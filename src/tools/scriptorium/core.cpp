@@ -1,3 +1,7 @@
+/// @file core.cpp
+/// @brief Implementation of `planar.tools.scriptorium`: source parsing, per-vendor projection, and the
+///   `check`/`status` comparisons. See the module interface for the entry point's contract.
+
 module;
 #include <glaze/json.hpp>
 #include <glaze/toml.hpp>
@@ -9,90 +13,109 @@ namespace planar::tools::scriptorium {
 namespace detail {
 namespace fs = std::filesystem;
 
+/// @brief Per-vendor frontmatter overrides a source may carry under `vendor.<name>`.
 struct vendor_extra {
-  std::string argument_hint;
-  std::string invocation_examples;
-  std::string model;
-  std::string name;
+  std::string argument_hint;       ///< Claude `argument-hint` / Codex `argument_hint`; empty emits none.
+  std::string invocation_examples; ///< Example invocations, emitted only for profiles with `invocation` set.
+  std::string model;               ///< Vendor-specific model override.
+  std::string name;                ///< Name emitted in Codex frontmatter; empty falls back to the slug.
 };
+/// @brief The frontmatter block of one authored source file.
 struct frontmatter {
-  std::string                         slug;
-  std::string                         kind = "skill";
-  std::string                         description;
-  std::string                         origin;
-  std::string                         model;
-  std::vector<std::string>            tools;
-  std::vector<std::string>            shared_notes;
-  std::map<std::string, vendor_extra> vendor;
+  std::string                         slug;           ///< Stable artifact name; also the output file or directory name.
+  std::string                         kind = "skill"; ///< `skill`, `agent`, or `doc`.
+  std::string                         description;    ///< One-line description rendered into every projection.
+  std::string                         origin;         ///< Provenance note; the only extra key a `doc` may carry.
+  std::string                         model;          ///< Default model for the artifact.
+  std::vector<std::string>            tools;          ///< Tools the artifact is granted.
+  std::vector<std::string>            shared_notes;   ///< Notes rendered as a `## Notes` list in a skill projection.
+  std::map<std::string, vendor_extra> vendor;         ///< Per-vendor overrides, keyed by profile name.
 };
+/// @brief The `sources` table of the configuration file.
 struct config_sources {
-  std::string skills;
-  std::string agents;
+  std::string skills; ///< Directory holding skill sources.
+  std::string agents; ///< Directory holding agent and doc sources.
 };
+/// @brief A per-vendor configuration override.
 struct config_override {
-  std::string output_dir;
+  std::string output_dir; ///< Replaces the profile's `skill_dir` when non-empty.
 };
+/// @brief The parsed configuration file.
 struct config {
-  config_sources                         sources;
-  std::vector<std::string>               vendors;
-  std::map<std::string, config_override> vendor_overrides;
+  config_sources                         sources;          ///< Where the authored sources live.
+  std::vector<std::string>               vendors;          ///< Vendor profiles to render, by name.
+  std::map<std::string, config_override> vendor_overrides; ///< Per-vendor overrides, keyed by profile name.
 };
+/// @brief One authored source file, split into frontmatter and body.
 struct source {
-  frontmatter meta;
-  fs::path    path;
-  std::string body;
+  frontmatter meta; ///< Parsed and validated frontmatter.
+  fs::path    path; ///< File it was read from; names it in diagnostics.
+  std::string body; ///< Template body after the frontmatter block.
 };
+/// @brief One rendered output file, relative to the output root.
 struct projection {
-  fs::path    path;
-  std::string bytes;
-  std::string slug;
-  std::string kind;
+  fs::path    path;  ///< Output path relative to the output root.
+  std::string bytes; ///< Exact expected file contents.
+  std::string slug;  ///< Slug of the source it was rendered from.
+  std::string kind;  ///< Kind of the source it was rendered from.
 };
+/// @brief A built-in vendor profile: where and how that vendor's surfaces are rendered.
 struct profile {
-  std::string name;
-  std::string title;
-  std::string skill_dir;
-  std::string agent_dir;
-  std::string invoke;
-  std::string install_path;
-  bool        dir_layout = false;
-  bool        invocation = false;
+  std::string name;               ///< Profile key, e.g. `claude` or `codex`.
+  std::string title;              ///< Display name rendered as `VendorTitle`.
+  std::string skill_dir;          ///< Skill output directory, relative to the output root.
+  std::string agent_dir;          ///< Agent and doc output directory, relative to the output root.
+  std::string invoke;             ///< Invocation pattern; `<slug>` is substituted.
+  std::string install_path;       ///< Installed-path pattern; `<slug>` is substituted.
+  bool        dir_layout = false; ///< Skills render as `<slug>/SKILL.md` rather than `<slug>.md`; docs are skipped.
+  bool        invocation = false; ///< Emit `invocation_examples` into skill projections.
 };
+/// @brief One artifact's row in the `status` report.
 struct status_row {
-  std::string slug;
-  std::string kind;
-  bool        defined   = true;
-  bool        rendered  = false;
-  bool        installed = false;
-  bool        drifted   = false;
-  bool        orphaned  = false;
+  std::string slug;              ///< Artifact slug.
+  std::string kind;              ///< Artifact kind.
+  bool        defined   = true;  ///< A source defines it; false for an orphaned output file.
+  bool        rendered  = false; ///< Every expected projection is staged byte-for-byte.
+  bool        installed = false; ///< Every expected projection is installed and matches its staged copy.
+  bool        drifted   = false; ///< A staged or installed copy differs from what is expected.
+  bool        orphaned  = false; ///< An output file exists that no source produces.
 };
+/// @brief The `status` report: one row per defined or orphaned artifact.
 struct status_report {
-  std::vector<status_row> artifacts;
+  std::vector<status_row> artifacts; ///< Rows ordered by kind, then slug.
 };
+/// @brief The `check` report; any finding makes the verb exit 1.
 struct check_report {
-  std::vector<std::string> missing;
-  std::vector<std::string> changed;
-  std::vector<std::string> unexpected;
-  int                      failures = 0;
+  std::vector<std::string> missing;      ///< Expected outputs that are absent.
+  std::vector<std::string> changed;      ///< Expected outputs whose bytes differ.
+  std::vector<std::string> unexpected;   ///< Files in an owned output directory that no source produces.
+  int                      failures = 0; ///< Total number of findings.
 };
+/// @brief One entry of the installer's `install-manifest.json`.
 struct manifest_row {
-  std::string vendor;
-  std::string kind;
-  std::string name;
-  std::string staged_path;
-  std::string installed_path;
+  std::string vendor;         ///< Vendor profile the file was installed for.
+  std::string kind;           ///< Artifact kind; companion docs are recorded as `agent`.
+  std::string name;           ///< Artifact slug.
+  std::string staged_path;    ///< Absolute path of the staged copy.
+  std::string installed_path; ///< Absolute path of the installed copy.
 };
+/// @brief The installer's manifest of installed projections.
 struct install_manifest {
-  std::vector<manifest_row> projections;
+  std::vector<manifest_row> projections; ///< Every installed file.
 };
 
+/// @brief Read a whole file as bytes.
+/// @param path File to read.
+/// @return Its contents; throws `std::runtime_error` when it cannot be opened.
 auto read_file(const fs::path& path) -> std::string {
   std::ifstream file(path, std::ios::binary);
   if (!file)
     throw std::runtime_error("cannot read " + path.string());
   return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
+/// @brief Quote a string for YAML or TOML frontmatter, escaping backslash, quote, newline, tab and CR.
+/// @param s Unquoted value.
+/// @return The double-quoted, escaped value.
 auto quote(std::string_view s) -> std::string {
   std::string out = "\"";
   for (char c : s) {
@@ -110,6 +133,9 @@ auto quote(std::string_view s) -> std::string {
   out += '"';
   return out;
 }
+/// @brief Render a YAML flow list, quoting any item that is not a plain `[A-Za-z0-9_.-]+` token.
+/// @param items List items.
+/// @return The `[a, b]` flow list.
 auto yaml_list(const std::vector<std::string>& items) -> std::string {
   std::string out = "[";
   for (const auto& item : items) {
@@ -121,6 +147,9 @@ auto yaml_list(const std::vector<std::string>& items) -> std::string {
   }
   return out + "]";
 }
+/// @brief Render a TOML array of quoted strings.
+/// @param items Array items.
+/// @return The `["a", "b"]` array.
 auto toml_list(const std::vector<std::string>& items) -> std::string {
   std::string out = "[";
   for (const auto& item : items) {
@@ -130,6 +159,9 @@ auto toml_list(const std::vector<std::string>& items) -> std::string {
   }
   return out + "]";
 }
+/// @brief Drop one leading line break so a body joins its frontmatter without a blank line of its own.
+/// @param s Body text.
+/// @return The body without a single leading `\n` or `\r\n`.
 auto seam(std::string s) -> std::string {
   if (s.starts_with("\r\n"))
     return s.substr(2);
@@ -137,10 +169,16 @@ auto seam(std::string s) -> std::string {
     return s.substr(1);
   return s;
 }
+/// @brief Whether a slug is non-empty and only `[a-z0-9-]`.
+/// @param s Candidate slug.
+/// @return True when it is a valid slug.
 auto valid_slug(std::string_view s) -> bool {
   return !s.empty() &&
          std::ranges::all_of(s, [](unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-'; });
 }
+/// @brief Whether a path is non-empty, relative, and free of `.` and `..` components.
+/// @param p Candidate output path.
+/// @return True when it cannot escape the output root.
 auto safe_relative(const fs::path& p) -> bool {
   if (p.empty() || p.is_absolute())
     return false;
@@ -149,6 +187,8 @@ auto safe_relative(const fs::path& p) -> bool {
       return false;
   return true;
 }
+/// @brief The built-in vendor profiles.
+/// @return Profiles keyed by name: `claude`, `codex`, `copilot`, `gemini`.
 auto builtins() -> std::map<std::string, profile> {
   return {
       {"claude",
@@ -159,6 +199,9 @@ auto builtins() -> std::map<std::string, profile> {
       {"gemini", {"gemini", "Gemini", "skills/gemini", "agents/gemini", "/<slug>", "~/.gemini/commands/<slug>.md", false, false}},
   };
 }
+/// @brief Load and validate the YAML configuration file.
+/// @param path Configuration file.
+/// @return The configuration; throws when it is unreadable, malformed, or names no sources or vendors.
 auto load_config(const fs::path& path) -> config {
   config cfg;
   auto   raw = read_file(path);
@@ -168,6 +211,12 @@ auto load_config(const fs::path& path) -> config {
     throw std::runtime_error(path.string() + ": missing sources or vendors");
   return cfg;
 }
+/// @brief Load one authored source and grade its frontmatter strictly.
+///
+/// Unknown, duplicate, and kind-inappropriate keys are refused, as is a legacy Go template action in the
+/// body, so a typo cannot silently change a projection.
+/// @param path Source file.
+/// @return The parsed source; throws on any validation failure.
 auto load_source(const fs::path& path) -> source {
   auto raw = read_file(path);
   if (!raw.starts_with("---\n"))
@@ -211,6 +260,9 @@ auto load_source(const fs::path& path) -> source {
     throw std::runtime_error(path.string() + ": legacy Go template action");
   return src;
 }
+/// @brief Load every `.md` source under the given roots, in path order.
+/// @param roots Source directories; each must exist.
+/// @return The sources; throws on a missing root or a duplicate slug.
 auto discover(const std::vector<fs::path>& roots) -> std::vector<source> {
   std::vector<fs::path> paths;
   for (const auto& root : roots) {
@@ -273,6 +325,10 @@ auto substitute(const source& src, const std::map<std::string, std::string>& ctx
   }
   return out;
 }
+/// @brief Render a source body against its template context.
+/// @param src Source to render.
+/// @param p Vendor profile supplying the vendor variables, or null for a vendor-neutral doc.
+/// @return The rendered body.
 auto render_body(const source& src, const profile* p) -> std::string {
   std::map<std::string, std::string> ctx{{"Slug", src.meta.slug}, {"Description", src.meta.description}};
   if (p) {
@@ -298,6 +354,10 @@ auto render_body(const source& src, const profile* p) -> std::string {
   }
   return substitute(src, ctx);
 }
+/// @brief Render one source for one vendor profile.
+/// @param src Source to render.
+/// @param p Vendor profile.
+/// @return The projection, or unset when the profile does not carry this kind (a doc under `dir_layout`).
 auto project(const source& src, const profile& p) -> std::optional<projection> {
   const auto& m     = src.meta;
   auto        it    = m.vendor.find(p.name);
@@ -376,6 +436,10 @@ auto project(const source& src, const profile& p) -> std::optional<projection> {
   out += "---\n\n" + seam(body);
   return projection{fs::path(p.agent_dir) / (m.slug + ".md"), out, m.slug, m.kind};
 }
+/// @brief Every projection the sources produce across the selected profiles.
+/// @param sources Loaded sources.
+/// @param profiles Selected vendor profiles.
+/// @return Projections sorted by path; throws on an unsafe or duplicate output path.
 auto expected(const std::vector<source>& sources, const std::vector<profile>& profiles) -> std::vector<projection> {
   std::vector<projection> result;
   std::set<fs::path>      paths;
@@ -391,6 +455,10 @@ auto expected(const std::vector<source>& sources, const std::vector<profile>& pr
   std::ranges::sort(result, {}, &projection::path);
   return result;
 }
+/// @brief Resolve a projection path under the output root, refusing a symlinked parent directory.
+/// @param root Output root.
+/// @param relative Projection path relative to the root.
+/// @return The absolute staged path; throws when a parent component is a symlink.
 auto staged_path(const fs::path& root, const fs::path& relative) -> fs::path {
   auto current = root;
   for (const auto& part : relative.parent_path()) {
@@ -400,6 +468,9 @@ auto staged_path(const fs::path& root, const fs::path& relative) -> fs::path {
   }
   return root / relative;
 }
+/// @brief Write a file by renaming a fully written temporary over it, creating parent directories.
+/// @param path Destination file.
+/// @param bytes Exact contents.
 void write_atomic(const fs::path& path, const std::string& bytes) {
   fs::create_directories(path.parent_path());
   auto tmp = path;
@@ -414,6 +485,9 @@ void write_atomic(const fs::path& path, const std::string& bytes) {
   }
   fs::rename(tmp, path);
 }
+/// @brief Serialize a report as JSON.
+/// @param value Report to serialize.
+/// @return The JSON text; throws when serialization fails.
 auto as_json(const auto& value) -> std::string {
   std::string out;
   if (auto e = glz::write_json(value, out); e)
