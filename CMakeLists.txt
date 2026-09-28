@@ -281,6 +281,11 @@ endif()
 include(architecture)
 planar_check_architecture()
 
+# Third-party targets declare no modules, so they need no scan step
+# (cmake/scan.cmake).
+include(scan)
+planar_disable_third_party_scan()
+
 # --- clangd symlink ----------------------------------------------------------
 # compile_commands.json always lands in the build tree; symlink it to the
 # source root for zero-config clangd. The symlink itself is git-ignored and

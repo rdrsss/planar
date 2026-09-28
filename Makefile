@@ -41,6 +41,22 @@ SURFACE_LINT := $(CPP_BUILD_DIR)/src/tools/surface_lint/surface_lint
 # Extra args forwarded to the relevant underlying build command.
 ARGS        ?=
 
+# Configure the debug tree only when it has never been configured. Ninja
+# re-runs CMake by itself when a CMake input or a globbed directory changes,
+# so an unconditional `cmake --preset debug` adds nothing except a
+# configure pass to every gate that needs a binary.
+#
+# It first checks ninja's dependency log. A damaged log makes every build a
+# full rebuild and ninja only warns about it (scripts/ninja-deps-check.py).
+define configure_debug
+	@scripts/ninja-deps-check.py --repair $(CPP_BUILD_DIR)
+	@test -f $(CPP_BUILD_DIR)/build.ninja || cmake --preset debug
+endef
+
+# Parallel ctest jobs. Every case builds its own scratch database and HOME,
+# so cases do not share state. Override with TEST_JOBS=1 to run serially.
+TEST_JOBS   ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
 .DEFAULT_GOAL := help
 
 .PHONY: help
@@ -127,9 +143,9 @@ test-install-deps: ## Run focused installer compiler-preflight fixture
 
 .PHONY: test
 test: test-install-manifest test-install-deps ## Run unit tests
-	cmake --preset debug
+	$(configure_debug)
 	cmake --build build/debug $(ARGS)
-	ctest --test-dir build/debug --output-on-failure $(ARGS)
+	ctest --test-dir build/debug --output-on-failure -j $(TEST_JOBS) $(ARGS)
 
 .PHONY: test-vendor-mtkahypar-offline
 test-vendor-mtkahypar-offline: ## Recurrence guard (task 6461): -DPLANAR_WITH_MTKAHYPAR=ON must configure offline from the committed vendor cache. macOS/sandbox-exec only; not part of test-all (slow, platform-specific) -- run after touching cmake/dependencies.cmake's mtkahypar block, or wire into make test-cpp-solver, the lane that configures with the solver ON (task 6532).
@@ -332,7 +348,7 @@ test-cpp-solver: ## Run the ctest suite against a solver-ON build (decision 1032
 
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
-	cmake --preset debug
+	$(configure_debug)
 	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext planar_cmd_planar_execute
 	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY) $(CPP_BIN_ABS)/$(EXECUTE_BINARY)
 	$(CLI_DOCS_COVERAGE) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY)
@@ -340,7 +356,7 @@ cli-usage-check: ## Validate authored surfaces against the live CLI schema and s
 
 .PHONY: surface-lint
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
-	cmake --preset debug
+	$(configure_debug)
 	cmake --build $(CPP_BUILD_DIR) --target surface_lint
 	$(SURFACE_LINT) $(CURDIR)
 
@@ -358,21 +374,27 @@ surface-lint: ## Validate authored links, contracts, capabilities, commands, and
 # with the resulting baseline diff reviewed on purpose — never absorbed
 # silently into an unrelated commit as a side effect of a passing gate.
 surface-check: ## Diff each binary's live schema/help surface against scripts/surface-baseline.txt
-	cmake --preset debug
+	$(configure_debug)
 	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext
 	scripts/surface-snapshot.sh verify
 
 .PHONY: coverage
-coverage: build ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt
-	scripts/coverage-check.sh
+coverage: ## Check integration-test leaf-coverage ratio against scripts/coverage-baseline.txt
+	$(configure_debug)
+	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar
+	PLANAR_BIN=$(CPP_BIN_ABS)/$(BINARY) scripts/coverage-check.sh
 
 .PHONY: coverage-report
-coverage-report: build ## Print per-verb integration-test leaf coverage table
-	scripts/coverage-check.sh --report
+coverage-report: ## Print per-verb integration-test leaf coverage table
+	$(configure_debug)
+	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar
+	PLANAR_BIN=$(CPP_BIN_ABS)/$(BINARY) scripts/coverage-check.sh --report
 
 .PHONY: coverage-update
-coverage-update: build ## Re-seed scripts/coverage-baseline.txt with the current coverage ratio
-	scripts/coverage-check.sh --update
+coverage-update: ## Re-seed scripts/coverage-baseline.txt with the current coverage ratio
+	$(configure_debug)
+	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar
+	PLANAR_BIN=$(CPP_BIN_ABS)/$(BINARY) scripts/coverage-check.sh --update
 
 # The Go-archive parity gate was RETIRED (planar task 5623). The reference was
 # a frozen archive whose last migration is 00030; the port moved past it, so
@@ -465,7 +487,7 @@ CENTURIOND_PREFIX ?= build/centuriond-prefix
 
 .PHONY: centuriond-local
 centuriond-local: ## Build + install a stock centuriond into $(CENTURIOND_PREFIX) from the pinned archive
-	cmake --preset debug
+	$(configure_debug)
 	scripts/install-centuriond.sh --no-release \
 		--pin $(CPP_BUILD_DIR)/centurion-pin.env \
 		--prefix $(CURDIR)/$(CENTURIOND_PREFIX) \
@@ -480,7 +502,7 @@ centurion-client-proof: centuriond-local ## Link centurion::client under Planar'
 
 .PHONY: centuriond-dist-test
 centuriond-dist-test: ## Prove an installed centuriond runs with its source cache deleted (task 6709; slow: builds gRPC)
-	cmake --preset debug
+	$(configure_debug)
 	scripts/centuriond-dist-test.sh $(CPP_BUILD_DIR)
 
 # Deliberately NOT in test-all: it compiles Centurion's whole gRPC stack from
