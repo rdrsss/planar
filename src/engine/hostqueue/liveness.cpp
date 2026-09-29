@@ -105,6 +105,10 @@ auto judge_liveness(const entry& e, const liveness_context& ctx, const process_p
   return liveness{.live = live, .submitter_live = *submitter, .group = *group};
 }
 
+auto judge_child_group(const entry& e, const process_probe& probe) -> std::expected<group_verdict, process::identity::error> {
+  return judge_group(e, probe);
+}
+
 auto submitter_gone(const entry& e, const liveness_context& ctx, const process_probe& probe)
     -> std::expected<bool, process::identity::error> {
   return judge_liveness(e, ctx, probe).transform([](const liveness& verdict) { return verdict.submitter_gone(); });
