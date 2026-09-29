@@ -151,6 +151,23 @@ TEST_CASE("liveness: a reused process id is not mistaken for the submitter", "[e
   CHECK(select(entries, host) == std::vector<std::int64_t>{1});
 }
 
+TEST_CASE("liveness: existence is decided by the existence query, not by a readable start time",
+          "[engine][hostqueue][liveness]") {
+  // Tech spec 647: process existence is `kill(pid, 0)`. A start time that
+  // can still be read for a pid that query reports absent does not make the
+  // submitter exist.
+  fake_host host;
+  host.processes       = {{100, 5}};
+  auto probe           = host.probe();
+  probe.process_exists = [](std::int64_t) -> std::expected<bool, pid_ns::error> { return false; };
+
+  std::array const entries{waiting(1, 100, 5)};
+  auto const       verdict = hq::judge_liveness(entries[0], context(), probe);
+  REQUIRE(verdict.has_value());
+  CHECK_FALSE(verdict->live);
+  CHECK(hq::select_not_live(entries, context(), probe) == std::vector<std::int64_t>{1});
+}
+
 TEST_CASE("liveness: a live entry is never reaped", "[engine][hostqueue][liveness]") {
   fake_host host;
   host.processes           = {{100, 5}, {300, 11}};
