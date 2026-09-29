@@ -225,9 +225,9 @@ auto enqueue_one(planar::db::connection& conn, const hq::enqueue_request& reques
   return *seq;
 }
 
-auto poll_request_for(std::int64_t seq) -> hq::poll_request {
+auto poll_request_for(std::int64_t seq, std::int64_t slots = 1) -> hq::poll_request {
   return hq::poll_request{
-      .seq = seq, .host_id = std::string(k_host), .slots = 1, .stale_after_ms = k_window, .run_limit_ms = k_run_limit};
+      .seq = seq, .host_id = std::string(k_host), .slots = slots, .stale_after_ms = k_window, .run_limit_ms = k_run_limit};
 }
 
 // @brief The entry `seq`, which must exist.
@@ -255,12 +255,13 @@ void record_child_group(planar::db::connection& conn, std::int64_t seq, std::int
 }
 
 // @brief Enqueues submitter `pid`, gives it its turn (it polls as itself, so
-// the probe is not consulted for it), and records `pgid` as its command's
+// the probe is not consulted for it; the slot count is large enough that
+// earlier running entries do not hold it back), and records `pgid` as its command's
 // group with leader start time `pgid * 10`, matching `fake_host::add_group`.
 auto running_entry(planar::db::connection& conn, std::int64_t pid, fake_clock& clock, const hq::process_probe& probe,
                    std::int64_t pgid) -> std::int64_t {
   auto const seq     = enqueue_one(conn, request_for(pid, clock));
-  auto const started = hq::poll(conn, poll_request_for(seq), clock, probe);
+  auto const started = hq::poll(conn, poll_request_for(seq, 64), clock, probe);
   REQUIRE(started.has_value());
   REQUIRE(started->running);
   record_child_group(conn, seq, pgid, pgid * 10);
