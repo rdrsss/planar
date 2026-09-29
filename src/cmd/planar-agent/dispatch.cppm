@@ -44,6 +44,18 @@
 /// A bare `planar-agent`, and a bare `planar-agent action`, render that
 /// node's help page and exit 0 — the same thing the deleted parser did for
 /// a bare parent verb.
+///
+/// ## A handler's outcome, and the exit code it becomes (task 7007)
+///
+/// A handler returns a `handler_outcome`: either a `handler_result` —
+/// success exits 0, a `domain_error` is reported on stderr (plus the
+/// `--json` envelope when asked) and exits with its mapped code — or an
+/// `exit_status`, which `run` returns verbatim with nothing written. The
+/// second form exists for a verb whose exit code is another process's
+/// status (`queue run`, decision 1188), so a pass-through 1, 2 or 125 is
+/// never mistaken for this binary's own refusal of the same number. A
+/// status outside 0..255 writes `error: <verb>: exit status <n> is outside
+/// 0..255` and exits `exit_internal_error` (125).
 module;
 
 export module planar.cmd.planar_agent.dispatch;

@@ -87,6 +87,28 @@ export inline constexpr int exit_scope_violation       = 5;  ///< Cross-scope wr
 export inline constexpr int exit_precondition_conflict = 6;  ///< Slug conflict / already-exists.
 export inline constexpr int exit_schema_version        = 7;  ///< DB schema newer/older than this binary supports.
 export inline constexpr int exit_not_implemented       = 64; ///< Placeholder / not-yet-implemented handler.
+/// @brief Internal error: a handler passed through a status outside
+/// `exit_status_min..exit_status_max`. The same 125 decision 1188 gives the
+/// queue's own failures, so a caller of `queue run` reads one code for both.
+export inline constexpr int exit_internal_error = 125;
+export inline constexpr int exit_status_min     = 0;   ///< Lowest status a handler may pass through.
+export inline constexpr int exit_status_max     = 255; ///< Highest status a handler may pass through.
+
+/// @brief A process exit status a handler passes through verbatim, as
+/// opposed to a `domain_error` that dispatch maps to a code (plan 1080,
+/// task 7007).
+///
+/// For a verb whose exit code IS another process's exit code (`queue run`
+/// exits with its command's status). Dispatch returns `code` unchanged and
+/// writes nothing, even when `code` equals one of this binary's own codes:
+/// a pass-through 2 is not an `invalid_input` refusal and prints no
+/// `error:` line and no `--json` envelope. A `code` outside
+/// `exit_status_min..exit_status_max` cannot be reported by a process
+/// without truncation; dispatch refuses it with `exit_internal_error`.
+export struct exit_status {
+  /// @brief The status to exit with.
+  int code = exit_success;
+};
 
 /// @brief A handler failure: which exit-code bucket it falls in, plus the
 /// stderr text.
