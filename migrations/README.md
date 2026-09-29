@@ -1,8 +1,15 @@
 # Migrations
 
-SQL schema migrations for Planar. Authored in plain SQL, applied with
+SQL schema migrations for Planar's main database (`~/.planar/planar.db`).
+Authored in plain SQL, applied with
 [`sqlx-cli`](https://github.com/launchbadge/sqlx/tree/main/sqlx-cli) at
 operational time and embedded into the binary at build time.
+
+The agent database (`~/.planar/agent.db`) has its own stream under
+[`migrations-agent/`](../migrations-agent/README.md): same format, same
+codegen and runner, a different file, version table and generated module.
+Nothing here names an agent database table, and nothing there names one of
+these.
 
 ## File format
 
@@ -72,7 +79,9 @@ The build pipeline auto-discovers new migrations via configure-time CMake
 codegen (`cmake/generate_migrations.cmake`), which `#embed`s each up/down
 pair into the generated `planar.db.migrations` module. Its `file(GLOB
 CONFIGURE_DEPENDS)` re-runs configure when the set changes, so no manual
-manifest update is required.
+manifest update is required. The codegen takes the module name, namespace
+and accessor as parameters and is called once per stream from
+`src/lib/db/CMakeLists.txt`; the defaults are this stream's.
 
 ## Applying migrations
 

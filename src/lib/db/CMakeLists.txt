@@ -26,15 +26,31 @@ planar_generate_migrations(
   OUT_FILE "${_planar_db_migrations_generated}"
   MODULE_NAME "planar.db.migrations")
 
+# The agent database's stream (plan 1080, decision 1181): a second call of
+# the same codegen over `migrations-agent/`, into its own module and
+# namespace so neither chain can see the other's files. The version table
+# it writes (`agent_schema_migrations`) is a parameter of the applier in
+# migrate.cppm, not of the codegen.
+set(_planar_db_migrations_agent_generated "${CMAKE_CURRENT_BINARY_DIR}/generated/migrations_agent.generated.cpp")
+planar_generate_migrations(
+  MIGRATIONS_DIR "${CMAKE_SOURCE_DIR}/migrations-agent"
+  OUT_FILE "${_planar_db_migrations_agent_generated}"
+  MODULE_NAME "planar.db.migrations_agent"
+  NAMESPACE "planar::db::agent"
+  ACCESSOR "migrations"
+  INTERFACE_UNIT "src/lib/db/migrations_agent.cppm")
+
 planar_module(db
   INTERFACE
     db.cppm
     migrations.cppm
+    migrations_agent.cppm
     migrate.cppm
   SOURCES
     db.cpp
     migrate.cpp
     "${_planar_db_migrations_generated}"
+    "${_planar_db_migrations_agent_generated}"
   EMBED)
 
 target_link_libraries(planar_db PRIVATE SQLite::SQLite3)
