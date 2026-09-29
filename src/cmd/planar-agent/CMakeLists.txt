@@ -179,7 +179,8 @@ planar_binary(planar_agent
     engine_runtime
     engine_routing
     json_text
-    engine_planning)
+    engine_planning
+    engine_hostqueue)
 
 # `--metadata` is validated with glz::validate_json -- the same purpose-built
 # probe engine/config and engine/runs use, and the only one that enables
