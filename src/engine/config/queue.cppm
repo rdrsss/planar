@@ -50,6 +50,7 @@ export struct queue_settings {
   std::int64_t history_days     = 30;    ///< How many days history rows and logs are kept; at least 1.
 
   /// @brief Field-wise equality.
+  /// @return Whether every field is equal.
   auto operator==(const queue_settings&) const -> bool = default;
 };
 

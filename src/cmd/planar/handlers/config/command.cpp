@@ -468,6 +468,9 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 /// Used only to name the key of a TOML rejection the parser reports by line
 /// alone. Lexical, like the sensitive-literal scan: it tracks `[table]`
 /// headers line by line and never interprets values.
+/// @param content The whole configuration file.
+/// @param line The 1-based source line a parse failure was reported on.
+/// @return `queue.<key>`, or empty when the line is not a `[queue]` entry.
 auto queue_key_at_line(std::string_view content, std::uint32_t line) -> std::string {
   if (line == 0) {
     return {};
