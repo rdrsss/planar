@@ -33,6 +33,9 @@
 # two steps, signalling only outside any transaction; it imports queue,
 # history and liveness from this bucket.
 #
+# `nested.cppm` (task hq-nested-entry) inserts a nested run's entry after
+# checking its parent; it imports queue and liveness from this bucket.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
@@ -43,6 +46,7 @@ planar_module(engine_hostqueue
     liveness.cppm
     poll.cppm
     terminate.cppm
+    nested.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
@@ -50,6 +54,7 @@ planar_module(engine_hostqueue
     liveness.cpp
     poll.cpp
     terminate.cpp
+    nested.cpp
   DEPENDS
     db
     json_dom
