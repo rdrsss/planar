@@ -26,6 +26,9 @@
 # module's default probe forwards to (task hq-liveness); tests replace the
 # probe with a fake.
 #
+# `poll.cppm` (task hq-poll-transaction) is the poll transaction; it
+# imports queue, history and liveness from this bucket.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
@@ -34,11 +37,13 @@ planar_module(engine_hostqueue
     queue.cppm
     history.cppm
     liveness.cppm
+    poll.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
     history.cpp
     liveness.cpp
+    poll.cpp
   DEPENDS
     db
     json_dom
