@@ -12,3 +12,4 @@ export module planar.engine.hostqueue;
 export import planar.engine.hostqueue.queue;
 export import planar.engine.hostqueue.history;
 export import planar.engine.hostqueue.liveness;
+export import planar.engine.hostqueue.poll;
