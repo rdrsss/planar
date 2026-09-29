@@ -9,6 +9,17 @@
 /// `schema_migrations` insert/delete contract (migrations/README.md) is
 /// honored entirely by the migration SQL itself — the runner never injects
 /// those statements.
+///
+/// The runner serves two independent migration streams (plan 1080,
+/// decision 1181): the main database's `migrations/` chain, versioned in
+/// `schema_migrations`, and the agent database's `migrations-agent/`
+/// chain, versioned in `agent_schema_migrations`. Every entry point that
+/// reads a version table takes the table's name as a parameter; the
+/// overloads without one are the main-stream defaults and are unchanged
+/// in behaviour. The agent chain itself is `planar::db::agent::migrations()`
+/// from `planar.db.migrations_agent`; this module does not import it, so
+/// a caller applies the agent stream by passing that chain and
+/// `k_agent_version_table` explicitly.
 
 module;
 
@@ -20,11 +31,32 @@ import planar.db.migrations;
 
 namespace planar::db {
 
-/// @brief Reads `schema_migrations`'s highest applied version. A fresh
+/// @brief The main database's schema-version table, written by every
+/// `migrations/*.up.sql` (migrations/README.md).
+export constexpr std::string_view k_main_version_table = "schema_migrations";
+
+/// @brief The agent database's schema-version table, written by every
+/// `migrations-agent/*.up.sql` (migrations-agent/README.md). Distinct from
+/// `k_main_version_table` so the two streams never read each other's
+/// bookkeeping, even if both tables were ever present in one file.
+export constexpr std::string_view k_agent_version_table = "agent_schema_migrations";
+
+/// @brief Reads `version_table`'s highest applied version. A fresh
 /// database (the table does not exist yet) reports `0` rather than
 /// surfacing the underlying "no such table" failure — mirrors
 /// `zig/src/db/migrate.zig`'s `intQuery(...) catch` fallback, which is how
 /// `applyAll` knows to start from the beginning of the chain.
+/// @param conn The connection to query.
+/// @param version_table The stream's version table. A compile-time
+/// identifier chosen by the caller (`k_main_version_table` or
+/// `k_agent_version_table`), never operator input: it is spliced into the
+/// query text, not bound.
+/// @return The highest applied version (`0` on a fresh database), or the
+/// SQLite failure as a `db_error` for any other kind of failure.
+export auto current_version(connection& conn, std::string_view version_table) -> std::expected<std::uint32_t, db_error>;
+
+/// @brief Reads `schema_migrations`'s highest applied version — the main
+/// stream's `current_version`.
 /// @param conn The connection to query.
 /// @return The highest applied version (`0` on a fresh database), or the
 /// SQLite failure as a `db_error` for any other kind of failure.
@@ -155,11 +187,19 @@ export auto require_contiguous(std::span<migration_record const> chain) -> std::
 /// surfaced.
 /// @param conn The connection to inspect.
 /// @param chain The chain this binary embeds.
+/// @param version_table The stream's version table (see `current_version`).
+/// @return The handshake state, or the SQLite failure as a `db_error`.
+export auto assert_schema_compatible(connection& conn, std::span<migration_record const> chain, std::string_view version_table)
+    -> std::expected<schema_state, db_error>;
+
+/// @brief Main-stream overload: compares `chain` against `schema_migrations`.
+/// @param conn The connection to inspect.
+/// @param chain The chain this binary embeds.
 /// @return The handshake state, or the SQLite failure as a `db_error`.
 export auto assert_schema_compatible(connection& conn, std::span<migration_record const> chain)
     -> std::expected<schema_state, db_error>;
 
-/// @brief Convenience overload comparing against the embedded chain.
+/// @brief Convenience overload comparing against the embedded main chain.
 /// @param conn The connection to inspect.
 /// @return The handshake state, or the SQLite failure as a `db_error`.
 export auto assert_schema_compatible(connection& conn) -> std::expected<schema_state, db_error>;
@@ -186,10 +226,20 @@ export auto assert_schema_compatible(connection& conn) -> std::expected<schema_s
 /// tests can inject a synthetic chain (e.g. a deliberately broken
 /// migration, to exercise the rollback-on-failure path) without touching
 /// the real `migrations/` directory.
+/// @param version_table The stream's version table, read once before the
+/// loop to decide where the chain resumes (see `current_version`). The
+/// migration SQL, not the runner, writes to it.
 /// @return Success, or the first failing migration's `db_error`. That
 /// migration's own transaction is rolled back (`transaction`'s
 /// destructor rolls back anything not explicitly committed); every
 /// migration applied earlier in the same call stays committed.
+export auto apply_all(connection& conn, std::span<migration_record const> chain, std::string_view version_table)
+    -> std::expected<void, db_error>;
+
+/// @brief Main-stream overload: applies `chain` against `schema_migrations`.
+/// @param conn The connection to migrate.
+/// @param chain The ordered migration chain to apply (the test seam).
+/// @return Success, or the first failing migration's `db_error`.
 export auto apply_all(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error>;
 
 /// @brief Apply `chain` after enforcing that it is CONTIGUOUS from 1.
@@ -205,6 +255,17 @@ export auto apply_all(connection& conn, std::span<migration_record const> chain)
 /// Do NOT route the span overload through this: that overload is the test
 /// seam that deliberately injects partial and synthetic chains, and
 /// enforcing contiguity there would reject its whole purpose.
+/// @param conn An open database connection.
+/// @param chain The migration chain to enforce and apply.
+/// @param version_table The stream's version table (see `current_version`).
+/// This is the entry point for the agent stream: pass
+/// `planar::db::agent::migrations()` and `k_agent_version_table`.
+/// @return Success, or the contiguity failure before any migration runs.
+export auto apply_contiguous(connection& conn, std::span<migration_record const> chain, std::string_view version_table)
+    -> std::expected<void, db_error>;
+
+/// @brief Main-stream overload: enforces contiguity and applies `chain`
+/// against `schema_migrations`.
 /// @param conn An open database connection.
 /// @param chain The migration chain to enforce and apply.
 /// @return Success, or the contiguity failure before any migration runs.

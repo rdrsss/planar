@@ -58,6 +58,12 @@ Migrations are plain SQL files under `migrations/` in sqlx-cli format (`NNNNN_<n
 
 Authoring rules (file naming, the `schema_migrations` insert/delete contract, the `.sqlfluff` linter config, and the up/down/up roundtrip test) live in [`migrations/README.md`](../migrations/README.md). New migrations are created via `sqlx migrate add -r <name> --source migrations`; the next `cmake --build` regenerates the embedded module (CMake re-runs configure automatically on new/removed migration files).
 
+#### The agent database's stream
+
+The agent database (`~/.planar/agent.db`, plan 1080, decision 1181) has a second, independent migration stream under `migrations-agent/`, in the same sqlx-cli format. The same codegen embeds it, called a second time from `src/lib/db/CMakeLists.txt` with its own module name, namespace and accessor: `planar.db.migrations_agent` exports `planar::db::agent::migrations()`, and neither generated module holds a file from the other directory. The same runner applies it: every `planar.db.migrate` entry point that reads a version table takes the table name as a parameter (`k_main_version_table` = `schema_migrations`, `k_agent_version_table` = `agent_schema_migrations`), and the overloads without one are the unchanged main-stream defaults.
+
+`agent_schema_migrations(version integer primary key, compat integer not null, description text not null)` is the agent database's schema-version contract. The row with the highest `version` is authoritative, and its `compat` names the oldest binary schema version that may open the store: a migration that only adds tables, columns with defaults, or indexes keeps the previous `compat`, and one that drops, renames or changes the meaning of anything sets `compat` to its own version. Existing agent tables (`agent_work_claims`, `agent_actions`, the routing dispatch tables) stay in the main database; moving them is a separate plan. Authoring rules for the stream live in [`migrations-agent/README.md`](../migrations-agent/README.md).
+
 ### Application tables
 
 | Migration | Tables / schema change |
@@ -364,14 +370,15 @@ CLI11 (vendored, `vendor/cli11/`) owns tokenization and value coercion only — 
 | File | Role |
 |------|------|
 | `db.cppm` / `db.cpp` | `connection` / `statement` / `transaction` RAII wrappers, PRAGMA setup (foreign keys on, WAL mode). Every fallible boundary returns `std::expected<T, db_error>` — no exceptions cross the module boundary. |
-| `migrate.cppm` / `migrate.cpp` | Applies the generated `planar.db.migrations` module on startup. |
+| `migrate.cppm` / `migrate.cpp` | Applies the generated `planar.db.migrations` module on startup, and the agent stream when handed that chain and its version table. |
 | `migrations.cppm` | The generated module's declared interface (implementation is `#embed`-generated at configure time into a file under the build tree, not checked in). |
+| `migrations_agent.cppm` | The same for the agent database's stream, `planar.db.migrations_agent` (`migrations-agent/`). |
 
 ### Configure-time codegen (`cmake/`)
 
 | File | Role |
 |------|------|
-| `cmake/generate_migrations.cmake` | Scans `migrations/*.up.sql`/`*.down.sql`, sorts explicitly, and `#embed`s each pair into a generated `planar.db.migrations` implementation unit. Re-runs configure automatically on new/removed migration files (`file(GLOB CONFIGURE_DEPENDS)`). |
+| `cmake/generate_migrations.cmake` | Scans a stream directory's `*.up.sql`/`*.down.sql`, sorts explicitly, and `#embed`s each pair into a generated implementation unit for the module, namespace and accessor it is given. Called once per stream: `migrations/` into `planar.db.migrations`, `migrations-agent/` into `planar.db.migrations_agent`. Re-runs configure automatically on new/removed migration files (`file(GLOB CONFIGURE_DEPENDS)`). |
 | `cmake/generate_templates.cmake` | Same pattern for `templates/defaults/` — embeds propagation-template defaults so they compile into the binary. |
 
 <!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ codegen tooling for history -->
