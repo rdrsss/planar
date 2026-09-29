@@ -40,15 +40,21 @@ planar_generate_migrations(
   ACCESSOR "migrations"
   INTERFACE_UNIT "src/lib/db/migrations_agent.cppm")
 
+# planar.db.agentdb (plan 1080, task hq-agentdb-open) is the agent
+# database's open path: path resolution, create-on-first-use, and the agent
+# stream applied through migrate.cppm. Same target for the same layering
+# reason as the modules above.
 planar_module(db
   INTERFACE
     db.cppm
     migrations.cppm
     migrations_agent.cppm
     migrate.cppm
+    agentdb.cppm
   SOURCES
     db.cpp
     migrate.cpp
+    agentdb.cpp
     "${_planar_db_migrations_generated}"
     "${_planar_db_migrations_agent_generated}"
   EMBED)

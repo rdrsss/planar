@@ -29,9 +29,9 @@ struct scratch_dir {
   std::filesystem::path path_;
 
   scratch_dir()
-      : path_(std::filesystem::temp_directory_path() /
-              std::format("planar_agentdb_test_{}_{}", std::chrono::steady_clock::now().time_since_epoch().count(),
-                          reinterpret_cast<std::uintptr_t>(this))) {
+      : path_(std::filesystem::temp_directory_path() / std::format("planar_agentdb_test_{}_{}",
+                                                                   std::chrono::steady_clock::now().time_since_epoch().count(),
+                                                                   reinterpret_cast<std::uintptr_t>(this))) {
     std::filesystem::create_directories(path_);
   }
 
@@ -42,11 +42,10 @@ struct scratch_dir {
     std::error_code ec;
     // A test may have removed write permission from a subdirectory; restore
     // it so remove_all can empty it.
-    for (auto const& entry : std::filesystem::recursive_directory_iterator(
-             path_, std::filesystem::directory_options::skip_permission_denied, ec)) {
+    for (auto const& entry :
+         std::filesystem::recursive_directory_iterator(path_, std::filesystem::directory_options::skip_permission_denied, ec)) {
       if (entry.is_directory(ec)) {
-        std::filesystem::permissions(entry.path(), std::filesystem::perms::owner_all,
-                                     std::filesystem::perm_options::add, ec);
+        std::filesystem::permissions(entry.path(), std::filesystem::perms::owner_all, std::filesystem::perm_options::add, ec);
       }
     }
     std::filesystem::remove_all(path_, ec);
@@ -151,8 +150,7 @@ TEST_CASE("open_agent_db falls back to $HOME/.planar/agent.db and never reads PL
   CHECK_FALSE(std::filesystem::exists(decoy));
 }
 
-TEST_CASE("open_agent_db migrates an existing store that is behind the embedded agent chain",
-          "[db][agentdb][hq-agentdb-open]") {
+TEST_CASE("open_agent_db migrates an existing store that is behind the embedded agent chain", "[db][agentdb][hq-agentdb-open]") {
   scratch_dir scratch;
   auto const  store = scratch.path_ / "agent.db";
   {
@@ -239,7 +237,7 @@ TEST_CASE("resolve_agent_db_path fails naming the missing variables when neither
 
   SECTION("PLANAR_DB alone is not a fallback for the agent store") {
     scratch_dir scratch;
-    auto const  main = scratch.path_ / "planar.db";
+    auto const  main   = scratch.path_ / "planar.db";
     auto        opened = planar::db::agent::open_agent_db(env_of({{"PLANAR_DB", main.string()}}));
     REQUIRE_FALSE(opened.has_value());
     CHECK(opened.error().kind == planar::db::agent::open_error_kind::unresolved_path);
@@ -274,11 +272,16 @@ TEST_CASE("open_agent_db succeeds while the main database is ahead of the binary
     REQUIRE(conn->execute("create table schema_migrations (version integer primary key, applied_at text, description text);"
                           "insert into schema_migrations (version, description) values (999999, 'from the future');")
                 .has_value());
+    // Leave the decoy in rollback-journal mode. `connection::open` switches
+    // a file to WAL, which rewrites header bytes 18-19 (1 -> 2), so an open
+    // path that touched this file even harmlessly would change its bytes.
+    REQUIRE(scalar(*conn, "pragma journal_mode = delete") == "delete");
   }
-  // The connection above closed, so its WAL has been checkpointed and the
-  // sidecars removed; the main file is now at rest.
   REQUIRE_FALSE(std::filesystem::exists(main.string() + "-wal"));
   auto const before = read_bytes(main);
+  REQUIRE(before.size() > 19);
+  REQUIRE(before[18] == 1);
+  REQUIRE(before[19] == 1);
   auto const main_mtime = std::filesystem::last_write_time(main);
 
   auto opened = planar::db::agent::open_agent_db(
@@ -292,7 +295,8 @@ TEST_CASE("open_agent_db succeeds while the main database is ahead of the binary
   CHECK_FALSE(std::filesystem::exists(main.string() + "-wal"));
   CHECK_FALSE(std::filesystem::exists(main.string() + "-shm"));
   CHECK(read_bytes(main) == before);
-  CHECK(std::filesystem::last_write_time(main) == main_mtime);
+  bool const mtime_unchanged = std::filesystem::last_write_time(main) == main_mtime;
+  CHECK(mtime_unchanged);
 }
 
 TEST_CASE("the process environment lookup reads the same values as getenv", "[db][agentdb][hq-agentdb-open]") {

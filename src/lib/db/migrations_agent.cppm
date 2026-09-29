@@ -7,20 +7,32 @@
 /// build tree from `migrations-agent/*.up.sql` / `*.down.sql`, sorted
 /// explicitly by the `NNNNN` filename prefix exactly as the main stream is.
 ///
-/// Records reuse `migration_record` from `planar.db.migrations`, which
-/// this module re-exports so a consumer of the agent chain sees the record
-/// type without importing the main stream by name. The two chains never
-/// mix: this module holds no file from `migrations/`, and
-/// `planar.db.migrations` holds no file from `migrations-agent/`.
+/// Records reuse `migration_record` from `planar.db.migrations`. That
+/// module is imported here without `export`, so importing the agent chain
+/// does NOT put the main stream's `planar::db::migrations()` in scope: a
+/// consumer that wants the main chain says so by importing
+/// `planar.db.migrations` itself, and one that only applies the agent
+/// chain (such as `planar.db.agentdb`) cannot reach for the wrong accessor
+/// by accident. The non-exported using-declaration below gives the
+/// generated implementation unit the record type under this namespace;
+/// importers see the type through the exported signature and name it, when
+/// they need to, as `planar::db::migration_record` after importing the main
+/// stream. The two chains never mix: this module holds no file from
+/// `migrations/`, and `planar.db.migrations` holds no file from
+/// `migrations-agent/`.
 
 module;
 
 export module planar.db.migrations_agent;
 
 import std;
-export import planar.db.migrations;
+import planar.db.migrations;
 
 namespace planar::db::agent {
+
+/// @brief The record type the generated chain is built from, visible to
+/// this module's implementation unit without re-exporting the main stream.
+using planar::db::migration_record;
 
 /// @brief The full embedded agent migration chain, in ascending version
 /// order — generated at configure time from `migrations-agent/*.up.sql`,

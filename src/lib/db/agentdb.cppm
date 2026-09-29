@@ -1,0 +1,102 @@
+/// @file agentdb.cppm
+/// @brief `planar.db.agentdb` — the agent database's open path (plan 1080,
+/// decision 1181, task hq-agentdb-open). Resolves the store's location from
+/// `PLANAR_AGENT_DB`, falling back to `$HOME/.planar/agent.db` beside the
+/// main database, creates the file and its parent directory on first use,
+/// opens it with the same WAL journal mode and busy timeout every
+/// read-write `planar.db` connection gets, and applies the embedded agent
+/// migration stream (`planar::db::agent::migrations()` against
+/// `k_agent_version_table`) so the store is at head when `open_agent_db`
+/// returns.
+///
+/// The open path never reads `PLANAR_DB` and never opens the main
+/// database: a caller whose main database is locked out by a schema
+/// mismatch still opens the agent store (tech-spec § Open Questions "Where
+/// the queue store lives"). The compatibility check against the highest
+/// version row's `compat` is task hq-agentdb-compat and is not performed
+/// here.
+///
+/// Every failure surfaces as `std::expected<..., open_error>`; nothing
+/// throws across the module boundary. The error names the path it failed
+/// on, so a verb can print it and map the failure to its own exit code
+/// (decision 1185: `queue run` exits 125 on an unreachable store).
+///
+/// The environment is injected as an `env_lookup` rather than read from
+/// the process, so tests pass a fixed table and never mutate the process
+/// environment; `process_env()` is the production lookup.
+
+module;
+
+export module planar.db.agentdb;
+
+import std;
+import planar.db;
+
+namespace planar::db::agent {
+
+/// @brief Look up one environment variable by name. Returns `std::nullopt`
+/// when the variable is not set; an empty string when it is set to nothing.
+export using env_lookup = std::function<std::optional<std::string>(std::string_view)>;
+
+/// @brief The production lookup over the process environment (`getenv`).
+/// @return A lookup callable that reads the live process environment.
+export auto process_env() -> env_lookup;
+
+/// @brief A deterministic lookup over a fixed table, for tests and for
+/// callers that already hold a snapshot of the environment.
+/// @param vars The variables the lookup answers; anything else is unset.
+/// @return A lookup callable over `vars`.
+export auto map_env(std::map<std::string, std::string, std::less<>> vars) -> env_lookup;
+
+/// @brief The environment variable that overrides the agent database path.
+export constexpr std::string_view k_agent_db_env = "PLANAR_AGENT_DB";
+
+/// @brief The variable the fallback location is built from.
+export constexpr std::string_view k_home_env = "HOME";
+
+/// @brief What went wrong while opening the agent database.
+export enum class open_error_kind : std::uint8_t {
+  unresolved_path,     ///< Neither `PLANAR_AGENT_DB` nor `HOME` is set, or `PLANAR_AGENT_DB` is empty.
+  unwritable_location, ///< The store's parent directory could not be created.
+  open_failed,         ///< SQLite could not open or create the file at the resolved path.
+  migrate_failed,      ///< The agent migration stream failed to apply.
+};
+
+/// @brief The failure `resolve_agent_db_path` / `open_agent_db` report.
+///
+/// `message` is complete on its own: it names the path (or, for
+/// `unresolved_path`, the missing variables) and the underlying reason, so
+/// a caller can print it verbatim. `path` is empty only for
+/// `unresolved_path`.
+export struct open_error {
+  open_error_kind       kind = open_error_kind::unresolved_path; ///< Which step failed.
+  std::filesystem::path path;                                    ///< The store path the failure is about.
+  std::string           message;                                 ///< A complete, printable description.
+  int                   sqlite_code = 0;                         ///< The SQLite extended result code, when SQLite failed.
+};
+
+/// @brief Resolves where the agent database lives: `PLANAR_AGENT_DB` when
+/// set and non-empty, else `$HOME/.planar/agent.db`. `PLANAR_DB` is never
+/// consulted; the two stores are independent files.
+/// @param env The environment to read.
+/// @return The resolved path, or an `unresolved_path` error naming the
+/// variables that would have supplied one.
+export auto resolve_agent_db_path(const env_lookup& env) -> std::expected<std::filesystem::path, open_error>;
+
+/// @brief Opens the agent database at an explicit path, creating the file
+/// and its parent directory when absent, and brings it to the head of the
+/// embedded agent migration stream. Idempotent: an up-to-date store is
+/// opened without any write beyond SQLite's own journal-mode handshake.
+/// @param path The store's location.
+/// @return An open read-write connection at the current agent schema
+/// version, or the failure naming `path`.
+export auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connection, open_error>;
+
+/// @brief Resolves the store's path from `env` (see `resolve_agent_db_path`)
+/// and opens it (see `open_agent_db_at`).
+/// @param env The environment to read.
+/// @return An open connection at the current agent schema version, or the
+/// first failure.
+export auto open_agent_db(const env_lookup& env) -> std::expected<connection, open_error>;
+
+} // namespace planar::db::agent
