@@ -193,10 +193,24 @@ TEST_CASE("no migration authors a double-quoted identifier or literal", "[db][mi
   // actually ships), not the source files on disk -- so it fails the moment
   // a future migration violates it, at the same `ctest` gate everything
   // else in this file runs under.
-  for (auto const& record : planar::db::migrations()) {
-    INFO("migration " << record.version_ << " (" << record.name_ << ")");
-    CHECK(strip_line_comments(record.up_sql_).find('"') == std::string::npos);
-    CHECK(strip_line_comments(record.down_sql_).find('"') == std::string::npos);
+  //
+  // Both embedded chains are held to it (plan 1080, task hq-agentdb-compat):
+  // the agent stream's roundtrip goes through the same `canonical_schema_dump`.
+  struct stream {
+    std::string_view                              label_;
+    std::span<planar::db::migration_record const> chain_;
+  };
+  std::array<stream, 2> const streams{{
+      {"main", planar::db::migrations()},
+      {"agent", planar::db::agent::migrations()},
+  }};
+  for (auto const& [label, chain] : streams) {
+    REQUIRE_FALSE(chain.empty());
+    for (auto const& record : chain) {
+      INFO(label << " migration " << record.version_ << " (" << record.name_ << ")");
+      CHECK(strip_line_comments(record.up_sql_).find('"') == std::string::npos);
+      CHECK(strip_line_comments(record.down_sql_).find('"') == std::string::npos);
+    }
   }
 }
 

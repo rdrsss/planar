@@ -5,7 +5,11 @@
 // "Error -- an unwritable location is reported, not created elsewhere",
 // "Edge -- neither HOME nor an explicit path is set" (the library half; the
 // exit-125 mapping belongs to the `queue run` verb) and the library half of
-// "Edge -- the queue works when the main database is unusable".
+// "Edge -- the queue works when the main database is unusable". The
+// compatibility check (task hq-agentdb-compat) is covered at the end of the
+// file: "Error -- a store that needs a newer binary is refused", "Edge -- a
+// newer store that is still compatible is accepted" and "Error -- changing
+// a migration's compat value fails a test" (the pinned compat table).
 //
 // Every case runs against a per-test scratch directory and passes its
 // environment into the function under test through the injectable lookup,
@@ -256,6 +260,18 @@ TEST_CASE("resolve_agent_db_path fails naming the missing variables when neither
     CHECK(resolved.error().message.find("PLANAR_AGENT_DB") != std::string::npos);
     CHECK_FALSE(std::filesystem::exists(home));
   }
+
+  SECTION("HOME set but empty is treated as unset, so nothing resolves to /.planar/agent.db") {
+    // Caveat from task hq-agentdb-open's review, pinned here (task
+    // hq-agentdb-compat): an empty HOME must not produce a path at the
+    // filesystem root.
+    auto const resolved = planar::db::agent::resolve_agent_db_path(env_of({{"HOME", ""}}));
+    REQUIRE_FALSE(resolved.has_value());
+    CHECK(resolved.error().kind == planar::db::agent::open_error_kind::unresolved_path);
+    CHECK(resolved.error().path.empty());
+    CHECK(resolved.error().message.find("PLANAR_AGENT_DB") != std::string::npos);
+    CHECK(resolved.error().message.find("HOME") != std::string::npos);
+  }
 }
 
 TEST_CASE("open_agent_db succeeds while the main database is ahead of the binary, and leaves that file untouched",
@@ -307,4 +323,237 @@ TEST_CASE("the process environment lookup reads the same values as getenv", "[db
   REQUIRE(path.has_value());
   CHECK_FALSE(path->empty());
   CHECK_FALSE(env("PLANAR_AGENTDB_TEST_VARIABLE_THAT_IS_NEVER_SET").has_value());
+}
+
+namespace {
+
+/// @brief Whether `table` exists on `conn`.
+auto has_table(planar::db::connection& conn, std::string_view table) -> bool {
+  auto stmt = conn.prepare(std::format("select count(*) from sqlite_master where type = 'table' and name = '{}'", table));
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  return stmt->column_int64(0) == 1;
+}
+
+/// @brief A store at the head of the embedded agent chain, in WAL mode
+/// (every agent store is: `open_agent_db_at` creates them through
+/// `connection::open`), with one extra `agent_schema_migrations` row on
+/// top claiming `version` / `compat`. Returns the file's bytes once every
+/// connection to it is closed, so the caller can prove a later open left
+/// it alone.
+auto seed_store_ahead(const std::filesystem::path& store, std::uint32_t version, std::uint32_t compat) -> std::string {
+  {
+    auto seeded = planar::db::agent::open_agent_db_at(store);
+    REQUIRE(seeded.has_value());
+    REQUIRE(seeded
+                ->execute(std::format("insert into agent_schema_migrations (version, compat, description) "
+                                      "values ({}, {}, 'seeded by the test');",
+                                      version, compat))
+                .has_value());
+  }
+  // A closed WAL database has no sidecars: SQLite checkpoints and removes
+  // them on the last close. A leftover here would mean the seed connection
+  // is still alive and the byte comparison below would prove nothing.
+  REQUIRE_FALSE(std::filesystem::exists(store.string() + "-wal"));
+  REQUIRE_FALSE(std::filesystem::exists(store.string() + "-shm"));
+  REQUIRE_FALSE(std::filesystem::exists(store.string() + "-journal"));
+  return read_bytes(store);
+}
+
+} // namespace
+
+TEST_CASE("open_agent_db_at refuses a store whose compat is above the binary's agent schema version, without modifying it",
+          "[db][agentdb][hq-agentdb-compat]") {
+  // Test-spec "Error -- a store that needs a newer binary is refused": the
+  // row with the highest version is authoritative, and its compat above
+  // this binary's version means a newer binary changed the meaning of
+  // something this one would misread. The check runs before any migration
+  // write, so the file is exactly what it was.
+  scratch_dir scratch;
+  auto const  store       = scratch.path_ / "agent.db";
+  auto const  binary_head = planar::db::agent::agent_schema_version();
+  REQUIRE(binary_head == planar::db::embedded_max(planar::db::agent::migrations()));
+
+  auto const expect_refused = [&](std::string const& before, std::uint32_t store_compat) {
+    auto const mtime  = std::filesystem::last_write_time(store);
+    auto       opened = planar::db::agent::open_agent_db_at(store);
+    REQUIRE_FALSE(opened.has_value());
+    auto const& error = opened.error();
+    CHECK(error.kind == planar::db::agent::open_error_kind::incompatible_store);
+    CHECK(error.path == store);
+    CHECK(error.store_compat == store_compat);
+    CHECK(error.binary_version == binary_head);
+    CHECK(error.message.find(store.string()) != std::string::npos);
+    CHECK(error.message.find(std::to_string(store_compat)) != std::string::npos);
+    CHECK(error.message.find(std::to_string(binary_head)) != std::string::npos);
+
+    // Untouched: same bytes, no sidecar or journal left behind, same mtime.
+    CHECK(read_bytes(store) == before);
+    CHECK_FALSE(std::filesystem::exists(store.string() + "-wal"));
+    CHECK_FALSE(std::filesystem::exists(store.string() + "-shm"));
+    CHECK_FALSE(std::filesystem::exists(store.string() + "-journal"));
+    bool const mtime_unchanged = std::filesystem::last_write_time(store) == mtime;
+    CHECK(mtime_unchanged);
+  };
+
+  SECTION("the highest row's compat equals its version, one above the binary") {
+    auto const before = seed_store_ahead(store, binary_head + 1, binary_head + 1);
+    expect_refused(before, binary_head + 1);
+    // Also refused through the environment-resolving entry point.
+    auto opened = planar::db::agent::open_agent_db(env_of({{"PLANAR_AGENT_DB", store.string()}}));
+    REQUIRE_FALSE(opened.has_value());
+    CHECK(opened.error().kind == planar::db::agent::open_error_kind::incompatible_store);
+    CHECK(read_bytes(store) == before);
+  }
+
+  SECTION("the highest row's compat is above the binary but below its own version") {
+    auto const before = seed_store_ahead(store, binary_head + 5, binary_head + 2);
+    expect_refused(before, binary_head + 2);
+  }
+
+  SECTION("only the highest row counts: a lower row with a low compat does not rescue the store") {
+    // The seed leaves the whole embedded chain in place (every compat there
+    // is <= binary_head); the extra row on top is what decides.
+    auto const before = seed_store_ahead(store, binary_head + 1, binary_head + 1);
+    {
+      auto raw = planar::db::connection::open(store.string());
+      REQUIRE(raw.has_value());
+      CHECK(scalar(*raw, "select min(compat) from agent_schema_migrations") == "1");
+    }
+    REQUIRE(read_bytes(store) == before);
+    expect_refused(before, binary_head + 1);
+  }
+
+  // The refusal applied no migration and wrote nothing: the seeded row set is
+  // exactly what the store holds.
+  auto raw = planar::db::connection::open(store.string());
+  REQUIRE(raw.has_value());
+  CHECK(scalar(*raw, "select count(*) from agent_schema_migrations") == std::to_string(binary_head + 1));
+}
+
+TEST_CASE("open_agent_db_at accepts a store that is ahead of the binary but whose compat is not, and reports its version",
+          "[db][agentdb][hq-agentdb-compat]") {
+  // Test-spec "Edge -- a newer store that is still compatible is accepted":
+  // a newer binary added something and kept compat, so this binary reads
+  // the store it understands and leaves the newer rows alone.
+  scratch_dir scratch;
+  auto const  store       = scratch.path_ / "agent.db";
+  auto const  binary_head = planar::db::agent::agent_schema_version();
+
+  SECTION("one version ahead, compat unchanged") {
+    seed_store_ahead(store, binary_head + 1, binary_head);
+    auto opened = planar::db::agent::open_agent_db(env_of({{"PLANAR_AGENT_DB", store.string()}}));
+    REQUIRE(opened.has_value());
+    CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() == binary_head + 1);
+    CHECK(scalar(*opened, "select count(*) from agent_schema_migrations") == std::to_string(binary_head + 1));
+    CHECK(scalar(*opened, "pragma journal_mode") == "wal");
+    CHECK_FALSE(opened->is_read_only());
+    // Usable: a write on the opened connection succeeds and is visible.
+    REQUIRE(opened->execute("create table hq_compat_probe (id integer primary key); insert into hq_compat_probe values (1);")
+                .has_value());
+    CHECK(scalar(*opened, "select count(*) from hq_compat_probe") == "1");
+  }
+
+  SECTION("several versions ahead, compat below the binary's version") {
+    seed_store_ahead(store, binary_head + 3, binary_head);
+    auto opened = planar::db::agent::open_agent_db_at(store);
+    REQUIRE(opened.has_value());
+    CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() == binary_head + 3);
+  }
+
+  SECTION("the direct check agrees with the open path") {
+    seed_store_ahead(store, binary_head + 1, binary_head);
+    auto raw = planar::db::connection::open(store.string());
+    REQUIRE(raw.has_value());
+    CHECK(planar::db::agent::check_compat(*raw, store).has_value());
+    REQUIRE(raw->execute(std::format("update agent_schema_migrations set compat = {} where version = {};", binary_head + 1,
+                                     binary_head + 1))
+                .has_value());
+    auto const refused = planar::db::agent::check_compat(*raw, store);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().kind == planar::db::agent::open_error_kind::incompatible_store);
+    CHECK(refused.error().store_compat == binary_head + 1);
+    CHECK(refused.error().binary_version == binary_head);
+  }
+}
+
+TEST_CASE("check_compat accepts a fresh store and a store at or behind the binary", "[db][agentdb][hq-agentdb-compat]") {
+  scratch_dir scratch;
+  auto const  store = scratch.path_ / "agent.db";
+  auto        raw   = planar::db::connection::open(store.string());
+  REQUIRE(raw.has_value());
+
+  // Fresh: no version table at all.
+  REQUIRE_FALSE(has_table(*raw, "agent_schema_migrations"));
+  CHECK(planar::db::agent::check_compat(*raw, store).has_value());
+
+  // At head.
+  REQUIRE(planar::db::apply_contiguous(*raw, planar::db::agent::migrations(), planar::db::k_agent_version_table).has_value());
+  CHECK(planar::db::agent::check_compat(*raw, store).has_value());
+
+  // Behind (an empty version table reads as version 0, compat none).
+  REQUIRE(raw->execute("delete from agent_schema_migrations;").has_value());
+  CHECK(planar::db::agent::check_compat(*raw, store).has_value());
+}
+
+TEST_CASE("every agent migration's compat value is pinned", "[db][agentdb][migrations][hq-agentdb-compat]") {
+  // Test-spec "Error -- changing a migration's compat value fails a test".
+  // The table below IS the reviewed contract (migrations-agent/README.md):
+  // an additive migration keeps the previous compat, one that drops,
+  // renames or changes meaning sets compat to its own version. A new
+  // migration must be added here; a changed value must be changed here.
+  //
+  // The actual value is what the migration's up SQL inserts, read back
+  // after applying the chain one migration at a time to a scratch store,
+  // so a migration whose insert disagrees with its own filename or with
+  // this table is caught regardless of how the insert is spelled.
+  static constexpr std::array<std::pair<std::string_view, std::uint32_t>, 1> k_pinned_compat{{
+      {"00001_agent_foundation.up.sql", 1},
+  }};
+
+  scratch_dir scratch;
+  auto        conn = planar::db::connection::open((scratch.path_ / "agent.db").string());
+  REQUIRE(conn.has_value());
+
+  auto const chain = planar::db::agent::migrations();
+  REQUIRE_FALSE(chain.empty());
+  REQUIRE(planar::db::require_contiguous(chain).has_value());
+
+  std::set<std::string> seen;
+  std::uint32_t         previous_compat = 0;
+  for (std::size_t i = 0; i < chain.size(); ++i) {
+    auto const& record = chain[i];
+    auto const  file   = std::format("{:05}_{}.up.sql", record.version_, record.name_);
+    INFO("agent migration file " << file);
+    CHECK(std::filesystem::is_regular_file(std::filesystem::path(PLANAR_MIGRATIONS_AGENT_DIR) / file));
+    seen.insert(file);
+
+    REQUIRE(planar::db::apply_all(*conn, chain.subspan(i, 1), planar::db::k_agent_version_table).has_value());
+    auto row = conn->prepare("select compat from agent_schema_migrations where version = ?");
+    REQUIRE(row.has_value());
+    REQUIRE(row->bind_int64(1, record.version_).has_value());
+    REQUIRE(row->step().value() == planar::db::step_result::row);
+    auto const actual = static_cast<std::uint32_t>(row->column_int64(0));
+
+    auto const pinned = std::ranges::find(k_pinned_compat, file, &std::pair<std::string_view, std::uint32_t>::first);
+    if (pinned == k_pinned_compat.end()) {
+      FAIL("agent migration " << file << " is missing from the pinned compat table (its compat is " << actual << ")");
+    }
+    if (actual != pinned->second) {
+      FAIL("agent migration " << file << " inserts compat " << actual << " but the pinned compat table says " << pinned->second);
+    }
+    // The rule itself: keep the previous compat, or set it to this version.
+    CHECK((actual == previous_compat || actual == record.version_));
+    CHECK(actual >= previous_compat);
+    CHECK(actual <= record.version_);
+    previous_compat = actual;
+  }
+
+  for (auto const& [file, compat] : k_pinned_compat) {
+    INFO("pinned entry " << file << " -> " << compat);
+    if (!seen.contains(file)) {
+      FAIL("the pinned compat table names " << file << ", which is not an embedded agent migration");
+    }
+  }
+  CHECK(seen.size() == k_pinned_compat.size());
 }
