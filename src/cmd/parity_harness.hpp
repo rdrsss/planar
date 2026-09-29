@@ -79,7 +79,14 @@ inline auto shell_quote(std::string_view value) -> std::string {
   return quoted;
 }
 
-/// @brief The `env VAR=... ` prefix every pinned invocation runs behind.
+/// @brief One environment variable a pinned invocation carries.
+struct pinned_var {
+  std::string name;  ///< The variable name.
+  std::string value; ///< Its value, an absolute path under the arena.
+};
+
+/// @brief The variables every pinned invocation runs under, all rooted in
+/// `work`.
 ///
 /// EXTRACTED, NOT COPIED (plan 996, task 6547). `run_pinned` below and
 /// `launch_pinned_detached` further down must pin the SAME set of roots, and
@@ -88,18 +95,124 @@ inline auto shell_quote(std::string_view value) -> std::string {
 /// comment above spends forty lines warning about: a redirect that misses one
 /// root writes into the operator's live state while every assertion still
 /// passes. So the map is built here once and both entry points consume it.
+///
+/// `PLANAR_AGENT_DB` (plan 1080, task 6996; decision 1181) is the agent
+/// database, `src/lib/db/agentdb.cppm`'s open path, which migrates its file
+/// on first use exactly as `PLANAR_DB` does. It is pinned DIRECTLY, not via
+/// `HOME`, for the reason the workbench root is: the runtime's fallback is
+/// `$HOME/.planar/agent.db`, so a scratch `HOME` contains it only
+/// incidentally, and `agent_db_pin_error` below fails a case whose map ever
+/// lets it resolve outside the arena.
+/// @param work The scratch root.
+/// @return The variables, in a fixed order.
+inline auto pinned_env(const std::filesystem::path& work) -> std::vector<pinned_var> {
+  return {
+      pinned_var{.name = "PLANAR_DB", .value = (work / "planar.db").string()},
+      pinned_var{.name = "PLANAR_AGENT_DB", .value = (work / "agent.db").string()},
+      pinned_var{.name = "PLANAR_HOME", .value = (work / "home").string()},
+      pinned_var{.name = "PLANAR_CONFIG_PATH", .value = (work / "config.toml").string()},
+      pinned_var{.name = "PLANAR_LOCAL_HOME", .value = (work / "localhome").string()},
+      pinned_var{.name = "PLANAR_WORKBENCH_ROOT", .value = (work / "workbench").string()},
+      pinned_var{.name = "HOME", .value = (work / "fakehome").string()},
+      pinned_var{.name = "PWD", .value = (work / "proj").string()},
+  };
+}
+
+/// @brief Look one variable up in a pinned map.
+/// @param env The map.
+/// @param name The variable name.
+/// @return Its value, or nullopt when absent.
+inline auto pinned_lookup(std::span<const pinned_var> env, std::string_view name) -> std::optional<std::string> {
+  for (auto const& var : env) {
+    if (var.name == name) {
+      return var.value;
+    }
+  }
+  return std::nullopt;
+}
+
+/// @brief Whether `path` lies under `root`, compared lexically.
+/// @param root The directory.
+/// @param path The candidate, which must be absolute to qualify.
+/// @return `true` only for an absolute path at or below `root`.
+inline auto lexically_under(const std::filesystem::path& root, const std::filesystem::path& path) -> bool {
+  if (!path.is_absolute()) {
+    return false;
+  }
+  auto const rel = path.lexically_normal().lexically_relative(root.lexically_normal());
+  if (rel.empty()) {
+    return false;
+  }
+  auto const first = rel.begin()->string();
+  return first != "..";
+}
+
+/// @brief The agent-database safety check: resolve the path the runtime
+/// would open from `env`, by the runtime's own rule (`PLANAR_AGENT_DB` when
+/// set and non-empty, else `$HOME/.planar/agent.db`, see
+/// `src/lib/db/agentdb.cppm`), and report it when it is not under `work`.
+///
+/// This mirrors the rule rather than importing `planar.db.agentdb`, because
+/// this header is included by `planar-execute`'s test target, whose
+/// invariant is that it reaches no SQLite handle (see the header comment).
+/// @param work The arena root.
+/// @param env The variables the invocation would run under.
+/// @return A diagnostic naming the offending path, or nullopt when pinned.
+inline auto agent_db_pin_error(const std::filesystem::path& work, std::span<const pinned_var> env) -> std::optional<std::string> {
+  std::filesystem::path resolved;
+  std::string_view      source;
+  if (auto const direct = pinned_lookup(env, "PLANAR_AGENT_DB"); direct.has_value() && !direct->empty()) {
+    resolved = *direct;
+    source   = "PLANAR_AGENT_DB";
+  } else if (auto const home = pinned_lookup(env, "HOME"); home.has_value() && !home->empty()) {
+    resolved = std::filesystem::path{*home} / ".planar" / "agent.db";
+    source   = "the $HOME/.planar/agent.db fallback";
+  } else {
+    return std::format("parity harness: the agent database is unpinned (neither PLANAR_AGENT_DB nor HOME is in the "
+                       "pinned map) for arena root '{}'; a from-source binary would open the operator's live "
+                       "~/.planar/agent.db",
+                       work.string());
+  }
+  if (lexically_under(work, resolved)) {
+    return std::nullopt;
+  }
+  return std::format("parity harness: the agent database resolves to '{}' via {}, outside the arena root '{}'; a "
+                     "from-source binary would migrate a store the arena does not own",
+                     resolved.string(), source, work.string());
+}
+
+/// @brief Fail the calling case, before any binary starts, when
+/// `agent_db_pin_error` reports a path outside the arena.
+///
+/// This throws rather than `REQUIRE`s because nine of the thirteen includers
+/// include this header BEFORE `catch_test_macros.hpp`, so the Catch2 macros
+/// are not visible here. Catch2 reports an uncaught `std::runtime_error` as
+/// a failed case with the message, which is the same loud failure.
+/// @param work The arena root.
+/// @param env The variables the invocation would run under.
+inline void require_agent_db_pinned(const std::filesystem::path& work, std::span<const pinned_var> env) {
+  if (auto const problem = agent_db_pin_error(work, env)) {
+    throw std::runtime_error(*problem);
+  }
+}
+
+/// @brief The `env VAR=... ` prefix a pinned invocation runs behind.
+/// @param env The variables, normally `pinned_env(work)`.
+/// @return A shell fragment ending in a trailing space, ready for a binary.
+inline auto pinned_env_prefix(std::span<const pinned_var> env) -> std::string {
+  std::string child = "env";
+  for (auto const& var : env) {
+    child += std::format(" {}={}", var.name, shell_quote(var.value));
+  }
+  child += ' ';
+  return child;
+}
+
+/// @brief The `env VAR=... ` prefix for the default pinned map of `work`.
 /// @param work The scratch root.
 /// @return A shell fragment ending in a trailing space, ready for a binary.
 inline auto pinned_env_prefix(const std::filesystem::path& work) -> std::string {
-  std::string child = "env";
-  child += std::format(" PLANAR_DB={}", shell_quote((work / "planar.db").string()));
-  child += std::format(" PLANAR_HOME={}", shell_quote((work / "home").string()));
-  child += std::format(" PLANAR_CONFIG_PATH={}", shell_quote((work / "config.toml").string()));
-  child += std::format(" PLANAR_LOCAL_HOME={}", shell_quote((work / "localhome").string()));
-  child += std::format(" PLANAR_WORKBENCH_ROOT={}", shell_quote((work / "workbench").string()));
-  child += std::format(" HOME={}", shell_quote((work / "fakehome").string()));
-  child += std::format(" PWD={} ", shell_quote((work / "proj").string()));
-  return child;
+  return pinned_env_prefix(pinned_env(work));
 }
 
 /// @brief Run `bin` with `args` inside `work`, under an environment pinned
@@ -184,13 +297,22 @@ inline auto pinned_env_prefix(const std::filesystem::path& work) -> std::string 
 ///
 /// The per-invocation `tag` still keys all three files, and must keep doing
 /// so — concurrent Catch2 cases share `work`.
+/// THE AGENT DATABASE IS CHECKED BEFORE THE BINARY STARTS (plan 1080, task
+/// 6996). `require_agent_db_pinned` resolves the agent database from the map
+/// the child will run under and fails the case when it is outside `work`.
+/// The `env` overload exists so the harness's own cases can hand it a map
+/// that points outside and prove the refusal fires; every ordinary caller
+/// uses the four-argument form, which pins `pinned_env(work)`.
 /// @param bin The binary to run.
 /// @param args The arguments.
 /// @param work The scratch root; `work/proj` is also the working directory.
 /// @param tag A discriminator so each invocation gets its own capture files.
+/// @param env The variables to run under; see `pinned_env`.
 /// @return The captured result.
 inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::string> args, const std::filesystem::path& work,
-                       std::string_view tag) -> capture {
+                       std::string_view tag, std::span<const pinned_var> env) -> capture {
+  require_agent_db_pinned(work, env);
+
   auto const out_path  = work / std::format("{}.out", tag);
   auto const err_path  = work / std::format("{}.err", tag);
   auto const code_path = work / std::format("{}.code", tag);
@@ -198,7 +320,7 @@ inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::st
   std::error_code discard;
   std::filesystem::remove(code_path, discard);
 
-  std::string child = pinned_env_prefix(work);
+  std::string child = pinned_env_prefix(env);
   child += shell_quote(bin.string());
   for (auto const& arg : args) {
     child += " " + shell_quote(arg);
@@ -225,6 +347,17 @@ inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::st
     code = parsed;
   }
   return capture{.code = code, .out = read_all(out_path), .err = read_all(err_path)};
+}
+
+/// @brief `run_pinned` under the default pinned map of `work`.
+/// @param bin The binary to run.
+/// @param args The arguments.
+/// @param work The scratch root; `work/proj` is also the working directory.
+/// @param tag A discriminator so each invocation gets its own capture files.
+/// @return The captured result.
+inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::string> args, const std::filesystem::path& work,
+                       std::string_view tag) -> capture {
+  return run_pinned(bin, args, work, tag, pinned_env(work));
 }
 
 /// @brief Start `bin` with `args` inside `work` under the same pinned
@@ -275,13 +408,19 @@ inline auto run_pinned(const std::filesystem::path& bin, std::span<const std::st
 /// scratch database every 200ms and quietly loading every measurement taken
 /// in that window. It was found by `ps`, not by any gate. If you are
 /// prototyping against this, reap what you start.
+/// The agent database is checked before the launch exactly as `run_pinned`
+/// checks it, from the same map; see `require_agent_db_pinned`.
 /// @param bin The binary to run.
 /// @param args The arguments.
 /// @param work The scratch root; `work/proj` is also the working directory.
 /// @param tag A discriminator so each launch gets its own capture files.
+/// @param env The variables to run under; see `pinned_env`.
 inline auto launch_pinned_detached(const std::filesystem::path& bin, std::span<const std::string> args,
-                                   const std::filesystem::path& work, std::string_view tag) -> void {
-  std::string child = pinned_env_prefix(work);
+                                   const std::filesystem::path& work, std::string_view tag, std::span<const pinned_var> env)
+    -> void {
+  require_agent_db_pinned(work, env);
+
+  std::string child = pinned_env_prefix(env);
   child += shell_quote(bin.string());
   for (auto const& arg : args) {
     child += " " + shell_quote(arg);
@@ -293,6 +432,16 @@ inline auto launch_pinned_detached(const std::filesystem::path& bin, std::span<c
                                        shell_quote((work / std::format("{}.out", tag)).string()),
                                        shell_quote((work / std::format("{}.err", tag)).string()));
   static_cast<void>(std::system(line.c_str()));
+}
+
+/// @brief `launch_pinned_detached` under the default pinned map of `work`.
+/// @param bin The binary to run.
+/// @param args The arguments.
+/// @param work The scratch root; `work/proj` is also the working directory.
+/// @param tag A discriminator so each launch gets its own capture files.
+inline auto launch_pinned_detached(const std::filesystem::path& bin, std::span<const std::string> args,
+                                   const std::filesystem::path& work, std::string_view tag) -> void {
+  launch_pinned_detached(bin, args, work, tag, pinned_env(work));
 }
 
 /// @brief Poll for `path` to exist (and, when `nonempty`, to have bytes) and

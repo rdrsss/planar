@@ -282,3 +282,115 @@ TEST_CASE("make smoke: the recipe pins PLANAR_AGENT_DB beside the throwaway PLAN
   REQUIRE(seen_rows.front().agent_db == (build_dir / ".smoke" / "agent.db").string());
   REQUIRE(seen_rows.front().db == (build_dir / ".smoke" / "planar.db").string());
 }
+
+// ---------------------------------------------------------------------------
+// Scenario: Error — an agent database path outside the arena fails the case
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using planar::cmd::parity::agent_db_pin_error;
+using planar::cmd::parity::pinned_env;
+using planar::cmd::parity::pinned_var;
+
+/// @brief A pinned map with `PLANAR_AGENT_DB` replaced (or, with an empty
+/// `value`, removed) and `HOME` optionally replaced.
+/// @param work The arena root.
+/// @param agent_db The `PLANAR_AGENT_DB` value, or empty to drop the variable.
+/// @param home The `HOME` value, or empty to leave the default.
+/// @return The map.
+auto env_with(const std::filesystem::path& work, std::string agent_db, std::string home = {}) -> std::vector<pinned_var> {
+  std::vector<pinned_var> out;
+  for (auto& var : pinned_env(work)) {
+    if (var.name == "PLANAR_AGENT_DB") {
+      if (!agent_db.empty()) {
+        out.push_back(pinned_var{.name = var.name, .value = agent_db});
+      }
+      continue;
+    }
+    if (var.name == "HOME" && !home.empty()) {
+      out.push_back(pinned_var{.name = var.name, .value = home});
+      continue;
+    }
+    out.push_back(std::move(var));
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("arena: agent_db_pin_error accepts the default map and refuses one that resolves outside", "[arena][agentdb]") {
+  auto const arena   = make_arena("agentdb_predicate");
+  auto const work    = arena.cpp_root;
+  auto const outside = (std::filesystem::temp_directory_path() / "planar_agentdb_elsewhere" / "agent.db").string();
+
+  SECTION("the default map is pinned") {
+    auto const env = pinned_env(work);
+    REQUIRE_FALSE(agent_db_pin_error(work, env).has_value());
+  }
+  SECTION("PLANAR_AGENT_DB outside the arena is named in the diagnostic") {
+    auto const problem = agent_db_pin_error(work, env_with(work, outside));
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring(outside));
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring(work.string()));
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("PLANAR_AGENT_DB"));
+  }
+  SECTION("a relative PLANAR_AGENT_DB is refused: it depends on the cwd, not the arena") {
+    auto const problem = agent_db_pin_error(work, env_with(work, "agent.db"));
+    REQUIRE(problem.has_value());
+  }
+  SECTION("a path that only looks nested (`..` after the root) is refused") {
+    auto const problem = agent_db_pin_error(work, env_with(work, (work / ".." / "agent.db").string()));
+    REQUIRE(problem.has_value());
+  }
+  SECTION("with PLANAR_AGENT_DB absent the HOME fallback is resolved, and a scratch HOME contains it") {
+    auto const env = env_with(work, "");
+    REQUIRE_FALSE(agent_db_pin_error(work, env).has_value());
+  }
+  SECTION("with PLANAR_AGENT_DB absent and HOME outside, the fallback is refused and named") {
+    auto const home    = (std::filesystem::temp_directory_path() / "planar_agentdb_elsewhere_home").string();
+    auto const problem = agent_db_pin_error(work, env_with(work, "", home));
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring(home));
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("fallback"));
+  }
+  SECTION("with neither variable the map is unpinned and refused") {
+    std::vector<pinned_var> env;
+    for (auto& var : pinned_env(work)) {
+      if (var.name != "PLANAR_AGENT_DB" && var.name != "HOME") {
+        env.push_back(std::move(var));
+      }
+    }
+    auto const problem = agent_db_pin_error(work, env);
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("unpinned"));
+  }
+}
+
+TEST_CASE("arena: run_pinned fails the case before the binary runs when the agent database is outside", "[arena][agentdb]") {
+  auto const arena   = make_arena("agentdb_refuse_run");
+  auto const record  = arena.cpp_root / "record.tsv";
+  auto const bin     = arena.cpp_root / "bin";
+  auto const outside = (std::filesystem::temp_directory_path() / "planar_agentdb_elsewhere" / "agent.db").string();
+  write_wrapper(bin, "planar", record);
+  REQUIRE_THROWS_WITH(
+      run_pinned(bin / "planar", std::span<const std::string>{}, arena.cpp_root, "refused", env_with(arena.cpp_root, outside)),
+      Catch::Matchers::ContainsSubstring("outside the arena root"));
+  // The wrapper never ran: no row was recorded and no capture file exists.
+  REQUIRE(rows(record).empty());
+  REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "refused.out"));
+}
+
+TEST_CASE("arena: launch_pinned_detached fails the case before the launch when the agent database is outside",
+          "[arena][agentdb]") {
+  auto const arena   = make_arena("agentdb_refuse_launch");
+  auto const record  = arena.cpp_root / "record.tsv";
+  auto const bin     = arena.cpp_root / "bin";
+  auto const outside = (std::filesystem::temp_directory_path() / "planar_agentdb_elsewhere" / "agent.db").string();
+  write_wrapper(bin, "planar", record);
+  REQUIRE_THROWS_WITH(launch_pinned_detached(bin / "planar", std::span<const std::string>{}, arena.cpp_root, "refused",
+                                             env_with(arena.cpp_root, outside)),
+                      Catch::Matchers::ContainsSubstring("outside the arena root"));
+  REQUIRE(rows(record).empty());
+  REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "refused.out"));
+}
