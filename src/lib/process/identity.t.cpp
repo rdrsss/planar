@@ -16,6 +16,7 @@
 
 #include <cerrno>
 #include <csignal>
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -31,19 +32,38 @@ namespace pid_ns = planar::process::identity;
 class sleeping_child {
 public:
   sleeping_child() {
+    // An exec barrier. The forked child inherits Catch2's fatal-condition
+    // handler for SIGTERM, so a signal that lands before `execl` has
+    // replaced the image runs that handler instead of terminating the
+    // child. The write end is close-on-exec: the parent's read returns EOF
+    // only once the exec has happened (or the child has died), so nothing
+    // a test sends can reach the pre-exec image.
+    std::array<int, 2> fds{};
+    if (::pipe(fds.data()) != 0) {
+      throw std::runtime_error("pipe failed");
+    }
+    ::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+
     ::pid_t const forked = ::fork();
     if (forked < 0) {
       throw std::runtime_error("fork failed");
     }
     if (forked == 0) {
+      ::close(fds[0]);
       ::setpgid(0, 0);
       ::execl("/bin/sleep", "sleep", "30", static_cast<char*>(nullptr));
       ::_exit(127);
     }
+    ::close(fds[1]);
     // Both sides set the group so the parent never observes the child in
     // the parent's group, whichever runs first.
     ::setpgid(forked, forked);
     _pid = forked;
+
+    char byte = 0;
+    while (::read(fds[0], &byte, 1) < 0 && errno == EINTR) {
+    }
+    ::close(fds[0]);
   }
   sleeping_child(const sleeping_child&)                    = delete;
   auto operator=(const sleeping_child&) -> sleeping_child& = delete;
