@@ -249,6 +249,29 @@ TEST_CASE("two connections ending the same entry at once write exactly one histo
   CHECK(hq::list(setup).value().empty());
 }
 
+TEST_CASE("a history insert that fails leaves the entry in place and writes no history row", "[engine][hostqueue][hq-history]") {
+  // Ending an entry deletes it and writes its history row in one transaction:
+  // when the insert fails, the delete must roll back with it.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const seq = enqueue_one(conn, request_for("doomed"));
+  // Fault injection inside a unit test, not scenario seeding, so the
+  // test spec's "never raw SQL" rule for scenarios does not apply.
+  REQUIRE(conn.execute("create temp trigger fail_history_insert before insert on queue_history "
+                       "begin select raise(abort, 'injected'); end;")
+              .has_value());
+
+  auto const ended =
+      hq::end_entry(conn, seq, {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_enqueued_at + 10});
+  REQUIRE_FALSE(ended.has_value());
+  CHECK(ended.error().kind == hq::queue_error_kind::query_failed);
+
+  CHECK(hq::find(conn, seq).value().has_value());
+  CHECK_FALSE(hq::find_history(conn, seq).value().has_value());
+  CHECK_FALSE(conn.in_transaction());
+}
+
 TEST_CASE("a new store has no history rows", "[engine][hostqueue][hq-history]") {
   // Test-spec "Empty -- history starts empty".
   scratch_dir scratch;
@@ -391,6 +414,49 @@ TEST_CASE("a log file that cannot be removed is reported and the entry is still 
   CHECK(std::filesystem::exists(stuck));
   CHECK(hq::find(conn, result->seq).value().has_value());
   CHECK(hq::list_history(conn).value().empty());
+}
+
+TEST_CASE("an enqueue whose insert fails prunes no history rows and removes no log files", "[engine][hostqueue][hq-history]") {
+  // queue.cppm: after a SQLite failure neither the prune nor the insert has
+  // happened, so the expired rows and their logs must survive.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  constexpr std::int64_t             k_now = k_enqueued_at + 10 * hq::k_ms_per_day;
+  std::vector<std::int64_t>          seqs;
+  std::vector<std::filesystem::path> logs;
+  for (std::string_view name : {"expired-a.log", "expired-b.log"}) {
+    auto const path = scratch.path_ / name;
+    write_file(path, "output\n");
+    auto request     = request_for(std::string{name});
+    request.log_path = path.string();
+    auto const seq   = enqueue_one(conn, request);
+    end_one(conn, seq, {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_now - 5 * hq::k_ms_per_day});
+    seqs.push_back(seq);
+    logs.push_back(path);
+  }
+  REQUIRE(hq::list(conn).value().empty());
+
+  // Fault injection inside a unit test, not scenario seeding, so the
+  // test spec's "never raw SQL" rule for scenarios does not apply.
+  REQUIRE(conn.execute("create temp trigger fail_entry_insert before insert on queue_entries "
+                       "begin select raise(abort, 'injected'); end;")
+              .has_value());
+
+  auto next         = request_for("next");
+  next.enqueued_at  = k_now;
+  auto const result = hq::enqueue(conn, next, 1);
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error().kind == hq::queue_error_kind::query_failed);
+  CHECK_FALSE(conn.in_transaction());
+
+  CHECK(hq::list(conn).value().empty());
+  CHECK(hq::list_history(conn).value().size() == seqs.size());
+  for (std::size_t i = 0; i < seqs.size(); ++i) {
+    INFO("row " << logs[i].filename().string());
+    CHECK(hq::find_history(conn, seqs[i]).value().has_value());
+    CHECK(std::filesystem::exists(logs[i]));
+  }
 }
 
 TEST_CASE("a negative retention is refused and nothing is enqueued or pruned", "[engine][hostqueue][hq-history]") {
