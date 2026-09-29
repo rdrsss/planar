@@ -1,11 +1,13 @@
 /// @file queue.cpp
 /// @brief Implementation of `planar.engine.hostqueue.queue` (plan 1080, task
-/// hq-enqueue). See queue.cppm for the contract.
+/// hq-enqueue; the pruning enqueue, task hq-history). See queue.cppm for the
+/// contract.
 
 module planar.engine.hostqueue.queue;
 
 import std;
 import planar.db;
+import planar.engine.hostqueue.history;
 import planar.json_dom;
 import planar.json_text;
 
@@ -185,6 +187,31 @@ auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expec
     return sql_failure("finish queue entry insert", done.error());
   }
   return seq;
+}
+
+auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t history_days)
+    -> std::expected<enqueued, queue_error> {
+  auto txn = conn.begin_transaction(db::lock_mode::immediate);
+  if (!txn) {
+    return sql_failure("begin enqueue", txn.error());
+  }
+  auto expired = delete_expired_history(conn, history_days, request.enqueued_at);
+  if (!expired) {
+    return std::unexpected(std::move(expired.error()));
+  }
+  auto seq = enqueue(conn, request);
+  if (!seq) {
+    return std::unexpected(std::move(seq.error()));
+  }
+  if (auto committed = txn->commit(); !committed) {
+    return sql_failure("commit enqueue", committed.error());
+  }
+  // Files go only after the rows are committed away: a rolled-back prune
+  // must never leave a kept row whose log is gone.
+  return enqueued{
+      .seq    = *seq,
+      .pruned = prune_report{.rows_deleted = expired->rows_deleted, .log_failures = remove_log_files(expired->log_paths)},
+  };
 }
 
 auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<entry>, queue_error> {
