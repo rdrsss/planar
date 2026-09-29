@@ -21,6 +21,9 @@
 #     share/centurion/                # centuriond migrations + build identity
 #     install-manifest.json           # managed vendor projections
 #     planar.db                       # created on first `planar init`
+#     agent.db                        # agent-state database (override with
+#                                     # PLANAR_AGENT_DB); created on first use
+#     queue-logs/                     # detached queue-run output, beside agent.db
 #     migrations/00001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at configure
 #                                     # time via CMake codegen)
@@ -401,7 +404,8 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     # all — `PLANAR_HOME=$HOME ./install.sh --uninstall --force` deletes the
     # operator's home directory outright, and even without --force the
     # find-and-delete two lines down removes every top-level entry of
-    # $PLANAR_HOME except a file literally named `planar.db`.
+    # $PLANAR_HOME except the preserved data entries (planar.db, agent.db
+    # and its SQLite sidecars, queue-logs/).
     #
     # Two checks, in order:
     #   1. $PLANAR_HOME normalized (plain `realpath`, not `-m` — GNU's `-m`
@@ -417,25 +421,34 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     #      never a valid Planar prefix, so this refuses even under --force:
     #      there is no legitimate reason to override it.
     #   2. Absent that, the SAME ownership signals the install-side guard
-    #      uses (stamp / bin/planar / planar.db) must be present, unless
-    #      --force overrides — mirroring the install-side guard exactly
-    #      rather than inventing a second policy.
+    #      uses (stamp / bin/planar / planar.db / agent.db) must be present,
+    #      unless --force overrides — mirroring the install-side guard
+    #      exactly rather than inventing a second policy.
     _planar_home_real="$(realpath "$PLANAR_HOME" 2>/dev/null || echo "$PLANAR_HOME")"
     _home_real="$(realpath "$HOME" 2>/dev/null || echo "$HOME")"
     if [[ "$_planar_home_real" == "$_home_real" ]]; then
       err "refusing to uninstall: PLANAR_HOME ($PLANAR_HOME) resolves to \$HOME ($HOME) — this would delete your home directory. Set --prefix to the actual Planar install root."
     fi
-    if [[ ! -e "$PLANAR_HOME/.planar-install" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
-      err "$PLANAR_HOME does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Refusing to remove it. Pass the correct --prefix, or re-run with --force to remove it anyway."
+    if [[ ! -e "$PLANAR_HOME/.planar-install" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && ! -e "$PLANAR_HOME/agent.db" && "$FORCE" -ne 1 ]]; then
+      err "$PLANAR_HOME does not look like a Planar install (no bin/planar, no planar.db, no agent.db, no .planar-install stamp). Refusing to remove it. Pass the correct --prefix, or re-run with --force to remove it anyway."
     fi
 
     log "removing install root: $PLANAR_HOME"
-    log "(planar.db is preserved if you have data — re-run with --force or rm manually)"
+    log "(planar.db, agent.db and queue-logs/ are preserved if you have data — re-run with --force or rm manually)"
     if [[ "$FORCE" -eq 1 ]]; then
       rm -rf "$PLANAR_HOME"
     else
-      # Preserve the database; remove everything else.
-      find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 ! -name 'planar.db' -exec rm -rf {} +
+      # Preserve the databases and the agent database's detached-run output;
+      # remove everything else. agent.db's SQLite sidecars (-wal / -shm) hold
+      # committed data not yet checkpointed into the main file, so they stay
+      # with it. Both planar.db and agent.db default to this directory;
+      # PLANAR_DB / PLANAR_AGENT_DB overrides live wherever the operator put
+      # them and are never touched here.
+      find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 \
+        ! -name 'planar.db' \
+        ! -name 'agent.db' ! -name 'agent.db-wal' ! -name 'agent.db-shm' \
+        ! -name 'queue-logs' \
+        -exec rm -rf {} +
     fi
   fi
 
@@ -559,9 +572,10 @@ fi
 PLANAR_STAMP="$PLANAR_HOME/.planar-install"
 if [[ -d "$PLANAR_HOME" && -n "$(ls -A "$PLANAR_HOME" 2>/dev/null)" ]]; then
   # Ownership signals: the stamp, an existing binary, or a preserved planar.db
-  # (left behind by a non-force uninstall). Any one of them means "our tree".
-  if [[ ! -e "$PLANAR_STAMP" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
-    err "$PLANAR_HOME exists and does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Pass a clean --prefix, remove it, or re-run with --force to adopt it."
+  # or agent.db (left behind by a non-force uninstall). Any one of them means
+  # "our tree".
+  if [[ ! -e "$PLANAR_STAMP" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && ! -e "$PLANAR_HOME/agent.db" && "$FORCE" -ne 1 ]]; then
+    err "$PLANAR_HOME exists and does not look like a Planar install (no bin/planar, no planar.db, no agent.db, no .planar-install stamp). Pass a clean --prefix, remove it, or re-run with --force to adopt it."
   fi
 fi
 

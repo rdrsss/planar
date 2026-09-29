@@ -12,6 +12,11 @@
 // version in the chain, plus a strict-descending-mirror-order rollback
 // sweep from head down to an empty database.
 //
+// The agent database's stream (plan 1080, task hq-agentdb-migrations) is
+// covered at the end of the file: `planar.db.migrations_agent` embeds
+// exactly `migrations-agent/`, `planar.db.migrations` embeds exactly
+// `migrations/`, and the runner reads the version table it is given.
+//
 // Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp):
 // MSVC's supported direction for mixing textual std headers with IFC
 // imports is include-then-import, not the reverse.
@@ -20,6 +25,7 @@
 import std;
 import planar.db;
 import planar.db.migrations;
+import planar.db.migrations_agent;
 import planar.db.migrate;
 
 namespace {
@@ -187,10 +193,24 @@ TEST_CASE("no migration authors a double-quoted identifier or literal", "[db][mi
   // actually ships), not the source files on disk -- so it fails the moment
   // a future migration violates it, at the same `ctest` gate everything
   // else in this file runs under.
-  for (auto const& record : planar::db::migrations()) {
-    INFO("migration " << record.version_ << " (" << record.name_ << ")");
-    CHECK(strip_line_comments(record.up_sql_).find('"') == std::string::npos);
-    CHECK(strip_line_comments(record.down_sql_).find('"') == std::string::npos);
+  //
+  // Both embedded chains are held to it (plan 1080, task hq-agentdb-compat):
+  // the agent stream's roundtrip goes through the same `canonical_schema_dump`.
+  struct stream {
+    std::string_view                              label_;
+    std::span<planar::db::migration_record const> chain_;
+  };
+  std::array<stream, 2> const streams{{
+      {"main", planar::db::migrations()},
+      {"agent", planar::db::agent::migrations()},
+  }};
+  for (auto const& [label, chain] : streams) {
+    REQUIRE_FALSE(chain.empty());
+    for (auto const& record : chain) {
+      INFO(label << " migration " << record.version_ << " (" << record.name_ << ")");
+      CHECK(strip_line_comments(record.up_sql_).find('"') == std::string::npos);
+      CHECK(strip_line_comments(record.down_sql_).find('"') == std::string::npos);
+    }
   }
 }
 
@@ -1119,4 +1139,226 @@ TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[d
     REQUIRE(ahead.has_value());
     CHECK(ahead->verdict_ == planar::db::schema_compatibility::ahead);
   }
+}
+
+namespace {
+
+/// @brief The `(version, name)` pairs of every `*.up.sql` under `dir`,
+/// read from the source tree at test time, so a chain can be compared with
+/// the DIRECTORY it claims to embed rather than with itself.
+/// @param dir A migration stream directory (a `PLANAR_*_DIR` definition).
+/// @return The sorted set of pairs; empty if the directory is missing.
+auto up_files_in(std::filesystem::path const& dir) -> std::set<std::pair<std::uint32_t, std::string>> {
+  std::set<std::pair<std::uint32_t, std::string>> out;
+  std::error_code                                 ec;
+  for (auto const& entry : std::filesystem::directory_iterator(dir, ec)) {
+    auto const name = entry.path().filename().string();
+    if (!name.ends_with(".up.sql")) {
+      continue;
+    }
+    auto const underscore = name.find('_');
+    REQUIRE(underscore != std::string::npos);
+    auto const version = static_cast<std::uint32_t>(std::stoul(name.substr(0, underscore)));
+    out.emplace(version, name.substr(underscore + 1, name.size() - underscore - 1 - std::string_view(".up.sql").size()));
+  }
+  return out;
+}
+
+/// @brief The `(version, name)` pairs of an embedded chain, in the same
+/// shape as `up_files_in` so the two can be compared directly.
+/// @param chain An embedded migration chain.
+/// @return The sorted set of pairs.
+auto records_of(std::span<planar::db::migration_record const> chain) -> std::set<std::pair<std::uint32_t, std::string>> {
+  std::set<std::pair<std::uint32_t, std::string>> out;
+  for (auto const& record : chain) {
+    out.emplace(record.version_, std::string(record.name_));
+  }
+  return out;
+}
+
+/// @brief `sql` with every `--` line comment removed, so a check over
+/// what a migration DOES is not tripped by what its comments SAY.
+/// @param sql A migration script.
+/// @return The script's non-comment text.
+auto sql_without_comments(std::string_view sql) -> std::string {
+  std::string out;
+  for (auto const line : std::views::split(sql, '\n')) {
+    std::string_view const text(line.begin(), line.end());
+    out += text.substr(0, text.find("--"));
+    out += '\n';
+  }
+  return out;
+}
+
+/// @brief Whether a table exists on `conn`.
+/// @param conn The connection.
+/// @param table The table name.
+/// @return `true` when `sqlite_master` lists it.
+auto table_exists(planar::db::connection& conn, std::string_view table) -> bool {
+  auto stmt = conn.prepare(std::format("select count(*) from sqlite_master where type = 'table' and name = '{}'", table));
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  return stmt->column_int64(0) == 1;
+}
+
+} // namespace
+
+TEST_CASE("the agent migration stream is embedded separately from the main stream",
+          "[db][migrations][agent][hq-agentdb-migrations]") {
+  // Test-spec scenario "Happy path -- the agent migration stream is embedded
+  // separately" (plan 1080, task hq-agentdb-migrations). Two chains, two
+  // directories, and the codegen is called once per stream: the agent
+  // chain is exactly the files under migrations-agent/, the main chain is
+  // exactly the files under migrations/, and neither holds the other's.
+  auto const agent = planar::db::agent::migrations();
+  auto const main  = planar::db::migrations();
+  REQUIRE_FALSE(agent.empty());
+  REQUIRE_FALSE(main.empty());
+
+  auto const agent_files = up_files_in(PLANAR_MIGRATIONS_AGENT_DIR);
+  auto const main_files  = up_files_in(PLANAR_MIGRATIONS_DIR);
+  REQUIRE_FALSE(agent_files.empty());
+  REQUIRE_FALSE(main_files.empty());
+
+  CHECK(records_of(agent) == agent_files);
+  CHECK(records_of(main) == main_files);
+  for (auto const& record : records_of(agent)) {
+    INFO("agent record " << record.first << " " << record.second);
+    CHECK_FALSE(main_files.contains(record));
+  }
+  for (auto const& record : records_of(main)) {
+    INFO("main record " << record.first << " " << record.second);
+    CHECK_FALSE(agent_files.contains(record));
+  }
+
+  // The agent chain is a real chain by the same rules as the main one.
+  CHECK(planar::db::require_contiguous(agent).has_value());
+  CHECK(planar::db::embedded_max(agent) == agent.size());
+
+  // Each stream's SQL writes ITS version table and never names the other's.
+  // Comments are stripped first (a header comment may explain the relation
+  // between the two tables); the regex excludes `agent_schema_migrations`
+  // from the bare-name match.
+  std::regex const bare_main_table("(^|[^_a-z])schema_migrations");
+  for (auto const& record : agent) {
+    INFO("agent migration " << record.version_ << " " << record.name_);
+    auto const up   = sql_without_comments(record.up_sql_);
+    auto const down = sql_without_comments(record.down_sql_);
+    CHECK(up.find("agent_schema_migrations") != std::string::npos);
+    CHECK_FALSE(std::regex_search(up, bare_main_table));
+    CHECK_FALSE(std::regex_search(down, bare_main_table));
+  }
+  for (auto const& record : main) {
+    INFO("main migration " << record.version_ << " " << record.name_);
+    CHECK(sql_without_comments(record.up_sql_).find("agent_schema_migrations") == std::string::npos);
+    CHECK(sql_without_comments(record.down_sql_).find("agent_schema_migrations") == std::string::npos);
+  }
+}
+
+TEST_CASE("applying the agent stream to an empty database creates agent_schema_migrations and not schema_migrations",
+          "[db][migrate][agent][hq-agentdb-migrations]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  auto const agent = planar::db::agent::migrations();
+  auto const head  = planar::db::embedded_max(agent);
+  REQUIRE(head >= 1);
+
+  // Fresh store: the agent table is absent and reads as version 0.
+  auto const fresh = planar::db::assert_schema_compatible(*conn, agent, planar::db::k_agent_version_table);
+  REQUIRE(fresh.has_value());
+  CHECK(fresh->live_ == 0);
+  CHECK(fresh->verdict_ == planar::db::schema_compatibility::behind);
+
+  REQUIRE(planar::db::apply_contiguous(*conn, agent, planar::db::k_agent_version_table).has_value());
+
+  CHECK(table_exists(*conn, "agent_schema_migrations"));
+  CHECK_FALSE(table_exists(*conn, "schema_migrations"));
+
+  // The version table has the spec's three columns, and the foundation row
+  // says a version-1 binary may open a version-1 store.
+  auto row = conn->prepare("select version, compat, description from agent_schema_migrations order by version desc limit 1");
+  REQUIRE(row.has_value());
+  REQUIRE(row->step().value() == planar::db::step_result::row);
+  CHECK(row->column_int64(0) == head);
+  CHECK(row->column_int64(1) >= 1);
+  CHECK(row->column_int64(1) <= head);
+  CHECK_FALSE(row->column_text(2).empty());
+  REQUIRE(row->step().value() == planar::db::step_result::done);
+
+  auto compat_of_first = scalar(*conn, "select compat from agent_schema_migrations where version = 1");
+  CHECK(compat_of_first == "1");
+
+  // Version reads are per table: the agent table is at head and the main
+  // table, which does not exist here, still reads 0 -- the runner did not
+  // silently read `schema_migrations` for the agent stream.
+  auto const agent_version = planar::db::current_version(*conn, planar::db::k_agent_version_table);
+  REQUIRE(agent_version.has_value());
+  CHECK(*agent_version == head);
+  auto const main_version = planar::db::current_version(*conn);
+  REQUIRE(main_version.has_value());
+  CHECK(*main_version == 0);
+
+  auto const current = planar::db::assert_schema_compatible(*conn, agent, planar::db::k_agent_version_table);
+  REQUIRE(current.has_value());
+  CHECK(current->live_ == head);
+  CHECK(current->verdict_ == planar::db::schema_compatibility::current);
+
+  // Idempotent, like the main stream.
+  REQUIRE(planar::db::apply_contiguous(*conn, agent, planar::db::k_agent_version_table).has_value());
+  CHECK(scalar(*conn, "select count(*) from agent_schema_migrations") == std::to_string(head));
+
+  // Down drops the foundation table, so the store is empty again.
+  REQUIRE(planar::db::rollback_all(*conn, agent).has_value());
+  CHECK_FALSE(table_exists(*conn, "agent_schema_migrations"));
+  CHECK_FALSE(table_exists(*conn, "schema_migrations"));
+}
+
+TEST_CASE("the two streams' version tables do not read each other when both are present",
+          "[db][migrate][agent][hq-agentdb-migrations]") {
+  // A store that carries BOTH tables is not the shipped layout (decision
+  // 1181 keeps the streams in different files), but it is the one fixture
+  // that proves the version-table parameter is honoured rather than the
+  // main table being read for both: with only one table present, a runner
+  // that ignored the parameter would still produce the right answers
+  // whenever the ignored table happened to be absent.
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  auto const agent      = planar::db::agent::migrations();
+  auto const agent_head = planar::db::embedded_max(agent);
+  auto const main_head  = planar::db::embedded_max();
+  REQUIRE(agent_head != main_head);
+
+  REQUIRE(planar::db::apply_all(*conn).has_value());
+  REQUIRE(planar::db::apply_contiguous(*conn, agent, planar::db::k_agent_version_table).has_value());
+
+  CHECK(planar::db::current_version(*conn).value() == main_head);
+  CHECK(planar::db::current_version(*conn, planar::db::k_main_version_table).value() == main_head);
+  CHECK(planar::db::current_version(*conn, planar::db::k_agent_version_table).value() == agent_head);
+
+  auto const main_state = planar::db::assert_schema_compatible(*conn);
+  REQUIRE(main_state.has_value());
+  CHECK(main_state->live_ == main_head);
+  CHECK(main_state->verdict_ == planar::db::schema_compatibility::current);
+
+  auto const agent_state = planar::db::assert_schema_compatible(*conn, agent, planar::db::k_agent_version_table);
+  REQUIRE(agent_state.has_value());
+  CHECK(agent_state->live_ == agent_head);
+  CHECK(agent_state->embedded_max_ == agent_head);
+  CHECK(agent_state->verdict_ == planar::db::schema_compatibility::current);
+
+  // Bumping ONE table moves only that stream's verdict.
+  REQUIRE(conn->execute(std::format("insert into agent_schema_migrations (version, compat, description) "
+                                    "values ({}, {}, 'newer');",
+                                    agent_head + 1, agent_head + 1)));
+  CHECK(planar::db::assert_schema_compatible(*conn, agent, planar::db::k_agent_version_table)->verdict_ ==
+        planar::db::schema_compatibility::ahead);
+  CHECK(planar::db::assert_schema_compatible(*conn)->verdict_ == planar::db::schema_compatibility::current);
+
+  // And applying the agent chain again does nothing to the main table.
+  REQUIRE(planar::db::apply_all(*conn, agent, planar::db::k_agent_version_table).has_value());
+  CHECK(planar::db::current_version(*conn).value() == main_head);
 }

@@ -58,6 +58,14 @@ Migrations are plain SQL files under `migrations/` in sqlx-cli format (`NNNNN_<n
 
 Authoring rules (file naming, the `schema_migrations` insert/delete contract, the `.sqlfluff` linter config, and the up/down/up roundtrip test) live in [`migrations/README.md`](../migrations/README.md). New migrations are created via `sqlx migrate add -r <name> --source migrations`; the next `cmake --build` regenerates the embedded module (CMake re-runs configure automatically on new/removed migration files).
 
+#### The agent database's stream
+
+The agent database (`~/.planar/agent.db`, plan 1080, decision 1181) has a second, independent migration stream under `migrations-agent/`, in the same sqlx-cli format. The same codegen embeds it, called a second time from `src/lib/db/CMakeLists.txt` with its own module name, namespace and accessor: `planar.db.migrations_agent` exports `planar::db::agent::migrations()`, and neither generated module holds a file from the other directory. The same runner applies it: every `planar.db.migrate` entry point that reads a version table takes the table name as a parameter (`k_main_version_table` = `schema_migrations`, `k_agent_version_table` = `agent_schema_migrations`), and the overloads without one are the unchanged main-stream defaults.
+
+The store's location is resolved by `planar.db.agentdb` (`src/lib/db/agentdb.cppm`): `PLANAR_AGENT_DB` when set and non-empty, else `$HOME/.planar/agent.db`, beside `planar.db`; an empty `HOME` counts as unset, and `PLANAR_DB` is never consulted, so pointing the main database elsewhere does not move the agent store. `open_agent_db` creates the file and its parent directory on first use, opens it through the same `connection::open` as the main database (foreign keys on, WAL journal mode, the 5000 ms busy timeout), checks the store's compatibility (below), and applies the agent stream through `apply_contiguous` against `agent_schema_migrations`, so the store is at head when the call returns and a second open changes nothing. It never opens the main database: a main-schema lockout does not reach it. A failure is an `open_error` naming the path: an unwritable parent directory, a file SQLite cannot open, a store that needs a newer binary, or a migration that fails; when neither `PLANAR_AGENT_DB` nor `HOME` is set, the error names both variables and nothing is created anywhere. The `queue run` verb (M2) maps that error to exit 125 (decision 1185).
+
+`agent_schema_migrations(version integer primary key, compat integer not null, description text not null)` is the agent database's schema-version contract. The row with the highest `version` is authoritative, and its `compat` names the oldest binary schema version that may open the store: a migration that only adds tables, columns with defaults, or indexes keeps the previous `compat`, and one that drops, renames or changes the meaning of anything sets `compat` to its own version. The binary's own agent schema version is the head of the chain it embeds (`planar::db::agent::agent_schema_version()`). `check_compat`, which `open_agent_db_at` runs between opening the file and applying the stream, refuses the store with an `incompatible_store` error naming the path, the store's `compat` and the binary's version only when that `compat` is higher than the binary's version; the refusal happens before any migration write, so the file is unchanged. A store whose `version` is higher than the binary's but whose `compat` is not is opened as it is: the binary reads the tables it understands and applies nothing. A fresh store, or one behind the binary, passes the check and is migrated to head. Every agent migration's `compat` is pinned in one test table (`src/lib/db/agentdb.t.cpp`), which fails naming the file when a migration's inserted value differs from the table or a migration is missing from it, so changing a value is a reviewed edit. Existing agent tables (`agent_work_claims`, `agent_actions`, the routing dispatch tables) stay in the main database; moving them is a separate plan. Authoring rules for the stream live in [`migrations-agent/README.md`](../migrations-agent/README.md).
+
 ### Application tables
 
 | Migration | Tables / schema change |
@@ -364,14 +372,16 @@ CLI11 (vendored, `vendor/cli11/`) owns tokenization and value coercion only — 
 | File | Role |
 |------|------|
 | `db.cppm` / `db.cpp` | `connection` / `statement` / `transaction` RAII wrappers, PRAGMA setup (foreign keys on, WAL mode). Every fallible boundary returns `std::expected<T, db_error>` — no exceptions cross the module boundary. |
-| `migrate.cppm` / `migrate.cpp` | Applies the generated `planar.db.migrations` module on startup. |
+| `migrate.cppm` / `migrate.cpp` | Applies the generated `planar.db.migrations` module on startup, and the agent stream when handed that chain and its version table. |
 | `migrations.cppm` | The generated module's declared interface (implementation is `#embed`-generated at configure time into a file under the build tree, not checked in). |
+| `migrations_agent.cppm` | The same for the agent database's stream, `planar.db.migrations_agent` (`migrations-agent/`). Imports `planar.db.migrations` for the record type without re-exporting it. |
+| `agentdb.cppm` / `agentdb.cpp` | `planar.db.agentdb`: resolves the agent database path (`PLANAR_AGENT_DB`, else `$HOME/.planar/agent.db`) from an injected environment lookup, creates and opens the store on first use with the main database's connection settings, refuses a store whose highest row's `compat` is above the binary's agent schema version (`check_compat`), and applies the agent stream. Returns `std::expected<connection, open_error>`; never touches the main database. |
 
 ### Configure-time codegen (`cmake/`)
 
 | File | Role |
 |------|------|
-| `cmake/generate_migrations.cmake` | Scans `migrations/*.up.sql`/`*.down.sql`, sorts explicitly, and `#embed`s each pair into a generated `planar.db.migrations` implementation unit. Re-runs configure automatically on new/removed migration files (`file(GLOB CONFIGURE_DEPENDS)`). |
+| `cmake/generate_migrations.cmake` | Scans a stream directory's `*.up.sql`/`*.down.sql`, sorts explicitly, and `#embed`s each pair into a generated implementation unit for the module, namespace and accessor it is given. Called once per stream: `migrations/` into `planar.db.migrations`, `migrations-agent/` into `planar.db.migrations_agent`. Re-runs configure automatically on new/removed migration files (`file(GLOB CONFIGURE_DEPENDS)`). |
 | `cmake/generate_templates.cmake` | Same pattern for `templates/defaults/` — embeds propagation-template defaults so they compile into the binary. |
 
 <!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ codegen tooling for history -->

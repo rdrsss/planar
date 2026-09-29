@@ -130,7 +130,7 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | `--dry-run`, `-n` | Show the planned actions without changing anything. |
 | `--verbose`, `-v` | Per-file detail (default prints a summary). |
 | `--version` | Print the installer version and exit. |
-| `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db` unless `--force` is also given. |
+| `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db`, `~/.planar/agent.db` (with its `-wal`/`-shm` sidecars) and `~/.planar/queue-logs/` unless `--force` is also given. |
 
 ### Copy mode vs link mode
 
@@ -152,6 +152,8 @@ planar init --name "my-project"
 ```
 
 The default database lives at `~/.planar/planar.db`. Override it with the `PLANAR_DB` environment variable; there is no global `--db` flag.
+
+Agent state lives in a second database, `~/.planar/agent.db`, with its own migration stream. `planar-agent` creates it on first use; no `init` step is needed. Override its path with `PLANAR_AGENT_DB`. Detached queue runs write their output files under `queue-logs/` in the directory that holds `agent.db`.
 
 ## Build from source
 
@@ -209,9 +211,13 @@ make uninstall-full
 
 This removes:
 - All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
-- Everything in `~/.planar/` *except* `planar.db` — your data is preserved.
+- Everything in `~/.planar/` *except* your data: `planar.db`, `agent.db` (with its SQLite sidecars `agent.db-wal` and `agent.db-shm`), and the `queue-logs/` directory of detached queue-run output.
 
-To remove the database too:
+A prefix that holds only a preserved `planar.db` or `agent.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
+
+Databases relocated with `PLANAR_DB` or `PLANAR_AGENT_DB` live outside `~/.planar/` and are never touched by the uninstall.
+
+To remove the databases and the queue logs too:
 
 ```bash
 ./install.sh --uninstall --force
@@ -219,10 +225,12 @@ To remove the database too:
 
 `make uninstall` is the counterpart of `make install`: it removes only the five Planar executables from `PREFIX/bin` (default `~/.local/bin`).
 
-To remove only the database and keep the install:
+To remove only the data and keep the install:
 
 ```bash
 rm -f ~/.planar/planar.db
+rm -f ~/.planar/agent.db ~/.planar/agent.db-wal ~/.planar/agent.db-shm
+rm -rf ~/.planar/queue-logs
 ```
 
 ## Troubleshooting
@@ -323,6 +331,9 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 ├── share/centurion/                    # centuriond migrations + build-identity.json
 ├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`)
+├── agent.db                            # agent-state database (created on first use;
+│                                       # `agent.db-wal` / `agent.db-shm` may sit beside it)
+├── queue-logs/                         # detached queue-run output (`<seq>.log`)
 ├── migrations/
 │   ├── 00001_foundation.up.sql         # canonical migration sources, sqlx-cli format
 │   ├── 00001_foundation.down.sql
@@ -388,6 +399,7 @@ Planar respects these env vars when set:
 | `PLANAR_WORKBENCH_ROOT` | Override the workbench drafting filesystem root (default `~/.planar/workbench/`). Useful for pointing multiple Planar instances at the same workbench directory. |
 | `PLANAR_CONFIG_PATH` | Override the config file location (default `~/.planar/config.toml`). |
 | `PLANAR_DB` | Override the database path (default `~/.planar/planar.db`). |
+| `PLANAR_AGENT_DB` | Override the agent-state database path (default `~/.planar/agent.db`). Detached queue-run output goes to `queue-logs/` next to this file. |
 | `PLANAR_BIN` | Used by `scripts/coverage-check.sh` (`make coverage`) to point at a pre-built `planar` binary (default `./bin/planar`). |
 | `JIRA_USER`, `JIRA_TOKEN`, etc. | Whatever you point `planar-ext ext register … --auth-env VAR_NAME` at. Comma-separated `USER,TOKEN` form uses HTTP Basic auth. |
 
