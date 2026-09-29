@@ -185,7 +185,11 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
     return exit_code(err);
   }
 
-  auto const outcome = found->second(ctx, args);
+  auto const handled = found->second(ctx, args);
+  if (std::holds_alternative<exit_status>(handled)) {
+    return exit_success;
+  }
+  auto const& outcome = std::get<handler_result>(handled);
   if (!outcome) {
     report(outcome.error(), ctx.err());
     if (want_json_envelope) {
