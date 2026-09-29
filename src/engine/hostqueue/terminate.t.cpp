@@ -1139,8 +1139,11 @@ TEST_CASE("terminate: one entry that cannot be ended does not stop the advance",
   REQUIRE(result->ended.size() == 1);
   CHECK(result->ended[0].seq == fine);
   CHECK_FALSE(exists(conn, fine));
-  // The failing entry is left in place for a later call.
+  // The failing entry is left in place for a later call, and named.
   CHECK(exists(conn, broken));
+  REQUIRE(result->end_failures.size() == 1);
+  CHECK(result->end_failures[0].seq == broken);
+  CHECK(result->end_failures[0].error.message.contains("history refused"));
 }
 
 TEST_CASE("terminate: a cancelled entry with no readable canceller ends as abandoned", "[engine][hostqueue][hq-terminate]") {
