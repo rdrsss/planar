@@ -697,6 +697,8 @@ TEST_CASE("poll: an overdue running entry whose submitter is gone is marked term
     auto const later = poll_as(conn, waiter, clock, host);
     CHECK(later.terminating.empty());
     CHECK(entry_of(conn, orphan).terminating_since_mono == k_mono0 + k_run_limit + 1);
+    // Regression test: a terminating entry keeps its slot on later polls too.
+    CHECK_FALSE(later.running);
   }
 }
 
@@ -740,7 +742,10 @@ public:
     return _pid;
   }
 
-  // @brief Let the child exit and wait for it.
+  // @brief Let the child exit and wait for it, for at most ten seconds.
+  // A child still present at the deadline is killed and counts as unclean,
+  // so a regression that stops the child fails the test instead of hanging
+  // the suite.
   // @return Whether it exited normally with status 0: it was not killed by
   // a signal before it was released.
   auto release() -> bool {
@@ -750,11 +755,30 @@ public:
     }
     bool clean = false;
     if (_pid > 0) {
-      int status = 0;
-      while (::waitpid(_pid, &status, 0) < 0 && errno == EINTR) {
+      int        status   = 0;
+      auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      bool       reaped   = false;
+      bool       gone     = false; // not our child any more: nothing to kill
+      while (std::chrono::steady_clock::now() < deadline) {
+        ::pid_t const got = ::waitpid(_pid, &status, WNOHANG);
+        if (got == _pid) {
+          reaped = true;
+          break;
+        }
+        if (got < 0 && errno != EINTR) {
+          gone = true;
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
       }
-      clean = WIFEXITED(status) && WEXITSTATUS(status) == 0;
-      _pid  = 0;
+      if (reaped) {
+        clean = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+      } else if (!gone) {
+        ::kill(_pid, SIGKILL);
+        while (::waitpid(_pid, &status, 0) < 0 && errno == EINTR) {
+        }
+      }
+      _pid = 0;
     }
     return clean;
   }
