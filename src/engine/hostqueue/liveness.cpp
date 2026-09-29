@@ -86,7 +86,7 @@ auto is_fresh(std::int64_t refreshed_mono, const liveness_context& ctx) -> bool 
 }
 
 auto judge_liveness(const entry& e, const liveness_context& ctx, const process_probe& probe)
-    -> std::expected<liveness, identity::error> {
+    -> std::expected<liveness, process::identity::error> {
   if (!same_host(e, ctx)) {
     bool const fresh = is_fresh(e.refreshed_mono, ctx);
     return liveness{.live = fresh, .submitter_live = fresh, .group = group_verdict::not_checked};
@@ -106,7 +106,7 @@ auto judge_liveness(const entry& e, const liveness_context& ctx, const process_p
 }
 
 auto submitter_gone(const entry& e, const liveness_context& ctx, const process_probe& probe)
-    -> std::expected<bool, identity::error> {
+    -> std::expected<bool, process::identity::error> {
   return judge_liveness(e, ctx, probe).transform([](const liveness& verdict) { return verdict.submitter_gone(); });
 }
 
