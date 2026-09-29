@@ -123,7 +123,7 @@ than linked, because a `cmd_*` target may not depend on another `cmd_*`
 target.
 
 - `make_arena("<tag>")` builds a scratch environment under a temp root with
-  its own `PLANAR_DB`, `HOME` and `PLANAR_WORKBENCH_ROOT`.
+  its own `PLANAR_DB`, `PLANAR_AGENT_DB`, `HOME` and `PLANAR_WORKBENCH_ROOT`.
 - `run_pinned(bin, argv, root, tag)` runs a binary inside that environment
   and captures stdout, stderr and the exit code.
 - `launch_pinned_detached` and `await_sentinel` cover the few cases that need
@@ -131,8 +131,13 @@ target.
 
 Both halves of the arena matter. `PLANAR_HOME` alone does not redirect the
 database: without a scratch `PLANAR_DB` the runtime falls back to
-`~/.planar/planar.db` and applies pending migrations to it. Never run a
-from-source binary outside `run_pinned`.
+`~/.planar/planar.db` and applies pending migrations to it. The agent
+database (`~/.planar/agent.db`, override `PLANAR_AGENT_DB`) migrates on
+first open the same way, so `pinned_env(root)` pins it to `<root>/agent.db`
+directly rather than through the `HOME` fallback, and both entry points run
+`require_agent_db_pinned` before the binary starts: a map whose agent
+database resolves outside the arena fails the case with the path in the
+message. Never run a from-source binary outside `run_pinned`.
 
 Two case styles coexist:
 
@@ -206,12 +211,22 @@ live database past the schema version every installed binary supports. Every
 other agent on the machine then fails with `SchemaVersionAhead`, and the
 migration has to be rolled back by hand.
 
-- `make smoke ARGS="<verb>"` runs the debug build against a throwaway
-  database under `build/debug/.smoke/`. `make smoke-reset` deletes it.
+- `make smoke ARGS="<verb>"` runs the debug build against throwaway
+  databases under `build/debug/.smoke/`: `planar.db` as `PLANAR_DB` and
+  `agent.db` as `PLANAR_AGENT_DB`. `make smoke-reset` deletes both.
 - `make run` runs against the real database.
-- By hand: `PLANAR_DB=<scratch-path> build/debug/bin/planar <verb>`, with a
-  scratch `HOME` as well whenever the verb touches `~/.planar` for anything
-  other than the database.
+- By hand: `PLANAR_DB=<scratch-path> PLANAR_AGENT_DB=<scratch-path>
+  build/debug/bin/planar <verb>`, with a scratch `HOME` as well whenever the
+  verb touches `~/.planar` for anything other than the two databases. The
+  agent database (`~/.planar/agent.db`) migrates on first open exactly as
+  `planar.db` does, so it needs its own pin; a scratch `HOME` contains it
+  only by fallback.
+
+The gate scripts that run a built binary (`scripts/exit-code-contract.sh`,
+`scripts/surface-snapshot.sh`, `scripts/coverage-check.sh`) export
+`PLANAR_AGENT_DB` beside `PLANAR_DB` under their own scratch directory, and
+`src/cmd/planar/arena_agent_db.t.cpp` runs each of them and `make smoke`
+with a recording wrapper in place of the binary to keep it that way.
 
 To check a migration as raw SQL:
 

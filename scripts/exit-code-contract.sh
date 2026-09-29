@@ -84,9 +84,12 @@ doc="$(cd "$(dirname "$doc")" && pwd)/$(basename "$doc")"
 # Scratch DB *and* scratch HOME. `PLANAR_HOME` alone does NOT redirect the
 # database: without PLANAR_DB the runtime falls back to ~/.planar/planar.db
 # and auto-applies pending migrations, moving the operator's live schema.
+# The agent database (decision 1181; ~/.planar/agent.db, override
+# PLANAR_AGENT_DB) migrates on first open the same way, so it is pinned
+# beside PLANAR_DB rather than left to the HOME fallback (task 6996).
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-export PLANAR_DB="$tmp/db.sqlite" HOME="$tmp/home" PLANAR_WORKBENCH_ROOT="$tmp/wb"
+export PLANAR_DB="$tmp/db.sqlite" PLANAR_AGENT_DB="$tmp/agent.db" HOME="$tmp/home" PLANAR_WORKBENCH_ROOT="$tmp/wb"
 mkdir -p "$HOME"
 # The WORKING DIRECTORY is isolated too (task 6845 / bug 6896), separately
 # from PLANAR_DB/HOME/WORKBENCH above: a plain, non-git scratch directory.
