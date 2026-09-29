@@ -29,6 +29,10 @@
 # `poll.cppm` (task hq-poll-transaction) is the poll transaction; it
 # imports queue, history and liveness from this bucket.
 #
+# `terminate.cppm` (task hq-terminate) stops a running entry's command in
+# two steps, signalling only outside any transaction; it imports queue,
+# history and liveness from this bucket.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
@@ -38,12 +42,14 @@ planar_module(engine_hostqueue
     history.cppm
     liveness.cppm
     poll.cppm
+    terminate.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
     history.cpp
     liveness.cpp
     poll.cpp
+    terminate.cpp
   DEPENDS
     db
     json_dom

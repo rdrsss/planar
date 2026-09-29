@@ -110,6 +110,18 @@ export auto is_fresh(std::int64_t refreshed_mono, const liveness_context& ctx) -
 export auto judge_liveness(const entry& e, const liveness_context& ctx, const process_probe& probe)
     -> std::expected<liveness, process::identity::error>;
 
+/// @brief The state of an entry's child group, by the same rule
+/// `judge_liveness` applies: `reused` when a process with the id `child_pgid`
+/// exists with a start time other than `child_started`, otherwise whether the
+/// group has members. The host identity is not compared; the caller does
+/// that before trusting any process id.
+/// @param e The entry.
+/// @param probe The process queries.
+/// @return `not_checked` for an entry that is not running or records no
+/// child group; otherwise the verdict, or the first probe failure.
+export auto judge_child_group(const entry& e, const process_probe& probe)
+    -> std::expected<group_verdict, process::identity::error>;
+
 /// @brief Whether the entry's submitter is gone (it fails the `waiting` test).
 /// @param e The entry, waiting or running.
 /// @param ctx The checker's host identity, clock and staleness window.
