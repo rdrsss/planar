@@ -16,19 +16,26 @@
 # scratch store at head. `json_text` is the one shared RFC 8259 string
 # escape used to write the `argv` column; `json_dom` parses it back.
 #
+# `process` supplies `planar.process.identity`, which the liveness
+# module's default probe forwards to (task hq-liveness); tests replace the
+# probe with a fake.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
 planar_module(engine_hostqueue
   INTERFACE
     queue.cppm
+    liveness.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
+    liveness.cpp
   DEPENDS
     db
     json_dom
-    json_text)
+    json_text
+    process)
 
 if(TARGET planar_engine_hostqueue_tests)
   # The test binary opens real on-disk scratch stores through
