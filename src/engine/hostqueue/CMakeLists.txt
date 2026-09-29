@@ -31,7 +31,9 @@
 #
 # `terminate.cppm` (task hq-terminate) stops a running entry's command in
 # two steps, signalling only outside any transaction; it imports queue,
-# history and liveness from this bucket.
+# history, liveness and poll from this bucket (poll for `poll_and_stop`,
+# task hq-orphan-deadline, which signals what a poll marked after it
+# commits). poll does not import terminate, so the interfaces form no cycle.
 #
 # `nested.cppm` (task hq-nested-entry) inserts a nested run's entry after
 # checking its parent; it imports queue and liveness from this bucket.
