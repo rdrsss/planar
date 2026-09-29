@@ -56,9 +56,32 @@ row with the highest `version` is authoritative. A migration that only adds
 tables, columns with defaults, or indexes keeps the previous migration's
 `compat`, so a `planar-agent` from an older build keeps working while a
 newer one upgrades the store under it. A migration that drops, renames, or
-changes the meaning of anything sets `compat` to its own version. A test
-pins every migration's `compat` value in one table, so changing one is a
-reviewed edit.
+changes the meaning of anything sets `compat` to its own version. So for
+every migration `N`, `compat` is either the previous migration's `compat`
+or `N` itself, never anything else.
+
+A binary's own agent schema version is the head of the chain it embeds.
+`planar::db::agent::open_agent_db` (`src/lib/db/agentdb.cppm`) runs
+`check_compat` after opening the file and before applying any migration:
+it reads the highest row and refuses the store, leaving the file unchanged,
+only when that row's `compat` is higher than the binary's version. A store
+that is ahead of the binary but still compatible is opened as it is.
+
+## The pinned compat table
+
+`src/lib/db/agentdb.t.cpp` (`every agent migration's compat value is
+pinned`) lists every `.up.sql` here with the `compat` it must insert, and
+checks the value the migration actually writes by applying the chain one
+migration at a time to a scratch store. The test fails, naming the file,
+when a migration's inserted `compat` differs from the table, when a
+migration is missing from the table, or when the table names a file that
+does not exist.
+
+Adding a migration therefore always adds one row to that table, with the
+value the rule above dictates. Changing an existing value is a reviewed
+edit of the table, made in the same change as the migration that needs it,
+and the review question is whether the migration really drops, renames or
+changes meaning.
 
 ## Adding a migration
 

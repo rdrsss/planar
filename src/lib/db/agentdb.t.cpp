@@ -519,8 +519,8 @@ TEST_CASE("every agent migration's compat value is pinned", "[db][agentdb][migra
   REQUIRE_FALSE(chain.empty());
   REQUIRE(planar::db::require_contiguous(chain).has_value());
 
-  std::set<std::string> seen;
-  std::uint32_t         previous_compat = 0;
+  std::set<std::string, std::less<>> seen;
+  std::uint32_t                      previous_compat = 0;
   for (std::size_t i = 0; i < chain.size(); ++i) {
     auto const& record = chain[i];
     auto const  file   = std::format("{:05}_{}.up.sql", record.version_, record.name_);
