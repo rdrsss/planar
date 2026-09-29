@@ -16,3 +16,4 @@ export import planar.engine.config.effective;
 export import planar.engine.config.templates_embed;
 export import planar.engine.config.templates;
 export import planar.engine.config.init;
+export import planar.engine.config.queue;
