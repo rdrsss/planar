@@ -733,36 +733,30 @@ public:
   blocked_child(blocked_child&&)                         = delete;
   auto operator=(blocked_child&&) -> blocked_child&      = delete;
   ~blocked_child() {
-    release();
+    (void)release();
   }
 
   [[nodiscard]] auto pid() const -> std::int64_t {
     return _pid;
   }
 
-  // @brief Whether the child has exited, without waiting; a child that has
-  // exited is reaped here.
-  [[nodiscard]] auto has_exited() -> bool {
-    int        status = 0;
-    auto const done   = ::waitpid(_pid, &status, WNOHANG);
-    if (done == _pid) {
-      _pid = 0;
-      return true;
-    }
-    return false;
-  }
-
-  void release() {
+  // @brief Let the child exit and wait for it.
+  // @return Whether it exited normally with status 0: it was not killed by
+  // a signal before it was released.
+  auto release() -> bool {
     if (_release >= 0) {
       ::close(_release);
       _release = -1;
     }
+    bool clean = false;
     if (_pid > 0) {
       int status = 0;
       while (::waitpid(_pid, &status, 0) < 0 && errno == EINTR) {
       }
-      _pid = 0;
+      clean = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+      _pid  = 0;
     }
+    return clean;
   }
 
 private:
@@ -823,9 +817,10 @@ TEST_CASE("poll: marking a real orphan terminating sends it no signal", "[engine
   CHECK(result->terminating[0].seq == orphan);
   CHECK(result->reaped.empty());
 
-  CHECK_FALSE(command.has_exited());
+  // Had the poll signalled the group, the child would have died of it
+  // rather than exiting 0 when released.
   CHECK(pid_ns::group_has_members(command.pid()).value());
-  command.release();
+  CHECK(command.release());
 }
 
 TEST_CASE("poll: a running entry's start time and deadline are set once", "[engine][hostqueue][hq-poll-transaction]") {
