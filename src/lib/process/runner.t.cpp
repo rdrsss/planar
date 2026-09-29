@@ -21,9 +21,10 @@
 //     a watchdog thread, so a `poll` that blocks returns late and fails
 //     rather than hanging.
 //
-// The runner resets caught signal handlers in the child before it
-// executes, so Catch2's SIGTERM handler, which a forked child inherits,
-// cannot swallow the SIGTERM the grandchild test sends.
+// The runner empties the child's signal mask, which `exec` would otherwise
+// carry over; the mask test blocks SIGTERM in the caller and requires the
+// child to die of a forwarded SIGTERM anyway. Caught handlers need no test
+// of their own: `exec` resets them.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -31,6 +32,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -235,6 +237,34 @@ auto has_unreaped_child() -> bool {
   int status = 0;
   return ::waitpid(-1, &status, WNOHANG) >= 0;
 }
+
+// @brief Blocks SIGTERM in the calling thread and restores the previous
+// mask when it leaves scope, whatever path leaves it.
+class sigterm_blocked {
+public:
+  sigterm_blocked() {
+    ::sigset_t block{};
+    sigemptyset(&block);
+    sigaddset(&block, SIGTERM);
+    _ok = ::pthread_sigmask(SIG_BLOCK, &block, &_previous) == 0;
+  }
+  sigterm_blocked(const sigterm_blocked&)                    = delete;
+  auto operator=(const sigterm_blocked&) -> sigterm_blocked& = delete;
+  sigterm_blocked(sigterm_blocked&&)                         = delete;
+  auto operator=(sigterm_blocked&&) -> sigterm_blocked&      = delete;
+  ~sigterm_blocked() {
+    if (_ok) {
+      ::pthread_sigmask(SIG_SETMASK, &_previous, nullptr);
+    }
+  }
+  [[nodiscard]] auto ok() const -> bool {
+    return _ok;
+  }
+
+private:
+  ::sigset_t _previous{};
+  bool       _ok = false;
+};
 
 } // namespace
 
@@ -616,6 +646,34 @@ TEST_CASE("runner: signalling the group reaches a grandchild in the same group",
     REQUIRE_FALSE(late.has_value());
     CHECK(late.error() == runner::error::no_such_process);
   }
+}
+
+TEST_CASE("runner: a signal the caller blocked is not blocked in the child", "[lib][process][runner]") {
+  scratch_dir const scratch;
+  fifo_gate         gate{scratch.path() / "gate"};
+  auto const        script = scratch.path() / "child.sh";
+  write_script(script, std::format("#!/bin/sh\nread x < '{}'\n", gate.path().string()));
+  std::vector<std::string> const argv{script.string()};
+
+  sigterm_blocked const blocked;
+  REQUIRE(blocked.ok());
+
+  auto started = runner::start(map_env({}), argv, slot_options("1"));
+  REQUIRE(started.has_value());
+  child_guard guard{*started};
+  REQUIRE(::getpgid(static_cast<::pid_t>(guard.get().pid)) == static_cast<::pid_t>(guard.get().pgid));
+  REQUIRE(guard.get().pgid != ::getpgrp());
+
+  // The caller's mask is intact after start.
+  ::sigset_t current{};
+  REQUIRE(::pthread_sigmask(SIG_BLOCK, nullptr, &current) == 0);
+  CHECK(sigismember(&current, SIGTERM) == 1);
+
+  REQUIRE(runner::signal(guard.get(), SIGTERM).has_value());
+  auto const ended = guard.wait_for(k_bound);
+  REQUIRE(ended.has_value());
+  CHECK(ended->kind == runner::state::signalled);
+  CHECK(ended->code == SIGTERM);
 }
 
 TEST_CASE("runner: an added variable name that cannot be set is refused before forking", "[lib][process][runner]") {

@@ -61,11 +61,17 @@ export enum class error : std::uint8_t {
 /// spawned.
 ///
 /// A name containing `/` is used as given. A bare name is searched along
-/// the `PATH` that `env` reports, in order, skipping empty elements; the
-/// first regular file the caller may execute wins. A name that matched
-/// only files that are not executable, or directories, is
-/// `not_executable`; a name that matched nothing, or a lookup with no
-/// `PATH`, is `not_found`.
+/// the `PATH` that `env` reports, in order; the first regular file the
+/// caller may execute wins. Empty `PATH` elements are skipped, not treated
+/// as the current directory. A name that matched only files that are not
+/// executable, or directories, is `not_executable`; a name that matched
+/// nothing is `not_found`, and so is a lookup where `PATH` is unset or
+/// empty (there is no default search path).
+///
+/// This matches `execvp`'s search only. There is no `/bin/sh` fallback on
+/// `ENOEXEC`: a file with the execute bit but no `#!` line is accepted here
+/// and fails when run as `not_executable`, which the queue reports as
+/// `not_started` with exit code 126.
 /// @param env The environment lookup, consulted for `PATH`.
 /// @param program The program name or path.
 /// @return The path to execute, or `empty_command`, `not_found` or
@@ -106,8 +112,17 @@ export struct child {
 /// standard streams, and `options.working_directory` when given. `argv[0]`
 /// is passed to the program as given; the resolved path is what is
 /// executed. Signal handlers the caller installed are reset to the default
-/// in the child before it executes, so a signal that arrives in that window
-/// acts as it would on the program; ignored signals stay ignored.
+/// in the child before it executes; ignored signals stay ignored. The
+/// child's signal mask is emptied, so a signal the caller blocked in the
+/// calling thread is not blocked in the program, and a forwarded signal
+/// acts on it. All signals are blocked in the caller across the fork, so no
+/// caller handler runs in the child, and the caller's mask is restored
+/// before `start` returns.
+///
+/// Requires that no other thread forks and execs concurrently with `start`:
+/// off Linux the pipes are made close-on-exec in a second call, and a
+/// concurrent fork in that window would inherit them. The submitter is
+/// single-threaded.
 ///
 /// A failure after the fork (changing directory, or an `exec` that fails
 /// because the program vanished or lost its permission since `resolve`) is

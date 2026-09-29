@@ -23,6 +23,7 @@ module;
 #include <cerrno>
 #include <csignal>
 #include <fcntl.h>
+#include <pthread.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -87,7 +88,19 @@ void close_pair(std::array<int, 2>& fds) {
 }
 
 /// @brief Open a pipe with both ends close-on-exec.
+///
+/// On Linux `pipe2(O_CLOEXEC)` makes this atomic. Elsewhere `pipe` followed
+/// by `fcntl` leaves a window in which another thread's `fork` and `exec`
+/// would carry the descriptors into its child; `start` therefore requires
+/// that no other thread forks and execs concurrently.
 auto open_pipe(std::array<int, 2>& fds) -> bool {
+#if defined(__linux__)
+  if (::pipe2(fds.data(), O_CLOEXEC) != 0) {
+    fds = {-1, -1};
+    return false;
+  }
+  return true;
+#else
   if (::pipe(fds.data()) != 0) {
     fds = {-1, -1};
     return false;
@@ -99,6 +112,7 @@ auto open_pipe(std::array<int, 2>& fds) -> bool {
     }
   }
   return true;
+#endif
 }
 
 /// @brief Wait for `pid` to terminate, retrying an interrupted wait.
@@ -139,9 +153,12 @@ auto exec_error(int err) -> error {
   ::_exit(127);
 }
 
-/// @brief Reset every caught signal to its default and unblock every
+/// @brief Reset every caught signal to its default, then unblock every
 /// signal, so the child acts on a signal the way the program it becomes
 /// would. Ignored signals stay ignored, as `exec` itself would leave them.
+/// `exec` already resets caught handlers; the mask is what it would not
+/// clear, so a caller that blocked a signal would otherwise hand the
+/// program a signal it cannot receive. Async-signal-safe.
 void reset_signals() {
   for (int sig = 1; sig < NSIG; ++sig) {
     struct ::sigaction current{};
@@ -258,7 +275,19 @@ auto start(const env_lookup& env, std::span<const std::string> argv, const start
   std::cout.flush();
   std::cerr.flush();
 
-  ::pid_t const pid = ::fork();
+  // Block every signal across the fork so the caller's handlers cannot run
+  // in the child, in the caller's group, before `reset_signals`. The parent
+  // restores its own mask straight after.
+  ::sigset_t all{};
+  ::sigset_t caller_mask{};
+  sigfillset(&all);
+  ::pthread_sigmask(SIG_SETMASK, &all, &caller_mask);
+  ::pid_t const pid        = ::fork();
+  int const     fork_errno = errno;
+  if (pid != 0) {
+    ::pthread_sigmask(SIG_SETMASK, &caller_mask, nullptr);
+  }
+  errno = fork_errno;
   if (pid < 0) {
     close_pair(go);
     close_pair(report);
@@ -267,6 +296,8 @@ auto start(const env_lookup& env, std::span<const std::string> argv, const start
   if (pid == 0) {
     ::close(go[1]);
     ::close(report[0]);
+    // Handlers first, so nothing the caller installed runs once the mask
+    // opens; the mask is still the all-blocked one the parent set.
     reset_signals();
     if (::setpgid(0, 0) != 0) {
       child_fail(report[1], child_stage::group, errno);
