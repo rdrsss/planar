@@ -34,6 +34,13 @@
 /// mapping is testable; production callers reach it only through
 /// `process_exists` and `group_has_members`.
 ///
+/// Ids are taken as `std::int64_t`. An id that is not positive, or that a
+/// platform `pid_t` cannot hold, names no process: the queries report
+/// absence and `signal_group` reports `no_such_process`, with no system call
+/// made. Group ids 0 and 1 are refused the same way, so no call here can
+/// reach `kill(0, ...)` (the caller's own group) or `kill(-1, ...)` (every
+/// process the user may signal).
+///
 /// The platform tables come from the tech spec (artifact 647, § Liveness,
 /// precisely) and are restated on each declaration below.
 module;
@@ -69,6 +76,13 @@ export enum class error : std::uint8_t {
 export using start_time = std::uint64_t;
 
 /// @brief Read the start time of the process with id `pid`.
+///
+/// Documented limit: on Linux with `/proc` mounted `hidepid=1` or
+/// `hidepid=2`, another user's live process has no readable entry, so this
+/// reports it absent while `process_exists` reports that it exists (`kill`
+/// fails with `EPERM`). A rule of "exists and start time matches" reads such
+/// a process as dead. Queue entries are normally the checking user's own,
+/// where `hidepid` hides nothing.
 /// @param pid The process id to look up.
 /// @return The start time; `std::nullopt` when no process with that id
 /// exists; an `error` only when the query itself failed.

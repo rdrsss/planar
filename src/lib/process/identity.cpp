@@ -25,6 +25,20 @@ namespace planar::process::identity {
 
 namespace {
 
+/// @brief Whether `id` is a positive value a `pid_t` holds without
+/// narrowing. Anything else names no process: a larger value would
+/// otherwise be truncated into the id of an unrelated one.
+auto is_pid(std::int64_t id) -> bool {
+  return id > 0 && id <= static_cast<std::int64_t>(std::numeric_limits<::pid_t>::max());
+}
+
+/// @brief Whether `pgid` is a process group this module may address.
+/// Group ids 0 and 1 are refused: `kill(0, ...)` is the caller's own group
+/// and `kill(-1, ...)` is every process the user may signal.
+auto is_group(std::int64_t pgid) -> bool {
+  return pgid > 1 && is_pid(pgid);
+}
+
 /// @brief Turn a `kill(..., 0)` return into a verdict, reading errno only
 /// when the call failed.
 auto exists_from_kill(int rc) -> std::expected<bool, error> {
@@ -106,18 +120,21 @@ auto exists_from_errno(int err) -> std::expected<bool, error> {
 }
 
 auto process_start_time(std::int64_t pid) -> std::expected<std::optional<start_time>, error> {
-  if (pid <= 0) {
+  if (!is_pid(pid)) {
     return std::optional<start_time>{};
   }
 #if defined(__APPLE__)
   proc_bsdinfo info{};
-  auto const   got = ::proc_pidinfo(static_cast<int>(pid), PROC_PIDTBSDINFO, 0, &info, sizeof info);
+  errno          = 0;
+  auto const got = ::proc_pidinfo(static_cast<int>(pid), PROC_PIDTBSDINFO, 0, &info, sizeof info);
   if (got == static_cast<int>(sizeof info)) {
     auto const seconds      = static_cast<start_time>(info.pbi_start_tvsec);
     auto const microseconds = static_cast<start_time>(info.pbi_start_tvusec);
     return std::optional<start_time>{seconds * 1'000'000 + microseconds};
   }
-  if (errno == ESRCH) {
+  // Only a failed call sets errno. A short positive return is a partial
+  // read, so errno says nothing about it and it is a query failure.
+  if (got <= 0 && errno == ESRCH) {
     return std::optional<start_time>{};
   }
   return std::unexpected{error::query_failed};
@@ -148,21 +165,21 @@ auto process_start_time(std::int64_t pid) -> std::expected<std::optional<start_t
 }
 
 auto process_exists(std::int64_t pid) -> std::expected<bool, error> {
-  if (pid <= 0) {
+  if (!is_pid(pid)) {
     return false;
   }
   return exists_from_kill(::kill(static_cast<::pid_t>(pid), 0));
 }
 
 auto group_has_members(std::int64_t pgid) -> std::expected<bool, error> {
-  if (pgid <= 1) {
+  if (!is_group(pgid)) {
     return false;
   }
   return exists_from_kill(::kill(static_cast<::pid_t>(-pgid), 0));
 }
 
 auto signal_group(std::int64_t pgid, int sig) -> std::expected<void, error> {
-  if (pgid <= 1) {
+  if (!is_group(pgid)) {
     return std::unexpected{error::no_such_process};
   }
   if (::kill(static_cast<::pid_t>(-pgid), sig) == 0) {
