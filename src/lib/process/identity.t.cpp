@@ -27,11 +27,15 @@ namespace {
 
 namespace pid_ns = planar::process::identity;
 
-// @brief A child running `/bin/sleep` as the leader of its own process
-// group, killed and reaped when the holder leaves scope or on `reap()`.
+// @brief A child running `/bin/sleep`, killed and reaped when the holder
+// leaves scope or on `reap()`.
+//
+// By default the child leads its own process group. Given a group id, it
+// joins that group instead, which is how a test builds a group whose leader
+// can die while another member lives on.
 class sleeping_child {
 public:
-  sleeping_child() {
+  explicit sleeping_child(::pid_t join_group = 0) {
     // An exec barrier. The forked child inherits Catch2's fatal-condition
     // handler for SIGTERM, so a signal that lands before `execl` has
     // replaced the image runs that handler instead of terminating the
@@ -50,14 +54,16 @@ public:
     }
     if (forked == 0) {
       ::close(fds[0]);
-      ::setpgid(0, 0);
+      ::setpgid(0, join_group);
       ::execl("/bin/sleep", "sleep", "30", static_cast<char*>(nullptr));
       ::_exit(127);
     }
     ::close(fds[1]);
     // Both sides set the group so the parent never observes the child in
-    // the parent's group, whichever runs first.
-    ::setpgid(forked, forked);
+    // the parent's group, whichever runs first. Once the child has exec'd
+    // the parent's call fails with EACCES, by which time the child's own
+    // call has already placed it.
+    ::setpgid(forked, join_group == 0 ? forked : join_group);
     _pid = forked;
 
     char byte = 0;
@@ -210,6 +216,38 @@ TEST_CASE("group_has_members: a process group is a member of itself until it is 
   CHECK_FALSE(*emptied);
 }
 
+TEST_CASE("group_has_members and signal_group: a group outlives its dead leader until its last member is signalled",
+          "[lib][process][identity]") {
+  // An orphaned helper whose leader has died is the case the engine uses
+  // the group form for. The leader is reaped first, so a call that targeted
+  // the pid `pgid` instead of the group `-pgid` would find nothing.
+  sleeping_child leader;
+  auto const     pgid = leader.pid();
+  sleeping_child member{static_cast<::pid_t>(pgid)};
+  REQUIRE(::getpgid(static_cast<::pid_t>(member.pid())) == static_cast<::pid_t>(pgid));
+
+  leader.reap();
+  REQUIRE_FALSE(*pid_ns::process_exists(pgid));
+
+  auto const orphaned = pid_ns::group_has_members(pgid);
+  REQUIRE(orphaned.has_value());
+  CHECK(*orphaned);
+
+  auto const sent = pid_ns::signal_group(pgid, SIGTERM);
+  REQUIRE(sent.has_value());
+
+  int status = 0;
+  while (::waitpid(static_cast<::pid_t>(member.pid()), &status, 0) < 0 && errno == EINTR) {
+  }
+  member.forget();
+  REQUIRE(WIFSIGNALED(status));
+  CHECK(WTERMSIG(status) == SIGTERM);
+
+  auto const emptied = pid_ns::group_has_members(pgid);
+  REQUIRE(emptied.has_value());
+  CHECK_FALSE(*emptied);
+}
+
 TEST_CASE("signal_group: a signal reaches every member of a group this test created", "[lib][process][identity]") {
   sleeping_child child;
   auto const     pgid = child.pid();
@@ -231,10 +269,49 @@ TEST_CASE("signal_group: a signal reaches every member of a group this test crea
 }
 
 TEST_CASE("signal_group: a group id that names no group is the module's error, not a crash", "[lib][process][identity]") {
+  // Signal 0 sends nothing, so even if another test's group has since
+  // taken this id, it is not disturbed.
   auto const gone = reaped_pid();
-  auto const sent = pid_ns::signal_group(gone, SIGTERM);
+  auto const sent = pid_ns::signal_group(gone, 0);
   REQUIRE_FALSE(sent.has_value());
   CHECK(sent.error() == pid_ns::error::no_such_process);
+}
+
+TEST_CASE("identity: ids that name the caller's own group or every process are refused before any kill",
+          "[lib][process][identity]") {
+  // `kill(0, ...)` targets the caller's own group and `kill(-1, ...)` every
+  // process the user may signal. Only signal 0 is used here, so a missing
+  // guard is detected by `kill` succeeding and nothing is ever delivered.
+  auto const own_group = pid_ns::signal_group(0, 0);
+  REQUIRE_FALSE(own_group.has_value());
+  CHECK(own_group.error() == pid_ns::error::no_such_process);
+
+  auto const everything = pid_ns::signal_group(1, 0);
+  REQUIRE_FALSE(everything.has_value());
+  CHECK(everything.error() == pid_ns::error::no_such_process);
+
+  auto const negative_group = pid_ns::signal_group(-5, 0);
+  REQUIRE_FALSE(negative_group.has_value());
+  CHECK(negative_group.error() == pid_ns::error::no_such_process);
+
+  auto const init_group = pid_ns::group_has_members(1);
+  REQUIRE(init_group.has_value());
+  CHECK_FALSE(*init_group);
+
+  auto const zero_group = pid_ns::group_has_members(0);
+  REQUIRE(zero_group.has_value());
+  CHECK_FALSE(*zero_group);
+
+  for (std::int64_t const pid : {std::int64_t{-1}, std::int64_t{0}}) {
+    CAPTURE(pid);
+    auto const exists = pid_ns::process_exists(pid);
+    REQUIRE(exists.has_value());
+    CHECK_FALSE(*exists);
+
+    auto const start = pid_ns::process_start_time(pid);
+    REQUIRE(start.has_value());
+    CHECK_FALSE(start->has_value());
+  }
 }
 
 TEST_CASE("signal_group: an invalid signal number is the module's error", "[lib][process][identity]") {
@@ -289,6 +366,11 @@ TEST_CASE("system_clock: the monotonic and wall clocks tick forward", "[lib][pro
   auto const chrono_now =
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
   CHECK(std::abs(chrono_now - wall_after) < 5'000);
+
+  // The monotonic clock counts from boot, not from the epoch: a host would
+  // have to have been up for decades for it to reach half of wall time. A
+  // monotonic value read from the wall clock fails this.
+  CHECK(*after < wall_after / 2);
 }
 
 TEST_CASE("clock: a fake clock can be driven through the interface", "[lib][process][identity]") {
