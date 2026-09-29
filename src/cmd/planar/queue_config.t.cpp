@@ -32,7 +32,8 @@ auto validate_with(std::string_view tag, std::string_view config_text) -> ::plan
 } // namespace
 
 TEST_CASE("queue config workflow: a full queue table validates and an absent one does too", "[cmd][planar][hq-config]") {
-  auto const full = validate_with("qcfg_ok", "[queue]\nslots = 2\npoll_interval = \"500ms\"\nstale_after = \"5s\"\ngrace = \"3s\"\nhistory_days = 7\n");
+  auto const full = validate_with(
+      "qcfg_ok", "[queue]\nslots = 2\npoll_interval = \"500ms\"\nstale_after = \"5s\"\ngrace = \"3s\"\nhistory_days = 7\n");
   INFO("stderr: " << full.err);
   CHECK(full.code == 0);
   CHECK(full.out == "config validate: ok\n");
@@ -70,11 +71,10 @@ TEST_CASE("queue config workflow: invalid queue settings are refused at exit 1 n
 TEST_CASE("queue config workflow: a float slot count is refused naming the key", "[cmd][planar][hq-config]") {
   auto const ran = validate_with("qcfg_float", "[queue]\nslots = 1.5\n");
   CHECK(ran.code == 1);
-  CHECK(ran.err.contains("slots"));
+  CHECK(ran.err.contains("(queue.slots)"));
 }
 
-TEST_CASE("queue config workflow: findings from the queue table and another table are all reported",
-          "[cmd][planar][hq-config]") {
+TEST_CASE("queue config workflow: findings from the queue table and another table are all reported", "[cmd][planar][hq-config]") {
   auto const ran = validate_with("qcfg_multi", "[external.github-issues]\nauth = \"bogus\"\n[queue]\nslots = 0\n");
   CHECK(ran.code == 1);
   CHECK(ran.err.contains("external.github-issues.auth"));

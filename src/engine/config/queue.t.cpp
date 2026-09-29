@@ -46,7 +46,7 @@ struct scratch {
   }
   scratch(const scratch&)            = delete;
   scratch& operator=(const scratch&) = delete;
-  void write(std::string_view text) const {
+  void     write(std::string_view text) const {
     std::ofstream out{root / "config.toml", std::ios::trunc};
     out << text;
   }
@@ -188,8 +188,7 @@ TEST_CASE("queue config: settings that pass never carry a non-positive window, i
   for (auto const stale : durations) {
     for (auto const poll : durations) {
       for (auto const slot : slots) {
-        auto const got =
-            queue_of(std::format("slots = {}\npoll_interval = \"{}\"\nstale_after = \"{}\"", slot, poll, stale));
+        auto const got = queue_of(std::format("slots = {}\npoll_interval = \"{}\"\nstale_after = \"{}\"", slot, poll, stale));
         if (!got.has_value()) {
           continue;
         }
@@ -211,8 +210,7 @@ TEST_CASE("queue loader: a missing file gives the defaults", "[engine][config][h
   CHECK(*got == default_queue_settings());
 }
 
-TEST_CASE("queue loader: the file's values are returned, and an edit is seen on the next call",
-          "[engine][config][hq-config]") {
+TEST_CASE("queue loader: the file's values are returned, and an edit is seen on the next call", "[engine][config][hq-config]") {
   scratch const dir;
   dir.write("[queue]\nslots = 2\nstale_after = \"7s\"\n");
   auto const first = load_queue_settings(dir.path());

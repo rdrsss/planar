@@ -9,6 +9,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.engine.config.effective;
+import planar.engine.config.queue;
 import planar.engine.config.toml;
 import planar.json_text;
 import planar.cmd.planar.cli_log;
@@ -461,6 +462,41 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   return {};
 }
 
+/// @brief The dotted key on 1-based source line `line` when that line is a
+/// `key = value` entry inside the `[queue]` table, else empty.
+///
+/// Used only to name the key of a TOML rejection the parser reports by line
+/// alone. Lexical, like the sensitive-literal scan: it tracks `[table]`
+/// headers line by line and never interprets values.
+auto queue_key_at_line(std::string_view content, std::uint32_t line) -> std::string {
+  if (line == 0) {
+    return {};
+  }
+  std::string      table;
+  std::uint32_t    number = 0;
+  std::string_view rest{content};
+  while (true) {
+    ++number;
+    auto const newline = rest.find('\n');
+    auto const text    = trim_any(rest.substr(0, newline == std::string_view::npos ? rest.size() : newline), " \t\r");
+    if (!text.empty() && text.front() != '#') {
+      if (text.front() == '[') {
+        table = std::string{trim_any(trim_any(text, "[]"), " \t")};
+      } else if (number == line) {
+        auto const eq = text.find('=');
+        if (table == "queue" && eq != std::string_view::npos) {
+          return std::format("queue.{}", trim_any(text.substr(0, eq), " \t"));
+        }
+        return {};
+      }
+    }
+    if (number >= line || newline == std::string_view::npos) {
+      return {};
+    }
+    rest = rest.substr(newline + 1);
+  }
+}
+
 auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   static_cast<void>(args);
   auto const path = config_file_path(ctx);
@@ -485,9 +521,14 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
   auto const parsed = cfg::parse_toml(*content);
   if (!parsed.has_value()) {
     auto const& err = parsed.error();
+    // A rejected `[queue]` value (a float slot count, say) is named by its
+    // key as well as its line, so the operator is told what to fix (plan
+    // 1080, task hq-config). Other tables keep the pinned wording.
+    auto const queue_key = queue_key_at_line(*content, err.line);
     return std::unexpected(
         error_from_body(domain_error_kind::generic_failure,
-                        std::format("line {}: col {}: TOML parse error: {}", err.line, err.column, err.message)));
+                        std::format("line {}: col {}: TOML parse error: {}{}", err.line, err.column, err.message,
+                                    queue_key.empty() ? std::string{} : std::format(" ({})", queue_key))));
   }
 
   // Steps 2-4 ACCUMULATE. Every finding is a stderr line; the exit is 1
@@ -625,6 +666,15 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
         }
       }
     }
+  }
+
+  // ---- step 5: the `[queue]` table (plan 1080, task hq-config) -----------
+  //
+  // Read from the parsed FILE map, like step 3: a value inherited from the
+  // embedded defaults is not something the operator wrote. Every refused
+  // value is its own finding, named by its dotted key.
+  for (auto const& finding : cfg::validate_queue(*parsed)) {
+    report(std::format("{}: {}", finding.key, finding.message));
   }
 
   if (!findings.empty()) {

@@ -573,6 +573,8 @@ Configuration lives in `~/.planar/config.toml`. The `planar config` domain manag
 | `planar config init` | Write a starter `config.toml` with documented defaults. |
 | `planar config path` | Print the path to the active config file. |
 
+The `[queue]` table configures the host-wide build and test queue: `slots`, `poll_interval`, `stale_after`, `grace` and `history_days` (ranges and units in [`docs/cli-reference.md`](cli-reference.md#the-queue-table)). Its typed, range-checked view is `planar.engine.config.queue` (`src/engine/config/queue.cppm`): `load_queue_settings(path)` reads only `config.toml`, never a database, so a `planar-agent` handler calls it at each poll and hands the engine `slots`, `stale_after_ms`, `grace_ms` and `history_days` even when `planar.db` is schema-locked. `planar config validate` reports every refused `[queue]` value with its key.
+
 Notable config keys: the per-association `github_lead_repo` (used by the GitHub zero-repo propagation strategy), `external.jira.base_url`, the `external.jira.status.*` and `external.github-issues.status.*` status maps, and template set selection (`templates.default_set`).
 
 ---
