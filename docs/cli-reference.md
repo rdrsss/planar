@@ -5543,6 +5543,35 @@ work_type)`; see `skills/src/pl-orchestrator.md` § Dispatch preview and model
 tiers), and other workflow callers all resolve through
 it; there is no separate `execute-config.toml`.
 
+#### The `[queue]` table
+
+The host-wide build and test queue (`planar-agent queue run`) reads its
+settings from an optional `[queue]` table. Every key is optional; the values
+shown are the defaults.
+
+```toml
+[queue]
+slots         = 1       # integer, 1..1024: commands that may run at once
+poll_interval = "1s"    # duration, above zero: how often a submitter polls
+stale_after   = "30s"   # duration, above zero, not below poll_interval
+grace         = "10s"   # duration, zero or more: SIGTERM-to-SIGKILL grace
+history_days  = 30      # integer, 1..36500: days history rows and logs are kept
+```
+
+A duration is an integer followed by a unit: `ms`, `s`, `m` or `h` (at most
+`24h`). A bare integer is refused: the unit of a bare number is not guessed.
+The queue reads the file at each poll, so an edit takes effect without
+restarting a waiting submitter; lowering `slots` stops no running command, and
+no new one starts until the running count is below the new value. The queue
+reads only `config.toml`: it never opens `planar.db`, so it keeps working when
+the main database is schema-locked. `planar config show --effective` reports
+each `queue.*` key with its provenance.
+
+`planar config validate` refuses a `[queue]` value outside those ranges, a key
+of a wrong type, and an unknown `[queue]` key, and names the key on each
+finding (`error: queue.stale_after: stale_after must not be negative, got
+"-5s"`).
+
 ---
 
 ### `planar config show`
@@ -5631,6 +5660,7 @@ planar config validate
 - TOML syntax.
 - Sensitive-data invariant: keys matching the secret-name denylist must not carry literal values.
 - Cross-reference consistency (e.g. `auth = "token-env"` requires `token_env` to name an env var).
+- The `[queue]` table: every key within its range, no unknown key, and `stale_after` not shorter than `poll_interval` (see [The `[queue]` table](#the-queue-table)).
 - Unknown keys produce a **warning**, not an error, preserving forward-compatibility.
 
 Each issue is printed with its line number and key path.

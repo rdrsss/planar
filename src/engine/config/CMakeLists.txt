@@ -44,12 +44,14 @@ planar_module(engine_config
     templates_embed.cppm
     templates.cppm
     init.cppm
+    queue.cppm
     config.cppm
   SOURCES
     toml.cpp
     effective.cpp
     templates.cpp
     init.cpp
+    queue.cpp
     "${_planar_engine_config_templates_generated}"
   DEPENDS
     db
