@@ -163,9 +163,9 @@ struct fake_host {
 struct signal_record {
   std::int64_t                pgid           = 0;
   int                         sig            = 0;
-  bool                        in_transaction = false; ///< The stopping connection had a transaction open.
-  bool                        lock_free      = false; ///< Another connection could take the write lock.
-  std::optional<std::int64_t> marker_seen;            ///< The marker another connection read for `seq`.
+  bool                        in_transaction = false; // The stopping connection had a transaction open.
+  bool                        lock_free      = false; // Another connection could take the write lock.
+  std::optional<std::int64_t> marker_seen;            // The marker another connection read for `seq`.
 };
 
 // @brief A signaller that records every request and delivers none. At each
