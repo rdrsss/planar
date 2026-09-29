@@ -41,10 +41,22 @@
 # `clock_gettime`), so it shares the target the same way `src/lib/db/`
 # holds `db`, `migrate` and `agentdb`.
 
+#
+# `planar.process.runner` (plan 1080, task 7006) is a third interface unit
+# in the same target: the command runner the host queue starts a queued
+# command with. It resolves a program telling missing from not executable,
+# starts a child in a new process group with one added environment
+# variable, polls it without blocking, reports an exit status or a
+# terminating signal, and signals its group through
+# `planar.process.identity`. `run_inherited` is deliberately left as it is:
+# it folds signal death into exit 1, and its callers depend on that.
+
 planar_module(process
   INTERFACE
     process.cppm
     identity.cppm
+    runner.cppm
   SOURCES
     process.cpp
-    identity.cpp)
+    identity.cpp
+    runner.cpp)
