@@ -47,6 +47,62 @@ auto resolve_agent_db_path(const env_lookup& env) -> std::expected<std::filesyst
   });
 }
 
+auto agent_schema_version() -> std::uint32_t {
+  return embedded_max(migrations());
+}
+
+auto check_compat(connection& conn, const std::filesystem::path& path) -> std::expected<void, open_error> {
+  auto const read_failed = [&](db_error const& error) {
+    return std::unexpected(open_error{
+        .kind        = open_error_kind::open_failed,
+        .path        = path,
+        .message     = std::format("failed to read the schema version of agent database {}: {}", path.string(), error.message_),
+        .sqlite_code = error.code_,
+    });
+  };
+
+  // A fresh store has no version table yet; `current_version` treats the
+  // same state as version 0. Asking sqlite_master first keeps a genuine
+  // read failure below distinguishable from "not created yet".
+  auto exists =
+      conn.prepare(std::format("select count(*) from sqlite_master where type = 'table' and name = '{}'", k_agent_version_table));
+  if (!exists) {
+    return read_failed(exists.error());
+  }
+  if (auto step = exists->step(); !step) {
+    return read_failed(step.error());
+  } else if (*step != step_result::row || exists->column_int64(0) == 0) {
+    return {};
+  }
+
+  auto highest = conn.prepare(std::format("select version, compat from {} order by version desc limit 1", k_agent_version_table));
+  if (!highest) {
+    return read_failed(highest.error());
+  }
+  auto step = highest->step();
+  if (!step) {
+    return read_failed(step.error());
+  }
+  if (*step != step_result::row) {
+    return {}; // An empty table: nothing applied, nothing to refuse.
+  }
+  auto const store_version = static_cast<std::uint32_t>(highest->column_int64(0));
+  auto const store_compat  = static_cast<std::uint32_t>(highest->column_int64(1));
+  auto const binary        = agent_schema_version();
+  if (store_compat <= binary) {
+    return {};
+  }
+  return std::unexpected(open_error{
+      .kind           = open_error_kind::incompatible_store,
+      .path           = path,
+      .message        = std::format("agent database {} needs a newer binary: its schema version {} requires at least "
+                                    "agent schema version {} (compat), and this binary's agent schema version is {}",
+                                    path.string(), store_version, store_compat, binary),
+      .store_compat   = store_compat,
+      .binary_version = binary,
+  });
+}
+
 auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connection, open_error> {
   // The parent directory is created here, as the main database's consumer
   // open does (src/cmd/planar-agent/database.cpp), so a fresh `~/.planar`
@@ -79,9 +135,17 @@ auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connec
     });
   }
 
+  // Before any write: a store whose highest row's `compat` is above this
+  // binary's agent schema version is refused as it is, so a newer binary's
+  // meaning-changing migration is never half-read or built upon. Reads
+  // only, so a refused file keeps its bytes.
+  if (auto compatible = check_compat(*opened, path); !compatible) {
+    return std::unexpected(std::move(compatible.error()));
+  }
+
   // The agent stream, against its own version table. `apply_contiguous`
   // reads `agent_schema_migrations`, applies only what is pending, and is
-  // a no-op on an up-to-date store.
+  // a no-op on an up-to-date store (or on one ahead of the chain).
   if (auto applied = apply_contiguous(*opened, migrations(), k_agent_version_table); !applied) {
     return std::unexpected(open_error{
         .kind        = open_error_kind::migrate_failed,

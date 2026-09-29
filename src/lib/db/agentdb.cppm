@@ -1,20 +1,28 @@
 /// @file agentdb.cppm
 /// @brief `planar.db.agentdb` — the agent database's open path (plan 1080,
-/// decision 1181, task hq-agentdb-open). Resolves the store's location from
-/// `PLANAR_AGENT_DB`, falling back to `$HOME/.planar/agent.db` beside the
-/// main database, creates the file and its parent directory on first use,
-/// opens it with the same WAL journal mode and busy timeout every
-/// read-write `planar.db` connection gets, and applies the embedded agent
-/// migration stream (`planar::db::agent::migrations()` against
-/// `k_agent_version_table`) so the store is at head when `open_agent_db`
-/// returns.
+/// decision 1181, tasks hq-agentdb-open and hq-agentdb-compat). Resolves
+/// the store's location from `PLANAR_AGENT_DB`, falling back to
+/// `$HOME/.planar/agent.db` beside the main database, creates the file and
+/// its parent directory on first use, opens it with the same WAL journal
+/// mode and busy timeout every read-write `planar.db` connection gets,
+/// checks that the store does not need a newer binary, and applies the
+/// embedded agent migration stream (`planar::db::agent::migrations()`
+/// against `k_agent_version_table`) so the store is at head when
+/// `open_agent_db` returns.
+///
+/// The compatibility check (`check_compat`) runs inside the open path,
+/// between opening the file and applying any migration, so no caller can
+/// open a store and forget it, and a refused store is left exactly as it
+/// was. The row with the highest `version` in `agent_schema_migrations` is
+/// authoritative: the store is refused only when that row's `compat` is
+/// higher than this binary's agent schema version (`agent_schema_version`,
+/// the head of the embedded chain). A store ahead of the binary whose
+/// `compat` is not is opened as it is.
 ///
 /// The open path never reads `PLANAR_DB` and never opens the main
 /// database: a caller whose main database is locked out by a schema
 /// mismatch still opens the agent store (tech-spec § Open Questions "Where
-/// the queue store lives"). The compatibility check against the highest
-/// version row's `compat` is task hq-agentdb-compat and is not performed
-/// here.
+/// the queue store lives").
 ///
 /// Every failure surfaces as `std::expected<..., open_error>`; nothing
 /// throws across the module boundary. The error names the path it failed
@@ -56,9 +64,10 @@ export constexpr std::string_view k_home_env = "HOME";
 
 /// @brief What went wrong while opening the agent database.
 export enum class open_error_kind : std::uint8_t {
-  unresolved_path,     ///< Neither `PLANAR_AGENT_DB` nor `HOME` is set, or `PLANAR_AGENT_DB` is empty.
+  unresolved_path,     ///< Neither `PLANAR_AGENT_DB` nor `HOME` is set or non-empty, or `PLANAR_AGENT_DB` is empty.
   unwritable_location, ///< The store's parent directory could not be created.
-  open_failed,         ///< SQLite could not open or create the file at the resolved path.
+  open_failed,         ///< SQLite could not open or create the file, or could not read its version table.
+  incompatible_store,  ///< The store's highest `compat` is above this binary's agent schema version.
   migrate_failed,      ///< The agent migration stream failed to apply.
 };
 
@@ -67,29 +76,54 @@ export enum class open_error_kind : std::uint8_t {
 /// `message` is complete on its own: it names the path (or, for
 /// `unresolved_path`, the missing variables) and the underlying reason, so
 /// a caller can print it verbatim. `path` is empty only for
-/// `unresolved_path`.
+/// `unresolved_path`. `store_compat` and `binary_version` are set only for
+/// `incompatible_store`, where the message also spells both out.
 export struct open_error {
   open_error_kind       kind = open_error_kind::unresolved_path; ///< Which step failed.
   std::filesystem::path path;                                    ///< The store path the failure is about.
   std::string           message;                                 ///< A complete, printable description.
-  int                   sqlite_code = 0;                         ///< The SQLite extended result code, when SQLite failed.
+  int                   sqlite_code    = 0;                      ///< The SQLite extended result code, when SQLite failed.
+  std::uint32_t         store_compat   = 0;                      ///< The refused store's highest-row `compat`.
+  std::uint32_t         binary_version = 0;                      ///< This binary's agent schema version.
 };
 
+/// @brief This binary's agent schema version: the highest version in the
+/// embedded agent migration chain. A store's `compat` is compared against
+/// it.
+/// @return The head of `planar::db::agent::migrations()`.
+export auto agent_schema_version() -> std::uint32_t;
+
 /// @brief Resolves where the agent database lives: `PLANAR_AGENT_DB` when
-/// set and non-empty, else `$HOME/.planar/agent.db`. `PLANAR_DB` is never
-/// consulted; the two stores are independent files.
+/// set and non-empty, else `$HOME/.planar/agent.db` when `HOME` is set and
+/// non-empty. `PLANAR_DB` is never consulted; the two stores are
+/// independent files.
 /// @param env The environment to read.
 /// @return The resolved path, or an `unresolved_path` error naming the
 /// variables that would have supplied one.
 export auto resolve_agent_db_path(const env_lookup& env) -> std::expected<std::filesystem::path, open_error>;
 
+/// @brief Checks that the store on `conn` may be opened by this binary.
+/// Reads the row with the highest `version` in `agent_schema_migrations`
+/// and refuses only when its `compat` is higher than
+/// `agent_schema_version()`. A store without the table, or with an empty
+/// one, is fresh or behind and passes. Reads only; never writes.
+/// @param conn An open connection to the store.
+/// @param path The store's location, for the error message.
+/// @return Success, an `incompatible_store` error naming `path`, the
+/// store's `compat` and the binary's version, or an `open_failed` error
+/// when the version table could not be read.
+export auto check_compat(connection& conn, const std::filesystem::path& path) -> std::expected<void, open_error>;
+
 /// @brief Opens the agent database at an explicit path, creating the file
-/// and its parent directory when absent, and brings it to the head of the
-/// embedded agent migration stream. Idempotent: an up-to-date store is
-/// opened without any write beyond SQLite's own journal-mode handshake.
+/// and its parent directory when absent, refuses it when `check_compat`
+/// does, and otherwise brings it to the head of the embedded agent
+/// migration stream. Idempotent: an up-to-date store is opened without any
+/// write beyond SQLite's own journal-mode handshake. A refused store is
+/// not written at all.
 /// @param path The store's location.
 /// @return An open read-write connection at the current agent schema
-/// version, or the failure naming `path`.
+/// version (or at the store's own higher, compatible version), or the
+/// failure naming `path`.
 export auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connection, open_error>;
 
 /// @brief Resolves the store's path from `env` (see `resolve_agent_db_path`)
