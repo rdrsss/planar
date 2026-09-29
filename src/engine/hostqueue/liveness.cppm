@@ -12,10 +12,11 @@
 ///
 /// The rules, from the tech spec:
 ///
-/// | State | Live when |
-/// |---|---|
-/// | `waiting` | The submitter's process exists, its start time matches the recorded one, and the entry was refreshed within the
-/// staleness window | | `running` | The `waiting` test passes, or the child group has at least one member |
+/// * A `waiting` entry is live when the submitter's process exists, its
+///   start time matches the recorded one, and the entry was refreshed
+///   within the staleness window.
+/// * A `running` entry is live when the `waiting` test passes, or the child
+///   group has at least one member.
 ///
 /// * Existence is `kill(pid, 0)`, with `EPERM` counting as existing (the
 ///   probe's `process_exists`).
