@@ -25,13 +25,16 @@
 ///   `poll` uses it to send SIGTERM to each entry the poll returned as newly
 ///   marked, after the poll has committed.
 ///
-/// A signal is sent only when every guard passes: the connection is not in a
-/// transaction; the entry's host identity equals the checker's and neither is
-/// `unknown`; the entry records a child group id greater than 1 and the start
-/// time of that group's leader; the id has not been reused (tech spec 647 §
-/// Liveness, precisely); and the group has at least one member. So no call
-/// here signals process group 0, 1 or -1, a group on another host, or a
-/// process that has since taken a reused id.
+/// `signal_child_group` sends a signal only when every guard passes: the
+/// entry's host identity equals the checker's and neither is `unknown`; the
+/// entry records a child group id greater than 1 and the start time of that
+/// group's leader; the id has not been reused (tech spec 647 § Liveness,
+/// precisely); and the group has at least one member. So no call here signals
+/// process group 0, 1 or -1, a group on another host, or a process that has
+/// since taken a reused id. It takes no connection, so signalling outside any
+/// transaction is the caller's obligation: `begin_terminate` and
+/// `advance_terminations` enforce it, and a poll caller calls
+/// `signal_child_group` only after the poll's transaction has committed.
 ///
 /// Every signal goes through a `group_signaller`, whose default
 /// (`system_group_signaller`) forwards to `planar.process.identity::
