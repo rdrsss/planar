@@ -20,12 +20,16 @@
 /// engine target, so configuration and process identity arrive as
 /// arguments).
 ///
-/// Only enqueue and the read side live here as of task hq-enqueue. The poll
-/// transaction, liveness, reaping, termination, history rows and nested-run
-/// semantics are later tasks of the same milestone; a `parent_seq` on the
-/// request is stored, and such an entry is inserted in state `running`
-/// (roadmap M1: "outside the slot count and arrival order"), but nothing
-/// here interprets it.
+/// Enqueue and the read side live here; how an entry ends, its history row
+/// and the retention prune live in `planar.engine.hostqueue.history` (task
+/// hq-history). The enqueue that takes a retention prunes expired history in
+/// the transaction that inserts the entry (tech spec 647 § Finishing and
+/// history: "History rows older than the retention period are deleted at
+/// enqueue"). The poll transaction, liveness, reaping, termination and
+/// nested-run semantics are later tasks of the same milestone; a
+/// `parent_seq` on the request is stored, and such an entry is inserted in
+/// state `running` (roadmap M1: "outside the slot count and arrival order"),
+/// but nothing here interprets it.
 ///
 /// Every failure is a `queue_error` carrying the SQLite result code and the
 /// driver's message; nothing throws across the module boundary.
@@ -41,8 +45,10 @@ namespace planar::engine::hostqueue {
 
 /// @brief What went wrong in a queue operation.
 export enum class queue_error_kind : std::uint8_t {
-  query_failed,   ///< A SQLite statement failed to prepare, bind or step; `sqlite_code` and `message` say why.
-  malformed_argv, ///< A stored `argv` column is not a JSON array of strings (a store written by something else).
+  query_failed,        ///< A SQLite statement failed to prepare, bind or step; `sqlite_code` and `message` say why.
+  malformed_argv,      ///< A stored `argv` column is not a JSON array of strings (a store written by something else).
+  malformed_canceller, ///< A stored `cancelled_by` column is not the canceller object `encode_canceller` writes.
+  invalid_request,     ///< The caller's arguments do not fit the operation (see the entry point's contract); nothing was written.
 };
 
 /// @brief The failure every fallible entry point reports.
@@ -123,7 +129,8 @@ export auto encode_argv(std::span<std::string const> argv) -> std::string;
 /// array whose every element is a string.
 export auto decode_argv(std::string_view text) -> std::expected<std::vector<std::string>, queue_error>;
 
-/// @brief Inserts one entry and returns its sequence number. The entry is in
+/// @brief Inserts one entry and returns its sequence number, without pruning
+/// history (the three-argument form prunes). The entry is in
 /// state `waiting`, or `running` when `request.parent_seq` is set (a nested
 /// run never waits for a slot). The number is higher than that of every entry
 /// ever inserted into this store, deleted or not.
@@ -131,6 +138,42 @@ export auto decode_argv(std::string_view text) -> std::expected<std::vector<std:
 /// @param request What to record.
 /// @return The assigned sequence number, or the SQLite failure.
 export auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error>;
+
+/// @brief A pruned history row's log file that could not be removed.
+export struct log_removal_failure {
+  std::string path;    ///< The log file.
+  std::string message; ///< Why it could not be removed.
+};
+
+/// @brief What the retention prune at enqueue did.
+export struct prune_report {
+  std::int64_t                     rows_deleted = 0; ///< How many expired history rows were deleted.
+  std::vector<log_removal_failure> log_failures;     ///< Log files of those rows that could not be removed.
+};
+
+/// @brief The result of an enqueue that prunes history.
+export struct enqueued {
+  std::int64_t seq = 0; ///< The assigned sequence number.
+  prune_report pruned;  ///< What the prune removed, and any log file it could not.
+};
+
+/// @brief Inserts one entry, as the two-argument `enqueue` does, after
+/// deleting every history row that ended more than `history_days` days
+/// before `request.enqueued_at` (decision 1199); the delete and the insert
+/// are one write transaction. The expired rows' log files are removed after
+/// the commit. A log file that is already gone counts as removed; one that
+/// cannot be removed is listed in `pruned.log_failures` and does not fail
+/// the enqueue, because the entry is already committed and the caller's
+/// command must still run. The queue verbs call this form with the
+/// configured `[queue] history_days`.
+/// @param conn An open agent database at or above agent schema version 2.
+/// @param request What to record; `enqueued_at` is the prune's "now".
+/// @param history_days The retention in days; must not be negative.
+/// @return The sequence number and the prune report; `invalid_request` for a
+/// negative retention; or the SQLite failure, after which neither the prune
+/// nor the insert has happened.
+export auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t history_days)
+    -> std::expected<enqueued, queue_error>;
 
 /// @brief Reads one entry by sequence number.
 /// @param conn An open agent database.

@@ -14,7 +14,13 @@
 # `db` supplies the connection wrapper and, through the same target, the
 # agent database's open path (`planar.db.agentdb`) the tests use to create a
 # scratch store at head. `json_text` is the one shared RFC 8259 string
-# escape used to write the `argv` column; `json_dom` parses it back.
+# escape used to write the `argv` and `cancelled_by` columns; `json_dom`
+# parses them back.
+#
+# `history.cppm` (task hq-history) ends entries and prunes history; it
+# imports `queue.cppm` for the shared error and argv types, and `queue.cpp`
+# imports it back for the pruning enqueue (an implementation-unit import,
+# so the interfaces form no cycle).
 #
 # `process` supplies `planar.process.identity`, which the liveness
 # module's default probe forwards to (task hq-liveness); tests replace the
@@ -26,10 +32,12 @@
 planar_module(engine_hostqueue
   INTERFACE
     queue.cppm
+    history.cppm
     liveness.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
+    history.cpp
     liveness.cpp
   DEPENDS
     db
