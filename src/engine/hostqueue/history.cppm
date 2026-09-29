@@ -70,7 +70,9 @@ export struct canceller {
   std::int64_t               pid = 0; ///< The cancelling process id.
 
   /// @brief Member-wise equality.
-  auto operator==(const canceller&) const -> bool = default;
+  /// @param other The canceller to compare with.
+  /// @return Whether vendor, role and pid are all equal.
+  auto operator==(const canceller& other) const -> bool = default;
 };
 
 /// @brief Encodes a canceller as the JSON object the `cancelled_by` columns
