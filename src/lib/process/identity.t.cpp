@@ -314,6 +314,36 @@ TEST_CASE("identity: ids that name the caller's own group or every process are r
   }
 }
 
+TEST_CASE("identity: an id beyond the platform's pid range is absent, not a truncated alias", "[lib][process][identity]") {
+  // 2^32 plus a live id truncates to that live id in a 32-bit pid_t. The
+  // module must read it as a process that cannot exist. Only signal 0 is
+  // sent, so a truncating implementation disturbs nothing.
+  constexpr std::int64_t k_wrap = std::int64_t{1} << 32;
+  sleeping_child const   child;
+  auto const             alias = k_wrap + child.pid();
+
+  auto const exists = pid_ns::process_exists(alias);
+  REQUIRE(exists.has_value());
+  CHECK_FALSE(*exists);
+
+  auto const start = pid_ns::process_start_time(alias);
+  REQUIRE(start.has_value());
+  CHECK_FALSE(start->has_value());
+
+  auto const members = pid_ns::group_has_members(alias);
+  REQUIRE(members.has_value());
+  CHECK_FALSE(*members);
+
+  auto const sent = pid_ns::signal_group(alias, 0);
+  REQUIRE_FALSE(sent.has_value());
+  CHECK(sent.error() == pid_ns::error::no_such_process);
+
+  // The largest id a pid_t holds is still in range, and names no process.
+  auto const largest = pid_ns::process_exists(std::numeric_limits<std::int32_t>::max());
+  REQUIRE(largest.has_value());
+  CHECK_FALSE(*largest);
+}
+
 TEST_CASE("signal_group: an invalid signal number is the module's error", "[lib][process][identity]") {
   sleeping_child const child;
   auto const           sent = pid_ns::signal_group(child.pid(), 100'000);
