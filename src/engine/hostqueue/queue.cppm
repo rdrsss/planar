@@ -176,6 +176,22 @@ export struct enqueued {
 export auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t history_days)
     -> std::expected<enqueued, queue_error>;
 
+/// @brief Records the child group of a running entry: the group id and the
+/// start time of its leader (`child_pgid`, `child_started`), which the
+/// liveness rules use to keep the entry live while the group has members and
+/// to detect a reused id. Written by the submitter once its command has
+/// started, and only on an entry that is `running`.
+/// @param conn An open agent database at or above agent schema version 2.
+/// @param seq The submitter's entry.
+/// @param child_pgid The command's process group id.
+/// @param child_started The start time of the group's leader, as the platform
+/// reports it.
+/// @return `true` when the entry exists, is running, and now records the
+/// group; `false` when there is no such running entry (it was reaped, or it
+/// never started) and nothing was written; or the SQLite failure.
+export auto record_child(db::connection& conn, std::int64_t seq, std::int64_t child_pgid, std::int64_t child_started)
+    -> std::expected<bool, queue_error>;
+
 /// @brief Reads one entry by sequence number.
 /// @param conn An open agent database.
 /// @param seq The sequence number.
