@@ -31,6 +31,20 @@
 # anything else along, which is the same property that makes `git` usable
 # from both `engine_identity` and two `cmd_*` binaries.
 
+#
+# `planar.process.identity` (plan 1080, task 6998) is a second interface
+# unit in the SAME target: process start time, host identity, process and
+# group existence, group signalling, and the sleep-excluding clock the host
+# queue engine compares with. It is a liveness vocabulary, not a spawn one,
+# so it is a separate module name — but it depends on nothing either
+# (`proc_pidinfo` / `sysctl` on macOS, `/proc` reads on Linux, `kill`,
+# `clock_gettime`), so it shares the target the same way `src/lib/db/`
+# holds `db`, `migrate` and `agentdb`.
+
 planar_module(process
-  INTERFACE process.cppm
-  SOURCES process.cpp)
+  INTERFACE
+    process.cppm
+    identity.cppm
+  SOURCES
+    process.cpp
+    identity.cpp)
