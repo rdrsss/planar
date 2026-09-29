@@ -186,8 +186,17 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   }
 
   auto const handled = found->second(ctx, args);
-  if (std::holds_alternative<exit_status>(handled)) {
-    return exit_success;
+  if (auto const* status = std::get_if<exit_status>(&handled)) {
+    // Task 7007: the handler's exit code IS another process's status. It
+    // is returned verbatim and never reported, even when it equals one of
+    // this binary's own codes. A status no process can report without
+    // truncation is a handler bug, refused with the internal-error code.
+    if (status->code < exit_status_min || status->code > exit_status_max) {
+      ctx.err() << std::format("error: {}: exit status {} is outside {}..{}\n", key, status->code, exit_status_min,
+                               exit_status_max);
+      return exit_internal_error;
+    }
+    return status->code;
   }
   auto const& outcome = std::get<handler_result>(handled);
   if (!outcome) {
