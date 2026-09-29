@@ -266,6 +266,25 @@ private:
   bool       _ok = false;
 };
 
+// @brief The calling thread's signal mask.
+auto current_mask() -> ::sigset_t {
+  ::sigset_t now{};
+  sigemptyset(&now);
+  ::pthread_sigmask(SIG_BLOCK, nullptr, &now);
+  return now;
+}
+
+// @brief The signals that differ between two masks, as numbers.
+auto mask_differences(const ::sigset_t& a, const ::sigset_t& b) -> std::vector<int> {
+  std::vector<int> out;
+  for (int sig = 1; sig < NSIG; ++sig) {
+    if (sigismember(&a, sig) != sigismember(&b, sig)) {
+      out.push_back(sig);
+    }
+  }
+  return out;
+}
+
 } // namespace
 
 TEST_CASE("runner: reports a child's exit status, in its own group, with the added variable", "[lib][process][runner]") {
@@ -657,6 +676,7 @@ TEST_CASE("runner: a signal the caller blocked is not blocked in the child", "[l
 
   sigterm_blocked const blocked;
   REQUIRE(blocked.ok());
+  auto const before = current_mask();
 
   auto started = runner::start(map_env({}), argv, slot_options("1"));
   REQUIRE(started.has_value());
@@ -664,16 +684,39 @@ TEST_CASE("runner: a signal the caller blocked is not blocked in the child", "[l
   REQUIRE(::getpgid(static_cast<::pid_t>(guard.get().pid)) == static_cast<::pid_t>(guard.get().pgid));
   REQUIRE(guard.get().pgid != ::getpgrp());
 
-  // The caller's mask is intact after start.
-  ::sigset_t current{};
-  REQUIRE(::pthread_sigmask(SIG_BLOCK, nullptr, &current) == 0);
-  CHECK(sigismember(&current, SIGTERM) == 1);
+  // The caller's whole mask is unchanged by start: SIGTERM still blocked,
+  // and nothing else (SIGUSR1 included) left blocked.
+  auto const after = current_mask();
+  CHECK(mask_differences(before, after).empty());
+  CHECK(sigismember(&after, SIGUSR1) == 0);
 
   REQUIRE(runner::signal(guard.get(), SIGTERM).has_value());
   auto const ended = guard.wait_for(k_bound);
   REQUIRE(ended.has_value());
   CHECK(ended->kind == runner::state::signalled);
   CHECK(ended->code == SIGTERM);
+}
+
+TEST_CASE("runner: the caller's signal mask is restored when start fails after the fork", "[lib][process][runner]") {
+  scratch_dir const scratch;
+  auto const        script = scratch.path() / "child.sh";
+  write_script(script, "#!/bin/sh\nexit 0\n");
+  std::vector<std::string> const argv{script.string()};
+
+  sigterm_blocked const blocked;
+  REQUIRE(blocked.ok());
+  auto const before = current_mask();
+
+  auto options              = slot_options("1");
+  options.working_directory = scratch.path() / "missing";
+  auto const got            = runner::start(map_env({}), argv, options);
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error() == runner::error::working_directory_failed);
+
+  auto const after = current_mask();
+  CHECK(mask_differences(before, after).empty());
+  CHECK(sigismember(&after, SIGUSR1) == 0);
+  CHECK_FALSE(has_unreaped_child());
 }
 
 TEST_CASE("runner: an added variable name that cannot be set is refused before forking", "[lib][process][runner]") {
