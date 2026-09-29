@@ -277,7 +277,13 @@ TEST_CASE("nested: a nested entry is recorded with its parent", "[engine][hostqu
   clock.mono += 400;
   clock.wall += 9;
 
-  auto const result = nest(conn, parent, 102, clock, host);
+  // The submitter read its clock before the write lock; the entry is
+  // refreshed at the time read under the lock instead.
+  auto request           = request_for(102, clock);
+  request.refreshed_mono = k_mono0 + 1;
+  auto const inserted    = hq::enqueue_nested(conn, parent, request, k_limits, clock, host.probe());
+  REQUIRE(inserted.has_value());
+  auto const& result = *inserted;
   REQUIRE(result.status == hq::nested_status::inserted);
   CHECK_FALSE(result.refusal.has_value());
   CHECK(result.seq > parent);
