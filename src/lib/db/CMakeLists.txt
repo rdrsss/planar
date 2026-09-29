@@ -44,4 +44,10 @@ target_link_libraries(planar_db PRIVATE SQLite::SQLite3)
 # vendored amalgamation.
 if(TARGET planar_db_tests)
   target_link_libraries(planar_db_tests PRIVATE SQLite::SQLite3)
+  # migrate.t.cpp compares each embedded chain with the DIRECTORY it claims
+  # to embed (plan 1080, task hq-agentdb-migrations), so the test binary
+  # knows both stream directories in the source tree.
+  target_compile_definitions(planar_db_tests PRIVATE
+    "PLANAR_MIGRATIONS_DIR=\"${CMAKE_SOURCE_DIR}/migrations\""
+    "PLANAR_MIGRATIONS_AGENT_DIR=\"${CMAKE_SOURCE_DIR}/migrations-agent\"")
 endif()
