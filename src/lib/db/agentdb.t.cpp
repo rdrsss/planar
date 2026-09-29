@@ -56,6 +56,10 @@ struct scratch_dir {
   }
 };
 
+/// @brief Every table the agent chain creates at head, sorted: the version
+/// table (00001) and the two queue tables (00002, task hq-enqueue).
+std::vector<std::string> const k_agent_tables{"agent_schema_migrations", "queue_entries", "queue_history"};
+
 /// @brief Every user table on `conn` (SQLite's own `sqlite_*` bookkeeping
 /// excluded), sorted.
 auto user_tables(planar::db::connection& conn) -> std::vector<std::string> {
@@ -116,7 +120,7 @@ TEST_CASE("open_agent_db creates the agent database at PLANAR_AGENT_DB on first 
 
     // At the current agent schema version, with nothing else in it.
     CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() == agent_head);
-    CHECK(user_tables(*opened) == std::vector<std::string>{"agent_schema_migrations"});
+    CHECK(user_tables(*opened) == k_agent_tables);
     CHECK(scalar(*opened, "select count(*) from agent_schema_migrations") == std::to_string(agent_head));
     CHECK(planar::db::current_version(*opened, planar::db::k_main_version_table).value() == 0);
   }
@@ -129,7 +133,7 @@ TEST_CASE("open_agent_db creates the agent database at PLANAR_AGENT_DB on first 
     auto reopened = planar::db::agent::open_agent_db(env);
     REQUIRE(reopened.has_value());
     CHECK(planar::db::current_version(*reopened, planar::db::k_agent_version_table).value() == agent_head);
-    CHECK(user_tables(*reopened) == std::vector<std::string>{"agent_schema_migrations"});
+    CHECK(user_tables(*reopened) == k_agent_tables);
     CHECK(scalar(*reopened, "select count(*) from agent_schema_migrations") == std::to_string(agent_head));
     CHECK(scalar(*reopened, "pragma journal_mode") == "wal");
   }
@@ -167,7 +171,8 @@ TEST_CASE("open_agent_db migrates an existing store that is behind the embedded 
   REQUIRE(opened.has_value());
   CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() ==
         planar::db::embedded_max(planar::db::agent::migrations()));
-  CHECK(user_tables(*opened) == std::vector<std::string>{"agent_schema_migrations", "unrelated"});
+  CHECK(user_tables(*opened) ==
+        std::vector<std::string>{"agent_schema_migrations", "queue_entries", "queue_history", "unrelated"});
 }
 
 TEST_CASE("an unwritable agent database location is reported by path, and nothing is created at the fallback",
@@ -305,7 +310,7 @@ TEST_CASE("open_agent_db succeeds while the main database is ahead of the binary
   REQUIRE(opened.has_value());
   CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() ==
         planar::db::embedded_max(planar::db::agent::migrations()));
-  CHECK(user_tables(*opened) == std::vector<std::string>{"agent_schema_migrations"});
+  CHECK(user_tables(*opened) == k_agent_tables);
 
   // Not opened at all: no sidecar appeared, and the bytes are the same.
   CHECK_FALSE(std::filesystem::exists(main.string() + "-wal"));
@@ -507,8 +512,9 @@ TEST_CASE("every agent migration's compat value is pinned", "[db][agentdb][migra
   // after applying the chain one migration at a time to a scratch store,
   // so a migration whose insert disagrees with its own filename or with
   // this table is caught regardless of how the insert is spelled.
-  static constexpr std::array<std::pair<std::string_view, std::uint32_t>, 1> k_pinned_compat{{
+  static constexpr std::array<std::pair<std::string_view, std::uint32_t>, 2> k_pinned_compat{{
       {"00001_agent_foundation.up.sql", 1},
+      {"00002_queue_tables.up.sql", 1}, // additive: two tables and their indexes (task hq-enqueue)
   }};
 
   scratch_dir scratch;
