@@ -1,6 +1,7 @@
 /// @file queue.cpp
 /// @brief Implementation of `planar.engine.hostqueue.queue` (plan 1080, task
-/// hq-enqueue). See queue.cppm for the contract.
+/// hq-enqueue; the pruning enqueue, task hq-history). See queue.cppm for the
+/// contract.
 
 module planar.engine.hostqueue.queue;
 
@@ -185,6 +186,16 @@ auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expec
     return sql_failure("finish queue entry insert", done.error());
   }
   return seq;
+}
+
+auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t /*history_days*/)
+    -> std::expected<enqueued, queue_error> {
+  // Red stub (task hq-history): inserts without pruning.
+  auto seq = enqueue(conn, request);
+  if (!seq) {
+    return std::unexpected(std::move(seq.error()));
+  }
+  return enqueued{.seq = *seq, .pruned = {}};
 }
 
 auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<entry>, queue_error> {
