@@ -24,6 +24,13 @@
 /// - `signal_child_group` is the one guarded path to a signal. The caller of
 ///   `poll` uses it to send SIGTERM to each entry the poll returned as newly
 ///   marked, after the poll has committed.
+/// - `poll_and_stop` is the poll a submitter runs at each interval together
+///   with the stopping steps that follow it (task hq-orphan-deadline): it
+///   runs `poll`, and only after the poll has committed sends SIGTERM through
+///   `signal_child_group` to each entry the poll marked, then runs
+///   `advance_terminations`. So every polling submitter enforces an
+///   orphan's deadline (decision 1184) with one call, and no signal is sent
+///   while the write lock is held.
 ///
 /// `signal_child_group` sends a signal only when every guard passes: the
 /// entry's host identity equals the checker's and neither is `unknown`; the
@@ -60,6 +67,7 @@ import planar.process.identity;
 import planar.engine.hostqueue.queue;
 import planar.engine.hostqueue.history;
 import planar.engine.hostqueue.liveness;
+import planar.engine.hostqueue.poll;
 
 namespace planar::engine::hostqueue {
 
@@ -204,5 +212,39 @@ export struct advance_result {
 export auto advance_terminations(db::connection& conn, const advance_request& request, process::identity::clock& clock,
                                  const process_probe& probe, const group_signaller& signaller)
     -> std::expected<advance_result, queue_error>;
+
+/// @brief What the polling submitter supplies to `poll_and_stop`.
+export struct poll_stop_request {
+  poll_request poll;         ///< The poll: the caller's entry, host identity, slot count, window and run limit.
+  std::int64_t grace_ms = 0; ///< How long an entry may be terminating before SIGKILL; must not be negative.
+};
+
+/// @brief What `poll_and_stop` did.
+export struct poll_stop_result {
+  poll_result                 poll;          ///< The poll's result; when it was skipped, nothing else was done.
+  std::vector<signal_attempt> sigterms;      ///< One SIGTERM attempt per entry the poll marked, in the poll's order.
+  advance_result              advanced;      ///< What `advance_terminations` did; empty when it did not run.
+  std::optional<queue_error>  advance_error; ///< Why `advance_terminations` failed, when it did; the poll still committed.
+};
+
+/// @brief Runs one poll and then the stopping steps it leads to, as this
+/// module's description states: `poll`, then, with the poll committed and no
+/// transaction open, SIGTERM to each entry it marked, then
+/// `advance_terminations` over every terminating entry on this host.
+/// @param conn An open agent database at or above agent schema version 2,
+/// not inside a transaction.
+/// @param request The poll request and the grace period.
+/// @param clock The monotonic and wall clocks, read by the poll and by the
+/// advance.
+/// @param probe The process queries.
+/// @param signaller Where SIGTERM and SIGKILL go.
+/// @return The result, including a skipped poll (after which nothing was
+/// signalled or advanced) and an advance failure (reported on the result,
+/// because the poll it follows has committed); `invalid_request` for a
+/// negative grace period, before anything is done; or the poll's own error,
+/// after which nothing was changed or signalled.
+export auto poll_and_stop(db::connection& conn, const poll_stop_request& request, process::identity::clock& clock,
+                          const process_probe& probe, const group_signaller& signaller)
+    -> std::expected<poll_stop_result, queue_error>;
 
 } // namespace planar::engine::hostqueue

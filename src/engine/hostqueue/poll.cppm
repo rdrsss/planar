@@ -10,9 +10,13 @@
 /// transaction, in this order, it:
 ///
 /// 1. refreshes the caller's entry (`refreshed_mono` = now);
-/// 2. ends every other entry that is not live with outcome `abandoned`,
-///    through `end_entry`, so each gets exactly one history row in this same
-///    transaction;
+/// 2. ends every other entry that is not live, through `end_entry`, so each
+///    gets exactly one history row in this same transaction. The outcome is
+///    `abandoned`, except for an entry whose stop was already under way (it
+///    carries a terminating marker): that one ends with the outcome its
+///    `terminate_reason` names, `timeout` or `cancelled` with the canceller
+///    it records, whichever of a poll or `advance_terminations` finds its
+///    child group empty first;
 /// 3. marks as terminating (`terminating_since_mono` = now, `terminate_reason`
 ///    = `timeout`) every running entry that is past its deadline, is not
 ///    already terminating, and whose submitter is gone;
@@ -32,11 +36,12 @@
 /// compared.
 ///
 /// No signal is sent. Entries this poll marked terminating are returned so
-/// the caller can signal them after the commit (task hq-terminate). An entry
-/// whose liveness could not be judged because a process query failed is
-/// neither reaped nor marked; it is returned in `liveness_errors` and still
-/// counts toward the turn, so a failing query can delay a start but never
-/// oversubscribe the slots.
+/// the caller can signal them after the commit (task hq-terminate);
+/// `planar.engine.hostqueue.terminate::poll_and_stop` runs a poll and those
+/// signals together. An entry whose liveness could not be judged because a
+/// process query failed is neither reaped nor marked; it is returned in
+/// `liveness_errors` and still counts toward the turn, so a failing query can
+/// delay a start but never oversubscribe the slots.
 ///
 /// Error boundary: when `BEGIN IMMEDIATE` fails because the store is busy
 /// past the connection's busy timeout, the poll changes nothing and returns
@@ -56,6 +61,7 @@ import std;
 import planar.db;
 import planar.process.identity;
 import planar.engine.hostqueue.queue;
+import planar.engine.hostqueue.history;
 import planar.engine.hostqueue.liveness;
 
 namespace planar::engine::hostqueue {
@@ -75,6 +81,12 @@ export enum class poll_status : std::uint8_t {
   skipped,   ///< The store was busy past the busy timeout; nothing changed.
 };
 
+/// @brief A terminating entry this poll ended because it was no longer live.
+export struct stopped_entry {
+  std::int64_t    seq     = 0;                        ///< The entry.
+  history_outcome outcome = history_outcome::timeout; ///< The outcome written: `timeout` or `cancelled`.
+};
+
 /// @brief An entry whose liveness could not be judged in this poll.
 export struct liveness_failure {
   std::int64_t             seq   = 0;                                      ///< The entry.
@@ -92,7 +104,8 @@ export struct poll_result {
   std::optional<std::int64_t> started_at;      ///< The caller's entry's wall-clock start, when running.
   std::optional<std::int64_t> deadline_mono;   ///< The caller's entry's deadline, when running.
   std::vector<std::int64_t>   reaped;          ///< Entries this poll ended with outcome `abandoned`, in sequence order.
-  std::vector<entry> terminating; ///< Entries this poll marked terminating, as marked; the caller signals them after commit.
+  std::vector<stopped_entry>  stopped; ///< Terminating entries this poll ended with their terminate reason, in sequence order.
+  std::vector<entry> terminating;      ///< Entries this poll marked terminating, as marked; the caller signals them after commit.
   std::vector<liveness_failure>
       liveness_errors; ///< Entries not judged because a process query failed; neither reaped nor marked.
 };

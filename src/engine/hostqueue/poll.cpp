@@ -112,6 +112,33 @@ auto start_entry(db::connection& conn, std::int64_t seq, std::int64_t started_at
   return {};
 }
 
+/// @brief How a terminating entry that is reaped ends: the outcome its
+/// `terminate_reason` names, and for `cancelled` the canceller it records.
+struct stop_end {
+  history_outcome          outcome = history_outcome::timeout; ///< `timeout` or `cancelled`.
+  std::optional<canceller> who;                                ///< The recorded canceller, for `cancelled`.
+};
+
+/// @brief The end of a reaped entry whose stop was under way, or
+/// `std::nullopt` when none was: the entry carries no terminating marker, or
+/// (for a row not written by `begin_terminate`) a cancellation without a
+/// readable canceller, which would make `end_entry` refuse the row and so
+/// fail every poll.
+auto stopped_end(const entry& e) -> std::optional<stop_end> {
+  if (!e.terminating_since_mono || !e.terminate_reason) {
+    return std::nullopt;
+  }
+  if (*e.terminate_reason == "timeout") {
+    return stop_end{.outcome = history_outcome::timeout, .who = std::nullopt};
+  }
+  if (*e.terminate_reason == "cancelled" && e.cancelled_by) {
+    if (auto who = decode_canceller(*e.cancelled_by); who) {
+      return stop_end{.outcome = history_outcome::cancelled, .who = std::move(*who)};
+    }
+  }
+  return std::nullopt;
+}
+
 /// @brief `base + span`, saturating instead of overflowing.
 auto saturating_add(std::int64_t base, std::int64_t span) -> std::int64_t {
   auto const max = std::numeric_limits<std::int64_t>::max();
@@ -191,14 +218,26 @@ auto poll(db::connection& conn, const poll_request& request, process::identity::
       continue;
     }
 
-    // Step 2: reap an entry that is not live.
+    // Step 2: reap an entry that is not live. One whose stop was already
+    // under way ends with the outcome its terminate reason names (and its
+    // canceller), not `abandoned`.
     if (!verdict->live) {
-      auto ended = end_entry(conn, e.seq, end_request{.outcome = history_outcome::abandoned, .ended_at = wall});
+      auto const  stop = stopped_end(e);
+      end_request request_end{.outcome = history_outcome::abandoned, .ended_at = wall};
+      if (stop) {
+        request_end.outcome      = stop->outcome;
+        request_end.cancelled_by = stop->who;
+      }
+      auto ended = end_entry(conn, e.seq, request_end);
       if (!ended) {
         return std::unexpected(std::move(ended.error()));
       }
       if (*ended == end_result::ended) {
-        result.reaped.push_back(e.seq);
+        if (stop) {
+          result.stopped.push_back(stopped_entry{.seq = e.seq, .outcome = stop->outcome});
+        } else {
+          result.reaped.push_back(e.seq);
+        }
       }
       continue;
     }

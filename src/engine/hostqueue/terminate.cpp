@@ -14,6 +14,7 @@ import planar.process.identity;
 import planar.engine.hostqueue.queue;
 import planar.engine.hostqueue.history;
 import planar.engine.hostqueue.liveness;
+import planar.engine.hostqueue.poll;
 
 namespace planar::engine::hostqueue {
 
@@ -304,6 +305,36 @@ auto advance_terminations(db::connection& conn, const advance_request& request, 
     if (overdue) {
       result.kills.push_back(signal_child_group(e, stop_signal::kill, request.host_id, probe, signaller));
     }
+  }
+  return result;
+}
+
+auto poll_and_stop(db::connection& conn, const poll_stop_request& request, process::identity::clock& clock,
+                   const process_probe& probe, const group_signaller& signaller) -> std::expected<poll_stop_result, queue_error> {
+  if (request.grace_ms < 0) {
+    return invalid("poll and stop", std::format("grace period must not be negative, got {} ms", request.grace_ms));
+  }
+  auto polled = poll(conn, request.poll, clock, probe);
+  if (!polled) {
+    return std::unexpected(std::move(polled.error()));
+  }
+  poll_stop_result result{.poll = std::move(*polled)};
+  if (result.poll.status == poll_status::skipped) {
+    return result;
+  }
+
+  // The poll has committed: signal the entries it marked.
+  for (auto const& marked : result.poll.terminating) {
+    result.sigterms.push_back(signal_child_group(marked, stop_signal::term, request.poll.host_id, probe, signaller));
+  }
+
+  auto advanced = advance_terminations(
+      conn, advance_request{.host_id = request.poll.host_id, .grace_ms = request.grace_ms, .seq = std::nullopt}, clock, probe,
+      signaller);
+  if (advanced) {
+    result.advanced = std::move(*advanced);
+  } else {
+    result.advance_error = std::move(advanced.error());
   }
   return result;
 }
