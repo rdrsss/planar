@@ -318,6 +318,42 @@ TEST_CASE("runner: the added variable replaces an inherited one of the same name
   CHECK(ended->kind == runner::state::exited);
   CHECK(ended->code == 0);
   CHECK(slurp(witness) == "1\nadded\n");
+
+  // A shell drops duplicate entries when it re-exports its environment, so
+  // the raw environment is read by `env` itself, with no shell between it
+  // and the runner. Its stdout is this process's, inherited: it is pointed
+  // at a file for the duration, which also shows the stream is inherited
+  // rather than captured. A second entry of the same name would be seen by
+  // `getenv` in a C program first, so exactly one entry must arrive.
+  auto const raw_witness = scratch.path() / "raw-env";
+  int const  file        = ::open(raw_witness.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  REQUIRE(file >= 0);
+  std::cout.flush();
+  int const saved = ::dup(STDOUT_FILENO);
+  REQUIRE(saved >= 0);
+  REQUIRE(::dup2(file, STDOUT_FILENO) == STDOUT_FILENO);
+  std::vector<std::string> const env_argv{"env"};
+  auto                           raw = runner::start(map_env({{"PATH", "/usr/bin:/bin"}}), env_argv, options);
+  ::dup2(saved, STDOUT_FILENO);
+  ::close(saved);
+  ::close(file);
+  REQUIRE(raw.has_value());
+  child_guard raw_guard{*raw};
+  auto const  raw_end = raw_guard.wait_for(k_bound);
+  REQUIRE(raw_end.has_value());
+  CHECK(raw_end->kind == runner::state::exited);
+  CHECK(raw_end->code == 0);
+
+  auto const listing = slurp(raw_witness);
+  REQUIRE_FALSE(listing.empty());
+  std::vector<std::string> matches;
+  for (auto const line : std::views::split(listing, '\n')) {
+    std::string_view const entry{line.begin(), line.end()};
+    if (entry.starts_with(std::format("{}=", k_name))) {
+      matches.emplace_back(entry);
+    }
+  }
+  CHECK(matches == std::vector<std::string>{std::format("{}=added", k_name)});
 }
 
 TEST_CASE("runner: a child killed by SIGKILL is reported as signalled with 9, not as an exit status", "[lib][process][runner]") {
