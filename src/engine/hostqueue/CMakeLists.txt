@@ -22,6 +22,10 @@
 # imports it back for the pruning enqueue (an implementation-unit import,
 # so the interfaces form no cycle).
 #
+# `process` supplies `planar.process.identity`, which the liveness
+# module's default probe forwards to (task hq-liveness); tests replace the
+# probe with a fake.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
@@ -29,14 +33,17 @@ planar_module(engine_hostqueue
   INTERFACE
     queue.cppm
     history.cppm
+    liveness.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
     history.cpp
+    liveness.cpp
   DEPENDS
     db
     json_dom
-    json_text)
+    json_text
+    process)
 
 if(TARGET planar_engine_hostqueue_tests)
   # The test binary opens real on-disk scratch stores through

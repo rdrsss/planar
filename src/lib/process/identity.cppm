@@ -157,12 +157,19 @@ export auto host_identity(const identity_source& source) -> std::string;
 /// drive time by hand.
 export class clock {
 public:
-  clock()                                = default;
-  clock(const clock&)                    = default;
-  clock(clock&&)                         = default;
+  clock() = default;
+  /// @brief Copies the clock; the default copies nothing, as the base holds no state.
+  clock(const clock&) = default;
+  /// @brief Moves the clock; the default moves nothing, as the base holds no state.
+  clock(clock&&) = default;
+  /// @brief Copy-assigns the clock; the default copies nothing, as the base holds no state.
+  /// @return This clock.
   auto operator=(const clock&) -> clock& = default;
-  auto operator=(clock&&) -> clock&      = default;
-  virtual ~clock()                       = default;
+  /// @brief Move-assigns the clock; the default moves nothing, as the base holds no state.
+  /// @return This clock.
+  auto operator=(clock&&) -> clock& = default;
+  /// @brief Destroys the clock; virtual so a derived clock is destroyed through a `clock&`.
+  virtual ~clock() = default;
 
   /// @brief Milliseconds from a clock that does not move when the wall
   /// clock is set and does not advance while the host is asleep.
