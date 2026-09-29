@@ -17,8 +17,8 @@
 // `refreshed_mono` advancing in the store. The only clocks are the bounded
 // waits that turn a hang into a failure.
 //
-// A gate is released, and every future joined, on the way out of a failing
-// case too, so a failed assertion cannot leave a blocked command behind.
+// A gate is released on the way out of a failing case too, so a failed
+// assertion cannot leave a blocked command behind.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -45,7 +45,7 @@ using parity::capture;
 using parity::pinned_var;
 using parity::read_all;
 
-constexpr auto k_budget = std::chrono::seconds(45);
+constexpr auto k_budget = std::chrono::seconds(30);
 
 auto agent_bin() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_CPP_BIN};
@@ -209,14 +209,13 @@ struct gate {
   void release() {
     if (!released && fd >= 0) {
       released = true;
-      static_cast<void>(::write(fd, "x", 1));
+      static_cast<void>(::write(fd, "x\n", 2));
     }
   }
 };
 
-/// @brief Releases the gates it names when it leaves scope, before the
-/// futures (declared earlier) are joined, so a failed assertion cannot
-/// leave a case waiting on a blocked command.
+/// @brief Releases the gates it names when it leaves scope, so a failed
+/// assertion cannot leave a blocked command behind.
 struct release_all {
   std::vector<gate*> gates;
   ~release_all() {
@@ -226,22 +225,57 @@ struct release_all {
   }
 };
 
-auto start_queue(const parity::arena& arena, std::string tag, std::vector<std::string> command, std::vector<pinned_var> env = {})
-    -> std::future<capture> {
-  auto const root = arena.cpp_root;
-  return std::async(std::launch::async, [root, tag = std::move(tag), command = std::move(command), env = std::move(env)] {
-    auto const args = queue_args(command);
-    auto       vars = parity::pinned_env(root);
-    for (auto const& extra : env) {
-      vars.push_back(extra);
-    }
-    return parity::run_pinned(agent_bin(), args, root, tag, vars);
-  });
+/// @brief A `queue run` started in the background by `spawn_queue`.
+struct spawned {
+  std::filesystem::path root; ///< The arena root the invocation ran under.
+  std::string           tag;  ///< Its capture-file name: `<tag>.out`, `.err`, `.code`.
+};
+
+/// @brief Starts `planar-agent queue run -- <command>` in the background,
+/// under the arena's pinned environment plus `extra`, and returns at once.
+///
+/// This is not `run_pinned` on a thread. `std::system` serialises concurrent
+/// callers on macOS, so a second `run_pinned` would not even start until the
+/// first had finished, which is exactly the overlap these cases exist to
+/// exercise. The streams go straight to files, as `launch_pinned_detached`
+/// does, and the exit status to `<tag>.code`; `finish` reads them back. The
+/// pinned map and the agent-database check are the harness's own.
+auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<std::string>& command,
+                 std::vector<pinned_var> extra = {}) -> spawned {
+  auto vars = parity::pinned_env(arena.cpp_root);
+  for (auto& var : extra) {
+    vars.push_back(std::move(var));
+  }
+  parity::require_agent_db_pinned(arena.cpp_root, vars);
+
+  std::string child = parity::pinned_env_prefix(vars) + parity::shell_quote(agent_bin().string());
+  for (auto const& arg : queue_args(command)) {
+    child += " " + parity::shell_quote(arg);
+  }
+  auto const path = [&](std::string_view suffix) {
+    return parity::shell_quote((arena.cpp_root / std::format("{}.{}", tag, suffix)).string());
+  };
+  std::error_code ec;
+  std::filesystem::remove(arena.cpp_root / std::format("{}.code", tag), ec);
+  auto const line =
+      std::format("( cd {} && {{ {} ; echo $? > {} ; }} > {} 2> {} ) &", parity::shell_quote((arena.cpp_root / "proj").string()),
+                  child, path("code"), path("out"), path("err"));
+  static_cast<void>(std::system(line.c_str()));
+  return spawned{.root = arena.cpp_root, .tag = std::move(tag)};
 }
 
-auto join(std::future<capture>& future) -> capture {
-  REQUIRE(future.wait_for(k_budget) == std::future_status::ready);
-  return future.get();
+/// @brief Waits for a spawned invocation to end and returns what it wrote.
+auto finish(const spawned& run) -> capture {
+  auto const code_path = run.root / std::format("{}.code", run.tag);
+  INFO("waiting for " << run.tag << " to end");
+  REQUIRE(await([&] { return read_all(code_path).ends_with('\n'); }));
+  auto const  raw  = read_all(code_path);
+  int         code = -1;
+  auto const* head = raw.data();
+  REQUIRE(std::from_chars(head, head + raw.size() - 1, code).ec == std::errc{});
+  return capture{.code = code,
+                 .out  = read_all(run.root / std::format("{}.out", run.tag)),
+                 .err  = read_all(run.root / std::format("{}.err", run.tag))};
 }
 
 auto proj(const parity::arena& arena) -> std::filesystem::path {
@@ -345,11 +379,11 @@ TEST_CASE("queue run: a second submitter waits for the first and starts only aft
   auto const started_a = arena.cpp_root / "started_a";
   auto const started_b = arena.cpp_root / "started_b";
 
-  std::future<capture> first;
-  std::future<capture> second;
-  release_all          guard{.gates = {&first_gate}};
+  spawned     first;
+  spawned     second;
+  release_all guard{.gates = {&first_gate}};
 
-  first = start_queue(arena, "first",
+  first = spawn_queue(arena, "first",
                       sh_command("echo \"$PLANAR_QUEUE_SLOT\" > \"$1\"; read x < \"$2\"; exit 3",
                                  {started_a.string(), first_gate.path.string()}));
   await_file(started_a);
@@ -364,7 +398,7 @@ TEST_CASE("queue run: a second submitter waits for the first and starts only aft
   await_refreshes(arena, 1, 2);
 
   // The second is submitted while the first runs, and waits.
-  second             = start_queue(arena, "second", sh_command("echo b > \"$1\"", {started_b.string()}));
+  second             = spawn_queue(arena, "second", sh_command("echo b > \"$1\"", {started_b.string()}));
   auto const waiting = await_entry(arena, 2, hq::entry_state::waiting);
   CHECK_FALSE(waiting.child_pgid.has_value());
   await_refreshes(arena, 2, 3);
@@ -378,8 +412,8 @@ TEST_CASE("queue run: a second submitter waits for the first and starts only aft
   }
 
   first_gate.release();
-  auto const a = join(first);
-  auto const b = join(second);
+  auto const a = finish(first);
+  auto const b = finish(second);
   INFO("first stderr:\n" << a.err << "second stderr:\n" << b.err);
   CHECK(a.code == 3);
   CHECK(b.code == 0);
@@ -414,22 +448,22 @@ TEST_CASE("queue run: [queue] slots = 2 lets two commands run at once and a thir
   auto const started_b = arena.cpp_root / "started_b";
   auto const started_c = arena.cpp_root / "started_c";
 
-  std::future<capture> a;
-  std::future<capture> b;
-  std::future<capture> c;
-  release_all          guard{.gates = {&gate_a, &gate_b}};
+  spawned     a;
+  spawned     b;
+  spawned     c;
+  release_all guard{.gates = {&gate_a, &gate_b}};
 
   auto const blocked = [](const std::filesystem::path& started, const gate& g) {
     return sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), g.path.string()});
   };
-  a = start_queue(arena, "a", blocked(started_a, gate_a));
+  a = spawn_queue(arena, "a", blocked(started_a, gate_a));
   await_file(started_a);
-  b = start_queue(arena, "b", blocked(started_b, gate_b));
+  b = spawn_queue(arena, "b", blocked(started_b, gate_b));
   await_file(started_b);
   await_entry(arena, 1, hq::entry_state::running);
   await_entry(arena, 2, hq::entry_state::running);
 
-  c = start_queue(arena, "c", sh_command("echo c > \"$1\"", {started_c.string()}));
+  c = spawn_queue(arena, "c", sh_command("echo c > \"$1\"", {started_c.string()}));
   await_entry(arena, 3, hq::entry_state::waiting);
   await_refreshes(arena, 3, 3);
   CHECK_FALSE(present(started_c));
@@ -442,11 +476,11 @@ TEST_CASE("queue run: [queue] slots = 2 lets two commands run at once and a thir
   }
 
   gate_a.release();
-  CHECK(join(a).code == 0);
-  CHECK(join(c).code == 0);
+  CHECK(finish(a).code == 0);
+  CHECK(finish(c).code == 0);
   CHECK(present(started_c));
   gate_b.release();
-  CHECK(join(b).code == 0);
+  CHECK(finish(b).code == 0);
   auto const snap = require_snapshot(arena);
   CHECK(snap.entries.empty());
   CHECK(snap.history.size() == 3);
@@ -459,13 +493,13 @@ TEST_CASE("queue run: a slot count changed while a submitter waits is read at it
   auto const started_a = arena.cpp_root / "started_a";
   auto const started_b = arena.cpp_root / "started_b";
 
-  std::future<capture> a;
-  std::future<capture> b;
-  release_all          guard{.gates = {&gate_a}};
+  spawned     a;
+  spawned     b;
+  release_all guard{.gates = {&gate_a}};
 
-  a = start_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started_a.string(), gate_a.path.string()}));
+  a = spawn_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started_a.string(), gate_a.path.string()}));
   await_file(started_a);
-  b = start_queue(arena, "b", sh_command("echo b > \"$1\"", {started_b.string()}));
+  b = spawn_queue(arena, "b", sh_command("echo b > \"$1\"", {started_b.string()}));
   await_entry(arena, 2, hq::entry_state::waiting);
   await_refreshes(arena, 2, 3);
   CHECK_FALSE(present(started_b));
@@ -474,12 +508,12 @@ TEST_CASE("queue run: a slot count changed while a submitter waits is read at it
   // waiting submitter start on its next poll.
   write_config(arena, "[queue]\nslots = 2\npoll_interval = \"100ms\"\n");
   await_file(started_b);
-  CHECK(join(b).code == 0);
+  CHECK(finish(b).code == 0);
   CHECK(present(started_b));
   CHECK(entry_seq(require_snapshot(arena), 1) != nullptr);
 
   gate_a.release();
-  CHECK(join(a).code == 0);
+  CHECK(finish(a).code == 0);
   CHECK(require_snapshot(arena).history.size() == 2);
 }
 
@@ -491,13 +525,13 @@ TEST_CASE("queue run: an unreadable configuration mid-wait is reported once and 
   auto const started_a = arena.cpp_root / "started_a";
   auto const started_b = arena.cpp_root / "started_b";
 
-  std::future<capture> a;
-  std::future<capture> b;
-  release_all          guard{.gates = {&gate_a}};
+  spawned     a;
+  spawned     b;
+  release_all guard{.gates = {&gate_a}};
 
-  a = start_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started_a.string(), gate_a.path.string()}));
+  a = spawn_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started_a.string(), gate_a.path.string()}));
   await_file(started_a);
-  b = start_queue(arena, "b", sh_command("echo b > \"$1\"", {started_b.string()}));
+  b = spawn_queue(arena, "b", sh_command("echo b > \"$1\"", {started_b.string()}));
   await_entry(arena, 2, hq::entry_state::waiting);
 
   write_config(arena, "[queue]\nslots = 0\n");
@@ -509,8 +543,8 @@ TEST_CASE("queue run: an unreadable configuration mid-wait is reported once and 
   CHECK_FALSE(present(started_b));
 
   gate_a.release();
-  CHECK(join(a).code == 0);
-  auto const done = join(b);
+  CHECK(finish(a).code == 0);
+  auto const done = finish(b);
   CHECK(done.code == 0);
   CHECK(present(started_b));
   // Once per failure streak, not once per poll.
@@ -554,14 +588,15 @@ TEST_CASE("queue run: a killed submitter does not free the slot while its comman
   auto const started_a = arena.cpp_root / "started_a";
   auto const started_b = arena.cpp_root / "started_b";
 
-  std::future<capture> a;
-  std::future<capture> b;
-  release_all          guard{.gates = {&gate_a}};
+  spawned     a;
+  spawned     b;
+  release_all guard{.gates = {&gate_a}};
 
-  // The command closes its streams once started: after its submitter is
-  // killed, nothing may keep `run_pinned`'s capture pipes open.
-  a = start_queue(arena, "a",
-                  sh_command("echo x > \"$1\"; exec >/dev/null 2>&1 </dev/null; read x < \"$2\"",
+  // The command closes its streams (and fd 3, `run_pinned`'s capture pipe)
+  // once started: after its submitter is killed, nothing may keep the
+  // capture open.
+  a = spawn_queue(arena, "a",
+                  sh_command("echo x > \"$1\"; exec >/dev/null 2>&1 </dev/null 3>&-; read x < \"$2\"",
                              {started_a.string(), gate_a.path.string()}));
   await_file(started_a);
   auto const running = await_entry(arena, 1, hq::entry_state::running);
@@ -570,11 +605,11 @@ TEST_CASE("queue run: a killed submitter does not free the slot while its comman
   REQUIRE(running.pid != static_cast<std::int64_t>(::getpid()));
   // The pid is the submitter this case started: the entry records it.
   REQUIRE(::kill(static_cast<pid_t>(running.pid), SIGKILL) == 0);
-  CHECK(join(a).code == 128 + SIGKILL);
+  CHECK(finish(a).code == 128 + SIGKILL);
 
   // The submitter is gone, its command is not: a second submitter must not
   // start on top of it.
-  b = start_queue(arena, "b", sh_command("echo b > \"$1\"", {started_b.string()}));
+  b = spawn_queue(arena, "b", sh_command("echo b > \"$1\"", {started_b.string()}));
   await_entry(arena, 2, hq::entry_state::waiting);
   await_refreshes(arena, 2, 4);
   CHECK_FALSE(present(started_b));
@@ -582,7 +617,7 @@ TEST_CASE("queue run: a killed submitter does not free the slot while its comman
 
   // Once the command ends, the second submitter reaps the entry and starts.
   gate_a.release();
-  auto const done = join(b);
+  auto const done = finish(b);
   INFO("stderr:\n" << done.err);
   CHECK(done.code == 0);
   CHECK(present(started_b));
@@ -608,10 +643,10 @@ TEST_CASE("queue run: a helper left in the command's group does not hold the slo
   auto const  pid_file = arena.cpp_root / "helper.pid";
   release_all guard{.gates = {&helper_gate}};
 
-  // The helper closes its inherited streams so `run_pinned`'s capture pipes
-  // are not held open, then blocks on the gate in the command's group.
+  // The helper closes its inherited streams (and fd 3, the capture pipe
+  // `run_pinned` gives the shell) so the capture is not held open, then blocks on the gate in the command's group.
   auto const first = run_queue(arena, "helper",
-                               sh_command("( exec >/dev/null 2>&1 </dev/null; read x < \"$2\" ) & echo $! > \"$1\"; exit 0",
+                               sh_command("( exec >/dev/null 2>&1 </dev/null 3>&-; read x < \"$2\" ) & echo $! > \"$1\"; exit 0",
                                           {pid_file.string(), helper_gate.path.string()}));
   INFO("stderr:\n" << first.err);
   CHECK(first.code == 0);
