@@ -6868,7 +6868,7 @@ planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now
 # Host-wide build and test queue (plan 1080). Everything after `--` is the
 # command; it runs in the caller's directory with the caller's environment.
 # See "Queue verbs" below.
-planar-agent queue run  [--label <text>] -- <command> [args...]
+planar-agent queue run  [--label <text>] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
 
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
 planar-agent version
@@ -6887,7 +6887,7 @@ Previously `--ttl` carried a hardcoded `600` default, so an omitted flag was ind
 
 `planar-agent queue` is the host-wide build and test queue (plan 1080). One queue per user per host serves every project, so a build or test one agent starts does not run on top of another's. There is no daemon: the process that submits a command is the process that runs it.
 
-`planar-agent queue run [--label <text>] -- <command> [args...]` is the foreground form:
+The foreground form is `queue run` with an optional `--label <text>`, then the argument terminator and the command with its arguments (`queue run [--label <text>] <terminator> <command> [args...]`):
 
 1. It reads the `[queue]` configuration ([the `[queue]` table](#the-queue-table)). A configuration it cannot use refuses at exit **125** before anything is enqueued.
 2. It opens the **agent database**, `~/.planar/agent.db` (override `PLANAR_AGENT_DB`), creating and migrating it on first use, and inserts an entry in state `waiting`. This opens no part of `planar.db`, so the verb works while the main schema is locked. A store it cannot open refuses at exit **125** and does not run the command. Inserting the entry also deletes history rows older than `[queue] history_days` and their log files.
