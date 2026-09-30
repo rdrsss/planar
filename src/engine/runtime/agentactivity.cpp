@@ -849,6 +849,23 @@ auto heartbeat_claim(db::connection& conn, std::string_view claim_token, std::op
   return get_claim_by_token(conn, claim_token);
 }
 
+auto lease_length_seconds(db::connection& conn, std::string_view claim_token) -> std::expected<std::int64_t, agent_error> {
+  // The same expression `heartbeat_claim` renews by when it is given no TTL.
+  auto stmt = conn.prepare("select cast(round((julianday(lease_expires_at) - julianday(last_heartbeat_at)) * 86400) as int)\n"
+                           "from agent_work_claims where claim_token = ?");
+  if (!stmt || !stmt->bind_text(1, claim_token)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(db::is_busy(stepped.error()) ? agent_error::busy : agent_error::query_failed);
+  }
+  if (*stepped != db::step_result::row) {
+    return std::unexpected(agent_error::claim_not_found);
+  }
+  return stmt->column_int64(0);
+}
+
 auto release_claim(db::connection& conn, std::string_view claim_token, claim_status new_status,
                    std::optional<std::string_view> reason, std::optional<failure_category> category)
     -> std::expected<claim, agent_error> {

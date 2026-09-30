@@ -319,6 +319,22 @@ public:
   /// @return The open connection, or the SQLite failure as a `db_error`.
   static auto open(std::string_view path) -> std::expected<connection, db_error>;
 
+  /// @brief Opens an EXISTING database read-write with a bounded lock wait,
+  /// touching nothing but what a caller then asks of it.
+  ///
+  /// Unlike `open`, this never creates the file (a missing one is a
+  /// `SQLITE_CANTOPEN` failure even if it vanishes after the caller looked),
+  /// sets `busy_timeout` to `busy_timeout_ms` through the C API before any
+  /// statement runs, and does not switch the journal mode: setting
+  /// `journal_mode = WAL` on a database that already is in WAL is a no-op that
+  /// still takes a lock, and on any other it would be a write the caller did not
+  /// ask for. Foreign keys are enabled as in `open`.
+  /// @param path Filesystem path to an existing database file.
+  /// @param busy_timeout_ms How long any statement on this connection may wait
+  /// for a competing lock.
+  /// @return The open connection, or the SQLite failure as a `db_error`.
+  static auto open_existing(std::string_view path, int busy_timeout_ms) -> std::expected<connection, db_error>;
+
   /// @brief Opens `path` in strict read-only mode for `planar-watch`: both
   /// the `file:<path>?mode=ro` URI form and `SQLITE_OPEN_READONLY` are
   /// used together, so the driver refuses any write SQL

@@ -25,6 +25,8 @@ import planar.db;
 import planar.db.agentdb;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
+import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.agentatomic;
 import planar.process;
 import planar.process.identity;
 import planar.process.runner;
@@ -37,6 +39,8 @@ namespace hq     = engine::hostqueue;
 namespace ident  = process::identity;
 namespace runner = process::runner;
 namespace qcfg   = engine::config;
+namespace aa     = engine::runtime::agentactivity;
+namespace atomic = engine::runtime::agentatomic;
 
 /// @brief The run limit an entry is given when nothing else names one
 /// (tech spec 647 § Time limits are built in: thirty minutes). `--timeout`
@@ -238,6 +242,134 @@ public:
     if (_seen.insert(line).second) {
       *_err << line << '\n';
     }
+  }
+};
+
+/// @brief How long a renewal that failed waits before it is tried again when
+/// the claim's lease length is not known or is longer than this.
+constexpr std::int64_t k_renew_retry_ms = 5'000;
+
+/// @brief The most any one statement of a renewal may wait on a competing lock:
+/// the connection's usual 5 second window would stall the submitter's loop for
+/// that long. It is in force from the connection's first statement.
+constexpr int k_renew_busy_ms = 1'000;
+
+/// @brief The shortest renewal cadence, so a claim with a tiny lease cannot
+/// turn the submitter's loop into a renewal loop.
+constexpr std::int64_t k_min_renew_interval_ms = 100;
+
+/// @brief Renews the submitter's claim on a schedule (`queue run --claim`;
+/// tech spec 647 § Whether the submitter should renew the agent's claim).
+///
+/// Claims live in the MAIN database, which `queue run` otherwise never opens,
+/// so everything here is lazy and fallible: the connection is opened on the
+/// first attempt (never when `--claim` is absent, because no renewer is then
+/// built), through the binary's own main-database policy (never migrating,
+/// refusing a schema on either side of the binary's), and an unusable main
+/// database is retried on the next attempt rather than remembered. A renewal is
+/// `supervised_heartbeat` with no TTL and no status, the very transaction
+/// `planar-agent heartbeat --claim` runs, so the lease keeps the length it has,
+/// no action row is written, and an engine-supervised claim is refused as it is
+/// for any caller. The cadence is half the lease length the claim holds.
+///
+/// A failed attempt never stops anything: it is reported once per distinct
+/// reason through the submitter's `reporter` as a `warning: queue:` line, and
+/// retried after the shorter of the cadence and `k_renew_retry_ms`. Not
+/// thread-safe; the submitter is single-threaded.
+class claim_renewer {
+  context*                      _ctx;
+  std::string                   _token;
+  reporter*                     _report;
+  std::optional<db::connection> _conn;
+  std::optional<std::int64_t>   _interval_ms; ///< Half the lease, once read.
+  std::int64_t                  _next_due = 0;
+
+  /// @brief Records a failed attempt: one warning per distinct reason, and the
+  /// time of the next try.
+  void failed(const std::string& why, std::int64_t now) {
+    _report->once(std::format("warning: queue: cannot renew the claim: {}; the command is not affected", why));
+    _next_due = now + std::min(_interval_ms.value_or(k_renew_retry_ms), k_renew_retry_ms);
+  }
+
+  /// @brief The cadence for a lease of `seconds`: half of it, never below the floor.
+  static auto half(std::int64_t seconds) -> std::int64_t {
+    return std::max(seconds * 1000 / 2, k_min_renew_interval_ms);
+  }
+
+  /// @brief Opens the main database if it is not open. On failure, the reason.
+  auto connect() -> std::optional<std::string> {
+    if (_conn) {
+      return std::nullopt;
+    }
+    auto const& path = _ctx->db().path();
+    if (path.empty()) {
+      return "the main database's path could not be resolved";
+    }
+    // The existence check is the fast path and the readable message; the open
+    // itself never creates the file, so one that vanishes after the check is a
+    // failure too. The lock wait is bounded from the first statement.
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      return std::format("the main database {} does not exist", path.string());
+    }
+    std::ostringstream diagnostics;
+    auto               opened = database_policy::open_existing(path, diagnostics, k_renew_busy_ms);
+    if (!opened) {
+      return std::format("the main database is unusable ({})", opened.error().text);
+    }
+    _conn.emplace(std::move(*opened));
+    return std::nullopt;
+  }
+
+public:
+  /// @brief A renewer for `token`. Touches nothing until the first `tick`.
+  /// @param ctx The invocation context, whose main-database path is used.
+  /// @param token The claim.
+  /// @param report Where a failure is reported, once per reason.
+  claim_renewer(context& ctx, std::string token, reporter& report) : _ctx(&ctx), _token(std::move(token)), _report(&report) {
+  }
+
+  /// @brief Renews the claim when its turn has come.
+  /// @param now The monotonic clock's reading, in milliseconds.
+  void tick(std::int64_t now) {
+    if (now < _next_due) {
+      return;
+    }
+    if (auto const why = connect()) {
+      failed(*why, now);
+      return;
+    }
+    if (!_interval_ms) {
+      // The first attempt needs a cadence for its own retry, so it is read
+      // before the renewal.
+      auto const lease = aa::lease_length_seconds(*_conn, _token);
+      if (!lease) {
+        failed(std::string{aa::error_name(lease.error())}, now);
+        return;
+      }
+      _interval_ms = half(*lease);
+    }
+    auto const renewed = atomic::supervised_heartbeat(*_conn, _token, std::nullopt, std::nullopt, atomic::supervisor_gate{});
+    if (!renewed) {
+      failed(std::string{aa::error_name(renewed.error())}, now);
+      return;
+    }
+    // The lease is read again after every renewal, so one changed meanwhile
+    // (`heartbeat --ttl`) sets the next cadence. The renewal above kept the
+    // length the claim held, which is what this reads.
+    auto const held = aa::lease_length_seconds(*_conn, _token);
+    if (!held) {
+      failed(std::string{aa::error_name(held.error())}, now);
+      return;
+    }
+    _interval_ms = half(*held);
+    _next_due    = now + *_interval_ms;
+  }
+
+  /// @brief Milliseconds until the next attempt is due; zero when it is due.
+  /// @param now The monotonic clock's reading, in milliseconds.
+  [[nodiscard]] auto due_in(std::int64_t now) const -> std::int64_t {
+    return std::max<std::int64_t>(_next_due - now, 0);
   }
 };
 
@@ -937,6 +1069,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
             std::int64_t run_limit_ms, std::optional<std::int64_t> wait_limit_ms, detach_link* link) -> handler_outcome {
   auto const vendor = identity_field(args, "--vendor", ctx.env(), "PLANAR_VENDOR");
   auto const role   = identity_field(args, "--role", ctx.env(), "PLANAR_ROLE");
+  auto const claim  = cliapp::flag_string(args, "--claim");
   notices    notice{ctx.err(), cliapp::flag_bool(args, "--notices")};
 
   ident::system_clock system_clock;
@@ -1025,6 +1158,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
                               .label          = cliapp::flag_string(args, "--label"),
                               .vendor         = vendor,
                               .role           = role,
+                              .claim_token    = claim,
                               .enqueued_at    = clock.wall_ms(),
                               .refreshed_mono = *at},
           hq::nested_limits{.stale_after_ms = settings.current().stale_after_ms, .run_limit_ms = run_limit_ms}, clock, probe);
@@ -1065,6 +1199,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
         .label              = cliapp::flag_string(args, "--label"),
         .vendor             = vendor,
         .role               = role,
+        .claim_token        = claim,
         .enqueued_at        = clock.wall_ms(),
         .refreshed_mono     = refreshed_mono,
         .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
@@ -1095,16 +1230,32 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   }
 
   reporter report{ctx.err()};
-  poller   poll{.conn         = conn,
-                .seq          = seq,
-                .host_id      = host,
-                .clock        = clock,
-                .probe        = probe,
-                .signaller    = signaller,
-                .settings     = settings,
-                .err          = ctx.err(),
-                .report       = report,
-                .run_limit_ms = run_limit_ms};
+
+  // `--claim`: the claim is renewed at half its lease while the entry waits
+  // and while the command runs (tech spec 647 § Running, step 3). The renewer
+  // opens the main database, lazily, on its first attempt, and only when the
+  // flag was given; a failed attempt is reported and never stops the command.
+  std::optional<claim_renewer> renewer;
+  if (claim) {
+    renewer.emplace(ctx, *claim, report);
+  }
+  auto const renew = [&] {
+    if (renewer) {
+      if (auto const at = clock.monotonic_ms()) {
+        renewer->tick(*at);
+      }
+    }
+  };
+  poller poll{.conn         = conn,
+              .seq          = seq,
+              .host_id      = host,
+              .clock        = clock,
+              .probe        = probe,
+              .signaller    = signaller,
+              .settings     = settings,
+              .err          = ctx.err(),
+              .report       = report,
+              .run_limit_ms = run_limit_ms};
 
   // Ends the entry with `request`, reporting a store failure. The command's
   // status is the caller's to return either way.
@@ -1249,6 +1400,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     if (auto const signals = relay->drain(); !signals.empty()) {
       return interrupted(signals.front());
     }
+    renew();
     auto       polled = poll.poll_once();
     auto const now    = clock.monotonic_ms();
     if (!polled || polled->poll.status == hq::poll_status::skipped) {
@@ -1298,6 +1450,10 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     auto nap = settings.current().poll_interval_ms;
     if (wait_limit_ms && now) {
       nap = std::clamp(*now_mono + *wait_limit_ms - *now, std::int64_t{1}, nap);
+    }
+    // ... or the claim's renewal falls inside it.
+    if (renewer && now) {
+      nap = std::clamp(renewer->due_in(*now), std::int64_t{1}, nap);
     }
     sleep(std::chrono::milliseconds{nap});
   }
@@ -1507,6 +1663,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     }
     enforce_run_limit();
     sleep(k_child_tick);
+    renew();
     auto const now = clock.monotonic_ms();
     if (now && *now >= next_poll) {
       if (!group_recorded && !local_term_at && !entry_gone && record_retries_left > 0) {

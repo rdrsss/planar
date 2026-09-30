@@ -177,7 +177,7 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
   // change that adds the verb.
   CHECK(verbs == std::set<std::string, std::less<>>{"cancel", "run", "status"});
 
-  // `queue run`'s surface: the label, time-limit, vendor, role and notices flags, the command
+  // `queue run`'s surface: the label, time-limit, vendor, role, claim and notices flags, the command
   // positional, and nothing else (no `--json`: standard output belongs to the command).
   auto const* run = queue->get_subcommand_no_throw("run");
   REQUIRE(run != nullptr);
@@ -188,8 +188,8 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
     }
     declared.insert(option->get_name(false, true));
   }
-  CHECK(declared == std::set<std::string, std::less<>>{"--detach", "--label", "--notices", "--role", "--timeout", "--vendor",
-                                                       "--wait-timeout", "command"});
+  CHECK(declared == std::set<std::string, std::less<>>{"--claim", "--detach", "--label", "--notices", "--role", "--timeout",
+                                                       "--vendor", "--wait-timeout", "command"});
 
   // `queue cancel` (task hq-queue-cancel): the canceller's vendor and role
   // and the entry's number, and nothing else. No `--json`, no `--force`:
