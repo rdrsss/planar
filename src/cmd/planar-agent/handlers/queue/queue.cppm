@@ -64,6 +64,28 @@
 /// own code). A signal ignored at start stays ignored. Only the recorded child
 /// group is signalled, through `runner::signal`.
 ///
+/// ## Nested runs
+///
+/// The command runs with `PLANAR_QUEUE_SLOT` set to its entry's sequence
+/// number. A `queue run` that finds the variable set to the sequence number of
+/// a live running entry (`engine::hostqueue::enqueue_nested`) runs as a nested
+/// entry: inserted `running` with `parent_seq` set, outside the slot count and
+/// arrival order, with its own deadline (the run limit of its own `--timeout`
+/// or the default, not the parent's) and its own history row marked nested.
+/// A wait limit has nothing to bound and is ignored. Any other value (not a
+/// positive integer, no such entry, an entry still waiting, an entry that is
+/// not live) queues normally. The marker is advisory and the parent may end
+/// first; the nested entry is then supervised and ended like any other. A
+/// nested entry's own command sees its own sequence number, so a third level
+/// nests under the second.
+///
+/// When the store stays busy past its timeout while the nested entry is being
+/// inserted, the insert is retried at the poll interval for as long as the
+/// staleness window, then refused at 125 with the command not run. It is
+/// neither queued normally (it would wait behind the entry that is waiting for
+/// it) nor run unqueued (nobody checked the marker). Any other store failure
+/// refuses at once.
+///
 /// ## Known limits
 ///
 /// A queued command cannot read the terminal. It runs in its own process group,
@@ -79,7 +101,7 @@
 /// cannot be executed 126, each before the configuration or the store is
 /// touched, so nothing is enqueued. A program that cannot start at its turn ends
 /// its entry `not_started` with the same 127 or 126. Later tasks of the same
-/// milestone add nested runs, missing-entry handling, `--notices`, `--vendor`
+/// milestone add missing-entry handling, `--notices`, `--vendor`
 /// and `--role`, and `--claim`. This handler leaves them out and says so at
 /// each seam.
 module;
@@ -90,6 +112,7 @@ import std;
 import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.handler;
+import planar.db;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.process.identity;
@@ -112,6 +135,13 @@ export struct queue_run_deps {
   /// @brief Sleeps for a duration; when empty, waits on the signal relay, so a
   /// forwarded signal ends the wait early.
   std::function<void(std::chrono::milliseconds)> sleep;
+  /// @brief The nested insert: what `engine::hostqueue::enqueue_nested` does
+  /// with its arguments. A test replaces it to make the store report busy.
+  using nested_enqueuer = std::function<std::expected<engine::hostqueue::nested_result, engine::hostqueue::queue_error>(
+      db::connection&, std::int64_t, const engine::hostqueue::enqueue_request&, const engine::hostqueue::nested_limits&,
+      process::identity::clock&, const engine::hostqueue::process_probe&)>;
+  /// @brief Inserts a nested entry; `engine::hostqueue::enqueue_nested` when empty.
+  nested_enqueuer enqueue_nested;
 };
 
 /// @brief `planar-agent queue run -- <command>` with the production

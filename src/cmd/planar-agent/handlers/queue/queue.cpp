@@ -403,6 +403,29 @@ auto start_exit_code(runner::error error) -> int {
   }
 }
 
+/// @brief The sequence number a slot marker names, when the text is one: a
+/// decimal integer that fits the store's key and is positive, with nothing
+/// before or after it. Anything else names no entry (tech spec 647 § The slot
+/// marker is advisory).
+auto parse_slot_marker(std::string_view text) -> std::optional<std::int64_t> {
+  std::int64_t value  = 0;
+  auto const*  first  = text.data();
+  auto const*  last   = first + text.size();
+  auto const   parsed = std::from_chars(first, last, value);
+  if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != last || value <= 0) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+/// @brief Whether a store failure is the store staying busy past the
+/// connection's busy timeout: the plain `SQLITE_BUSY` in the low byte of the
+/// extended code.
+auto is_busy_failure(const hq::queue_error& error) -> bool {
+  return error.kind == hq::queue_error_kind::query_failed &&
+         db::is_busy(db::db_error{.code_ = error.sqlite_code, .message_ = {}});
+}
+
 /// @brief The words that follow `cannot start '<program>':` for `code`.
 auto start_failure_text(int code) -> std::string_view {
   return code == 127 ? "no such program" : code == 126 ? "not executable" : "the command could not be started";
@@ -463,6 +486,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   ident::clock&       clock     = deps.clock ? *deps.clock : static_cast<ident::clock&>(system_clock);
   auto const          probe     = deps.probe ? *deps.probe : hq::system_process_probe();
   auto const          signaller = deps.signaller ? deps.signaller : hq::system_group_signaller();
+  auto const          nested_fn = deps.enqueue_nested ? deps.enqueue_nested : queue_run_deps::nested_enqueuer{hq::enqueue_nested};
 
   // Configuration first: an unusable configuration must refuse before the
   // store is touched. The path is the context's environment's, exactly as
@@ -513,30 +537,95 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
       deps.sleep ? deps.sleep
                  : std::function<void(std::chrono::milliseconds)>{[&relay](std::chrono::milliseconds d) { relay->wait(d); }};
 
+  // The slot marker (tech spec 647 § Nested runs, § The slot marker is
+  // advisory). A marker that names a live running entry makes this run a
+  // nested entry, running at once outside the slot count; any other value,
+  // or none, queues the command normally. The check and the insert are one
+  // transaction inside the engine.
+  //
+  // A store that stays busy past its timeout says nothing about the marker,
+  // and neither answer is safe to guess: queueing normally would put the
+  // command behind the very entry that is waiting for it, and running it
+  // unqueued would honour a marker nobody checked. So the insert is retried
+  // at the poll interval, for as long as the staleness window a waiting
+  // submitter is allowed (the same bound as a poll that cannot complete), and
+  // then refused at 125 with the command not run (task 7052).
+  auto const                       marker_text = ctx.env()("PLANAR_QUEUE_SLOT");
+  auto const                       marker      = marker_text ? parse_slot_marker(*marker_text) : std::nullopt;
+  std::optional<hq::nested_result> nested;
+  if (marker) {
+    std::optional<std::int64_t> busy_since;
+    while (true) {
+      if (auto const signals = relay->drain(); !signals.empty()) {
+        ctx.err() << std::format("error: queue: interrupted by {} before the nested run was admitted; the command was not run\n",
+                                 signal_name(signals.front()));
+        return exit_status{exit_internal_error};
+      }
+      auto const at = clock.monotonic_ms();
+      if (!at) {
+        return refuse(ctx, "cannot read the monotonic clock");
+      }
+      auto inserted = nested_fn(
+          conn, *marker,
+          hq::enqueue_request{.host_id        = host,
+                              .pid            = pid,
+                              .pid_started    = static_cast<std::int64_t>(**started),
+                              .cwd            = ctx.cwd().string(),
+                              .argv           = argv,
+                              .label          = cliapp::flag_string(args, "--label"),
+                              .enqueued_at    = clock.wall_ms(),
+                              .refreshed_mono = *at},
+          hq::nested_limits{.stale_after_ms = settings.current().stale_after_ms, .run_limit_ms = run_limit_ms}, clock, probe);
+      if (inserted) {
+        if (inserted->status == hq::nested_status::inserted) {
+          nested = *inserted;
+        }
+        break;
+      }
+      if (!is_busy_failure(inserted.error())) {
+        return refuse(ctx, inserted.error().message);
+      }
+      if (!busy_since) {
+        busy_since = *at;
+      } else if (*at - *busy_since > settings.current().stale_after_ms) {
+        return refuse(ctx, std::format("the store stayed busy for longer than the staleness window while starting a nested "
+                                       "run under entry {}; the command was not run",
+                                       *marker));
+      }
+      settings.reload(ctx.err());
+      sleep(std::chrono::milliseconds{settings.current().poll_interval_ms});
+    }
+  }
+
   // The command guard and the 126/127 checks ran at the top of this function,
   // before the configuration and the store were touched.
   // SEAM (task hq-vendor-role): `--vendor` and `--role` fill `vendor` and
   // `role`.
-  auto enqueued = hq::enqueue(
-      conn,
-      hq::enqueue_request{
-          .host_id            = host,
-          .pid                = pid,
-          .pid_started        = static_cast<std::int64_t>(**started),
-          .cwd                = ctx.cwd().string(),
-          .argv               = argv,
-          .label              = cliapp::flag_string(args, "--label"),
-          .enqueued_at        = clock.wall_ms(),
-          .refreshed_mono     = *now_mono,
-          .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
-      },
-      settings.current().history_days);
-  if (!enqueued) {
-    return refuse(ctx, enqueued.error().message);
-  }
-  auto const seq = enqueued->seq;
-  for (auto const& failure : enqueued->pruned.log_failures) {
-    ctx.err() << std::format("warning: queue: cannot remove pruned log file {}: {}\n", failure.path, failure.message);
+  std::int64_t seq = 0;
+  if (nested) {
+    seq = nested->seq;
+  } else {
+    auto enqueued = hq::enqueue(
+        conn,
+        hq::enqueue_request{
+            .host_id            = host,
+            .pid                = pid,
+            .pid_started        = static_cast<std::int64_t>(**started),
+            .cwd                = ctx.cwd().string(),
+            .argv               = argv,
+            .label              = cliapp::flag_string(args, "--label"),
+            .enqueued_at        = clock.wall_ms(),
+            .refreshed_mono     = *now_mono,
+            .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
+        },
+        settings.current().history_days);
+    if (!enqueued) {
+      return refuse(ctx, enqueued.error().message);
+    }
+    seq = enqueued->seq;
+    for (auto const& failure : enqueued->pruned.log_failures) {
+      ctx.err() << std::format("warning: queue: cannot remove pruned log file {}: {}\n", failure.path, failure.message);
+    }
   }
 
   reporter report{ctx.err()};
@@ -580,7 +669,12 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   // --- Waiting for the turn ---------------------------------------------
   std::optional<std::int64_t> failing_since;
   std::optional<std::int64_t> own_deadline;
-  while (true) {
+  if (nested) {
+    // A nested entry is inserted running, with its deadline set: it has no
+    // turn to wait for.
+    own_deadline = nested->deadline_mono;
+  }
+  while (!nested) {
     if (auto const signals = relay->drain(); !signals.empty()) {
       return interrupted(signals.front());
     }
@@ -635,8 +729,6 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   }
 
   // --- Running -----------------------------------------------------------
-  // SEAM (task hq-nested-run): a run that finds PLANAR_QUEUE_SLOT naming a
-  // live running entry runs as a nested entry instead of waiting above.
   auto started_child = runner::start(
       ctx.env(), argv,
       runner::start_options{.working_directory = ctx.cwd(), .env_name = "PLANAR_QUEUE_SLOT", .env_value = std::to_string(seq)});
