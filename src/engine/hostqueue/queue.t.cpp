@@ -381,3 +381,48 @@ TEST_CASE("record_child stores the group on a running entry and refuses a waitin
     CHECK_FALSE(*recorded);
   }
 }
+
+TEST_CASE("a stored state that is neither waiting nor running is refused, not read as waiting",
+          "[engine][hostqueue][hq-enqueue][hq-entry-state]") {
+  // The CHECK constraint keeps such a row out of a store this binary wrote;
+  // a later agent migration that adds a state would put one in front of an
+  // older binary, which must refuse it rather than misread it as waiting.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const seq = hq::enqueue(conn, full_request()).value();
+  auto const ok  = hq::enqueue(conn, full_request()).value();
+  REQUIRE(conn.execute("pragma ignore_check_constraints = on").has_value());
+  REQUIRE(conn.execute(std::format("update queue_entries set state = 'paused' where seq = {}", seq)).has_value());
+  REQUIRE(conn.execute("pragma ignore_check_constraints = off").has_value());
+  REQUIRE(scalar(conn, std::format("select state from queue_entries where seq = {}", seq)) == "paused");
+
+  SECTION("find refuses the row and names the state") {
+    auto const found = hq::find(conn, seq);
+    REQUIRE_FALSE(found.has_value());
+    CHECK(found.error().message.find("paused") != std::string::npos);
+    CHECK(found.error().message.find("state") != std::string::npos);
+  }
+  SECTION("list refuses rather than returning the row as waiting") {
+    auto const all = hq::list(conn);
+    REQUIRE_FALSE(all.has_value());
+    CHECK(all.error().message.find("paused") != std::string::npos);
+  }
+  SECTION("the neighbouring valid row still reads") {
+    auto const found = hq::find(conn, ok);
+    REQUIRE(found.has_value());
+    REQUIRE(found->has_value());
+    CHECK((*found)->state == hq::entry_state::waiting);
+  }
+}
+
+TEST_CASE("a malformed stored argv is refused without repeating the whole column in the message",
+          "[engine][hostqueue][hq-enqueue][hq-entry-state]") {
+  auto const big     = std::string(5'000, 'x');
+  auto const decoded = hq::decode_argv(big);
+  REQUIRE_FALSE(decoded.has_value());
+  CHECK(decoded.error().kind == hq::queue_error_kind::malformed_argv);
+  CHECK(decoded.error().message.find(big) == std::string::npos);
+  CHECK(decoded.error().message.size() < 300);
+  CHECK(decoded.error().message.find("argv") != std::string::npos);
+}
