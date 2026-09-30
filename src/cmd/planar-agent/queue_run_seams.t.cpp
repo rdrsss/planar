@@ -339,3 +339,74 @@ TEST_CASE("queue run: an entry another process already ended is still mapped to 
     CHECK_FALSE(history.front().signal.has_value());
   }
 }
+
+namespace {
+
+/// @brief The system clock, counting how often the monotonic clock is read.
+class counting_clock final : public ident::clock {
+public:
+  ident::system_clock inner;
+  int                 reads = 0;
+
+  [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, ident::error> override {
+    ++reads;
+    return inner.monotonic_ms();
+  }
+  [[nodiscard]] auto wall_ms() -> std::int64_t override {
+    return inner.wall_ms();
+  }
+};
+
+} // namespace
+
+TEST_CASE("queue run: a run limit that cannot mark a missing entry retries at the poll interval, not at every tick",
+          "[cmd][agent][queue][hq-timeouts]") {
+  scratch sc;
+  auto    clock = std::make_shared<counting_clock>();
+  bool    acted = false;
+  int     ticks = 0;
+
+  agent::handlers::queue_run_deps deps;
+  deps.clock = clock;
+  // A poll interval far longer than the case: the regular poll never runs, so
+  // only the run-limit marking reads the store.
+  auto const settings = planar::engine::config::queue_settings{
+      .slots = 1, .poll_interval_ms = 60'000, .stale_after_ms = 3'600'000, .grace_ms = 10'000, .history_days = 30};
+  deps.load_settings = [settings] {
+    return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{settings};
+  };
+  deps.sleep = [&](std::chrono::milliseconds) {
+    if (++ticks >= 2000) {
+      throw std::runtime_error("queue run ticked past the case's bound");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (acted) {
+      return;
+    }
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    REQUIRE(opened.has_value());
+    auto const stored = hq::find(*opened, 1);
+    if (!stored || !stored->has_value() || !(*stored)->child_pgid) {
+      return;
+    }
+    // The entry disappears from under the running submitter; its run limit
+    // (300 ms) passes while the command still runs, so every tick would try to mark it and find it missing.
+    acted = true;
+    REQUIRE(opened->execute("delete from queue_entries where seq = 1;").has_value());
+  };
+
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args            = queue_args({"/bin/sleep", "1"});
+  args.flags["--timeout"] = {"300ms"};
+  auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status      = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(acted);
+  CHECK(status->code == 0);
+  REQUIRE(ticks > 50);
+  // Two clock reads per tick are the loop's own (the run-limit check and the
+  // poll schedule). A mark attempted at every tick reads a third, inside
+  // `begin_terminate`.
+  CHECK(clock->reads <= 2 * ticks + 20);
+}
