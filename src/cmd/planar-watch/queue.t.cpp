@@ -853,6 +853,37 @@ TEST_CASE("queue view: a long vendor, role or label is cut in text and complete 
   CHECK(text_of(rows[0], "role") == role);
 }
 
+/// @brief `count` copies of `unit`.
+auto repeated(std::string_view unit, std::size_t count) -> std::string {
+  std::string out;
+  for (std::size_t i = 0; i < count; ++i) {
+    out += unit;
+  }
+  return out;
+}
+
+TEST_CASE("queue view: a value that escapes wide is cut by its escaped width",
+          "[cmd][watch][queue][hq-view-escape-fields][hq-escaped-cap]") {
+  auto const arena = parity::make_arena("wq_escaped_cap");
+  {
+    auto conn      = open_store(arena);
+    auto request   = alive_request("/w", {"make"});
+    request.label  = repeated(k_zwsp, 300);
+    request.vendor = repeated(k_rlo, 300);
+    request.role   = repeated("\x01\xFF\n", 100);
+    enqueue_or_fail(conn, request);
+  }
+  auto const text = run_queue(arena, "escaped_cap_text", false);
+  INFO("stdout size: " << text.out.size());
+  REQUIRE(text.code == 0);
+  // Three fields of at most 48 escaped columns and two quotes each, plus the
+  // fixed columns; unbounded it is over 4000 bytes.
+  CHECK(text.out.size() < 600);
+  auto const rows = rows_of(run_queue(arena, "escaped_cap_json"));
+  REQUIRE(rows.size() == 1);
+  CHECK(text_of(rows[0], "label") == repeated(k_zwsp, 300));
+}
+
 TEST_CASE("queue view: columns line up by display width, not bytes", "[cmd][watch][queue][hq-view-escape-fields]") {
   auto const arena = parity::make_arena("wq_width");
   {
@@ -1707,6 +1738,27 @@ TEST_CASE("queue history: control characters in submitted values are escaped, in
   CHECK(text_of(rows[0], "cwd") == evil_cwd);
   CHECK(argv_of(rows[0]) == std::vector<std::string>{"echo", evil_arg, "tab\there"});
   CHECK(text_of(member(rows[0], "cancelled_by"), "vendor") == evil_who);
+}
+
+TEST_CASE("queue history: a value that escapes wide is cut by its escaped width",
+          "[cmd][watch][queue][hq-watch-history][hq-view-escape-fields][hq-escaped-cap]") {
+  auto const arena = parity::make_arena("wh_escaped_cap");
+  {
+    auto       conn = open_store(arena);
+    ended_spec spec;
+    spec.label  = repeated(k_zwsp, 300);
+    spec.vendor = repeated(k_rlo, 300);
+    spec.role   = repeated("\x01\xFF\n", 100);
+    spec.end    = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
+    seed_ended(conn, spec);
+  }
+  auto const text = run_history(arena, "escaped_cap_text", {});
+  REQUIRE(text.code == 0);
+  INFO("stdout size: " << text.out.size());
+  CHECK(text.out.size() < 700);
+  auto const rows = rows_of(run_history(arena, "escaped_cap_json"));
+  REQUIRE(rows.size() == 1);
+  CHECK(text_of(rows[0], "vendor") == repeated(k_rlo, 300));
 }
 
 TEST_CASE("queue history: format characters, long values and display width are handled in text, JSON stays complete",

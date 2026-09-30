@@ -95,3 +95,32 @@ TEST_CASE("textview: cap_field cuts at the field cap", "[lib][textview][hq-view-
   CHECK(tv::cap_field(std::string(48, 'a')) == std::string(48, 'a'));
   CHECK(tv::cap_field(std::string(49, 'a')) == std::string(47, 'a') + "\xE2\x80\xA6");
 }
+
+TEST_CASE("textview: a capped value is bounded AFTER escaping, whatever it is made of",
+          "[lib][textview][hq-view-escape-fields][hq-escaped-cap]") {
+  auto repeat = [](std::string_view unit, std::size_t n) {
+    std::string out;
+    for (std::size_t i = 0; i < n; ++i) {
+      out += unit;
+    }
+    return out;
+  };
+  // 48 columns for the escaped content; quote_text adds the two quotes.
+  constexpr std::size_t k_bound = tv::k_field_cap + 2;
+  for (auto const& value : {repeat("\xE2\x80\x8B", 300),               // zero width space
+                            repeat("\xE2\x80\xAE", 300),               // right-to-left override
+                            repeat("\x01", 300),                       // control
+                            repeat("\xFF", 300),                       // invalid byte
+                            repeat("\n", 300),                         // short escape
+                            repeat("\\", 300),                         // backslash
+                            repeat("\xC2\x9B", 300),                   // C1
+                            repeat("a\xE2\x80\x8B\x01\xFF\n", 100)}) { // a mix
+    auto const shown = tv::quote_text(tv::cap_field(value));
+    INFO("escaped width: " << tv::display_width(shown) << ", bytes " << shown.size());
+    CHECK(tv::display_width(shown) <= k_bound);
+    CHECK(shown.size() <= k_bound + 4); // ASCII escapes plus the three-byte marker
+  }
+  // Combining marks pass through raw, so they are bounded too.
+  auto const marks = tv::cap_field("e" + repeat("\xCC\x81", 10'000));
+  CHECK(marks.size() < 200);
+}

@@ -1293,4 +1293,33 @@ TEST_CASE("queue status: text is unambiguous for quotes and backslashes, escapes
   CHECK(text_value(backslash, "label") == std::string{"\"a\\\\b\""});
 }
 
+TEST_CASE("queue status: a value that escapes wide is cut by its escaped width",
+          "[cmd][agent][queue][hq-view-escape-fields][hq-escaped-cap]") {
+  auto const arena    = parity::make_arena("qs_escaped_cap");
+  auto const repeated = [](std::string_view unit, std::size_t n) {
+    std::string out;
+    for (std::size_t i = 0; i < n; ++i) {
+      out += unit;
+    }
+    return out;
+  };
+  std::int64_t seq = 0;
+  {
+    auto conn      = open_store(arena);
+    auto request   = alive_request(repeated("\xE2\x80\x8B", 300));
+    request.vendor = repeated("\xE2\x80\xAE", 300);
+    request.role   = repeated("\x01\xFF\n", 100);
+    seq            = enqueue_or_fail(conn, request);
+  }
+  auto const text = run_status(arena, "st_escaped_cap", seq, false);
+  REQUIRE(text.code == 0);
+  auto const lines = text_lines(text.out);
+  for (auto const* key : {"label", "vendor", "role"}) {
+    auto const value = text_value(lines, key);
+    REQUIRE(value.has_value());
+    INFO(key << " is " << value->size() << " bytes");
+    CHECK(value->size() < 70);
+  }
+}
+
 } // namespace
