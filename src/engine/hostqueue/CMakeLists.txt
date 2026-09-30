@@ -52,6 +52,7 @@ planar_module(engine_hostqueue
     poll.cppm
     terminate.cppm
     nested.cppm
+    status.cppm
     guard.cppm
     hostqueue.cppm
   SOURCES
@@ -61,6 +62,7 @@ planar_module(engine_hostqueue
     poll.cpp
     terminate.cpp
     nested.cpp
+    status.cpp
     guard.cpp
   DEPENDS
     db

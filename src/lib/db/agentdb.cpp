@@ -158,6 +158,41 @@ auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connec
   return std::move(*opened);
 }
 
+auto open_agent_db_read_only_at(const std::filesystem::path& path) -> std::expected<connection, open_error> {
+  // `open_read_only` fails on a missing file, but with SQLite's terse
+  // message; naming the path and the cause here keeps a caller's refusal
+  // self-explanatory. The file is never created.
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    return std::unexpected(open_error{
+        .kind    = open_error_kind::open_failed,
+        .path    = path,
+        .message = std::format("agent database {} does not exist", path.string()),
+    });
+  }
+  auto opened = connection::open_read_only(path.string());
+  if (!opened) {
+    return std::unexpected(open_error{
+        .kind        = open_error_kind::open_failed,
+        .path        = path,
+        .message     = std::format("failed to open agent database {} read-only: {}", path.string(), opened.error().message_),
+        .sqlite_code = opened.error().code_,
+    });
+  }
+  if (auto compatible = check_compat(*opened, path); !compatible) {
+    return std::unexpected(std::move(compatible.error()));
+  }
+  return std::move(*opened);
+}
+
+auto open_agent_db_read_only(const env_lookup& env) -> std::expected<connection, open_error> {
+  auto path = resolve_agent_db_path(env);
+  if (!path) {
+    return std::unexpected(std::move(path.error()));
+  }
+  return open_agent_db_read_only_at(*path);
+}
+
 auto open_agent_db(const env_lookup& env) -> std::expected<connection, open_error> {
   auto path = resolve_agent_db_path(env);
   if (!path) {
