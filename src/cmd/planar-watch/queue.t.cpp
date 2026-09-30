@@ -620,6 +620,27 @@ TEST_CASE("queue view: an unusable [queue] configuration degrades to the default
   CHECK(run.err.contains("[queue] configuration"));
 }
 
+TEST_CASE("queue view: liveness is judged against the [queue] staleness window", "[cmd][watch][queue][hq-watch-queue]") {
+  // An entry last refreshed 45 seconds ago: stale under the 30 second default,
+  // live under a 120 second window.
+  auto const arena = parity::make_arena("wq_window");
+  {
+    auto conn            = open_store(arena);
+    auto quiet           = alive_request("/w/quiet", {"make"});
+    quiet.refreshed_mono = mono_now() - 45'000;
+    enqueue_or_fail(conn, quiet);
+  }
+
+  auto const by_default = rows_of(run_queue(arena, "window_default"));
+  REQUIRE(by_default.size() == 1);
+  CHECK_FALSE(bool_of(by_default[0], "live"));
+
+  write_config(arena, "[queue]\nstale_after = \"120s\"\n");
+  auto const widened = rows_of(run_queue(arena, "window_widened"));
+  REQUIRE(widened.size() == 1);
+  CHECK(bool_of(widened[0], "live"));
+}
+
 // ---------------------------------------------------------------------------
 // Nested and terminating entries are marked.
 // ---------------------------------------------------------------------------

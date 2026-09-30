@@ -113,6 +113,7 @@ planar_binary(planar_watch
     handlers/tree/command.cppm
     handlers/run/command.cppm
     handlers/sync_events/command.cppm
+    handlers/queue/command.cppm
     handlers/version/command.cppm
     handlers/completion/command.cppm
     handlers/schema/command.cppm
@@ -128,6 +129,7 @@ planar_binary(planar_watch
     handlers/shared/live.cppm
     handlers/run/run.cppm
     handlers/sync_events/syncevents.cppm
+    handlers/queue/queue.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -143,6 +145,7 @@ planar_binary(planar_watch
     handlers/shared/live.cpp
     handlers/run/run.cpp
     handlers/sync_events/syncevents.cpp
+    handlers/queue/queue.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal

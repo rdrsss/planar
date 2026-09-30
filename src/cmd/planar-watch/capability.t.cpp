@@ -39,7 +39,9 @@ import planar.cliapp.walk;
 import planar.db;
 import planar.db.agentdb;
 import planar.cmd.planar_watch.agentstore;
+import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.dispatch;
+import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.surface;
 import planar.cmd.planar_watch.main;
 
@@ -213,6 +215,61 @@ TEST_CASE("planar-watch's agent database handle is read-only, and a missing stor
   REQUIRE(view.has_value());
   CHECK_FALSE(view->present());
   CHECK_FALSE(std::filesystem::exists(absent.parent_path()));
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("planar-watch queue reads through the read-only handle: the store is untouched and no main database is opened",
+          "[cmd][watch][capability][queue]") {
+  // Level 2 for the `queue` verb (plan 1080, task hq-watch-queue). The verb
+  // runs in-process against a store holding a live and a dead entry, with no
+  // main database anywhere in its environment. Afterwards the store's bytes and
+  // modification time are the ones it started with, the dead entry is still
+  // there, the main database handle was never opened, and the handle the verb
+  // reads through refuses a write.
+  auto const dir = std::filesystem::temp_directory_path() /
+                   std::format("planar_watch_cap_queue_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::filesystem::create_directories(dir);
+  auto const store = dir / "agent.db";
+  {
+    auto seeded = planar::db::agent::open_agent_db_at(store);
+    REQUIRE(seeded.has_value());
+    // A waiting entry whose submitter cannot exist (pid far above any real one).
+    REQUIRE(seeded
+                ->execute("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, enqueued_at, refreshed_mono) "
+                          "values ('waiting', 'unknown', 2147483646, 1, '/w', '[\"make\"]', 1000, 5000)")
+                .has_value());
+  }
+  auto const read_bytes = [&] {
+    std::ifstream in(store, std::ios::binary);
+    return std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  };
+  auto const before_bytes = read_bytes();
+  auto const before_time  = std::filesystem::last_write_time(store);
+
+  std::ostringstream          out;
+  std::ostringstream          err;
+  planar::cmd::watch::context ctx{{"planar-watch", "queue", "--json"},
+                                  planar::cmd::watch::map_env({{"PLANAR_AGENT_DB", store.string()}}),
+                                  dir,
+                                  std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err),
+                                  out,
+                                  err};
+  auto const                  tree  = planar::cmd::watch::root_app();
+  auto const                  table = planar::cmd::watch::handlers(*tree);
+  CHECK(planar::cmd::watch::run(ctx, *tree, table) == 0);
+  CHECK(out.str().contains("\"live\":false"));
+  CHECK_FALSE(ctx.db().opened());
+
+  CHECK(read_bytes() == before_bytes);
+  CHECK((std::filesystem::last_write_time(store) == before_time));
+  auto view = planar::cmd::watch::open_agent_store_at(store);
+  REQUIRE(view.has_value());
+  CHECK(view->entries().value().size() == 1);
+  REQUIRE(view->connection() != nullptr);
+  CHECK(view->connection()->is_read_only());
+  CHECK_FALSE(view->connection()->execute("delete from queue_entries").has_value());
 
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);

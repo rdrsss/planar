@@ -7206,8 +7206,8 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/`) registers exactly nine read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
-2. The bootstrap calls `db::connection::open_read_only` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`.
+1. The command tree (`src/cmd/planar-watch/`) registers exactly ten read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `queue` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
+2. The bootstrap calls `db::connection::open_read_only` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`. The `queue` verb reads a second store, the agent database, through the same kind of handle (`planar.db.agentdb::open_agent_db_read_only_at`); `capability.t.cpp` asserts that handle refuses a write and that running the verb leaves the store's bytes and modification time unchanged.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
 
@@ -7243,6 +7243,9 @@ planar-watch run show <id> [--json]
 
 # Sync-event ledger (plan 638 addition — read-only view over sync_events).
 planar-watch sync-events [--plan <id>] [--system <slug>] [--entity <kind:id>] [--outcome <value>] [--since <ISO8601>] [--limit <n>] [--json]
+
+# Host build and test queue (plan 1080 — read-only view over the agent database).
+planar-watch queue [--json]
 
 # Conventional helpers.
 planar-watch version
@@ -7385,6 +7388,51 @@ id    at                         direction  outcome   link_id  detail
 - `0` — success (empty result is not an error).
 - `1` — invalid flag value (non-integer `--plan` or `--limit`, malformed `--entity` reference, invalid `--since` timestamp).
 
+### `planar-watch queue` — the host build and test queue (plan 1080)
+
+Read-only listing of every running and waiting entry of the host-wide queue that `planar-agent queue run` feeds, across every project. It reads the **agent database** (`PLANAR_AGENT_DB`, else `~/.planar/agent.db`), not the main database, so it works when the main database cannot be located.
+
+**Synopsis:**
+```
+planar-watch queue [--json]
+```
+
+**What it lists.** Running entries first, then waiting entries in queue order. `POS` is the place among the *waiting* entries from 1; a running entry holds a slot and has none. Each entry is judged by the same liveness rules a queue poll applies, against the `stale_after` window of the [`[queue]` table](#the-queue-table), but the judgement is only reported: this verb never reaps, refreshes or removes an entry, and the store's bytes and modification time are unchanged by it. An entry that is not live stays listed and is marked `NOT-LIVE`; a nested entry is marked `nested:<parent seq>`; an entry being stopped is marked `stopping:<reason>`. When the `[queue]` table cannot be used, the default window applies and one `warning: queue: ...` line goes to standard error (the same degradation as `planar-agent queue status`).
+
+**Human output.** A header and one line per entry, columns padded: `SEQ  STATE  POS  NOTES  WAITED  RAN  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `NOTES` is `-` or a comma-joined list of `NOT-LIVE`, `LIVE-UNKNOWN` (the process query failed), `nested:<n>`, `stopping:<reason>`. An empty value is `-`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m`. `COMMAND` is the argument vector with each word shell-quoted. An empty queue prints nothing. A value that holds a control character, a space or a double quote is written as a double-quoted string with `\n` / `\u00xx` escapes, so a submitted label, vendor, role, directory or argument cannot start a line of its own; a command word holding a control character is escaped the same way. Bidirectional-text and other Unicode format characters are not escaped yet (task 7082).
+
+```
+SEQ  STATE    POS  NOTES     WAITED  RAN   VENDOR  ROLE   LABEL       DIRECTORY   COMMAND
+41   running  -    -         0s      3m12s claude  coder  -           /work/a     make test
+42   waiting  1    NOT-LIVE  4m10s   -     codex   tester "my label"  /work/b     ctest -j 8
+```
+
+**JSON output.** One array, `[]` when the queue is empty, of objects with exactly these members in this order; a member that does not apply is `null`:
+
+| Field | Meaning |
+|---|---|
+| `seq` | The sequence number |
+| `state` | `waiting` or `running` |
+| `live` | Whether the entry passes the liveness rules; `null` when the process query failed |
+| `position` | Place among the waiting entries, from 1; `null` for a running entry |
+| `terminating` | The reason (`timeout`, `cancelled`) while the entry is being stopped |
+| `nested`, `parent_seq` | Nesting |
+| `cwd`, `argv` | As submitted; `argv` is an array |
+| `label`, `vendor`, `role` | As submitted |
+| `log_path` | The output file of a detached run |
+| `enqueued_at`, `started_at` | Wall-clock milliseconds |
+| `waited_ms`, `ran_ms` | Durations at the moment of the listing |
+| `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` on a store still at agent schema version 2 |
+
+**Schema effects:** Reads `queue_entries` in the agent database. No writes; a missing agent database is an empty queue and is not created.
+
+**Exit codes:**
+- `0` — success, an empty or missing queue included.
+- `1` — the file at the agent database path is not an agent store (a database with other tables) or cannot be read; a parse failure.
+- `7` — the store was written by a newer release (its `compat` is above this binary's agent schema version); both versions are named.
+
+**Main database.** `planar-watch queue` is the one verb that does not need the main database's path. Every other verb still exits `1` with `neither PLANAR_DB nor HOME is set` when neither variable is; `queue` resolves its own store from `PLANAR_AGENT_DB` / `HOME`.
+
 ---
 
 ### JSON shapes
@@ -7461,9 +7509,9 @@ latest_action: { kind: string, summary: string, started_at: ISO8601 } | null
 | Code | Meaning |
 |------|---------|
 | 0 | Success (and the `--follow` graceful-SIGINT exit). |
-| 1 | Generic failure (DB I/O error), and every parse failure — unknown flag, a flag value outside its accepted set. |
+| 1 | Generic failure (DB I/O error), and every parse failure — unknown flag, a flag value outside its accepted set. `queue`: a file that is not an agent store. |
 | 2 | Invalid input raised by a handler (missing required filter on `log`, an `--entity` value that is not `kind:id`). |
-| 7 | Schema version mismatch (DB older than binary's embedded minimum, OR newer than its embedded max). `planar-agent` and `planar-ext` fold both directions into `7` the same way; `planar` returns `7` only for a newer schema and `1` for an older one. |
+| 7 | Schema version mismatch (DB older than binary's embedded minimum, OR newer than its embedded max); for `queue`, an agent database written by a newer release. `planar-agent` and `planar-ext` fold both directions into `7` the same way; `planar` returns `7` only for a newer schema and `1` for an older one. |
 
 ### `--follow` and SIGINT
 

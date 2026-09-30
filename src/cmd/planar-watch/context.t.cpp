@@ -289,3 +289,20 @@ TEST_CASE("planar-watch refuses a database migrated past its embedded chain", "[
   CHECK(opened.error().kind == planar::cmd::watch::domain_error_kind::schema_version_ahead);
   CHECK(planar::cmd::watch::exit_code(opened.error()) == 7);
 }
+
+TEST_CASE("planar-watch: only the queue domain skips the main database's path resolution", "[cmd][watch][context]") {
+  using planar::cmd::watch::uses_main_database;
+  auto const argv = [](std::vector<std::string> v) { return v; };
+
+  CHECK_FALSE(uses_main_database(argv({"planar-watch", "queue"})));
+  CHECK_FALSE(uses_main_database(argv({"planar-watch", "queue", "--json"})));
+  CHECK(uses_main_database(argv({"planar-watch", "ps"})));
+  CHECK(uses_main_database(argv({"planar-watch", "version"})));
+  CHECK(uses_main_database(argv({"planar-watch", "schema"})));
+  CHECK(uses_main_database(argv({"planar-watch", "--json"})));
+  CHECK(uses_main_database(argv({"planar-watch", "--help", "queue"})));
+  CHECK(uses_main_database(argv({"planar-watch", "queues"})));
+  CHECK(uses_main_database(argv({"planar-watch", "run", "queue"})));
+  CHECK(uses_main_database(argv({"planar-watch"})));
+  CHECK(uses_main_database(argv({})));
+}
