@@ -1362,3 +1362,91 @@ TEST_CASE("the two streams' version tables do not read each other when both are 
   REQUIRE(planar::db::apply_all(*conn, agent, planar::db::k_agent_version_table).has_value());
   CHECK(planar::db::current_version(*conn).value() == main_head);
 }
+
+// Plan 1080, task hq-queue-limit-columns: the agent stream gets the same
+// per-version up/down/up walk as the main chain, plus the stronger check that
+// a migration's down puts the schema back to exactly what the previous
+// version had (a down that forgets a dropped column still re-applies cleanly,
+// because nothing re-adds it, so the roundtrip alone would not notice).
+TEST_CASE("agent stream: every migration's down restores the previous schema and up-down-up is lossless",
+          "[db][migrate][roundtrip][agent][hq-queue-limit-columns]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  auto const chain = planar::db::agent::migrations();
+  REQUIRE(chain.size() >= 3);
+
+  // `canonical_schema_dump` minus `sqlite_sequence`: SQLite creates that
+  // table for the first `autoincrement` key and never lets it be dropped, so
+  // it outlives 00002's down without being a leftover of any migration.
+  auto const schema = [&] {
+    auto const  dump = canonical_schema_dump(*conn);
+    std::string out;
+    for (auto const record : std::views::split(dump, '\x1e')) {
+      std::string_view const row{record.begin(), record.end()};
+      if (!row.empty() && !row.starts_with("table\x1fsqlite_sequence\x1f")) {
+        out += row;
+        out += '\x1e';
+      }
+    }
+    return out;
+  };
+
+  auto previous = schema(); // version 0: nothing at all
+  for (std::size_t i = 0; i < chain.size(); ++i) {
+    INFO(std::format("agent migration version {} ('{}')", chain[i].version_, chain[i].name_));
+    REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, i + 1), planar::db::k_agent_version_table));
+    auto const before = schema();
+    CHECK(before != previous);
+
+    REQUIRE(conn->execute(chain[i].down_sql_));
+    CHECK(schema() == previous);
+
+    REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, i + 1), planar::db::k_agent_version_table));
+    CHECK(schema() == before);
+    previous = before;
+  }
+  CHECK(planar::db::current_version(*conn, planar::db::k_agent_version_table).value() == planar::db::embedded_max(chain));
+}
+
+TEST_CASE("agent migration 00003 adds nullable run_limit_ms and wait_limit_ms to both queue tables, and its down removes them",
+          "[db][migrate][agent][hq-queue-limit-columns]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+
+  auto const chain = planar::db::agent::migrations();
+  auto const at    = std::ranges::find(chain, std::string_view{"queue_limits"}, &planar::db::migration_record::name_);
+  REQUIRE(at != chain.end());
+  REQUIRE(at->version_ == 3);
+  auto const upto = static_cast<std::size_t>(std::distance(chain.begin(), at)) + 1;
+
+  // One `name:type:notnull:default` row per limit column, sorted.
+  auto const limit_columns = [&](std::string_view table) {
+    auto stmt = conn->prepare(std::format("select group_concat(name || ':' || type || ':' || \"notnull\" || ':' || "
+                                          "ifnull(dflt_value, 'none'), ',') from (select * from pragma_table_info('{}') "
+                                          "where name in ('run_limit_ms', 'wait_limit_ms') order by name)",
+                                          table));
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().value() == planar::db::step_result::row);
+    return stmt->is_null(0) ? std::string{} : stmt->column_text(0);
+  };
+
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, upto), planar::db::k_agent_version_table));
+  for (auto const table : {"queue_entries", "queue_history"}) {
+    INFO(table);
+    CHECK(limit_columns(table) == "run_limit_ms:INTEGER:0:none,wait_limit_ms:INTEGER:0:none");
+  }
+  auto compat = conn->prepare("select compat from agent_schema_migrations where version = 3");
+  REQUIRE(compat.has_value());
+  REQUIRE(compat->step().value() == planar::db::step_result::row);
+  CHECK(compat->column_int64(0) == 1);
+
+  REQUIRE(conn->execute(at->down_sql_));
+  for (auto const table : {"queue_entries", "queue_history"}) {
+    INFO(table);
+    CHECK(limit_columns(table).empty());
+  }
+  CHECK(planar::db::current_version(*conn, planar::db::k_agent_version_table).value() == 2);
+}
