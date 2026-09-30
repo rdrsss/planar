@@ -239,7 +239,9 @@ struct spawned {
 /// first had finished, which is exactly the overlap these cases exist to
 /// exercise. The streams go straight to files, as `launch_pinned_detached`
 /// does, and the exit status to `<tag>.code`; `finish` reads them back. The
-/// pinned map and the agent-database check are the harness's own.
+/// pinned map and the agent-database check are the harness's own. The
+/// background subshell closes its own streams, so a case that fails while
+/// its submitter is still waiting cannot keep the test process's pipes open.
 auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<std::string>& command,
                  std::vector<pinned_var> extra = {}) -> spawned {
   auto vars = parity::pinned_env(arena.cpp_root);
@@ -258,8 +260,8 @@ auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<
   std::error_code ec;
   std::filesystem::remove(arena.cpp_root / std::format("{}.code", tag), ec);
   auto const line =
-      std::format("( cd {} && {{ {} ; echo $? > {} ; }} > {} 2> {} ) &", parity::shell_quote((arena.cpp_root / "proj").string()),
-                  child, path("code"), path("out"), path("err"));
+      std::format("( cd {} && {{ {} ; echo $? > {} ; }} > {} 2> {} ) </dev/null >/dev/null 2>&1 &",
+                  parity::shell_quote((arena.cpp_root / "proj").string()), child, path("code"), path("out"), path("err"));
   static_cast<void>(std::system(line.c_str()));
   return spawned{.root = arena.cpp_root, .tag = std::move(tag)};
 }

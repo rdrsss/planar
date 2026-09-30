@@ -99,26 +99,25 @@ auto fast_settings() -> planar::engine::config::queue_settings {
 }
 
 /// @brief A sleep seam that bounds a case: it really sleeps a millisecond,
-/// counts the polls, and once `limit` polls have gone by it makes the settings
-/// loader return a slot count nothing can lack, so a submitter that should
-/// have started at once but is waiting on a regression starts anyway and the
-/// case FAILS on `polls` instead of hanging.
+/// counts the polls, and once `limit` polls have gone by it THROWS, which
+/// Catch2 reports as a failure of the case. A submitter that waits on a
+/// regression (however the regression is spelled) therefore fails the case
+/// after a bounded number of polls instead of looping forever.
 struct poll_bound {
   static constexpr int limit = 300;
   std::shared_ptr<int> polls = std::make_shared<int>(0);
 
+  /// @brief Installs the seam and a fixed settings loader.
   void bind(agent::handlers::queue_run_deps& deps, planar::engine::config::queue_settings settings) const {
     auto const count = polls;
     deps.sleep       = [count](std::chrono::milliseconds) {
-      ++*count;
+      if (++*count >= limit) {
+        throw std::runtime_error("queue run polled past the case's bound: it is waiting on something that should not block it");
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     };
-    deps.load_settings = [count, settings]() mutable {
-      auto now = settings;
-      if (*count >= limit) {
-        now.slots = 1000;
-      }
-      return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{now};
+    deps.load_settings = [settings] {
+      return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{settings};
     };
   }
 };
