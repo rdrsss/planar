@@ -402,6 +402,39 @@ TEST_CASE("arena: agent_db_pin_error accepts the default map and refuses one tha
     REQUIRE(problem.has_value());
     REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("unpinned"));
   }
+  SECTION("with both variables explicitly REMOVED the map is provably unresolvable and accepted") {
+    auto env = pinned_env(work);
+    for (auto& var : env) {
+      if (var.name == "PLANAR_AGENT_DB" || var.name == "HOME") {
+        var.unset = true;
+      }
+    }
+    REQUIRE_FALSE(agent_db_pin_error(work, env).has_value());
+  }
+  SECTION("removing only PLANAR_AGENT_DB, or only HOME with PLANAR_AGENT_DB outside, is judged on what is left") {
+    auto only_agent_db = pinned_env(work);
+    for (auto& var : only_agent_db) {
+      if (var.name == "PLANAR_AGENT_DB") {
+        var.unset = true;
+      }
+    }
+    REQUIRE_FALSE(agent_db_pin_error(work, only_agent_db).has_value()); // The scratch HOME still contains the fallback.
+
+    auto env = env_with(work, (std::filesystem::temp_directory_path() / "planar_agentdb_elsewhere" / "agent.db").string());
+    for (auto& var : env) {
+      if (var.name == "HOME") {
+        var.unset = true;
+      }
+    }
+    REQUIRE(agent_db_pin_error(work, env).has_value()); // HOME removed does not excuse an outside PLANAR_AGENT_DB.
+  }
+  SECTION("an unset entry is exported as env -u, before the assignments") {
+    auto env = pinned_env(work);
+    env.push_back(pinned_var{.name = "PLANAR_DB", .unset = true});
+    auto const prefix = planar::cmd::parity::pinned_env_prefix(env);
+    REQUIRE_THAT(prefix, Catch::Matchers::ContainsSubstring("env -u 'PLANAR_DB' "));
+    REQUIRE(prefix.find("-u 'PLANAR_DB'") < prefix.find("PLANAR_AGENT_DB="));
+  }
 }
 
 TEST_CASE("arena: run_pinned fails the case before the binary runs when the agent database is outside", "[arena][agentdb]") {
