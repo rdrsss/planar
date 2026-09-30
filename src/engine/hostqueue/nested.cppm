@@ -5,8 +5,8 @@
 ///
 /// Entry point: `enqueue_nested(conn, parent_seq, request, limits, clock,
 /// probe)`. In one `BEGIN IMMEDIATE` transaction it reads the named parent
-/// entry and, only when that parent exists, is `running` and passes the
-/// liveness rules of `planar.engine.hostqueue.liveness`, inserts a new entry
+/// entry and, only when that parent exists, is `running`, is on the caller's
+/// own host identity (decision 1209) and passes the liveness rules of `planar.engine.hostqueue.liveness`, inserts a new entry
 /// that:
 ///
 /// - records `parent_seq`, so the poll leaves it out of the slot count and
@@ -20,11 +20,15 @@
 /// A parent may itself be a nested entry, so a nested run can contain
 /// another.
 ///
-/// When the parent is missing, waiting, not live, or its liveness cannot be
-/// judged because a process query failed, nothing is inserted and the
+/// When the parent is missing, waiting, on another (or an unknown) host
+/// identity, not live, or its liveness cannot be judged because a process
+/// query failed, nothing is inserted and the
 /// result is `nested_status::queue_normally` with the reason: decision 1191
 /// honours the slot marker only when it names a live running entry, and the
-/// caller then enqueues the command as an ordinary waiting entry. A failed
+/// caller then enqueues the command as an ordinary waiting entry. The host
+/// rule exists because nesting asserts that the parent's command started this
+/// run, which no freshness reading of another host's entry can establish; it
+/// is the `same_host` test of `planar.engine.hostqueue.terminate`. A failed
 /// liveness query refuses rather than accepts, so an unjudged marker can
 /// delay a command but never start one outside the queue.
 ///

@@ -36,7 +36,9 @@
 # commits). poll does not import terminate, so the interfaces form no cycle.
 #
 # `nested.cppm` (task hq-nested-entry) inserts a nested run's entry after
-# checking its parent; it imports queue and liveness from this bucket.
+# checking its parent; it imports queue and liveness from this bucket, and
+# `nested.cpp` imports terminate for its `same_host` test (decision 1209; an
+# implementation-unit import, so the interfaces form no cycle).
 #
 # `guard.cppm` (task hq-command-guard) is the pure command guard: it imports
 # nothing but the standard library.
