@@ -52,6 +52,10 @@ constexpr std::array<std::string_view, 2> k_global_ok_flags{"--help", "-h"};
 /// Directories under the repo root that hold authored CLI prose.
 constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills/src", "docs"};
 
+/// Single authored files, outside those directories, that carry commands
+/// agents are told to run.
+constexpr std::array<std::string_view, 1> k_scan_files{"src/engine/hostqueue/queue-rule.md"};
+
 // ---------------------------------------------------------------------------
 // Schema model.
 // ---------------------------------------------------------------------------
@@ -421,6 +425,11 @@ void scan_command(catalog_t& catalog, std::vector<std::string> const& bin_names,
     return;
 
   for (std::string const& t : rest) {
+    // A bare `--` ends the resolved command's own flags: what follows is
+    // another program's command line (`planar-agent queue run -- make -j8`),
+    // and its flags are not this catalog's to check.
+    if (t == "--")
+      break;
     if (!is_flag(t))
       continue;
     std::string_view name = flag_name(t);
@@ -644,6 +653,20 @@ auto main(int argc, char** argv) -> int {
     std::string   content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     ++files_scanned;
     scan_file(catalog, bin_names, claude_md.string(), content, violations);
+  }
+
+  // The queue rule (plan 1080, task hq-rule-text) is authored beside the code
+  // that embeds it, not under one of the directories above, and it shows
+  // `planar-agent queue` commands that agents copy. Each such file is scanned
+  // like CLAUDE.md is: as a single file with its own entry point.
+  for (auto const rel : k_scan_files) {
+    auto const path = fs::path{repo_root} / rel;
+    if (std::error_code ec; fs::exists(path, ec) && fs::is_regular_file(path, ec)) {
+      std::ifstream in(path, std::ios::binary);
+      std::string   content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      ++files_scanned;
+      scan_file(catalog, bin_names, path.string(), content, violations);
+    }
   }
 
   auto const policy = check_command_policy(catalog, bin_names, fs::path{repo_root});
