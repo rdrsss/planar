@@ -786,6 +786,53 @@ auto touch_command(const std::filesystem::path& marker) -> std::vector<std::stri
 
 } // namespace
 
+TEST_CASE("queue run: a nested attempt that falls back to the normal enqueue reads the clock again for the entry it queues",
+          "[cmd][agent][queue][hq-nested-run]") {
+  // Task 7077. The nested attempt can spend time (a busy store retried at the
+  // poll interval), so the clock reading the handler took before it is stale by
+  // the time the entry is enqueued normally. The seam below moves the steered
+  // clock while it declines the nested run; the entry's wait deadline, which
+  // is that reading plus the wait limit, must be measured from the later one.
+  scratch    sc;
+  auto const clock  = std::make_shared<steered_clock>();
+  auto const holder = seed_live_parent(sc, clock.get());
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  deps.clock = clock;
+  deps.enqueue_nested =
+      [clock](planar::db::connection&, std::int64_t, const hq::enqueue_request&, const hq::nested_limits&, ident::clock&,
+              const hq::process_probe&) -> std::expected<hq::nested_result, hq::queue_error> {
+    clock->advance(7'000);
+    return hq::nested_result{.status = hq::nested_status::queue_normally, .refusal = hq::nested_refusal::parent_missing};
+  };
+  std::optional<std::int64_t> deadline;
+  std::optional<std::int64_t> clock_at_enqueue;
+  bool                        released = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!released) {
+      released = true;
+      if (auto const entry = hq::find(conn, holder + 1).value()) {
+        deadline = entry->wait_deadline_mono;
+      }
+      clock_at_enqueue = clock->monotonic_ms().value_or(0);
+      end_as(conn, holder, hq::history_outcome::exited);
+    }
+  });
+
+  fixture fx{sc, (sc.root / "agent.db").string(), {{"PLANAR_QUEUE_SLOT", "987654"}}};
+  auto    args                 = queue_args(touch_command(marker));
+  args.flags["--wait-timeout"] = {"1h"};
+  auto const  outcome          = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status           = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(status->code == 0);
+  REQUIRE(deadline.has_value());
+  REQUIRE(clock_at_enqueue.has_value());
+  CHECK(*deadline == *clock_at_enqueue + 3'600'000);
+}
+
 TEST_CASE("queue run: a waiting submitter reaped as abandoned rejoins behind later arrivals, records its successor and runs once",
           "[cmd][agent][queue][hq-missing-entry]") {
   scratch    sc;
