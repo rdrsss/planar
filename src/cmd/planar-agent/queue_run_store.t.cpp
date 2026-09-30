@@ -139,6 +139,46 @@ auto permissions_bind() -> bool {
 } // namespace
 
 // ---------------------------------------------------------------------------
+// The harness's removals reach the child
+// ---------------------------------------------------------------------------
+
+TEST_CASE("queue run store cases: a variable the map removes is absent from the child's environment",
+          "[cmd][agent][queue][queue-store]") {
+  // Every no-HOME case above rests on `env -u` really removing the variable;
+  // if the prefix dropped it, the child would inherit the operator's HOME and
+  // the run would use (and migrate) stores outside the arena. The child here
+  // is `env` itself, printing what it received.
+  auto const arena = parity::make_arena("qs_removal");
+  REQUIRE(::setenv("PLANAR_PROBE_INHERITED", "yes", 1) == 0);
+
+  auto       env     = parity::pinned_env(arena.cpp_root);
+  auto const printed = [&](std::string_view tag) {
+    return parity::run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, tag, env);
+  };
+  auto const has_line = [](const std::string& text, std::string_view line) {
+    return ("\n" + text).find(std::format("\n{}", line)) != std::string::npos;
+  };
+
+  // Control: an unlisted variable is inherited, so the removal below is what
+  // makes it disappear.
+  auto const control = printed("qs_removal_control");
+  REQUIRE(control.code == 0);
+  CHECK(has_line(control.out, "PLANAR_PROBE_INHERITED=yes"));
+
+  remove_var(env, "PLANAR_PROBE_INHERITED");
+  remove_var(env, "PLANAR_DB");
+  remove_var(env, "HOME");
+  auto const got = printed("qs_removal_run");
+  INFO("child environment:\n" << got.out);
+  REQUIRE(got.code == 0);
+  CHECK_FALSE(has_line(got.out, "PLANAR_PROBE_INHERITED="));
+  CHECK_FALSE(has_line(got.out, "PLANAR_DB="));
+  CHECK_FALSE(has_line(got.out, "HOME="));
+  CHECK(has_line(got.out, std::format("PLANAR_AGENT_DB={}", (arena.cpp_root / "agent.db").string())));
+  ::unsetenv("PLANAR_PROBE_INHERITED");
+}
+
+// ---------------------------------------------------------------------------
 // Scenario: Error: the agent database cannot be opened or written
 // ---------------------------------------------------------------------------
 

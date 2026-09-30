@@ -428,6 +428,36 @@ TEST_CASE("arena: agent_db_pin_error accepts the default map and refuses one tha
     }
     REQUIRE(agent_db_pin_error(work, env).has_value()); // HOME removed does not excuse an outside PLANAR_AGENT_DB.
   }
+  SECTION("removing PLANAR_AGENT_DB while HOME is merely ABSENT is refused: the child would inherit the operator's HOME") {
+    std::vector<pinned_var> env;
+    for (auto& var : pinned_env(work)) {
+      if (var.name == "HOME") {
+        continue; // Erased, not removed: `env` would pass the caller's HOME through.
+      }
+      if (var.name == "PLANAR_AGENT_DB") {
+        var.unset = true;
+      }
+      env.push_back(std::move(var));
+    }
+    auto const problem = agent_db_pin_error(work, env);
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("unpinned"));
+  }
+  SECTION("removing HOME while PLANAR_AGENT_DB is merely ABSENT is refused") {
+    std::vector<pinned_var> env;
+    for (auto& var : pinned_env(work)) {
+      if (var.name == "PLANAR_AGENT_DB") {
+        continue;
+      }
+      if (var.name == "HOME") {
+        var.unset = true;
+      }
+      env.push_back(std::move(var));
+    }
+    auto const problem = agent_db_pin_error(work, env);
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("unpinned"));
+  }
   SECTION("an unset entry is exported as env -u, before the assignments") {
     auto env = pinned_env(work);
     env.push_back(pinned_var{.name = "PLANAR_DB", .unset = true});

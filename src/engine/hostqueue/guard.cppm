@@ -26,9 +26,11 @@
 ///     its options and any assignments that follow it: `-i`, `-0`, `-v`,
 ///     `-u NAME` / `-uNAME` / `--unset=NAME` / `--unset NAME`,
 ///     `-C DIR` / `-CDIR` / `--chdir=DIR` / `--chdir DIR`, `-P PATH` / `-PPATH`,
-///     `-a NAME` / `-aNAME` / `--argv0=NAME` / `--argv0 NAME`, macOS's
-///     `-L USER` / `-LUSER` and `-U USER` / `-UUSER` (the value is a user, not
-///     the program), clustered short
+///     `-a NAME` / `-aNAME` / `--argv0=NAME` / `--argv0 NAME`, FreeBSD's
+///     `-L USER` / `-LUSER` and `-U USER` / `-UUSER` (macOS and GNU env reject
+///     them, so such a command fails inside env before anything runs; consuming
+///     the value is harmless, and keeps the user from being read as the
+///     program), clustered short
 ///     options such as `-iu NAME`, and `--` (which ends the options);
 ///   * `-S STRING` / `-SSTRING` / `--split-string=STRING` /
 ///     `--split-string STRING`, whose string is split on white space and

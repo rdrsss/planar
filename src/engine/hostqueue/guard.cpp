@@ -141,7 +141,9 @@ void skip_option(std::vector<std::string>& words, std::size_t& at) {
   // Short options, possibly clustered: `-iu NAME`, `-uNAME`, `-Sclaude`.
   for (std::size_t j = 1; j < word.size(); ++j) {
     char const c = word[j];
-    // `-L` and `-U` are macOS's login-class options; each takes a user.
+    // `-L` and `-U` are FreeBSD's login-class options, which macOS and GNU env
+    // reject. Consuming their value anyway is harmless: such a command fails
+    // inside env before anything runs.
     if (c == 'u' || c == 'C' || c == 'P' || c == 'a' || c == 'S' || c == 'L' || c == 'U') {
       bool const has_inline = j + 1 < word.size();
       auto const rest       = std::string_view{word}.substr(j + 1);
