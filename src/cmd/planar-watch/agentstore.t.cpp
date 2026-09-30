@@ -175,6 +175,17 @@ TEST_CASE("a store at head is read, byte for byte unchanged by the read", "[cmd]
   }
   CHECK(bytes_of(store) == before_bytes);
   CHECK((fs::last_write_time(store) == before_time));
+  // SQLite itself creates the -wal / -shm sidecars when a read-only
+  // connection opens a cleanly closed WAL store (the main database read by
+  // planar-watch behaves the same); they carry no data, and nothing else may
+  // appear.
+  for (auto const& name : listing(sc.root)) {
+    INFO("unexpected file: " << name);
+    CHECK((name == "agent.db" || name == "agent.db-wal" || name == "agent.db-shm"));
+  }
+  if (fs::exists(store.string() + "-wal")) {
+    CHECK(fs::file_size(store.string() + "-wal") == 0);
+  }
 }
 
 TEST_CASE("a store with an uncheckpointed WAL write is read and its main file is untouched", "[cmd][watch][agentstore]") {
