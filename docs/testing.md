@@ -20,11 +20,49 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make cpp-lint-gate` | `clang-format --Werror` and the Doxygen doc-comment pass. |
 | `make test-all` | All of the above, composed. This is the gate to run before a pull request. |
 | `make cpp-lint` | `cpp-lint-gate` plus `clang-tidy`. Not part of `test-all`. |
+| `make linux-gate` | The `debug` build and the whole ctest suite on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
 | `make test-cpp-solver` | The ctest suite against a `-DPLANAR_WITH_MTKAHYPAR=ON` build. |
 
 `clang-tidy` is advisory. The recipe runs it without `--warnings-as-errors`
 and `.clang-tidy` declares no `WarningsAsErrors` key, so its warnings never
 fail a run. It enables one check, `readability-identifier-naming`.
+
+## The Linux gate
+
+`make linux-gate` builds the `debug` preset and runs the whole ctest suite in
+a `debian:trixie-slim` container, so code with a Linux-only branch
+(`close_range` and `/proc/self/fd` in `src/lib/process`, `pipe2` in the
+runner, `/proc/<pid>/fd` in the queue tests) is compiled and run somewhere
+other than macOS. It is the Linux lane; CI is not relied on for it.
+
+```bash
+make linux-gate                                  # full build + suite
+make linux-gate LINUX_GATE_CTEST_ARGS="-L process"   # a subset
+make linux-gate LINUX_GATE_JOBS=8                # build and ctest parallelism (default 4)
+make linux-gate-prune                            # docker builder prune -f
+```
+
+`docker/linux-gate.Dockerfile` installs apt.llvm.org's LLVM 23 (clang,
+libc++ with its modules manifest, libc++abi), Kitware CMake pinned by version
+and SHA-256, ninja, git, python3, `sqlite3`, `libtbb-dev`, `libssl-dev` (vendored libcurl's TLS on Linux) and `patch` (CPM's `PATCHES` keyword). The image
+build never fails on a red suite. It records `configure.log`, `build.log`,
+`ctest.log` and `status.txt`, and the Makefile exports them to
+`build/linux-gate/`, prints the ctest verdict and exits nonzero unless
+`status=0`. Read `ctest.log` there rather than the build output: BuildKit
+clips a step's log at 2 MiB.
+
+Centurion lives in the gitignored `external/` directory and its repository is
+private. The gate does not fetch it and no token enters an image layer. The
+Makefile passes the pinned tag's already-populated directory (from this
+checkout, or from the primary checkout when run in a linked worktree) as a
+named build context and bind-mounts it for the one `RUN` that builds. Populate
+it once on the host with `GITHUB_TOKEN=$(gh auth token) cmake --preset debug`,
+or set `LINUX_GATE_EXTERNAL`.
+
+The build tree lives in a BuildKit cache mount, so a second run is
+incremental, and it costs disk while it stays. Run `make linux-gate-prune`
+when done; a past unpruned run of this kind filled the machine's disk.
+Docker is a developer tool and not one of the installer's `BUILD_DEPS`.
 
 ## When every build is a full rebuild
 
