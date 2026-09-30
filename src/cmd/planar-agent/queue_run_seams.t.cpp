@@ -57,6 +57,15 @@ struct invocation {
   std::string err;
 };
 
+/// @brief The last line of `text`, without its newline; empty when there is none.
+auto last_line(std::string_view text) -> std::string {
+  while (text.ends_with('\n')) {
+    text.remove_suffix(1);
+  }
+  auto const start = text.rfind('\n');
+  return std::string{start == std::string_view::npos ? text : text.substr(start + 1)};
+}
+
 /// @brief The handler's parsed arguments for `queue run -- <command>`, as the
 /// tree's `command` positional would harvest them.
 auto queue_args(const std::vector<std::string>& command) -> planar::cliapp::parsed_args {
@@ -64,6 +73,9 @@ auto queue_args(const std::vector<std::string>& command) -> planar::cliapp::pars
   args.path                        = {"queue", "run"};
   args.positional_lists["command"] = command;
   args.positionals["command"]      = command.back();
+  // Every seam case runs with `--notices`, so the last line on standard error
+  // is the outcome the submitter reports on the path under test.
+  args.flags["--notices"] = {"true"};
   return args;
 }
 
@@ -303,6 +315,7 @@ TEST_CASE("queue run: giving up after a poll cannot complete ends the entry as a
   auto const got = run_queue(sc, {"/usr/bin/true"}, deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
+  CHECK(last_line(got.err) == "queue: entry 1 abandoned, could not be polled");
   CHECK(got.err.contains("giving up"));
   CHECK(*bound.polls < poll_bound::limit);
 
@@ -799,6 +812,7 @@ TEST_CASE("queue run: a waiting submitter whose entry was cancelled exits 125, r
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
+  CHECK(last_line(got.err) == "queue: entry 2 cancelled");
   CHECK(got.err.contains("cancelled"));
   CHECK(got.err.contains("the command was not run"));
   CHECK_FALSE(std::filesystem::exists(marker));
@@ -835,6 +849,7 @@ TEST_CASE("queue run: a waiting submitter whose entry ended any other way exits 
     auto const got = run_queue(sc, touch_command(marker), deps);
     INFO("stderr:\n" << got.err);
     CHECK(got.code == 125);
+    CHECK(last_line(got.err) == std::format("queue: entry 2 ended as {} without this submitter", hq::to_string(outcome)));
     CHECK(got.err.contains("the command was not run"));
     CHECK_FALSE(std::filesystem::exists(marker));
 
@@ -864,6 +879,7 @@ TEST_CASE("queue run: a waiting submitter whose entry is missing and left no his
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
+  CHECK(last_line(got.err) == "queue: entry 2 ended without a history row");
   CHECK(got.err.contains("no history"));
   CHECK(got.err.contains("the command was not run"));
   CHECK_FALSE(std::filesystem::exists(marker));
@@ -900,6 +916,7 @@ TEST_CASE("queue run: a submitter reaped again and again stops rejoining after t
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
+  CHECK(last_line(got.err) == "queue: entry 5 abandoned, rejoin limit reached");
   CHECK(got.err.contains("the command was not run"));
   CHECK_FALSE(std::filesystem::exists(marker));
   // The original entry and each of the three rejoins was reaped once; nothing
@@ -1021,6 +1038,7 @@ TEST_CASE("queue run: a give-up exit leaves an abandoned row with the fields of 
   auto const* status    = std::get_if<agent::exit_status>(&outcome);
   REQUIRE(status != nullptr);
   CHECK(status->code == 125);
+  CHECK(last_line(fx.err.str()) == "queue: entry 1 abandoned, could not be polled");
 
   auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
   REQUIRE(opened.has_value());
@@ -1082,6 +1100,7 @@ TEST_CASE("queue run: a rejoin that keeps finding the store busy exits 125 withi
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
+  CHECK(last_line(got.err) == "queue: entry 2 ended: store busy while rejoining");
   CHECK(got.err.contains("busy"));
   CHECK(got.err.contains("the command was not run"));
   CHECK(*calls > 1); // retried rather than given up on at the first busy
@@ -1123,6 +1142,7 @@ TEST_CASE("queue run: a rejoin that fails for any other reason exits 125 at once
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
+  CHECK(last_line(got.err) == "queue: entry 2 ended: cannot rejoin the queue");
   CHECK(got.err.contains("insert refused"));
   CHECK(got.err.contains("the command was not run"));
   CHECK_FALSE(got.err.contains("busy"));
@@ -1172,4 +1192,38 @@ TEST_CASE("queue run: a rejoin that finds the store busy and then succeeds rejoi
   CHECK(hq::list(*opened).value().empty());
   CHECK(history_of(*opened, 2)->successor_seq == 3);
   CHECK(history_of(*opened, 3)->outcome == hq::history_outcome::exited);
+}
+
+TEST_CASE("queue run: a start failure that is neither 126 nor 127 ends the entry abandoned and the notice says so",
+          "[cmd][agent][queue][hq-notices]") {
+  // The directory the command was submitted from disappears while the entry
+  // waits, so the command passes every check made before the enqueue and then
+  // cannot be started at its turn for a reason other than a missing or
+  // unexecutable program. `not_started` is the outcome of 126 and 127 only.
+  scratch    sc;
+  auto const holder = seed_live_parent(sc);
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  bool                            done = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!done && hq::find(conn, 2).value()) {
+      end_as(conn, holder, hq::history_outcome::exited);
+      std::filesystem::remove_all(sc.root / "proj");
+      done = true;
+    }
+  });
+  auto const got = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(last_line(got.err) == "queue: entry 2 abandoned, could not be started");
+  CHECK_FALSE(std::filesystem::exists(marker));
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const row = history_of(*opened, 2);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::abandoned);
+  CHECK_FALSE(row->exit_code.has_value());
+  CHECK(hq::list(*opened).value().empty());
 }

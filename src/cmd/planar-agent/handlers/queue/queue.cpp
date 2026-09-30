@@ -257,6 +257,80 @@ auto describe(const qcfg::queue_load_error& err) -> std::string {
   return text;
 }
 
+/// @brief One identity field of a submission: the flag when it is given and not
+/// empty, else the environment variable when it is set and not empty, else
+/// nothing (task hq-vendor-role). An empty value reads as absent, as
+/// `$PLANAR_VENDOR` does everywhere else, so an entry never stores an empty
+/// string. Planar does not guess a value.
+/// @param args The parsed arguments.
+/// @param flag The flag name, with its dashes.
+/// @param env The context's environment lookup.
+/// @param variable The environment variable that stands in for the flag.
+/// @return The value to store, or `std::nullopt`.
+template <class Env>
+auto identity_field(const cliapp::parsed_args& args, std::string_view flag, const Env& env, std::string_view variable)
+    -> std::optional<std::string> {
+  if (auto given = cliapp::flag_string(args, flag); given && !given->empty()) {
+    return given;
+  }
+  if (auto set = env(std::string{variable}); set && !set->empty()) {
+    return set;
+  }
+  return std::nullopt;
+}
+
+/// @brief Writes queue notices to standard error when `--notices` was given
+/// (tech spec 647 § CLI surface). Notices go to the error stream only, never
+/// the output stream, and nothing is written without the flag. The
+/// `warning: queue:` diagnostics are not notices: they report a degraded path
+/// and are written with or without the flag.
+class notices {
+  std::ostream* _err;
+  bool          _enabled;
+
+public:
+  /// @brief A notice writer.
+  /// @param err The stream notices go to.
+  /// @param enabled Whether `--notices` was given.
+  notices(std::ostream& err, bool enabled) : _err(&err), _enabled(enabled) {
+  }
+
+  /// @brief Whether notices are on.
+  [[nodiscard]] auto enabled() const -> bool {
+    return _enabled;
+  }
+
+  /// @brief Writes `queue: entry <seq> <text>` and a newline, when enabled.
+  /// @param seq The entry's sequence number.
+  /// @param text What happened to it.
+  void line(std::int64_t seq, const std::string& text) const {
+    if (_enabled) {
+      *_err << std::format("queue: entry {} {}\n", seq, text);
+    }
+  }
+};
+
+/// @brief The place of entry `seq` among the waiting entries, counting from
+/// 1, or `std::nullopt` when it is not waiting or the store cannot say.
+auto waiting_position(db::connection& conn, std::int64_t seq) -> std::optional<std::int64_t> {
+  auto const all = hq::list(conn);
+  if (!all) {
+    return std::nullopt;
+  }
+  std::vector<std::int64_t> waiting;
+  for (auto const& entry : *all) {
+    if (entry.state == hq::entry_state::waiting) {
+      waiting.push_back(entry.seq);
+    }
+  }
+  std::ranges::sort(waiting);
+  auto const found = std::ranges::find(waiting, seq);
+  if (found == waiting.end()) {
+    return std::nullopt;
+  }
+  return static_cast<std::int64_t>(found - waiting.begin()) + 1;
+}
+
 /// @brief The `[queue]` settings in force, reloaded at every poll.
 class settings_source {
   std::function<std::expected<qcfg::queue_settings, qcfg::queue_load_error>()> _load;
@@ -490,6 +564,10 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     return exit_status{code};
   }
 
+  auto const vendor = identity_field(args, "--vendor", ctx.env(), "PLANAR_VENDOR");
+  auto const role   = identity_field(args, "--role", ctx.env(), "PLANAR_ROLE");
+  notices    notice{ctx.err(), cliapp::flag_bool(args, "--notices")};
+
   ident::system_clock system_clock;
   ident::clock&       clock     = deps.clock ? *deps.clock : static_cast<ident::clock&>(system_clock);
   auto const          probe     = deps.probe ? *deps.probe : hq::system_process_probe();
@@ -582,6 +660,8 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
                               .cwd            = ctx.cwd().string(),
                               .argv           = argv,
                               .label          = cliapp::flag_string(args, "--label"),
+                              .vendor         = vendor,
+                              .role           = role,
                               .enqueued_at    = clock.wall_ms(),
                               .refreshed_mono = *at},
           hq::nested_limits{.stale_after_ms = settings.current().stale_after_ms, .run_limit_ms = run_limit_ms}, clock, probe);
@@ -608,8 +688,6 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
 
   // The command guard and the 126/127 checks ran at the top of this function,
   // before the configuration and the store were touched.
-  // SEAM (task hq-vendor-role): `--vendor` and `--role` fill `vendor` and
-  // `role`.
   // The entry this submitter enqueues, and enqueues again when it rejoins the
   // queue: everything but the freshness baseline is the same. The wait limit
   // is one deadline for the whole wait, so a rejoined entry keeps the
@@ -622,6 +700,8 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
         .cwd                = ctx.cwd().string(),
         .argv               = argv,
         .label              = cliapp::flag_string(args, "--label"),
+        .vendor             = vendor,
+        .role               = role,
         .enqueued_at        = clock.wall_ms(),
         .refreshed_mono     = refreshed_mono,
         .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
@@ -666,15 +746,25 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // claiming a turn).
   };
 
+  // A refusal after the entry exists: the `error: queue:` line, then, with
+  // `--notices`, the outcome as the last line (tech spec 647: the submitter's
+  // last line names the sequence number and the outcome).
+  auto const refuse_entry = [&](const std::string& body, const std::string& outcome) {
+    auto refused = refuse(ctx, body);
+    notice.line(seq, outcome);
+    return refused;
+  };
+
   // A signal that arrives before the command starts removes the entry and
   // runs nothing (tech spec 647 § Signals are forwarded and the entry is
   // always removed). The entry ends as `cancelled`, attributed to this
   // process, and the submitter exits 125.
   auto const interrupted = [&](int sig) {
     end(hq::end_request{.outcome      = hq::history_outcome::cancelled,
-                        .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = pid}});
+                        .cancelled_by = hq::canceller{.vendor = vendor, .role = role, .pid = pid}});
     ctx.err() << std::format("error: queue: entry {} was interrupted by {} before its turn; the command was not run\n", seq,
                              signal_name(sig));
+    notice.line(seq, "cancelled before its turn");
     // The command never ran, so this is the queue's cancelled exit (decision
     // 1188), not 128 plus the signal, which is for a command a signal ended.
     return exit_status{exit_internal_error};
@@ -691,27 +781,32 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   // or the store was busy and the next poll asks again, within the staleness
   // window).
   int                         rejoins = 0;
+  std::optional<std::int64_t> last_position;     // The position last told to `--notices`; reset when the entry is replaced.
   std::optional<std::int64_t> rejoin_busy_since; // Monotonic ms of the first busy failure of a streak.
   auto const                  on_missing_while_waiting = [&]() -> std::optional<handler_outcome> {
     auto const gone = [&](std::optional<hq::history_outcome> outcome) -> handler_outcome {
       if (!outcome) {
-        return refuse(ctx,
-                      std::format("entry {} is no longer in the queue and left no history row; the command was not run", seq));
+        return refuse_entry(
+            std::format("entry {} is no longer in the queue and left no history row; the command was not run", seq),
+            "ended without a history row");
       }
       if (*outcome == hq::history_outcome::cancelled) {
-        return refuse(ctx, std::format("entry {} was cancelled; the command was not run", seq));
+        return refuse_entry(std::format("entry {} was cancelled; the command was not run", seq), "cancelled");
       }
       if (*outcome == hq::history_outcome::abandoned) {
-        return refuse(ctx, std::format("entry {} was reaped after this submitter had already rejoined the queue {} times; giving "
-                                       "up, the command was not run",
-                                       seq, rejoins));
+        return refuse_entry(
+            std::format("entry {} was reaped after this submitter had already rejoined the queue {} times; giving "
+                        "up, the command was not run",
+                        seq, rejoins),
+            "abandoned, rejoin limit reached");
       }
-      return refuse(
-          ctx, std::format("entry {} ended as {} without this submitter; the command was not run", seq, hq::to_string(*outcome)));
+      return refuse_entry(
+          std::format("entry {} ended as {} without this submitter; the command was not run", seq, hq::to_string(*outcome)),
+          std::format("ended as {} without this submitter", hq::to_string(*outcome)));
     };
     auto const now = clock.monotonic_ms();
     if (!now) {
-      return refuse(ctx, "cannot read the monotonic clock");
+      return refuse_entry("cannot read the monotonic clock", "ended: cannot read the clock");
     }
     // A store failure here is the poll-cannot-complete case of tech spec 647 §
     // Waiting: busy is retried at the poll interval for up to the staleness
@@ -720,15 +815,17 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // write); any other failure refuses at once. Nested insert, same rule.
     auto const store_failure = [&](const hq::queue_error& error) -> std::optional<handler_outcome> {
       if (!is_busy_failure(error)) {
-        return refuse(ctx, std::format("cannot rejoin the queue after entry {} went missing: {}; the command was not run", seq,
-                                       error.message));
+        return refuse_entry(
+            std::format("cannot rejoin the queue after entry {} went missing: {}; the command was not run", seq, error.message),
+            "ended: cannot rejoin the queue");
       }
       if (!rejoin_busy_since) {
         rejoin_busy_since = *now;
       } else if (*now - *rejoin_busy_since > settings.current().stale_after_ms) {
-        return refuse(ctx, std::format("the store stayed busy for longer than the staleness window while entry {} was being put "
-                                       "back in the queue; the command was not run",
-                                       seq));
+        return refuse_entry(std::format("the store stayed busy for longer than the staleness window while entry {} was being put "
+                                        "back in the queue; the command was not run",
+                                        seq),
+                            "ended: store busy while rejoining");
       }
       report.once(
           std::format("warning: queue: cannot rejoin the queue after entry {} went missing, will retry: {}", seq, error.message));
@@ -761,6 +858,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
                             seq, rejoined->seq));
     seq      = rejoined->seq;
     poll.seq = seq;
+    last_position.reset();
     return std::nullopt;
   };
 
@@ -790,7 +888,8 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
           // end it ourselves as abandoned (the entry's fate when its submitter
           // stops being live) so it is not left for a reaper, then give up.
           end(hq::end_request{.outcome = hq::history_outcome::abandoned});
-          return refuse(ctx, std::format("entry {} could not be polled for longer than the staleness window; giving up", seq));
+          return refuse_entry(std::format("entry {} could not be polled for longer than the staleness window; giving up", seq),
+                              "abandoned, could not be polled");
         }
       }
     } else {
@@ -802,13 +901,22 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
       } else if (polled->poll.running) {
         own_deadline = polled->poll.deadline_mono;
         break;
+      } else if (notice.enabled()) {
+        // Told once, and again whenever the place changes.
+        if (auto const place = waiting_position(conn, seq); place && place != last_position) {
+          notice.line(seq, std::format("waiting at position {}", *place));
+          last_position = place;
+        }
       }
     }
     // The wait limit. It is judged after the poll, so an entry whose turn has
     // come at its limit runs rather than being removed.
     if (wait_limit_ms && now && *now >= *now_mono + *wait_limit_ms) {
       end(hq::end_request{.outcome = hq::history_outcome::wait_timeout});
-      return refuse(ctx, std::format("entry {} waited longer than --wait-timeout and was removed; the command was not run", seq));
+      auto const refused =
+          refuse(ctx, std::format("entry {} waited longer than --wait-timeout and was removed; the command was not run", seq));
+      notice.line(seq, "removed at its wait limit");
+      return refused;
     }
     // Sleep a poll interval, or less when the wait limit falls inside it, so the
     // limit is honoured to the millisecond rather than to the next poll.
@@ -834,14 +942,19 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // turn, or could not be started at all.
     auto const code = start_exit_code(started_child.error());
     ctx.err() << std::format("error: queue: cannot start '{}': {}\n", argv.front(), start_failure_text(code));
+    // `not_started` is the outcome of a 126 or 127 (tech spec 647); any other
+    // start failure ends the entry `abandoned`, and the notice says the same.
     if (code == 127 || code == 126) {
       end(hq::end_request{.outcome = hq::history_outcome::not_started, .exit_code = code});
+      notice.line(seq, "not started");
     } else {
       end(hq::end_request{.outcome = hq::history_outcome::abandoned});
+      notice.line(seq, "abandoned, could not be started");
     }
     return exit_status{code};
   }
   auto const child = *started_child;
+  notice.line(seq, "started");
 
   // Record the child group on the entry, so that the entry stays live while
   // the group has members even if this process is killed. A store failure is
@@ -938,6 +1051,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     if (!observed) {
       ctx.err() << "error: queue: cannot observe the command's status\n";
       end(hq::end_request{.outcome = hq::history_outcome::abandoned});
+      notice.line(seq, "abandoned, cannot observe the command's status");
       return exit_status{exit_internal_error};
     }
     if (observed->kind != runner::state::running) {
@@ -1034,16 +1148,20 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     }
   }
   if (reason == hq::stop_reason::timeout) {
+    notice.line(seq, "stopped at its run limit");
     return exit_status{exit_run_limit};
   }
   if (reason == hq::stop_reason::cancelled) {
+    notice.line(seq, "cancelled");
     return exit_status{exit_internal_error};
   }
 
   if (final_status.kind == runner::state::signalled) {
     end(hq::end_request{.outcome = hq::history_outcome::signaled, .signal = final_status.code});
+    notice.line(seq, std::format("terminated by signal {}", final_status.code));
   } else {
     end(hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = final_status.code});
+    notice.line(seq, std::format("exited with code {}", final_status.code));
   }
   return exit_status{status_code(final_status)};
 }
