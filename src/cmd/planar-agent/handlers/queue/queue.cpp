@@ -49,6 +49,14 @@ constexpr int exit_run_limit = 124;
 /// been sent by then, so only an unkillable member outlasts it.
 constexpr std::int64_t k_drain_slack_ms = 15'000;
 
+/// @brief How many times one submitter rejoins the queue after being reaped
+/// while it waited (task hq-missing-entry). The spec has a reaped waiter
+/// rejoin and names no limit; a submitter whose every new entry is reaped too
+/// would otherwise queue for ever, so after this many rejoins it gives up
+/// with 125. Reaping a waiter takes a stop longer than the staleness window,
+/// so three is far more than a healthy host ever needs.
+constexpr int k_max_rejoins = 3;
+
 /// @brief How often a running submitter looks at its child. The queue is
 /// polled at the configured interval; the child is checked more often so
 /// the submitter exits promptly when the command does.
@@ -601,24 +609,28 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   // before the configuration and the store were touched.
   // SEAM (task hq-vendor-role): `--vendor` and `--role` fill `vendor` and
   // `role`.
+  // The entry this submitter enqueues, and enqueues again when it rejoins the
+  // queue: everything but the freshness baseline is the same. The wait limit
+  // is one deadline for the whole wait, so a rejoined entry keeps the
+  // original's.
+  auto const make_request = [&](std::int64_t refreshed_mono) {
+    return hq::enqueue_request{
+        .host_id            = host,
+        .pid                = pid,
+        .pid_started        = static_cast<std::int64_t>(**started),
+        .cwd                = ctx.cwd().string(),
+        .argv               = argv,
+        .label              = cliapp::flag_string(args, "--label"),
+        .enqueued_at        = clock.wall_ms(),
+        .refreshed_mono     = refreshed_mono,
+        .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
+    };
+  };
   std::int64_t seq = 0;
   if (nested) {
     seq = nested->seq;
   } else {
-    auto enqueued = hq::enqueue(
-        conn,
-        hq::enqueue_request{
-            .host_id            = host,
-            .pid                = pid,
-            .pid_started        = static_cast<std::int64_t>(**started),
-            .cwd                = ctx.cwd().string(),
-            .argv               = argv,
-            .label              = cliapp::flag_string(args, "--label"),
-            .enqueued_at        = clock.wall_ms(),
-            .refreshed_mono     = *now_mono,
-            .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
-        },
-        settings.current().history_days);
+    auto enqueued = hq::enqueue(conn, make_request(*now_mono), settings.current().history_days);
     if (!enqueued) {
       return refuse(ctx, enqueued.error().message);
     }
@@ -648,8 +660,9 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     if (!ended) {
       ctx.err() << std::format("warning: queue: cannot record the end of entry {}: {}\n", seq, ended.error().message);
     }
-    // `already_gone` (the entry was reaped under us) writes nothing; the
-    // missing-entry rule (task hq-missing-entry) refines it.
+    // `already_gone` (the entry was removed under us) writes nothing: the
+    // process that removed it wrote the row (tech spec 647 § Waiting and
+    // claiming a turn).
   };
 
   // A signal that arrives before the command starts removes the entry and
@@ -664,6 +677,64 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // The command never ran, so this is the queue's cancelled exit (decision
     // 1188), not 128 plus the signal, which is for a command a signal ended.
     return exit_status{exit_internal_error};
+  };
+
+  // The waiting submitter's own entry is gone (tech spec 647 § Waiting and
+  // claiming a turn): it reads the history row for its sequence number.
+  // `abandoned` (reaped while stopped) puts it back at the back of the queue
+  // as a new entry recorded as its successor, in one transaction; every other
+  // row, or none, means the entry ended by a path this submitter did not take,
+  // and it exits 125 without running the command. A submitter rejoins at most
+  // `k_max_rejoins` times.
+  // @return The exit to make, or `std::nullopt` to go on waiting (it rejoined,
+  // or the store could not be read at this instant and the next poll asks
+  // again).
+  int        rejoins                  = 0;
+  auto const on_missing_while_waiting = [&]() -> std::optional<handler_outcome> {
+    auto const gone = [&](std::optional<hq::history_outcome> outcome) -> handler_outcome {
+      if (!outcome) {
+        return refuse(ctx,
+                      std::format("entry {} is no longer in the queue and left no history row; the command was not run", seq));
+      }
+      if (*outcome == hq::history_outcome::cancelled) {
+        return refuse(ctx, std::format("entry {} was cancelled; the command was not run", seq));
+      }
+      if (*outcome == hq::history_outcome::abandoned) {
+        return refuse(ctx, std::format("entry {} was reaped after this submitter had already rejoined the queue {} times; giving "
+                                       "up, the command was not run",
+                                       seq, rejoins));
+      }
+      return refuse(
+          ctx, std::format("entry {} ended as {} without this submitter; the command was not run", seq, hq::to_string(*outcome)));
+    };
+    auto const now = clock.monotonic_ms();
+    if (!now) {
+      return refuse(ctx, "cannot read the monotonic clock");
+    }
+    if (rejoins >= k_max_rejoins) {
+      auto const row = hq::find_history(conn, seq);
+      if (!row) {
+        report.once(std::format("warning: queue: cannot read the history of entry {}: {}", seq, row.error().message));
+        return std::nullopt;
+      }
+      return gone(*row ? std::optional{(*row)->outcome} : std::nullopt);
+    }
+    auto const rejoined = hq::rejoin(conn, seq, make_request(*now));
+    if (!rejoined) {
+      report.once(
+          std::format("warning: queue: cannot rejoin the queue after entry {} went missing: {}", seq, rejoined.error().message));
+      return std::nullopt;
+    }
+    if (rejoined->status != hq::rejoin_status::rejoined) {
+      return gone(rejoined->outcome);
+    }
+    ++rejoins;
+    report.once(std::format("warning: queue: entry {} was reaped while this submitter was not polling; rejoined the queue as "
+                            "entry {}",
+                            seq, rejoined->seq));
+    seq      = rejoined->seq;
+    poll.seq = seq;
+    return std::nullopt;
   };
 
   // --- Waiting for the turn ---------------------------------------------
@@ -698,11 +769,10 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     } else {
       failing_since.reset();
       if (polled->poll.entry_missing) {
-        // SEAM (task hq-missing-entry): read the history row and either
-        // re-enqueue (`abandoned`) or exit 125 (`cancelled`).
-        return refuse(ctx, std::format("entry {} is no longer in the queue", seq));
-      }
-      if (polled->poll.running) {
+        if (auto const verdict = on_missing_while_waiting()) {
+          return *verdict;
+        }
+      } else if (polled->poll.running) {
         own_deadline = polled->poll.deadline_mono;
         break;
       }
@@ -771,14 +841,31 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     own_deadline = clock.monotonic_ms().value_or(0) + run_limit_ms;
   }
   bool                        stopping       = false; // The entry carries a stop reason this submitter is advancing.
+  bool                        entry_gone     = false; // The entry was removed while its command runs.
   bool                        timed_out_here = false; // This submitter set the reason `timeout`.
   std::optional<std::int64_t> next_mark_attempt;      // Earliest monotonic ms to try marking the entry again.
-  auto const                  enforce_run_limit = [&] {
+  // A running submitter whose entry was removed (reaped, or ended by another
+  // process) keeps supervising its command and exits with what it observed of
+  // it; it never rejoins the queue and never runs the command a second time
+  // (tech spec 647 § Waiting and claiming a turn). The entry's run limit and
+  // its slot went with it. A removal by a stop (`timeout`, `cancelled`) is
+  // already accounted for by the stop; any other says so, once.
+  auto const entry_removed = [&] {
+    entry_gone     = true;
+    auto const row = hq::find_history(conn, seq);
+    if (row && *row && ((*row)->outcome == hq::history_outcome::cancelled || (*row)->outcome == hq::history_outcome::timeout)) {
+      return;
+    }
+    report.once(std::format("warning: queue: entry {} is no longer in the queue; its command keeps running to its end, and its "
+                            "run limit is no longer enforced",
+                            seq));
+  };
+  auto const enforce_run_limit = [&] {
     auto const now = clock.monotonic_ms();
     if (!now) {
       return;
     }
-    if (!stopping && *now >= *own_deadline && (!next_mark_attempt || *now >= *next_mark_attempt)) {
+    if (!stopping && !entry_gone && *now >= *own_deadline && (!next_mark_attempt || *now >= *next_mark_attempt)) {
       auto begun =
           hq::begin_terminate(conn, hq::begin_terminate_request{.seq = seq, .reason = hq::stop_reason::timeout, .host_id = host},
                               clock, probe, signaller);
@@ -792,12 +879,16 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
       }
       stopping       = begun->status == hq::begin_status::marked || begun->status == hq::begin_status::already_terminating;
       timed_out_here = begun->status == hq::begin_status::marked;
-      if (!stopping) {
-        // SEAM (task hq-missing-entry): the entry is missing or not running
-        // although this submitter is supervising its command; what to do
-        // about that belongs to that task. Until then the mark is retried at
-        // the poll interval, not at every tick, so a store that keeps saying
-        // so is not hit with a write transaction every 20 ms.
+      if (begun->status == hq::begin_status::missing) {
+        // The entry is gone, and an entry cannot come back under its number.
+        // There is nothing to mark, so the run limit cannot be enforced
+        // through the queue; see `entry_removed`.
+        entry_removed();
+      } else if (!stopping) {
+        // The entry exists but is not running (not expected while this
+        // submitter supervises its command); try again at the poll interval,
+        // not at every tick, so a store that keeps saying so is not hit with a
+        // write transaction every 20 ms.
         next_mark_attempt = *now + settings.current().poll_interval_ms;
       }
     }
@@ -841,6 +932,8 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
       // cannot reach the store never stops its command.
       if (auto polled = poll.poll_once(); !polled) {
         report.once(std::format("warning: queue: cannot poll the queue: {}", polled.error().message));
+      } else if (polled->poll.entry_missing && !entry_gone) {
+        entry_removed();
       }
       next_poll = *now + settings.current().poll_interval_ms;
     }

@@ -396,6 +396,36 @@ auto record_successor(db::connection& conn, std::int64_t seq, std::int64_t succe
   return successor_result::recorded;
 }
 
+auto rejoin(db::connection& conn, std::int64_t old_seq, const enqueue_request& request)
+    -> std::expected<rejoin_result, queue_error> {
+  auto txn = conn.begin_transaction(db::lock_mode::immediate);
+  if (!txn) {
+    return sql_failure("begin rejoin", txn.error());
+  }
+  auto row = find_history(conn, old_seq);
+  if (!row) {
+    return std::unexpected(std::move(row.error()));
+  }
+  if (!row->has_value()) {
+    return rejoin_result{.status = rejoin_status::no_history};
+  }
+  if ((*row)->outcome != history_outcome::abandoned) {
+    return rejoin_result{.status = rejoin_status::not_abandoned, .seq = 0, .outcome = (*row)->outcome};
+  }
+  auto inserted = enqueue(conn, request);
+  if (!inserted) {
+    return std::unexpected(std::move(inserted.error()));
+  }
+  auto recorded = record_successor(conn, old_seq, *inserted);
+  if (!recorded) {
+    return std::unexpected(std::move(recorded.error()));
+  }
+  if (auto committed = txn->commit(); !committed) {
+    return sql_failure("commit rejoin", committed.error());
+  }
+  return rejoin_result{.status = rejoin_status::rejoined, .seq = *inserted, .outcome = std::nullopt};
+}
+
 auto find_history(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<history_row>, queue_error> {
   auto stmt = conn.prepare(std::format("select {} from queue_history where seq = ?", k_history_columns));
   if (!stmt) {

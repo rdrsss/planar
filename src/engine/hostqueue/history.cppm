@@ -13,6 +13,9 @@
 ///   process did" (§ Waiting and claiming a turn).
 /// - `record_successor` names the entry an abandoned waiter re-enqueued as,
 ///   on that waiter's existing history row.
+/// - `rejoin` is what a waiting submitter does when its entry is gone and its
+///   history row says `abandoned`: insert a new entry and record it as the old
+///   row's successor, in one transaction.
 /// - `find_history` and `list_history` read rows back.
 /// - `delete_expired_history` and `remove_log_files` are the two halves of
 ///   the retention prune (decision 1199). `enqueue` with a retention runs the
@@ -168,6 +171,35 @@ export enum class successor_result : std::uint8_t {
 /// @return Whether a row was updated, or the SQLite failure.
 export auto record_successor(db::connection& conn, std::int64_t seq, std::int64_t successor_seq)
     -> std::expected<successor_result, queue_error>;
+
+/// @brief What `rejoin` found and did.
+export enum class rejoin_status : std::uint8_t {
+  rejoined,      ///< The old row was `abandoned`; a new entry was inserted and named as its successor.
+  no_history,    ///< No history row has that sequence number (never written, or pruned); nothing was written.
+  not_abandoned, ///< The old row ended another way; nothing was written and `outcome` says how.
+};
+
+/// @brief The result of `rejoin`.
+export struct rejoin_result {
+  rejoin_status                  status = rejoin_status::no_history; ///< What was found and done.
+  std::int64_t                   seq    = 0;                         ///< The new entry's sequence number, when `rejoined`.
+  std::optional<history_outcome> outcome;                            ///< The old row's outcome, when `not_abandoned`.
+};
+
+/// @brief Puts a reaped waiter back at the back of the queue (tech spec 647 §
+/// Waiting and claiming a turn): in one write transaction (`BEGIN IMMEDIATE`)
+/// it reads the history row of `old_seq`, and only when the outcome is
+/// `abandoned` inserts `request` as a new entry (a higher sequence number, so
+/// behind every entry that arrived meanwhile) and records the new number as
+/// the old row's successor. Either both writes happen or neither does. Runs
+/// no retention prune: the submitter's own enqueue already did.
+/// @param conn An open agent database at or above agent schema version 2.
+/// @param old_seq The sequence number the submitter's missing entry had.
+/// @param request The new entry, as `enqueue` takes it.
+/// @return The status (see `rejoin_status`), or the failure, after which
+/// nothing has been written.
+export auto rejoin(db::connection& conn, std::int64_t old_seq, const enqueue_request& request)
+    -> std::expected<rejoin_result, queue_error>;
 
 /// @brief Reads one history row by sequence number.
 /// @param conn An open agent database.

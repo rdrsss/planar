@@ -685,3 +685,60 @@ TEST_CASE("an enqueue whose commit fails keeps the expired rows and their log fi
     CHECK(std::filesystem::exists(logs[i]));
   }
 }
+
+TEST_CASE("rejoin inserts a new entry behind the arrivals and names it as the abandoned row's successor",
+          "[engine][hostqueue][hq-missing-entry]") {
+  scratch_dir scratch;
+  auto        conn    = open_scratch_store(scratch);
+  auto const  old_seq = enqueue_one(conn, request_for("first"));
+  auto const  arrival = enqueue_one(conn, request_for("arrival"));
+  end_one(conn, old_seq, hq::end_request{.outcome = hq::history_outcome::abandoned, .ended_at = k_enqueued_at + 5});
+
+  auto const got = hq::rejoin(conn, old_seq, request_for("first"));
+  REQUIRE(got.has_value());
+  CHECK(got->status == hq::rejoin_status::rejoined);
+  CHECK(got->seq > arrival);
+  CHECK_FALSE(got->outcome.has_value());
+  CHECK(history_of(conn, old_seq).successor_seq == got->seq);
+  auto const entries = hq::list(conn).value();
+  REQUIRE(entries.size() == 2);
+  CHECK(entries.back().seq == got->seq);
+  CHECK(entries.back().state == hq::entry_state::waiting);
+  CHECK(entries.back().label == "first");
+}
+
+TEST_CASE("rejoin writes nothing for a row that did not end abandoned or is not there", "[engine][hostqueue][hq-missing-entry]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const gone = hq::rejoin(conn, 77, request_for("none"));
+  REQUIRE(gone.has_value());
+  CHECK(gone->status == hq::rejoin_status::no_history);
+
+  auto const cancelled = enqueue_one(conn, request_for("cancelled"));
+  end_one(conn, cancelled,
+          hq::end_request{.outcome      = hq::history_outcome::cancelled,
+                          .cancelled_by = hq::canceller{.vendor = "claude", .role = "operator", .pid = 9},
+                          .ended_at     = k_enqueued_at + 5});
+  auto const refused = hq::rejoin(conn, cancelled, request_for("cancelled"));
+  REQUIRE(refused.has_value());
+  CHECK(refused->status == hq::rejoin_status::not_abandoned);
+  CHECK(refused->outcome == hq::history_outcome::cancelled);
+
+  CHECK(hq::list(conn).value().empty());
+  CHECK_FALSE(history_of(conn, cancelled).successor_seq.has_value());
+}
+
+TEST_CASE("a rejoin whose insert fails leaves the old row without a successor", "[engine][hostqueue][hq-missing-entry]") {
+  scratch_dir scratch;
+  auto        conn    = open_scratch_store(scratch);
+  auto const  old_seq = enqueue_one(conn, request_for("first"));
+  end_one(conn, old_seq, hq::end_request{.outcome = hq::history_outcome::abandoned, .ended_at = k_enqueued_at + 5});
+  REQUIRE(conn.execute("create trigger refuse_insert before insert on queue_entries begin select raise(abort, 'refused'); end;")
+              .has_value());
+
+  auto const got = hq::rejoin(conn, old_seq, request_for("first"));
+  CHECK_FALSE(got.has_value());
+  CHECK_FALSE(history_of(conn, old_seq).successor_seq.has_value());
+  CHECK(hq::list(conn).value().empty());
+}
