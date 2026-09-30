@@ -2736,6 +2736,7 @@ TEST_CASE("queue run: --notices tells a rejoined submitter its position again un
   auto const started = arena.cpp_root / "started";
 
   spawned          holder;
+  spawned          ahead;
   spawned          waiter;
   spawned          later;
   release_all      guard{.gates = {&hold}};
@@ -2744,33 +2745,51 @@ TEST_CASE("queue run: --notices tells a rejoined submitter its position again un
   holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
   await_file(started);
   static_cast<void>(await_child_recorded(arena, 1));
+  // One entry waits ahead of the waiter, so the waiter's place is 2, and the
+  // same place after it rejoins: the re-notice must not be swallowed as "no
+  // change" just because the number is the same.
+  ahead = spawn_queue(arena, "ahead", sh_command("exit 0"));
+  static_cast<void>(await_entry(arena, 2, hq::entry_state::waiting));
   waiter = spawn_queue(arena, "waiter", sh_command("exit 0"), {}, {"--notices"});
-  await_err_contains(waiter, "queue: entry 2 waiting at position 1\n");
+  await_err_contains(waiter, "queue: entry 3 waiting at position 2\n");
 
   REQUIRE(waiter.still_mine());
   resume.run = &waiter;
   stop_outside_a_transaction(arena, waiter);
+  {
+    // The entry ahead leaves while the waiter is stopped, and is replaced by
+    // a later arrival.
+    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    REQUIRE(opened.has_value());
+    ident::system_clock clock;
+    REQUIRE(hq::end_entry(*opened, 2,
+                          hq::end_request{.outcome      = hq::history_outcome::cancelled,
+                                          .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = 1},
+                                          .ended_at     = clock.wall_ms()})
+                .has_value());
+  }
   later = spawn_queue(arena, "later", sh_command("exit 0"));
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
-    return snap && history_seq(*snap, 2) != nullptr;
+    return snap && history_seq(*snap, 3) != nullptr;
   }));
   REQUIRE(::kill(static_cast<::pid_t>(waiter.pid), SIGCONT) == 0);
 
   std::int64_t successor = 0;
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
-    if (!snap || history_seq(*snap, 2) == nullptr || !history_seq(*snap, 2)->successor_seq) {
+    if (!snap || history_seq(*snap, 3) == nullptr || !history_seq(*snap, 3)->successor_seq) {
       return false;
     }
-    successor = *history_seq(*snap, 2)->successor_seq;
+    successor = *history_seq(*snap, 3)->successor_seq;
     return true;
   }));
-  // The entry that arrived meanwhile is ahead of the rejoined one.
+  // The entry that arrived meanwhile is ahead of the rejoined one: place 2 again.
   await_err_contains(waiter, std::format("queue: entry {} waiting at position 2\n", successor));
 
   hold.release();
   CHECK(finish(holder).code == 0);
+  CHECK(finish(ahead).code == 125);
   auto const got = finish(waiter);
   CHECK(finish(later).code == 0);
   INFO("stderr:\n" << got.err);
