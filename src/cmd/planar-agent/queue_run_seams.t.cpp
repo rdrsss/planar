@@ -435,12 +435,17 @@ TEST_CASE("queue run: an entry another process already ended is still mapped to 
 
 namespace {
 
-/// @brief The system clock, counting how often the monotonic clock is read.
+/// @brief A steered monotonic clock that counts how often it is read. Time
+/// moves only when the case calls `advance`, so the number of reads a run makes
+/// does not depend on how loaded the machine is.
 class counting_clock final : public ident::clock {
 public:
-  ident::system_clock inner;
-  int                 reads = 0;
+  steered_clock inner;
+  int           reads = 0;
 
+  void advance(std::int64_t ms) {
+    inner.advance(ms);
+  }
   [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, ident::error> override {
     ++reads;
     return inner.monotonic_ms();
@@ -452,19 +457,32 @@ public:
 
 } // namespace
 
-TEST_CASE("queue run: a run limit that cannot mark a missing entry retries at the poll interval, not at every tick",
+TEST_CASE("queue run: a run limit that cannot mark its entry retries at the poll interval, not at every tick",
           "[cmd][agent][queue][hq-timeouts]") {
+  // Task 7014 (F3): the run-limit mark of an entry that exists but is not
+  // running is retried at the poll interval, not at every 20 ms tick. Task 7105
+  // made the case independent of scheduling: time is steered (20 ms per tick),
+  // the tick count is fixed by the case, and the retries are counted from the
+  // clock reads, so a loaded machine changes nothing. (A MISSING entry is not
+  // this path since task 7080: the submitter stops its command itself, which the
+  // `hq-vanished-entry-run-limit` case pins.)
+  constexpr std::int64_t tick_ms      = 20;
+  constexpr std::int64_t poll_ms      = 60'000; // far beyond the case: the regular poll never runs
+  constexpr int          window_ticks = 200;    // 4 s of steered time after the entry is made unmarkable
+
   scratch sc;
-  auto    clock = std::make_shared<counting_clock>();
-  bool    acted = false;
-  int     ticks = 0;
+  auto    clock        = std::make_shared<counting_clock>();
+  bool    acted        = false;
+  bool    ended        = false;
+  int     ticks        = 0;
+  int     first_tick   = 0;
+  int     first_reads  = 0;
+  int     window_marks = -1;
 
   agent::handlers::queue_run_deps deps;
-  deps.clock = clock;
-  // A poll interval far longer than the case: the regular poll never runs, so
-  // only the run-limit marking reads the store.
+  deps.clock          = clock;
   auto const settings = planar::engine::config::queue_settings{
-      .slots = 1, .poll_interval_ms = 60'000, .stale_after_ms = 3'600'000, .grace_ms = 10'000, .history_days = 30};
+      .slots = 1, .poll_interval_ms = poll_ms, .stale_after_ms = 3'600'000, .grace_ms = 10'000, .history_days = 30};
   deps.load_settings = [settings] {
     return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{settings};
   };
@@ -473,35 +491,54 @@ TEST_CASE("queue run: a run limit that cannot mark a missing entry retries at th
       throw std::runtime_error("queue run ticked past the case's bound");
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    if (acted) {
-      return;
-    }
     auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
     REQUIRE(opened.has_value());
-    auto const stored = hq::find(*opened, 1);
-    if (!stored || !stored->has_value() || !(*stored)->child_pgid) {
+    if (!acted) {
+      auto const stored = hq::find(*opened, 1);
+      if (!stored || !stored->has_value() || !(*stored)->child_pgid) {
+        return;
+      }
+      // The command runs and its group is recorded. Make the entry one the
+      // mark cannot take (present, not running) and start counting.
+      acted       = true;
+      first_tick  = ticks;
+      first_reads = clock->reads;
+      REQUIRE(opened->execute("update queue_entries set state = 'waiting' where seq = 1;").has_value());
       return;
     }
-    // The entry disappears from under the running submitter; its run limit
-    // (300 ms) passes while the command still runs, so every tick would try to mark it and find it missing.
-    acted = true;
-    REQUIRE(opened->execute("delete from queue_entries where seq = 1;").has_value());
+    if (ended) {
+      return;
+    }
+    clock->advance(tick_ms);
+    if (ticks - first_tick == window_ticks) {
+      // Every tick since `first_tick` read the clock twice (the run-limit check
+      // and the poll schedule); anything more is a mark attempt, which reads it
+      // once under the write lock.
+      window_marks = (clock->reads - first_reads) - 2 * (ticks - first_tick);
+      // Let the next mark succeed, so the command is stopped and the case ends.
+      ended = true;
+      REQUIRE(opened->execute("update queue_entries set state = 'running' where seq = 1;").has_value());
+      clock->advance(poll_ms);
+    }
   };
 
   fixture fx{sc, (sc.root / "agent.db").string()};
-  auto    args            = queue_args({"/bin/sleep", "1"});
+  auto    args            = queue_args({"/bin/sleep", "30"});
   args.flags["--timeout"] = {"300ms"};
   auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
   auto const* status      = std::get_if<agent::exit_status>(&outcome);
   REQUIRE(status != nullptr);
   INFO("stderr:\n" << fx.err.str());
-  CHECK(acted);
-  CHECK(status->code == 124); // task 7080: with the entry gone the submitter stops the command itself at the limit
-  REQUIRE(ticks > 50);
-  // Two clock reads per tick are the loop's own (the run-limit check and the
-  // poll schedule). A mark attempted at every tick reads a third, inside
-  // `begin_terminate`.
-  CHECK(clock->reads <= 2 * ticks + 20);
+  REQUIRE(acted);
+  REQUIRE(ended);
+  CHECK(status->code == 124);
+  // The limit (300 ms) passes 15 ticks in; from then on the mark is attempted
+  // and, finding the entry not running, is not attempted again before the poll
+  // interval has passed. It is attempted at all (else the case pins nothing).
+  auto const after_limit = window_ticks * tick_ms - 300;
+  INFO("marks attempted over " << window_ticks << " ticks: " << window_marks);
+  CHECK(window_marks >= 1);
+  CHECK(window_marks <= (after_limit + poll_ms - 1) / poll_ms + 1);
 }
 
 TEST_CASE("queue run: a signal that arrives while the turn is being taken runs nothing", "[cmd][agent][queue][hq-signals]") {
