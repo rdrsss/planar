@@ -550,3 +550,62 @@ TEST_CASE("enqueue records the wait limit it is given, and none when there is no
   CHECK(all->front().wait_limit_ms == 600'000);
   CHECK_FALSE(all->back().wait_limit_ms.has_value());
 }
+
+TEST_CASE("the entry and history reads answer on a store still at agent schema version 2, with the limits empty",
+          "[engine][hostqueue][hq-queue-limit-columns]") {
+  // Review F1 on task hq-queue-limit-columns: a read-only connection never
+  // migrates, so after an upgrade `queue status` reads a store an older
+  // binary left at version 2, which has no limit columns. The reads must read
+  // them as empty rather than fail. The store is built and seeded with raw SQL
+  // (the chain up to 00002, rows written the way that binary wrote them),
+  // because no code at head writes a version-2 store.
+  scratch_dir scratch;
+  auto const  store = scratch.path_ / "agent.db";
+  auto const  chain = planar::db::agent::migrations();
+  REQUIRE(chain.size() >= 3);
+  {
+    auto raw = planar::db::connection::open(store.string());
+    REQUIRE(raw.has_value());
+    REQUIRE(planar::db::apply_all(*raw, chain.subspan(0, 2), planar::db::k_agent_version_table).has_value());
+    REQUIRE(raw->execute("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, label, enqueued_at, "
+                         "refreshed_mono, wait_deadline_mono) values ('waiting', 'h', 11, 111, '/w', '[\"make\"]', 'old-w', "
+                         "1000, 5000, 9000);"
+                         "insert into queue_history (seq, outcome, exit_code, cwd, argv, label, enqueued_at, started_at, "
+                         "ended_at, waited_ms, ran_ms) values (7, 'exited', 0, '/w', '[\"true\"]', 'old-h', 900, 950, 990, "
+                         "50, 40);")
+                .has_value());
+  }
+
+  auto opened = planar::db::agent::open_agent_db_read_only_at(store);
+  REQUIRE(opened.has_value());
+  auto& conn = *opened;
+
+  auto const found = hq::find(conn, 1);
+  REQUIRE(found.has_value());
+  REQUIRE(found->has_value());
+  CHECK((*found)->label == "old-w");
+  CHECK((*found)->wait_deadline_mono == 9000);
+  CHECK_FALSE((*found)->run_limit_ms.has_value());
+  CHECK_FALSE((*found)->wait_limit_ms.has_value());
+
+  auto const all = hq::list(conn);
+  REQUIRE(all.has_value());
+  REQUIRE(all->size() == 1);
+  CHECK_FALSE(all->front().wait_limit_ms.has_value());
+
+  auto const row = hq::find_history(conn, 7);
+  REQUIRE(row.has_value());
+  REQUIRE(row->has_value());
+  CHECK((*row)->label == "old-h");
+  CHECK((*row)->ran_ms == 40);
+  CHECK_FALSE((*row)->run_limit_ms.has_value());
+  CHECK_FALSE((*row)->wait_limit_ms.has_value());
+
+  auto const rows = hq::list_history(conn);
+  REQUIRE(rows.has_value());
+  REQUIRE(rows->size() == 1);
+  CHECK_FALSE(rows->front().run_limit_ms.has_value());
+
+  // Reading changed nothing: the store is still at version 2.
+  CHECK(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == 2);
+}

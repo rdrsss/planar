@@ -27,6 +27,8 @@
 import std;
 import planar.db;
 import planar.db.agentdb;
+import planar.db.migrate;
+import planar.db.migrations_agent;
 import planar.json_dom;
 import planar.process.identity;
 import planar.engine.hostqueue;
@@ -602,6 +604,62 @@ TEST_CASE("queue status: a detached run reports the --timeout and --wait-timeout
   auto const defaults_text = text_lines(run_status(arena, "lim_default_done_text", defaults.seq, false).out);
   CHECK(text_value(defaults_text, "run_limit_ms") == "1800000");
   CHECK_FALSE(text_value(defaults_text, "wait_limit_ms").has_value());
+}
+
+// Review F1 on task 7089: `queue status` opens the store read-only and never
+// migrates it, so after an upgrade it reads a store the older, still running
+// submitters left at agent schema version 2. The store is built and seeded
+// with raw SQL (the chain up to 00002, rows as that binary wrote them),
+// because no code at head writes a version-2 store.
+TEST_CASE("queue status: a store still at agent schema version 2 is answered with null limits and left at version 2",
+          "[cmd][agent][queue][hq-queue-status][hq-queue-limit-columns]") {
+  auto const arena = parity::make_arena("qs_v2store");
+  auto const chain = planar::db::agent::migrations();
+  REQUIRE(chain.size() >= 3);
+  {
+    auto raw = planar::db::connection::open(store_path(arena).string());
+    REQUIRE(raw.has_value());
+    REQUIRE(planar::db::apply_all(*raw, chain.subspan(0, 2), planar::db::k_agent_version_table).has_value());
+    REQUIRE(raw->execute(std::format("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, label, "
+                                     "enqueued_at, refreshed_mono, wait_deadline_mono) values ('waiting', '{}', {}, {}, "
+                                     "'/work/project', '[\"make\",\"test\"]', 'old-waiter', {}, {}, {});"
+                                     "insert into queue_history (seq, outcome, exit_code, cwd, argv, label, enqueued_at, "
+                                     "started_at, ended_at, waited_ms, ran_ms) values (40, 'exited', 3, '/work/project', "
+                                     "'[\"true\"]', 'old-ended', 900, 950, 990, 50, 40);",
+                                     this_host(), this_pid(), this_start(), wall_now(), mono_now(), mono_now() + 600'000))
+                .has_value());
+  }
+
+  auto const waiting = run_status(arena, "v2_waiting", 1);
+  INFO("stderr:\n" << waiting.err);
+  CHECK(waiting.code == 0);
+  auto const waiting_doc = status_object(waiting);
+  CHECK(keys_of(waiting_doc) == k_fields);
+  CHECK(text_of(waiting_doc, "state") == "waiting");
+  CHECK(text_of(waiting_doc, "label") == "old-waiter");
+  CHECK(member(waiting_doc, "live").boolean);
+  CHECK(is_null(waiting_doc, "run_limit_ms"));
+  CHECK(is_null(waiting_doc, "wait_limit_ms"));
+
+  auto const ended = run_status(arena, "v2_ended", 40);
+  INFO("stderr:\n" << ended.err);
+  CHECK(ended.code == 0);
+  auto const ended_doc = status_object(ended);
+  CHECK(text_of(ended_doc, "state") == "ended");
+  CHECK(text_of(ended_doc, "outcome") == "exited");
+  CHECK(int_of(ended_doc, "exit_code") == 3);
+  CHECK(is_null(ended_doc, "run_limit_ms"));
+  CHECK(is_null(ended_doc, "wait_limit_ms"));
+
+  auto const text = run_status(arena, "v2_waiting_text", 1, false);
+  CHECK(text.code == 0);
+  CHECK_FALSE(text_value(text_lines(text.out), "wait_limit_ms").has_value());
+
+  // Read-only: the store was not migrated. Checked through a read-only open,
+  // since `open_store` would migrate it.
+  auto after = planar::db::agent::open_agent_db_read_only_at(store_path(arena));
+  REQUIRE(after.has_value());
+  CHECK(planar::db::current_version(*after, planar::db::k_agent_version_table).value() == 2);
 }
 
 // ---------------------------------------------------------------------------

@@ -109,10 +109,21 @@ auto check_request(const end_request& request) -> std::expected<void, queue_erro
 }
 
 /// @brief The column list every history read shares, in the order
-/// `read_history` consumes it.
+/// `read_history` consumes it, followed by `limit_columns_select`'s two limit
+/// columns.
 constexpr std::string_view k_history_columns = "seq, outcome, exit_code, signal, successor_seq, cancelled_by, nested, "
                                                "parent_seq, cwd, argv, label, vendor, role, log_path, enqueued_at, "
-                                               "started_at, ended_at, waited_ms, ran_ms, run_limit_ms, wait_limit_ms";
+                                               "started_at, ended_at, waited_ms, ran_ms";
+
+/// @brief `select <every history column> from queue_history`, with the limit
+/// columns read as null on a store that predates them.
+auto select_history(db::connection& conn) -> std::expected<std::string, queue_error> {
+  auto limits = limit_columns_select(conn, "queue_history");
+  if (!limits) {
+    return std::unexpected(std::move(limits.error()));
+  }
+  return std::format("select {}, {} from queue_history", k_history_columns, *limits);
+}
 
 /// @brief Materialises the current row of a `k_history_columns` statement.
 auto read_history(const db::statement& stmt) -> std::expected<history_row, queue_error> {
@@ -436,7 +447,11 @@ auto rejoin(db::connection& conn, std::int64_t old_seq, const enqueue_request& r
 }
 
 auto find_history(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<history_row>, queue_error> {
-  auto stmt = conn.prepare(std::format("select {} from queue_history where seq = ?", k_history_columns));
+  auto select = select_history(conn);
+  if (!select) {
+    return std::unexpected(std::move(select.error()));
+  }
+  auto stmt = conn.prepare(std::format("{} where seq = ?", *select));
   if (!stmt) {
     return sql_failure("prepare find history", stmt.error());
   }
@@ -459,9 +474,11 @@ auto find_history(db::connection& conn, std::int64_t seq) -> std::expected<std::
 
 auto list_history(db::connection& conn, std::optional<std::int64_t> ended_since)
     -> std::expected<std::vector<history_row>, queue_error> {
-  auto stmt = conn.prepare(std::format("select {} from queue_history where (?1 is null or ended_at >= ?1) "
-                                       "order by ended_at, seq",
-                                       k_history_columns));
+  auto select = select_history(conn);
+  if (!select) {
+    return std::unexpected(std::move(select.error()));
+  }
+  auto stmt = conn.prepare(std::format("{} where (?1 is null or ended_at >= ?1) order by ended_at, seq", *select));
   if (!stmt) {
     return sql_failure("prepare list history", stmt.error());
   }

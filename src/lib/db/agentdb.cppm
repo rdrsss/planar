@@ -19,6 +19,16 @@
 /// the head of the embedded chain). A store ahead of the binary whose
 /// `compat` is not is opened as it is.
 ///
+/// Every READ path over the store must tolerate a store behind head.
+/// `open_agent_db_read_only_at` never migrates, so after an upgrade a
+/// read-only reader (`queue status`) keeps seeing the older schema until some
+/// read-write open brings the store to head, and older binaries keep writing
+/// it meanwhile. A column an additive migration added reads as NULL (unknown)
+/// on such a store, never as a query failure; see
+/// `planar.engine.hostqueue.queue::limit_columns_select` for the agent
+/// migration 00003 columns. Write paths need no such care: they run only on a
+/// connection `open_agent_db` has migrated to head.
+///
 /// The open path never reads `PLANAR_DB` and never opens the main
 /// database: a caller whose main database is locked out by a schema
 /// mismatch still opens the agent store (tech-spec § Open Questions "Where
