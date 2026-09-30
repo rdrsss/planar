@@ -1248,4 +1248,48 @@ TEST_CASE("queue status: a sequence number that is not a positive integer exits 
   CHECK(missing.out.empty());
 }
 
+TEST_CASE("queue status: text is unambiguous for quotes and backslashes, escapes format characters, and cuts long values; JSON is complete",
+          "[cmd][agent][queue][hq-view-escape-fields]") {
+  auto const arena  = parity::make_arena("qs_display");
+  auto const quoted = std::string{"\"already quoted\""};
+  auto const bidi   = std::string{"v\xE2\x80\xAE"
+                                  "evil"};
+  auto const role   = std::string(100, 'r') + "RTAIL";
+  std::int64_t seq  = 0;
+  {
+    auto conn     = open_store(arena);
+    auto request  = alive_request(quoted);
+    request.vendor = bidi;
+    request.role   = role;
+    seq            = enqueue_or_fail(conn, request);
+  }
+  auto const text = run_status(arena, "st_display_text", seq, false);
+  INFO("stdout:\n" << text.out);
+  REQUIRE(text.code == 0);
+  auto const lines = text_lines(text.out);
+  // A value that starts with a double quote is shown quoted, so it cannot be
+  // read as the quoting the view itself uses.
+  CHECK(text_value(lines, "label") == std::string{"\"\\\"already quoted\\\"\""});
+  // A format character is escaped, never printed.
+  CHECK_FALSE(text.out.contains("\xE2\x80\xAE"));
+  CHECK(text_value(lines, "vendor") == std::string{"\"v\\u202eevil\""});
+  // A long value is cut and marked.
+  CHECK_FALSE(text.out.contains("RTAIL"));
+  CHECK(text_value(lines, "role") == std::string(47, 'r') + "\xE2\x80\xA6");
+  // JSON is complete and unchanged.
+  auto const doc = status_object(run_status(arena, "st_display_json", seq));
+  CHECK(text_of(doc, "label") == quoted);
+  CHECK(text_of(doc, "vendor") == bidi);
+  CHECK(text_of(doc, "role") == role);
+
+  // A bare backslash is quoted.
+  std::int64_t other = 0;
+  {
+    auto conn = open_store(arena);
+    other     = enqueue_or_fail(conn, alive_request("a\\b"));
+  }
+  auto const backslash = text_lines(run_status(arena, "st_display_backslash", other, false).out);
+  CHECK(text_value(backslash, "label") == std::string{"\"a\\\\b\""});
+}
+
 } // namespace

@@ -762,6 +762,135 @@ TEST_CASE("queue view: control characters in submitted values are escaped, in te
 }
 
 // ---------------------------------------------------------------------------
+// Text-display hardening (task 7082): format characters, long values, display
+// width, a bare backslash. JSON stays complete.
+// ---------------------------------------------------------------------------
+
+/// @brief The terminal column a byte offset lands on: a UTF-8 continuation
+/// byte takes none, a CJK lead byte (E3-E9) two, everything else one.
+auto display_col(std::string_view line, std::size_t at) -> std::size_t {
+  std::size_t col = 0;
+  for (std::size_t i = 0; i < at && i < line.size(); ++i) {
+    auto const u = static_cast<unsigned char>(line[i]);
+    if ((u & 0xC0u) == 0x80u) {
+      continue;
+    }
+    col += (u >= 0xE3 && u <= 0xE9) ? 2 : 1;
+  }
+  return col;
+}
+
+constexpr std::string_view k_rlo      = "\xE2\x80\xAE"; // U+202E right-to-left override
+constexpr std::string_view k_zwsp     = "\xE2\x80\x8B"; // U+200B zero width space
+constexpr std::string_view k_line_sep = "\xE2\x80\xA8"; // U+2028 line separator
+constexpr std::string_view k_isolate  = "\xE2\x81\xA6"; // U+2066 left-to-right isolate
+constexpr std::string_view k_bom      = "\xEF\xBB\xBF"; // U+FEFF byte-order mark
+
+TEST_CASE("queue view: Unicode format characters are escaped in text and kept in JSON", "[cmd][watch][queue][hq-view-escape-fields]") {
+  auto const arena  = parity::make_arena("wq_format");
+  auto const vendor = std::format("v{}evil", k_rlo);
+  auto const role   = std::format("r{}z", k_zwsp);
+  auto const label  = std::format("l{}m{}n", k_line_sep, k_bom);
+  auto const cwd    = std::format("/w{}x", k_isolate);
+  {
+    auto conn      = open_store(arena);
+    auto request   = alive_request(cwd, {"echo", std::format("a{}b", k_rlo)});
+    request.label  = label;
+    request.vendor = vendor;
+    request.role   = role;
+    enqueue_or_fail(conn, request);
+  }
+  auto const text = run_queue(arena, "format_text", false);
+  INFO("stdout:\n" << text.out);
+  REQUIRE(text.code == 0);
+  CHECK(lines_of(text.out).size() == 2);
+  for (auto const raw : {k_rlo, k_zwsp, k_line_sep, k_isolate, k_bom}) {
+    CHECK_FALSE(text.out.contains(raw));
+  }
+  for (auto const escaped : {"\\u202e", "\\u200b", "\\u2028", "\\u2066", "\\ufeff"}) {
+    CHECK(text.out.contains(escaped));
+  }
+  // JSON carries the exact bytes.
+  auto const rows = rows_of(run_queue(arena, "format_json"));
+  REQUIRE(rows.size() == 1);
+  CHECK(text_of(rows[0], "vendor") == vendor);
+  CHECK(text_of(rows[0], "role") == role);
+  CHECK(text_of(rows[0], "label") == label);
+  CHECK(text_of(rows[0], "cwd") == cwd);
+}
+
+TEST_CASE("queue view: a long vendor, role or label is cut in text and complete in JSON", "[cmd][watch][queue][hq-view-escape-fields]") {
+  auto const arena = parity::make_arena("wq_long");
+  auto const label = std::string(200, 'x') + "TAILMARK";
+  auto const vendor = std::string(100, 'v') + "VTAIL";
+  auto const role   = std::string(100, 'r') + "RTAIL";
+  {
+    auto conn      = open_store(arena);
+    auto request   = alive_request("/w", {"make"});
+    request.label  = label;
+    request.vendor = vendor;
+    request.role   = role;
+    enqueue_or_fail(conn, request);
+  }
+  auto const text = run_queue(arena, "long_text", false);
+  INFO("stdout:\n" << text.out);
+  REQUIRE(text.code == 0);
+  CHECK(text.out.size() < 400);
+  for (auto const tail : {"TAILMARK", "VTAIL", "RTAIL"}) {
+    CHECK_FALSE(text.out.contains(tail));
+  }
+  // 47 characters and the marker fill the 48 columns a field may take.
+  CHECK(text.out.contains(std::string(47, 'x') + "\xE2\x80\xA6"));
+  CHECK_FALSE(text.out.contains(std::string(48, 'x')));
+  CHECK(text.out.contains(std::string(47, 'v') + "\xE2\x80\xA6"));
+  CHECK(text.out.contains(std::string(47, 'r') + "\xE2\x80\xA6"));
+  auto const rows = rows_of(run_queue(arena, "long_json"));
+  REQUIRE(rows.size() == 1);
+  CHECK(text_of(rows[0], "label") == label);
+  CHECK(text_of(rows[0], "vendor") == vendor);
+  CHECK(text_of(rows[0], "role") == role);
+}
+
+TEST_CASE("queue view: columns line up by display width, not bytes", "[cmd][watch][queue][hq-view-escape-fields]") {
+  auto const arena = parity::make_arena("wq_width");
+  {
+    auto conn     = open_store(arena);
+    auto wide     = alive_request("/w", {"make"});
+    wide.vendor   = "\xE6\x97\xA5\xE6\x9C\xAC"; // two wide characters, four columns, six bytes
+    wide.role     = "R1";
+    auto narrow   = alive_request("/w", {"make"});
+    narrow.vendor = "abcd";
+    narrow.role   = "R2";
+    enqueue_or_fail(conn, wide);
+    enqueue_or_fail(conn, narrow);
+  }
+  auto const text = run_queue(arena, "width_text", false);
+  INFO("stdout:\n" << text.out);
+  REQUIRE(text.code == 0);
+  auto const lines = lines_of(text.out);
+  REQUIRE(lines.size() == 3);
+  auto const first  = lines[1].find("R1");
+  auto const second = lines[2].find("R2");
+  REQUIRE(first != std::string::npos);
+  REQUIRE(second != std::string::npos);
+  CHECK(display_col(lines[1], first) == display_col(lines[2], second));
+}
+
+TEST_CASE("queue view: a bare backslash is quoted", "[cmd][watch][queue][hq-view-escape-fields]") {
+  auto const arena = parity::make_arena("wq_backslash");
+  {
+    auto conn     = open_store(arena);
+    auto request  = alive_request("/w", {"make"});
+    request.label = "a\\b";
+    enqueue_or_fail(conn, request);
+  }
+  auto const text = run_queue(arena, "backslash_text", false);
+  INFO("stdout:\n" << text.out);
+  REQUIRE(text.code == 0);
+  CHECK(text.out.contains("\"a\\\\b\""));
+}
+
+// ---------------------------------------------------------------------------
 // Errors: an incompatible store, and a file that is not an agent store.
 // ---------------------------------------------------------------------------
 
@@ -1575,6 +1704,46 @@ TEST_CASE("queue history: control characters in submitted values are escaped, in
   CHECK(text_of(rows[0], "cwd") == evil_cwd);
   CHECK(argv_of(rows[0]) == std::vector<std::string>{"echo", evil_arg, "tab\there"});
   CHECK(text_of(member(rows[0], "cancelled_by"), "vendor") == evil_who);
+}
+
+TEST_CASE("queue history: format characters, long values and display width are handled in text, JSON stays complete",
+          "[cmd][watch][queue][hq-watch-history][hq-view-escape-fields]") {
+  auto const arena = parity::make_arena("wh_display");
+  auto const label = std::string(200, 'x') + "TAILMARK";
+  auto const bidi  = std::format("v{}evil", k_rlo);
+  auto const cwd   = std::format("/w{}x", k_line_sep);
+  {
+    auto       conn = open_store(arena);
+    ended_spec first;
+    first.vendor = bidi;
+    first.role   = "\xE6\x97\xA5\xE6\x9C\xAC";
+    first.label  = label;
+    first.cwd    = cwd;
+    first.end    = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now() - 2000};
+    seed_ended(conn, first);
+    ended_spec second;
+    second.vendor = "abcd";
+    second.role   = "abcd";
+    second.label  = "a\\b";
+    second.end    = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now() - 1000};
+    seed_ended(conn, second);
+  }
+  auto const text = run_history(arena, "display_text", {});
+  INFO("stdout:\n" << text.out);
+  REQUIRE(text.code == 0);
+  CHECK(lines_of(text.out).size() == 3);
+  CHECK_FALSE(text.out.contains(k_rlo));
+  CHECK_FALSE(text.out.contains(k_line_sep));
+  CHECK(text.out.contains("\\u202e"));
+  CHECK(text.out.contains("\\u2028"));
+  CHECK_FALSE(text.out.contains("TAILMARK"));
+  CHECK(text.out.contains(std::string(47, 'x') + "\xE2\x80\xA6"));
+  CHECK(text.out.contains("\"a\\\\b\""));
+  auto const rows = rows_of(run_history(arena, "display_json"));
+  REQUIRE(rows.size() == 2);
+  CHECK(text_of(rows[0], "label") == label);
+  CHECK(text_of(rows[0], "vendor") == bidi);
+  CHECK(text_of(rows[0], "cwd") == cwd);
 }
 
 // ---- errors ----------------------------------------------------------------
