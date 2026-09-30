@@ -16,6 +16,7 @@ import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.json_text;
 import planar.process.identity;
+import planar.textview;
 
 namespace planar::cmd::agent::handlers {
 
@@ -162,15 +163,24 @@ auto render_json(const hq::queue_status& s) -> std::string {
 
 // ---- text -----------------------------------------------------------------
 
-/// @brief `value` as one line's text: verbatim, or quoted as a JSON string when
-/// a control character (or, with `spaces`, a space or quote) would break the
-/// line-oriented form.
+/// @brief `value` as one line's text: verbatim, or double-quoted and escaped
+/// (`textview::quote_text`) when it would break or mislead the line-oriented
+/// form: a control character, a Unicode format character (bidirectional
+/// override, zero-width, line separator), invalid UTF-8, a backslash, or a
+/// leading double quote (which would otherwise read as this view's own
+/// quoting). With `spaces`, a space, any quote, or an empty value is quoted
+/// too, for a value that shares its line with others.
 auto line_text(std::string_view value, bool spaces = false) -> std::string {
-  auto const risky = std::ranges::any_of(value, [&](char c) {
-    auto const u = static_cast<unsigned char>(c);
-    return u < 0x20 || u == 0x7f || (spaces && (c == ' ' || c == '"'));
-  });
-  return risky || (spaces && value.empty()) ? json_text::json_string(value) : std::string{value};
+  auto const risky = textview::has_hazard(value) || value.starts_with('"') || value.contains('\\') ||
+                     (spaces && (value.contains(' ') || value.contains('"') || value.empty()));
+  return risky ? textview::quote_text(value) : std::string{value};
+}
+
+/// @brief A submitter-chosen vendor, role or label as a line's text: cut to
+/// `textview::k_field_cap` display columns with a `…` marker when longer,
+/// then `line_text`. JSON is never cut.
+auto capped_text(std::string_view value, bool spaces = false) -> std::string {
+  return line_text(textview::cap_field(value), spaces);
 }
 
 void line(std::string& out, std::string_view key, std::string_view value) {
@@ -183,9 +193,9 @@ void line_int(std::string& out, std::string_view key, const std::optional<std::i
   }
 }
 
-void line_text(std::string& out, std::string_view key, const std::optional<std::string>& value) {
+void line_text(std::string& out, std::string_view key, const std::optional<std::string>& value, bool capped = false) {
   if (value) {
-    line(out, key, line_text(*value));
+    line(out, key, capped ? capped_text(*value) : line_text(*value));
   }
 }
 
@@ -205,17 +215,17 @@ auto render_text(const hq::queue_status& s) -> std::string {
   line_text(out, "terminating", s.terminating);
   if (s.cancelled_by) {
     line(out, "cancelled_by",
-         std::format("vendor={} role={} pid={}", line_text(s.cancelled_by->vendor.value_or(""), true),
-                     line_text(s.cancelled_by->role.value_or(""), true), s.cancelled_by->pid));
+         std::format("vendor={} role={} pid={}", capped_text(s.cancelled_by->vendor.value_or(""), true),
+                     capped_text(s.cancelled_by->role.value_or(""), true), s.cancelled_by->pid));
   }
   line_int(out, "superseded_by", s.superseded_by);
   line(out, "nested", s.nested ? "true" : "false");
   line_int(out, "parent_seq", s.parent_seq);
   line(out, "cwd", line_text(s.cwd));
   line(out, "argv", argv_json(s.argv));
-  line_text(out, "label", s.label);
-  line_text(out, "vendor", s.vendor);
-  line_text(out, "role", s.role);
+  line_text(out, "label", s.label, true);
+  line_text(out, "vendor", s.vendor, true);
+  line_text(out, "role", s.role, true);
   line_text(out, "log_path", s.log_path);
   line_int(out, "enqueued_at", s.enqueued_at);
   line_int(out, "started_at", s.started_at);

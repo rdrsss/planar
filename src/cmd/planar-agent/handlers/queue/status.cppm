@@ -25,7 +25,12 @@
 /// order, `null` where a field does not apply. Without it, the same answer as
 /// `key: value` lines, one per field that applies, in the same order; the
 /// nested `cancelled_by` reads `vendor=<v> role=<r> pid=<n>` and `argv` is a
-/// compact JSON array.
+/// compact JSON array. A text value that holds a control character, a Unicode
+/// format character (bidirectional override, zero-width, line separator), a
+/// backslash or a leading double quote is shown double-quoted and escaped, so
+/// a quoted value is never mistaken for an unquoted one; a `label`, `vendor` or
+/// `role` (and the canceller's) longer than 48 display columns is cut and ends
+/// with `…`. `--json` is never cut and carries the exact bytes.
 ///
 /// ## Exit status
 ///

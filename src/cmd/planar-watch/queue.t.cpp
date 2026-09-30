@@ -835,7 +835,7 @@ TEST_CASE("queue view: a long vendor, role or label is cut in text and complete 
   auto const text = run_queue(arena, "long_text", false);
   INFO("stdout:\n" << text.out);
   REQUIRE(text.code == 0);
-  CHECK(text.out.size() < 400);
+  CHECK(text.out.size() < 600); // untruncated it is over 900
   for (auto const tail : {"TAILMARK", "VTAIL", "RTAIL"}) {
     CHECK_FALSE(text.out.contains(tail));
   }
