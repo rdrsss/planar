@@ -23,6 +23,15 @@ auto basename_of(std::string_view path) -> std::string_view {
   return slash == std::string_view::npos ? path : path.substr(slash + 1);
 }
 
+/// @brief Whether `a` and `b` are equal when ASCII letters are compared
+/// without regard to case. Non-ASCII bytes compare exactly.
+auto equals_ignore_case(std::string_view a, std::string_view b) -> bool {
+  return std::ranges::equal(a, b, [](char x, char y) {
+    auto const fold = [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; };
+    return fold(x) == fold(y);
+  });
+}
+
 /// @brief Whether `word` is a `NAME=value` assignment. Before `env` the name
 /// is a shell identifier; after `env`, which accepts any name, it is any
 /// non-empty text before the first `=`.
@@ -132,7 +141,10 @@ void skip_option(std::vector<std::string>& words, std::size_t& at) {
   // Short options, possibly clustered: `-iu NAME`, `-uNAME`, `-Sclaude`.
   for (std::size_t j = 1; j < word.size(); ++j) {
     char const c = word[j];
-    if (c == 'u' || c == 'C' || c == 'P' || c == 'a' || c == 'S') {
+    // `-L` and `-U` are FreeBSD's login-class options, which macOS and GNU env
+    // reject. Consuming their value anyway is harmless: such a command fails
+    // inside env before anything runs.
+    if (c == 'u' || c == 'C' || c == 'P' || c == 'a' || c == 'S' || c == 'L' || c == 'U') {
       bool const has_inline = j + 1 < word.size();
       auto const rest       = std::string_view{word}.substr(j + 1);
       auto [value, used]    = take(1, rest, has_inline);
@@ -166,7 +178,7 @@ auto check_command(std::span<const std::string> argv) -> std::expected<void, gua
     if (at >= words.size()) {
       return {};
     }
-    if (basename_of(words[at]) != "env") {
+    if (!equals_ignore_case(basename_of(words[at]), "env")) {
       break;
     }
     ++at;
@@ -192,8 +204,10 @@ auto check_command(std::span<const std::string> argv) -> std::expected<void, gua
     return {};
   }
   auto const program = basename_of(words[at]);
-  if (std::ranges::find(k_launchers, program) != k_launchers.end()) {
-    return std::unexpected(guard_refusal{.program = std::string{program}});
+  // The refusal names the LISTED spelling, whatever case the command used.
+  auto const listed = std::ranges::find_if(k_launchers, [&](std::string_view name) { return equals_ignore_case(program, name); });
+  if (listed != k_launchers.end()) {
+    return std::unexpected(guard_refusal{.program = std::string{*listed}});
   }
   return {};
 }

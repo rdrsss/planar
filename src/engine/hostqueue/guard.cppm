@@ -13,7 +13,12 @@
 ///
 /// The guard takes the BASENAME of the program: `/usr/local/bin/claude` and
 /// `claude` are the same program, and a name that merely contains a listed
-/// word (`codex-lint-report`, `claude_fixture`) is a different one. Before the
+/// word (`codex-lint-report`, `claude_fixture`) is a different one. The names
+/// are matched WITHOUT REGARD TO ASCII CASE (`Claude`, `CODEX`): macOS's default
+/// volumes are case-insensitive, so a PATH lookup of `Claude` runs `claude`,
+/// and an exact comparison would be walked around by changing a letter. The
+/// refusal reports the listed spelling. The same folding applies to `env`.
+/// Non-ASCII bytes compare exactly. Before the
 /// program is chosen the guard skips what would run in front of it:
 ///
 ///   * leading `NAME=value` assignments;
@@ -21,7 +26,11 @@
 ///     its options and any assignments that follow it: `-i`, `-0`, `-v`,
 ///     `-u NAME` / `-uNAME` / `--unset=NAME` / `--unset NAME`,
 ///     `-C DIR` / `-CDIR` / `--chdir=DIR` / `--chdir DIR`, `-P PATH` / `-PPATH`,
-///     `-a NAME` / `-aNAME` / `--argv0=NAME` / `--argv0 NAME`, clustered short
+///     `-a NAME` / `-aNAME` / `--argv0=NAME` / `--argv0 NAME`, FreeBSD's
+///     `-L USER` / `-LUSER` and `-U USER` / `-UUSER` (macOS and GNU env reject
+///     them, so such a command fails inside env before anything runs; consuming
+///     the value is harmless, and keeps the user from being read as the
+///     program), clustered short
 ///     options such as `-iu NAME`, and `--` (which ends the options);
 ///   * `-S STRING` / `-SSTRING` / `--split-string=STRING` /
 ///     `--split-string STRING`, whose string is split on white space and
@@ -54,14 +63,16 @@ export auto model_launchers() -> std::span<const std::string_view>;
 
 /// @brief Why a command was refused.
 export struct guard_refusal {
-  /// @brief The listed name the command's program matched (its basename).
+  /// @brief The listed name the command's program matched (its basename,
+  /// compared without regard to ASCII case), spelled as listed.
   std::string program;
 };
 
 /// @brief Decides whether `argv` may be queued.
 /// @param argv The full argument vector, program first. An empty vector has no
 /// program and is not refused.
-/// @return Success, or the launcher the command would start.
+/// @return Success, or the launcher the command would start, in its listed
+/// spelling.
 export auto check_command(std::span<const std::string> argv) -> std::expected<void, guard_refusal>;
 
 } // namespace planar::engine::hostqueue

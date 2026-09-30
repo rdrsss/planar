@@ -83,6 +83,10 @@ inline auto shell_quote(std::string_view value) -> std::string {
 struct pinned_var {
   std::string name;  ///< The variable name.
   std::string value; ///< Its value, an absolute path under the arena.
+  /// @brief When true the child runs with `name` REMOVED from its environment
+  /// (`env -u name`) and `value` is ignored. A variable merely absent from the
+  /// map is inherited, not removed; only this makes it unset.
+  bool unset = false;
 };
 
 /// @brief The variables every pinned invocation runs under, all rooted in
@@ -124,11 +128,20 @@ inline auto pinned_env(const std::filesystem::path& work) -> std::vector<pinned_
 /// @return Its value, or nullopt when absent.
 inline auto pinned_lookup(std::span<const pinned_var> env, std::string_view name) -> std::optional<std::string> {
   for (auto const& var : env) {
-    if (var.name == name) {
+    if (var.name == name && !var.unset) {
       return var.value;
     }
   }
   return std::nullopt;
+}
+
+/// @brief Whether a pinned map explicitly removes `name` from the child's
+/// environment (an entry with `unset` set).
+/// @param env The map.
+/// @param name The variable name.
+/// @return `true` only for an explicit removal; mere absence is inheritance.
+inline auto pinned_unsets(std::span<const pinned_var> env, std::string_view name) -> bool {
+  return std::ranges::any_of(env, [&](const pinned_var& var) { return var.name == name && var.unset; });
 }
 
 /// @brief Whether `path` lies under `root`, compared lexically.
@@ -174,6 +187,13 @@ inline auto agent_db_pin_error(const std::filesystem::path& work, std::span<cons
   } else if (auto const home = pinned_lookup(env, "HOME"); home.has_value() && !home->empty()) {
     resolved = std::filesystem::path{*home} / ".planar" / "agent.db";
     source   = "the $HOME/.planar/agent.db fallback";
+  } else if (pinned_unsets(env, "PLANAR_AGENT_DB") && pinned_unsets(env, "HOME")) {
+    // Both variables are REMOVED from the child's environment, so the runtime
+    // has nothing to resolve a path from and refuses (`resolve_agent_db_path`
+    // has no passwd-database fallback). This is the one deliberately
+    // unresolvable map; mere absence from the map is still refused below,
+    // because an absent variable is inherited from the caller.
+    return std::nullopt;
   } else {
     return std::format("parity harness: the agent database is unpinned (neither PLANAR_AGENT_DB nor HOME is in the "
                        "pinned map) for arena root '{}'; a from-source binary would open the operator's live "
@@ -214,8 +234,16 @@ inline void require_agent_db_pinned(const std::filesystem::path& work, std::span
 /// @return A shell fragment ending in a trailing space, ready for a binary.
 inline auto pinned_env_prefix(std::span<const pinned_var> env) -> std::string {
   std::string child = "env -u PLANAR_QUEUE_SLOT";
+  // Options first: `env` stops reading options at the first assignment.
   for (auto const& var : env) {
-    child += std::format(" {}={}", var.name, shell_quote(var.value));
+    if (var.unset) {
+      child += std::format(" -u {}", shell_quote(var.name));
+    }
+  }
+  for (auto const& var : env) {
+    if (!var.unset) {
+      child += std::format(" {}={}", var.name, shell_quote(var.value));
+    }
   }
   child += ' ';
   return child;
