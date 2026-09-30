@@ -609,3 +609,434 @@ TEST_CASE("queue run: a nested insert that fails for any other reason refuses at
   CHECK(hq::list(*opened).value().size() == 1);
   CHECK(hq::list_history(*opened).value().empty());
 }
+
+// ---------------------------------------------------------------------------
+// Task 7017 (hq-missing-entry): a submitter that finds its own entry missing
+// reads the history row (tech spec 647 § Waiting and claiming a turn, table
+// under the poll steps). Task 7065 (hq-giveup-history-fields): the history row
+// a submitter's give-up leaves.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The settings the missing-entry cases use: ONE slot, so a seeded
+/// running holder keeps the submitter waiting, a short poll, and a staleness
+/// window so long that no seeded entry is ever reaped by the engine on its own.
+auto one_slot_settings() -> planar::engine::config::queue_settings {
+  return planar::engine::config::queue_settings{
+      .slots = 1, .poll_interval_ms = 10, .stale_after_ms = 3'600'000, .grace_ms = 10'000, .history_days = 30};
+}
+
+/// @brief Installs a sleep seam that calls `act` with a fresh connection to the
+/// scratch store at every tick, and throws (failing the case) after `limit`
+/// ticks, so a submitter that waits forever fails instead of hanging.
+void script(agent::handlers::queue_run_deps& deps, const scratch& sc, planar::engine::config::queue_settings settings,
+            std::function<void(planar::db::connection&)> act, int limit = 600) {
+  auto const ticks   = std::make_shared<int>(0);
+  auto const root    = sc.root;
+  deps.load_settings = [settings] {
+    return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{settings};
+  };
+  deps.sleep = [ticks, root, act = std::move(act), limit](std::chrono::milliseconds) {
+    if (++*ticks >= limit) {
+      throw std::runtime_error("queue run ticked past the case's bound");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    auto opened = planar::db::agent::open_agent_db_at(root / "agent.db");
+    REQUIRE(opened.has_value());
+    act(*opened);
+  };
+}
+
+/// @brief Ends `seq` the way `outcome` says another process would, and
+/// requires that this call was the one that removed it.
+void end_as(planar::db::connection& conn, std::int64_t seq, hq::history_outcome outcome) {
+  ident::system_clock clock;
+  hq::end_request     request{.outcome = outcome, .ended_at = clock.wall_ms()};
+  if (outcome == hq::history_outcome::exited) {
+    request.exit_code = 0;
+  } else if (outcome == hq::history_outcome::signaled) {
+    request.signal = 9;
+  } else if (outcome == hq::history_outcome::cancelled) {
+    request.cancelled_by = hq::canceller{.vendor = "claude", .role = "operator", .pid = 4321};
+  }
+  auto const ended = hq::end_entry(conn, seq, request);
+  REQUIRE(ended.has_value());
+  REQUIRE(*ended == hq::end_result::ended);
+}
+
+/// @brief A live waiting entry submitted by this test process: a later
+/// arrival the submitter under test has to queue behind.
+auto arrive(planar::db::connection& conn) -> std::int64_t {
+  ident::system_clock clock;
+  auto const          pid     = static_cast<std::int64_t>(::getpid());
+  auto const          started = ident::process_start_time(pid);
+  REQUIRE((started && started->has_value()));
+  auto const now = clock.monotonic_ms();
+  REQUIRE(now.has_value());
+  auto const seq = hq::enqueue(conn, hq::enqueue_request{.host_id        = ident::host_identity(ident::native_identity_source()),
+                                                         .pid            = pid,
+                                                         .pid_started    = static_cast<std::int64_t>(**started),
+                                                         .cwd            = "/",
+                                                         .argv           = {"arrival"},
+                                                         .enqueued_at    = clock.wall_ms(),
+                                                         .refreshed_mono = *now});
+  REQUIRE(seq.has_value());
+  return *seq;
+}
+
+auto history_of(planar::db::connection& conn, std::int64_t seq) -> std::optional<hq::history_row> {
+  auto const row = hq::find_history(conn, seq);
+  REQUIRE(row.has_value());
+  return *row;
+}
+
+auto marker_lines(const std::filesystem::path& path) -> int {
+  std::ifstream in(path);
+  int           lines = 0;
+  for (std::string line; std::getline(in, line);) {
+    ++lines;
+  }
+  return lines;
+}
+
+auto touch_command(const std::filesystem::path& marker) -> std::vector<std::string> {
+  return {"/bin/sh", "-c", std::format("echo ran >> '{}'", marker.string())};
+}
+
+} // namespace
+
+TEST_CASE("queue run: a waiting submitter reaped as abandoned rejoins behind later arrivals, records its successor and runs once",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  scratch    sc;
+  auto const holder = seed_live_parent(sc); // seq 1, running, holds the only slot
+  auto const marker = sc.root / "ran";
+
+  int                         stage   = 0;
+  int                         watch   = 0;
+  std::int64_t                arrival = 0;
+  std::optional<std::int64_t> original_wait_deadline;
+  bool                        deadline_carried = false;
+  bool                        stayed_behind    = true;
+
+  agent::handlers::queue_run_deps deps;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (stage == 0) {
+      auto const mine = hq::find(conn, 2).value();
+      if (!mine || mine->state != hq::entry_state::waiting) {
+        return;
+      }
+      original_wait_deadline = mine->wait_deadline_mono;
+      end_as(conn, 2, hq::history_outcome::abandoned); // a reaper removes it
+      arrival = arrive(conn);                          // and someone arrives meanwhile
+      stage   = 1;
+    } else if (stage == 1) {
+      auto const rejoined = hq::find(conn, 4).value();
+      if (!rejoined) {
+        return;
+      }
+      deadline_carried = rejoined->wait_deadline_mono == original_wait_deadline;
+      stage            = 2;
+    } else if (stage == 2) {
+      // Slot free, but the arrival is ahead: the rejoined entry must not start.
+      if (++watch == 1) {
+        end_as(conn, holder, hq::history_outcome::exited);
+      }
+      auto const rejoined = hq::find(conn, 4).value();
+      stayed_behind       = stayed_behind && rejoined && rejoined->state == hq::entry_state::waiting;
+      if (watch >= 8) {
+        end_as(conn, arrival, hq::history_outcome::exited);
+        stage = 3;
+      }
+    }
+  });
+
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args                 = queue_args(touch_command(marker));
+  args.flags["--wait-timeout"] = {"1h"};
+  auto const  outcome          = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status           = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(status->code == 0);
+  CHECK(marker_lines(marker) == 1);
+  CHECK(stayed_behind);
+  CHECK(deadline_carried);
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  CHECK(hq::list(*opened).value().empty());
+  auto const old_row = history_of(*opened, 2);
+  REQUIRE(old_row.has_value());
+  CHECK(old_row->outcome == hq::history_outcome::abandoned);
+  CHECK(old_row->successor_seq == 4);
+  auto const new_row = history_of(*opened, 4);
+  REQUIRE(new_row.has_value());
+  CHECK(new_row->outcome == hq::history_outcome::exited);
+  CHECK(new_row->exit_code == 0);
+  CHECK_FALSE(new_row->successor_seq.has_value());
+  auto const ahead = history_of(*opened, 3);
+  REQUIRE(ahead.has_value());
+  REQUIRE(new_row->started_at.has_value());
+  CHECK(*new_row->started_at >= ahead->ended_at); // arrival order: it ran after the arrival ended
+  CHECK(hq::list_history(*opened).value().size() == 4);
+}
+
+TEST_CASE("queue run: a waiting submitter whose entry was cancelled exits 125, runs nothing and does not rejoin",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  scratch    sc;
+  auto const holder = seed_live_parent(sc);
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  bool                            done = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!done && hq::find(conn, 2).value()) {
+      end_as(conn, 2, hq::history_outcome::cancelled);
+      done = true;
+    }
+  });
+  auto const got = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("cancelled"));
+  CHECK(got.err.contains("the command was not run"));
+  CHECK_FALSE(std::filesystem::exists(marker));
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const entries = hq::list(*opened).value();
+  REQUIRE(entries.size() == 1); // only the holder: nothing with a higher number appeared
+  CHECK(entries.front().seq == holder);
+  auto const row = history_of(*opened, 2);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::cancelled);
+  CHECK_FALSE(row->successor_seq.has_value());
+  CHECK(hq::list_history(*opened).value().size() == 1);
+}
+
+TEST_CASE("queue run: a waiting submitter whose entry ended any other way exits 125 and does not rejoin",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  for (auto const outcome : {hq::history_outcome::exited, hq::history_outcome::signaled, hq::history_outcome::timeout,
+                             hq::history_outcome::wait_timeout}) {
+    INFO("outcome " << hq::to_string(outcome));
+    scratch    sc;
+    auto const holder = seed_live_parent(sc);
+    auto const marker = sc.root / "ran";
+
+    agent::handlers::queue_run_deps deps;
+    bool                            done = false;
+    script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+      if (!done && hq::find(conn, 2).value()) {
+        end_as(conn, 2, outcome);
+        done = true;
+      }
+    });
+    auto const got = run_queue(sc, touch_command(marker), deps);
+    INFO("stderr:\n" << got.err);
+    CHECK(got.code == 125);
+    CHECK(got.err.contains("the command was not run"));
+    CHECK_FALSE(std::filesystem::exists(marker));
+
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    REQUIRE(opened.has_value());
+    auto const entries = hq::list(*opened).value();
+    REQUIRE(entries.size() == 1);
+    CHECK(entries.front().seq == holder);
+    CHECK(hq::list_history(*opened).value().size() == 1);
+  }
+}
+
+TEST_CASE("queue run: a waiting submitter whose entry is missing and left no history row exits 125 and runs nothing",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  scratch    sc;
+  auto const holder = seed_live_parent(sc);
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  bool                            done = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!done && hq::find(conn, 2).value()) {
+      REQUIRE(conn.execute("delete from queue_entries where seq = 2;").has_value()); // no history row written
+      done = true;
+    }
+  });
+  auto const got = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("no history"));
+  CHECK(got.err.contains("the command was not run"));
+  CHECK_FALSE(std::filesystem::exists(marker));
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const entries = hq::list(*opened).value();
+  REQUIRE(entries.size() == 1);
+  CHECK(entries.front().seq == holder);
+  CHECK(hq::list_history(*opened).value().empty());
+}
+
+TEST_CASE("queue run: a submitter reaped again and again stops rejoining after three rejoins",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  // The bound is this task's decision (queue.cppm, "Missing entry"): the spec
+  // says a reaped waiter rejoins and names no limit, and a submitter reaped
+  // every time it rejoined would otherwise queue forever.
+  constexpr int k_rejoins = 3;
+
+  scratch    sc;
+  auto const holder = seed_live_parent(sc);
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  int                             reaped = 0;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    for (auto const& e : hq::list(conn).value()) {
+      if (e.seq != holder && e.state == hq::entry_state::waiting) {
+        end_as(conn, e.seq, hq::history_outcome::abandoned);
+        ++reaped;
+      }
+    }
+  });
+  auto const got = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("the command was not run"));
+  CHECK_FALSE(std::filesystem::exists(marker));
+  // The original entry and each of the three rejoins was reaped once; nothing
+  // was inserted after the last.
+  CHECK(reaped == k_rejoins + 1);
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const entries = hq::list(*opened).value();
+  REQUIRE(entries.size() == 1);
+  CHECK(entries.front().seq == holder);
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == static_cast<std::size_t>(k_rejoins + 1));
+  // The successors chain 2 -> 3 -> 4 -> 5, and the last names none.
+  for (std::int64_t seq = 2; seq <= 4; ++seq) {
+    auto const row = history_of(*opened, seq);
+    REQUIRE(row.has_value());
+    CHECK(row->outcome == hq::history_outcome::abandoned);
+    CHECK(row->successor_seq == seq + 1);
+  }
+  auto const last = history_of(*opened, 5);
+  REQUIRE(last.has_value());
+  CHECK(last->outcome == hq::history_outcome::abandoned);
+  CHECK_FALSE(last->successor_seq.has_value());
+}
+
+TEST_CASE("queue run: a running submitter whose entry was reaped keeps supervising, runs once and never rejoins",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  scratch    sc;
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  bool                            done = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    auto const mine = hq::find(conn, 1).value();
+    if (!done && mine && mine->child_pgid) {
+      end_as(conn, 1, hq::history_outcome::abandoned); // reaped while its command runs
+      done = true;
+    }
+  });
+  auto const got = run_queue(sc, {"/bin/sh", "-c", std::format("sleep 0.3; echo ran >> '{}'; exit 7", marker.string())}, deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(done);
+  CHECK(got.code == 7); // what it observed of its child
+  CHECK(marker_lines(marker) == 1);
+  // Said once, not once per poll.
+  auto const notice = std::string_view{"no longer in the queue"};
+  auto       count  = std::size_t{0};
+  for (auto at = got.err.find(notice); at != std::string::npos; at = got.err.find(notice, at + 1)) {
+    ++count;
+  }
+  CHECK(count == 1);
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  CHECK(hq::list(*opened).value().empty()); // no new entry
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == 1);
+  CHECK(history.front().seq == 1);
+  CHECK(history.front().outcome == hq::history_outcome::abandoned);
+  CHECK_FALSE(history.front().successor_seq.has_value());
+}
+
+TEST_CASE("queue run: a running submitter whose entry is missing has no run limit to enforce and says so once",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  // The run limit is a property of the entry (tech spec 647 § Running, step 3:
+  // the submitter marks its ENTRY terminating). With the entry gone there is
+  // nothing to mark, so the command runs to its own end and the submitter
+  // exits with what it observed, as the spec says a running submitter does.
+  scratch    sc;
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  bool                            done = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!done && hq::find(conn, 1).value() && hq::find(conn, 1).value()->child_pgid) {
+      end_as(conn, 1, hq::history_outcome::abandoned);
+      done = true;
+    }
+  });
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args            = queue_args({"/bin/sh", "-c", std::format("sleep 0.5; echo ran >> '{}'", marker.string())});
+  args.flags["--timeout"] = {"100ms"};
+  auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status      = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(done);
+  CHECK(status->code == 0);
+  CHECK(marker_lines(marker) == 1);
+  CHECK(fx.err.str().contains("run limit"));
+}
+
+TEST_CASE("queue run: a give-up exit leaves an abandoned row with the fields of an entry that never started",
+          "[cmd][agent][queue][hq-giveup-history-fields]") {
+  // Task 7065's decision: the submitter that cannot poll for longer than the
+  // staleness window ends its own waiting entry as `abandoned`, the outcome the
+  // spec gives an entry that is no longer live. The row is that of an entry
+  // that never ran: no exit code, no signal, no start, no run time, no
+  // successor (it does not rejoin) and no canceller; it keeps the command as
+  // submitted and the time it waited.
+  scratch sc;
+  {
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    REQUIRE(opened.has_value());
+    REQUIRE(opened
+                ->execute("create trigger refuse_refresh before update on queue_entries "
+                          "begin select raise(abort, 'refresh refused'); end;")
+                .has_value());
+  }
+  agent::handlers::queue_run_deps deps;
+  poll_bound                      bound;
+  bound.bind(deps, planar::engine::config::queue_settings{
+                       .slots = 1, .poll_interval_ms = 5, .stale_after_ms = 50, .grace_ms = 10'000, .history_days = 30});
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args          = queue_args({"/usr/bin/true"});
+  args.flags["--label"] = {"give-up probe"};
+  auto const  outcome   = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status    = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  CHECK(status->code == 125);
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const row = history_of(*opened, 1);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::abandoned);
+  CHECK_FALSE(row->exit_code.has_value());
+  CHECK_FALSE(row->signal.has_value());
+  CHECK_FALSE(row->started_at.has_value());
+  CHECK_FALSE(row->ran_ms.has_value());
+  CHECK_FALSE(row->successor_seq.has_value());
+  CHECK_FALSE(row->cancelled_by.has_value());
+  CHECK_FALSE(row->nested);
+  CHECK(row->argv == std::vector<std::string>{"/usr/bin/true"});
+  CHECK(row->label == "give-up probe");
+  CHECK(row->waited_ms >= 0);
+  CHECK(row->ended_at >= row->enqueued_at);
+  CHECK(row->waited_ms == row->ended_at - row->enqueued_at); // never started: waited until the end
+}
