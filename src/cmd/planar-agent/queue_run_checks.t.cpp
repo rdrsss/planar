@@ -47,7 +47,8 @@ constexpr auto k_budget = std::chrono::seconds(30);
 /// @brief The program names the tech spec lists as model launchers. Spelled
 /// out here rather than read from the engine, so a change to the list has to
 /// change this test too.
-constexpr std::array<std::string_view, 7> k_launchers{"claude", "codex", "gemini", "copilot", "aider", "opencode", "cursor-agent"};
+constexpr std::array<std::string_view, 7> k_launchers{"claude", "codex",    "gemini",      "copilot",
+                                                      "aider",  "opencode", "cursor-agent"};
 
 auto agent_bin() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_CPP_BIN};
@@ -82,10 +83,11 @@ auto make_program(const parity::arena& arena, std::string_view name) -> std::fil
 /// @brief The pinned environment plus `fakebin` in front of the inherited
 /// `PATH`.
 auto env_with_fakebin(const parity::arena& arena) -> std::vector<pinned_var> {
-  auto env = parity::pinned_env(arena.cpp_root);
+  auto       env       = parity::pinned_env(arena.cpp_root);
   auto const inherited = std::getenv("PATH");
-  env.push_back(pinned_var{.name  = "PATH",
-                           .value = std::format("{}:{}", fakebin(arena).string(), inherited != nullptr ? inherited : "/usr/bin:/bin")});
+  env.push_back(
+      pinned_var{.name  = "PATH",
+                 .value = std::format("{}:{}", fakebin(arena).string(), inherited != nullptr ? inherited : "/usr/bin:/bin")});
   return env;
 }
 
@@ -227,9 +229,9 @@ auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<
   };
   std::error_code ec;
   std::filesystem::remove(arena.cpp_root / std::format("{}.code", tag), ec);
-  auto const line = std::format("( cd {} && {{ {} ; echo $? > {} ; }} > {} 2> {} ) </dev/null >/dev/null 2>&1 &",
-                                parity::shell_quote((arena.cpp_root / "proj").string()), child, path("code"), path("out"),
-                                path("err"));
+  auto const line =
+      std::format("( cd {} && {{ {} ; echo $? > {} ; }} > {} 2> {} ) </dev/null >/dev/null 2>&1 &",
+                  parity::shell_quote((arena.cpp_root / "proj").string()), child, path("code"), path("out"), path("err"));
   static_cast<void>(std::system(line.c_str()));
   return spawned{.root = arena.cpp_root, .tag = std::move(tag)};
 }
@@ -336,7 +338,8 @@ TEST_CASE("queue run: a program whose name only contains a listed word is queued
 
   auto const snap = require_snapshot(arena);
   CHECK(snap.entries.empty());
-  CHECK(std::ranges::count_if(snap.history, [](const hq::history_row& r) { return r.outcome == hq::history_outcome::exited; }) >= 2);
+  CHECK(std::ranges::count_if(snap.history, [](const hq::history_row& r) { return r.outcome == hq::history_outcome::exited; }) >=
+        2);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +347,8 @@ TEST_CASE("queue run: a program whose name only contains a listed word is queued
 // executed exits 126
 // ---------------------------------------------------------------------------
 
-TEST_CASE("queue run: a missing command exits 127 and leaves no entry and no history row", "[cmd][agent][queue][queue-notstarted]") {
+TEST_CASE("queue run: a missing command exits 127 and leaves no entry and no history row",
+          "[cmd][agent][queue][queue-notstarted]") {
   auto const arena = parity::make_arena("qc_missing");
 
   SECTION("a bare name found nowhere on PATH") {
@@ -435,9 +439,8 @@ TEST_CASE("queue run: a program that vanishes while queued ends as not started a
   auto const vanish  = make_program(arena, "vanishing");
   make_program(arena, "afterwards");
 
-  auto const first = spawn_queue(arena, "first",
-                                 {"sh", "-c", "echo up > \"$1\"; read x < \"$2\"; exit 0", "sh", started.string(),
-                                  release.path.string()});
+  auto const first = spawn_queue(
+      arena, "first", {"sh", "-c", "echo up > \"$1\"; read x < \"$2\"; exit 0", "sh", started.string(), release.path.string()});
   REQUIRE(await([&] { return present(started); }));
 
   auto const second = spawn_queue(arena, "second", {"vanishing"});
@@ -463,8 +466,8 @@ TEST_CASE("queue run: a program that vanishes while queued ends as not started a
   auto const snap = require_snapshot(arena);
   CHECK(snap.entries.empty());
   REQUIRE(snap.history.size() == 3);
-  auto const not_started = std::ranges::count_if(
-      snap.history, [](const hq::history_row& r) { return r.outcome == hq::history_outcome::not_started; });
+  auto const not_started =
+      std::ranges::count_if(snap.history, [](const hq::history_row& r) { return r.outcome == hq::history_outcome::not_started; });
   CHECK(not_started == 1);
   auto const row = std::ranges::find_if(snap.history, [](const hq::history_row& r) { return r.seq == 2; });
   REQUIRE(row != snap.history.end());

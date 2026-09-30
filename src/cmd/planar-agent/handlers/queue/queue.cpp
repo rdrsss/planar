@@ -218,6 +218,26 @@ auto status_code(const runner::status& status) -> int {
   return status.code;
 }
 
+/// @brief The exit code a failed resolution or start maps to: 127 for a program
+/// that cannot be found, 126 for one that cannot be executed, and the queue's
+/// own 125 for anything else.
+auto start_exit_code(runner::error error) -> int {
+  switch (error) {
+  case runner::error::not_found:
+  case runner::error::empty_command:
+    return 127;
+  case runner::error::not_executable:
+    return 126;
+  default:
+    return exit_internal_error;
+  }
+}
+
+/// @brief The words that follow `cannot start '<program>':` for `code`.
+auto start_failure_text(int code) -> std::string_view {
+  return code == 127 ? "no such program" : code == 126 ? "not executable" : "the command could not be started";
+}
+
 } // namespace
 
 auto queue_run(context& ctx, const cliapp::parsed_args& args) -> handler_outcome {
@@ -232,6 +252,20 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // failure's code rather than an enqueue of nothing.
     ctx.err() << "error: queue: run: no command given\n";
     return exit_status{exit_generic_failure};
+  }
+
+  // The command is checked before anything else is touched, so a refusal
+  // creates no entry, no ticket and no history row, and does not even open the
+  // store (tech spec 647 § Submitting). The guard comes first: a launcher that
+  // is also missing is refused as a launcher.
+  if (auto allowed = hq::check_command(argv); !allowed) {
+    ctx.err() << std::format("error: queue: refusing to queue '{}': it is a model launcher\n", allowed.error().program);
+    return exit_status{exit_user_input};
+  }
+  if (auto resolved = runner::resolve(ctx.env(), argv.front()); !resolved) {
+    auto const code = start_exit_code(resolved.error());
+    ctx.err() << std::format("error: queue: cannot start '{}': {}\n", argv.front(), start_failure_text(code));
+    return exit_status{code};
   }
 
   ident::system_clock system_clock;
@@ -280,8 +314,8 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     return refuse(ctx, "cannot read the monotonic clock");
   }
 
-  // SEAM (task hq-command-guard, hq-not-started): the guard and the 126/127
-  // checks run here, before anything is enqueued.
+  // The command guard and the 126/127 checks ran at the top of this function,
+  // before the configuration and the store were touched.
   // SEAM (task hq-vendor-role): `--vendor` and `--role` fill `vendor` and
   // `role`. SEAM (task hq-timeouts): `--wait-timeout` fills
   // `wait_deadline_mono`.
@@ -371,17 +405,8 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   if (!started_child) {
     // The program vanished or lost its permission between the checks and the
     // turn, or could not be started at all.
-    auto const error = started_child.error();
-    int        code  = exit_internal_error;
-    if (error == runner::error::not_found) {
-      code = 127;
-    } else if (error == runner::error::not_executable) {
-      code = 126;
-    }
-    ctx.err() << std::format("error: queue: cannot start '{}': {}\n", argv.front(),
-                             code == 127   ? "no such program"
-                             : code == 126 ? "not executable"
-                                           : "the command could not be started");
+    auto const code = start_exit_code(started_child.error());
+    ctx.err() << std::format("error: queue: cannot start '{}': {}\n", argv.front(), start_failure_text(code));
     if (code == 127 || code == 126) {
       end(hq::end_request{.outcome = hq::history_outcome::not_started, .exit_code = code});
     } else {
