@@ -138,10 +138,30 @@
 /// and hq-not-started): a launcher exits 2, a missing program 127 and one that
 /// cannot be executed 126, each before the configuration or the store is
 /// touched, so nothing is enqueued. A program that cannot start at its turn ends
-/// its entry `not_started` with the same 127 or 126. Later tasks of the same
-/// milestone add `--notices`, `--vendor`
-/// and `--role`, and `--claim`. This handler leaves them out and says so at
-/// each seam.
+/// its entry `not_started` with the same 127 or 126. A later task of the same
+/// milestone adds `--claim`; this handler leaves it out.
+///
+/// ## Notices
+///
+/// `--notices` (task hq-notices) writes `queue: entry <seq> <what happened>`
+/// lines to standard error: `waiting at position <n>` (when the entry first
+/// waits and whenever its place changes; a rejoined entry says it again under
+/// its new number), `started`, and a last line with the outcome
+/// (`exited with code <n>`, `terminated by signal <n>`, `stopped at its run
+/// limit`, `cancelled`, `cancelled before its turn`, `removed at its wait
+/// limit` or `not started`; a path that ends without a command outcome says why, e.g. `ended as exited without this submitter`).
+/// Every exit after the entry exists writes one, after its `error: queue:` line. Standard output is never written by the queue,
+/// with or without the flag, and without it the queue writes nothing to
+/// standard error on the happy path. The `warning: queue:` diagnostics of a
+/// degraded path and the `error: queue:` lines are written either way.
+///
+/// ## Vendor and role
+///
+/// `--vendor` and `--role` (task hq-vendor-role) name the submitting agent.
+/// Each is the flag when given and not empty, else `$PLANAR_VENDOR` or
+/// `$PLANAR_ROLE` when set and not empty, else stored empty (SQL NULL). The
+/// values reach the entry, its history row, a rejoined entry and a nested
+/// entry.
 module;
 
 export module planar.cmd.planar_agent.handlers.queue;
