@@ -207,12 +207,20 @@ qcheck 1   1   "queue run: unknown flag (parse failure)"     -- --no-such-flag -
 qcheck 2   2   "queue run: model launcher refused by guard"  -- -- claude
 qcheck 2   2   "queue run: invalid --timeout duration"       -- --timeout 0 -- true
 qcheck 124 124 "queue run: --timeout overrun"                -- --timeout 1s -- sleep 30
-qcheck 125 125 "queue run: no HOME and no PLANAR_AGENT_DB"   -u PLANAR_AGENT_DB -u HOME -- -- true
-qcheck 125 125 "queue run: store path is a directory"        "PLANAR_AGENT_DB=$tmp" -- -- true
 qcheck 126 126 "queue run: not executable"                   -- -- "$noexec_file"
 qcheck 127 127 "queue run: program not found"                -- -- exit-code-contract-no-such-program
 qcheck 143 128 "queue run: terminated by SIGTERM (128+N)"    -- -- sh -c 'kill -TERM $$'
 qcheck 7   own "queue run: pass-through status"              -- -- sh -c 'exit 7'
+# An unreachable store: PLANAR_AGENT_DB (left at the pinned path, so every
+# invocation in this script keeps it beside PLANAR_DB) names a DIRECTORY. Run
+# last, because the cases above create it as a database file. (The other
+# unreachable-store shape, neither PLANAR_AGENT_DB nor HOME set, is pinned by
+# queue_run_store.t.cpp: an unset variable would break the arena tests'
+# contract that this script always pins it.)
+rm -f "$PLANAR_AGENT_DB" "$PLANAR_AGENT_DB-wal" "$PLANAR_AGENT_DB-shm"
+mkdir "$PLANAR_AGENT_DB"
+qcheck 125 125 "queue run: store path is a directory"        -- -- true
+rmdir "$PLANAR_AGENT_DB"
 
 printf 'exit-code-contract: %d behaviour cases checked\n' "$checked"
 
