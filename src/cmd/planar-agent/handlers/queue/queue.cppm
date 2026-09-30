@@ -53,8 +53,12 @@
 ///
 /// ## What is not here yet
 ///
-/// Later tasks of the same milestone add the command guard and the 126/127
-/// checks before the enqueue, signal forwarding, nested runs, missing-entry handling, `--notices`, `--vendor`
+/// The command guard and the 126/127 checks run first (tasks hq-command-guard
+/// and hq-not-started): a launcher exits 2, a missing program 127 and one that
+/// cannot be executed 126, each before the configuration or the store is
+/// touched, so nothing is enqueued. A program that cannot start at its turn ends
+/// its entry `not_started` with the same 127 or 126. Later tasks of the same
+/// milestone add signal forwarding, nested runs, missing-entry handling, `--notices`, `--vendor`
 /// and `--role`, and `--claim`. This handler leaves them out and says so at
 /// each seam.
 module;

@@ -633,3 +633,55 @@ TEST_CASE("every outcome's stored text parses back to the same outcome", "[engin
   }
   CHECK_FALSE(hq::parse_history_outcome("vanished").has_value());
 }
+
+TEST_CASE("an enqueue whose commit fails keeps the expired rows and their log files", "[engine][hostqueue][hq-history]") {
+  // queue.cppm: the log files of pruned rows are removed only after the
+  // transaction commits. The insert and the delete both succeed here; the
+  // COMMIT itself is refused, so the delete is rolled back and the files must
+  // still exist. Moving `remove_log_files` before the commit passes every other
+  // case in this file and fails this one.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  constexpr std::int64_t             k_now = k_enqueued_at + 10 * hq::k_ms_per_day;
+  std::vector<std::int64_t>          seqs;
+  std::vector<std::filesystem::path> logs;
+  for (std::string_view name : {"expired-a.log", "expired-b.log"}) {
+    auto const path = scratch.path_ / name;
+    write_file(path, "output\n");
+    auto request     = request_for(std::string{name});
+    request.log_path = path.string();
+    auto const seq   = enqueue_one(conn, request);
+    end_one(conn, seq, {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_now - 5 * hq::k_ms_per_day});
+    seqs.push_back(seq);
+    logs.push_back(path);
+  }
+
+  // Fault injection inside a unit test, not scenario seeding. A deferred
+  // foreign key on a temp table is checked at COMMIT, not at the statement:
+  // the trigger inserts a child row whose parent does not exist, so every
+  // statement of the enqueue succeeds and the commit is what fails.
+  REQUIRE(conn.execute("create temp table fk_parent (id integer primary key)").has_value());
+  REQUIRE(conn.execute("create temp table fk_child (parent_id integer references fk_parent (id) deferrable initially deferred)")
+              .has_value());
+  REQUIRE(conn.execute("create temp trigger fail_at_commit after insert on queue_entries "
+                       "begin insert into fk_child (parent_id) values (999); end;")
+              .has_value());
+
+  auto next         = request_for("next");
+  next.enqueued_at  = k_now;
+  auto const result = hq::enqueue(conn, next, 1);
+  REQUIRE_FALSE(result.has_value());
+  CHECK(result.error().kind == hq::queue_error_kind::query_failed);
+  CHECK(result.error().message.find("commit enqueue") != std::string::npos);
+  CHECK_FALSE(conn.in_transaction());
+
+  // Nothing was enqueued, and nothing was pruned: rows and files both remain.
+  CHECK(hq::list(conn).value().empty());
+  CHECK(hq::list_history(conn).value().size() == seqs.size());
+  for (std::size_t i = 0; i < seqs.size(); ++i) {
+    INFO("row " << logs[i].filename().string());
+    CHECK(hq::find_history(conn, seqs[i]).value().has_value());
+    CHECK(std::filesystem::exists(logs[i]));
+  }
+}
