@@ -1040,3 +1040,136 @@ TEST_CASE("queue run: a give-up exit leaves an abandoned row with the fields of 
   CHECK(row->ended_at >= row->enqueued_at);
   CHECK(row->waited_ms == row->ended_at - row->enqueued_at); // never started: waited until the end
 }
+
+// ---------------------------------------------------------------------------
+// Task 7017, iteration 2: a store failure while rejoining is bounded like the
+// nested insert's (tech spec 647 § Waiting: a submitter that cannot complete a
+// poll for longer than the staleness window exits 125).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Ends entry 2 as abandoned once it exists, as a reaper would.
+auto reap_second(bool& done) -> std::function<void(planar::db::connection&)> {
+  return [&done](planar::db::connection& conn) {
+    if (!done && hq::find(conn, 2).value()) {
+      end_as(conn, 2, hq::history_outcome::abandoned);
+      done = true;
+    }
+  };
+}
+
+} // namespace
+
+TEST_CASE("queue run: a rejoin that keeps finding the store busy exits 125 within the staleness window and runs nothing",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  scratch    sc;
+  auto const holder = seed_live_parent(sc);
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  bool                            done = false;
+  script(deps, sc,
+         planar::engine::config::queue_settings{
+             .slots = 1, .poll_interval_ms = 5, .stale_after_ms = 50, .grace_ms = 10'000, .history_days = 30},
+         reap_second(done));
+  auto const calls = std::make_shared<int>(0);
+  deps.rejoin      = [calls](planar::db::connection&, std::int64_t,
+                             const hq::enqueue_request&) -> std::expected<hq::rejoin_result, hq::queue_error> {
+    ++*calls;
+    return std::unexpected(busy_failure(5));
+  };
+  auto const got = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("busy"));
+  CHECK(got.err.contains("the command was not run"));
+  CHECK(*calls > 1); // retried rather than given up on at the first busy
+  CHECK_FALSE(std::filesystem::exists(marker));
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  // The short window let the seeded holder go stale too; what matters is that
+  // nothing was inserted after entry 2.
+  for (auto const& e : hq::list(*opened).value()) {
+    CHECK(e.seq <= holder);
+  }
+  auto const row = history_of(*opened, 2);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::abandoned);
+  CHECK_FALSE(row->successor_seq.has_value());
+}
+
+TEST_CASE("queue run: a rejoin that fails for any other reason exits 125 at once and runs nothing",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  scratch    sc;
+  auto const holder = seed_live_parent(sc);
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  bool                            done = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!done && hq::find(conn, 2).value()) {
+      end_as(conn, 2, hq::history_outcome::abandoned);
+      // From here every insert into the queue is refused, with a constraint
+      // error rather than a busy one.
+      REQUIRE(
+          conn.execute(
+                  "create trigger refuse_insert before insert on queue_entries begin select raise(abort, 'insert refused'); end;")
+              .has_value());
+      done = true;
+    }
+  });
+  auto const got = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("insert refused"));
+  CHECK(got.err.contains("the command was not run"));
+  CHECK_FALSE(got.err.contains("busy"));
+  CHECK_FALSE(std::filesystem::exists(marker));
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const entries = hq::list(*opened).value();
+  REQUIRE(entries.size() == 1);
+  CHECK(entries.front().seq == holder);
+  CHECK_FALSE(history_of(*opened, 2)->successor_seq.has_value());
+}
+
+TEST_CASE("queue run: a rejoin that finds the store busy and then succeeds rejoins normally",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  scratch    sc;
+  auto const holder = seed_live_parent(sc);
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  bool                            reaped   = false;
+  bool                            released = false;
+  auto const                      reap     = reap_second(reaped);
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    reap(conn);
+    if (reaped && !released && hq::find(conn, 3).value()) {
+      released = true;
+      end_as(conn, holder, hq::history_outcome::exited);
+    }
+  });
+  auto const calls = std::make_shared<int>(0);
+  deps.rejoin      = [calls](planar::db::connection& conn, std::int64_t seq,
+                             const hq::enqueue_request& request) -> std::expected<hq::rejoin_result, hq::queue_error> {
+    if (++*calls <= 2) {
+      return std::unexpected(busy_failure(*calls == 1 ? 5 : 261));
+    }
+    return hq::rejoin(conn, seq, request);
+  };
+  auto const got = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(*calls == 3);
+  CHECK(marker_lines(marker) == 1);
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  CHECK(hq::list(*opened).value().empty());
+  CHECK(history_of(*opened, 2)->successor_seq == 3);
+  CHECK(history_of(*opened, 3)->outcome == hq::history_outcome::exited);
+}

@@ -2117,6 +2117,28 @@ struct continue_on_exit {
   }
 };
 
+/// @brief Stops `run` (SIGSTOP) at an instant when it is not inside a write
+/// transaction. A process stopped mid-transaction keeps the store's write lock
+/// for as long as it is stopped, so no other submitter could ever reap it and
+/// the case would time out under load. After each stop the test tries the write
+/// lock itself; when that is busy it continues the submitter and tries again.
+void stop_outside_a_transaction(const parity::arena& arena, const spawned& run) {
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    REQUIRE(::kill(static_cast<::pid_t>(run.pid), SIGSTOP) == 0);
+    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    REQUIRE(opened.has_value());
+    static_cast<void>(opened->execute("pragma busy_timeout = 100;"));
+    auto const locked = opened->execute("begin immediate;");
+    if (locked) {
+      static_cast<void>(opened->execute("rollback;"));
+      return;
+    }
+    REQUIRE(::kill(static_cast<::pid_t>(run.pid), SIGCONT) == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  FAIL("the waiter was always inside a write transaction when it was stopped");
+}
+
 } // namespace
 
 TEST_CASE("queue run: a cancelled waiter exits 125 without running and does not rejoin",
@@ -2182,7 +2204,7 @@ TEST_CASE("queue run: a waiter stopped until it is reaped rejoins behind the ent
   // reaps it. This process recorded the pid, and checks its start time first.
   REQUIRE(waiter.still_mine());
   resume.run = &waiter;
-  REQUIRE(::kill(static_cast<::pid_t>(waiter.pid), SIGSTOP) == 0);
+  stop_outside_a_transaction(arena, waiter);
   later = spawn_queue(arena, "later", sh_command("echo later >> \"$1\"", {order.string()}));
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);

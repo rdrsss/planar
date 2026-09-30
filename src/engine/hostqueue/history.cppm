@@ -193,6 +193,9 @@ export struct rejoin_result {
 /// behind every entry that arrived meanwhile) and records the new number as
 /// the old row's successor. Either both writes happen or neither does. Runs
 /// no retention prune: the submitter's own enqueue already did.
+/// The caller reads `request.refreshed_mono` before this call takes its lock, so
+/// the new entry's freshness baseline is slightly older than its insert; the
+/// submitter's next poll refreshes it.
 /// @param conn An open agent database at or above agent schema version 2.
 /// @param old_seq The sequence number the submitter's missing entry had.
 /// @param request The new entry, as `enqueue` takes it.

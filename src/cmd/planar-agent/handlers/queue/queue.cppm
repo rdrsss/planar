@@ -97,7 +97,11 @@
 /// records its number in the old row's `successor_seq`, in one transaction, so
 /// `queue status` can follow the chain. The new entry keeps the original wait
 /// limit's deadline, so `--wait-timeout` bounds the whole wait, not each try.
-/// A submitter rejoins at most three times and then exits 125: the spec names
+/// A rejoin (or the history read after the third) that finds the store busy is
+/// retried at the poll interval for as long as the staleness window, counted
+/// from the FIRST failure and cleared only by a success, then refused at 125
+/// with the command not run; any other store failure refuses at once (the same
+/// rule as the nested insert). A submitter rejoins at most three times and then exits 125: the spec names
 /// no bound, and one reaped after every rejoin would otherwise queue for ever.
 /// `cancelled`, any other outcome, or no row at all (never written, or pruned)
 /// exits 125 without running the command: the entry ended by a path the
@@ -176,6 +180,12 @@ export struct queue_run_deps {
       process::identity::clock&, const engine::hostqueue::process_probe&)>;
   /// @brief Inserts a nested entry; `engine::hostqueue::enqueue_nested` when empty.
   nested_enqueuer enqueue_nested;
+  /// @brief The rejoin of a reaped waiter: what `engine::hostqueue::rejoin`
+  /// does with its arguments. A test replaces it to make the store fail.
+  using rejoiner = std::function<std::expected<engine::hostqueue::rejoin_result, engine::hostqueue::queue_error>(
+      db::connection&, std::int64_t, const engine::hostqueue::enqueue_request&)>;
+  /// @brief Rejoins the queue; `engine::hostqueue::rejoin` when empty.
+  rejoiner rejoin;
 };
 
 /// @brief `planar-agent queue run -- <command>` with the production

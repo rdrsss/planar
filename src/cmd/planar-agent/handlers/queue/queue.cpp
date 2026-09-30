@@ -494,6 +494,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   ident::clock&       clock     = deps.clock ? *deps.clock : static_cast<ident::clock&>(system_clock);
   auto const          probe     = deps.probe ? *deps.probe : hq::system_process_probe();
   auto const          signaller = deps.signaller ? deps.signaller : hq::system_group_signaller();
+  auto const          rejoin_fn = deps.rejoin ? deps.rejoin : queue_run_deps::rejoiner{hq::rejoin};
   auto const          nested_fn = deps.enqueue_nested ? deps.enqueue_nested : queue_run_deps::nested_enqueuer{hq::enqueue_nested};
 
   // Configuration first: an unusable configuration must refuse before the
@@ -687,10 +688,11 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   // and it exits 125 without running the command. A submitter rejoins at most
   // `k_max_rejoins` times.
   // @return The exit to make, or `std::nullopt` to go on waiting (it rejoined,
-  // or the store could not be read at this instant and the next poll asks
-  // again).
-  int        rejoins                  = 0;
-  auto const on_missing_while_waiting = [&]() -> std::optional<handler_outcome> {
+  // or the store was busy and the next poll asks again, within the staleness
+  // window).
+  int                         rejoins = 0;
+  std::optional<std::int64_t> rejoin_busy_since; // Monotonic ms of the first busy failure of a streak.
+  auto const                  on_missing_while_waiting = [&]() -> std::optional<handler_outcome> {
     auto const gone = [&](std::optional<hq::history_outcome> outcome) -> handler_outcome {
       if (!outcome) {
         return refuse(ctx,
@@ -711,20 +713,45 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     if (!now) {
       return refuse(ctx, "cannot read the monotonic clock");
     }
+    // A store failure here is the poll-cannot-complete case of tech spec 647 §
+    // Waiting: busy is retried at the poll interval for up to the staleness
+    // window, counted from the first failure and cleared by a success (the
+    // successful poll that reported the missing entry says nothing about this
+    // write); any other failure refuses at once. Nested insert, same rule.
+    auto const store_failure = [&](const hq::queue_error& error) -> std::optional<handler_outcome> {
+      if (!is_busy_failure(error)) {
+        return refuse(ctx, std::format("cannot rejoin the queue after entry {} went missing: {}; the command was not run", seq,
+                                       error.message));
+      }
+      if (!rejoin_busy_since) {
+        rejoin_busy_since = *now;
+      } else if (*now - *rejoin_busy_since > settings.current().stale_after_ms) {
+        return refuse(ctx, std::format("the store stayed busy for longer than the staleness window while entry {} was being put "
+                                       "back in the queue; the command was not run",
+                                       seq));
+      }
+      report.once(
+          std::format("warning: queue: cannot rejoin the queue after entry {} went missing, will retry: {}", seq, error.message));
+      return std::nullopt;
+    };
     if (rejoins >= k_max_rejoins) {
       auto const row = hq::find_history(conn, seq);
       if (!row) {
-        report.once(std::format("warning: queue: cannot read the history of entry {}: {}", seq, row.error().message));
+        if (auto refused = store_failure(row.error())) {
+          return refused;
+        }
         return std::nullopt;
       }
       return gone(*row ? std::optional{(*row)->outcome} : std::nullopt);
     }
-    auto const rejoined = hq::rejoin(conn, seq, make_request(*now));
+    auto const rejoined = rejoin_fn(conn, seq, make_request(*now));
     if (!rejoined) {
-      report.once(
-          std::format("warning: queue: cannot rejoin the queue after entry {} went missing: {}", seq, rejoined.error().message));
+      if (auto refused = store_failure(rejoined.error())) {
+        return refused;
+      }
       return std::nullopt;
     }
+    rejoin_busy_since.reset();
     if (rejoined->status != hq::rejoin_status::rejoined) {
       return gone(rejoined->outcome);
     }
