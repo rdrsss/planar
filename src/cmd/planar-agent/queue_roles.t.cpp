@@ -174,7 +174,7 @@ TEST_CASE("the coder's gate instructions use the queued form", "[cmd][agent][que
   // The long gates are submitted detached, the short ones run in the foreground.
   CHECK(contains(text, "planar-agent queue run --detach --vendor <vendor> --role coder -- make test"));
   CHECK(contains(text, "planar-agent queue run --detach --vendor <vendor> --role coder -- make cpp-lint"));
-  CHECK(contains(text, "planar-agent queue run --vendor <vendor> --role coder -- make"));
+  CHECK(contains(text, "planar-agent queue run --vendor <vendor> --role coder -- make fmt-check"));
 }
 
 TEST_CASE("the direct-instruction check discriminates", "[cmd][agent][queue][roles]") {
