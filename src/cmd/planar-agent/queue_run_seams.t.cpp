@@ -151,14 +151,42 @@ struct poll_bound {
   }
 };
 
+/// @brief A monotonic clock that stands still until the test moves it. It
+/// starts at the system clock's reading and adds only what `advance` gives it,
+/// so a case whose outcome depends on a window elapsing (a staleness window, a
+/// run limit) decides WHEN by calling `advance`, not by how loaded the machine
+/// is. Wall time is the system's; only the monotonic clock is steered.
+class steered_clock final : public ident::clock {
+public:
+  /// @brief Moves the monotonic clock forward.
+  void advance(std::int64_t ms) {
+    _offset += ms;
+  }
+
+  [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, ident::error> override {
+    return _base + _offset;
+  }
+  [[nodiscard]] auto wall_ms() -> std::int64_t override {
+    return _system.wall_ms();
+  }
+
+private:
+  ident::system_clock _system;
+  std::int64_t        _base   = _system.monotonic_ms().value_or(0);
+  std::int64_t        _offset = 0;
+};
+
 /// @brief Seeds the scratch store with a RUNNING entry that is live: its
 /// submitter is this test process, so its existence and start time hold, and
 /// it was just refreshed. It is the parent a nested run can name.
+/// @param steered When set, the clock the entry's refresh time is read from, so a case that steers the handler's clock seeds on
+/// the same timeline; the system clock otherwise.
 /// @return The entry's sequence number.
-auto seed_live_parent(const scratch& sc) -> std::int64_t {
+auto seed_live_parent(const scratch& sc, ident::clock* steered = nullptr) -> std::int64_t {
   auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
   REQUIRE(opened.has_value());
-  ident::system_clock clock;
+  ident::system_clock system;
+  ident::clock&       clock   = steered != nullptr ? *steered : static_cast<ident::clock&>(system);
   auto const          pid     = static_cast<std::int64_t>(::getpid());
   auto const          started = ident::process_start_time(pid);
   REQUIRE((started && started->has_value()));
@@ -988,15 +1016,23 @@ TEST_CASE("queue run: a running submitter whose entry is missing has no run limi
   // the submitter marks its ENTRY terminating). With the entry gone there is
   // nothing to mark, so the command runs to its own end and the submitter
   // exits with what it observed, as the spec says a running submitter does.
+  // The run limit (100 ms) is read on a steered clock that stands still until
+  // the entry has been removed and is then moved past the limit. The order
+  // "entry gone, THEN the limit passes" is therefore fixed by the case; on the
+  // system clock a loaded machine let the limit pass first, the submitter
+  // marked the entry and stopped the command (exit 124).
   scratch    sc;
   auto const marker = sc.root / "ran";
+  auto const clock  = std::make_shared<steered_clock>();
 
   agent::handlers::queue_run_deps deps;
   bool                            done = false;
+  deps.clock                           = clock;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
     if (!done && hq::find(conn, 1).value() && hq::find(conn, 1).value()->child_pgid) {
       end_as(conn, 1, hq::history_outcome::abandoned);
       done = true;
+      clock->advance(1'000);
     }
   });
   fixture fx{sc, (sc.root / "agent.db").string()};
@@ -1083,16 +1119,26 @@ auto reap_second(bool& done) -> std::function<void(planar::db::connection&)> {
 
 TEST_CASE("queue run: a rejoin that keeps finding the store busy exits 125 within the staleness window and runs nothing",
           "[cmd][agent][queue][hq-missing-entry]") {
+  // The staleness window is measured on a steered clock: it moves 20 ms at each
+  // sleep and not at all otherwise, so the window (50 ms) closes after a fixed
+  // number of polls whatever the machine is doing. On the system clock the
+  // seeded holder could go stale, and free the slot, before this case had
+  // reaped entry 2 (measured under load: the submitter then ran its command).
   scratch    sc;
-  auto const holder = seed_live_parent(sc);
+  auto const clock  = std::make_shared<steered_clock>();
+  auto const holder = seed_live_parent(sc, clock.get());
   auto const marker = sc.root / "ran";
 
   agent::handlers::queue_run_deps deps;
   bool                            done = false;
+  deps.clock                           = clock;
   script(deps, sc,
          planar::engine::config::queue_settings{
              .slots = 1, .poll_interval_ms = 5, .stale_after_ms = 50, .grace_ms = 10'000, .history_days = 30},
-         reap_second(done));
+         [&done, clock, reap = reap_second(done)](planar::db::connection& conn) {
+           reap(conn);
+           clock->advance(20);
+         });
   auto const calls = std::make_shared<int>(0);
   deps.rejoin      = [calls](planar::db::connection&, std::int64_t,
                              const hq::enqueue_request&) -> std::expected<hq::rejoin_result, hq::queue_error> {
