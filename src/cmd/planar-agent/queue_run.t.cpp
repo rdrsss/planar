@@ -248,9 +248,76 @@ struct release_all {
 };
 
 /// @brief A `queue run` started in the background by `spawn_queue`.
+///
+/// It owns the submitter it started: `spawn_queue` records the submitter's pid
+/// (and its start time, so a reused pid is never signalled), and the
+/// destructor stops the submitter when it has not ended by then, so a case
+/// that fails part-way leaves no live process behind. Stopping it is a
+/// SIGTERM to that one recorded pid, which the submitter forwards to its
+/// command's group; a SIGKILL follows only if it outlives a bounded wait.
+/// Nothing is ever signalled by name, and never pid 0, 1 or a group.
 struct spawned {
-  std::filesystem::path root; ///< The arena root the invocation ran under.
-  std::string           tag;  ///< Its capture-file name: `<tag>.out`, `.err`, `.code`.
+  std::filesystem::path            root;    ///< The arena root the invocation ran under.
+  std::string                      tag;     ///< Its capture-file name: `<tag>.out`, `.err`, `.code`, `.pid`.
+  std::int64_t                     pid = 0; ///< The submitter's pid, as recorded by the shell that started it; 0 when none.
+  std::optional<ident::start_time> started; ///< The submitter's start time when it was recorded.
+
+  spawned() = default;
+  spawned(std::filesystem::path where, std::string name, std::int64_t submitter, std::optional<ident::start_time> when)
+      : root(std::move(where)), tag(std::move(name)), pid(submitter), started(when) {
+  }
+  spawned(const spawned&)            = delete;
+  spawned& operator=(const spawned&) = delete;
+  spawned(spawned&& other) noexcept
+      : root(std::move(other.root)), tag(std::move(other.tag)), pid(std::exchange(other.pid, 0)), started(other.started) {
+  }
+  spawned& operator=(spawned&& other) noexcept {
+    if (this != &other) {
+      stop();
+      root    = std::move(other.root);
+      tag     = std::move(other.tag);
+      pid     = std::exchange(other.pid, 0);
+      started = other.started;
+    }
+    return *this;
+  }
+  ~spawned() {
+    stop();
+  }
+
+  /// @brief True once the shell that started the submitter has written its
+  /// exit status: the submitter has been reaped and its pid may be reused.
+  [[nodiscard]] auto ended() const -> bool {
+    return read_all(root / std::format("{}.code", tag)).ends_with('\n');
+  }
+
+  /// @brief Whether `pid` is still this test's submitter: the recorded start
+  /// time still matches, so the pid was not reused.
+  [[nodiscard]] auto still_mine() const -> bool {
+    if (pid <= 1 || !started) {
+      return false;
+    }
+    auto const now = ident::process_start_time(pid);
+    return now && now->has_value() && **now == *started;
+  }
+
+  /// @brief Stops the submitter if it is still running and waits, bounded, for
+  /// it to be reaped.
+  void stop() {
+    if (pid <= 1 || ended()) {
+      pid = 0;
+      return;
+    }
+    auto const bound = std::chrono::seconds(10);
+    if (still_mine()) {
+      ::kill(static_cast<::pid_t>(pid), SIGTERM);
+    }
+    if (!await([&] { return ended(); }, std::chrono::duration_cast<std::chrono::milliseconds>(bound)) && still_mine()) {
+      ::kill(static_cast<::pid_t>(pid), SIGKILL);
+      await([&] { return ended(); }, std::chrono::duration_cast<std::chrono::milliseconds>(bound));
+    }
+    pid = 0;
+  }
 };
 
 /// @brief Starts `planar-agent queue run -- <command>` in the background,
@@ -264,15 +331,24 @@ struct spawned {
 /// pinned map and the agent-database check are the harness's own. The
 /// background subshell closes its own streams, so a case that fails while
 /// its submitter is still waiting cannot keep the test process's pipes open.
+///
+/// The submitter itself is the subshell's background job, so `<tag>.pid`
+/// holds the submitter's own pid and the subshell's `wait` yields its exit
+/// status (128 plus N when a signal killed it). A shell starts an
+/// asynchronous list with SIGINT ignored, and an ignored signal stays ignored
+/// through `exec`; `default_int` puts the disposition back to the default
+/// first, so a case that sends the submitter SIGINT reaches a command that
+/// can trap it.
 auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<std::string>& command,
-                 std::vector<pinned_var> extra = {}, std::vector<std::string> flags = {}) -> spawned {
+                 std::vector<pinned_var> extra = {}, std::vector<std::string> flags = {}, bool default_int = false) -> spawned {
   auto vars = parity::pinned_env(arena.cpp_root);
   for (auto& var : extra) {
     vars.push_back(std::move(var));
   }
   parity::require_agent_db_pinned(arena.cpp_root, vars);
 
-  std::string child = parity::pinned_env_prefix(vars) + parity::shell_quote(agent_bin().string());
+  std::string child = default_int ? "perl -e '$SIG{INT} = q(DEFAULT); exec @ARGV' " : "";
+  child += parity::pinned_env_prefix(vars) + parity::shell_quote(agent_bin().string());
   for (auto const& arg : queue_args(command, std::move(flags))) {
     child += " " + parity::shell_quote(arg);
   }
@@ -281,11 +357,35 @@ auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<
   };
   std::error_code ec;
   std::filesystem::remove(arena.cpp_root / std::format("{}.code", tag), ec);
-  auto const line =
-      std::format("( cd {} && {{ {} ; echo $? > {} ; }} > {} 2> {} ) </dev/null >/dev/null 2>&1 &",
-                  parity::shell_quote((arena.cpp_root / "proj").string()), child, path("code"), path("out"), path("err"));
+  std::filesystem::remove(arena.cpp_root / std::format("{}.pid", tag), ec);
+  auto const line = std::format(
+      "( cd {} && {{ {} & echo $! > {} ; wait $! ; echo $? > {} ; }} > {} 2> {} ) </dev/null >/dev/null "
+      "2>&1 &",
+      parity::shell_quote((arena.cpp_root / "proj").string()), child, path("pid"), path("code"), path("out"), path("err"));
   static_cast<void>(std::system(line.c_str()));
-  return spawned{.root = arena.cpp_root, .tag = std::move(tag)};
+
+  // The pid file is written by the background subshell, not by `system`'s
+  // shell, so wait (bounded) for it.
+  std::int64_t                     pid = 0;
+  std::optional<ident::start_time> started;
+  await([&] {
+    auto const text = read_all(arena.cpp_root / std::format("{}.pid", tag));
+    if (!text.ends_with('\n')) {
+      return false;
+    }
+    std::int64_t value = 0;
+    if (std::from_chars(text.data(), text.data() + text.size() - 1, value).ec != std::errc{} || value <= 1) {
+      return false;
+    }
+    pid = value;
+    return true;
+  });
+  if (pid > 1) {
+    if (auto const at = ident::process_start_time(pid); at && at->has_value()) {
+      started = **at;
+    }
+  }
+  return spawned{arena.cpp_root, std::move(tag), pid, started};
 }
 
 /// @brief Waits for a spawned invocation to end and returns what it wrote.
@@ -1227,4 +1327,296 @@ TEST_CASE("queue run: a terminating entry that cannot be ended is reported on st
   REQUIRE(snap.entries.size() == 1);
   CHECK(snap.entries.front().seq == stuck);
   CHECK(history_seq(snap, stuck + 1) != nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: signals are forwarded and the entry is always removed (task
+// hq-signal-forwarding; tech spec 647 § Signals are forwarded and the entry is
+// always removed).
+//
+// A signal to a WAITING submitter removes its entry and runs nothing; a signal
+// to a RUNNING submitter reaches the command's group and the submitter then
+// reports what the command did. The submitter's pid is the one the case
+// recorded when it started it (`spawned::pid`), never a name lookup.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The signal number's name as a test label.
+auto signal_label(int sig) -> std::string {
+  return sig == SIGINT ? "int" : sig == SIGTERM ? "term" : "hup";
+}
+
+/// @brief The shell's name for `sig`, for a `trap` line.
+auto trap_name(int sig) -> std::string {
+  return sig == SIGINT ? "INT" : sig == SIGTERM ? "TERM" : "HUP";
+}
+
+/// @brief The script of a command that traps `sig`, appends `got` to `$2`, and
+/// either exits 42 (`exit_on_signal`) or carries on. It records that it is
+/// ready in `$1` only once the trap is in place, and otherwise waits, in short
+/// naps so a trapped signal is taken promptly by any shell, for the file `$3`
+/// to appear.
+auto trapping_script(int sig, bool exit_on_signal) -> std::string {
+  return std::format("trap 'echo got >> \"$2\"{}' {}; echo ready > \"$1\"; while [ ! -e \"$3\" ]; do sleep 0.05; done; exit 0",
+                     exit_on_signal ? "; exit 42" : "", trap_name(sig));
+}
+
+/// @brief The pid of the submitter of `run`, checked to be the process the
+/// store recorded for entry `seq` and not this test.
+auto submitter_pid(const spawned& run, const parity::arena& arena, std::int64_t seq) -> ::pid_t {
+  auto const  snap = require_snapshot(arena);
+  auto const* live = entry_seq(snap, seq);
+  REQUIRE(live != nullptr);
+  REQUIRE(run.pid > 1);
+  REQUIRE(live->pid == run.pid);
+  REQUIRE(run.pid != static_cast<std::int64_t>(::getpid()));
+  return static_cast<::pid_t>(run.pid);
+}
+
+/// @brief A waiting submitter that gets `sig` removes its entry, runs nothing,
+/// records why, exits 128 plus the signal, and leaves the queue free for the
+/// next entry.
+void waiter_is_signalled(int sig) {
+  auto const arena = parity::make_arena(std::format("qr_sigwait_{}", signal_label(sig)));
+  write_config(arena, k_fast_poll);
+  gate       hold(arena.cpp_root / "hold.fifo");
+  auto const started_a = arena.cpp_root / "started_a";
+  auto const ran_b     = arena.cpp_root / "ran_b";
+  auto const ran_c     = arena.cpp_root / "ran_c";
+
+  spawned     a;
+  spawned     b;
+  spawned     c;
+  release_all guard{.gates = {&hold}};
+
+  a = spawn_queue(arena, "a", sh_command(blocked_script(false), {started_a.string(), hold.path.string()}), {}, {}, true);
+  await_file(started_a);
+  await_child_recorded(arena, 1);
+  b = spawn_queue(arena, "b", sh_command("touch \"$1\"", {ran_b.string()}), {}, {}, true);
+  await_entry(arena, 2, hq::entry_state::waiting);
+  await_refreshes(arena, 2, 2);
+  c = spawn_queue(arena, "c", sh_command("touch \"$1\"", {ran_c.string()}), {}, {}, true);
+  await_entry(arena, 3, hq::entry_state::waiting);
+
+  auto const victim = submitter_pid(b, arena, 2);
+  REQUIRE(::kill(victim, sig) == 0);
+
+  auto const got = finish(b);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 128 + sig);
+  CHECK_FALSE(present(ran_b));
+  CHECK(got.err.contains("not run"));
+  {
+    // The entry is gone and its row says why; the others are untouched.
+    auto const snap = require_snapshot(arena);
+    CHECK(entry_seq(snap, 2) == nullptr);
+    REQUIRE(entry_seq(snap, 1) != nullptr);
+    CHECK(entry_seq(snap, 1)->state == hq::entry_state::running);
+    REQUIRE(entry_seq(snap, 3) != nullptr);
+    CHECK(entry_seq(snap, 3)->state == hq::entry_state::waiting);
+    auto const* row = history_seq(snap, 2);
+    REQUIRE(row != nullptr);
+    CHECK(row->outcome == hq::history_outcome::cancelled);
+    REQUIRE(row->cancelled_by.has_value());
+    CHECK(row->cancelled_by->pid == static_cast<std::int64_t>(victim));
+    CHECK_FALSE(row->started_at.has_value());
+    CHECK_FALSE(row->exit_code.has_value());
+  }
+
+  // The queue is free for the entry behind it: once the running one ends, the
+  // third starts (it does not wait for the removed one).
+  hold.release();
+  CHECK(finish(a).code == 0);
+  auto const third = finish(c);
+  INFO("third stderr:\n" << third.err);
+  CHECK(third.code == 0);
+  CHECK(present(ran_c));
+  CHECK_FALSE(present(ran_b));
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  REQUIRE(snap.history.size() == 3);
+  CHECK(history_seq(snap, 1)->outcome == hq::history_outcome::exited);
+  CHECK(history_seq(snap, 3)->outcome == hq::history_outcome::exited);
+}
+
+/// @brief A running submitter that gets `sig` forwards it to the command, which
+/// traps it and exits 42; the submitter exits 42 and records `exited`.
+void running_command_traps_forwarded(int sig) {
+  auto const arena = parity::make_arena(std::format("qr_sigfwd_{}", signal_label(sig)));
+  write_config(arena, k_fast_poll);
+  auto const ready  = arena.cpp_root / "ready";
+  auto const marker = arena.cpp_root / "marker";
+  auto const stop   = arena.cpp_root / "stop";
+
+  auto run = spawn_queue(arena, "run", sh_command(trapping_script(sig, true), {ready.string(), marker.string(), stop.string()}),
+                         {}, {}, true);
+  await_file(ready);
+  auto const running = await_child_recorded(arena, 1);
+  REQUIRE(running.child_pgid.has_value());
+  auto const victim = submitter_pid(run, arena, 1);
+  REQUIRE(::kill(victim, sig) == 0);
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  // The command saw the signal, and the submitter reports what the command did
+  // with it.
+  CHECK(got.code == 42);
+  CHECK(read_all(marker) == "got\n");
+  auto const row = only_history(arena, 1);
+  CHECK(row.outcome == hq::history_outcome::exited);
+  CHECK(row.exit_code == 42);
+  CHECK_FALSE(row.signal.has_value());
+  CHECK(group_empty(*running.child_pgid));
+}
+
+} // namespace
+
+TEST_CASE("queue run: SIGTERM to a waiting submitter removes its entry and runs nothing", "[cmd][agent][queue][hq-signals]") {
+  waiter_is_signalled(SIGTERM);
+}
+
+TEST_CASE("queue run: SIGINT to a waiting submitter removes its entry and runs nothing", "[cmd][agent][queue][hq-signals]") {
+  waiter_is_signalled(SIGINT);
+}
+
+TEST_CASE("queue run: SIGHUP to a waiting submitter removes its entry and runs nothing", "[cmd][agent][queue][hq-signals]") {
+  waiter_is_signalled(SIGHUP);
+}
+
+TEST_CASE("queue run: SIGINT to a running submitter reaches the command, which traps it", "[cmd][agent][queue][hq-signals]") {
+  running_command_traps_forwarded(SIGINT);
+}
+
+TEST_CASE("queue run: SIGTERM to a running submitter reaches the command, which traps it", "[cmd][agent][queue][hq-signals]") {
+  running_command_traps_forwarded(SIGTERM);
+}
+
+TEST_CASE("queue run: SIGHUP to a running submitter reaches the command, which traps it", "[cmd][agent][queue][hq-signals]") {
+  running_command_traps_forwarded(SIGHUP);
+}
+
+TEST_CASE("queue run: SIGTERM to a running submitter empties the group, removes the entry and starts the next",
+          "[cmd][agent][queue][hq-signals]") {
+  auto const arena = parity::make_arena("qr_sigfwd_next");
+  write_config(arena, k_fast_poll);
+  gate       hold(arena.cpp_root / "hold.fifo");
+  auto const started_a = arena.cpp_root / "started_a";
+  auto const ran_b     = arena.cpp_root / "ran_b";
+
+  spawned     a;
+  spawned     b;
+  release_all guard{.gates = {&hold}};
+
+  a                  = spawn_queue(arena, "a", sh_command(blocked_script(false), {started_a.string(), hold.path.string()}));
+  auto const running = [&] {
+    await_file(started_a);
+    return await_child_recorded(arena, 1);
+  }();
+  REQUIRE(running.child_pgid.has_value());
+  b = spawn_queue(arena, "b", sh_command("touch \"$1\"", {ran_b.string()}));
+  await_entry(arena, 2, hq::entry_state::waiting);
+  CHECK_FALSE(present(ran_b));
+
+  REQUIRE(::kill(submitter_pid(a, arena, 1), SIGTERM) == 0);
+
+  // The command was blocked on a read and has no trap: the forwarded SIGTERM
+  // killed it, so the submitter exits 128 + 15 and records `signaled`.
+  auto const first = finish(a);
+  INFO("stderr:\n" << first.err);
+  CHECK(first.code == 128 + SIGTERM);
+  CHECK(group_empty(*running.child_pgid));
+  auto const second = finish(b);
+  INFO("second stderr:\n" << second.err);
+  CHECK(second.code == 0);
+  CHECK(present(ran_b));
+
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  REQUIRE(snap.history.size() == 2);
+  auto const* one = history_seq(snap, 1);
+  auto const* two = history_seq(snap, 2);
+  REQUIRE(one != nullptr);
+  REQUIRE(two != nullptr);
+  CHECK(one->outcome == hq::history_outcome::signaled);
+  CHECK(one->signal == SIGTERM);
+  CHECK(two->outcome == hq::history_outcome::exited);
+  // The next entry started only after the first was removed.
+  REQUIRE(two->started_at.has_value());
+  CHECK(*two->started_at >= one->ended_at);
+}
+
+TEST_CASE("queue run: a command that carries on after the forwarded signal keeps its slot and its own exit status",
+          "[cmd][agent][queue][hq-signals]") {
+  auto const arena = parity::make_arena("qr_sigfwd_ignored");
+  write_config(arena, k_fast_poll);
+  auto const ready  = arena.cpp_root / "ready";
+  auto const marker = arena.cpp_root / "marker";
+  auto const stop   = arena.cpp_root / "stop";
+  auto const ran_b  = arena.cpp_root / "ran_b";
+
+  spawned b;
+  spawned a =
+      spawn_queue(arena, "a", sh_command(trapping_script(SIGTERM, false), {ready.string(), marker.string(), stop.string()}));
+  await_file(ready);
+  auto const running = await_child_recorded(arena, 1);
+  REQUIRE(running.child_pgid.has_value());
+  b = spawn_queue(arena, "b", sh_command("touch \"$1\"", {ran_b.string()}));
+  await_entry(arena, 2, hq::entry_state::waiting);
+
+  REQUIRE(::kill(submitter_pid(a, arena, 1), SIGTERM) == 0);
+  // The signal reached the command, which took it and went on.
+  await_file(marker);
+
+  // Nothing escalates: the spec forwards the signal and stops there. The
+  // submitter still supervises, the entry still holds the slot and is not
+  // marked terminating, and the next entry is still waiting.
+  await_refreshes(arena, 1, 3);
+  {
+    auto const snap = require_snapshot(arena);
+    REQUIRE(entry_seq(snap, 1) != nullptr);
+    CHECK(entry_seq(snap, 1)->state == hq::entry_state::running);
+    CHECK_FALSE(entry_seq(snap, 1)->terminating_since_mono.has_value());
+    CHECK_FALSE(entry_seq(snap, 1)->terminate_reason.has_value());
+    CHECK(snap.history.empty());
+    CHECK_FALSE(present(ran_b));
+    CHECK_FALSE(a.ended());
+  }
+
+  // It ends by itself, and the submitter passes its status through.
+  {
+    std::ofstream out(stop);
+  }
+  auto const first = finish(a);
+  INFO("stderr:\n" << first.err);
+  CHECK(first.code == 0);
+  CHECK(finish(b).code == 0);
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  auto const* one = history_seq(snap, 1);
+  REQUIRE(one != nullptr);
+  CHECK(one->outcome == hq::history_outcome::exited);
+  CHECK(one->exit_code == 0);
+}
+
+TEST_CASE("queue run: a failing case leaves no live submitter behind", "[cmd][agent][queue][hq-signals]") {
+  // 7064: the harness itself. A `spawned` that goes out of scope while its
+  // submitter still runs stops it, so an assertion that fails part-way cannot
+  // leave a process behind.
+  auto const arena = parity::make_arena("qr_reap");
+  write_config(arena, k_fast_poll);
+  gate         hold(arena.cpp_root / "hold.fifo");
+  auto const   started = arena.cpp_root / "started";
+  std::int64_t pid     = 0;
+  {
+    release_all guard{.gates = {}};
+    auto const  run = spawn_queue(arena, "run", sh_command(blocked_script(false), {started.string(), hold.path.string()}));
+    await_file(started);
+    pid = run.pid;
+    REQUIRE(pid > 1);
+    REQUIRE(::kill(static_cast<::pid_t>(pid), 0) == 0);
+  }
+  // Out of scope with the command still blocked: the submitter is gone.
+  CHECK(::kill(static_cast<::pid_t>(pid), 0) != 0);
+  CHECK(errno == ESRCH);
 }
