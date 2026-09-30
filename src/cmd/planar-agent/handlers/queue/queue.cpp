@@ -1620,9 +1620,10 @@ auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_
   // or it was already terminating: refuse at once instead of waiting for a
   // group that `advance_terminations` will never examine.
   if (begun->stored && !(begun->stored->host_id == host && host != ident::k_unknown_host_identity)) {
-    ctx.err() << std::format("error: queue: cancel: entry {} belongs to another host identity; it is {} cancelled, and a poll on "
+    ctx.err() << std::format("error: queue: cancel: entry {} belongs to another host identity; it is {}, and a poll on "
                              "that host will stop it\n",
-                             seq, begun->status == hq::begin_status::marked ? "now marked" : "already marked");
+                             seq,
+                             begun->status == hq::begin_status::marked ? "now marked cancelled" : "already marked terminating");
     return exit_status{exit_internal_error};
   }
   reporter report{ctx.err()};
