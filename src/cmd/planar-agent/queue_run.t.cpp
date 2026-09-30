@@ -1433,8 +1433,8 @@ auto submitter_pid(const spawned& run, const parity::arena& arena, std::int64_t 
 }
 
 /// @brief A waiting submitter that gets `sig` removes its entry, runs nothing,
-/// records why, exits 125, and leaves the queue free for the
-/// next entry.
+/// records why (naming the sending process as the canceller), exits 125, and
+/// leaves the queue free for the next entry.
 void waiter_is_signalled(int sig) {
   auto const arena = parity::make_arena(std::format("qr_sigwait_{}", signal_label(sig)));
   write_config(arena, k_fast_poll);
@@ -1478,7 +1478,10 @@ void waiter_is_signalled(int sig) {
     REQUIRE(row != nullptr);
     CHECK(row->outcome == hq::history_outcome::cancelled);
     REQUIRE(row->cancelled_by.has_value());
-    CHECK(row->cancelled_by->pid == static_cast<std::int64_t>(victim));
+    // The canceller is whoever sent the signal (task 7071): this test process,
+    // read from the signal's `si_pid`, not the submitter that recorded it.
+    CHECK(row->cancelled_by->pid == static_cast<std::int64_t>(::getpid()));
+    CHECK(row->cancelled_by->pid != static_cast<std::int64_t>(victim));
     CHECK_FALSE(row->started_at.has_value());
     CHECK_FALSE(row->exit_code.has_value());
   }
