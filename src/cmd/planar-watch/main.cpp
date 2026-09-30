@@ -42,13 +42,19 @@ auto main(int argc, char** argv) -> int {
 
   auto const env = planar::cmd::watch::process_env();
 
-  auto db_path = planar::cmd::watch::resolve_db_path(env);
-  if (!db_path) {
+  // The main database's path is resolved before dispatch and a failure is
+  // fatal, for every verb but the `queue` domain: its store is the agent
+  // database, so it must not be stopped by a main database it never opens.
+  // The holder is then built with an empty path and, being lazy, opens nothing.
+  std::filesystem::path main_db;
+  if (auto db_path = planar::cmd::watch::resolve_db_path(env); db_path) {
+    main_db = *std::move(db_path);
+  } else if (planar::cmd::watch::uses_main_database(args)) {
     planar::cmd::watch::report(db_path.error(), std::cerr);
     return planar::cmd::watch::exit_code(db_path.error());
   }
 
-  auto                        database = std::make_shared<planar::cmd::watch::database>(*db_path, std::cerr);
+  auto                        database = std::make_shared<planar::cmd::watch::database>(std::move(main_db), std::cerr);
   planar::cmd::watch::context ctx{std::move(args), env, planar::cmd::watch::operator_cwd(env), database, std::cout, std::cerr};
   auto const                  root  = planar::cmd::watch::root_app();
   auto const                  table = planar::cmd::watch::handlers(*root);
