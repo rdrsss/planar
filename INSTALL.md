@@ -213,11 +213,11 @@ make uninstall-full
 
 This removes:
 - All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
-- Everything in `~/.planar/` *except* your data: `planar.db`, `agent.db` (with its SQLite sidecars `agent.db-wal` and `agent.db-shm`), and the `queue-logs/` directory of detached queue-run output.
+- Everything in `~/.planar/` *except* your data: `planar.db` and `agent.db` (each with its SQLite sidecars, `-wal` and `-shm`), and the `queue-logs/` directory of detached queue-run output.
 
 A prefix that holds only a preserved `planar.db` or `agent.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
 
-Databases relocated with `PLANAR_DB` or `PLANAR_AGENT_DB` live outside `~/.planar/` and are never touched by the uninstall.
+Only the default file names directly under `~/.planar/` are preserved. A database relocated with `PLANAR_DB` or `PLANAR_AGENT_DB` to a path outside `~/.planar/` is never touched by the uninstall; one relocated to another file name *inside* `~/.planar/` is not preserved, and a non-force uninstall deletes it.
 
 To remove the databases and the queue logs too:
 
