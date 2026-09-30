@@ -304,6 +304,26 @@ TEST_CASE("the rule text carries every element an agent needs", "[cmd][agent][qu
     CHECK(contains(text, "may not have run"));
   }
 
+  SECTION("an agent holding a task claim passes --claim instead of renewing by hand") {
+    // Submit (detached) and the foreground form each name the flag; the
+    // hand-renewal instruction it replaces is gone.
+    CHECK(contains(source, "`--claim <token>`"));
+    CHECK(contains(text, "the queue renews that claim"));
+    CHECK(contains(text, "while the entry waits and while the command runs"));
+    CHECK_FALSE(contains(text, "keep renewing it between polls"));
+    std::size_t mentions = 0;
+    for (std::size_t at = source.find("`--claim <token>`"); at != std::string::npos;
+         at             = source.find("`--claim <token>`", at + 1)) {
+      ++mentions;
+    }
+    CHECK(mentions >= 2); // detached and foreground
+    // The flag it names is a real flag of `queue run`.
+    auto const  root = planar::cmd::agent::root_app();
+    auto const* run  = root->get_subcommand_no_throw("queue")->get_subcommand_no_throw("run");
+    REQUIRE(run != nullptr);
+    CHECK(declared_names(*run).contains("--claim"));
+  }
+
   SECTION("the exit codes of the foreground form") {
     for (auto const* code : {"124", "125", "126", "127", "128"}) {
       INFO("code: " << code);
