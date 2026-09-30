@@ -1905,3 +1905,60 @@ TEST_CASE("queue run: a waiter that finds its entry gone and cannot read the clo
   CHECK(last_line(got.err) == "queue: entry 2 ended: cannot read the clock");
   CHECK_FALSE(std::filesystem::exists(marker));
 }
+
+TEST_CASE("queue run: the submitter's own stop at its run limit does not report a refusal for a group of zombies",
+          "[cmd][agent][queue][hq-eperm-zombie-group]") {
+  // Task 7097. When no entry can stop the command for the submitter (its
+  // group was never recorded, or its entry vanished), the submitter signals the
+  // group itself, and the kernel's refusal of a group of zombies is not a
+  // failure to report. The signaller refuses every signal with EPERM; the probe
+  // says whether the group holds nothing but zombies, so the warning must be
+  // absent when it does and present when it does not. The clock is steered past
+  // the limit once the entry is running.
+  enum class how { unrecorded_group, vanished_entry };
+  for (auto const path : {how::unrecorded_group, how::vanished_entry}) {
+    for (bool const zombies : {true, false}) {
+      INFO(std::string{path == how::unrecorded_group ? "the group was never recorded" : "the entry vanished"}
+           << (zombies ? ": the group holds only zombies" : ": the group has a live member, so the refusal is real"));
+      scratch                         sc;
+      auto const                      clock = std::make_shared<steered_clock>();
+      agent::handlers::queue_run_deps deps;
+      deps.clock     = clock;
+      deps.signaller = [](std::int64_t, int) -> std::expected<void, ident::error> {
+        return std::unexpected(ident::error::not_permitted);
+      };
+      auto probe               = hq::system_process_probe();
+      probe.group_only_zombies = [zombies](std::int64_t) -> std::expected<bool, ident::error> { return zombies; };
+      deps.probe               = probe;
+      if (path == how::unrecorded_group) {
+        deps.record_child = [](planar::db::connection&, std::int64_t, std::int64_t,
+                               std::int64_t) -> std::expected<bool, hq::queue_error> { return std::unexpected(record_failure()); };
+      }
+      bool advanced = false;
+      script(deps, sc, fast_settings(), [&](planar::db::connection& conn) {
+        auto const stored = hq::find(conn, 1).value();
+        if (advanced || !stored || stored->state != hq::entry_state::running) {
+          return;
+        }
+        if (path == how::vanished_entry) {
+          if (!stored->child_pgid) {
+            return;
+          }
+          end_as(conn, 1, hq::history_outcome::abandoned);
+        }
+        advanced = true;
+        clock->advance(1'000);
+      });
+      fixture fx{sc, (sc.root / "agent.db").string()};
+      auto    args            = queue_args({"/bin/sleep", "0.3"});
+      args.flags["--timeout"] = {"100ms"};
+      auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+      auto const* status      = std::get_if<agent::exit_status>(&outcome);
+      REQUIRE(status != nullptr);
+      INFO("stderr:\n" << fx.err.str());
+      CHECK(advanced);
+      CHECK(status->code == 124);
+      CHECK(fx.err.str().contains("SIGTERM to the command's process group failed: not permitted") == !zombies);
+    }
+  }
+}

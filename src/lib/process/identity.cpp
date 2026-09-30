@@ -13,6 +13,7 @@ module;
 
 #if defined(__APPLE__)
 #include <libproc.h>
+#include <sys/proc.h>
 #include <sys/proc_info.h>
 #include <sys/sysctl.h>
 #endif
@@ -205,8 +206,8 @@ auto group_only_zombies(std::int64_t pgid) -> std::expected<bool, error> {
     // parent's wait, or that is being torn down after a fatal signal and is
     // already beyond signalling (the kernel refuses it too, for a few
     // milliseconds before it becomes a zombie).
-    constexpr char         k_zombie  = 5;
-    constexpr std::int32_t k_exiting = 0x00002000;
+    constexpr char         k_zombie  = SZOMB;
+    constexpr std::int32_t k_exiting = P_WEXIT;
     return !members.empty() && std::ranges::all_of(members, [](const ::kinfo_proc& one) {
       return one.kp_proc.p_stat == k_zombie || (one.kp_proc.p_flag & k_exiting) != 0;
     });
