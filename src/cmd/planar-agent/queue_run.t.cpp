@@ -774,7 +774,10 @@ TEST_CASE("queue run: --timeout stops a command that honours SIGTERM, exits 124 
 TEST_CASE("queue run: --timeout kills a command that ignores SIGTERM only after the grace period",
           "[cmd][agent][queue][hq-timeouts]") {
   auto const arena = parity::make_arena("qr_timeout_kill");
-  write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"1s\"\n");
+  // A long poll interval, so only the submitter's own per-tick advance of its
+  // stop can send the SIGKILL in time: the next regular poll is twenty
+  // seconds away.
+  write_config(arena, "[queue]\npoll_interval = \"20s\"\ngrace = \"1s\"\n");
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
   release_all guard{.gates = {&hold}};
@@ -796,6 +799,7 @@ TEST_CASE("queue run: --timeout kills a command that ignores SIGTERM only after 
   // had to pass before the SIGKILL.
   REQUIRE(row.ran_ms.has_value());
   CHECK(*row.ran_ms >= 1900);
+  CHECK(*row.ran_ms < 10000);
 }
 
 TEST_CASE("queue run: --timeout is recorded as the entry's deadline and the default is thirty minutes",
