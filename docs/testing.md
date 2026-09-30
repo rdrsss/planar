@@ -13,7 +13,7 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make test-cpp-report` | The same suite, plus its skip tally. The expected tally is zero. |
 | `make ctest-registry-check` | ctest runs exactly the cases the test binaries contain. Needs `build/debug` built. |
 | `make coverage` | The `(verb, subcommand)` leaf-coverage ratio has not dropped below `scripts/coverage-baseline.txt`. |
-| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/src/`, `docs/`) only use commands and flags the five binaries expose, and pass the semantic surface lint. |
+| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/src/`, `docs/`) only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)). |
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
 | `make eval-contracts` | The provider-free eval lanes. |

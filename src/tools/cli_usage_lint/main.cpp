@@ -1,6 +1,7 @@
 /// @file main.cpp
 /// @brief `cli_usage_lint` — validate authored CLI invocations against the
-/// live command schema (C++ port of `zig/tools/cli_usage_lint.zig`, plan
+/// live command schema, and the closed command policy against the same
+/// catalogs. It began as a C++ port of `zig/tools/cli_usage_lint.zig` (plan
 /// 996, task 6402).
 ///
 /// Every Planar binary exposes `<bin> schema`, a deterministic flat JSON
@@ -11,10 +12,14 @@
 /// spans and fenced blocks, and reports any `--flag` referenced on a
 /// command that the binary does not actually expose.
 ///
-/// This is a DELIBERATE, LINE-FOR-LINE port of the zig original. Every
-/// helper below mirrors its zig namesake so behavior parity is checkable
-/// by inspection, not just by differential run. See that file's own
-/// header for the drift class this catches and the exit-code contract:
+/// It also lints `workflows/command-policy.json` (plan 1033, task 6707):
+/// every entry for a Planar binary must name a runnable leaf command in that
+/// binary's catalog. It is the schema-driven half of `make cli-usage-check`;
+/// the semantic half, including the host-queue rule (`surface-queue-command`),
+/// is `surface_lint`, and the two share no finding codes.
+///
+/// The scan is a port of the zig original and keeps its helpers' shape, so
+/// behavior parity is checkable by inspection. Exit-code contract:
 /// 0 = clean, 1 = violations found, 2 = usage / internal error.
 ///
 /// Usage:

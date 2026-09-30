@@ -2,7 +2,12 @@
 /// @brief Implementation of `planar.db.agentdb`.
 module;
 
+#include <cerrno>
 #include <cstdlib>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 module planar.db.agentdb;
 
@@ -12,6 +17,64 @@ import planar.db.migrate;
 import planar.db.migrations_agent;
 
 namespace planar::db::agent {
+
+namespace {
+
+/// @brief Creates every missing component of `dir`, each with mode 0700
+/// (before the umask, which can only remove bits). Components that already
+/// exist are left exactly as they are. Decision 1210.
+auto create_private_directories(const std::filesystem::path& dir) -> std::error_code {
+  std::vector<std::filesystem::path> missing;
+  std::error_code                    ec;
+  for (auto current = dir; !current.empty() && !std::filesystem::exists(current, ec); current = current.parent_path()) {
+    missing.push_back(current);
+    if (current == current.parent_path()) {
+      break;
+    }
+  }
+  for (auto const& component : std::views::reverse(missing)) {
+    if (::mkdir(component.c_str(), 0700) != 0 && errno != EEXIST) {
+      return std::error_code{errno, std::generic_category()};
+    }
+  }
+  // An existing component that is not a directory (a regular file in the
+  // way) is as much a failure to create `dir` as a refused mkdir.
+  if (!std::filesystem::is_directory(dir, ec)) {
+    return std::make_error_code(std::errc::not_a_directory);
+  }
+  return {};
+}
+
+/// @brief Tightens `dir` to 0700 when the current user owns it and it grants
+/// anything to group or others. Best effort: a directory that cannot be
+/// tightened is left as it is, since the store's own 0600 mode still holds.
+void tighten_owned_directory(const std::filesystem::path& dir) {
+  struct ::stat info{};
+  if (::stat(dir.c_str(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::geteuid()) {
+    return;
+  }
+  if ((info.st_mode & 0077) != 0) {
+    static_cast<void>(::chmod(dir.c_str(), 0700));
+  }
+}
+
+/// @brief Creates the empty store file with mode 0600 when it does not exist,
+/// so SQLite opens it instead of creating it with the umask's default mode.
+/// SQLite gives the `-wal` and `-shm` files the main file's mode. An existing
+/// file is never touched, and a failure is left for SQLite to report with its
+/// own, more specific message.
+void create_private_file(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (std::filesystem::exists(path, ec)) {
+    return;
+  }
+  int const fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (fd >= 0) {
+    ::close(fd);
+  }
+}
+
+} // namespace
 
 auto process_env() -> env_lookup {
   return [](std::string_view name) -> std::optional<std::string> {
@@ -110,8 +173,7 @@ auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connec
   // SQLite would fail to create the file a moment later with a less
   // specific message.
   if (path.has_parent_path()) {
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
+    auto const ec = create_private_directories(path.parent_path());
     if (ec) {
       return std::unexpected(open_error{
           .kind    = open_error_kind::unwritable_location,
@@ -121,6 +183,10 @@ auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connec
       });
     }
   }
+  // Decision 1210: the store holds task claim tokens, so it is created
+  // owner-only. An existing file keeps the mode it has; the installer
+  // tightens those.
+  create_private_file(path);
 
   // `connection::open` sets `busy_timeout` and `journal_mode = WAL` once
   // per read-write connection, so the agent store gets exactly the main
@@ -197,6 +263,13 @@ auto open_agent_db(const env_lookup& env) -> std::expected<connection, open_erro
   auto path = resolve_agent_db_path(env);
   if (!path) {
     return std::unexpected(std::move(path.error()));
+  }
+  // Decision 1210: at the default location the directory is Planar's own
+  // (`$HOME/.planar`), so it is ensured 0700. A directory the user chose
+  // through PLANAR_AGENT_DB is theirs and may hold other things: it is never
+  // chmodded, only created 0700 when it did not exist.
+  if (!env(k_agent_db_env).has_value() && path->has_parent_path()) {
+    tighten_owned_directory(path->parent_path());
   }
   return open_agent_db_at(*path);
 }

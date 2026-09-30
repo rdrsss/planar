@@ -39,6 +39,11 @@
 /// on, so a verb can print it and map the failure to its own exit code
 /// (decision 1185: `queue run` exits 125 on an unreachable store).
 ///
+/// File modes (decision 1210): the store holds task claim tokens, so it is
+/// created owner-only (0600, sidecars included) and the directories the open
+/// path creates are 0700; `$HOME/.planar` is ensured 0700 at the default
+/// location. An existing store keeps its mode, which `install.sh` tightens.
+///
 /// The environment is injected as an `env_lookup` rather than read from
 /// the process, so tests pass a fixed table and never mutate the process
 /// environment; `process_env()` is the production lookup.
@@ -130,6 +135,10 @@ export auto check_compat(connection& conn, const std::filesystem::path& path) ->
 /// migration stream. Idempotent: an up-to-date store is opened without any
 /// write beyond SQLite's own journal-mode handshake. A refused store is
 /// not written at all.
+///
+/// File modes (decision 1210): a file this call creates is 0600, and so are
+/// the `-wal` and `-shm` SQLite derives from it; any parent directory this
+/// call creates is 0700. An existing file or directory keeps its mode.
 /// @param path The store's location.
 /// @return An open read-write connection at the current agent schema
 /// version (or at the store's own higher, compatible version), or the
@@ -157,7 +166,10 @@ export auto open_agent_db_read_only_at(const std::filesystem::path& path) -> std
 export auto open_agent_db_read_only(const env_lookup& env) -> std::expected<connection, open_error>;
 
 /// @brief Resolves the store's path from `env` (see `resolve_agent_db_path`)
-/// and opens it (see `open_agent_db_at`).
+/// and opens it (see `open_agent_db_at`). When the path is the default
+/// `$HOME/.planar/agent.db` (no `PLANAR_AGENT_DB`), the directory
+/// `$HOME/.planar` is also ensured 0700 if the current user owns it; a
+/// directory named through `PLANAR_AGENT_DB` is never chmodded.
 /// @param env The environment to read.
 /// @return An open connection at the current agent schema version, or the
 /// first failure.

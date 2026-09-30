@@ -9,6 +9,7 @@ import planar.db;
 import planar.process.identity;
 import planar.engine.hostqueue.queue;
 import planar.engine.hostqueue.liveness;
+import planar.engine.hostqueue.terminate;
 
 namespace planar::engine::hostqueue {
 
@@ -115,6 +116,13 @@ auto enqueue_nested(db::connection& conn, std::int64_t parent_seq, const enqueue
   }
   if ((*parent)->state != entry_state::running) {
     return refused(nested_refusal::parent_waiting, *now);
+  }
+  // Decision 1209: nesting asserts that the parent's command started this
+  // run, which can only hold on the parent's own host. A marker naming an
+  // entry on another (or an unknown) host identity is ignored however fresh
+  // that entry is.
+  if (!same_host(**parent, request.host_id)) {
+    return refused(nested_refusal::parent_other_host, *now);
   }
   liveness_context const ctx{.host_id = request.host_id, .now_mono = *now, .stale_after_ms = limits.stale_after_ms};
   auto                   verdict = judge_liveness(**parent, ctx, probe);

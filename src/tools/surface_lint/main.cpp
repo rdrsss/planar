@@ -1,12 +1,22 @@
 /// @file main.cpp
 /// @brief `surface_lint` — deterministic semantic validator for authored
-/// agent, skill, and doc Markdown (C++ port of `zig/tools/surface_lint.zig`,
-/// plan 996, task 6402).
+/// agent, skill, and doc Markdown. It began as a C++ port of
+/// `zig/tools/surface_lint.zig` (plan 996, task 6402) and has since grown
+/// checks of its own.
 ///
-/// A DELIBERATE, LINE-FOR-LINE port. Every helper below mirrors its zig
-/// namesake, including the pinned `command_classes` inventory (260
-/// classified leaves) and the hand-rolled JSON string escaper — which is
-/// its OWN table, distinct from `planar::json_text`'s (that one special-
+/// Scope: repository-relative links, retired references, artifact-set and
+/// capability drift, command shapes, path existence, the skill
+/// feedback/recovery headings, and (plan 1080, task hq-rule-lint) the
+/// host-queue rule: `surface-queue-command` flags a build or test command in
+/// `agents/` or `skills/src/` that is not given to `planar-agent queue run`,
+/// and `surface-queue-marker-invalid` flags an unbalanced
+/// `queue-lint-ignore-begin`/`-end` region. `surface-lint-ignore` suppresses
+/// the first set of codes; the queue codes have their own `queue-lint-ignore`
+/// line and region markers (see the checkQueueCommands comment below).
+///
+/// The ported checks mirror their zig namesakes, including the pinned
+/// `command_classes` inventory and the hand-rolled JSON string escaper, which
+/// is its OWN table, distinct from `planar::json_text`'s (that one special-
 /// cases 0x08/0x0C as `\b`/`\f`; this tool's original never did, so this
 /// port does not either).
 ///

@@ -155,6 +155,8 @@ The default database lives at `~/.planar/planar.db`. Override it with the `PLANA
 
 Agent state lives in a second database, `~/.planar/agent.db`, with its own migration stream. `planar-agent` creates it on first use; no `init` step is needed. Override its path with `PLANAR_AGENT_DB`. Detached queue runs write their output files under `queue-logs/` in the directory that holds `agent.db`.
 
+Both databases hold task claim tokens, which authorise heartbeats and terminal verbs on a claim, so they are private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` and `agent.db` (with their `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `planar-agent` creates `agent.db` `0600` and ensures `~/.planar` is `0700` on first open; a directory you choose through `PLANAR_AGENT_DB` is never chmodded. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
+
 ## Build from source
 
 If you want to develop on Planar or contribute back:
@@ -330,8 +332,8 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   └── centuriond                      # stock Centurion workflow daemon
 ├── share/centurion/                    # centuriond migrations + build-identity.json
 ├── install-manifest.json               # versioned managed-projection authority
-├── planar.db                           # SQLite database (after `planar init`)
-├── agent.db                            # agent-state database (created on first use;
+├── planar.db                           # SQLite database (after `planar init`; mode 0600)
+├── agent.db                            # agent-state database (created 0600 on first use;
 │                                       # `agent.db-wal` / `agent.db-shm` may sit beside it)
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
 ├── migrations/

@@ -334,15 +334,32 @@ an agent or script that did not say who it is.
 
 **Preservation and file modes.** `install.sh --uninstall` keeps `agent.db` and
 `queue-logs/` as it keeps `planar.db`; remove them by hand when you want them
-gone. `agent.db` is created with the process's umask, so
-under a default umask it is readable by other users of the machine. A live
-entry stores the submitter's task claim token in the clear
+gone. A live entry stores the submitter's task claim token in the clear
 (`queue_entries.claim_token`, written when `queue run` is given `--claim`; the
 history row does not keep it), and a claim token authorises heartbeats and
-terminal verbs on that claim. Restrict the directory (`chmod 700 ~/.planar`) on
-a shared host. The detached-run log directory is the exception: `queue-logs` is
-created `0700` and its files `0600`. Tightening `agent.db` itself is a known open
-item.
+terminal verbs on that claim. `planar.db` holds claim tokens too. So the files
+are owner-only (decision 1210):
+
+- `agent.db` is created `0600`, and so are its `-wal` and `-shm` (SQLite gives
+  them the main file's mode), whatever the umask.
+- `~/.planar` (`PLANAR_HOME`) is `0700`. `install.sh` makes it so, and
+  tightens an existing install in place: `planar.db` and `agent.db`, with their
+  sidecars, become `0600`. `planar-agent` also ensures `~/.planar` `0700` the
+  first time it opens `agent.db` at the default location, if you own it.
+- `queue-logs/` is created `0700` and its logs `0600`, as before.
+- A directory you name through `PLANAR_AGENT_DB` is yours: Planar creates the
+  directories that are missing `0700`, but never changes the mode of one that
+  exists, and `install.sh` only touches the databases directly under the
+  install root. If you point `PLANAR_AGENT_DB` into a shared directory, the
+  store file is still `0600`, but restrict the directory yourself.
+- An `agent.db` that already existed keeps its mode when a binary opens it; run
+  `./install.sh` again, or `chmod 600 ~/.planar/agent.db*`, to tighten it.
+  `install.sh --uninstall` keeps the databases and their modes.
+- An install root shared by several users (a `--prefix` such as `/opt/planar`
+  that more than one account runs from) is unsupported under the `0700` rule:
+  only the owner can open the databases. Run one install per user.
+- If `install.sh` cannot change a mode (a file you can write but do not own),
+  it prints a warning and carries on; fix the mode by hand.
 
 **When something looks wrong.** A `waiting` entry that never advances and shows
 `NOT-LIVE` is an orphan; poll again, and a later submitter reaps it. A command
