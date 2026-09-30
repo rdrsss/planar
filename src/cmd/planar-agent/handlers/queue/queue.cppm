@@ -152,8 +152,35 @@
 /// and hq-not-started): a launcher exits 2, a missing program 127 and one that
 /// cannot be executed 126, each before the configuration or the store is
 /// touched, so nothing is enqueued. A program that cannot start at its turn ends
-/// its entry `not_started` with the same 127 or 126. A later task of the same
-/// milestone adds `--claim`; this handler leaves it out.
+/// its entry `not_started` with the same 127 or 126.
+///
+/// ## Claim renewal
+///
+/// `--claim <token>` (tasks hq-claim-renewal and hq-claim-renewal-nonfatal;
+/// tech spec 647 § Whether the submitter should renew the agent's claim) makes
+/// the submitter renew that claim at half its lease length, from its first poll
+/// until its command ends: at every wait tick, and at every tick of the
+/// running loop, the renewal is due or it is not, and a wait's nap is cut short
+/// so a renewal is never later than its cadence. A renewal is the transaction
+/// `planar-agent heartbeat --claim <token>` runs (`supervised_heartbeat`, no
+/// TTL, no status), so the lease keeps its length and no action row is written.
+/// The lease length is read from the claim when the first renewal is made.
+///
+/// Claims live in the MAIN database, the one thing `queue run` otherwise never
+/// touches, so the renewal is the only path that opens it: only when `--claim`
+/// is given, only when a renewal is due, never creating it (an absent file is a
+/// failure), never migrating it, and refusing a schema on either side of the
+/// binary's. The queue's own guarantees hold when it cannot: a renewal that
+/// fails (an unresolvable path, an absent or schema-locked or busy main
+/// database, an unknown, ended or lapsed claim, an engine-supervised claim) is
+/// reported as a `warning: queue: cannot renew the claim: <why>; the command is
+/// not affected` line on standard error, or in the output file of a detached
+/// run, written with or without `--notices` and once per distinct reason. It is
+/// retried after the shorter of the cadence and five seconds, and it never
+/// changes the command's status or delays it beyond one second of busy wait. A
+/// detached submitter renews; the invoked process, which returns its ticket
+/// before the store is opened, does not. A nested entry renews too, on its own
+/// schedule.
 ///
 /// ## Notices
 ///

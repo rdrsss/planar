@@ -435,9 +435,9 @@ TEST_CASE("queue run --claim: a waiting entry renews the claim", "[cmd][agent][q
   auto const arena = parity::make_arena("qc_wait");
   write_config(arena, k_fast_poll);
   seed_main(arena);
-  auto const token = mint_claim(arena);
-  gate       hold(arena.cpp_root / "hold.fifo");
-  gate       release(arena.cpp_root / "release.fifo");
+  auto const  token = mint_claim(arena);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  gate        release(arena.cpp_root / "release.fifo");
   release_all guard{.gates = {&hold, &release}};
   spawned     holder;
   spawned     claimed;
@@ -534,7 +534,8 @@ TEST_CASE("queue run: without --claim the main database is never touched", "[cmd
 // Scenarios: a failed renewal is reported and never stops the command
 // ---------------------------------------------------------------------------
 
-TEST_CASE("queue run --claim: an unknown claim token is reported and the command still exits 0", "[cmd][agent][queue][hq-claim]") {
+TEST_CASE("queue run --claim: an unknown claim token is reported and the command still exits 0",
+          "[cmd][agent][queue][hq-claim]") {
   auto const arena = parity::make_arena("qc_bad");
   seed_main(arena);
 
