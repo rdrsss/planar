@@ -83,4 +83,8 @@ if(TARGET planar_engine_hostqueue_tests)
   # planar.db.agentdb and probes the schema with raw SQL, exactly as
   # engine/closure's suite does.
   target_link_libraries(planar_engine_hostqueue_tests PRIVATE SQLite::SQLite3)
+  # rule_methodology.t.cpp reads the authored agents/methodology.md from the
+  # source tree to compare its queue section with the embedded rule text.
+  target_compile_definitions(planar_engine_hostqueue_tests PRIVATE
+    "PLANAR_METHODOLOGY_PATH=\"${PROJECT_SOURCE_DIR}/agents/methodology.md\"")
 endif()
