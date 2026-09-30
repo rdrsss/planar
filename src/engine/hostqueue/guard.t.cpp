@@ -52,9 +52,9 @@ TEST_CASE("every launcher is refused as a bare name, with a directory prefix, an
   }
 }
 
-TEST_CASE("a name that only contains a listed word, or differs in case, is allowed", "[engine][hostqueue][hq-command-guard]") {
-  for (auto const* name : {"codex-lint-report", "claude_fixture", "claudette", "myclaude", "aider2", "Claude", "CODEX", "cursor",
-                           "cursor-agents", "opencode.sh", "/usr/bin/claude-code-helper", "/opt/claude/bin/make"}) {
+TEST_CASE("a name that only contains a listed word is allowed", "[engine][hostqueue][hq-command-guard]") {
+  for (auto const* name : {"codex-lint-report", "claude_fixture", "claudette", "myclaude", "aider2", "cursor", "cursor-agents",
+                           "opencode.sh", "/usr/bin/claude-code-helper", "/opt/claude/bin/make"}) {
     INFO(name);
     CHECK(refused_as({name}) == "");
   }
@@ -63,6 +63,43 @@ TEST_CASE("a name that only contains a listed word, or differs in case, is allow
   // A listed word as an ARGUMENT is not the program.
   CHECK(refused_as({"make", "claude"}) == "");
   CHECK(refused_as({"echo", "codex"}) == "");
+}
+
+TEST_CASE("a listed name is matched without regard to ASCII case, and reported as listed",
+          "[engine][hostqueue][hq-command-guard][hq-guard-test-hardening]") {
+  // macOS's default volumes are case-insensitive, so PATH lookup runs
+  // `claude` for `Claude`; a guard that compared exactly would be walked
+  // around by changing a letter.
+  CHECK(refused_as({"Claude"}) == "claude");
+  CHECK(refused_as({"CODEX"}) == "codex");
+  CHECK(refused_as({"Cursor-Agent", "-p", "x"}) == "cursor-agent");
+  CHECK(refused_as({"/usr/local/bin/GEMINI"}) == "gemini");
+  CHECK(refused_as({"env", "COPILOT"}) == "copilot");
+  CHECK(refused_as({"CLAUDE=1", "AiDeR"}) == "aider");
+  // `env` is matched the same way: `ENV claude` runs env on such a volume.
+  CHECK(refused_as({"ENV", "claude"}) == "claude");
+  CHECK(refused_as({"/usr/bin/Env", "-i", "OpenCode"}) == "opencode");
+  CHECK(refused_as({"env", "-S", "CLAUDE -p hi"}) == "claude");
+  // Case folding is ASCII only and does not loosen the exact-name rule.
+  CHECK(refused_as({"Claudette"}) == "");
+  CHECK(refused_as({"Codex-Lint-Report"}) == "");
+  CHECK(refused_as({"cLaUdE_fixture"}) == "");
+}
+
+TEST_CASE("env -L and -U take a user, so the word after them is not the program",
+          "[engine][hostqueue][hq-command-guard][hq-guard-test-hardening]") {
+  CHECK(refused_as({"env", "-L", "someuser", "claude"}) == "claude");
+  CHECK(refused_as({"env", "-U", "someuser", "claude"}) == "claude");
+  CHECK(refused_as({"env", "-Lsomeuser", "codex"}) == "codex");
+  CHECK(refused_as({"env", "-Usomeuser", "codex"}) == "codex");
+  CHECK(refused_as({"env", "-L", "user/class", "gemini"}) == "gemini");
+  CHECK(refused_as({"env", "-iL", "someuser", "claude"}) == "claude");
+  CHECK(refused_as({"env", "-i", "-U", "someuser", "A=1", "aider"}) == "aider");
+  // The value is a user name, not the program: a launcher-looking user is not refused.
+  CHECK(refused_as({"env", "-L", "claude", "make"}) == "");
+  CHECK(refused_as({"env", "-U", "codex", "make"}) == "");
+  CHECK(refused_as({"env", "-L"}) == "");
+  CHECK(refused_as({"env", "-U", "someuser"}) == "");
 }
 
 TEST_CASE("leading assignments and a leading env are skipped before the program is chosen",

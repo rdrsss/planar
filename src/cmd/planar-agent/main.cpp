@@ -10,7 +10,8 @@
 /// One divergence from the `planar` entry point, and it is in the failure
 /// path rather than the happy one: `resolve_db_path` failing here is
 /// reported through `planar.cmd.planar_agent.exit`, so it carries THIS
-/// binary's exit-code policy. Wiring it to the operator binary's module
+/// binary's exit-code policy. The `queue` domain alone is exempt from that
+/// failure (`uses_main_database`): it never opens the main database. Wiring it to the operator binary's module
 /// would compile and would be wrong on two error kinds (see that module's
 /// header).
 ///
@@ -45,13 +46,20 @@ auto main(int argc, char** argv) -> int {
 
   auto const env = planar::cmd::agent::process_env();
 
-  auto db_path = planar::cmd::agent::resolve_db_path(env);
-  if (!db_path) {
+  // The main database's path is resolved before dispatch, and a failure is
+  // fatal, for every verb but the `queue` domain. `queue run` needs no main
+  // database at all (its store is the agent database, located separately), so
+  // it must not be stopped by one it will never open; the holder is then
+  // built with an empty path, and it is lazy, so nothing opens it.
+  std::filesystem::path main_db;
+  if (auto db_path = planar::cmd::agent::resolve_db_path(env); db_path) {
+    main_db = *std::move(db_path);
+  } else if (planar::cmd::agent::uses_main_database(args)) {
     planar::cmd::agent::report(db_path.error(), std::cerr);
     return planar::cmd::agent::exit_code(db_path.error());
   }
 
-  auto                        database = std::make_shared<planar::cmd::agent::database>(*db_path, std::cerr);
+  auto                        database = std::make_shared<planar::cmd::agent::database>(std::move(main_db), std::cerr);
   planar::cmd::agent::context ctx{std::move(args), env, planar::cmd::agent::operator_cwd(env), database, std::cout, std::cerr};
   auto const                  root  = planar::cmd::agent::root_app();
   auto const                  table = planar::cmd::agent::handlers(*root);

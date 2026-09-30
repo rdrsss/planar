@@ -137,15 +137,15 @@ auto require_snapshot(const parity::arena& arena) -> snapshot {
   return *now;
 }
 
-/// @brief Requires that the store holds no entry and no history row: either
-/// it was never created, or it was and both tables are empty.
+/// @brief Requires that the store was never touched: the file is ABSENT, not
+/// merely empty. The guard and the 126/127 checks run before the store is
+/// opened (tech spec 647 § Submitting), and `open_agent_db` creates the file,
+/// so a refusal that opened the store first and enqueued nothing would leave
+/// an empty file behind; an empty snapshot alone would pass for that. Every
+/// caller runs in an arena no earlier case has touched.
 void require_nothing_enqueued(const parity::arena& arena) {
-  if (!present(arena.cpp_root / "agent.db")) {
-    return;
-  }
-  auto const snap = require_snapshot(arena);
-  CHECK(snap.entries.empty());
-  CHECK(snap.history.empty());
+  CHECK_FALSE(present(arena.cpp_root / "agent.db"));
+  CHECK_FALSE(present(arena.cpp_root / "agent.db-wal"));
 }
 
 /// @brief Polls `predicate` until it holds or the budget ends.
@@ -264,8 +264,13 @@ TEST_CASE("queue run: a model launcher is refused before anything is enqueued", 
     // stop it, and a run would leave the marker behind.
     auto const program = make_program(arena, name);
 
+    std::string upper{name};
+    std::ranges::transform(upper, upper.begin(),
+                           [](char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); });
+
     std::vector<std::pair<std::string, std::vector<std::string>>> forms{
         {"bare name", {std::string{name}}},
+        {"upper-case name", {upper}},
         {"directory prefix", {program.string()}},
         {"relative directory prefix", {std::format("../fakebin/{}", name)}},
         {"env assignment", {"env", "VAR=value", std::string{name}}},
@@ -299,6 +304,8 @@ TEST_CASE("queue run: env options that take a value do not hide the launcher", "
       {"env -uNAME", {"env", "-uNAME", "claude"}},
       {"env --unset=NAME", {"env", "--unset=NAME", "claude"}},
       {"env -C DIR", {"env", "-C", "/tmp", "claude"}},
+      {"env -L USER", {"env", "-L", "someuser", "claude"}},
+      {"env -U USER", {"env", "-U", "someuser", "claude"}},
       {"env then --", {"env", "-i", "--", "claude"}},
       {"env then assignment", {"env", "-i", "A=1", "B=2", "claude"}},
       {"env twice", {"env", "env", "claude"}},
@@ -328,18 +335,29 @@ TEST_CASE("queue run: a program whose name only contains a listed word is queued
     CHECK(got.code == 0);
     CHECK(present(marker(arena, name)));
   }
-  // An env that runs nothing, and an env that runs a listed-looking
-  // non-launcher, are queued too.
+  // An env that runs a listed-looking non-launcher is queued and runs it.
   make_program(arena, "claudette");
-  auto const wrapped = run_queue(arena, "allowed_env", {"env", "-i", "A=1", "claudette"});
-  // `-i` empties PATH, so the program is not found: the point is that the
-  // guard did not refuse (2), not that it ran.
-  CHECK(wrapped.code != 2);
+  auto const wrapped = run_queue(arena, "allowed_env_run", {"env", "A=1", "claudette"});
+  INFO("stderr:\n" << wrapped.err);
+  CHECK(wrapped.code == 0);
+  CHECK(present(marker(arena, "claudette")));
+
+  // `-i` empties the environment, `env` then cannot find `claudette` and
+  // exits 127. That is the command's own status, recorded as `exited`: the
+  // guard did not refuse it (2), and the queue did not refuse it (125/127
+  // before the enqueue), it ran `env` and `env` failed.
+  std::filesystem::remove(marker(arena, "claudette"));
+  auto const emptied = run_queue(arena, "allowed_env_i", {"env", "-i", "A=1", "claudette"});
+  INFO("stderr:\n" << emptied.err);
+  CHECK(emptied.code == 127);
+  CHECK_FALSE(present(marker(arena, "claudette")));
 
   auto const snap = require_snapshot(arena);
   CHECK(snap.entries.empty());
-  CHECK(std::ranges::count_if(snap.history, [](const hq::history_row& r) { return r.outcome == hq::history_outcome::exited; }) >=
-        2);
+  auto const exited =
+      std::ranges::count_if(snap.history, [](const hq::history_row& r) { return r.outcome == hq::history_outcome::exited; });
+  CHECK(exited == 4);
+  CHECK(snap.history.size() == 4);
 }
 
 // ---------------------------------------------------------------------------
