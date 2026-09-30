@@ -152,6 +152,42 @@ test: test-install-manifest test-install-deps ## Run unit tests
 	cmake --build build/debug $(ARGS)
 	ctest --test-dir build/debug --output-on-failure -j $(TEST_JOBS) $(ARGS)
 
+# Linux gate (task 7094): build + ctest on Debian trixie in Docker. See
+# docker/linux-gate.Dockerfile and docs/testing.md. Docker is a developer
+# tool, not a build dependency. external/ (Centurion) is handed in as a named
+# build context, so no token ever enters an image layer.
+LINUX_GATE_PLATFORM ?= linux/arm64
+LINUX_GATE_JOBS     ?= 4
+LINUX_GATE_OUT      ?= build/linux-gate
+LINUX_GATE_CTEST_ARGS ?=
+# The pinned Centurion tag is read from cmake/dependencies.cmake, the one place it is set.
+LINUX_GATE_CENTURION_TAG ?= $(shell sed -n 's/^set(PLANAR_CENTURION_TAG "\(.*\)")/\1/p' cmake/dependencies.cmake)
+# external/ lives in the primary checkout, so a linked worktree falls back to it.
+LINUX_GATE_EXTERNAL ?= $(shell if [ -d external/centurion/$(LINUX_GATE_CENTURION_TAG) ]; then echo "$(CURDIR)/external"; else d=$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); echo "$${d%/.git}/external"; fi)
+
+.PHONY: linux-gate
+linux-gate: ## Build and run the whole ctest suite on Linux in Docker (arm64): make linux-gate [LINUX_GATE_JOBS=4 LINUX_GATE_CTEST_ARGS="-L process"]
+	@test -d "$(LINUX_GATE_EXTERNAL)/centurion/$(LINUX_GATE_CENTURION_TAG)" || { \
+	  echo "make linux-gate: no populated external/centurion/$(LINUX_GATE_CENTURION_TAG) under '$(LINUX_GATE_EXTERNAL)'."; \
+	  echo "  Run 'GITHUB_TOKEN=\$$(gh auth token) cmake --preset debug' once on the host, or set LINUX_GATE_EXTERNAL."; \
+	  exit 1; }
+	rm -rf $(LINUX_GATE_OUT)
+	DOCKER_BUILDKIT=1 docker build --platform $(LINUX_GATE_PLATFORM) \
+	  --target gate -f docker/linux-gate.Dockerfile \
+	  --build-context external=$(LINUX_GATE_EXTERNAL)/centurion/$(LINUX_GATE_CENTURION_TAG) \
+	  --build-arg CENTURION_TAG=$(LINUX_GATE_CENTURION_TAG) \
+	  --build-arg JOBS=$(LINUX_GATE_JOBS) --build-arg CTEST_ARGS="$(LINUX_GATE_CTEST_ARGS)" \
+	  --progress=plain --output type=local,dest=$(LINUX_GATE_OUT) .
+	@echo "--- linux-gate: $(LINUX_GATE_OUT)/{configure,build,ctest}.log ---"
+	@cat $(LINUX_GATE_OUT)/status.txt
+	@grep -E "tests passed|tests failed|Total Test time" $(LINUX_GATE_OUT)/ctest.log || true
+	@grep -qx "status=0" $(LINUX_GATE_OUT)/status.txt || { \
+	  echo "make linux-gate: FAILED (see $(LINUX_GATE_OUT)/*.log)"; exit 1; }
+
+.PHONY: linux-gate-prune
+linux-gate-prune: ## Reclaim the Docker build cache the Linux gate leaves behind (docker builder prune -f)
+	docker builder prune -f
+
 .PHONY: test-vendor-mtkahypar-offline
 test-vendor-mtkahypar-offline: ## Recurrence guard (task 6461): -DPLANAR_WITH_MTKAHYPAR=ON must configure offline from the committed vendor cache. macOS/sandbox-exec only; not part of test-all (slow, platform-specific) -- run after touching cmake/dependencies.cmake's mtkahypar block, or wire into make test-cpp-solver, the lane that configures with the solver ON (task 6532).
 	bash scripts/vendor-mtkahypar-offline-test.sh
