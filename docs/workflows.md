@@ -1698,7 +1698,7 @@ By design, the `planar` binary has **no `planar agent` subcommand**. Agent obser
 |--------|------|-------|
 | `planar` (this binary) | Operator reads of agent state, folded into existing verbs. | `dashboard --agents`, `plan next`, `tree`, `audit trail`, `health` |
 | `planar-agent` | Agent ritual + operator-recovery writes. Owns every write to `agent_work_claims` / `agent_actions`. | `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`end`, `ingest`, `reconcile`, `abort` |
-| `planar-watch` | Live streaming viewer. Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run list`/`show`, `sync-events`, `queue` |
+| `planar-watch` | Live streaming viewer. Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run list`/`show`, `sync-events`, `queue`, `queue history` |
 
 This recipe covers the **planar** binary's read surface. The claim ritual for `planar-agent` is in `agents/methodology.md` § Coordination claims; the streaming-viewer recipe for `planar-watch` is [Recipe 19](#recipe-19--live-agent-cockpit-with-planar-watch).
 

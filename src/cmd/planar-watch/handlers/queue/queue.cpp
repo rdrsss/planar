@@ -11,6 +11,7 @@ import planar.cmd.planar_watch.agentstore;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
+import planar.cmd.planar_watch.handlers.queue.render;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.process.identity;
@@ -23,102 +24,7 @@ namespace hq    = engine::hostqueue;
 namespace ident = process::identity;
 namespace qcfg  = engine::config;
 
-// ---- escaping ---------------------------------------------------------------
-
-/// @brief Whether the bytes at `at` are a C1 control character (U+0080 to
-/// U+009F), which UTF-8 spells `C2 80` to `C2 9F`.
-auto is_c1_at(std::string_view text, std::size_t at) -> bool {
-  return static_cast<unsigned char>(text[at]) == 0xC2 && at + 1 < text.size() &&
-         static_cast<unsigned char>(text[at + 1]) >= 0x80 && static_cast<unsigned char>(text[at + 1]) <= 0x9F;
-}
-
-/// @brief Whether `text` holds a byte that must not reach a terminal or a
-/// line-oriented reader raw: a C0 control, DEL or a C1 control.
-auto has_control(std::string_view text) -> bool {
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    auto const u = static_cast<unsigned char>(text[i]);
-    if (u < 0x20 || u == 0x7f || is_c1_at(text, i)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/// @brief `value` as a double-quoted string, escaping the quote, the backslash
-/// and every control byte. The result is a valid JSON string.
-auto quote(std::string_view value) -> std::string {
-  std::string out = "\"";
-  for (std::size_t i = 0; i < value.size(); ++i) {
-    auto const c = value[i];
-    auto const u = static_cast<unsigned char>(c);
-    if (c == '\\') {
-      out += "\\\\";
-    } else if (c == '"') {
-      out += "\\\"";
-    } else if (c == '\n') {
-      out += "\\n";
-    } else if (c == '\r') {
-      out += "\\r";
-    } else if (c == '\t') {
-      out += "\\t";
-    } else if (u < 0x20 || u == 0x7f) {
-      out += std::format("\\u{:04x}", static_cast<unsigned>(u));
-    } else if (is_c1_at(value, i)) {
-      out += std::format("\\u{:04x}", static_cast<unsigned>(static_cast<unsigned char>(value[i + 1])));
-      ++i;
-    } else {
-      out += c;
-    }
-  }
-  out += '"';
-  return out;
-}
-
-/// @brief A value as one whitespace-delimited cell: `-` when empty, quoted
-/// when it holds a control byte, a space or a double quote, or is itself `-`.
-auto cell(std::string_view value) -> std::string {
-  if (value.empty()) {
-    return "-";
-  }
-  auto const risky = has_control(value) || value == "-" || value.contains(' ') || value.contains('"');
-  return risky ? quote(value) : std::string{value};
-}
-
-/// @brief One argv word as a shell would need it: bare when only safe
-/// characters, single-quoted otherwise, and double-quoted with escapes when it
-/// holds a control byte (no shell quoting can carry one on a single line).
-auto shell_word(std::string_view word) -> std::string {
-  if (has_control(word)) {
-    return quote(word);
-  }
-  auto const safe = !word.empty() && std::ranges::all_of(word, [](char c) {
-    return std::isalnum(static_cast<unsigned char>(c)) != 0 || std::string_view{"_@%+=:,./-"}.contains(c);
-  });
-  if (safe) {
-    return std::string{word};
-  }
-  std::string out = "'";
-  for (auto const c : word) {
-    if (c == '\'') {
-      out += "'\\''";
-    } else {
-      out += c;
-    }
-  }
-  out += '\'';
-  return out;
-}
-
-auto shell_line(const std::vector<std::string>& argv) -> std::string {
-  std::string out;
-  for (auto const& word : argv) {
-    if (!out.empty()) {
-      out += ' ';
-    }
-    out += shell_word(word);
-  }
-  return out.empty() ? "-" : out;
-}
+using namespace queue_render;
 
 // ---- the rows ---------------------------------------------------------------
 
@@ -130,25 +36,6 @@ struct row {
   std::optional<std::int64_t> waited_ms;
   std::optional<std::int64_t> ran_ms;
 };
-
-/// @brief A duration between two wall-clock readings, never negative.
-auto span_ms(std::int64_t from, std::int64_t to) -> std::int64_t {
-  return std::max<std::int64_t>(0, to - from);
-}
-
-auto duration_text(const std::optional<std::int64_t>& ms) -> std::string {
-  if (!ms) {
-    return "-";
-  }
-  auto const seconds = *ms / 1000;
-  if (seconds < 60) {
-    return std::format("{}s", seconds);
-  }
-  if (seconds < 3600) {
-    return std::format("{}m{:02}s", seconds / 60, seconds % 60);
-  }
-  return std::format("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60);
-}
 
 /// @brief The `[queue]` staleness window, degraded to the default (with one
 /// warning) when the configuration cannot be used.
@@ -211,22 +98,6 @@ auto build_rows(context& ctx, std::vector<hq::entry> entries) -> std::expected<s
 
 // ---- JSON -------------------------------------------------------------------
 
-void put_key(std::string& out, std::string_view key) {
-  out += out.back() == '{' ? "" : ",";
-  out += quote(key);
-  out += ':';
-}
-
-void put_int(std::string& out, std::string_view key, const std::optional<std::int64_t>& value) {
-  put_key(out, key);
-  out += value ? std::to_string(*value) : "null";
-}
-
-void put_text(std::string& out, std::string_view key, const std::optional<std::string>& value) {
-  put_key(out, key);
-  out += value ? quote(*value) : "null";
-}
-
 auto render_json(const std::vector<row>& rows) -> std::string {
   std::string out = "[";
   for (auto const& r : rows) {
@@ -244,13 +115,7 @@ auto render_json(const std::vector<row>& rows) -> std::string {
     put_int(out, "parent_seq", e.parent_seq);
     put_key(out, "cwd");
     out += quote(e.cwd);
-    put_key(out, "argv");
-    out += '[';
-    for (std::size_t i = 0; i < e.argv.size(); ++i) {
-      out += i == 0 ? "" : ",";
-      out += quote(e.argv[i]);
-    }
-    out += ']';
+    put_argv(out, e.argv);
     put_text(out, "label", e.label);
     put_text(out, "vendor", e.vendor);
     put_text(out, "role", e.role);
@@ -297,7 +162,7 @@ auto render_text(const std::vector<row>& rows) -> std::string {
   if (rows.empty()) {
     return {};
   }
-  std::vector<std::array<std::string, 11>> table;
+  std::vector<std::vector<std::string>> table;
   table.push_back({"SEQ", "STATE", "POS", "NOTES", "WAITED", "RAN", "VENDOR", "ROLE", "LABEL", "DIRECTORY", "COMMAND"});
   for (auto const& r : rows) {
     auto const& e = r.entry;
@@ -307,22 +172,7 @@ auto render_text(const std::vector<row>& rows) -> std::string {
                      cell(e.cwd), shell_line(e.argv)});
   }
 
-  std::array<std::size_t, 10> width{};
-  for (auto const& line : table) {
-    for (std::size_t i = 0; i < width.size(); ++i) {
-      width[i] = std::max(width[i], line[i].size());
-    }
-  }
-  std::string out;
-  for (auto const& line : table) {
-    for (std::size_t i = 0; i < width.size(); ++i) {
-      out += line[i];
-      out.append(width[i] - line[i].size() + 2, ' ');
-    }
-    out += line.back();
-    out += '\n';
-  }
-  return out;
+  return pad_table(table);
 }
 
 } // namespace

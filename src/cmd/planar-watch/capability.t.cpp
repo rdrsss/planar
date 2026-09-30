@@ -310,15 +310,12 @@ TEST_CASE("planar-watch queue history reads through the read-only handle: the st
   auto const tree  = planar::cmd::watch::root_app();
   auto const table = planar::cmd::watch::handlers(*tree);
   for (auto const& verb : std::vector<std::vector<std::string>>{{"planar-watch", "queue", "history", "--json"},
-                                                                 {"planar-watch", "queue", "--json"}}) {
+                                                                {"planar-watch", "queue", "--json"}}) {
     std::ostringstream          out;
     std::ostringstream          err;
-    planar::cmd::watch::context ctx{verb,
-                                    planar::cmd::watch::map_env({{"PLANAR_AGENT_DB", store.string()}}),
-                                    dir,
-                                    std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err),
-                                    out,
-                                    err};
+    planar::cmd::watch::context ctx{verb, planar::cmd::watch::map_env({{"PLANAR_AGENT_DB", store.string()}}),
+                                    dir,  std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err),
+                                    out,  err};
     auto const                  fresh = planar::cmd::watch::root_app();
     CHECK(planar::cmd::watch::run(ctx, *fresh, table) == 0);
     CHECK_FALSE(ctx.db().opened());

@@ -17,6 +17,7 @@ import planar.cmd.planar_watch.handlers.feed;
 import planar.cmd.planar_watch.handlers.ledger;
 import planar.cmd.planar_watch.handlers.live;
 import planar.cmd.planar_watch.handlers.queue;
+import planar.cmd.planar_watch.handlers.queue.history;
 import planar.cmd.planar_watch.handlers.run;
 import planar.cmd.planar_watch.handlers.schema;
 import planar.cmd.planar_watch.handlers.syncevents;
@@ -48,6 +49,21 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
     node = matched.front();
     path.push_back(node->get_name());
   }
+}
+
+/// @brief Whether `key` names a node that is BOTH a group and a verb: it has
+/// children and a handler of its own, and running it without naming a child
+/// runs the handler rather than printing help.
+///
+/// `queue` is the only one (plan 1080, task hq-watch-history): the listing of
+/// running and waiting entries stayed on `planar-watch queue` when
+/// `queue history` was added beneath it. An explicit list, not "any group
+/// with a table entry", so a group cannot become runnable by accident and
+/// every other group keeps printing its help page byte for byte.
+/// @param key The space-joined root-relative path.
+/// @return True for a group that is also a verb.
+auto is_handler_group(std::string_view key) -> bool {
+  return key == "queue";
 }
 
 } // namespace
@@ -84,6 +100,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("run show", handlers::run_show);
   table.emplace("sync-events", handlers::sync_events);
   table.emplace("queue", handlers::queue);
+  table.emplace("queue history", handlers::queue_history);
   table.emplace("version", handlers::version);
   table.emplace("schema", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return handlers::schema(ctx, args, root);
@@ -116,7 +133,7 @@ auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> s
   std::set<std::string, std::less<>> leaf_keys(keys.begin(), keys.end());
   std::vector<std::string>           dead;
   for (auto const& [key, unused] : table) {
-    if (!leaf_keys.contains(key)) {
+    if (!leaf_keys.contains(key) && !is_handler_group(key)) {
       dead.push_back(key);
     }
   }
@@ -170,9 +187,10 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   }
 
   auto const [node, path] = matched_node(root);
-  if (!cliapp::children(*node).empty()) {
+  if (!cliapp::children(*node).empty() && !(is_handler_group(cliapp::path_key(path)) && table.contains(cliapp::path_key(path)))) {
     // A group named without a leaf beneath it — including a bare
-    // `planar-watch`, since `feed` is unported.
+    // `planar-watch`, since `feed` is unported. A group that is also a verb
+    // (`queue`) falls through to its own handler instead.
     ctx.out() << node->help();
     return exit_success;
   }
