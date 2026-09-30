@@ -218,8 +218,11 @@ TEST_CASE("queue run: an unopenable agent database refuses at 125 and does not r
   {
     std::ofstream(sc.root / "blocker") << "not a directory";
   }
-  fixture     fx{sc, (sc.root / "blocker" / "agent.db").string()};
-  auto const  outcome = agent::handlers::queue_run(fx.ctx, queue_args({"touch", (sc.root / "marker").string()}));
+  fixture fx{sc, (sc.root / "blocker" / "agent.db").string()};
+  // An absolute path: this environment has no PATH, and a program that
+  // cannot be resolved is refused (127) before the store is ever opened, which
+  // would make this case pass for the wrong reason.
+  auto const  outcome = agent::handlers::queue_run(fx.ctx, queue_args({"/usr/bin/touch", (sc.root / "marker").string()}));
   auto const* status  = std::get_if<agent::exit_status>(&outcome);
   REQUIRE(status != nullptr);
   INFO("stderr:\n" << fx.err.str());
