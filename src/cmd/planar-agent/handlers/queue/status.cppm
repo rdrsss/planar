@@ -36,7 +36,14 @@
 /// | 0 | The entry was found; the answer is on standard output |
 /// | 1 | No entry and no history row has that sequence number (never issued, or its history was pruned), or no sequence number
 /// was given (a parse failure) | | 2 | The argument is not a positive integer | | 125 | The queue failed: the store does not
-/// exist or cannot be read, the configuration cannot be used, or an internal error |
+/// exist or cannot be read, or an internal error |
+///
+/// An unusable `[queue]` configuration is not a failure (task
+/// hq-status-degrade-config): the answer is printed and the exit is 0, with
+/// `slots` and `grace_ms` null, liveness judged against the default staleness
+/// window, and one `warning: queue status: <reason>` line on standard error.
+/// The configuration is read only for an entry still in the queue, so an
+/// ended entry's answer never warns.
 ///
 /// A refusal writes `error: queue status: <message>` on standard error and,
 /// under `--json`, one object on standard output:

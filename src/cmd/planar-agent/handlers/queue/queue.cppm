@@ -42,9 +42,10 @@
 /// `[queue]` duration grammar (an integer and `ms`, `s`, `m` or `h`), share
 /// its 24-hour cap, and refuse zero, negative and unit-less values at exit 2
 /// before anything is enqueued. The run limit becomes the entry's
-/// `deadline_mono` when the entry starts; the wait limit is stored as
-/// `wait_deadline_mono` at enqueue. At its run limit the submitter marks its
-/// own entry terminating with reason `timeout` (SIGTERM) and advances that
+/// `deadline_mono` when the entry starts, and is recorded as `run_limit_ms`
+/// in the same statement; the wait limit is stored as `wait_deadline_mono`,
+/// and as `wait_limit_ms`, at enqueue (`queue status` reports both). At its
+/// run limit the submitter marks its own entry terminating with reason `timeout` (SIGTERM) and advances that
 /// entry each tick (SIGKILL after the `[queue]` grace period). The entry then
 /// ends with the outcome its stop reason names, never `signaled`: `timeout`
 /// (exit 124) or `cancelled` (exit 125), whichever process set the reason.

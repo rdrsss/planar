@@ -136,16 +136,19 @@ export struct history_row {
   std::int64_t                ended_at  = 0;                     ///< Wall clock at the end, ms.
   std::int64_t                waited_ms = 0; ///< Time from submission to start (or to the end, when it never started).
   std::optional<std::int64_t> ran_ms;        ///< Time from start to the end, when it started.
+  std::optional<std::int64_t> run_limit_ms;  ///< The run limit it ran under, copied from the entry, when it started.
+  std::optional<std::int64_t> wait_limit_ms; ///< The wait limit it was submitted with, copied from the entry, when limited.
 };
 
 /// @brief Ends an entry: deletes it from `queue_entries` and inserts its
 /// `queue_history` row in one write transaction (`BEGIN IMMEDIATE`, or a
 /// savepoint when `conn` is already in a transaction). The row copies the
-/// entry's command columns, sets `nested` and `parent_seq` from the entry's
+/// entry's command columns and its `run_limit_ms` and `wait_limit_ms`, sets
+/// `nested` and `parent_seq` from the entry's
 /// `parent_seq`, and computes `waited_ms` as start (or `ended_at` when the
 /// entry never started) minus `enqueued_at` and `ran_ms` as `ended_at` minus
 /// start, each clamped at zero because the wall clock can step backwards.
-/// @param conn An open agent database at or above agent schema version 2.
+/// @param conn An open agent database at or above agent schema version 3.
 /// @param seq The entry to end.
 /// @param request How it ended.
 /// @return `ended` when this call removed the entry and wrote the row;
@@ -193,10 +196,14 @@ export struct rejoin_result {
 /// behind every entry that arrived meanwhile) and records the new number as
 /// the old row's successor. Either both writes happen or neither does. Runs
 /// no retention prune: the submitter's own enqueue already did.
+/// The new entry records `request` as given, `wait_deadline_mono` and
+/// `wait_limit_ms` included, so a submitter that passes its original request
+/// keeps its wait limit across the rejoin; its run limit is recorded when it
+/// starts, like any entry's.
 /// The caller reads `request.refreshed_mono` before this call takes its lock, so
 /// the new entry's freshness baseline is slightly older than its insert; the
 /// submitter's next poll refreshes it.
-/// @param conn An open agent database at or above agent schema version 2.
+/// @param conn An open agent database at or above agent schema version 3.
 /// @param old_seq The sequence number the submitter's missing entry had.
 /// @param request The new entry, as `enqueue` takes it.
 /// @return The status (see `rejoin_status`), or the failure, after which
@@ -205,14 +212,18 @@ export auto rejoin(db::connection& conn, std::int64_t old_seq, const enqueue_req
     -> std::expected<rejoin_result, queue_error>;
 
 /// @brief Reads one history row by sequence number.
-/// @param conn An open agent database.
+/// @param conn An open agent database at agent schema version 2 or later; a
+/// read-only connection is enough, and on a store below 3 the limits read as
+/// empty (`limit_columns_select`).
 /// @param seq The ended entry's sequence number.
 /// @return The row, `std::nullopt` when there is none (never ended, or
 /// pruned), or the failure.
 export auto find_history(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<history_row>, queue_error>;
 
 /// @brief Reads history rows ordered by `ended_at`, then by sequence number.
-/// @param conn An open agent database.
+/// @param conn An open agent database at agent schema version 2 or later; a
+/// read-only connection is enough, and on a store below 3 the limits read as
+/// empty (`limit_columns_select`).
 /// @param ended_since When set, only rows whose `ended_at` is at or after
 /// this wall-clock ms value.
 /// @return The rows, oldest first; empty when there are none.

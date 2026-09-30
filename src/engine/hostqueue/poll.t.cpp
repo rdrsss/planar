@@ -999,3 +999,42 @@ TEST_CASE("poll: an invalid request changes nothing", "[engine][hostqueue][hq-po
   CHECK(clock.monotonic_reads == 0);
   CHECK(state_of(conn, seq) == hq::entry_state::waiting);
 }
+
+TEST_CASE("poll: the start records the run limit its deadline was computed from, once",
+          "[engine][hostqueue][hq-poll-transaction][hq-queue-limit-columns]") {
+  // Task hq-queue-limit-columns: `queue status` reports `run_limit_ms` from
+  // the entry, so the poll that starts an entry records the limit in the same
+  // statement that sets the deadline, and later polls leave both alone.
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add(1'001);
+  host.add(1'002);
+
+  auto const seq    = enqueue_one(conn, request_for(1'001, clock));
+  auto const behind = enqueue_one(conn, request_for(1'002, clock));
+  CHECK_FALSE(entry_of(conn, seq).run_limit_ms.has_value()); // waiting: not yet in force
+
+  auto const first = poll_as(conn, seq, clock, host);
+  REQUIRE(first.started);
+  auto const stored = entry_of(conn, seq);
+  CHECK(stored.run_limit_ms == k_run_limit);
+  CHECK(stored.deadline_mono == k_mono0 + k_run_limit);
+
+  // A later poll by the same submitter carrying another limit changes neither.
+  clock.mono += 1'000;
+  auto other         = poll_request_for(seq, 1);
+  other.run_limit_ms = 7'000;
+  auto const again   = hq::poll(conn, other, clock, host.probe());
+  REQUIRE(again.has_value());
+  CHECK(entry_of(conn, seq).run_limit_ms == k_run_limit);
+  CHECK(entry_of(conn, seq).deadline_mono == k_mono0 + k_run_limit);
+
+  // The entry behind it has no turn, so nothing is recorded on it.
+  auto waiting         = poll_request_for(behind, 1);
+  waiting.run_limit_ms = 7'000;
+  REQUIRE(hq::poll(conn, waiting, clock, host.probe()).has_value());
+  CHECK(entry_of(conn, behind).state == hq::entry_state::waiting);
+  CHECK_FALSE(entry_of(conn, behind).run_limit_ms.has_value());
+}

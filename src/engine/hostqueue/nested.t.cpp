@@ -582,3 +582,30 @@ TEST_CASE("nested: an invalid request changes nothing", "[engine][hostqueue][hq-
   REQUIRE(accepted.has_value());
   CHECK(accepted->status == hq::nested_status::inserted);
 }
+
+TEST_CASE("nested: a nested entry records the run limit its deadline was computed from",
+          "[engine][hostqueue][hq-nested-entry][hq-queue-limit-columns]") {
+  // Task hq-queue-limit-columns: a nested entry starts at insert, so the
+  // insert's start step records the run limit alongside the deadline, and the
+  // history row copies it.
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add(101);
+  host.add(102);
+
+  auto const parent = running_entry(conn, 101, clock, host);
+  auto const inserted =
+      hq::enqueue_nested(conn, parent, request_for(102, clock),
+                         hq::nested_limits{.stale_after_ms = k_window, .run_limit_ms = 45'000}, clock, host.probe());
+  REQUIRE(inserted.has_value());
+  REQUIRE(inserted->status == hq::nested_status::inserted);
+  auto const stored = entry_of(conn, inserted->seq);
+  CHECK(stored.run_limit_ms == 45'000);
+  CHECK(stored.deadline_mono == inserted->now_mono + 45'000);
+  CHECK_FALSE(stored.wait_limit_ms.has_value());
+
+  end_exited(conn, inserted->seq, clock.wall + 5);
+  CHECK(history_of(conn, inserted->seq).run_limit_ms == 45'000);
+}

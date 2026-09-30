@@ -6955,8 +6955,8 @@ The `--json` output is one object with exactly these fields, in this order. A fi
 | `log_path` | The output file, for a detached run |
 | `enqueued_at`, `started_at`, `ended_at` | Wall-clock milliseconds |
 | `waited_ms`, `ran_ms` | Durations: for an entry still in the queue, up to now |
-| `run_limit_ms`, `wait_limit_ms` | Always `null` in this build: the store records a monotonic deadline, not the limit an entry was submitted with |
-| `slots`, `grace_ms` | The `[queue]` settings in force now, for an entry still in the queue; `null` when ended |
+| `run_limit_ms`, `wait_limit_ms` | The limits in force, in milliseconds: `wait_limit_ms` is the `--wait-timeout` the entry was submitted with (`null` without one); `run_limit_ms` is its `--timeout` (default 30 minutes), recorded when the entry starts and `null` while it waits. An ended entry reports the values its history row copied. Both also read `null` wherever an older build (agent schema version 2, which has no limit columns) did the writing: a limit is `null` when such a build enqueued the entry (`wait_limit_ms`), started it (`run_limit_ms`), or ended it, including a reap by its poll (both, on the history row); and both are `null` for every entry and row while the store itself is still at version 2, which `queue status` reads without migrating it |
+| `slots`, `grace_ms` | The `[queue]` settings in force now, for an entry still in the queue; `null` when ended, or when the `[queue]` configuration cannot be used |
 
 **A successor is followed.** When the number asked for was reaped while its submitter was stopped and the submitter rejoined the queue (see above), its history row names the new number. `queue status` then describes the new entry (its `state`, `position` and so on, and its end once it has one), sets `superseded_by` to the new number and keeps `seq` as the number asked for. A chain of rejoins is followed to its end; a successor whose history was pruned ends the chain at the last row that exists.
 
@@ -6969,9 +6969,11 @@ Without `--json` the same answer is printed as `key: value` lines, one per field
 | 0 | The entry was found; the answer is on standard output |
 | 1 | No entry and no history row has that sequence number (never issued, or its history was pruned), or no sequence number was given (a parse failure, as everywhere in this binary) |
 | 2 | The argument is not a positive integer |
-| 125 | The queue failed: the agent database does not exist or cannot be read, the `[queue]` configuration cannot be used (asked for only when the entry is still in the queue), or an internal error |
+| 125 | The queue failed: the agent database does not exist or cannot be read, or an internal error |
 
-A refusal writes `error: queue status: <message>` on standard error. With `--json` it also writes one object on standard output, `{"error":{"verb":"queue status","tag":"<tag>","message":"<message>"}}` (plus `"seq"` for exit 1), so a script reads the reason without parsing prose. The tags are `not_found`, `invalid_input`, `store_unreachable`, `store_unreadable`, `config_unusable` and `internal`.
+**An unusable `[queue]` configuration does not fail `queue status`.** The configuration is read only for an entry still in the queue. When it cannot be used (a refused value, or a file that cannot be read or parsed), the answer is still printed and the exit is 0: `slots` and `grace_ms` are `null`, liveness is judged against the default 30-second staleness window (no value from the unusable table is trusted, including a `stale_after` that parsed), and one line `warning: queue status: the [queue] configuration cannot be used (<reason>); ...` is written on standard error.
+
+A refusal writes `error: queue status: <message>` on standard error. With `--json` it also writes one object on standard output, `{"error":{"verb":"queue status","tag":"<tag>","message":"<message>"}}` (plus `"seq"` for exit 1), so a script reads the reason without parsing prose. The tags are `not_found`, `invalid_input`, `store_unreachable`, `store_unreadable` and `internal`.
 
 Not yet available in this build (later tasks of plan 1080): `--claim` and `queue rule`.
 
