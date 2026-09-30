@@ -217,12 +217,19 @@ err()   { printf '\n%sinstall.sh: %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; exit 1; 
 # A symlinked database is left alone rather than chmodding its target.
 harden_planar_home() {
   mkdir -p "$PLANAR_HOME"
-  chmod 700 "$PLANAR_HOME"
+  # A chmod that fails is a warning, never an abort: a live -wal/-shm can be
+  # checkpointed away between the test and the chmod, and a file the user can
+  # write but does not own cannot be chmodded. Under `set -e` and the ERR trap
+  # either would end the install.
+  chmod 700 "$PLANAR_HOME" 2>/dev/null || warn "could not restrict $PLANAR_HOME to mode 700"
   local db
   for db in planar.db planar.db-wal planar.db-shm agent.db agent.db-wal agent.db-shm; do
     if [[ -f "$PLANAR_HOME/$db" && ! -L "$PLANAR_HOME/$db" ]]; then
-      chmod 600 "$PLANAR_HOME/$db"
-      vlog "$db: mode 600"
+      if chmod 600 "$PLANAR_HOME/$db" 2>/dev/null; then
+        vlog "$db: mode 600"
+      else
+        warn "could not restrict $PLANAR_HOME/$db to mode 600"
+      fi
     fi
   done
   vlog "$PLANAR_HOME: mode 700"

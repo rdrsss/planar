@@ -761,3 +761,19 @@ TEST_CASE("the directories the agent database open path creates are 0700; an exi
     CHECK(mode_bits(planar_home) == 0700U);
   }
 }
+
+TEST_CASE("opening an existing agent database keeps its mode", "[db][agentdb][hq-agentdb-modes]") {
+  // Decision 1210: only creation is private; tightening an existing store is
+  // the installer's job, so a binary never changes a mode it did not set.
+  usual_umask umask_guard;
+  scratch_dir scratch;
+  auto const  store = scratch.path_ / "agent.db";
+  {
+    std::ofstream out(store);
+  }
+  ::chmod(store.c_str(), 0644);
+
+  auto opened = planar::db::agent::open_agent_db_at(store);
+  REQUIRE(opened.has_value());
+  CHECK(mode_bits(store) == 0644U);
+}

@@ -205,6 +205,7 @@ run_harden() {
   PLANAR_HOME="$1" HARDEN="$TMP/harden.sh" bash -c '
     set -eEuo pipefail
     vlog() { :; }
+    warn() { printf "warn: %s\n" "$*" >&2; }
     source "$HARDEN"
     harden_planar_home
   '
@@ -238,11 +239,51 @@ run_harden "$FRESH_PREFIX" || fail "harden_planar_home failed on an empty prefix
 assert_mode "$FRESH_PREFIX" 700
 [[ -z "$(ls -A "$FRESH_PREFIX")" ]] || fail "harden_planar_home created files in an empty prefix"
 
-# The installer runs it after the dry-run exit, so a dry run changes nothing.
-_call_line="$(grep -n '^harden_planar_home$' "$ROOT/install.sh" | head -1 | cut -d: -f1)"
+# A database that is a symlink is left alone: its target, outside the prefix,
+# keeps its mode.
+LINK_PREFIX="$TMP/link_modes/.planar"
+LINK_TARGET="$TMP/link_modes/elsewhere.db"
+mkdir -p "$LINK_PREFIX"
+printf 'data\n' > "$LINK_TARGET"
+chmod 644 "$LINK_TARGET"
+ln -s "$LINK_TARGET" "$LINK_PREFIX/planar.db"
+printf 'data\n' > "$LINK_PREFIX/agent.db"
+chmod 644 "$LINK_PREFIX/agent.db"
+run_harden "$LINK_PREFIX" || fail "harden_planar_home failed beside a symlinked database"
+assert_mode "$LINK_TARGET" 644
+assert_mode "$LINK_PREFIX/agent.db" 600
+
+# A chmod that fails only warns, and the function still returns 0: under
+# `set -e` and the ERR trap an abort would end the install. A stub chmod
+# that always fails stands in for a vanished sidecar or a file not owned by
+# the user.
+FAIL_PREFIX="$TMP/fail_modes/.planar"
+mkdir -p "$FAIL_PREFIX"
+printf 'data\n' > "$FAIL_PREFIX/planar.db"
+printf 'data\n' > "$FAIL_PREFIX/agent.db-wal"
+mkdir -p "$TMP/failbin"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/failbin/chmod"
+chmod +x "$TMP/failbin/chmod"
+PATH="$TMP/failbin:$PATH" run_harden "$FAIL_PREFIX" 2>"$TMP/fail-modes-stderr" \
+  || fail "harden_planar_home aborted when chmod failed; it must only warn"
+grep -Fq "could not restrict $FAIL_PREFIX to mode 700" "$TMP/fail-modes-stderr" \
+  || fail "no warning for the install root when chmod failed"
+grep -Fq "could not restrict $FAIL_PREFIX/planar.db to mode 600" "$TMP/fail-modes-stderr" \
+  || fail "no warning for planar.db when chmod failed"
+grep -Fq "could not restrict $FAIL_PREFIX/agent.db-wal to mode 600" "$TMP/fail-modes-stderr" \
+  || fail "no warning for agent.db-wal when chmod failed"
+
+# The installer runs it twice, before the build and after the stamp, and both
+# calls must come after the dry-run exit so a dry run changes nothing.
 _dry_line="$(grep -n 'Re-run without --dry-run to apply' "$ROOT/install.sh" | head -1 | cut -d: -f1)"
-[[ -n "$_call_line" && -n "$_dry_line" && "$_call_line" -gt "$_dry_line" ]] \
-  || fail "install.sh must call harden_planar_home after the dry-run exit"
+_calls="$(grep -n '^harden_planar_home$' "$ROOT/install.sh" | cut -d: -f1)"
+[[ "$(printf '%s\n' "$_calls" | grep -c .)" == 2 ]] \
+  || fail "install.sh must call harden_planar_home exactly twice (before the build and after the stamp)"
+[[ -n "$_dry_line" ]] || fail "dry-run marker not found in install.sh"
+for _call_line in $_calls; do
+  [[ "$_call_line" -gt "$_dry_line" ]] \
+    || fail "install.sh calls harden_planar_home at line $_call_line, before the dry-run exit (line $_dry_line)"
+done
 
 # An uninstall keeps the tightened modes on the files it preserves.
 MODES_HOME="$TMP/modes_home"
@@ -253,4 +294,4 @@ assert_mode "$MODES_PREFIX/agent.db" 600
 assert_mode "$MODES_PREFIX/planar.db" 600
 assert_mode "$MODES_PREFIX" 700
 
-printf 'install-manifest tests: 8 passed\n'
+printf 'install-manifest tests: 10 passed\n'

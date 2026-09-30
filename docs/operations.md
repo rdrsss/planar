@@ -355,6 +355,11 @@ are owner-only (decision 1210):
 - An `agent.db` that already existed keeps its mode when a binary opens it; run
   `./install.sh` again, or `chmod 600 ~/.planar/agent.db*`, to tighten it.
   `install.sh --uninstall` keeps the databases and their modes.
+- An install root shared by several users (a `--prefix` such as `/opt/planar`
+  that more than one account runs from) is unsupported under the `0700` rule:
+  only the owner can open the databases. Run one install per user.
+- If `install.sh` cannot change a mode (a file you can write but do not own),
+  it prints a warning and carries on; fix the mode by hand.
 
 **When something looks wrong.** A `waiting` entry that never advances and shows
 `NOT-LIVE` is an orphan; poll again, and a later submitter reaps it. A command
