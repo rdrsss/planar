@@ -12,6 +12,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <signal.h>
+#include <unistd.h>
 
 import std;
 import planar.cliapp.args;
@@ -19,6 +20,7 @@ import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
 import planar.cmd.planar_agent.handlers.queue;
+import planar.db;
 import planar.db.agentdb;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
@@ -72,20 +74,31 @@ struct fixture {
   std::ostringstream err;
   agent::context     ctx;
 
-  explicit fixture(const scratch& sc, std::string agent_db)
-      : ctx({"planar-agent", "queue", "run"},
-            agent::map_env({{"PLANAR_AGENT_DB", std::move(agent_db)},
-                            {"HOME", (sc.root / "fakehome").string()},
-                            {"PWD", (sc.root / "proj").string()},
-                            {"PLANAR_CONFIG_PATH", (sc.root / "config.toml").string()},
-                            {"PLANAR_DB", (sc.root / "planar.db").string()}}),
+  explicit fixture(const scratch& sc, std::string agent_db, std::map<std::string, std::string, std::less<>> extra = {})
+      : ctx({"planar-agent", "queue", "run"}, agent::map_env(base_env(sc, std::move(agent_db), std::move(extra))),
             sc.root / "proj", std::make_shared<agent::database>(sc.root / "planar.db", err), out, err) {
+  }
+
+private:
+  /// @brief The scratch environment, plus `extra` (a case's `PLANAR_QUEUE_SLOT`).
+  static auto base_env(const scratch& sc, std::string agent_db, std::map<std::string, std::string, std::less<>> extra)
+      -> std::map<std::string, std::string, std::less<>> {
+    std::map<std::string, std::string, std::less<>> vars{{"PLANAR_AGENT_DB", std::move(agent_db)},
+                                                         {"HOME", (sc.root / "fakehome").string()},
+                                                         {"PWD", (sc.root / "proj").string()},
+                                                         {"PLANAR_CONFIG_PATH", (sc.root / "config.toml").string()},
+                                                         {"PLANAR_DB", (sc.root / "planar.db").string()}};
+    for (auto& [name, value] : extra) {
+      vars.insert_or_assign(name, std::move(value));
+    }
+    return vars;
   }
 };
 
 /// @brief Runs the handler for `command` with its seams replaced by `deps`.
-auto run_queue(const scratch& sc, const std::vector<std::string>& command, agent::handlers::queue_run_deps deps) -> invocation {
-  fixture     fx{sc, (sc.root / "agent.db").string()};
+auto run_queue(const scratch& sc, const std::vector<std::string>& command, agent::handlers::queue_run_deps deps,
+               std::map<std::string, std::string, std::less<>> extra_env = {}) -> invocation {
+  fixture     fx{sc, (sc.root / "agent.db").string(), std::move(extra_env)};
   auto const  outcome = agent::handlers::queue_run_with(fx.ctx, queue_args(command), std::move(deps));
   auto const* status  = std::get_if<agent::exit_status>(&outcome);
   REQUIRE(status != nullptr);
@@ -123,6 +136,41 @@ struct poll_bound {
     };
   }
 };
+
+/// @brief Seeds the scratch store with a RUNNING entry that is live: its
+/// submitter is this test process, so its existence and start time hold, and
+/// it was just refreshed. It is the parent a nested run can name.
+/// @return The entry's sequence number.
+auto seed_live_parent(const scratch& sc) -> std::int64_t {
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  ident::system_clock clock;
+  auto const          pid     = static_cast<std::int64_t>(::getpid());
+  auto const          started = ident::process_start_time(pid);
+  REQUIRE((started && started->has_value()));
+  auto const now = clock.monotonic_ms();
+  REQUIRE(now.has_value());
+  auto const seq = hq::enqueue(*opened, hq::enqueue_request{.host_id     = ident::host_identity(ident::native_identity_source()),
+                                                            .pid         = pid,
+                                                            .pid_started = static_cast<std::int64_t>(**started),
+                                                            .cwd         = "/",
+                                                            .argv        = {"parent"},
+                                                            .enqueued_at = clock.wall_ms(),
+                                                            .refreshed_mono = *now});
+  REQUIRE(seq.has_value());
+  REQUIRE(opened
+              ->execute(std::format("update queue_entries set state = 'running', started_at = {} where seq = {}", clock.wall_ms(),
+                                    *seq))
+              .has_value());
+  return *seq;
+}
+
+/// @brief The failure a store that stays busy past its timeout reports.
+auto busy_failure(int code) -> hq::queue_error {
+  return hq::queue_error{.kind        = hq::queue_error_kind::query_failed,
+                         .sqlite_code = code,
+                         .message     = std::format("hostqueue: begin nested enqueue: database is locked (sqlite {})", code)};
+}
 
 } // namespace
 
@@ -446,4 +494,118 @@ TEST_CASE("queue run: a signal that arrives while the turn is being taken runs n
   REQUIRE(row->has_value());
   CHECK((*row)->outcome == hq::history_outcome::cancelled);
   // The poll had already marked the entry running; the command still did not start.
+}
+
+// ---------------------------------------------------------------------------
+// Task 7052: a nested insert that finds the store busy
+// ---------------------------------------------------------------------------
+
+TEST_CASE("queue run: a nested insert that finds the store busy is retried and then succeeds",
+          "[cmd][agent][queue][hq-nested-run]") {
+  scratch    sc;
+  auto const parent = seed_live_parent(sc);
+  auto const ran    = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  poll_bound                      bound;
+  bound.bind(deps, fast_settings());
+  auto const calls = std::make_shared<int>(0);
+  // Plain SQLITE_BUSY, then an EXTENDED busy code (its low byte is 5), then
+  // the real insert.
+  deps.enqueue_nested = [calls](planar::db::connection& conn, std::int64_t seq, const hq::enqueue_request& request,
+                                const hq::nested_limits& limits, ident::clock& clock,
+                                const hq::process_probe& probe) -> std::expected<hq::nested_result, hq::queue_error> {
+    ++*calls;
+    if (*calls == 1) {
+      return std::unexpected(busy_failure(5));
+    }
+    if (*calls == 2) {
+      return std::unexpected(busy_failure(261));
+    }
+    return hq::enqueue_nested(conn, seq, request, limits, clock, probe);
+  };
+
+  auto const got = run_queue(sc, {"/bin/sh", "-c", std::format("echo x > '{}'", ran.string())}, deps,
+                             {{"PLANAR_QUEUE_SLOT", std::to_string(parent)}});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(*calls == 3);
+  CHECK(std::filesystem::exists(ran));
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  // Only the seeded parent is left; the command ran as its nested entry.
+  auto const entries = hq::list(*opened).value();
+  REQUIRE(entries.size() == 1);
+  CHECK(entries.front().seq == parent);
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == 1);
+  CHECK(history.front().nested);
+  CHECK(history.front().parent_seq == parent);
+  CHECK(history.front().outcome == hq::history_outcome::exited);
+}
+
+TEST_CASE("queue run: a nested insert that keeps finding the store busy refuses at 125 and runs nothing",
+          "[cmd][agent][queue][hq-nested-run]") {
+  scratch    sc;
+  auto const parent = seed_live_parent(sc);
+  auto const ran    = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  poll_bound                      bound;
+  // A short staleness window, so the bound is reached in a few polls.
+  bound.bind(deps, planar::engine::config::queue_settings{
+                       .slots = 1, .poll_interval_ms = 5, .stale_after_ms = 50, .grace_ms = 10'000, .history_days = 30});
+  auto const calls    = std::make_shared<int>(0);
+  deps.enqueue_nested = [calls](planar::db::connection&, std::int64_t, const hq::enqueue_request&, const hq::nested_limits&,
+                                ident::clock&, const hq::process_probe&) -> std::expected<hq::nested_result, hq::queue_error> {
+    ++*calls;
+    return std::unexpected(busy_failure(5));
+  };
+
+  auto const got = run_queue(sc, {"/bin/sh", "-c", std::format("echo x > '{}'", ran.string())}, deps,
+                             {{"PLANAR_QUEUE_SLOT", std::to_string(parent)}});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("busy"));
+  CHECK(got.err.contains("the command was not run"));
+  CHECK(*bound.polls < poll_bound::limit);
+  CHECK(*calls > 1); // it retried, rather than giving up on the first busy
+  CHECK_FALSE(std::filesystem::exists(ran));
+
+  // It neither queued normally nor left anything behind: the store holds the
+  // seeded parent and no history.
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const entries = hq::list(*opened).value();
+  REQUIRE(entries.size() == 1);
+  CHECK(entries.front().seq == parent);
+  CHECK(hq::list_history(*opened).value().empty());
+}
+
+TEST_CASE("queue run: a nested insert that fails for any other reason refuses at 125 at once",
+          "[cmd][agent][queue][hq-nested-run]") {
+  scratch    sc;
+  auto const parent = seed_live_parent(sc);
+
+  agent::handlers::queue_run_deps deps;
+  poll_bound                      bound;
+  bound.bind(deps, fast_settings());
+  auto const calls    = std::make_shared<int>(0);
+  deps.enqueue_nested = [calls](planar::db::connection&, std::int64_t, const hq::enqueue_request&, const hq::nested_limits&,
+                                ident::clock&, const hq::process_probe&) -> std::expected<hq::nested_result, hq::queue_error> {
+    ++*calls;
+    return std::unexpected(hq::queue_error{
+        .kind = hq::queue_error_kind::query_failed, .sqlite_code = 19, .message = "hostqueue: insert refused (sqlite 19)"});
+  };
+
+  auto const got = run_queue(sc, {"/usr/bin/true"}, deps, {{"PLANAR_QUEUE_SLOT", std::to_string(parent)}});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("insert refused"));
+  CHECK(*calls == 1);
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  CHECK(hq::list(*opened).value().size() == 1);
+  CHECK(hq::list_history(*opened).value().empty());
 }

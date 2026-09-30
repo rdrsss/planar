@@ -1826,11 +1826,11 @@ TEST_CASE("queue run: a queued command's own queue run starts at once and is rec
           "[cmd][agent][queue][hq-nested-run]") {
   auto const arena = parity::make_arena("qr_nested");
   write_config(arena, k_fast_poll); // one slot
-  auto const files = make_nested_files(arena);
-  gate       inner_gate(files.inner_gate);
-  gate       outer_gate(files.outer_gate);
-  spawned    outer;
-  spawned    third;
+  auto const  files = make_nested_files(arena);
+  gate        inner_gate(files.inner_gate);
+  gate        outer_gate(files.outer_gate);
+  spawned     outer;
+  spawned     third;
   release_all guard{.gates = {&inner_gate, &outer_gate}};
 
   outer = spawn_queue(arena, "outer", nested_outer_command(files));
@@ -1869,7 +1869,7 @@ TEST_CASE("queue run: a queued command's own queue run starts at once and is rec
   static_cast<void>(await_entry(arena, 3, hq::entry_state::waiting));
   await_refreshes(arena, 3, 3);
   {
-    auto const snap = require_snapshot(arena);
+    auto const  snap    = require_snapshot(arena);
     auto const* waiting = entry_seq(snap, 3);
     REQUIRE(waiting != nullptr);
     CHECK(waiting->state == hq::entry_state::waiting);
@@ -1927,12 +1927,13 @@ TEST_CASE("queue run: a queued command's own queue run starts at once and is rec
 TEST_CASE("queue run: a nested entry does not take a slot from an ordinary submitter", "[cmd][agent][queue][hq-nested-run]") {
   auto const arena = parity::make_arena("qr_nested_slots");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\nslots = 2\n");
-  auto const files = make_nested_files(arena);
-  gate       inner_gate(files.inner_gate);
-  gate       outer_gate(files.outer_gate);
-  spawned    outer;
-  spawned    third;
-  release_all guard{.gates = {&inner_gate, &outer_gate}};
+  auto const  files = make_nested_files(arena);
+  gate        inner_gate(files.inner_gate);
+  gate        outer_gate(files.outer_gate);
+  gate        third_gate(arena.cpp_root / "third.fifo");
+  spawned     outer;
+  spawned     third;
+  release_all guard{.gates = {&inner_gate, &outer_gate, &third_gate}};
 
   outer = spawn_queue(arena, "outer", nested_outer_command(files));
   await_file(files.inner_started);
@@ -1941,8 +1942,9 @@ TEST_CASE("queue run: a nested entry does not take a slot from an ordinary submi
   // Two slots, and the outer entry and its nested entry are both running. An
   // ordinary submitter takes the second slot at once: were the nested entry
   // counted, both slots would be full and it would wait.
-  third = spawn_queue(arena, "third", sh_command("echo x > \"$1\"; read y < \"$2\"", {(arena.cpp_root / "third_started").string(),
-                                                                                  outer_gate.path.string()}));
+  third = spawn_queue(
+      arena, "third",
+      sh_command("echo x > \"$1\"; read y < \"$2\"", {(arena.cpp_root / "third_started").string(), third_gate.path.string()}));
   await_file(arena.cpp_root / "third_started");
   auto const running = await_child_recorded(arena, 3);
   CHECK_FALSE(running.parent_seq.has_value());
@@ -1954,6 +1956,7 @@ TEST_CASE("queue run: a nested entry does not take a slot from an ordinary submi
 
   inner_gate.release();
   outer_gate.release();
+  third_gate.release();
   CHECK(finish(outer).code == 7);
   CHECK(finish(third).code == 0);
   auto const snap = require_snapshot(arena);
