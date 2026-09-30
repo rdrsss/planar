@@ -23,6 +23,47 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make linux-gate` | The `debug` build and the whole ctest suite on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
 | `make test-cpp-solver` | The ctest suite against a `-DPLANAR_WITH_MTKAHYPAR=ON` build. |
 
+## Builds and tests go through the host queue
+
+On a machine shared by several agents and projects, a build or test is not
+started directly. It is submitted to the host-wide queue, so two builds do
+not run at once and one agent's `make test` does not starve another's. The
+queue is `planar-agent queue`; see [the queue verbs](cli-reference.md#queue-verbs)
+for the full contract and [operations.md](operations.md#5-the-host-build-and-test-queue)
+for running it. `planar-agent queue rule` prints the rule agents follow.
+
+Every gate above has a queued form: the gate's own command after the argument
+terminator, run from the directory it needs.
+
+```bash
+# Short gate, in the foreground: the command's output and exit status come straight back.
+planar-agent queue run --vendor <vendor> --role <role> -- make fmt-check     # cli-lint-ignore: `--` is the argument terminator
+planar-agent queue run --vendor <vendor> --role <role> -- make cli-usage-check     # cli-lint-ignore: `--` is the argument terminator
+
+# Long gate, detached: prints a sequence number and a log path, then returns at once.
+planar-agent queue run --detach --vendor <vendor> --role <role> -- make test     # cli-lint-ignore: `--` is the argument terminator
+planar-agent queue status <seq>                                                  # poll every 30 seconds until state is ended
+```
+
+`make test-all`, `make cpp-lint` and `make linux-gate` run long enough to
+reach the queue's default run limit of 30 minutes, at which the command is
+stopped and its entry ends as `timeout`. Pass `--timeout <duration>` for a
+gate that legitimately takes longer (for example `--timeout 2h`), and
+`--claim <token>` when the caller holds a task claim, so the queue renews it
+while the command waits and runs.
+
+A detached gate builds when its turn comes, not when it is submitted. Submit
+it only once the tree is final for that gate, and do not edit the tree until
+its ticket has ended. Read the outcome from `queue status`, which is the
+record of how the command ended, not from the log. A probe rebuild and a gate
+write the same build directory, so submit both through the queue and never
+run one beside the other.
+
+The queue is for builds and tests that would otherwise run side by side. It
+does not replace the gates: a queued `make test` is the same `make test`.
+The test suite's own black-box cases never touch the real queue, because
+`run_pinned` gives each one its own `PLANAR_AGENT_DB`.
+
 `clang-tidy` is advisory. The recipe runs it without `--warnings-as-errors`
 and `.clang-tidy` declares no `WarningsAsErrors` key, so its warnings never
 fail a run. It enables one check, `readability-identifier-naming`.
@@ -63,6 +104,17 @@ The build tree lives in a BuildKit cache mount, so a second run is
 incremental, and it costs disk while it stays. Run `make linux-gate-prune`
 when done; a past unpruned run of this kind filled the machine's disk.
 Docker is a developer tool and not one of the installer's `BUILD_DEPS`.
+
+**Disk cost.** One full `make linux-gate` run grew Docker's virtual disk by
+about 16 GB, and the cache mount is kept after the run. Have at least 25 GB
+free before starting, and run `make linux-gate-prune` afterwards, every time.
+Do not run the gate on a machine that is short of disk. Through the queue
+it is submitted detached with a longer run limit, and it holds the queue's
+slot for its whole run:
+
+```bash
+planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> -- make linux-gate     # cli-lint-ignore: `--` is the argument terminator
+```
 
 ## When every build is a full rebuild
 

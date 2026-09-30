@@ -228,6 +228,13 @@ ctest --test-dir build/debug --output-on-failure
 - A no-change build runs zero steps. A full rebuild every time means a
   damaged `.ninja_deps`; see [docs/testing.md](docs/testing.md).
 - Do not run two builds in the same build directory at once.
+- Agents in this repo send builds and tests through the host queue, not
+  directly: `planar-agent queue run --detach --vendor <vendor> --role <role>
+  -- make test`, then poll `planar-agent queue status <seq>` every 30 seconds.
+  `planar-agent queue rule` prints the full rule, including what to do when
+  the queue refuses (exit 125: stop and report, never run the command
+  directly). The queue does not replace any gate; see
+  [docs/testing.md](docs/testing.md).
 - `clang-tidy` is advisory. `clang-format --Werror` and the Doxygen pass
   gate.
 - A bug fix lands as a failing "Red test: ..." commit, then the fix. Never
