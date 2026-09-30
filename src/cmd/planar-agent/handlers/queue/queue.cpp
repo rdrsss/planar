@@ -249,8 +249,9 @@ public:
 /// the claim's lease length is not known or is longer than this.
 constexpr std::int64_t k_renew_retry_ms = 5'000;
 
-/// @brief The most a renewal may wait on a busy main database: the connection's
-/// own 5 second window would stall the submitter's loop for that long.
+/// @brief The most any one statement of a renewal may wait on a competing lock:
+/// the connection's usual 5 second window would stall the submitter's loop for
+/// that long. It is in force from the connection's first statement.
 constexpr int k_renew_busy_ms = 1'000;
 
 /// @brief The shortest renewal cadence, so a claim with a tiny lease cannot
@@ -290,6 +291,11 @@ class claim_renewer {
     _next_due = now + std::min(_interval_ms.value_or(k_renew_retry_ms), k_renew_retry_ms);
   }
 
+  /// @brief The cadence for a lease of `seconds`: half of it, never below the floor.
+  static auto half(std::int64_t seconds) -> std::int64_t {
+    return std::max(seconds * 1000 / 2, k_min_renew_interval_ms);
+  }
+
   /// @brief Opens the main database if it is not open. On failure, the reason.
   auto connect() -> std::optional<std::string> {
     if (_conn) {
@@ -299,18 +305,19 @@ class claim_renewer {
     if (path.empty()) {
       return "the main database's path could not be resolved";
     }
-    // The policy would create an absent database; a renewal must not.
+    // The existence check is the fast path and the readable message; the open
+    // itself never creates the file, so one that vanishes after the check is a
+    // failure too. The lock wait is bounded from the first statement.
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
       return std::format("the main database {} does not exist", path.string());
     }
     std::ostringstream diagnostics;
-    auto               opened = database_policy::open(path, diagnostics);
+    auto               opened = database_policy::open_existing(path, diagnostics, k_renew_busy_ms);
     if (!opened) {
       return std::format("the main database is unusable ({})", opened.error().text);
     }
     _conn.emplace(std::move(*opened));
-    static_cast<void>(_conn->execute(std::format("pragma busy_timeout = {};", k_renew_busy_ms)));
     return std::nullopt;
   }
 
@@ -333,19 +340,30 @@ public:
       return;
     }
     if (!_interval_ms) {
+      // The first attempt needs a cadence for its own retry, so it is read
+      // before the renewal.
       auto const lease = aa::lease_length_seconds(*_conn, _token);
       if (!lease) {
         failed(std::string{aa::error_name(lease.error())}, now);
         return;
       }
-      _interval_ms = std::max(*lease * 1000 / 2, k_min_renew_interval_ms);
+      _interval_ms = half(*lease);
     }
     auto const renewed = atomic::supervised_heartbeat(*_conn, _token, std::nullopt, std::nullopt, atomic::supervisor_gate{});
     if (!renewed) {
       failed(std::string{aa::error_name(renewed.error())}, now);
       return;
     }
-    _next_due = now + *_interval_ms;
+    // The lease is read again after every renewal, so one changed meanwhile
+    // (`heartbeat --ttl`) sets the next cadence. The renewal above kept the
+    // length the claim held, which is what this reads.
+    auto const held = aa::lease_length_seconds(*_conn, _token);
+    if (!held) {
+      failed(std::string{aa::error_name(held.error())}, now);
+      return;
+    }
+    _interval_ms = half(*held);
+    _next_due    = now + *_interval_ms;
   }
 
   /// @brief Milliseconds until the next attempt is due; zero when it is due.

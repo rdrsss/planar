@@ -23,7 +23,23 @@ auto database_policy::open(const std::filesystem::path& path, std::ostream& erro
         error_from_body(domain_error_kind::generic_failure,
                         std::format("failed to open database {}: {}", path.string(), opened.error().message_)));
   }
-  std::optional<db::connection> connection{std::move(*opened)};
+  return verify(std::move(*opened), path, error_stream, false);
+}
+
+auto database_policy::open_existing(const std::filesystem::path& path, std::ostream& error_stream, int busy_timeout_ms)
+    -> std::expected<db::connection, domain_error> {
+  auto opened = db::connection::open_existing(path.string(), busy_timeout_ms);
+  if (!opened) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure,
+                        std::format("failed to open database {}: {}", path.string(), opened.error().message_)));
+  }
+  return verify(std::move(*opened), path, error_stream, true);
+}
+
+auto database_policy::verify(db::connection opened, const std::filesystem::path& path, std::ostream& error_stream, bool strict)
+    -> std::expected<db::connection, domain_error> {
+  std::optional<db::connection> connection{std::move(opened)};
 
   // The connection layer sets WAL and busy_timeout once at open (D7).
 
@@ -41,7 +57,13 @@ auto database_policy::open(const std::filesystem::path& path, std::ostream& erro
   // SchemaVersionBehind below as long as the binary's embedded
   // migrations include anything at all." The answer an operator needs
   // there is "run `planar init`", not a driver error string.
-  auto const compat  = db::assert_schema_compatible(*connection);
+  auto const compat = db::assert_schema_compatible(*connection);
+  if (strict && !compat) {
+    // A caller with a bounded wait must be told the version could not be read
+    // (a lock, most likely), not that the schema is behind.
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("cannot read the schema version of {}", path.string())));
+  }
   auto const stored  = compat ? compat->live_ : std::uint32_t{0};
   auto const maximum = db::embedded_max();
 

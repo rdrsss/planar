@@ -164,7 +164,8 @@
 /// so a renewal is never later than its cadence. A renewal is the transaction
 /// `planar-agent heartbeat --claim <token>` runs (`supervised_heartbeat`, no
 /// TTL, no status), so the lease keeps its length and no action row is written.
-/// The lease length is read from the claim when the first renewal is made.
+/// The lease length is read from the claim at the first renewal and again after
+/// every renewal, so a lease re-set with `heartbeat --ttl` sets the next cadence.
 ///
 /// Claims live in the MAIN database, the one thing `queue run` otherwise never
 /// touches, so the renewal is the only path that opens it: only when `--claim`
@@ -177,7 +178,11 @@
 /// not affected` line on standard error, or in the output file of a detached
 /// run, written with or without `--notices` and once per distinct reason. It is
 /// retried after the shorter of the cadence and five seconds, and it never
-/// changes the command's status or delays it beyond one second of busy wait. A
+/// changes the command's status. A lock on the main database is waited for at
+/// most one second per statement, from the connection's first statement on (it
+/// opens an existing file only, and does not touch its journal mode), and an
+/// attempt that times out stops there, so a locked main database costs the
+/// submitter about one second per attempt. A
 /// detached submitter renews; the invoked process, which returns its ticket
 /// before the store is opened, does not. A nested entry renews too, on its own
 /// schedule.

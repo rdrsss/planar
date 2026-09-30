@@ -779,3 +779,138 @@ TEST_CASE("queue run --claim --detach: a failed renewal is reported in the outpu
   INFO("log:\n" << log);
   CHECK(warning_count(log) == 1);
 }
+
+// ---------------------------------------------------------------------------
+// Final pass: a bounded first connect, the cadence following the lease, and
+// the main database in states the renewal must survive
+// ---------------------------------------------------------------------------
+
+TEST_CASE("queue run --claim: a lock that blocks readers costs about a second, once, and the command runs",
+          "[cmd][agent][queue][hq-claim]") {
+  auto const arena = parity::make_arena("qc_lock");
+  write_config(arena, k_fast_poll);
+  seed_main(arena);
+  auto const token = mint_claim(arena);
+
+  // A rollback-journal database under an exclusive lock refuses even readers, so
+  // the very first statement of the first connect (the schema read) has to wait.
+  // Under the ordinary connection's five second window, and its journal-mode
+  // pragma, the first attempt would hold the submitter for more than that.
+  auto locker = planar::db::connection::open(main_db(arena).string());
+  REQUIRE(locker.has_value());
+  REQUIRE(locker->execute("pragma journal_mode = delete;").has_value());
+  REQUIRE(locker->execute("begin exclusive;").has_value());
+
+  auto const began   = std::chrono::steady_clock::now();
+  auto const got     = run_queue(arena, "locked", sh_command("sleep 0.5; exit 3"), {"--claim", token});
+  auto const elapsed = std::chrono::steady_clock::now() - began;
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 3);
+  CHECK(warning_count(got.err) == 1);
+  CHECK(elapsed < std::chrono::milliseconds(3500));
+  REQUIRE(locker->execute("rollback;").has_value());
+}
+
+TEST_CASE("queue run --claim: a lease lengthened by heartbeat --ttl lengthens the cadence", "[cmd][agent][queue][hq-claim]") {
+  auto const arena = parity::make_arena("qc_follow");
+  write_config(arena, k_fast_poll);
+  seed_main(arena);
+  auto const  token = mint_claim(arena);
+  gate        release(arena.cpp_root / "release.fifo");
+  release_all guard{.gates = {&release}};
+  spawned     claimed;
+
+  auto const started = arena.cpp_root / "claimed.started";
+  claimed            = spawn_queue(arena, "claimed", blocked(started, release), {"--claim", token});
+  await_file(started);
+  auto const first = await_renewal(arena, token, expiry(arena, token));
+
+  // Re-set the lease to a minute: half of it is thirty seconds. The renewal that
+  // is due within two seconds keeps that length, reads it, and then waits thirty.
+  std::vector<std::string> const args{"heartbeat", "--claim", token, "--ttl", "60s"};
+  REQUIRE(parity::run_pinned(agent_bin(), args, arena.cpp_root, "lengthen").code == 0);
+  auto const lengthened = expiry(arena, token);
+  REQUIRE(lengthened != first);
+  auto const settled = await_renewal(arena, token, lengthened);
+
+  // Two seconds was the old cadence: it would renew twice in this window.
+  std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+  CHECK(expiry(arena, token) == settled);
+
+  release.release();
+  CHECK(finish(claimed).code == 0);
+}
+
+TEST_CASE("queue run --claim: a main database whose schema is behind is reported and never migrated",
+          "[cmd][agent][queue][hq-claim]") {
+  auto const arena = parity::make_arena("qc_behind");
+  {
+    auto opened = planar::db::connection::open(main_db(arena).string());
+    REQUIRE(opened.has_value());
+    REQUIRE(
+        opened->execute("create table schema_migrations (version integer primary key, description text not null);").has_value());
+    REQUIRE(opened->execute("insert into schema_migrations (version, description) values (1, 'foundation');").has_value());
+  }
+  auto const before = read_all(main_db(arena));
+
+  auto const got = run_queue(arena, "behind", sh_command("exit 6"), {"--claim", "0123456789abcdef0123456789abcdef"});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 6);
+  CHECK(warning_count(got.err) == 1);
+  CHECK(got.err.find("SchemaVersionBehind") != std::string::npos);
+  CHECK(read_all(main_db(arena)) == before);
+}
+
+TEST_CASE("queue run --claim: an engine-supervised claim is refused once, with a warning, and the command runs",
+          "[cmd][agent][queue][hq-claim]") {
+  auto const arena = parity::make_arena("qc_engine");
+  write_config(arena, k_fast_poll);
+  seed_main(arena);
+  auto const                     token = mint_claim(arena);
+  std::vector<std::string> const associate{"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "a1"};
+  auto const                     handed = parity::run_pinned(agent_bin(), associate, arena.cpp_root, "associate");
+  INFO("associate stderr:\n" << handed.err);
+  REQUIRE(handed.code == 0);
+  auto const before = expiry(arena, token);
+
+  auto const got = run_queue(arena, "engine", sh_command("sleep 0.5; exit 2"), {"--claim", token});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 2);
+  CHECK(warning_count(got.err) == 1);
+  CHECK(got.err.find("SupervisorMismatch") != std::string::npos);
+  CHECK(expiry(arena, token) == before);
+}
+
+TEST_CASE("queue run --claim: a nested run renews the claim", "[cmd][agent][queue][hq-claim]") {
+  auto const arena = parity::make_arena("qc_nested");
+  write_config(arena, k_fast_poll);
+  seed_main(arena);
+  auto const  token = mint_claim(arena);
+  gate        release(arena.cpp_root / "release.fifo");
+  release_all guard{.gates = {&release}};
+  spawned     outer;
+
+  // The outer command is not given the claim; the `queue run` it starts from
+  // inside its slot is, and runs as a nested entry.
+  auto const started = arena.cpp_root / "inner.started";
+  auto const script  = "\"$1\" queue run --claim \"$2\" -- sh -c 'echo x > \"$1\"; read x < \"$2\"' sh \"$3\" \"$4\"";
+  outer = spawn_queue(arena, "outer", sh_command(script, {agent_bin().string(), token, started.string(), release.path.string()}));
+  await_file(started);
+  auto const  snap = require_snapshot(arena);
+  auto const* nest = entry_seq(snap, 2);
+  REQUIRE(nest != nullptr);
+  CHECK(nest->parent_seq == std::optional<std::int64_t>{1});
+  CHECK(nest->state == hq::entry_state::running);
+
+  auto const base   = expiry(arena, token);
+  auto const first  = await_renewal(arena, token, base);
+  auto const second = await_renewal(arena, token, first);
+  CHECK(second != first);
+
+  release.release();
+  auto const got = finish(outer);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(await_history(arena, 2).exit_code == 0);
+  CHECK(claim_field(arena, token, "status") == "active");
+}
