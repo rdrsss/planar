@@ -282,6 +282,7 @@ TEST_CASE("queue config: a duration flag takes the configuration grammar and ref
   CHECK_FALSE(parse_duration_flag("").has_value());
   CHECK_FALSE(parse_duration_flag("s").has_value());
   CHECK_FALSE(parse_duration_flag("5d").has_value());
+  CHECK_FALSE(parse_duration_flag("1d").has_value()); // days belong to `queue history --since` only
   CHECK_FALSE(parse_duration_flag("1.5s").has_value());
   CHECK_FALSE(parse_duration_flag(" 5s").has_value());
   // The refusal names the value.

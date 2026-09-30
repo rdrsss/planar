@@ -1291,6 +1291,47 @@ TEST_CASE("queue history: --since keeps only rows that ended within the duration
   CHECK(seqs_of(rows_of(flipped)) == std::vector<std::int64_t>{inside});
 }
 
+TEST_CASE("queue history: --since takes days and keeps a week of history", "[cmd][watch][queue][hq-watch-history][hq-since-days]") {
+  auto const   arena    = parity::make_arena("wh_since_days");
+  auto const   now      = wall_now();
+  std::int64_t six_days = 0;
+  std::int64_t eight    = 0;
+  {
+    auto conn = open_store(arena);
+    auto add  = [&](std::int64_t ms_ago) {
+      ended_spec spec;
+      spec.waited_ms = 10;
+      spec.ran_ms    = 10;
+      spec.end       = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = now - ms_ago};
+      return seed_ended(conn, std::move(spec));
+    };
+    eight    = add(8 * 86'400'000LL);
+    six_days = add(6 * 86'400'000LL);
+  }
+  auto const seqs_of = [&](const std::vector<json::json_value>& rows) {
+    std::vector<std::int64_t> out;
+    for (auto const& row : rows) {
+      out.push_back(int_of(row, "seq"));
+    }
+    return out;
+  };
+  // 7d keeps the row that ended 6 days ago and drops the one 8 days ago.
+  CHECK(seqs_of(rows_of(run_history(arena, "days_7d", {"--since", "7d", "--json"}))) == std::vector<std::int64_t>{six_days});
+  CHECK(seqs_of(rows_of(run_history(arena, "days_9d", {"--since", "9d", "--json"}))) ==
+        std::vector<std::int64_t>{eight, six_days});
+  // 168h is the same cutoff as 7d.
+  CHECK(seqs_of(rows_of(run_history(arena, "days_168h", {"--since", "168h", "--json"}))) == std::vector<std::int64_t>{six_days});
+  // The cap is the retention maximum, inclusive: 36500d and its hour spelling are accepted.
+  CHECK(run_history(arena, "days_cap", {"--since", "36500d", "--json"}).code == 0);
+  CHECK(run_history(arena, "days_cap_h", {"--since", "876000h", "--json"}).code == 0);
+  auto const over = run_history(arena, "days_over", {"--since", "36501d", "--json"});
+  CHECK(over.code == 2);
+  CHECK(over.out.empty());
+  CHECK(over.err.contains("'36501d'"));
+  CHECK(run_history(arena, "days_zero", {"--since", "0d", "--json"}).code == 2);
+  CHECK(run_history(arena, "days_bare", {"--since", "7", "--json"}).code == 2);
+}
+
 TEST_CASE("queue history: an invalid --since is refused at exit 2 and names the value", "[cmd][watch][queue][hq-watch-history]") {
   auto const arena = parity::make_arena("wh_badsince");
   {
@@ -1299,7 +1340,7 @@ TEST_CASE("queue history: an invalid --since is refused at exit 2 and names the 
     spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
     seed_ended(conn, spec);
   }
-  for (std::string const bad : {"banana", "5", "0s", "1d", "25h", "1.5h", ""}) {
+  for (std::string const bad : {"banana", "5", "0s", "0d", "0ms", "-1d", "36501d", "876001h", "1.5h", "1w", ""}) {
     auto const run = run_history(arena, std::format("badsince_{}", bad.empty() ? "empty" : bad), {"--since", bad, "--json"});
     INFO("value: '" << bad << "'\nstderr:\n" << run.err);
     CHECK(run.code == 2);
