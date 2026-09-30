@@ -381,3 +381,93 @@ TEST_CASE("record_child stores the group on a running entry and refuses a waitin
     CHECK_FALSE(*recorded);
   }
 }
+
+TEST_CASE("a stored state that is neither waiting nor running is refused, not read as waiting",
+          "[engine][hostqueue][hq-enqueue][hq-entry-state]") {
+  // The CHECK constraint keeps such a row out of a store this binary wrote;
+  // a later agent migration that adds a state would put one in front of an
+  // older binary, which must refuse it rather than misread it as waiting.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const seq = hq::enqueue(conn, full_request()).value();
+  auto const ok  = hq::enqueue(conn, full_request()).value();
+  REQUIRE(conn.execute("pragma ignore_check_constraints = on").has_value());
+  REQUIRE(conn.execute(std::format("update queue_entries set state = 'paused' where seq = {}", seq)).has_value());
+  REQUIRE(conn.execute("pragma ignore_check_constraints = off").has_value());
+  REQUIRE(scalar(conn, std::format("select state from queue_entries where seq = {}", seq)) == "paused");
+
+  SECTION("find refuses the row and names the state") {
+    auto const found = hq::find(conn, seq);
+    REQUIRE_FALSE(found.has_value());
+    CHECK(found.error().kind == hq::queue_error_kind::unknown_state);
+    CHECK(found.error().message.find("paused") != std::string::npos);
+    CHECK(found.error().message.find("state") != std::string::npos);
+  }
+  SECTION("list refuses rather than returning the row as waiting") {
+    auto const all = hq::list(conn);
+    REQUIRE_FALSE(all.has_value());
+    CHECK(all.error().message.find("paused") != std::string::npos);
+  }
+  SECTION("the neighbouring valid row still reads") {
+    auto const found = hq::find(conn, ok);
+    REQUIRE(found.has_value());
+    REQUIRE(found->has_value());
+    CHECK((*found)->state == hq::entry_state::waiting);
+  }
+}
+
+TEST_CASE("a malformed stored argv is refused without repeating the whole column in the message",
+          "[engine][hostqueue][hq-enqueue][hq-entry-state]") {
+  auto const big     = std::string(5'000, 'x');
+  auto const decoded = hq::decode_argv(big);
+  REQUIRE_FALSE(decoded.has_value());
+  CHECK(decoded.error().kind == hq::queue_error_kind::malformed_argv);
+  CHECK(decoded.error().message.find(big) == std::string::npos);
+  CHECK(decoded.error().message.size() < 300);
+  CHECK(decoded.error().message.find("argv") != std::string::npos);
+}
+
+TEST_CASE("a store ahead of the binary with its compat unchanged accepts an enqueue and an end",
+          "[engine][hostqueue][hq-enqueue][hq-agentdb-compat]") {
+  // Test-spec "Edge -- a newer store that is still compatible is accepted",
+  // queue half: a newer binary added a migration and kept compat, so this
+  // binary opens the store and may enqueue and remove an entry in it. The
+  // db-layer suite (agentdb.t.cpp) proves the open and a raw write; the queue
+  // tables did not exist when it was written.
+  scratch_dir scratch;
+  auto const  store       = scratch.path_ / "agent.db";
+  auto const  binary_head = planar::db::agent::agent_schema_version();
+  {
+    auto seeded = planar::db::agent::open_agent_db_at(store);
+    REQUIRE(seeded.has_value());
+    REQUIRE(seeded
+                ->execute(std::format("insert into agent_schema_migrations (version, compat, description) "
+                                      "values ({}, {}, 'seeded ahead by the test')",
+                                      binary_head + 1, binary_head))
+                .has_value());
+  }
+
+  auto opened = planar::db::agent::open_agent_db_at(store);
+  REQUIRE(opened.has_value());
+  auto& conn = *opened;
+  REQUIRE(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == binary_head + 1);
+
+  auto const seq = hq::enqueue(conn, full_request());
+  REQUIRE(seq.has_value());
+  auto const found = hq::find(conn, *seq);
+  REQUIRE(found.has_value());
+  REQUIRE(found->has_value());
+  CHECK((*found)->argv == full_request().argv);
+
+  auto const ended = hq::end_entry(conn, *seq, {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = 2'000});
+  REQUIRE(ended.has_value());
+  CHECK(*ended == hq::end_result::ended);
+  CHECK(hq::list(conn).value().empty());
+  auto const row = hq::find_history(conn, *seq);
+  REQUIRE(row.has_value());
+  REQUIRE(row->has_value());
+  CHECK((*row)->outcome == hq::history_outcome::exited);
+  // The newer store's own version row is untouched.
+  CHECK(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == binary_head + 1);
+}
