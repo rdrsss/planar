@@ -166,7 +166,7 @@ auto request_for(std::int64_t pid, const fake_clock& clock, std::optional<std::i
 }
 
 auto enqueue_one(planar::db::connection& conn, const hq::enqueue_request& request) -> std::int64_t {
-  auto seq = hq::enqueue(conn, request);
+  auto seq = request.parent_seq ? hq::insert_nested_entry(conn, request) : hq::enqueue(conn, request);
   REQUIRE(seq.has_value());
   return *seq;
 }

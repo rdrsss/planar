@@ -433,8 +433,8 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     # all — `PLANAR_HOME=$HOME ./install.sh --uninstall --force` deletes the
     # operator's home directory outright, and even without --force the
     # find-and-delete two lines down removes every top-level entry of
-    # $PLANAR_HOME except the preserved data entries (planar.db, agent.db
-    # and its SQLite sidecars, queue-logs/).
+    # $PLANAR_HOME except the preserved data entries (planar.db, agent.db,
+    # their SQLite sidecars, queue-logs/).
     #
     # Two checks, in order:
     #   1. $PLANAR_HOME normalized (plain `realpath`, not `-m` — GNU's `-m`
@@ -463,18 +463,19 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     fi
 
     log "removing install root: $PLANAR_HOME"
-    log "(planar.db, agent.db and queue-logs/ are preserved if you have data — re-run with --force or rm manually)"
+    log "(planar.db, agent.db, their -wal/-shm sidecars and queue-logs/ are preserved if you have data — re-run with --force or rm manually)"
     if [[ "$FORCE" -eq 1 ]]; then
       rm -rf "$PLANAR_HOME"
     else
       # Preserve the databases and the agent database's detached-run output;
-      # remove everything else. agent.db's SQLite sidecars (-wal / -shm) hold
-      # committed data not yet checkpointed into the main file, so they stay
-      # with it. Both planar.db and agent.db default to this directory;
+      # remove everything else. The SQLite sidecars (-wal / -shm) of both
+      # databases hold committed data not yet checkpointed into the main file
+      # (both run in WAL mode, so an unclean exit leaves them behind), so they
+      # stay with their database. Both planar.db and agent.db default to this directory;
       # PLANAR_DB / PLANAR_AGENT_DB overrides live wherever the operator put
       # them and are never touched here.
       find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 \
-        ! -name 'planar.db' \
+        ! -name 'planar.db' ! -name 'planar.db-wal' ! -name 'planar.db-shm' \
         ! -name 'agent.db' ! -name 'agent.db-wal' ! -name 'agent.db-shm' \
         ! -name 'queue-logs' \
         -exec rm -rf {} +

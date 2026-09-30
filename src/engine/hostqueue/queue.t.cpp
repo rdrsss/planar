@@ -242,7 +242,7 @@ TEST_CASE("a request with a parent sequence number is stored running with its pa
       .refreshed_mono = 91'000,
       .parent_seq     = *parent,
   };
-  auto const child = hq::enqueue(conn, nested);
+  auto const child = hq::insert_nested_entry(conn, nested);
   REQUIRE(child.has_value());
   CHECK(*child > *parent);
 
@@ -349,6 +349,32 @@ TEST_CASE("agent migration 00002 rolls back and re-applies without losing schema
   CHECK(hq::find(conn, *seq).value().has_value());
 }
 
+TEST_CASE("plain enqueue refuses a request carrying parent_seq and inserts nothing", "[engine][hostqueue][hq-enqueue]") {
+  // Decision 1191: a nested entry is only ever created by `enqueue_nested`,
+  // which checks the parent and sets started_at and the deadline. The plain
+  // entry point must not be a back door to a running entry that never times out.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const parent = hq::enqueue(conn, full_request()).value();
+  auto       nested = full_request();
+  nested.parent_seq = parent;
+
+  auto const before = scalar(conn, "select count(*) from queue_entries");
+
+  SECTION("the two-argument form") {
+    auto const refused = hq::enqueue(conn, nested);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().kind == hq::queue_error_kind::invalid_request);
+  }
+  SECTION("the retention form") {
+    auto const refused = hq::enqueue(conn, nested, 30);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().kind == hq::queue_error_kind::invalid_request);
+  }
+  CHECK(scalar(conn, "select count(*) from queue_entries") == before);
+}
+
 TEST_CASE("record_child stores the group on a running entry and refuses a waiting or missing one",
           "[engine][hostqueue][hq-enqueue]") {
   scratch_dir scratch;
@@ -357,7 +383,7 @@ TEST_CASE("record_child stores the group on a running entry and refuses a waitin
   auto const waiting = hq::enqueue(conn, full_request()).value();
   auto       nested  = full_request();
   nested.parent_seq  = waiting;
-  auto const running = hq::enqueue(conn, nested).value(); // Inserted running: it never waits for a slot.
+  auto const running = hq::insert_nested_entry(conn, nested).value(); // Inserted running: it never waits for a slot.
 
   SECTION("a running entry records the group and the leader's start time") {
     auto const recorded = hq::record_child(conn, running, 4'321, 777'000'111);
