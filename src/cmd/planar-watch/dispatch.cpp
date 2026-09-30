@@ -51,21 +51,6 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
   }
 }
 
-/// @brief Whether `key` names a node that is BOTH a group and a verb: it has
-/// children and a handler of its own, and running it without naming a child
-/// runs the handler rather than printing help.
-///
-/// `queue` is the only one (plan 1080, task hq-watch-history): the listing of
-/// running and waiting entries stayed on `planar-watch queue` when
-/// `queue history` was added beneath it. An explicit list, not "any group
-/// with a table entry", so a group cannot become runnable by accident and
-/// every other group keeps printing its help page byte for byte.
-/// @param key The space-joined root-relative path.
-/// @return True for a group that is also a verb.
-auto is_handler_group(std::string_view key) -> bool {
-  return key == "queue";
-}
-
 } // namespace
 
 /// @brief A handler that always refuses with `not_implemented` (exit 64),
@@ -129,11 +114,16 @@ auto unregistered_leaves(const CLI::App& root, const handler_table& table) -> st
 }
 
 auto unreachable_handlers(const CLI::App& root, const handler_table& table) -> std::vector<std::string> {
-  auto const                         keys = cliapp::leaf_keys(root);
-  std::set<std::string, std::less<>> leaf_keys(keys.begin(), keys.end());
-  std::vector<std::string>           dead;
+  // EVERY node, not only childless ones: a dual group-and-leaf node (`queue`)
+  // carries a handler and is reachable through it. The same rule the operator
+  // binary uses (task 7100).
+  std::set<std::string, std::less<>> reachable;
+  for (auto const& node : cliapp::all_nodes(root)) {
+    reachable.insert(cliapp::path_key(node.path));
+  }
+  std::vector<std::string> dead;
   for (auto const& [key, unused] : table) {
-    if (!leaf_keys.contains(key) && !is_handler_group(key)) {
+    if (!reachable.contains(key)) {
       dead.push_back(key);
     }
   }
@@ -187,10 +177,12 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   }
 
   auto const [node, path] = matched_node(root);
-  if (!cliapp::children(*node).empty() && !(is_handler_group(cliapp::path_key(path)) && table.contains(cliapp::path_key(path)))) {
-    // A group named without a leaf beneath it — including a bare
-    // `planar-watch`, since `feed` is unported. A group that is also a verb
-    // (`queue`) falls through to its own handler instead.
+  if (!cliapp::children(*node).empty() && !table.contains(cliapp::path_key(path))) {
+    // A group named without a leaf beneath it AND with no handler of its own.
+    // A group that DOES have a handler is dual (`queue`) and falls through to
+    // it, the rule `planar` applies to `handoff` and `resume`; nothing here
+    // lists which groups may be dual, so the handler table is the one place
+    // that says so (task 7100).
     ctx.out() << node->help();
     return exit_success;
   }
