@@ -2081,3 +2081,174 @@ TEST_CASE("queue run: a marker that outlives its parent queues normally", "[cmd]
   CHECK_FALSE(row->parent_seq.has_value());
   CHECK(row->exit_code == 4);
 }
+
+// ---------------------------------------------------------------------------
+// Task 7017 (hq-missing-entry): a submitter that finds its own entry missing
+// reads the history row. Scenarios "a reaped waiter rejoins at the back" and
+// "a cancelled waiter does not rejoin" (test spec 649).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Ends entry `seq` through the engine from this test process, the way
+/// another process (a reaper, or `queue cancel`) would.
+void end_from_outside(const parity::arena& arena, std::int64_t seq, hq::history_outcome outcome) {
+  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  REQUIRE(opened.has_value());
+  ident::system_clock clock;
+  hq::end_request     request{.outcome = outcome, .ended_at = clock.wall_ms()};
+  if (outcome == hq::history_outcome::cancelled) {
+    request.cancelled_by = hq::canceller{.vendor = "claude", .role = "operator", .pid = 4321};
+  }
+  auto const ended = hq::end_entry(*opened, seq, request);
+  REQUIRE(ended.has_value());
+  REQUIRE(*ended == hq::end_result::ended);
+}
+
+/// @brief Continues a stopped submitter when it leaves scope, so a failed
+/// assertion cannot leave a stopped process behind. Signals only the pid the
+/// test recorded, and only while its start time still matches.
+struct continue_on_exit {
+  const spawned* run = nullptr;
+  ~continue_on_exit() {
+    if (run != nullptr && run->still_mine() && !run->ended()) {
+      ::kill(static_cast<::pid_t>(run->pid), SIGCONT);
+    }
+  }
+};
+
+/// @brief Stops `run` (SIGSTOP) at an instant when it is not inside a write
+/// transaction. A process stopped mid-transaction keeps the store's write lock
+/// for as long as it is stopped, so no other submitter could ever reap it and
+/// the case would time out under load. After each stop the test tries the write
+/// lock itself; when that is busy it continues the submitter and tries again.
+void stop_outside_a_transaction(const parity::arena& arena, const spawned& run) {
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    REQUIRE(::kill(static_cast<::pid_t>(run.pid), SIGSTOP) == 0);
+    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    REQUIRE(opened.has_value());
+    static_cast<void>(opened->execute("pragma busy_timeout = 100;"));
+    auto const locked = opened->execute("begin immediate;");
+    if (locked) {
+      static_cast<void>(opened->execute("rollback;"));
+      return;
+    }
+    REQUIRE(::kill(static_cast<::pid_t>(run.pid), SIGCONT) == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  FAIL("the waiter was always inside a write transaction when it was stopped");
+}
+
+} // namespace
+
+TEST_CASE("queue run: a cancelled waiter exits 125 without running and does not rejoin",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  auto const arena = parity::make_arena("qr_missing_cancelled");
+  write_config(arena, k_fast_poll);
+  gate       hold(arena.cpp_root / "hold.fifo");
+  auto const started = arena.cpp_root / "started";
+  auto const marker  = arena.cpp_root / "marker";
+
+  spawned     holder;
+  spawned     waiter;
+  release_all guard{.gates = {&hold}};
+
+  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  await_child_recorded(arena, 1);
+  waiter = spawn_queue(arena, "waiter", sh_command("echo x > \"$1\"", {marker.string()}));
+  await_entry(arena, 2, hq::entry_state::waiting);
+
+  end_from_outside(arena, 2, hq::history_outcome::cancelled);
+  auto const got = finish(waiter);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK_FALSE(present(marker));
+
+  {
+    // Nothing with a higher number appeared while the holder still runs.
+    auto const snap = require_snapshot(arena);
+    REQUIRE(snap.entries.size() == 1);
+    CHECK(snap.entries.front().seq == 1);
+    REQUIRE(snap.history.size() == 1);
+    CHECK(snap.history.front().seq == 2);
+    CHECK(snap.history.front().outcome == hq::history_outcome::cancelled);
+    CHECK_FALSE(snap.history.front().successor_seq.has_value());
+  }
+  hold.release();
+  CHECK(finish(holder).code == 0);
+  CHECK(require_snapshot(arena).history.size() == 2);
+}
+
+TEST_CASE("queue run: a waiter stopped until it is reaped rejoins behind the entries that arrived meanwhile",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  auto const arena = parity::make_arena("qr_missing_rejoin");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\nstale_after = \"2s\"\n");
+  gate       hold(arena.cpp_root / "hold.fifo");
+  auto const started = arena.cpp_root / "started";
+  auto const order   = arena.cpp_root / "order";
+
+  spawned          holder;
+  spawned          waiter;
+  spawned          later;
+  release_all      guard{.gates = {&hold}};
+  continue_on_exit resume;
+
+  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  await_child_recorded(arena, 1);
+  waiter = spawn_queue(arena, "waiter", sh_command("echo waiter >> \"$1\"", {order.string()}));
+  await_entry(arena, 2, hq::entry_state::waiting);
+
+  // Stop the waiter until its entry is stale and another submitter's poll
+  // reaps it. This process recorded the pid, and checks its start time first.
+  REQUIRE(waiter.still_mine());
+  resume.run = &waiter;
+  stop_outside_a_transaction(arena, waiter);
+  later = spawn_queue(arena, "later", sh_command("echo later >> \"$1\"", {order.string()}));
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    return snap && history_seq(*snap, 2) != nullptr;
+  }));
+  {
+    auto const snap = require_snapshot(arena);
+    CHECK(history_seq(snap, 2)->outcome == hq::history_outcome::abandoned);
+    CHECK_FALSE(history_seq(snap, 2)->successor_seq.has_value()); // nobody rejoined yet
+  }
+
+  REQUIRE(::kill(static_cast<::pid_t>(waiter.pid), SIGCONT) == 0);
+  std::int64_t successor = 0;
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    if (!snap || history_seq(*snap, 2) == nullptr || !history_seq(*snap, 2)->successor_seq) {
+      return false;
+    }
+    successor = *history_seq(*snap, 2)->successor_seq;
+    return true;
+  }));
+  CHECK(successor > 2);
+  await_entry(arena, successor, hq::entry_state::waiting);
+
+  hold.release();
+  auto const a = finish(holder);
+  auto const b = finish(waiter);
+  auto const c = finish(later);
+  INFO("waiter stderr:\n" << b.err << "later stderr:\n" << c.err);
+  CHECK(a.code == 0);
+  CHECK(b.code == 0);
+  CHECK(c.code == 0);
+  // The waiter arrived first and was reaped, so it comes back BEHIND the entry
+  // that arrived while it was stopped, and its command ran once.
+  CHECK(read_all(order) == "later\nwaiter\n");
+
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  auto const* old_row = history_seq(snap, 2);
+  auto const* new_row = history_seq(snap, successor);
+  REQUIRE(old_row != nullptr);
+  REQUIRE(new_row != nullptr);
+  CHECK(old_row->outcome == hq::history_outcome::abandoned);
+  CHECK(old_row->successor_seq == successor);
+  CHECK(new_row->outcome == hq::history_outcome::exited);
+  CHECK(new_row->exit_code == 0);
+}
