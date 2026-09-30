@@ -66,10 +66,11 @@ export enum class nested_status : std::uint8_t {
 
 /// @brief Why a parent does not qualify.
 export enum class nested_refusal : std::uint8_t {
-  parent_missing,  ///< No entry has the parent's sequence number (it never existed, or it has ended).
-  parent_waiting,  ///< The parent is still waiting for its turn.
-  parent_not_live, ///< The parent is running but fails the liveness rules.
-  parent_unjudged, ///< A process query failed, so the parent's liveness could not be judged.
+  parent_missing,    ///< No entry has the parent's sequence number (it never existed, or it has ended).
+  parent_waiting,    ///< The parent is still waiting for its turn.
+  parent_not_live,   ///< The parent is running but fails the liveness rules.
+  parent_unjudged,   ///< A process query failed, so the parent's liveness could not be judged.
+  parent_other_host, ///< The parent is on another host identity, or on an unknown one (decision 1209).
 };
 
 /// @brief What `enqueue_nested` did.

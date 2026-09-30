@@ -2089,6 +2089,55 @@ TEST_CASE("queue run: a marker that outlives its parent queues normally", "[cmd]
   CHECK(row->exit_code == 4);
 }
 
+TEST_CASE("queue run: a marker naming a fresh running entry on another host queues normally",
+          "[cmd][agent][queue][hq-nested-run][hq-nested-host]") {
+  // Decision 1209: a marker nests only under an entry on this host identity.
+  auto const arena = parity::make_arena("qr_cross_host_marker");
+  write_config(arena, "[queue]\nslots = 2\npoll_interval = \"100ms\"\nstale_after = \"1h\"\n");
+  REQUIRE(run_queue(arena, "prime", sh_command("exit 0")).code == 0);
+
+  std::int64_t foreign = 0;
+  {
+    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    REQUIRE(opened.has_value());
+    ident::system_clock clock;
+    auto const          now = clock.monotonic_ms();
+    REQUIRE(now.has_value());
+    auto const seq = hq::enqueue(*opened, hq::enqueue_request{
+                                              .host_id        = "another-host-identity",
+                                              .pid            = 4'000'000,
+                                              .pid_started    = 1,
+                                              .cwd            = "/foreign",
+                                              .argv           = {"foreign"},
+                                              .enqueued_at    = clock.wall_ms(),
+                                              .refreshed_mono = *now,
+                                          });
+    REQUIRE(seq.has_value());
+    REQUIRE(opened
+                ->execute(std::format("update queue_entries set state = 'running', started_at = {} where seq = {};",
+                                      clock.wall_ms(), *seq))
+                .has_value());
+    foreign = *seq;
+  }
+
+  auto const args = queue_args(sh_command("exit 4"));
+  auto const got =
+      parity::run_pinned(agent_bin(), args, arena.cpp_root, "cross_host", env_with_slot(arena, std::to_string(foreign)));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 4);
+  auto const snap = require_snapshot(arena);
+  // The foreign entry is untouched; the run got its own ordinary entry.
+  REQUIRE(snap.entries.size() == 1);
+  CHECK(snap.entries[0].seq == foreign);
+  CHECK(snap.entries[0].state == hq::entry_state::running);
+  REQUIRE(snap.history.size() == 2);
+  auto const* row = history_seq(snap, foreign + 1);
+  REQUIRE(row != nullptr);
+  CHECK_FALSE(row->nested);
+  CHECK_FALSE(row->parent_seq.has_value());
+  CHECK(row->exit_code == 4);
+}
+
 // ---------------------------------------------------------------------------
 // Task 7017 (hq-missing-entry): a submitter that finds its own entry missing
 // reads the history row. Scenarios "a reaped waiter rejoins at the back" and
