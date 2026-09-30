@@ -36,6 +36,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <stdlib.h>
+
 import std;
 
 #include "parity_harness.hpp"
@@ -220,6 +222,92 @@ TEST_CASE("arena: launch_pinned_detached exports the same PLANAR_AGENT_DB as run
   auto const agent = agent_db_from_env_dump(dump);
   REQUIRE(agent.has_value());
   REQUIRE(*agent == (arena.cpp_root / "agent.db").string());
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: Edge — the arena strips an inherited slot marker (task 7061)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Sets an environment variable for one scope and puts the previous
+/// state back, so a case that plants `PLANAR_QUEUE_SLOT` in this process (as a
+/// suite run under `queue run -- make test` inherits it) leaves nothing behind.
+struct scoped_env {
+  std::string                name;
+  std::optional<std::string> previous;
+
+  scoped_env(std::string variable, const std::string& value) : name(std::move(variable)) {
+    if (auto const* old = std::getenv(name.c_str()); old != nullptr) {
+      previous = old;
+    }
+    ::setenv(name.c_str(), value.c_str(), 1);
+  }
+  scoped_env(const scoped_env&)            = delete;
+  scoped_env& operator=(const scoped_env&) = delete;
+  ~scoped_env() {
+    if (previous) {
+      ::setenv(name.c_str(), previous->c_str(), 1);
+    } else {
+      ::unsetenv(name.c_str());
+    }
+  }
+};
+
+/// @brief The value `PLANAR_QUEUE_SLOT` has in an `env` dump, when the line
+/// is there.
+auto slot_from_env_dump(const std::string& dump) -> std::optional<std::string> {
+  std::istringstream in(dump);
+  std::string        line;
+  while (std::getline(in, line)) {
+    if (line.starts_with("PLANAR_QUEUE_SLOT=")) {
+      return line.substr(std::string_view{"PLANAR_QUEUE_SLOT="}.size());
+    }
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+TEST_CASE("arena: run_pinned and launch_pinned_detached strip an inherited PLANAR_QUEUE_SLOT", "[arena][queue]") {
+  // A suite run under `planar-agent queue run -- make test` inherits the
+  // marker, and every arena submitter would then look nested.
+  scoped_env const inherited{"PLANAR_QUEUE_SLOT", "424242"};
+  REQUIRE(std::getenv("PLANAR_QUEUE_SLOT") != nullptr); // the plant took effect
+
+  auto const arena = make_arena("slot_run");
+  auto const got   = run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump");
+  INFO("env dump:\n" << got.out);
+  REQUIRE(got.code == 0);
+  REQUIRE(got.out.contains("PLANAR_AGENT_DB=")); // the dump is a real one
+  CHECK_FALSE(slot_from_env_dump(got.out).has_value());
+
+  launch_pinned_detached("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump_detached");
+  REQUIRE(await_sentinel(arena.cpp_root / "envdump_detached.out", true, std::chrono::seconds(10)).has_value());
+  std::string dump;
+  for (int i = 0; i < 200; ++i) {
+    dump = read_all(arena.cpp_root / "envdump_detached.out");
+    if (dump.contains("PLANAR_AGENT_DB=") && dump.ends_with('\n')) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  INFO("detached env dump:\n" << dump);
+  REQUIRE(dump.contains("PLANAR_AGENT_DB="));
+  CHECK_FALSE(slot_from_env_dump(dump).has_value());
+}
+
+TEST_CASE("arena: a map that names PLANAR_QUEUE_SLOT still delivers it", "[arena][queue]") {
+  // Stripping is the default, not a ban: a case that plays a queued command
+  // hands the marker over explicitly, and that value must arrive.
+  scoped_env const inherited{"PLANAR_QUEUE_SLOT", "424242"};
+  auto const       arena = make_arena("slot_explicit");
+  auto             vars  = planar::cmd::parity::pinned_env(arena.cpp_root);
+  vars.push_back(planar::cmd::parity::pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "5"});
+  auto const got = run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump", vars);
+  INFO("env dump:\n" << got.out);
+  REQUIRE(got.code == 0);
+  CHECK(slot_from_env_dump(got.out) == std::optional<std::string>{"5"});
 }
 
 // ---------------------------------------------------------------------------

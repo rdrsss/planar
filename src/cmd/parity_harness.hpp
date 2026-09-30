@@ -224,10 +224,16 @@ inline void require_agent_db_pinned(const std::filesystem::path& work, std::span
 }
 
 /// @brief The `env VAR=... ` prefix a pinned invocation runs behind.
+///
+/// It first removes `PLANAR_QUEUE_SLOT` (task 7061): a suite run under
+/// `planar-agent queue run -- make test` inherits the marker, and every arena
+/// submitter would then look like a nested run of that entry. The removal
+/// comes before the assignments, so a map that names the marker still
+/// delivers it.
 /// @param env The variables, normally `pinned_env(work)`.
 /// @return A shell fragment ending in a trailing space, ready for a binary.
 inline auto pinned_env_prefix(std::span<const pinned_var> env) -> std::string {
-  std::string child = "env";
+  std::string child = "env -u PLANAR_QUEUE_SLOT";
   // Options first: `env` stops reading options at the first assignment.
   for (auto const& var : env) {
     if (var.unset) {

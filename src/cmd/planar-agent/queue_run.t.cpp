@@ -1770,3 +1770,485 @@ TEST_CASE("queue run: a failing case leaves no live submitter behind", "[cmd][ag
   CHECK(::kill(static_cast<::pid_t>(pid), 0) != 0);
   CHECK(errno == ESRCH);
 }
+
+// ---------------------------------------------------------------------------
+// Scenarios: nested runs and the slot marker (task hq-nested-run, tech spec
+// 647 § Nested runs and § The slot marker is advisory).
+//
+// A queued command reaches `planar-agent queue run` through the built
+// binary's absolute path, passed as `$1`, and inherits the submitter's
+// pinned environment, so the inner run opens the arena's own store.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The arena's pinned map with `PLANAR_QUEUE_SLOT` set to `value`, as a
+/// command that inherited a marker would carry it.
+auto env_with_slot(const parity::arena& arena, std::string value) -> std::vector<pinned_var> {
+  auto vars = parity::pinned_env(arena.cpp_root);
+  vars.push_back(pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = std::move(value)});
+  return vars;
+}
+
+/// @brief The files an outer command that runs one inner command under the
+/// queue reports through.
+struct nested_files {
+  std::filesystem::path outer_started; ///< Written by the outer command: its own `PLANAR_QUEUE_SLOT`.
+  std::filesystem::path inner_started; ///< Written by the inner command: its own `PLANAR_QUEUE_SLOT`.
+  std::filesystem::path inner_status;  ///< Written by the outer command: the inner run's exit status.
+  std::filesystem::path inner_gate;    ///< FIFO the inner command blocks on.
+  std::filesystem::path outer_gate;    ///< FIFO the outer command blocks on after the inner run ends.
+};
+
+/// @brief The outer command: it records its marker, runs an inner command
+/// through `queue run` (which records its own marker, blocks on the inner
+/// gate and exits 7), records the inner run's status, blocks on the outer gate
+/// and exits with the inner status.
+auto nested_outer_command(const nested_files& files) -> std::vector<std::string> {
+  return sh_command("echo \"$PLANAR_QUEUE_SLOT\" > \"$6\"; "
+                    "\"$1\" queue run -- sh -c 'echo \"$PLANAR_QUEUE_SLOT\" > \"$1\"; read x < \"$2\"; exit 7' sh \"$3\" \"$4\"; "
+                    "rc=$?; echo $rc > \"$2\"; read y < \"$5\"; exit $rc",
+                    {agent_bin().string(), files.inner_status.string(), files.inner_started.string(), files.inner_gate.string(),
+                     files.outer_gate.string(), files.outer_started.string()});
+}
+
+auto make_nested_files(const parity::arena& arena) -> nested_files {
+  return nested_files{.outer_started = arena.cpp_root / "outer_started",
+                      .inner_started = arena.cpp_root / "inner_started",
+                      .inner_status  = arena.cpp_root / "inner_status",
+                      .inner_gate    = arena.cpp_root / "inner.fifo",
+                      .outer_gate    = arena.cpp_root / "outer.fifo"};
+}
+
+} // namespace
+
+TEST_CASE("queue run: a queued command's own queue run starts at once and is recorded as nested",
+          "[cmd][agent][queue][hq-nested-run]") {
+  auto const arena = parity::make_arena("qr_nested");
+  write_config(arena, k_fast_poll); // one slot
+  auto const  files = make_nested_files(arena);
+  gate        inner_gate(files.inner_gate);
+  gate        outer_gate(files.outer_gate);
+  spawned     outer;
+  spawned     third;
+  release_all guard{.gates = {&inner_gate, &outer_gate}};
+
+  outer = spawn_queue(arena, "outer", nested_outer_command(files));
+  await_file(files.outer_started);
+  // The outer command holds the only slot. The inner run starts although the
+  // slot is taken; were it queued behind the outer command, nothing would
+  // ever write this file.
+  await_file(files.inner_started);
+  auto const nested = await_child_recorded(arena, 2);
+  {
+    auto const snap = require_snapshot(arena);
+    REQUIRE(snap.entries.size() == 2);
+    auto const* parent = entry_seq(snap, 1);
+    auto const* inner  = entry_seq(snap, 2);
+    REQUIRE(parent != nullptr);
+    REQUIRE(inner != nullptr);
+    CHECK(parent->state == hq::entry_state::running);
+    CHECK_FALSE(parent->parent_seq.has_value());
+    CHECK(inner->state == hq::entry_state::running);
+    REQUIRE(inner->parent_seq.has_value());
+    CHECK(*inner->parent_seq == 1);
+    CHECK(inner->started_at.has_value());
+    CHECK(inner->deadline_mono.has_value());
+    REQUIRE_FALSE(inner->argv.empty());
+    CHECK(inner->argv.front() == "sh");
+    CHECK(snap.history.empty());
+  }
+  // The marker each command sees is its own entry's sequence number.
+  CHECK(read_all(files.outer_started) == "1\n");
+  CHECK(read_all(files.inner_started) == "2\n");
+  static_cast<void>(nested);
+
+  // The slot count is unaffected: an ordinary submitter still waits behind
+  // the outer command, for as long as it runs.
+  third = spawn_queue(arena, "third", sh_command("exit 0"));
+  static_cast<void>(await_entry(arena, 3, hq::entry_state::waiting));
+  await_refreshes(arena, 3, 3);
+  {
+    auto const  snap    = require_snapshot(arena);
+    auto const* waiting = entry_seq(snap, 3);
+    REQUIRE(waiting != nullptr);
+    CHECK(waiting->state == hq::entry_state::waiting);
+    CHECK_FALSE(waiting->parent_seq.has_value());
+  }
+
+  // The inner command ends with 7: the run passes that status through and
+  // leaves one history row marked nested under the outer entry.
+  inner_gate.release();
+  REQUIRE(await([&] { return read_all(files.inner_status).ends_with('\n'); }));
+  CHECK(read_all(files.inner_status) == "7\n");
+  {
+    auto const snap = require_snapshot(arena);
+    REQUIRE(snap.history.size() == 1);
+    auto const* row = history_seq(snap, 2);
+    REQUIRE(row != nullptr);
+    CHECK(row->nested);
+    REQUIRE(row->parent_seq.has_value());
+    CHECK(*row->parent_seq == 1);
+    CHECK(row->outcome == hq::history_outcome::exited);
+    REQUIRE(row->exit_code.has_value());
+    CHECK(*row->exit_code == 7);
+    CHECK(entry_seq(snap, 1) != nullptr);
+  }
+
+  outer_gate.release();
+  auto const a = finish(outer);
+  auto const c = finish(third);
+  INFO("outer stderr:\n" << a.err << "third stderr:\n" << c.err);
+  CHECK(a.code == 7);
+  CHECK(c.code == 0);
+
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  REQUIRE(snap.history.size() == 3);
+  auto const* one   = history_seq(snap, 1);
+  auto const* two   = history_seq(snap, 2);
+  auto const* three = history_seq(snap, 3);
+  REQUIRE(one != nullptr);
+  REQUIRE(two != nullptr);
+  REQUIRE(three != nullptr);
+  CHECK_FALSE(one->nested);
+  CHECK_FALSE(one->parent_seq.has_value());
+  CHECK(one->exit_code == 7);
+  CHECK(two->nested);
+  CHECK(two->parent_seq == 1);
+  CHECK_FALSE(three->nested);
+  CHECK_FALSE(three->parent_seq.has_value());
+  CHECK(three->exit_code == 0);
+  // The ordinary entry started only once the outer one ended.
+  REQUIRE(three->started_at.has_value());
+  CHECK(*three->started_at >= one->ended_at);
+}
+
+TEST_CASE("queue run: a nested entry does not take a slot from an ordinary submitter", "[cmd][agent][queue][hq-nested-run]") {
+  auto const arena = parity::make_arena("qr_nested_slots");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\nslots = 2\n");
+  auto const  files = make_nested_files(arena);
+  gate        inner_gate(files.inner_gate);
+  gate        outer_gate(files.outer_gate);
+  gate        third_gate(arena.cpp_root / "third.fifo");
+  spawned     outer;
+  spawned     third;
+  release_all guard{.gates = {&inner_gate, &outer_gate, &third_gate}};
+
+  outer = spawn_queue(arena, "outer", nested_outer_command(files));
+  await_file(files.inner_started);
+  static_cast<void>(await_child_recorded(arena, 2));
+
+  // Two slots, and the outer entry and its nested entry are both running. An
+  // ordinary submitter takes the second slot at once: were the nested entry
+  // counted, both slots would be full and it would wait.
+  third = spawn_queue(
+      arena, "third",
+      sh_command("echo x > \"$1\"; read y < \"$2\"", {(arena.cpp_root / "third_started").string(), third_gate.path.string()}));
+  await_file(arena.cpp_root / "third_started");
+  auto const running = await_child_recorded(arena, 3);
+  CHECK_FALSE(running.parent_seq.has_value());
+  {
+    auto const snap = require_snapshot(arena);
+    CHECK(snap.entries.size() == 3);
+    CHECK(snap.history.empty());
+  }
+
+  inner_gate.release();
+  outer_gate.release();
+  third_gate.release();
+  CHECK(finish(outer).code == 7);
+  CHECK(finish(third).code == 0);
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  REQUIRE(snap.history.size() == 3);
+  auto const* inner = history_seq(snap, 2);
+  REQUIRE(inner != nullptr);
+  CHECK(inner->nested);
+  CHECK(inner->parent_seq == 1);
+}
+
+TEST_CASE("queue run: a nested run inside a nested run completes and each row names its parent",
+          "[cmd][agent][queue][hq-nested-run]") {
+  auto const arena = parity::make_arena("qr_nested_deep");
+  write_config(arena, k_fast_poll);
+  // outer -> inner -> innermost, each through `queue run`; the innermost
+  // exits 5 and both levels pass it through.
+  auto const got = [&] {
+    auto run = spawn_queue(arena, "deep",
+                           sh_command("\"$1\" queue run -- \"$1\" queue run -- sh -c 'exit 5'; exit $?", {agent_bin().string()}));
+    return finish(run);
+  }();
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 5);
+
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  REQUIRE(snap.history.size() == 3);
+  auto const* one   = history_seq(snap, 1);
+  auto const* two   = history_seq(snap, 2);
+  auto const* three = history_seq(snap, 3);
+  REQUIRE(one != nullptr);
+  REQUIRE(two != nullptr);
+  REQUIRE(three != nullptr);
+  CHECK_FALSE(one->nested);
+  CHECK(two->nested);
+  CHECK(two->parent_seq == 1);
+  CHECK(three->nested);
+  CHECK(three->parent_seq == 2);
+  for (auto const* row : {one, two, three}) {
+    CHECK(row->outcome == hq::history_outcome::exited);
+    CHECK(row->exit_code == 5);
+  }
+}
+
+TEST_CASE("queue run: a marker that names no live running entry queues normally and is not nested",
+          "[cmd][agent][queue][hq-nested-run]") {
+  auto const arena = parity::make_arena("qr_forged_marker");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  held = arena.cpp_root / "held";
+  spawned     holder;
+  release_all guard{.gates = {&hold}};
+  holder = spawn_queue(arena, "holder", sh_command(blocked_script(false), {held.string(), hold.path.string()}));
+  await_file(held);
+  static_cast<void>(await_child_recorded(arena, 1));
+
+  // With the only slot held, each of these waits: a nonexistent sequence
+  // number, garbage, an empty string, a negative number, trailing text, a
+  // number too large for the store, zero, and (last) the sequence number of
+  // an entry that is itself still waiting.
+  std::vector<std::string> markers{"999", "abc", "", "-1", "1x", "99999999999999999999", "0"};
+  std::vector<spawned>     runs;
+  std::int64_t             seq = 1;
+  for (std::size_t i = 0; i <= markers.size(); ++i) {
+    auto const value = i < markers.size() ? markers[i] : std::string{"2"};
+    INFO("marker '" << value << "'");
+    ++seq;
+    auto const started = arena.cpp_root / std::format("ran_{}", seq);
+    runs.push_back(spawn_queue(arena, std::format("forged{}", seq), sh_command("echo x > \"$1\"", {started.string()}),
+                               {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = value}}));
+    auto const waiting = await_entry(arena, seq, hq::entry_state::waiting);
+    CHECK_FALSE(waiting.parent_seq.has_value());
+    CHECK_FALSE(present(started));
+  }
+  {
+    auto const snap = require_snapshot(arena);
+    CHECK(snap.entries.size() == static_cast<std::size_t>(seq));
+    CHECK(snap.history.empty());
+    for (auto const& e : snap.entries) {
+      CHECK_FALSE(e.parent_seq.has_value());
+      CHECK(e.state == (e.seq == 1 ? hq::entry_state::running : hq::entry_state::waiting));
+    }
+  }
+
+  hold.release();
+  CHECK(finish(holder).code == 0);
+  for (auto& run : runs) {
+    auto const got = finish(run);
+    INFO("stderr:\n" << got.err);
+    CHECK(got.code == 0);
+  }
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  REQUIRE(snap.history.size() == static_cast<std::size_t>(seq));
+  for (auto const& row : snap.history) {
+    CHECK_FALSE(row.nested);
+    CHECK_FALSE(row.parent_seq.has_value());
+    CHECK(row.outcome == hq::history_outcome::exited);
+  }
+}
+
+TEST_CASE("queue run: a marker that outlives its parent queues normally", "[cmd][agent][queue][hq-nested-run]") {
+  auto const arena = parity::make_arena("qr_stale_marker");
+  write_config(arena, k_fast_poll);
+  auto const first = run_queue(arena, "first", {"true"});
+  REQUIRE(first.code == 0);
+  REQUIRE(require_snapshot(arena).history.size() == 1);
+
+  // Entry 1 has ended. A run that still carries its number is an ordinary
+  // run: it gets its own entry, is not nested, and passes its status through.
+  auto const args = queue_args(sh_command("exit 4"));
+  auto const got  = parity::run_pinned(agent_bin(), args, arena.cpp_root, "stale", env_with_slot(arena, "1"));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 4);
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  REQUIRE(snap.history.size() == 2);
+  auto const* row = history_seq(snap, 2);
+  REQUIRE(row != nullptr);
+  CHECK_FALSE(row->nested);
+  CHECK_FALSE(row->parent_seq.has_value());
+  CHECK(row->exit_code == 4);
+}
+
+// ---------------------------------------------------------------------------
+// Task 7017 (hq-missing-entry): a submitter that finds its own entry missing
+// reads the history row. Scenarios "a reaped waiter rejoins at the back" and
+// "a cancelled waiter does not rejoin" (test spec 649).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Ends entry `seq` through the engine from this test process, the way
+/// another process (a reaper, or `queue cancel`) would.
+void end_from_outside(const parity::arena& arena, std::int64_t seq, hq::history_outcome outcome) {
+  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  REQUIRE(opened.has_value());
+  ident::system_clock clock;
+  hq::end_request     request{.outcome = outcome, .ended_at = clock.wall_ms()};
+  if (outcome == hq::history_outcome::cancelled) {
+    request.cancelled_by = hq::canceller{.vendor = "claude", .role = "operator", .pid = 4321};
+  }
+  auto const ended = hq::end_entry(*opened, seq, request);
+  REQUIRE(ended.has_value());
+  REQUIRE(*ended == hq::end_result::ended);
+}
+
+/// @brief Continues a stopped submitter when it leaves scope, so a failed
+/// assertion cannot leave a stopped process behind. Signals only the pid the
+/// test recorded, and only while its start time still matches.
+struct continue_on_exit {
+  const spawned* run = nullptr;
+  ~continue_on_exit() {
+    if (run != nullptr && run->still_mine() && !run->ended()) {
+      ::kill(static_cast<::pid_t>(run->pid), SIGCONT);
+    }
+  }
+};
+
+/// @brief Stops `run` (SIGSTOP) at an instant when it is not inside a write
+/// transaction. A process stopped mid-transaction keeps the store's write lock
+/// for as long as it is stopped, so no other submitter could ever reap it and
+/// the case would time out under load. After each stop the test tries the write
+/// lock itself; when that is busy it continues the submitter and tries again.
+void stop_outside_a_transaction(const parity::arena& arena, const spawned& run) {
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    REQUIRE(::kill(static_cast<::pid_t>(run.pid), SIGSTOP) == 0);
+    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    REQUIRE(opened.has_value());
+    static_cast<void>(opened->execute("pragma busy_timeout = 100;"));
+    auto const locked = opened->execute("begin immediate;");
+    if (locked) {
+      static_cast<void>(opened->execute("rollback;"));
+      return;
+    }
+    REQUIRE(::kill(static_cast<::pid_t>(run.pid), SIGCONT) == 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  FAIL("the waiter was always inside a write transaction when it was stopped");
+}
+
+} // namespace
+
+TEST_CASE("queue run: a cancelled waiter exits 125 without running and does not rejoin",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  auto const arena = parity::make_arena("qr_missing_cancelled");
+  write_config(arena, k_fast_poll);
+  gate       hold(arena.cpp_root / "hold.fifo");
+  auto const started = arena.cpp_root / "started";
+  auto const marker  = arena.cpp_root / "marker";
+
+  spawned     holder;
+  spawned     waiter;
+  release_all guard{.gates = {&hold}};
+
+  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  await_child_recorded(arena, 1);
+  waiter = spawn_queue(arena, "waiter", sh_command("echo x > \"$1\"", {marker.string()}));
+  await_entry(arena, 2, hq::entry_state::waiting);
+
+  end_from_outside(arena, 2, hq::history_outcome::cancelled);
+  auto const got = finish(waiter);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK_FALSE(present(marker));
+
+  {
+    // Nothing with a higher number appeared while the holder still runs.
+    auto const snap = require_snapshot(arena);
+    REQUIRE(snap.entries.size() == 1);
+    CHECK(snap.entries.front().seq == 1);
+    REQUIRE(snap.history.size() == 1);
+    CHECK(snap.history.front().seq == 2);
+    CHECK(snap.history.front().outcome == hq::history_outcome::cancelled);
+    CHECK_FALSE(snap.history.front().successor_seq.has_value());
+  }
+  hold.release();
+  CHECK(finish(holder).code == 0);
+  CHECK(require_snapshot(arena).history.size() == 2);
+}
+
+TEST_CASE("queue run: a waiter stopped until it is reaped rejoins behind the entries that arrived meanwhile",
+          "[cmd][agent][queue][hq-missing-entry]") {
+  auto const arena = parity::make_arena("qr_missing_rejoin");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\nstale_after = \"2s\"\n");
+  gate       hold(arena.cpp_root / "hold.fifo");
+  auto const started = arena.cpp_root / "started";
+  auto const order   = arena.cpp_root / "order";
+
+  spawned          holder;
+  spawned          waiter;
+  spawned          later;
+  release_all      guard{.gates = {&hold}};
+  continue_on_exit resume;
+
+  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  await_child_recorded(arena, 1);
+  waiter = spawn_queue(arena, "waiter", sh_command("echo waiter >> \"$1\"", {order.string()}));
+  await_entry(arena, 2, hq::entry_state::waiting);
+
+  // Stop the waiter until its entry is stale and another submitter's poll
+  // reaps it. This process recorded the pid, and checks its start time first.
+  REQUIRE(waiter.still_mine());
+  resume.run = &waiter;
+  stop_outside_a_transaction(arena, waiter);
+  later = spawn_queue(arena, "later", sh_command("echo later >> \"$1\"", {order.string()}));
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    return snap && history_seq(*snap, 2) != nullptr;
+  }));
+  {
+    auto const snap = require_snapshot(arena);
+    CHECK(history_seq(snap, 2)->outcome == hq::history_outcome::abandoned);
+    CHECK_FALSE(history_seq(snap, 2)->successor_seq.has_value()); // nobody rejoined yet
+  }
+
+  REQUIRE(::kill(static_cast<::pid_t>(waiter.pid), SIGCONT) == 0);
+  std::int64_t successor = 0;
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    if (!snap || history_seq(*snap, 2) == nullptr || !history_seq(*snap, 2)->successor_seq) {
+      return false;
+    }
+    successor = *history_seq(*snap, 2)->successor_seq;
+    return true;
+  }));
+  CHECK(successor > 2);
+  await_entry(arena, successor, hq::entry_state::waiting);
+
+  hold.release();
+  auto const a = finish(holder);
+  auto const b = finish(waiter);
+  auto const c = finish(later);
+  INFO("waiter stderr:\n" << b.err << "later stderr:\n" << c.err);
+  CHECK(a.code == 0);
+  CHECK(b.code == 0);
+  CHECK(c.code == 0);
+  // The waiter arrived first and was reaped, so it comes back BEHIND the entry
+  // that arrived while it was stopped, and its command ran once.
+  CHECK(read_all(order) == "later\nwaiter\n");
+
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  auto const* old_row = history_seq(snap, 2);
+  auto const* new_row = history_seq(snap, successor);
+  REQUIRE(old_row != nullptr);
+  REQUIRE(new_row != nullptr);
+  CHECK(old_row->outcome == hq::history_outcome::abandoned);
+  CHECK(old_row->successor_seq == successor);
+  CHECK(new_row->outcome == hq::history_outcome::exited);
+  CHECK(new_row->exit_code == 0);
+}
