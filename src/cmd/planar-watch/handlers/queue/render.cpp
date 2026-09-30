@@ -79,8 +79,8 @@ auto cell(std::string_view value) -> std::string {
   if (value.empty()) {
     return "-";
   }
-  auto const risky = textview::has_hazard(value) || value == "-" || value.contains(' ') || value.contains('"') ||
-                     value.contains('\\');
+  auto const risky =
+      textview::has_hazard(value) || value == "-" || value.contains(' ') || value.contains('"') || value.contains('\\');
   return risky ? textview::quote_text(value) : std::string{value};
 }
 

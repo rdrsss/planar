@@ -62,7 +62,6 @@ auto all_node_names(const CLI::App& root) -> std::set<std::string, std::less<>> 
   return names;
 }
 
-
 // ---- the queue signaller boundary (task 7096) ------------------------------
 //
 // `planar-watch` links `engine_hostqueue`, whose `terminate` module can signal
@@ -75,10 +74,17 @@ auto all_node_names(const CLI::App& root) -> std::set<std::string, std::less<>> 
 /// @brief The names that mean "send a signal to a process group", or reach the
 /// module that does. `kill(` covers a direct call; the rest are the exports of
 /// `planar.engine.hostqueue.terminate` and the identity primitive under them.
-const std::vector<std::string_view> k_signaller_names{
-    "hostqueue.terminate", "signal_child_group", "system_group_signaller", "group_signaller", "begin_terminate",
-    "advance_terminations", "poll_and_stop",     "cancel_waiting",         "signal_group",    "killpg",
-    "kill("};
+const std::vector<std::string_view> k_signaller_names{"hostqueue.terminate",
+                                                      "signal_child_group",
+                                                      "system_group_signaller",
+                                                      "group_signaller",
+                                                      "begin_terminate",
+                                                      "advance_terminations",
+                                                      "poll_and_stop",
+                                                      "cancel_waiting",
+                                                      "signal_group",
+                                                      "killpg",
+                                                      "kill("};
 
 /// @brief The names in `text` that `k_signaller_names` forbids, ignoring `//`
 /// and `///` comments and block-comment continuation lines (prose about the
@@ -271,8 +277,8 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
   auto       table = planar::cmd::watch::handlers(*root);
   REQUIRE(planar::cmd::watch::unreachable_handlers(*root, table).empty());
 
-  planar::cmd::watch::handler_fn const noop = [](planar::cmd::watch::context&, const planar::cliapp::parsed_args&)
-      -> planar::cmd::watch::handler_result { return {}; };
+  planar::cmd::watch::handler_fn const noop =
+      [](planar::cmd::watch::context&, const planar::cliapp::parsed_args&) -> planar::cmd::watch::handler_result { return {}; };
 
   // Every node counts as reachable, not only the childless ones: a handler
   // registered on ANY group is dual, the way `planar` treats `handoff`, so no
@@ -292,8 +298,12 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
   auto const run_group = [&](const planar::cmd::watch::handler_table& t) {
     std::ostringstream          out;
     std::ostringstream          err;
-    planar::cmd::watch::context ctx{{"planar-watch", "run"}, planar::cmd::watch::map_env({}), std::filesystem::path{},
-                                    std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err), out, err};
+    planar::cmd::watch::context ctx{{"planar-watch", "run"},
+                                    planar::cmd::watch::map_env({}),
+                                    std::filesystem::path{},
+                                    std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err),
+                                    out,
+                                    err};
     auto const                  fresh = planar::cmd::watch::root_app();
     auto const                  code  = planar::cmd::watch::run(ctx, *fresh, t);
     return std::pair{code, out.str()};
@@ -302,9 +312,9 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
   CHECK(helped.first == 0);
   CHECK(helped.second.contains("list"));
   CHECK(helped.second.contains("show"));
-  bool ran = false;
-  with_group["run"] = [&ran](planar::cmd::watch::context&, const planar::cliapp::parsed_args&)
-      -> planar::cmd::watch::handler_result {
+  bool ran          = false;
+  with_group["run"] = [&ran](planar::cmd::watch::context&,
+                             const planar::cliapp::parsed_args&) -> planar::cmd::watch::handler_result {
     ran = true;
     return {};
   };
@@ -314,7 +324,8 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
   CHECK_FALSE(dual.second.contains("Subcommands"));
 }
 
-TEST_CASE("no planar-watch source names the queue group signaller or the terminate module", "[cmd][watch][capability][hq-watch-no-signaller]") {
+TEST_CASE("no planar-watch source names the queue group signaller or the terminate module",
+          "[cmd][watch][capability][hq-watch-no-signaller]") {
   // The scanner is exercised before it is trusted.
   CHECK(signaller_hits("auto r = hq::signal_child_group(e, sig, host, probe, signaller);").size() == 1);
   CHECK(signaller_hits("import planar.engine.hostqueue.terminate;").size() == 1);
@@ -353,9 +364,9 @@ TEST_CASE("the planar-watch binary does not link the queue terminate module", "[
   // module that sends anything else, and the source scan above and the case
   // below are what stop a watch handler from reaching it.
   constexpr std::array<std::string_view, 6> k_names{"signal_child_group",   "system_group_signaller", "begin_terminate",
-                                                    "advance_terminations", "poll_and_stop",         "cancel_waiting"};
-  auto const watch_bytes = read_file(std::filesystem::path{PLANAR_CPP_BIN});
-  auto const agent_bytes = read_file(std::filesystem::path{PLANAR_AGENT_CPP_BIN});
+                                                    "advance_terminations", "poll_and_stop",          "cancel_waiting"};
+  auto const                                watch_bytes = read_file(std::filesystem::path{PLANAR_CPP_BIN});
+  auto const                                agent_bytes = read_file(std::filesystem::path{PLANAR_AGENT_CPP_BIN});
   REQUIRE(watch_bytes.size() > 100'000);
   for (auto const name : k_names) {
     // Positive control: planar-agent DOES link the module, and this reading of
@@ -372,8 +383,8 @@ TEST_CASE("the liveness probe planar-watch uses sends signal 0 only", "[cmd][wat
   // `system_process_probe` forwards to `process_exists` and `group_has_members`
   // in `planar.process.identity`. Every `kill(` there but one passes the
   // literal signal 0 (existence check); the one exception is `signal_group`.
-  auto const identity = watch_source_dir().parent_path().parent_path() / "lib" / "process" / "identity.cpp";
-  auto const text     = read_file(identity);
+  auto const               identity = watch_source_dir().parent_path().parent_path() / "lib" / "process" / "identity.cpp";
+  auto const               text     = read_file(identity);
   std::vector<std::string> nonzero;
   std::size_t              zero = 0;
   std::string_view         rest = text;

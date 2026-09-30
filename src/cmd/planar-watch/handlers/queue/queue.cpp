@@ -168,8 +168,8 @@ auto render_text(const std::vector<row>& rows) -> std::string {
     auto const& e = r.entry;
     table.push_back({std::to_string(e.seq), e.state == hq::entry_state::waiting ? "waiting" : "running",
                      r.position ? std::to_string(*r.position) : "-", notes_of(r), duration_text(r.waited_ms),
-                     duration_text(r.ran_ms), field_cell(e.vendor.value_or("")), field_cell(e.role.value_or("")), field_cell(e.label.value_or("")),
-                     cell(e.cwd), shell_line(e.argv)});
+                     duration_text(r.ran_ms), field_cell(e.vendor.value_or("")), field_cell(e.role.value_or("")),
+                     field_cell(e.label.value_or("")), cell(e.cwd), shell_line(e.argv)});
   }
 
   return pad_table(table);

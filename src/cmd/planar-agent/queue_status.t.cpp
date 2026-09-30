@@ -1248,17 +1248,18 @@ TEST_CASE("queue status: a sequence number that is not a positive integer exits 
   CHECK(missing.out.empty());
 }
 
-TEST_CASE("queue status: text is unambiguous for quotes and backslashes, escapes format characters, and cuts long values; JSON is complete",
+TEST_CASE("queue status: text is unambiguous for quotes and backslashes, escapes format characters, and cuts long values; JSON "
+          "is complete",
           "[cmd][agent][queue][hq-view-escape-fields]") {
-  auto const arena  = parity::make_arena("qs_display");
-  auto const quoted = std::string{"\"already quoted\""};
-  auto const bidi   = std::string{"v\xE2\x80\xAE"
-                                  "evil"};
-  auto const role   = std::string(100, 'r') + "RTAIL";
-  std::int64_t seq  = 0;
+  auto const   arena  = parity::make_arena("qs_display");
+  auto const   quoted = std::string{"\"already quoted\""};
+  auto const   bidi   = std::string{"v\xE2\x80\xAE"
+                                    "evil"};
+  auto const   role   = std::string(100, 'r') + "RTAIL";
+  std::int64_t seq    = 0;
   {
-    auto conn     = open_store(arena);
-    auto request  = alive_request(quoted);
+    auto conn      = open_store(arena);
+    auto request   = alive_request(quoted);
     request.vendor = bidi;
     request.role   = role;
     seq            = enqueue_or_fail(conn, request);

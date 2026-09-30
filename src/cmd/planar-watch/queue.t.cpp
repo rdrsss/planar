@@ -786,7 +786,8 @@ constexpr std::string_view k_line_sep = "\xE2\x80\xA8"; // U+2028 line separator
 constexpr std::string_view k_isolate  = "\xE2\x81\xA6"; // U+2066 left-to-right isolate
 constexpr std::string_view k_bom      = "\xEF\xBB\xBF"; // U+FEFF byte-order mark
 
-TEST_CASE("queue view: Unicode format characters are escaped in text and kept in JSON", "[cmd][watch][queue][hq-view-escape-fields]") {
+TEST_CASE("queue view: Unicode format characters are escaped in text and kept in JSON",
+          "[cmd][watch][queue][hq-view-escape-fields]") {
   auto const arena  = parity::make_arena("wq_format");
   auto const vendor = std::format("v{}evil", k_rlo);
   auto const role   = std::format("r{}z", k_zwsp);
@@ -819,9 +820,10 @@ TEST_CASE("queue view: Unicode format characters are escaped in text and kept in
   CHECK(text_of(rows[0], "cwd") == cwd);
 }
 
-TEST_CASE("queue view: a long vendor, role or label is cut in text and complete in JSON", "[cmd][watch][queue][hq-view-escape-fields]") {
-  auto const arena = parity::make_arena("wq_long");
-  auto const label = std::string(200, 'x') + "TAILMARK";
+TEST_CASE("queue view: a long vendor, role or label is cut in text and complete in JSON",
+          "[cmd][watch][queue][hq-view-escape-fields]") {
+  auto const arena  = parity::make_arena("wq_long");
+  auto const label  = std::string(200, 'x') + "TAILMARK";
   auto const vendor = std::string(100, 'v') + "VTAIL";
   auto const role   = std::string(100, 'r') + "RTAIL";
   {
@@ -1420,7 +1422,8 @@ TEST_CASE("queue history: --since keeps only rows that ended within the duration
   CHECK(seqs_of(rows_of(flipped)) == std::vector<std::int64_t>{inside});
 }
 
-TEST_CASE("queue history: --since takes days and keeps a week of history", "[cmd][watch][queue][hq-watch-history][hq-since-days]") {
+TEST_CASE("queue history: --since takes days and keeps a week of history",
+          "[cmd][watch][queue][hq-watch-history][hq-since-days]") {
   auto const   arena    = parity::make_arena("wh_since_days");
   auto const   now      = wall_now();
   std::int64_t six_days = 0;

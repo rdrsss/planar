@@ -10,9 +10,10 @@ import planar.textview;
 
 namespace tv = planar::textview;
 
-TEST_CASE("textview: every listed format character is a hazard and an ordinary one is not", "[lib][textview][hq-view-escape-fields]") {
-  for (char32_t cp : {U'\u200b', U'\u200c', U'\u200d', U'\u200e', U'\u200f', U'\u202a', U'\u202b', U'\u202c', U'\u202d', U'\u202e',
-                      U'\u2066', U'\u2067', U'\u2068', U'\u2069', U'\ufeff', U'\u2028', U'\u2029'}) {
+TEST_CASE("textview: every listed format character is a hazard and an ordinary one is not",
+          "[lib][textview][hq-view-escape-fields]") {
+  for (char32_t cp : {U'\u200b', U'\u200c', U'\u200d', U'\u200e', U'\u200f', U'\u202a', U'\u202b', U'\u202c', U'\u202d',
+                      U'\u202e', U'\u2066', U'\u2067', U'\u2068', U'\u2069', U'\ufeff', U'\u2028', U'\u2029'}) {
     INFO("code point: " << static_cast<std::uint32_t>(cp));
     CHECK(tv::is_format_char(cp));
   }
@@ -22,7 +23,8 @@ TEST_CASE("textview: every listed format character is a hazard and an ordinary o
   }
 }
 
-TEST_CASE("textview: has_hazard flags controls, C1, format characters and invalid UTF-8 only", "[lib][textview][hq-view-escape-fields]") {
+TEST_CASE("textview: has_hazard flags controls, C1, format characters and invalid UTF-8 only",
+          "[lib][textview][hq-view-escape-fields]") {
   CHECK_FALSE(tv::has_hazard(""));
   CHECK_FALSE(tv::has_hazard("plain text /path -x \"q\" \\b"));
   CHECK_FALSE(tv::has_hazard("caf\xC3\xA9 \xE6\x97\xA5\xE6\x9C\xAC \xE2\x80\xA6"));
@@ -41,7 +43,8 @@ TEST_CASE("textview: has_hazard flags controls, C1, format characters and invali
   CHECK(tv::has_hazard("a\xE2\x80")); // truncated sequence
 }
 
-TEST_CASE("textview: quote_text escapes the quote, backslash, controls and format characters", "[lib][textview][hq-view-escape-fields]") {
+TEST_CASE("textview: quote_text escapes the quote, backslash, controls and format characters",
+          "[lib][textview][hq-view-escape-fields]") {
   CHECK(tv::quote_text("") == "\"\"");
   CHECK(tv::quote_text("plain") == "\"plain\"");
   CHECK(tv::quote_text("a\"b\\c") == "\"a\\\"b\\\\c\"");
@@ -62,17 +65,18 @@ TEST_CASE("textview: display_width counts code points, wide characters twice and
           "[lib][textview][hq-view-escape-fields]") {
   CHECK(tv::display_width("") == 0);
   CHECK(tv::display_width("abcd") == 4);
-  CHECK(tv::display_width("caf\xC3\xA9") == 4);                 // five bytes, four columns
-  CHECK(tv::display_width("\xE6\x97\xA5\xE6\x9C\xAC") == 4);    // two wide characters
-  CHECK(tv::display_width("\xEF\xBC\xA1") == 2);                // fullwidth A
-  CHECK(tv::display_width("e\xCC\x81") == 1);                   // e + combining acute
+  CHECK(tv::display_width("caf\xC3\xA9") == 4);              // five bytes, four columns
+  CHECK(tv::display_width("\xE6\x97\xA5\xE6\x9C\xAC") == 4); // two wide characters
+  CHECK(tv::display_width("\xEF\xBC\xA1") == 2);             // fullwidth A
+  CHECK(tv::display_width("e\xCC\x81") == 1);                // e + combining acute
   CHECK(tv::display_width("a\xE2\x80\x8B"
-                          "b") == 2); // zero width space
-  CHECK(tv::display_width("\xE2\x80\xA6") == 1);                // the marker
-  CHECK(tv::display_width("\xFF\xFE") == 2);                    // invalid bytes: one each
+                          "b") == 2);            // zero width space
+  CHECK(tv::display_width("\xE2\x80\xA6") == 1); // the marker
+  CHECK(tv::display_width("\xFF\xFE") == 2);     // invalid bytes: one each
 }
 
-TEST_CASE("textview: truncate_display keeps what fits, marks the cut and never splits a code point", "[lib][textview][hq-view-escape-fields]") {
+TEST_CASE("textview: truncate_display keeps what fits, marks the cut and never splits a code point",
+          "[lib][textview][hq-view-escape-fields]") {
   CHECK(tv::truncate_display("abcd", 4) == "abcd");
   CHECK(tv::truncate_display("abcde", 4) == "abc\xE2\x80\xA6");
   CHECK(tv::truncate_display("", 4).empty());
