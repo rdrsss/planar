@@ -126,6 +126,26 @@ export auto check_compat(connection& conn, const std::filesystem::path& path) ->
 /// failure naming `path`.
 export auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connection, open_error>;
 
+/// @brief Opens the agent database at an explicit path for READING ONLY:
+/// strictly read-only at the SQLite layer (`file:<path>?mode=ro` and
+/// `SQLITE_OPEN_READONLY`, as `planar-watch` opens the main database), so no
+/// statement run on the returned connection can write. Unlike
+/// `open_agent_db_at` it never creates the file or its directory, never sets
+/// the journal mode and never applies a migration: a store behind the head of
+/// the embedded chain is read as it is. It refuses a store `check_compat`
+/// refuses, which reads only.
+/// @param path The store's location.
+/// @return An open read-only connection, an `open_failed` error naming `path`
+/// when the file does not exist or cannot be opened, or the `check_compat`
+/// failure.
+export auto open_agent_db_read_only_at(const std::filesystem::path& path) -> std::expected<connection, open_error>;
+
+/// @brief Resolves the store's path from `env` (see `resolve_agent_db_path`)
+/// and opens it read-only (see `open_agent_db_read_only_at`).
+/// @param env The environment to read.
+/// @return An open read-only connection, or the first failure.
+export auto open_agent_db_read_only(const env_lookup& env) -> std::expected<connection, open_error>;
+
 /// @brief Resolves the store's path from `env` (see `resolve_agent_db_path`)
 /// and opens it (see `open_agent_db_at`).
 /// @param env The environment to read.

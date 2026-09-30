@@ -339,6 +339,7 @@ TEST_CASE("planar-agent resolves the main database path for every verb except th
   using planar::cmd::agent::uses_main_database;
   auto const argv = [](std::vector<std::string> words) { return words; };
   CHECK_FALSE(uses_main_database(argv({"planar-agent", "queue", "run", "--", "make"})));
+  CHECK_FALSE(uses_main_database(argv({"planar-agent", "queue", "status", "7", "--json"})));
   CHECK_FALSE(uses_main_database(argv({"planar-agent", "queue"})));
   CHECK(uses_main_database(argv({"planar-agent", "pull", "1"})));
   CHECK(uses_main_database(argv({"planar-agent", "version"})));

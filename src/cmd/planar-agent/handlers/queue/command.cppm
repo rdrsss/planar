@@ -42,5 +42,17 @@ export auto add(CLI::App& root) -> void {
       ->description(
           "Write the entry's queue position, start and final outcome to standard error; standard output is never touched");
   run->add_option("command")->description("The command and its arguments, after `--`")->required()->expected(1, -1);
+
+  // --- queue status -------------------------------------------------------
+  // Read-only: what became of one entry, from the entry while it exists and
+  // from its history row afterwards, following a successor (tech spec 647 §
+  // CLI surface).
+  CLI::App* status = queue->add_subcommand(
+      "status", "Report what became of a queue entry: its state and place in the queue, how it ended, the exit status, where "
+                "its output was saved and, for a cancelled entry, who cancelled it. Reads only; changes nothing.");
+  status->add_option("seq")
+      ->description("The sequence number, the first line of the ticket `queue run --detach` prints")
+      ->required();
+  status->add_flag("--json")->description("Print one JSON object with the documented fields, null where a field does not apply");
 }
 } // namespace planar::cmd::agent::handlers::queue_cli

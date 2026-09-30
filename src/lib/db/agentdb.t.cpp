@@ -563,3 +563,56 @@ TEST_CASE("every agent migration's compat value is pinned", "[db][agentdb][migra
   }
   CHECK(seen.size() == k_pinned_compat.size());
 }
+
+TEST_CASE("open_agent_db_read_only_at opens strictly read-only and never creates the file, its directory or a migration",
+          "[db][agentdb][hq-queue-status]") {
+  scratch_dir scratch;
+  auto const  store = scratch.path_ / "nested" / "agent.db";
+
+  SECTION("a missing store is refused by path and nothing is created") {
+    auto opened = planar::db::agent::open_agent_db_read_only_at(store);
+    REQUIRE_FALSE(opened.has_value());
+    CHECK(opened.error().kind == planar::db::agent::open_error_kind::open_failed);
+    CHECK(opened.error().path == store);
+    CHECK(opened.error().message.find(store.string()) != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(store));
+    CHECK_FALSE(std::filesystem::exists(store.parent_path()));
+  }
+
+  SECTION("an existing store opens read-only and refuses every write") {
+    {
+      auto created = planar::db::agent::open_agent_db_at(store);
+      REQUIRE(created.has_value());
+    }
+    auto const before = read_bytes(store);
+    auto       opened = planar::db::agent::open_agent_db_read_only_at(store);
+    REQUIRE(opened.has_value());
+    CHECK(opened->is_read_only());
+    CHECK_FALSE(
+        opened->execute("insert into agent_schema_migrations (version, compat, description) values (99, 1, 'x')").has_value());
+    CHECK_FALSE(opened->execute("create table extra (a integer)").has_value());
+    opened = std::unexpected(planar::db::agent::open_error{}); // close it
+    CHECK(read_bytes(store) == before);
+  }
+
+  SECTION("a store that needs a newer binary is refused, as the read-write open refuses it") {
+    auto const binary_head = planar::db::agent::agent_schema_version();
+    static_cast<void>(seed_store_ahead(store, binary_head + 1, binary_head + 1));
+    auto opened = planar::db::agent::open_agent_db_read_only_at(store);
+    REQUIRE_FALSE(opened.has_value());
+    CHECK(opened.error().kind == planar::db::agent::open_error_kind::incompatible_store);
+  }
+
+  SECTION("the environment-resolving form reads the same store, and reports an unresolvable path") {
+    {
+      auto created = planar::db::agent::open_agent_db_at(store);
+      REQUIRE(created.has_value());
+    }
+    auto opened = planar::db::agent::open_agent_db_read_only(env_of({{"PLANAR_AGENT_DB", store.string()}}));
+    REQUIRE(opened.has_value());
+    CHECK(opened->is_read_only());
+    auto const unresolved = planar::db::agent::open_agent_db_read_only(env_of({}));
+    REQUIRE_FALSE(unresolved.has_value());
+    CHECK(unresolved.error().kind == planar::db::agent::open_error_kind::unresolved_path);
+  }
+}
