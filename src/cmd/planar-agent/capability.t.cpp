@@ -173,9 +173,7 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
   for (auto const* sub : planar::cliapp::children(*queue)) {
     verbs.insert(sub->get_name());
   }
-  // `rule` is a later task of the same plan and adds its name here in the
-  // change that adds the verb.
-  CHECK(verbs == std::set<std::string, std::less<>>{"cancel", "run", "status"});
+  CHECK(verbs == std::set<std::string, std::less<>>{"cancel", "rule", "run", "status"});
 
   // `queue run`'s surface: the label, time-limit, vendor, role and notices flags, the command
   // positional, and nothing else (no `--json`: standard output belongs to the command).
@@ -218,6 +216,19 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
     status_declared.insert(option->get_name(false, true));
   }
   CHECK(status_declared == std::set<std::string, std::less<>>{"--json", "seq"});
+
+  // `queue rule` (task hq-queue-rule-verb) prints one embedded text: it takes
+  // no argument and no flag, so nothing can point it at a store or a format.
+  auto const* rule = queue->get_subcommand_no_throw("rule");
+  REQUIRE(rule != nullptr);
+  std::set<std::string, std::less<>> rule_declared;
+  for (auto const* option : rule->get_options()) {
+    if (option == rule->get_help_ptr()) {
+      continue;
+    }
+    rule_declared.insert(option->get_name(false, true));
+  }
+  CHECK(rule_declared.empty());
   // Still refuses every planning verb, at any depth, with `queue` present.
   for (auto const& forbidden : planar::cmd::agent::forbidden_verbs()) {
     INFO("forbidden verb reachable: " << forbidden);

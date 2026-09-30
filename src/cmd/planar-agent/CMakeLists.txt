@@ -207,7 +207,9 @@ if(TARGET planar_cmd_planar_agent_tests)
   # the M10 cutover deleted it (decisions 963/982). Only this binary's own
   # path is needed now; nothing here shells a second implementation.
   target_compile_definitions(planar_cmd_planar_agent_tests PRIVATE
-    "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\"")
+    "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
+    # queue_rule.t.cpp holds the built binary to the authored rule file.
+    "PLANAR_QUEUE_RULE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/engine/hostqueue/queue-rule.md\"")
   target_include_directories(planar_cmd_planar_agent_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
   add_dependencies(planar_cmd_planar_agent_tests planar_cmd_planar_agent)
 endif()
