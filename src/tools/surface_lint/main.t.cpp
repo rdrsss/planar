@@ -360,6 +360,54 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 1 finding(s) across 1 files\n");
   }
 
+  SECTION("queue_command: a span or block line that begins with a build or test program fires; queued, "
+          "prose, marked, region-exempt and out-of-scope text stays silent") {
+    // One file carries every shape: a span, a fenced line, an indented fenced
+    // line behind a `$ ` prompt, two spans on one line, a queued span and a
+    // queued block line (silent), prose naming programs (silent), non-build
+    // `cmake --preset` / `make:` / `go vet` / `npm install` spans (silent), a
+    // line carrying `queue-lint-ignore` (silent), a begin/end region holding a
+    // span, a span line and a fenced line (silent), and a span right after the
+    // region (fires again). docs/ is not gated; skills/src/ is.
+    auto const [out, status] = capture(bin.string(), {(fixtures / "queue_command").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out == "agents/direct.md:6: surface-queue-command: build or test command is not given to `planar-agent queue "
+                 "run`: `make test`\n"
+                 "agents/direct.md:9: surface-queue-command: build or test command is not given to `planar-agent queue "
+                 "run`: `ctest --test-dir build`\n"
+                 "agents/direct.md:13: surface-queue-command: build or test command is not given to `planar-agent queue "
+                 "run`: `cmake --build build/debug`\n"
+                 "agents/direct.md:16: surface-queue-command: build or test command is not given to `planar-agent queue "
+                 "run`: `ninja`\n"
+                 "agents/direct.md:16: surface-queue-command: build or test command is not given to `planar-agent queue "
+                 "run`: `cargo test --release`\n"
+                 "agents/direct.md:35: surface-queue-command: build or test command is not given to `planar-agent queue "
+                 "run`: `gradle build`\n"
+                 "skills/src/skill.md:6: surface-queue-command: build or test command is not given to `planar-agent "
+                 "queue run`: `pytest -q`\n"
+                 "surface-lint: 7 finding(s) across 3 files\n");
+  }
+
+  SECTION("queue_marker_invalid: an end without a begin, a begin inside a region and a region never closed are "
+          "reported, and the region state still decides what is exempt") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "queue_marker_invalid").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out == "agents/markers.md:5: surface-queue-marker-invalid: `queue-lint-ignore-end` without a matching "
+                 "`queue-lint-ignore-begin`\n"
+                 "agents/markers.md:6: surface-queue-command: build or test command is not given to `planar-agent queue "
+                 "run`: `make`\n"
+                 "agents/markers.md:8: surface-queue-marker-invalid: `queue-lint-ignore-begin` inside the region opened "
+                 "at line 7\n"
+                 "agents/markers.md:11: surface-queue-command: build or test command is not given to `planar-agent queue "
+                 "run`: `ninja`\n"
+                 "agents/markers.md:12: surface-queue-marker-invalid: `queue-lint-ignore-begin` is never closed\n"
+                 "surface-lint: 5 finding(s) across 1 files\n");
+  }
+
   SECTION("--command-inventory-json: the pinned 260-entry command_classes table") {
     auto const [out, status] = capture(bin.string(), {"--command-inventory-json"});
     INFO(out);
