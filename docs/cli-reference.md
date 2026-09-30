@@ -6896,6 +6896,7 @@ The foreground form is `queue run` with optional `--timeout <duration>`, `--wait
 5. It runs the command in the caller's working directory, with the caller's environment plus `PLANAR_QUEUE_SLOT` set to the entry's sequence number, and with the caller's standard streams. Standard output and standard error carry the command's own output and nothing else, except a `warning: queue: ...` line on standard error when the queue itself hit a failure it could not act on (a stopping signal that failed, a terminating entry that could not be ended, a configuration that could not be reloaded).
 6. While the command runs it refreshes the entry at each poll, so an entry whose submitter is alive stays live.
 7. When the command ends it removes the entry and writes its one `queue_history` row in a single transaction, then exits with the command's status: its own exit code, or `128` plus the signal that terminated it.
+8. It catches SIGINT, SIGTERM and SIGHUP for the whole submission and never leaves the entry behind. **While waiting**, a signal removes the entry with outcome `cancelled` (attributed to the submitter's own pid), the command is never started, and the submitter exits `128` plus the signal with one `error: queue: ... was interrupted by <signal> before its turn; the command was not run` line on standard error. The entry behind it takes its turn as usual. **While the command runs**, the signal is forwarded to the command's process group and the submitter keeps supervising: it neither marks the entry terminating nor escalates. What happens next is the command's choice. A command that dies of the signal ends the entry `signaled` and the submitter exits `128` plus the signal; one that traps it and exits ends the entry `exited` with the command's own code, which the submitter passes through; one that carries on keeps its slot until it ends, or until its run limit stops it, and a second signal is forwarded again. A signal that was ignored when the submitter started (`nohup`, or a shell's background job for SIGINT) stays ignored and is not forwarded. Only the process group recorded for the command is ever signalled.
 
 `command` is the argument vector, given after `--`. `--label` is stored with the entry and shown in listings.
 
@@ -6909,7 +6910,13 @@ A command that passes both checks can still fail to start at its turn: the progr
 
 The exit code passes the command's status through, so it is ambiguous by design (a command may exit `125` itself); `queue_history` records how each entry ended. The queue's own failure is exit **125** with one `error: queue: ...` line on standard error. `queue run` has no `--json`: standard output belongs to the command, so no envelope is written on any path.
 
-Not yet available in this build (later tasks of plan 1080): `--detach`, `--vendor`, `--role`, `--claim`, `--notices`, `queue status`, `queue cancel`, `queue rule`, signal forwarding to the command, and nested runs.
+Not yet available in this build (later tasks of plan 1080): `--detach`, `--vendor`, `--role`, `--claim`, `--notices`, `queue status`, `queue cancel`, `queue rule`, and nested runs.
+
+#### Known limits
+
+These are accepted, and stated here so they are not rediscovered.
+
+- **A queued command cannot read the terminal.** The command runs in a process group of its own, never the terminal's foreground group, so a read from the terminal stops it with SIGTTIN (a write to it may stop it with SIGTTOU when the terminal sets `tostop`). The queue does not hand the terminal over and does not redirect standard input: the command inherits the submitter's standard streams as they are. Queued commands are builds and tests, which do not read the terminal; a command that prompts belongs outside the queue. Run with standard input from a file, a pipe or `/dev/null` (as agent harnesses and CI do) and the limit never arises.
 
 #### The queue command guard
 
