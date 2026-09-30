@@ -35,11 +35,26 @@
 /// engine never sees the config module: the handler copies values into the
 /// engine's request structs.
 ///
+/// ## Time limits
+///
+/// `--timeout <duration>` (default 30 minutes) is the run limit and
+/// `--wait-timeout <duration>` (default none) the wait limit. Both take the
+/// `[queue]` duration grammar (an integer and `ms`, `s`, `m` or `h`), share
+/// its 24-hour cap, and refuse zero, negative and unit-less values at exit 2
+/// before anything is enqueued. The run limit becomes the entry's
+/// `deadline_mono` when the entry starts; the wait limit is stored as
+/// `wait_deadline_mono` at enqueue. At its run limit the submitter marks its
+/// own entry terminating with reason `timeout` (SIGTERM) and advances that
+/// entry each tick (SIGKILL after the `[queue]` grace period). The entry then
+/// ends with the outcome its stop reason names, never `signaled`: `timeout`
+/// (exit 124) or `cancelled` (exit 125), whichever process set the reason.
+/// A wait limit reached before the turn removes the entry with outcome
+/// `wait_timeout` and exits 125 without running the command.
+///
 /// ## What is not here yet
 ///
 /// Later tasks of the same milestone add the command guard and the 126/127
-/// checks before the enqueue, `--timeout` and `--wait-timeout`, signal
-/// forwarding, nested runs, missing-entry handling, `--notices`, `--vendor`
+/// checks before the enqueue, signal forwarding, nested runs, missing-entry handling, `--notices`, `--vendor`
 /// and `--role`, and `--claim`. This handler leaves them out and says so at
 /// each seam.
 module;

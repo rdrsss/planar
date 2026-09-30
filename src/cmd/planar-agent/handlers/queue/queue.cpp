@@ -32,8 +32,12 @@ namespace qcfg   = engine::config;
 
 /// @brief The run limit an entry is given when nothing else names one
 /// (tech spec 647 § Time limits are built in: thirty minutes). `--timeout`
-/// (task hq-timeouts) replaces it.
+/// replaces it.
 constexpr std::int64_t k_default_run_limit_ms = 30LL * 60 * 1000;
+
+/// @brief The exit status of a command stopped at its run limit (decision
+/// 1188).
+constexpr int exit_run_limit = 124;
 
 /// @brief How often a running submitter looks at its child. The queue is
 /// polled at the configured interval; the child is checked more often so
@@ -142,31 +146,39 @@ auto refuse(context& ctx, const std::string& body) -> handler_outcome {
   return exit_status{exit_internal_error};
 }
 
+/// @brief Reports a stopping signal that could not be sent, once.
+void report_signal_failure(const hq::signal_attempt& attempt, reporter& report) {
+  if (attempt.outcome != hq::signal_outcome::failed) {
+    return;
+  }
+  auto const name   = attempt.signal == hq::stop_signal::term ? "SIGTERM" : "SIGKILL";
+  auto const reason = attempt.error ? describe(*attempt.error) : std::string_view{"unknown failure"};
+  report.once(std::format("warning: queue: {} to entry {}'s process group failed: {}", name, attempt.seq, reason));
+}
+
+/// @brief Writes what one `advance_terminations` could not do, each distinct
+/// line once.
+void surface_advance(const hq::advance_result& advanced, reporter& report) {
+  for (auto const& attempt : advanced.kills) {
+    report_signal_failure(attempt, report);
+  }
+  for (auto const& attempt : advanced.failures) {
+    report.once(std::format("warning: queue: cannot judge the process group of terminating entry {}: {}", attempt.seq,
+                            attempt.error ? describe(*attempt.error) : std::string_view{"unknown failure"}));
+  }
+  for (auto const& failure : advanced.end_failures) {
+    report.once(std::format("warning: queue: cannot end terminating entry {}: {}", failure.seq, failure.error.message));
+  }
+}
+
 /// @brief Writes what one `poll_and_stop` could not do, each distinct line
 /// once: failed SIGTERMs and SIGKILLs, a failed advance, terminating entries
 /// that could not be ended, and entries whose liveness could not be judged.
 void surface(const hq::poll_stop_result& result, reporter& report) {
-  auto const signal_failure = [&](const hq::signal_attempt& attempt) {
-    if (attempt.outcome != hq::signal_outcome::failed) {
-      return;
-    }
-    auto const name   = attempt.signal == hq::stop_signal::term ? "SIGTERM" : "SIGKILL";
-    auto const reason = attempt.error ? describe(*attempt.error) : std::string_view{"unknown failure"};
-    report.once(std::format("warning: queue: {} to entry {}'s process group failed: {}", name, attempt.seq, reason));
-  };
   for (auto const& attempt : result.sigterms) {
-    signal_failure(attempt);
+    report_signal_failure(attempt, report);
   }
-  for (auto const& attempt : result.advanced.kills) {
-    signal_failure(attempt);
-  }
-  for (auto const& attempt : result.advanced.failures) {
-    report.once(std::format("warning: queue: cannot judge the process group of terminating entry {}: {}", attempt.seq,
-                            attempt.error ? describe(*attempt.error) : std::string_view{"unknown failure"}));
-  }
-  for (auto const& failure : result.advanced.end_failures) {
-    report.once(std::format("warning: queue: cannot end terminating entry {}: {}", failure.seq, failure.error.message));
-  }
+  surface_advance(result.advanced, report);
   if (result.advance_error) {
     report.once(std::format("warning: queue: cannot advance terminating entries: {}", result.advance_error->message));
   }
@@ -188,6 +200,7 @@ struct poller {
   settings_source&           settings;
   std::ostream&              err;
   reporter&                  report;
+  std::int64_t               run_limit_ms = k_default_run_limit_ms; ///< The entry's run limit, from `--timeout`.
 
   /// @brief Reloads the settings and runs one poll and its stopping steps.
   /// @return The result, or the failure that kept the poll from running.
@@ -199,7 +212,7 @@ struct poller {
                                                                                           .host_id        = host_id,
                                                                                           .slots          = now.slots,
                                                                                           .stale_after_ms = now.stale_after_ms,
-                                                                                          .run_limit_ms = k_default_run_limit_ms},
+                                                                                          .run_limit_ms   = run_limit_ms},
                                                                  .grace_ms = now.grace_ms},
                                            clock, probe, signaller);
     if (result) {
@@ -232,6 +245,27 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // failure's code rather than an enqueue of nothing.
     ctx.err() << "error: queue: run: no command given\n";
     return exit_status{exit_generic_failure};
+  }
+
+  // The time limits. A refused value is refused before the configuration or
+  // the store is touched, and nothing is enqueued.
+  std::int64_t                run_limit_ms = k_default_run_limit_ms;
+  std::optional<std::int64_t> wait_limit_ms;
+  for (auto const* name : {"--timeout", "--wait-timeout"}) {
+    auto const text = cliapp::flag_string(args, name);
+    if (!text) {
+      continue;
+    }
+    auto const parsed = qcfg::parse_duration_flag(*text);
+    if (!parsed) {
+      ctx.err() << std::format("error: queue: run: {}: {}\n", name, parsed.error());
+      return exit_status{exit_user_input};
+    }
+    if (std::string_view{name} == "--timeout") {
+      run_limit_ms = *parsed;
+    } else {
+      wait_limit_ms = *parsed;
+    }
   }
 
   ident::system_clock system_clock;
@@ -283,20 +317,21 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   // SEAM (task hq-command-guard, hq-not-started): the guard and the 126/127
   // checks run here, before anything is enqueued.
   // SEAM (task hq-vendor-role): `--vendor` and `--role` fill `vendor` and
-  // `role`. SEAM (task hq-timeouts): `--wait-timeout` fills
-  // `wait_deadline_mono`.
-  auto enqueued = hq::enqueue(conn,
-                              hq::enqueue_request{
-                                  .host_id        = host,
-                                  .pid            = pid,
-                                  .pid_started    = static_cast<std::int64_t>(**started),
-                                  .cwd            = ctx.cwd().string(),
-                                  .argv           = argv,
-                                  .label          = cliapp::flag_string(args, "--label"),
-                                  .enqueued_at    = clock.wall_ms(),
-                                  .refreshed_mono = *now_mono,
-                              },
-                              settings.current().history_days);
+  // `role`.
+  auto enqueued = hq::enqueue(
+      conn,
+      hq::enqueue_request{
+          .host_id            = host,
+          .pid                = pid,
+          .pid_started        = static_cast<std::int64_t>(**started),
+          .cwd                = ctx.cwd().string(),
+          .argv               = argv,
+          .label              = cliapp::flag_string(args, "--label"),
+          .enqueued_at        = clock.wall_ms(),
+          .refreshed_mono     = *now_mono,
+          .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
+      },
+      settings.current().history_days);
   if (!enqueued) {
     return refuse(ctx, enqueued.error().message);
   }
@@ -306,15 +341,16 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   }
 
   reporter report{ctx.err()};
-  poller   poll{.conn      = conn,
-                .seq       = seq,
-                .host_id   = host,
-                .clock     = clock,
-                .probe     = probe,
-                .signaller = signaller,
-                .settings  = settings,
-                .err       = ctx.err(),
-                .report    = report};
+  poller   poll{.conn         = conn,
+                .seq          = seq,
+                .host_id      = host,
+                .clock        = clock,
+                .probe        = probe,
+                .signaller    = signaller,
+                .settings     = settings,
+                .err          = ctx.err(),
+                .report       = report,
+                .run_limit_ms = run_limit_ms};
 
   // Ends the entry with `request`, reporting a store failure. The command's
   // status is the caller's to return either way.
@@ -330,6 +366,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
 
   // --- Waiting for the turn ---------------------------------------------
   std::optional<std::int64_t> failing_since;
+  std::optional<std::int64_t> own_deadline;
   while (true) {
     auto       polled = poll.poll_once();
     auto const now    = clock.monotonic_ms();
@@ -356,10 +393,23 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
         return refuse(ctx, std::format("entry {} is no longer in the queue", seq));
       }
       if (polled->poll.running) {
+        own_deadline = polled->poll.deadline_mono;
         break;
       }
     }
-    sleep(std::chrono::milliseconds{settings.current().poll_interval_ms});
+    // The wait limit. It is judged after the poll, so an entry whose turn has
+    // come at its limit runs rather than being removed.
+    if (wait_limit_ms && now && *now >= *now_mono + *wait_limit_ms) {
+      end(hq::end_request{.outcome = hq::history_outcome::wait_timeout});
+      return refuse(ctx, std::format("entry {} waited longer than --wait-timeout and was removed; the command was not run", seq));
+    }
+    // Sleep a poll interval, or less when the wait limit falls inside it, so the
+    // limit is honoured to the millisecond rather than to the next poll.
+    auto nap = settings.current().poll_interval_ms;
+    if (wait_limit_ms && now) {
+      nap = std::clamp(*now_mono + *wait_limit_ms - *now, std::int64_t{1}, nap);
+    }
+    sleep(std::chrono::milliseconds{nap});
   }
 
   // --- Running -----------------------------------------------------------
@@ -399,8 +449,52 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   }
 
   // SEAM (task hq-signal-forwarding): SIGINT, SIGTERM and SIGHUP received
-  // here are forwarded to the child group. SEAM (task hq-timeouts): the
-  // submitter enforces its own deadline here.
+  // here are forwarded to the child group.
+  //
+  // The submitter enforces its own run limit (tech spec 647 § Running, step
+  // 3): at the entry's recorded deadline it marks the entry terminating with
+  // reason `timeout`, which sends SIGTERM, and from then on advances the
+  // stopping steps for its own entry each tick, which sends SIGKILL once the
+  // grace period has passed. Both go through the engine's terminate module.
+  if (!own_deadline) {
+    // The poll that started the entry always reports its deadline; if it did
+    // not, derive it from the limit rather than run without one.
+    own_deadline = clock.monotonic_ms().value_or(0) + run_limit_ms;
+  }
+  bool       stopping          = false; // The entry carries a stop reason this submitter is advancing.
+  bool       timed_out_here    = false; // This submitter set the reason `timeout`.
+  auto const enforce_run_limit = [&] {
+    auto const now = clock.monotonic_ms();
+    if (!now) {
+      return;
+    }
+    if (!stopping && *now >= *own_deadline) {
+      auto begun =
+          hq::begin_terminate(conn, hq::begin_terminate_request{.seq = seq, .reason = hq::stop_reason::timeout, .host_id = host},
+                              clock, probe, signaller);
+      if (!begun) {
+        // Retried at the next tick.
+        report.once(std::format("warning: queue: cannot stop entry {} at its run limit: {}", seq, begun.error().message));
+        return;
+      }
+      if (begun->sigterm) {
+        report_signal_failure(*begun->sigterm, report);
+      }
+      stopping       = begun->status == hq::begin_status::marked || begun->status == hq::begin_status::already_terminating;
+      timed_out_here = begun->status == hq::begin_status::marked;
+    }
+    if (stopping) {
+      auto advanced = hq::advance_terminations(
+          conn, hq::advance_request{.host_id = host, .grace_ms = settings.current().grace_ms, .seq = seq}, clock, probe,
+          signaller);
+      if (advanced) {
+        surface_advance(*advanced, report);
+      } else {
+        report.once(std::format("warning: queue: cannot advance the stop of entry {}: {}", seq, advanced.error().message));
+      }
+    }
+  };
+
   runner::status final_status;
   auto           next_poll = clock.monotonic_ms().value_or(0) + settings.current().poll_interval_ms;
   while (true) {
@@ -414,6 +508,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
       final_status = *observed;
       break;
     }
+    enforce_run_limit();
     sleep(k_child_tick);
     auto const now = clock.monotonic_ms();
     if (now && *now >= next_poll) {
@@ -424,6 +519,50 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
       }
       next_poll = *now + settings.current().poll_interval_ms;
     }
+  }
+
+  // How the entry ends. A stop reason on the submitter's own entry decides it,
+  // whoever set it (this submitter at its run limit, or another process: a
+  // cancellation, or an orphan-deadline poll), and a command that died of the
+  // SIGTERM or SIGKILL sent for it is never recorded as `signaled`. Another
+  // process may already have ended the entry once its group was empty; then
+  // the history row it wrote names the reason.
+  std::optional<hq::stop_reason> reason;
+  std::optional<hq::canceller>   who;
+  if (timed_out_here) {
+    reason = hq::stop_reason::timeout;
+  } else if (auto stored = hq::find(conn, seq); stored && *stored) {
+    if ((*stored)->terminate_reason == hq::to_string(hq::stop_reason::timeout)) {
+      reason = hq::stop_reason::timeout;
+    } else if ((*stored)->terminate_reason == hq::to_string(hq::stop_reason::cancelled)) {
+      reason = hq::stop_reason::cancelled;
+      if ((*stored)->cancelled_by) {
+        if (auto decoded = hq::decode_canceller(*(*stored)->cancelled_by); decoded) {
+          who = std::move(*decoded);
+        }
+      }
+    }
+  } else if (stored) {
+    if (auto row = hq::find_history(conn, seq); row && *row) {
+      if ((*row)->outcome == hq::history_outcome::timeout) {
+        reason = hq::stop_reason::timeout;
+      } else if ((*row)->outcome == hq::history_outcome::cancelled) {
+        reason = hq::stop_reason::cancelled;
+        who    = (*row)->cancelled_by;
+      }
+    }
+  }
+
+  if (reason == hq::stop_reason::timeout) {
+    end(hq::end_request{.outcome = hq::history_outcome::timeout});
+    return exit_status{exit_run_limit};
+  }
+  if (reason == hq::stop_reason::cancelled) {
+    // A cancellation without a readable canceller ends as `abandoned`, as the
+    // terminate module ends it, because a `cancelled` row needs one.
+    end(who ? hq::end_request{.outcome = hq::history_outcome::cancelled, .cancelled_by = *who}
+            : hq::end_request{.outcome = hq::history_outcome::abandoned});
+    return exit_status{exit_internal_error};
   }
 
   if (final_status.kind == runner::state::signalled) {
