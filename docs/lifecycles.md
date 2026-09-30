@@ -42,7 +42,7 @@ The lifecycle families, grouped by which binary owns the write:
 | Owner | State machines |
 |---|---|
 | `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync, feedback triage, runs (bench) |
-| `planar-agent` | agent work claim, agent action, workflow run, context record, routing dispatch preview/snapshot |
+| `planar-agent` | agent work claim, agent action, workflow run, context record, routing dispatch preview/snapshot, host queue entry |
 | `planar-ext` | external link sync status, sync event |
 | derived (read-only) | health, resume readiness, closeout gate |
 
@@ -432,6 +432,70 @@ Snapshot `terminal_state` set: `pending`, `completed`, `quality_failed`,
 `bypassed`, `not_reached`. Snapshots and events are trigger-protected
 against update and delete. This machine is independent of the claim
 machine; a preview only *carries* the claim token as one bound value.
+
+### 3.6 Host queue entry
+
+One row of `queue_entries` in the agent database, from `queue run` to its
+`queue_history` row. The store's `state` column holds only `waiting` and
+`running`; `terminating` is a `running` entry carrying the stop markers
+(`terminating_since_mono`, `terminate_reason`), and each outcome is the
+`outcome` of the history row that replaces the entry when it ends
+(`queue_history.outcome` `CHECK`). The transitions are in
+`src/engine/hostqueue/` (`poll.cpp`, `terminate.cpp`, `history.cpp`,
+`queue.cpp`) and in the submitter's loop in
+`src/cmd/planar-agent/handlers/queue/queue.cpp`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> waiting : queue run · queue run --detach (enqueue)
+    [*] --> running : queue run inside a running entry (nested, PLANAR_QUEUE_SLOT)
+    waiting --> running : poll, turn taken (fewer than slots live entries ahead)
+    waiting --> cancelled : queue cancel SEQ · SIGINT, SIGTERM or SIGHUP to the submitter
+    waiting --> wait_timeout : --wait-timeout passes before the turn
+    waiting --> abandoned : reaped by another poll (submitter not live) · own polls failing past stale_after
+    abandoned --> waiting : rejoin, new entry with successor_seq (at most 3 times)
+    running --> exited : command exits
+    running --> signaled : a signal ends the command
+    running --> not_started : program cannot be executed at its turn (126, 127)
+    running --> terminating : deadline passes, submitter or orphan poll marks timeout and sends SIGTERM · queue cancel SEQ marks cancelled
+    running --> timeout : deadline passes and the group was never recorded, submitter stops the command itself
+    running --> abandoned : reaped by a poll (submitter and group both gone) · cannot observe the command
+    terminating --> terminating : grace period passes, SIGKILL to a group that still has members
+    terminating --> timeout : group empty, reason timeout
+    terminating --> cancelled : group empty, reason cancelled
+    exited --> [*]
+    signaled --> [*]
+    not_started --> [*]
+    timeout --> [*]
+    cancelled --> [*]
+    wait_timeout --> [*]
+    abandoned --> [*]
+```
+
+`waiting`, `running` and `terminating` are the live states; every other node
+is an outcome, and ending an entry deletes its row and writes its one history
+row in a single transaction, so an entry is never in both tables.
+
+| Edge | Fired by | Source |
+|---|---|---|
+| `[*]` to `waiting` | The submitter's insert. A nested run (a queued command that calls `queue run`) skips the wait: its entry is inserted `running` with `parent_seq`, outside the slot count and the arrival order. | `enqueue`, `queue.cpp` |
+| `waiting` to `running` | A poll that finds the entry among the first `slots` standing entries, nested ones not counted, after reaping the entries that are not live. It records the start time, the deadline and the run limit in one statement. | `poll` step 4, `poll.cpp` |
+| `waiting` to `cancelled` | `queue cancel` removes the entry in one transaction that first checks it is still waiting, so a turn taken meanwhile cannot strand a command; a signal to the submitter removes its own entry and the submitter exits 125. | `cancel_waiting`, `terminate.cpp`; `interrupted`, handler |
+| `waiting` to `wait_timeout` | The submitter's own check after a poll, so an entry whose turn has come at its limit runs. | handler wait loop |
+| `waiting` or `running` to `abandoned` | Liveness fails: a waiting entry is live only while its submitter exists, its start time matches and it was refreshed within `stale_after`; a running entry is also live while its recorded group has members. A poll by any submitter reaps it. | `judge_liveness`, `poll` step 2 |
+| `abandoned` to `waiting` | A waiting submitter whose entry went missing reads its history row, finds `abandoned` and inserts a new entry that keeps the original wait deadline. `successor_seq` on the old row names the new one, and `queue status` follows the chain. A fourth reaping exits 125. | `rejoin`, `history.cpp` |
+| `running` to `exited`, `signaled` | The submitter observes its command end. `signaled` records the signal, and the submitter exits 128 plus it. A command that dies of a stopping signal ends as `timeout` or `cancelled`, never `signaled`. | `end_entry`, handler |
+| `running` to `not_started` | The command vanished or lost its execute permission while the entry waited. The exit code recorded is 127 or 126. | handler |
+| `running` to `terminating` | `begin_terminate` commits the marker, then sends SIGTERM to the recorded group. The submitter does this at its own deadline; a poll by another submitter does it for an overdue orphan; `queue cancel` does it with reason `cancelled` and the canceller recorded. | `poll` step 3, `begin_terminate` |
+| `terminating` to itself | `advance_terminations` sends SIGKILL once the entry has been terminating for `[queue] grace`. The entry keeps its slot. | `advance_terminations` |
+| `terminating` to `timeout`, `cancelled` | The group is empty (or its id was reused): the entry ends with the outcome its reason names. The submitter exits 124 for `timeout` and 125 for `cancelled`. A poll reaps a terminating entry whose submitter is gone the same way. | `advance_terminations`, `stopped_end` in `poll.cpp` |
+| `running` to `timeout` | No group was recorded, so no other process can judge or signal one: the submitter stops the command itself and ends the entry once the command's first process exits. | handler, `local_timeout` |
+
+A submitter whose running entry is reaped while it is alive does not rejoin
+and does not run the command again. It keeps supervising, still stops the
+command at its deadline, and exits with the command's status while the
+history row says `abandoned`. The limits this leaves are listed in
+[cli-reference.md](cli-reference.md#known-limits).
 
 ---
 
@@ -901,6 +965,7 @@ bug, unless noted.
 | closeout gate | `src/engine/planning/closeout.cppm` | |
 | agent claim, action | `src/engine/runtime/agentactivity.cpp`, `agentatomic.cpp` | `00015_agent_activity.up.sql`, `00029_agent_failure_categories.up.sql` |
 | workflow run, context record | `src/engine/runtime/workflowruns.cppm` | `00022_workflow_context_plane.up.sql` |
+| host queue entry | `src/engine/hostqueue/{poll,terminate,history,queue}.cpp`, `src/cmd/planar-agent/handlers/queue/queue.cpp` | `migrations-agent/00002_queue_tables.up.sql`, `00003_queue_limits.up.sql` |
 | routing dispatch | `src/engine/routing/routing.cppm` | `00030_adaptive_routing_evidence.up.sql`, `00031_dispatch_confirmation_tokens.up.sql` |
 | resume readiness | `src/engine/runtime/resumecheck.cppm` | |
 | health | `src/engine/health/health.cpp` | |

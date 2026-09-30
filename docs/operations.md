@@ -282,6 +282,78 @@ the [`pl-models-config`](../skills/src/pl-models-config.md) skill.
 
 ---
 
+## 5. The Host Build and Test Queue
+
+Builds and tests on one machine go through a single queue, so agents in
+different projects do not compile or run suites at the same time. The queue is
+`planar-agent queue`; it has no daemon, because the process that submits a
+command is the process that runs it. The states an entry moves through are the
+diagram in [`lifecycles.md` §3.6](lifecycles.md#36-host-queue-entry), the verbs
+and exit codes are in [`cli-reference.md` §Queue verbs](cli-reference.md#queue-verbs),
+and the rule agents follow is printed by `planar-agent queue rule`.
+
+**Where it lives.** The queue's state is the agent database, `~/.planar/agent.db`
+(`PLANAR_AGENT_DB` moves it; `PLANAR_DB` does not). It is a separate file from
+`planar.db`, so the queue keeps working when the main schema is locked, and
+the planning verbs never open it. Output of a detached run
+(`queue run --detach`) is written to `queue-logs/<seq>.log` in the directory
+that holds `agent.db`, one file per entry, and is deleted with the history row
+that names it.
+
+**Settings.** The `[queue]` table of `~/.planar/config.toml` sets `slots` (how
+many commands run at once, default 1), `poll_interval`, `stale_after`, `grace`
+(SIGTERM to SIGKILL) and `history_days` (how long history and logs are kept,
+default 30). Ranges and units are in
+[`cli-reference.md`](cli-reference.md#the-queue-table). The file is read at each
+poll, so an edit applies to waiting submitters without a restart, and
+`planar config validate` refuses a bad value. A command's run limit is 30
+minutes unless its submitter passes `--timeout`.
+
+**Watching.** `planar-watch queue` lists every running and waiting entry, in
+order, with its place in line, how long it has waited and run, who submitted it
+and whether it is still live. An entry marked `NOT-LIVE` has lost its submitter
+and is reaped by the next submitter's poll; the viewer never changes anything.
+`planar-watch queue history [--since <duration>]` lists entries that have
+ended, with the outcome, exit code or signal, and who cancelled or replaced
+them. Both take `--json`. One entry's full record is `planar-agent queue status
+<seq>`.
+
+**Cancelling.** `planar-agent queue cancel <seq>` removes a waiting entry, or
+stops a running one (SIGTERM to its command's process group, SIGKILL after the
+grace period) and returns when the group is empty. Any caller that can open the
+store may cancel any entry; the canceller's vendor, role and process id are
+recorded and shown in `queue status` and in history. Pass `--vendor` and
+`--role` so the record names who acted.
+
+**Uptake.** The queue only helps if agents use it. Every `queue run` records
+the submitter's `--vendor` and `--role` (or `PLANAR_VENDOR` and `PLANAR_ROLE`),
+so `planar-watch queue history --since 7d --json` shows which vendors and roles
+queue their builds, how long they wait, how often a command times out and how
+often entries end `abandoned`. An entry with no vendor or role was submitted by
+an agent or script that did not say who it is.
+
+**Preservation and file modes.** `install.sh --uninstall` keeps `agent.db` and
+`queue-logs/` as it keeps `planar.db`; remove them by hand when you want them
+gone. `agent.db` is created with the process's umask, so
+under a default umask it is readable by other users of the machine. A live
+entry stores the submitter's task claim token in the clear
+(`queue_entries.claim_token`, written when `queue run` is given `--claim`; the
+history row does not keep it), and a claim token authorises heartbeats and
+terminal verbs on that claim. Restrict the directory (`chmod 700 ~/.planar`) on
+a shared host. The detached-run log directory is the exception: `queue-logs` is
+created `0700` and its files `0600`. Tightening `agent.db` itself is a known open
+item.
+
+**When something looks wrong.** A `waiting` entry that never advances and shows
+`NOT-LIVE` is an orphan; poll again, and a later submitter reaps it. A command
+past its run limit with no submitter polling is stopped by the next poll or by
+`queue cancel`. Both are accepted limits, listed with the others in
+[`cli-reference.md` §Known limits](cli-reference.md#known-limits). Exit 125 from
+a queue verb means the queue refused; agents stop and report it and never run
+the command directly.
+
+---
+
 ## See Also
 
 - [Architecture](architecture.md) — storage model, schema contract, binary

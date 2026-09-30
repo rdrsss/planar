@@ -52,13 +52,12 @@ they are the coder's job to get right before handoff.
    re-implement broadly. The reviewer's remediation list is the contract
    for the next iteration; edits outside that list are new scope and
    either need their own task rows or wait for a later cycle.
-7. **Budget the turn so break-probes actually run.** A full gate pass in this
-   repo is roughly 25 minutes — clang-tidy over ~563 files, a doxygen pass
-   that SIGBUSes and retries, and a ~9-minute test run. A coder that starts
-   those in the foreground and blocks reliably runs out of turn *before* its
-   break-probes, and the orchestrator inherits an implementation whose tests
-   have no proven discriminating power. Five coder stops across tasks 6339
-   and 6343 were all this exact shape (task 6346). So:
+7. **Budget the turn so break-probes actually run.** Long gates can take tens
+   of minutes: a full static-analysis pass, a documentation lint and a large
+   test suite add up. A coder that starts those in the foreground and blocks
+   reliably runs out of turn *before* its break-probes, and the orchestrator
+   inherits an implementation whose tests have no proven discriminating
+   power. So:
    - **Run break-probes FIRST, then the long gates.** Probes are the evidence
      only you can produce; gates are reproducible by anyone downstream.
    - **Submit the long gates detached** rather than blocking a whole turn on
@@ -76,7 +75,7 @@ they are the coder's job to get right before handoff.
    - **Never let a probe rebuild race a queued gate.** Submit probe rebuilds
      through the queue too. They and a gate write the same build directory,
      and concurrent access to one build dir manufactures failures that look
-     real and carry no exit-code tell (task 6350). Either sequence probes
+     real and carry no exit-code tell. Either sequence probes
      strictly before the suite starts, or give the probes their own build
      directory.
    - **Report partial results with what is outstanding.** A gate still running

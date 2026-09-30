@@ -51,6 +51,22 @@ which evidence was reproduced and which was accepted from the packet.
 
 ---
 
+## Builds and tests are queued, not locked
+
+Full rule: [`agents/methodology.md §Builds and tests go through the host queue`](methodology.md#builds-and-tests-go-through-the-host-queue).
+
+Summary: agents on one machine share its cores, so builds and test runs are
+ordered host-wide through one queue instead of each agent deciding when it is
+safe to start. The queue does not lock a build directory or a resource; it
+serializes execution, and a dead submitter cannot leave it stuck. Submit the
+command, poll for its outcome, and treat the ticket's recorded outcome as the
+truth rather than the command's exit code. A queue that refuses is reported to
+the operator, never bypassed by running the command directly: the operator
+chose refusal over bypass. Only a Planar with no queue at all is the exception,
+and the agent then says Planar needs upgrading.
+
+---
+
 ## Operator feedback contract
 
 Every user-invocable skill returns one compact account of what it understood,
