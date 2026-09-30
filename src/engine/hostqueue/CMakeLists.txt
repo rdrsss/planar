@@ -38,6 +38,9 @@
 # `nested.cppm` (task hq-nested-entry) inserts a nested run's entry after
 # checking its parent; it imports queue and liveness from this bucket.
 #
+# `guard.cppm` (task hq-command-guard) is the pure command guard: it imports
+# nothing but the standard library.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
@@ -49,6 +52,7 @@ planar_module(engine_hostqueue
     poll.cppm
     terminate.cppm
     nested.cppm
+    guard.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
@@ -57,6 +61,7 @@ planar_module(engine_hostqueue
     poll.cpp
     terminate.cpp
     nested.cpp
+    guard.cpp
   DEPENDS
     db
     json_dom

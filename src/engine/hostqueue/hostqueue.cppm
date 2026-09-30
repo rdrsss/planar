@@ -15,3 +15,4 @@ export import planar.engine.hostqueue.liveness;
 export import planar.engine.hostqueue.poll;
 export import planar.engine.hostqueue.terminate;
 export import planar.engine.hostqueue.nested;
+export import planar.engine.hostqueue.guard;

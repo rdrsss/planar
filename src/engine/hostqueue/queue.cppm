@@ -48,8 +48,9 @@ export enum class queue_error_kind : std::uint8_t {
   query_failed,        ///< A SQLite statement failed to prepare, bind or step; `sqlite_code` and `message` say why.
   malformed_argv,      ///< A stored `argv` column is not a JSON array of strings (a store written by something else).
   malformed_canceller, ///< A stored `cancelled_by` column is not the canceller object `encode_canceller` writes.
-  invalid_request,     ///< The caller's arguments do not fit the operation (see the entry point's contract); nothing was written.
-  clock_failed,        ///< The monotonic clock could not be read; nothing was written.
+  unknown_state,   ///< A stored `state` is neither `waiting` nor `running` (a store written by a newer binary or something else).
+  invalid_request, ///< The caller's arguments do not fit the operation (see the entry point's contract); nothing was written.
+  clock_failed,    ///< The monotonic clock could not be read; nothing was written.
 };
 
 /// @brief The failure every fallible entry point reports.

@@ -400,6 +400,7 @@ TEST_CASE("a stored state that is neither waiting nor running is refused, not re
   SECTION("find refuses the row and names the state") {
     auto const found = hq::find(conn, seq);
     REQUIRE_FALSE(found.has_value());
+    CHECK(found.error().kind == hq::queue_error_kind::unknown_state);
     CHECK(found.error().message.find("paused") != std::string::npos);
     CHECK(found.error().message.find("state") != std::string::npos);
   }
