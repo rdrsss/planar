@@ -1002,19 +1002,19 @@ re-run of the identical mutation caught it.
 
 Break-probes are the one piece of evidence only the coder can produce; the
 validation gates are reproducible by anyone downstream. Ordering them the
-other way round is what actually loses the evidence. A full gate pass here is
-roughly 25 minutes, so a coder that runs gates in the foreground and blocks
-runs out of turn before it reaches its probes — five coder stops across tasks
-6339 and 6343 were all that shape (task 6346). The orchestrator then inherits
-tests with unproven discriminating power, and on 6339 the reviewer ran the
-probe itself: the right outcome from the wrong role, because a reviewer judges
-evidence rather than manufacturing it.
+other way round is what actually loses the evidence. A full gate pass in a
+large repository can take tens of minutes (lint, documentation checks and the
+complete test suite), so a coder that runs gates in the foreground and blocks
+can run out of turn before it reaches its probes. The orchestrator then
+inherits tests with unproven discriminating power, and a reviewer who runs the
+probe itself produces the right outcome from the wrong role, because a
+reviewer judges evidence rather than manufacturing it.
 
 Run probes first, then background the long gates and keep working. Do NOT run
 the two concurrently against one build directory: a probe rebuilds, the suite
 reads what it rebuilt, and the resulting failures look real while carrying no
-exit-code tell (task 6350). Give the probes their own build directory or
-sequence them strictly before the suite starts.
+exit-code tell. Give the probes their own build directory or sequence them
+strictly before the suite starts.
 
 ## Verify a commit's contents; do not trust that `git add` did what was intended
 
