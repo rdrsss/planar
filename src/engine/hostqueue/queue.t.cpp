@@ -482,7 +482,7 @@ TEST_CASE("set_log_path names the output file of an entry and refuses a missing 
   REQUIRE(set.has_value());
   CHECK(*set);
   CHECK(hq::find(conn, seq).value()->log_path == "/logs/1.log");
-  CHECK_FALSE(hq::find(conn, other).value()->log_path.has_value());
+  CHECK(hq::find(conn, other).value()->log_path == full_request().log_path); // Only the named entry moved.
 
   auto const missing = hq::set_log_path(conn, 9'999, "/logs/9999.log");
   REQUIRE(missing.has_value());
