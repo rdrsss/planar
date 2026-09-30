@@ -2760,7 +2760,10 @@ TEST_CASE("queue run: --notices ends a submitter interrupted before its turn wit
   auto const* row  = history_seq(snap, 2);
   REQUIRE(row != nullptr);
   CHECK(row->outcome == hq::history_outcome::cancelled);
-  CHECK(row->cancelled_by == hq::canceller{.vendor = "iv", .role = "ir", .pid = b_pid});
+  // Vendor and role are the submitter's (a signal cannot carry them); the pid
+  // is the sender's, this test process (task 7071).
+  CHECK(row->cancelled_by == hq::canceller{.vendor = "iv", .role = "ir", .pid = static_cast<std::int64_t>(::getpid())});
+  CHECK(row->cancelled_by->pid != b_pid);
 }
 
 TEST_CASE("queue run: --notices ends a submitter whose wait limit passed with that outcome", "[cmd][agent][queue][hq-notices]") {

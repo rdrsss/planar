@@ -5,7 +5,9 @@
 module;
 
 #include <cerrno>
+#include <cstring>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -83,17 +85,34 @@ constexpr std::chrono::milliseconds k_child_tick{20};
 /// `signal_relay`, and a lock-free atomic is safe to read in a handler.
 std::atomic<int> g_relay_fd{-1};
 
+/// @brief One signal as the handler relays it: the number and the sending
+/// process (task 7071). Fixed-size and trivially copyable so the handler can
+/// write it to the pipe in one `write`; `write` of at most `PIPE_BUF` bytes to
+/// a pipe is atomic, so records from concurrent signals never interleave and
+/// the reader always sees whole records.
+struct relay_record {
+  int     sig;
+  ::pid_t from; ///< `si_pid` of the signal; 0 when the kernel or an unknown sender raised it.
+};
+static_assert(sizeof(relay_record) <= PIPE_BUF, "a relay record must be written to the pipe atomically");
+static_assert(std::is_trivially_copyable_v<relay_record>);
+
+/// @brief A signal taken off the relay: its number and who sent it.
+struct received_signal {
+  int     sig;
+  ::pid_t from; ///< The sender's pid, or 0 when it is not known.
+};
+
 /// @brief The handler for the forwarded signals. Async-signal-safe: it does
-/// nothing but write the signal number, as one byte, to the relay's pipe. A
-/// full pipe drops the byte, which loses nothing: the wait loop forwards each
-/// signal it reads, and a repeat of a signal already pending carries no
-/// information.
-void relay_handler(int sig) {
+/// nothing but write one `relay_record` to the relay's pipe. A full pipe drops
+/// the record, which loses nothing: the wait loop forwards each signal it
+/// reads, and a repeat of a signal already pending carries no information.
+void relay_handler(int sig, siginfo_t* info, void* /*context*/) {
   auto const saved = errno;
   auto const fd    = g_relay_fd.load();
   if (fd >= 0) {
-    auto const byte = static_cast<unsigned char>(sig);
-    static_cast<void>(::write(fd, &byte, 1));
+    relay_record const record{.sig = sig, .from = info != nullptr ? info->si_pid : 0};
+    static_cast<void>(::write(fd, &record, sizeof record));
   }
   errno = saved;
 }
@@ -119,7 +138,7 @@ auto signal_name(int sig) -> std::string {
 /// @brief Catches SIGINT, SIGTERM and SIGHUP for the lifetime of one
 /// submission and hands them to the wait loops through a self-pipe.
 ///
-/// The handler only writes the signal number to the pipe; every decision is
+/// The handler only writes the signal number and the sender's pid to the pipe; every decision is
 /// made in the loops, which call `drain` and `wait`. A signal that was ignored
 /// when the process started (a `nohup`ed or backgrounded submitter) stays
 /// ignored: the relay does not install a handler for it. The previous
@@ -133,7 +152,8 @@ class signal_relay {
   int                             _write = -1;
   std::array<struct sigaction, 3> _previous{};
   std::array<bool, 3>             _installed{};
-  std::vector<int>                _pending; ///< Signals read off the pipe and not yet drained.
+  std::vector<received_signal>    _pending; ///< Signals read off the pipe and not yet drained.
+  std::string                     _partial; ///< Bytes of a record that has not arrived whole.
 
   signal_relay() = default;
 
@@ -179,8 +199,8 @@ public:
         continue;
       }
       struct sigaction ours{};
-      ours.sa_handler = relay_handler;
-      ours.sa_flags   = SA_RESTART;
+      ours.sa_sigaction = relay_handler;
+      ours.sa_flags     = SA_RESTART | SA_SIGINFO;
       sigfillset(&ours.sa_mask);
       if (::sigaction(k_forwarded_signals[i], &ours, &relay->_previous[i]) == 0) {
         relay->_installed[i] = true;
@@ -191,8 +211,8 @@ public:
 
   /// @brief Reads every signal received since the last call, including any
   /// that `wait` already took off the pipe.
-  /// @return The signal numbers, in arrival order; empty when none.
-  auto drain() -> std::vector<int> {
+  /// @return The signals, in arrival order; empty when none.
+  auto drain() -> std::vector<received_signal> {
     pull();
     return std::exchange(_pending, {});
   }
@@ -209,16 +229,22 @@ public:
   }
 
 private:
-  /// @brief Moves every byte now in the pipe to the pending list.
+  /// @brief Moves every record now in the pipe to the pending list. Records are
+  /// written atomically, so a short read only ever ends on a record boundary;
+  /// `_partial` still carries a fragment over rather than trusting that.
   void pull() {
-    unsigned char buffer[64];
+    char buffer[8 * sizeof(relay_record)];
     while (true) {
       auto const n = ::read(_read, buffer, sizeof buffer);
       if (n <= 0) {
         break;
       }
-      for (ssize_t i = 0; i < n; ++i) {
-        _pending.push_back(buffer[i]);
+      _partial.append(buffer, static_cast<std::size_t>(n));
+      while (_partial.size() >= sizeof(relay_record)) {
+        relay_record record{};
+        std::memcpy(&record, _partial.data(), sizeof record);
+        _partial.erase(0, sizeof record);
+        _pending.push_back(received_signal{.sig = record.sig, .from = record.from});
       }
     }
   }
@@ -1145,7 +1171,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     while (true) {
       if (auto const signals = relay->drain(); !signals.empty()) {
         ctx.err() << std::format("error: queue: interrupted by {} before the nested run was admitted; the command was not run\n",
-                                 signal_name(signals.front()));
+                                 signal_name(signals.front().sig));
         return exit_status{exit_internal_error};
       }
       auto const at = clock.monotonic_ms();
@@ -1294,13 +1320,17 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
 
   // A signal that arrives before the command starts removes the entry and
   // runs nothing (tech spec 647 § Signals are forwarded and the entry is
-  // always removed). The entry ends as `cancelled`, attributed to this
-  // process, and the submitter exits 125.
-  auto const interrupted = [&](int sig) {
+  // always removed). The entry ends as `cancelled` and the submitter exits
+  // 125. The canceller is the process that sent the signal (`si_pid`, task
+  // 7071); when the kernel or an unknown sender raised it (pid 0) it is this
+  // process. The sender's vendor and role are not knowable from a signal, so
+  // they stay the submitter's own.
+  auto const interrupted = [&](const received_signal& received) {
+    auto const sender = received.from > 0 ? static_cast<std::int64_t>(received.from) : pid;
     end(hq::end_request{.outcome      = hq::history_outcome::cancelled,
-                        .cancelled_by = hq::canceller{.vendor = vendor, .role = role, .pid = pid}});
+                        .cancelled_by = hq::canceller{.vendor = vendor, .role = role, .pid = sender}});
     ctx.err() << std::format("error: queue: entry {} was interrupted by {} before its turn; the command was not run\n", seq,
-                             signal_name(sig));
+                             signal_name(received.sig));
     notice.line(seq, "cancelled before its turn");
     // The command never ran, so this is the queue's cancelled exit (decision
     // 1188), not 128 plus the signal, which is for a command a signal ended.
@@ -1665,7 +1695,8 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     }
     // The child was just observed running, so it is not yet reaped and its
     // group id cannot have been reused.
-    for (auto const sig : relay->drain()) {
+    for (auto const& received : relay->drain()) {
+      auto const sig = received.sig;
       if (auto sent = signaller(child.pgid, sig);
           !sent && sent.error() != ident::error::no_such_process &&
           !(sent.error() == ident::error::not_permitted && hq::group_has_only_zombies(probe, child.pgid))) {
