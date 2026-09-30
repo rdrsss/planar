@@ -204,7 +204,7 @@ grep -Fq 'chmod' "$TMP/harden.sh" || fail "harden_planar_home not found in insta
 run_harden() {
   PLANAR_HOME="$1" HARDEN="$TMP/harden.sh" bash -c '
     set -eEuo pipefail
-    log() { :; }
+    vlog() { :; }
     source "$HARDEN"
     harden_planar_home
   '

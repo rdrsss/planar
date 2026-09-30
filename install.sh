@@ -20,9 +20,10 @@
 #     bin/centuriond                  # stock Centurion workflow daemon
 #     share/centurion/                # centuriond migrations + build identity
 #     install-manifest.json           # managed vendor projections
-#     planar.db                       # created on first `planar init`
+#     planar.db                       # created on first `planar init` (0600;
+#                                     # the install root is 0700)
 #     agent.db                        # agent-state database (override with
-#                                     # PLANAR_AGENT_DB); created on first use
+#                                     # PLANAR_AGENT_DB); created 0600 on first use
 #     queue-logs/                     # detached queue-run output, beside agent.db
 #     migrations/00001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at configure
@@ -205,6 +206,27 @@ vlog()  { [[ "$VERBOSE" -eq 1 ]] && printf '  %s%s%s\n' "$C_DIM" "$*" "$C_RESET"
 ok()    { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn()  { WARN_COUNT=$((WARN_COUNT + 1)); printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 err()   { printf '\n%sinstall.sh: %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
+
+# harden_planar_home — make the install root private (decision 1210).
+# planar.db and agent.db both store task claim tokens, which authorise
+# heartbeats and terminal verbs on a claim, so the install root is 0700 and
+# the databases (with their -wal/-shm sidecars) are 0600. Creates the root
+# when absent, tightens an existing install in place, and touches nothing
+# else: queue-logs/ is already created 0700 with 0600 logs by `queue run`, and
+# PLANAR_DB / PLANAR_AGENT_DB overrides outside the root are the operator's.
+# A symlinked database is left alone rather than chmodding its target.
+harden_planar_home() {
+  mkdir -p "$PLANAR_HOME"
+  chmod 700 "$PLANAR_HOME"
+  local db
+  for db in planar.db planar.db-wal planar.db-shm agent.db agent.db-wal agent.db-shm; do
+    if [[ -f "$PLANAR_HOME/$db" && ! -L "$PLANAR_HOME/$db" ]]; then
+      chmod 600 "$PLANAR_HOME/$db"
+      vlog "$db: mode 600"
+    fi
+  done
+  vlog "$PLANAR_HOME: mode 700"
+}
 
 # set -e + this ERR trap turn a raw mid-script failure (a bad CMake build, a
 # failed `cp`) into a framed message naming the phase that died, instead of a
@@ -605,6 +627,7 @@ fi
 
 title "Building the Planar binaries"
 
+harden_planar_home
 mkdir -p "$PLANAR_HOME/bin"
 # CMake configures, builds, and installs all FIVE executable targets:
 #
@@ -1313,6 +1336,9 @@ vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_ROW_VENDOR[@
 # Mark $PLANAR_HOME as a Planar-managed install. The prefix ownership guard
 # reads this on re-install to distinguish "our tree" from a mis-typed --prefix.
 printf 'planar-install %s\nbuild %s\n' "$INSTALLER_VERSION" "${PLANAR_BUILD_ID:-unknown}" > "$PLANAR_STAMP"
+
+# A database the install itself created or replaced is private too.
+harden_planar_home
 
 # ---------- summary ----------
 
