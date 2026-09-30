@@ -109,10 +109,21 @@ auto check_request(const end_request& request) -> std::expected<void, queue_erro
 }
 
 /// @brief The column list every history read shares, in the order
-/// `read_history` consumes it.
+/// `read_history` consumes it, followed by `limit_columns_select`'s two limit
+/// columns.
 constexpr std::string_view k_history_columns = "seq, outcome, exit_code, signal, successor_seq, cancelled_by, nested, "
                                                "parent_seq, cwd, argv, label, vendor, role, log_path, enqueued_at, "
                                                "started_at, ended_at, waited_ms, ran_ms";
+
+/// @brief `select <every history column> from queue_history`, with the limit
+/// columns read as null on a store that predates them.
+auto select_history(db::connection& conn) -> std::expected<std::string, queue_error> {
+  auto limits = limit_columns_select(conn, "queue_history");
+  if (!limits) {
+    return std::unexpected(std::move(limits.error()));
+  }
+  return std::format("select {}, {} from queue_history", k_history_columns, *limits);
+}
 
 /// @brief Materialises the current row of a `k_history_columns` statement.
 auto read_history(const db::statement& stmt) -> std::expected<history_row, queue_error> {
@@ -142,16 +153,18 @@ auto read_history(const db::statement& stmt) -> std::expected<history_row, queue
   if (!argv) {
     return std::unexpected(std::move(argv.error()));
   }
-  out.argv        = std::move(*argv);
-  out.label       = optional_text(stmt, 10);
-  out.vendor      = optional_text(stmt, 11);
-  out.role        = optional_text(stmt, 12);
-  out.log_path    = optional_text(stmt, 13);
-  out.enqueued_at = stmt.column_int64(14);
-  out.started_at  = optional_int(stmt, 15);
-  out.ended_at    = stmt.column_int64(16);
-  out.waited_ms   = stmt.column_int64(17);
-  out.ran_ms      = optional_int(stmt, 18);
+  out.argv          = std::move(*argv);
+  out.label         = optional_text(stmt, 10);
+  out.vendor        = optional_text(stmt, 11);
+  out.role          = optional_text(stmt, 12);
+  out.log_path      = optional_text(stmt, 13);
+  out.enqueued_at   = stmt.column_int64(14);
+  out.started_at    = optional_int(stmt, 15);
+  out.ended_at      = stmt.column_int64(16);
+  out.waited_ms     = stmt.column_int64(17);
+  out.ran_ms        = optional_int(stmt, 18);
+  out.run_limit_ms  = optional_int(stmt, 19);
+  out.wait_limit_ms = optional_int(stmt, 20);
   return out;
 }
 
@@ -169,13 +182,15 @@ struct removed_entry {
   std::optional<std::string>  log_path;
   std::int64_t                enqueued_at = 0;
   std::optional<std::int64_t> started_at;
+  std::optional<std::int64_t> run_limit_ms;
+  std::optional<std::int64_t> wait_limit_ms;
 };
 
 /// @brief Deletes entry `seq` and returns the columns the history row needs,
 /// or `std::nullopt` when the delete removed nothing.
 auto delete_entry(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<removed_entry>, queue_error> {
   auto stmt = conn.prepare("delete from queue_entries where seq = ? returning parent_seq, cancelled_by, cwd, argv, label, "
-                           "vendor, role, log_path, enqueued_at, started_at");
+                           "vendor, role, log_path, enqueued_at, started_at, run_limit_ms, wait_limit_ms");
   if (!stmt) {
     return sql_failure("prepare entry delete", stmt.error());
   }
@@ -190,16 +205,18 @@ auto delete_entry(db::connection& conn, std::int64_t seq) -> std::expected<std::
     return std::optional<removed_entry>{};
   }
   removed_entry out{
-      .parent_seq   = optional_int(*stmt, 0),
-      .cancelled_by = optional_text(*stmt, 1),
-      .cwd          = stmt->column_text(2),
-      .argv         = stmt->column_text(3),
-      .label        = optional_text(*stmt, 4),
-      .vendor       = optional_text(*stmt, 5),
-      .role         = optional_text(*stmt, 6),
-      .log_path     = optional_text(*stmt, 7),
-      .enqueued_at  = stmt->column_int64(8),
-      .started_at   = optional_int(*stmt, 9),
+      .parent_seq    = optional_int(*stmt, 0),
+      .cancelled_by  = optional_text(*stmt, 1),
+      .cwd           = stmt->column_text(2),
+      .argv          = stmt->column_text(3),
+      .label         = optional_text(*stmt, 4),
+      .vendor        = optional_text(*stmt, 5),
+      .role          = optional_text(*stmt, 6),
+      .log_path      = optional_text(*stmt, 7),
+      .enqueued_at   = stmt->column_int64(8),
+      .started_at    = optional_int(*stmt, 9),
+      .run_limit_ms  = optional_int(*stmt, 10),
+      .wait_limit_ms = optional_int(*stmt, 11),
   };
   // A `returning` delete is not finished until it reports done.
   if (auto done = stmt->step(); !done) {
@@ -219,7 +236,8 @@ auto insert_history(db::connection& conn, std::int64_t seq, const end_request& r
                     const std::optional<std::string>& cancelled_by) -> std::expected<void, queue_error> {
   auto stmt = conn.prepare("insert into queue_history (seq, outcome, exit_code, signal, successor_seq, cancelled_by, nested, "
                            "parent_seq, cwd, argv, label, vendor, role, log_path, enqueued_at, started_at, ended_at, "
-                           "waited_ms, ran_ms) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                           "waited_ms, ran_ms, run_limit_ms, wait_limit_ms) "
+                           "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   if (!stmt) {
     return sql_failure("prepare history insert", stmt.error());
   }
@@ -227,7 +245,7 @@ auto insert_history(db::connection& conn, std::int64_t seq, const end_request& r
   auto const ran    = removed.started_at ? std::optional<std::int64_t>{elapsed(*removed.started_at, request.ended_at)}
                                          : std::optional<std::int64_t>{};
 
-  std::array<std::expected<void, db::db_error>, 19> const bound{{
+  std::array<std::expected<void, db::db_error>, 21> const bound{{
       stmt->bind_int64(1, seq),
       stmt->bind_text(2, to_string(request.outcome)),
       bind_optional_int(*stmt, 3, request.exit_code),
@@ -247,6 +265,8 @@ auto insert_history(db::connection& conn, std::int64_t seq, const end_request& r
       stmt->bind_int64(17, request.ended_at),
       stmt->bind_int64(18, waited),
       bind_optional_int(*stmt, 19, ran),
+      bind_optional_int(*stmt, 20, removed.run_limit_ms),
+      bind_optional_int(*stmt, 21, removed.wait_limit_ms),
   }};
   for (auto const& result : bound) {
     if (!result) {
@@ -427,7 +447,11 @@ auto rejoin(db::connection& conn, std::int64_t old_seq, const enqueue_request& r
 }
 
 auto find_history(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<history_row>, queue_error> {
-  auto stmt = conn.prepare(std::format("select {} from queue_history where seq = ?", k_history_columns));
+  auto select = select_history(conn);
+  if (!select) {
+    return std::unexpected(std::move(select.error()));
+  }
+  auto stmt = conn.prepare(std::format("{} where seq = ?", *select));
   if (!stmt) {
     return sql_failure("prepare find history", stmt.error());
   }
@@ -450,9 +474,11 @@ auto find_history(db::connection& conn, std::int64_t seq) -> std::expected<std::
 
 auto list_history(db::connection& conn, std::optional<std::int64_t> ended_since)
     -> std::expected<std::vector<history_row>, queue_error> {
-  auto stmt = conn.prepare(std::format("select {} from queue_history where (?1 is null or ended_at >= ?1) "
-                                       "order by ended_at, seq",
-                                       k_history_columns));
+  auto select = select_history(conn);
+  if (!select) {
+    return std::unexpected(std::move(select.error()));
+  }
+  auto stmt = conn.prepare(std::format("{} where (?1 is null or ended_at >= ?1) order by ended_at, seq", *select));
   if (!stmt) {
     return sql_failure("prepare list history", stmt.error());
   }

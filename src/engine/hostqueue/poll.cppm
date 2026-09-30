@@ -22,9 +22,10 @@
 ///    already terminating, and whose submitter is gone;
 /// 4. when the caller's entry is `waiting` and is among the first `slots`
 ///    live entries that are not nested, by sequence number, sets it `running`
-///    with `started_at` from the wall clock and `deadline_mono` = now + the run
-///    limit. An entry already running is left as it is, so its start time and
-///    deadline are set once.
+///    with `started_at` from the wall clock, `deadline_mono` = now + the run
+///    limit, and `run_limit_ms` = the run limit, so `queue status` can report
+///    it. An entry already running is left as it is, so its start time,
+///    deadline and recorded limit are set once.
 ///
 /// The caller's own entry is never judged for reaping or marking: the
 /// calling process is its submitter and has just refreshed it.
@@ -112,7 +113,7 @@ export struct poll_result {
 
 /// @brief Runs one poll for the caller's entry, as this module's description
 /// states.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3,
 /// not inside a transaction (the poll must take the write lock itself).
 /// @param request The caller's entry, host identity, slot count, staleness
 /// window and run limit.

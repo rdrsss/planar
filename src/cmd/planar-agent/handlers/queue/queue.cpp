@@ -1025,6 +1025,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
         .enqueued_at        = clock.wall_ms(),
         .refreshed_mono     = refreshed_mono,
         .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
+        .wait_limit_ms      = wait_limit_ms,
     };
   };
   std::int64_t seq = 0;

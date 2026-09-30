@@ -27,6 +27,8 @@
 import std;
 import planar.db;
 import planar.db.agentdb;
+import planar.db.migrate;
+import planar.db.migrations_agent;
 import planar.json_dom;
 import planar.process.identity;
 import planar.engine.hostqueue;
@@ -479,8 +481,13 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
   REQUIRE(hq::end_entry(conn, ended_seq,
                         hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 5, .ended_at = wall_now()})
               .has_value());
-  auto const running_seq = enqueue_or_fail(conn, alive_request("running", "/logs/running.log"));
-  start_entry(conn, running_seq, 2);
+  // Test-spec "status carries the documented fields": `--timeout 5m` and
+  // `--wait-timeout 10m` in force for the running entry. The wait limit is
+  // what enqueue records; the run limit is the poll's, recorded at the start.
+  auto running_request          = alive_request("running", "/logs/running.log");
+  running_request.wait_limit_ms = 600'000;
+  auto const running_seq        = enqueue_or_fail(conn, running_request);
+  start_entry(conn, running_seq, 2, 300'000);
   // Both of the two slots are taken before the waiting entry arrives.
   start_entry(conn, enqueue_or_fail(conn, alive_request("second-runner")), 2);
   auto const waiting_seq = enqueue_or_fail(conn, alive_request("waiting"));
@@ -496,6 +503,8 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
   CHECK(text_of(running, "state") == "running");
   CHECK(int_of(running, "slots") == 2);
   CHECK(int_of(running, "grace_ms") == 3000);
+  CHECK(int_of(running, "run_limit_ms") == 300'000);
+  CHECK(int_of(running, "wait_limit_ms") == 600'000);
   CHECK(text_of(running, "cwd") == "/work/project");
   auto const& argv = member(running, "argv");
   REQUIRE(argv.kind == json::json_kind::array);
@@ -517,6 +526,8 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
   CHECK(is_null(waiting, "ran_ms"));
   CHECK(is_null(waiting, "outcome"));
   CHECK(is_null(waiting, "exit_code"));
+  CHECK(is_null(waiting, "run_limit_ms"));  // not started
+  CHECK(is_null(waiting, "wait_limit_ms")); // submitted without one
 
   auto const ended = status_object(run_status(arena, "st_fields_ended", ended_seq));
   CHECK(text_of(ended, "state") == "ended");
@@ -529,6 +540,188 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
   CHECK(text_of(ended, "outcome") == "exited");
   CHECK(int_of(ended, "exit_code") == 5);
   CHECK(text_of(ended, "log_path") == "/logs/ended.log");
+  CHECK(is_null(ended, "run_limit_ms")); // ended without ever starting
+  CHECK(is_null(ended, "wait_limit_ms"));
+}
+
+// Task 7089 (hq-queue-limit-columns): the limits are the ones the submitter
+// was given, read back from the store, through the whole life of a ticket.
+// Real detached submitters carry `--timeout` and `--wait-timeout` from argv
+// to the store, so this pins the verb's wiring, not only the engine's.
+TEST_CASE("queue status: a detached run reports the --timeout and --wait-timeout it was submitted with, waiting, running "
+          "and ended",
+          "[cmd][agent][queue][hq-queue-status][hq-queue-limit-columns]") {
+  auto const arena = parity::make_arena("qs_limits");
+  write_config(arena, k_fast_poll);
+  gate            hold(arena.cpp_root / "hold.fifo");
+  submitter_guard guard;
+
+  auto const holder = submit_detached(arena, "limits_holder", sh_command("read x < \"$1\"", {hold.path.string()}),
+                                      {"--timeout", "5m", "--wait-timeout", "10m"}, guard);
+  await_state(arena, holder.seq, hq::entry_state::running);
+  auto const limited =
+      submit_detached(arena, "limits_waiter", sh_command("exit 0"), {"--timeout", "90s", "--wait-timeout", "1h"}, guard);
+  auto const defaults = submit_detached(arena, "limits_default", sh_command("exit 0"), {}, guard);
+
+  auto const running = status_object(run_status(arena, "lim_running", holder.seq));
+  CHECK(text_of(running, "state") == "running");
+  CHECK(int_of(running, "run_limit_ms") == 300'000);
+  CHECK(int_of(running, "wait_limit_ms") == 600'000);
+  auto const running_text = text_lines(run_status(arena, "lim_running_text", holder.seq, false).out);
+  CHECK(text_value(running_text, "run_limit_ms") == "300000");
+  CHECK(text_value(running_text, "wait_limit_ms") == "600000");
+
+  // A waiting entry has its wait limit in force; its run limit is set when
+  // its turn comes.
+  auto const waiting = status_object(run_status(arena, "lim_waiting", limited.seq));
+  CHECK(text_of(waiting, "state") == "waiting");
+  CHECK(int_of(waiting, "wait_limit_ms") == 3'600'000);
+  CHECK(is_null(waiting, "run_limit_ms"));
+  auto const waiting_default = status_object(run_status(arena, "lim_waiting_default", defaults.seq));
+  CHECK(text_of(waiting_default, "state") == "waiting");
+  CHECK(is_null(waiting_default, "wait_limit_ms"));
+  CHECK(is_null(waiting_default, "run_limit_ms"));
+
+  hold.release();
+  await_history(arena, holder.seq);
+  await_history(arena, limited.seq);
+  await_history(arena, defaults.seq);
+
+  // The history row carries the limits the entry had when it ended.
+  auto const holder_done = status_object(run_status(arena, "lim_holder_done", holder.seq));
+  CHECK(text_of(holder_done, "state") == "ended");
+  CHECK(int_of(holder_done, "run_limit_ms") == 300'000);
+  CHECK(int_of(holder_done, "wait_limit_ms") == 600'000);
+  auto const limited_done = status_object(run_status(arena, "lim_limited_done", limited.seq));
+  CHECK(text_of(limited_done, "outcome") == "exited");
+  CHECK(int_of(limited_done, "run_limit_ms") == 90'000);
+  CHECK(int_of(limited_done, "wait_limit_ms") == 3'600'000);
+  // No `--timeout` is the 30-minute default; no `--wait-timeout` is no limit.
+  auto const defaults_done = status_object(run_status(arena, "lim_default_done", defaults.seq));
+  CHECK(text_of(defaults_done, "outcome") == "exited");
+  CHECK(int_of(defaults_done, "run_limit_ms") == 1'800'000);
+  CHECK(is_null(defaults_done, "wait_limit_ms"));
+  auto const defaults_text = text_lines(run_status(arena, "lim_default_done_text", defaults.seq, false).out);
+  CHECK(text_value(defaults_text, "run_limit_ms") == "1800000");
+  CHECK_FALSE(text_value(defaults_text, "wait_limit_ms").has_value());
+}
+
+// Review F1 on task 7089: `queue status` opens the store read-only and never
+// migrates it, so after an upgrade it reads a store the older, still running
+// submitters left at agent schema version 2. The store is built and seeded
+// with raw SQL (the chain up to 00002, rows as that binary wrote them),
+// because no code at head writes a version-2 store.
+TEST_CASE("queue status: a store still at agent schema version 2 is answered with null limits and left at version 2",
+          "[cmd][agent][queue][hq-queue-status][hq-queue-limit-columns]") {
+  auto const arena = parity::make_arena("qs_v2store");
+  auto const chain = planar::db::agent::migrations();
+  REQUIRE(chain.size() >= 3);
+  {
+    auto raw = planar::db::connection::open(store_path(arena).string());
+    REQUIRE(raw.has_value());
+    REQUIRE(planar::db::apply_all(*raw, chain.subspan(0, 2), planar::db::k_agent_version_table).has_value());
+    REQUIRE(raw->execute(std::format("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, label, "
+                                     "enqueued_at, refreshed_mono, wait_deadline_mono) values ('waiting', '{}', {}, {}, "
+                                     "'/work/project', '[\"make\",\"test\"]', 'old-waiter', {}, {}, {});"
+                                     "insert into queue_history (seq, outcome, exit_code, cwd, argv, label, enqueued_at, "
+                                     "started_at, ended_at, waited_ms, ran_ms) values (40, 'exited', 3, '/work/project', "
+                                     "'[\"true\"]', 'old-ended', 900, 950, 990, 50, 40);",
+                                     this_host(), this_pid(), this_start(), wall_now(), mono_now(), mono_now() + 600'000))
+                .has_value());
+  }
+
+  auto const waiting = run_status(arena, "v2_waiting", 1);
+  INFO("stderr:\n" << waiting.err);
+  CHECK(waiting.code == 0);
+  auto const waiting_doc = status_object(waiting);
+  CHECK(keys_of(waiting_doc) == k_fields);
+  CHECK(text_of(waiting_doc, "state") == "waiting");
+  CHECK(text_of(waiting_doc, "label") == "old-waiter");
+  CHECK(member(waiting_doc, "live").boolean);
+  CHECK(is_null(waiting_doc, "run_limit_ms"));
+  CHECK(is_null(waiting_doc, "wait_limit_ms"));
+
+  auto const ended = run_status(arena, "v2_ended", 40);
+  INFO("stderr:\n" << ended.err);
+  CHECK(ended.code == 0);
+  auto const ended_doc = status_object(ended);
+  CHECK(text_of(ended_doc, "state") == "ended");
+  CHECK(text_of(ended_doc, "outcome") == "exited");
+  CHECK(int_of(ended_doc, "exit_code") == 3);
+  CHECK(is_null(ended_doc, "run_limit_ms"));
+  CHECK(is_null(ended_doc, "wait_limit_ms"));
+
+  auto const text = run_status(arena, "v2_waiting_text", 1, false);
+  CHECK(text.code == 0);
+  CHECK_FALSE(text_value(text_lines(text.out), "wait_limit_ms").has_value());
+
+  // Read-only: the store was not migrated. Checked through a read-only open,
+  // since `open_store` would migrate it.
+  auto after = planar::db::agent::open_agent_db_read_only_at(store_path(arena));
+  REQUIRE(after.has_value());
+  CHECK(planar::db::current_version(*after, planar::db::k_agent_version_table).value() == 2);
+}
+
+// ---------------------------------------------------------------------------
+// An unusable configuration (task 7090, hq-status-degrade-config).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("queue status: an unusable [queue] configuration degrades the answer for a running entry instead of exiting 125",
+          "[cmd][agent][queue][hq-queue-status][hq-status-degrade-config]") {
+  auto const arena = parity::make_arena("qs_badconfig");
+  // `slots = 0` is refused, which makes the whole [queue] table unusable,
+  // `stale_after` included: the answer must not borrow its 60 seconds.
+  write_config(arena, "[queue]\nslots = 0\nstale_after = \"60s\"\ngrace = \"3s\"\n");
+  auto conn = open_store(arena);
+
+  auto const fresh = enqueue_or_fail(conn, alive_request("fresh"));
+  start_entry(conn, fresh, 2);
+  auto const stale = enqueue_or_fail(conn, alive_request("stale"));
+  start_entry(conn, stale, 2);
+  // Both submitters are this process, alive, and neither entry records a
+  // child group, so liveness is freshness alone. 20 seconds old is live under
+  // the default 30-second window; 45 seconds old is not, though it would be
+  // under the 60 seconds the broken table names. The staleness is written
+  // directly: no verb can backdate a refresh.
+  auto const now = mono_now();
+  REQUIRE(conn.execute(std::format("update queue_entries set refreshed_mono = {} where seq = {};"
+                                   "update queue_entries set refreshed_mono = {} where seq = {};",
+                                   now - 20'000, fresh, now - 45'000, stale))
+              .has_value());
+
+  auto const run = run_status(arena, "bad_fresh", fresh);
+  INFO("stderr:\n" << run.err);
+  CHECK(run.code == 0);
+  CHECK(run.err.starts_with("warning: queue status: "));
+  CHECK(run.err.find("slots") != std::string::npos);
+  CHECK(run.err.find("error:") == std::string::npos);
+  auto const doc = status_object(run);
+  CHECK(keys_of(doc) == k_fields);
+  CHECK(text_of(doc, "state") == "running");
+  CHECK(is_null(doc, "slots"));
+  CHECK(is_null(doc, "grace_ms"));
+  CHECK(member(doc, "live").kind == json::json_kind::boolean);
+  CHECK(member(doc, "live").boolean);
+
+  auto const stale_doc = status_object(run_status(arena, "bad_stale", stale));
+  CHECK(member(stale_doc, "live").kind == json::json_kind::boolean);
+  CHECK_FALSE(member(stale_doc, "live").boolean);
+
+  // The text form degrades the same way: exit 0, the warning on stderr, and
+  // no slots or grace line.
+  auto const text = run_status(arena, "bad_fresh_text", fresh, false);
+  CHECK(text.code == 0);
+  CHECK(text.err.starts_with("warning: queue status: "));
+  auto const lines = text_lines(text.out);
+  CHECK(text_value(lines, "state") == "running");
+  CHECK(text_value(lines, "live") == "true");
+  CHECK_FALSE(text_value(lines, "slots").has_value());
+  CHECK_FALSE(text_value(lines, "grace_ms").has_value());
+
+  // Status only read: both entries are still in the store.
+  auto const entries = hq::list(conn);
+  REQUIRE(entries.has_value());
+  CHECK(entries->size() == 2);
 }
 
 // ---------------------------------------------------------------------------

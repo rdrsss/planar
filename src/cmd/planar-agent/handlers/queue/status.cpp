@@ -278,10 +278,21 @@ auto queue_status_with(context& ctx, const cliapp::parsed_args& args, queue_stat
       .host_id  = ident::host_identity(ident::native_identity_source()),
       .now_mono = *now_mono,
       .now_wall = clock.wall_ms(),
-      .settings = [&load]() -> std::expected<hq::status_settings, std::string> {
+      // An unusable `[queue]` table does not stop the answer (task
+      // hq-status-degrade-config): what the store says is still true, only
+      // the configuration-derived fields are unknown. `slots` and `grace_ms`
+      // are reported null, liveness is judged against the default staleness
+      // window (none of the broken table's values is trusted, including a
+      // `stale_after` that parsed), and the reason goes to standard error.
+      .settings = [&load, &ctx]() -> std::expected<hq::status_settings, std::string> {
         auto settings = load();
         if (!settings) {
-          return std::unexpected(describe(settings.error()));
+          ctx.err() << std::format(
+              "warning: queue status: the [queue] configuration cannot be used ({}); slots and grace_ms are unknown and "
+              "liveness is judged against the default staleness window\n",
+              describe(settings.error()));
+          return hq::status_settings{
+              .slots = std::nullopt, .stale_after_ms = qcfg::default_queue_settings().stale_after_ms, .grace_ms = std::nullopt};
         }
         return hq::status_settings{
             .slots = settings->slots, .stale_after_ms = settings->stale_after_ms, .grace_ms = settings->grace_ms};
@@ -292,7 +303,9 @@ auto queue_status_with(context& ctx, const cliapp::parsed_args& args, queue_stat
   auto answered = hq::query_status(conn, *seq, request);
   if (!answered) {
     return refuse(ctx, as_json, k_exit_queue_failed,
-                  answered.error().kind == hq::status_error_kind::settings ? "config_unusable" : "store_unreadable",
+                  // The supplier above never fails (an unusable configuration
+                  // degrades the answer), so a settings failure is internal.
+                  answered.error().kind == hq::status_error_kind::settings ? "internal" : "store_unreadable",
                   answered.error().message);
   }
   if (!answered->has_value()) {

@@ -18,13 +18,19 @@
 ///
 /// The fields mirror the `--json` field set in the tech spec. A member that
 /// does not apply to the state found is empty. `run_limit_ms` and
-/// `wait_limit_ms` are always empty: the store records a deadline on a
-/// monotonic clock, not the limit an entry was submitted with, so the limit
-/// cannot be recovered from it.
+/// `wait_limit_ms` are read from the entry, or from the history row that
+/// copied them (agent migration 00003): the wait limit is recorded at
+/// enqueue and is empty when the entry had none; the run limit is recorded
+/// when the entry starts and is empty while it waits. A row written before
+/// that migration has neither.
 ///
 /// Error boundary: a store failure is a `queue_error`; the configuration is
-/// asked for only when the entry described is still in the queue, and its
-/// failure is a `status_error` of kind `settings`. Nothing throws.
+/// asked for only when the entry described is still in the queue, and a
+/// supplier failure is a `status_error` of kind `settings`. A caller that
+/// wants to answer despite an unusable configuration supplies settings with
+/// `slots` and `grace_ms` empty and a fallback staleness window instead of
+/// failing (task hq-status-degrade-config); both are then reported empty.
+/// Nothing throws.
 module;
 
 export module planar.engine.hostqueue.status;
@@ -52,9 +58,9 @@ export auto to_string(status_state state) -> std::string_view;
 
 /// @brief The configuration `query_status` needs for an entry still in the queue.
 export struct status_settings {
-  std::int64_t slots          = 1; ///< The slot count in force.
-  std::int64_t stale_after_ms = 0; ///< The staleness window, ms, liveness is judged against.
-  std::int64_t grace_ms       = 0; ///< The SIGTERM-to-SIGKILL grace period, ms.
+  std::optional<std::int64_t> slots;              ///< The slot count in force; empty when the configuration is unusable.
+  std::int64_t                stale_after_ms = 0; ///< The staleness window, ms, liveness is judged against.
+  std::optional<std::int64_t> grace_ms;           ///< The SIGTERM-to-SIGKILL grace period, ms; empty when unusable.
 };
 
 /// @brief What the caller supplies to `query_status`.
@@ -93,10 +99,10 @@ export struct queue_status {
   std::optional<std::int64_t>    ended_at;        ///< Wall clock at the end, ms, when ended.
   std::optional<std::int64_t>    waited_ms;       ///< Time from submission to start, or to now while waiting.
   std::optional<std::int64_t>    ran_ms;          ///< Time from start to the end, or to now while running.
-  std::optional<std::int64_t>    run_limit_ms;    ///< Not recoverable from the store; always empty.
-  std::optional<std::int64_t>    wait_limit_ms;   ///< Not recoverable from the store; always empty.
-  std::optional<std::int64_t>    slots;           ///< The slot count in force, for an entry in the queue.
-  std::optional<std::int64_t>    grace_ms;        ///< The grace period in force, for an entry in the queue.
+  std::optional<std::int64_t>    run_limit_ms;    ///< The run limit it runs or ran under, once started.
+  std::optional<std::int64_t>    wait_limit_ms;   ///< The wait limit it was submitted with, when limited.
+  std::optional<std::int64_t>    slots;           ///< The slot count in force, for an entry in the queue, when known.
+  std::optional<std::int64_t>    grace_ms;        ///< The grace period in force, for an entry in the queue, when known.
 };
 
 /// @brief Which step of `query_status` failed.

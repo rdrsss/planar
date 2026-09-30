@@ -21,6 +21,7 @@ import std;
 import planar.db;
 import planar.db.agentdb;
 import planar.engine.hostqueue;
+import planar.process.identity;
 
 namespace {
 
@@ -741,4 +742,63 @@ TEST_CASE("a rejoin whose insert fails leaves the old row without a successor", 
   CHECK_FALSE(got.has_value());
   CHECK_FALSE(history_of(conn, old_seq).successor_seq.has_value());
   CHECK(hq::list(conn).value().empty());
+}
+
+TEST_CASE("the history row copies the run and wait limits the entry recorded",
+          "[engine][hostqueue][hq-history][hq-queue-limit-columns]") {
+  // Task hq-queue-limit-columns: `queue status` answers an ended entry from
+  // its history row, so ending an entry carries its limits across. The run
+  // limit is set by the poll that starts the entry, which is how this case
+  // gets one; an entry that never started has none to copy.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto ran_request               = request_for("ran");
+  ran_request.wait_deadline_mono = ran_request.refreshed_mono + 600'000;
+  ran_request.wait_limit_ms      = 600'000;
+  auto const ran                 = enqueue_one(conn, ran_request);
+
+  auto gave_up_request               = request_for("gave-up");
+  gave_up_request.wait_deadline_mono = gave_up_request.refreshed_mono + 120'000;
+  gave_up_request.wait_limit_ms      = 120'000;
+  auto const gave_up                 = enqueue_one(conn, gave_up_request);
+  end_one(conn, gave_up, hq::end_request{.outcome = hq::history_outcome::wait_timeout, .ended_at = k_enqueued_at + 5});
+
+  planar::process::identity::system_clock clock;
+  auto const                              polled = hq::poll(
+      conn, hq::poll_request{.seq = ran, .host_id = "boot-7f3a", .slots = 1, .stale_after_ms = 60'000, .run_limit_ms = 300'000},
+      clock, hq::system_process_probe());
+  REQUIRE(polled.has_value());
+  REQUIRE(polled->started);
+  end_one(conn, ran, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_enqueued_at + 9});
+
+  auto const ran_row = history_of(conn, ran);
+  CHECK(ran_row.run_limit_ms == 300'000);
+  CHECK(ran_row.wait_limit_ms == 600'000);
+  auto const gave_up_row = history_of(conn, gave_up);
+  CHECK_FALSE(gave_up_row.run_limit_ms.has_value());
+  CHECK(gave_up_row.wait_limit_ms == 120'000);
+}
+
+TEST_CASE("rejoin keeps the wait limit of the request it re-enqueues",
+          "[engine][hostqueue][hq-missing-entry][hq-queue-limit-columns]") {
+  // The submitter passes its original request (queue run's `make_request`),
+  // so the rejoined entry reports the same wait limit as the reaped one.
+  scratch_dir scratch;
+  auto        conn           = open_scratch_store(scratch);
+  auto        request        = request_for("first");
+  request.wait_deadline_mono = request.refreshed_mono + 600'000;
+  request.wait_limit_ms      = 600'000;
+  auto const old_seq         = enqueue_one(conn, request);
+  end_one(conn, old_seq, hq::end_request{.outcome = hq::history_outcome::abandoned, .ended_at = k_enqueued_at + 5});
+  CHECK(history_of(conn, old_seq).wait_limit_ms == 600'000);
+
+  auto const got = hq::rejoin(conn, old_seq, request);
+  REQUIRE(got.has_value());
+  REQUIRE(got->status == hq::rejoin_status::rejoined);
+  auto const found = hq::find(conn, got->seq);
+  REQUIRE((found.has_value() && found->has_value()));
+  CHECK((*found)->wait_limit_ms == 600'000);
+  CHECK((*found)->wait_deadline_mono == request.refreshed_mono + 600'000);
+  CHECK_FALSE((*found)->run_limit_ms.has_value());
 }

@@ -67,6 +67,15 @@ it reads the highest row and refuses the store, leaving the file unchanged,
 only when that row's `compat` is higher than the binary's version. A store
 that is ahead of the binary but still compatible is opened as it is.
 
+`open_agent_db_read_only` runs the same check but never migrates, so a
+read-only reader (`planar-agent queue status`) can meet a store behind the
+binary's head. A migration that adds a column therefore also obliges every
+read that names the column to tolerate its absence, reading it as NULL
+rather than failing the query (00003's `run_limit_ms` / `wait_limit_ms` go
+through `limit_columns_select` in `src/engine/hostqueue/queue.cppm`).
+Writes need no such care: they run only on a connection `open_agent_db`
+has migrated to head.
+
 ## The pinned compat table
 
 `src/lib/db/agentdb.t.cpp` (`every agent migration's compat value is
