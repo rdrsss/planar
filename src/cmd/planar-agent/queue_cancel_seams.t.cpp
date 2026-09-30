@@ -605,3 +605,132 @@ TEST_CASE("queue cancel: an entry its own submitter ends as exited after the mar
   REQUIRE(row.has_value());
   CHECK(row->outcome == hq::history_outcome::exited);
 }
+
+TEST_CASE("queue cancel: a group that was already empty is reported as an exited command, not as stopped",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch    sc;
+  world      w;
+  auto const seq = seed_running(sc, w);
+  w.live.clear(); // The command exited on its own; its entry has not been ended yet.
+
+  auto const got = run_cancel(sc, seq, w.deps(10'000));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(w.signals.empty());
+  CHECK(got.out.find("already exited") != std::string::npos);
+  CHECK(got.out.find("was stopped") == std::string::npos);
+  auto const row = history_now(sc, seq);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::cancelled);
+}
+
+namespace {
+
+/// @brief A clock that runs a hook at every wall-clock read, so a case can
+/// act at the exact moment the submitter writes the end of its entry.
+class hooked_clock final : public ident::clock {
+public:
+  ident::system_clock   inner;
+  std::function<void()> on_wall;
+
+  [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, ident::error> override {
+    return inner.monotonic_ms();
+  }
+  [[nodiscard]] auto wall_ms() -> std::int64_t override {
+    if (on_wall) {
+      on_wall();
+    }
+    return inner.wall_ms();
+  }
+};
+
+/// @brief What `queue run -- true --notices` reports when another process ends
+/// its entry with `outcome` after the command exited and before the submitter
+/// writes its own end.
+auto run_and_lose_the_end(hq::history_outcome outcome) -> invocation {
+  scratch sc;
+  {
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    REQUIRE(opened.has_value()); // Create the store before the submitter races anything.
+  }
+  auto clock = std::make_shared<hooked_clock>();
+  bool fired = false;
+  // The poll interval is a minute, so the only wall-clock read once the entry
+  // is running with its group recorded is the one that stamps the final end.
+  clock->on_wall = [&] {
+    if (fired) {
+      return;
+    }
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    if (!opened) {
+      return;
+    }
+    auto const entry = hq::find(*opened, 1);
+    if (!entry || !entry->has_value() || (*entry)->state != hq::entry_state::running || !(*entry)->child_pgid) {
+      return;
+    }
+    fired = true;
+    hq::end_request request{.outcome = outcome, .ended_at = 1};
+    if (outcome == hq::history_outcome::cancelled) {
+      request.cancelled_by = hq::canceller{.vendor = "other", .role = "canceller", .pid = 4242};
+    }
+    REQUIRE(hq::end_entry(*opened, 1, request).has_value());
+  };
+
+  agent::handlers::queue_run_deps deps;
+  deps.clock         = clock;
+  deps.sleep         = [](std::chrono::milliseconds) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); };
+  deps.load_settings = [] {
+    return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{
+        planar::engine::config::queue_settings{
+            .slots = 1, .poll_interval_ms = 60'000, .stale_after_ms = 3'600'000, .grace_ms = 10'000, .history_days = 30}};
+  };
+  planar::cliapp::parsed_args args;
+  args.path                        = {"queue", "run"};
+  args.positional_lists["command"] = {"true"};
+  args.positionals["command"]      = "true";
+  args.flags["--notices"]          = {"true"};
+
+  std::ostringstream out;
+  std::ostringstream err;
+  agent::context     ctx({"planar-agent", "queue", "run"},
+                         agent::map_env({{"PLANAR_AGENT_DB", (sc.root / "agent.db").string()},
+                                         {"HOME", (sc.root / "fakehome").string()},
+                                         {"PWD", (sc.root / "proj").string()},
+                                         {"PATH", "/usr/bin:/bin"},
+                                         {"PLANAR_CONFIG_PATH", (sc.root / "config.toml").string()},
+                                         {"PLANAR_DB", (sc.root / "planar.db").string()}}),
+                         sc.root / "proj", std::make_shared<agent::database>(sc.root / "planar.db", err), out, err);
+  auto const         outcome_of_run = agent::handlers::queue_run_with(ctx, args, std::move(deps));
+  auto const*        status         = std::get_if<agent::exit_status>(&outcome_of_run);
+  REQUIRE(status != nullptr);
+  REQUIRE(fired);
+  return invocation{.code = status->code, .out = out.str(), .err = err.str()};
+}
+
+} // namespace
+
+TEST_CASE("queue run: a command that exited while a cancel ended its entry reports the cancel, exit 125",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  auto const got = run_and_lose_the_end(hq::history_outcome::cancelled);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.find("queue: entry 1 cancelled\n") != std::string::npos);
+  CHECK(got.err.find("exited with code 0") == std::string::npos);
+}
+
+TEST_CASE("queue run: a command that exited while its entry was ended at its run limit reports the limit, exit 124",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  auto const got = run_and_lose_the_end(hq::history_outcome::timeout);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 124);
+  CHECK(got.err.find("queue: entry 1 stopped at its run limit\n") != std::string::npos);
+}
+
+TEST_CASE("queue run: a command that exited while its entry was reaped keeps the documented exit and notice",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  auto const got = run_and_lose_the_end(hq::history_outcome::abandoned);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(got.err.find("queue: entry 1 exited with code 0\n") != std::string::npos);
+}

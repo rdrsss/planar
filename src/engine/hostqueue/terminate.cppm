@@ -89,6 +89,14 @@ export enum class stop_reason : std::uint8_t {
 /// @return `timeout` or `cancelled`.
 export auto to_string(stop_reason reason) -> std::string_view;
 
+/// @brief Whether the checker may use this entry's process ids: both host
+/// identities are known and equal (the rule liveness applies). A checker whose
+/// own identity is `unknown` may use none.
+/// @param e The entry.
+/// @param host_id The checker's host identity.
+/// @return True when the entry's pids and groups can be judged and signalled here.
+export auto same_host(const entry& e, std::string_view host_id) -> bool;
+
 /// @brief Which of the two stopping signals a call sends.
 export enum class stop_signal : std::uint8_t {
   term, ///< SIGTERM, sent once by the process that set the terminating marker.
@@ -164,7 +172,7 @@ export struct begin_result {
 /// @brief Step one of stopping a command, as this module's description
 /// states: marks the entry in one committed transaction, then sends SIGTERM
 /// to its child group.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
 /// not inside a transaction.
 /// @param request The entry, the reason, the canceller and the checker's
 /// host identity.
@@ -196,7 +204,7 @@ export struct cancel_waiting_result {
 /// @brief Removes a waiting entry as cancelled: one `BEGIN IMMEDIATE`
 /// transaction reads the entry and, only when it is waiting, ends it through
 /// `end_entry` with outcome `cancelled` and `who`.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
 /// not inside a transaction.
 /// @param seq The entry to cancel.
 /// @param who The canceller, recorded on the history row.
@@ -238,7 +246,7 @@ export struct advance_result {
 /// @brief Step two of stopping a command, as this module's description
 /// states. Only terminating entries on the checker's host that record a
 /// child group are examined; any other entry is left alone.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
 /// not inside a transaction.
 /// @param request The checker's host identity, the grace period and an
 /// optional single entry.
@@ -277,7 +285,7 @@ export struct poll_stop_result {
 /// module's description states: `poll`, then, with the poll committed and no
 /// transaction open, SIGTERM to each entry it marked, then
 /// `advance_terminations` over every terminating entry on this host.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
 /// not inside a transaction.
 /// @param request The poll request and the grace period.
 /// @param clock The monotonic and wall clocks, read by the poll and by the

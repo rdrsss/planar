@@ -50,12 +50,6 @@ auto clock_failure(std::string_view operation) -> std::unexpected<queue_error> {
   });
 }
 
-/// @brief Whether the checker may use this entry's process ids: both host
-/// identities are known and equal (the rule liveness applies).
-auto same_host(const entry& e, std::string_view host_id) -> bool {
-  return e.host_id == host_id && e.host_id != identity::k_unknown_host_identity;
-}
-
 /// @brief Whether the entry records a child group that can be verified: an
 /// id above 1 (never the caller's own group, init's, or every process) and
 /// the start time of the group's leader.
@@ -110,6 +104,10 @@ auto outcome_for(std::string_view reason) -> std::optional<history_outcome> {
 }
 
 } // namespace
+
+auto same_host(const entry& e, std::string_view host_id) -> bool {
+  return e.host_id == host_id && e.host_id != identity::k_unknown_host_identity;
+}
 
 auto to_string(stop_reason reason) -> std::string_view {
   switch (reason) {

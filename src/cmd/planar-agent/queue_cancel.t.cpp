@@ -806,12 +806,10 @@ TEST_CASE("queue cancel: racing the command's own exit leaves exactly one histor
     if (outcome == hq::history_outcome::cancelled) {
       ++cancelled_rounds;
       CHECK(cancelled.code == 0);
-      // Normally the submitter reads the marker and exits 125. When the command
-      // had already exited and cancel ended the entry before the submitter's own
-      // end, the submitter finds its entry gone and, as a running submitter does
-      // (tech spec 647 § Waiting and claiming a turn), exits with what it
-      // observed of its command: 0. Either way one row says cancelled.
-      CHECK((submitted.code == 125 || submitted.code == 0));
+      // The submitter reports the cancel: it reads the marker, or, when cancel
+      // ended the entry after the command exited, it re-reads the history row
+      // its own end found already written (decision 1188).
+      CHECK(submitted.code == 125);
     } else {
       REQUIRE(outcome == hq::history_outcome::exited);
       ++exited_rounds;
@@ -820,6 +818,10 @@ TEST_CASE("queue cancel: racing the command's own exit leaves exactly one histor
     }
   }
   INFO("cancelled " << cancelled_rounds << ", exited " << exited_rounds);
+  // Both branches are reported, and the cancel branch must have run; the exit
+  // branch is pinned deterministically by the ended-entry case and the seams.
+  WARN("race split over " << k_rounds << " rounds: cancelled " << cancelled_rounds << ", exited " << exited_rounds);
+  CHECK(cancelled_rounds > 0);
   CHECK(cancelled_rounds + exited_rounds == k_rounds);
   CHECK(require_snapshot(arena).history.size() == static_cast<std::size_t>(k_rounds));
 }
