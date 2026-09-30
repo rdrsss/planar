@@ -329,6 +329,28 @@ auto connection::open(std::string_view path) -> std::expected<connection, db_err
   return conn;
 }
 
+auto connection::open_existing(std::string_view path, int busy_timeout_ms) -> std::expected<connection, db_error> {
+  const std::string cpath(path);
+  sqlite3*          handle = nullptr;
+  const int         rc     = sqlite3_open_v2(cpath.c_str(), &handle, SQLITE_OPEN_READWRITE, nullptr);
+  if (rc != SQLITE_OK) {
+    db_error err = make_error(handle);
+    if (handle != nullptr) {
+      sqlite3_close_v2(handle);
+    }
+    return std::unexpected(err);
+  }
+  sqlite3_extended_result_codes(handle, 1);
+  // Before any statement: the bound applies to everything that follows.
+  sqlite3_busy_timeout(handle, busy_timeout_ms);
+
+  connection conn(handle, false);
+  if (auto pragma = conn.execute("pragma foreign_keys = on;"); !pragma) {
+    return std::unexpected(pragma.error());
+  }
+  return conn;
+}
+
 auto connection::open_read_only(std::string_view path) -> std::expected<connection, db_error> {
   // Both the `mode=ro` URI parameter and SQLITE_OPEN_READONLY are used
   // together (docs/architecture.md-equivalent rationale ported from

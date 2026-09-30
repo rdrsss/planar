@@ -541,6 +541,18 @@ export auto acquire_claim(db::connection& conn, const acquire_args& args) -> std
 export auto heartbeat_claim(db::connection& conn, std::string_view claim_token, std::optional<std::int64_t> ttl_secs)
     -> std::expected<claim, agent_error>;
 
+/// @brief The length of a claim's lease in whole seconds: the span
+/// `heartbeat_claim` carries forward when it is given no TTL
+/// (`lease_expires_at` minus `last_heartbeat_at`, rounded).
+///
+/// Reads the row only; it neither refreshes nor refuses a terminal or lapsed
+/// claim, so a caller can size a renewal cadence before renewing. A caller that
+/// renews on a schedule (`queue run --claim`) uses half of this.
+/// @param conn An open, migrated connection.
+/// @param claim_token The token.
+/// @return The lease length, or `claim_not_found` / `query_failed`.
+export auto lease_length_seconds(db::connection& conn, std::string_view claim_token) -> std::expected<std::int64_t, agent_error>;
+
 /// @brief Move a live claim to a terminal status.
 ///
 /// Guarded on BOTH `status='active'` and an unexpired lease, so it cannot

@@ -138,6 +138,47 @@ TEST_CASE("restrict_writes_to denies a write against a table named only at RUNTI
   REQUIRE_FALSE(upd.has_value());
 }
 
+TEST_CASE("connection::open_existing never creates the file", "[db][connection][error-path]") {
+  scratch_db_path scratch;
+  REQUIRE_FALSE(std::filesystem::exists(scratch.path_));
+  auto conn = planar::db::connection::open_existing(scratch.path_.string(), 100);
+  REQUIRE_FALSE(conn.has_value());
+  CHECK((conn.error().code_ & 0xff) == k_sqlite_cantopen);
+  CHECK_FALSE(std::filesystem::exists(scratch.path_));
+}
+
+TEST_CASE("connection::open_existing bounds the lock wait from its first statement and leaves the journal mode alone",
+          "[db][connection]") {
+  scratch_db_path scratch;
+  {
+    auto seeded = planar::db::connection::open(scratch.path_.string());
+    REQUIRE(seeded.has_value());
+    REQUIRE(seeded->execute("create table t (x integer); pragma journal_mode = delete;").has_value());
+  }
+  auto holder = planar::db::connection::open_existing(scratch.path_.string(), 5000);
+  REQUIRE(holder.has_value());
+  REQUIRE(holder->execute("begin exclusive;").has_value());
+
+  auto const before  = std::chrono::steady_clock::now();
+  auto       bounded = planar::db::connection::open_existing(scratch.path_.string(), 200);
+  REQUIRE(bounded.has_value());
+  bool read_ok = false;
+  if (auto stmt = bounded->prepare("select count(*) from t"); stmt) {
+    read_ok = stmt->step().has_value();
+  }
+  auto const waited = std::chrono::steady_clock::now() - before;
+  // The reader waits for the exclusive lock for its 200 ms, not the 5 s the
+  // ordinary open gives every statement, and then fails as busy.
+  CHECK_FALSE(read_ok);
+  CHECK(waited < std::chrono::milliseconds(2500));
+
+  REQUIRE(holder->execute("rollback;").has_value());
+  auto mode = bounded->prepare("pragma journal_mode");
+  REQUIRE(mode.has_value());
+  REQUIRE(mode->step().has_value());
+  CHECK(mode->column_text(0) == "delete");
+}
+
 TEST_CASE("connection::open_read_only fails on a nonexistent path", "[db][connection][error-path]") {
   scratch_db_path scratch; // never created — path simply does not exist.
 

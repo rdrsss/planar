@@ -1729,3 +1729,41 @@ TEST_CASE("queue run: a forwarded signal that the kernel refuses for a group of 
     CHECK(got.err.contains("SIGTERM to the command's process group failed") == !zombies);
   }
 }
+
+TEST_CASE("queue run --claim: a renewal that keeps failing is reported once across many attempts, and the command runs",
+          "[cmd][agent][queue][hq-claim]") {
+  // The main database's schema is ahead of the binary, so every attempt fails
+  // the same way. Time is steered: each tick moves the monotonic clock a
+  // second, so the command's second of real life covers hundreds of seconds of
+  // retries (one every five), and a submitter that wrote a warning per attempt
+  // would write dozens.
+  scratch sc;
+  {
+    auto opened = planar::db::connection::open((sc.root / "planar.db").string());
+    REQUIRE(opened.has_value());
+    REQUIRE(
+        opened->execute("create table schema_migrations (version integer primary key, description text not null);").has_value());
+    REQUIRE(
+        opened->execute("insert into schema_migrations (version, description) values (99999, 'from the future');").has_value());
+  }
+  auto const clock = std::make_shared<steered_clock>();
+
+  agent::handlers::queue_run_deps deps;
+  deps.clock = clock;
+  script(deps, sc, one_slot_settings(), [clock](planar::db::connection&) { clock->advance(1'000); }, 5'000);
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args          = queue_args({"/bin/sh", "-c", "sleep 1; exit 4"});
+  args.flags["--claim"] = {"0123456789abcdef0123456789abcdef"};
+  auto const  outcome   = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status    = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  auto const text = fx.err.str();
+  INFO("stderr:\n" << text);
+  CHECK(status->code == 4);
+  std::size_t warnings = 0;
+  for (std::size_t at = text.find("warning: queue:"); at != std::string::npos; at = text.find("warning: queue:", at + 1)) {
+    ++warnings;
+  }
+  CHECK(warnings == 1);
+  CHECK(last_line(text) == "queue: entry 1 exited with code 4");
+}

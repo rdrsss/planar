@@ -17,6 +17,22 @@ export struct database_policy {
   /// @param error_stream Destination for nonfatal diagnostics.
   /// @return An open connection or a command error.
   static auto open(const std::filesystem::path& path, std::ostream& error_stream) -> std::expected<db::connection, domain_error>;
+  /// @brief Open an EXISTING database with a bounded lock wait, under the same
+  /// schema policy as `open`: it never creates the file, never switches the
+  /// journal mode, applies no migration, and refuses a schema on either side of
+  /// the binary's. A schema version that cannot be read (a lock held past the
+  /// bound) is a failure, not "behind".
+  /// @param path Database path.
+  /// @param error_stream Destination for nonfatal diagnostics.
+  /// @param busy_timeout_ms The longest any statement waits for a lock.
+  /// @return An open connection or a command error.
+  static auto open_existing(const std::filesystem::path& path, std::ostream& error_stream, int busy_timeout_ms)
+      -> std::expected<db::connection, domain_error>;
+
+private:
+  /// @brief The schema handshake shared by both opens.
+  static auto verify(db::connection opened, const std::filesystem::path& path, std::ostream& error_stream, bool strict)
+      -> std::expected<db::connection, domain_error>;
 };
 /// @brief Lazily opened agent database object.
 export using database = internal::database<database_policy>;

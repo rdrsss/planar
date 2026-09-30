@@ -437,6 +437,38 @@ TEST_CASE("heartbeat refuses a terminal or expired claim", "[agentactivity]") {
   REQUIRE(unknown.error() == aa::agent_error::claim_not_found);
 }
 
+TEST_CASE("lease_length_seconds is the length a bare heartbeat renews, and reads nothing else", "[agentactivity]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 2);
+
+  auto args       = basic_args(fx, task_id_at(conn, 0));
+  args.ttl_secs   = 4;
+  auto const held = aa::acquire_claim(conn, args);
+  REQUIRE(held.has_value());
+  auto const length = aa::lease_length_seconds(conn, held->claim_token);
+  REQUIRE(length.has_value());
+  CHECK(*length == 4);
+
+  // A re-TTL changes it; a bare heartbeat keeps it.
+  REQUIRE(aa::heartbeat_claim(conn, held->claim_token, 90).has_value());
+  CHECK(aa::lease_length_seconds(conn, held->claim_token).value_or(-1) == 90);
+  REQUIRE(aa::heartbeat_claim(conn, held->claim_token, std::nullopt).has_value());
+  CHECK(aa::lease_length_seconds(conn, held->claim_token).value_or(-1) == 90);
+
+  // It reads the row and writes nothing: a terminal claim still answers, and
+  // the heartbeat stays as it was.
+  REQUIRE(aa::release_claim(conn, held->claim_token, aa::claim_status::released, std::nullopt, std::nullopt).has_value());
+  auto const released = aa::get_claim_by_token(conn, held->claim_token);
+  REQUIRE(released.has_value());
+  CHECK(aa::lease_length_seconds(conn, held->claim_token).value_or(-1) == 90);
+  CHECK(aa::get_claim_by_token(conn, held->claim_token)->last_heartbeat_at == released->last_heartbeat_at);
+
+  auto const unknown = aa::lease_length_seconds(conn, "deadbeef");
+  REQUIRE_FALSE(unknown.has_value());
+  CHECK(unknown.error() == aa::agent_error::claim_not_found);
+}
+
 // ===========================================================================
 // release / abort
 // ===========================================================================
