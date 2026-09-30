@@ -36,9 +36,26 @@ auto rstrip_newlines(std::string_view s) -> std::string_view {
   return s;
 }
 
+/// @brief `s` without trailing newlines and without trailing lines that are
+/// one HTML comment. The lint marker that closes the section's
+/// `queue-lint-ignore` region sits after its last line and is not part of the
+/// rule text.
+auto drop_trailing_comments(std::string_view s) -> std::string_view {
+  s = rstrip_newlines(s);
+  while (true) {
+    auto const start = s.rfind('\n') == std::string_view::npos ? 0 : s.rfind('\n') + 1;
+    auto const last  = s.substr(start);
+    if (!last.starts_with("<!--") || !last.ends_with("-->")) {
+      return s;
+    }
+    s = rstrip_newlines(s.substr(0, start));
+  }
+}
+
 /// @brief The section headed k_heading: from that line to the next `## `
 /// heading outside a code fence, or the end of the text. Empty optional when
-/// the heading is absent. Trailing newlines are dropped.
+/// the heading is absent. Trailing newlines, and trailing HTML comment lines
+/// such as the closing lint marker, are dropped.
 auto extract_section(std::string_view doc) -> std::optional<std::string> {
   std::size_t                pos      = 0;
   bool                       in_fence = false;
@@ -51,7 +68,7 @@ auto extract_section(std::string_view doc) -> std::optional<std::string> {
       in_fence = !in_fence;
     } else if (!in_fence && line.starts_with("## ")) {
       if (start) {
-        return std::string(rstrip_newlines(doc.substr(*start, pos - *start)));
+        return std::string(drop_trailing_comments(doc.substr(*start, pos - *start)));
       }
       if (line == k_heading) {
         start = pos;
@@ -62,7 +79,7 @@ auto extract_section(std::string_view doc) -> std::optional<std::string> {
   if (!start) {
     return std::nullopt;
   }
-  return std::string(rstrip_newlines(doc.substr(*start)));
+  return std::string(drop_trailing_comments(doc.substr(*start)));
 }
 
 auto count_of(std::string_view doc, std::string_view needle) -> std::size_t {
@@ -97,6 +114,12 @@ TEST_CASE("the section extractor fails loudly on a missing section and stops at 
   // A `## ` line inside a code fence does not end it.
   CHECK(extract_section(head + "\n\n```\n## not a heading\n```\n\n## B\n") ==
         std::optional<std::string>{head + "\n\n```\n## not a heading\n```"});
+  // The lint marker that closes the region is not part of the section; a
+  // comment inside the body is.
+  CHECK(extract_section(head + "\n\nbody\n\n<!-- queue-lint-ignore-end -->\n\n## B\n") ==
+        std::optional<std::string>{head + "\n\nbody"});
+  CHECK(extract_section(head + "\n\n<!-- kept -->\nbody\n\n<!-- x -->\n<!-- y -->\n") ==
+        std::optional<std::string>{head + "\n\n<!-- kept -->\nbody"});
   // H3 subsections stay inside it.
   CHECK(extract_section(head + "\n\n### Sub\n\nt\n") == std::optional<std::string>{head + "\n\n### Sub\n\nt"});
 }

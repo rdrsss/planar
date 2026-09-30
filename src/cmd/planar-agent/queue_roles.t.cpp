@@ -5,8 +5,11 @@
 // Scriptorium does not render `agents/methodology.md` for Codex, so each role
 // file and each skill source carries the short form itself. These cases read
 // the authored sources from the repository and fail when one of them loses an
-// element the short form needs, or when the coder's own instructions go back
-// to a direct build or test command.
+// element the short form needs, or when the coder's own instructions stop
+// using the queued form. That no source tells an agent to run a build or test
+// command directly is not checked here: `surface_lint` owns that rule
+// (surface-queue-command, src/tools/surface_lint/main.cpp), over all of
+// `agents/` and `skills/src/`.
 //
 // The command line is not typed here a second time: it is read out of the
 // authored rule file, so the short form cannot drift from the rule.
@@ -80,56 +83,6 @@ auto flat(std::string_view text) -> std::string {
   return out;
 }
 
-/// @brief Does a fragment of a line start with a build or test command?
-auto starts_with_build_command(std::string_view s) -> bool {
-  for (auto const* word : {"make", "cmake", "ctest", "ninja", "cargo build", "cargo test", "go build", "go test", "npm test",
-                           "pytest", "tox", "gradle"}) {
-    std::string_view w{word};
-    if (s.starts_with(w) && (s.size() == w.size() || s[w.size()] == ' ' || s[w.size()] == '`')) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/// @brief Lines of code blocks and inline code spans that begin with a build or
-/// test command that is not given to the queue. A line carrying the
-/// `queue-lint-ignore` marker is exempt.
-auto direct_build_instructions(std::string_view text) -> std::vector<std::string> {
-  std::vector<std::string> found;
-  bool                     fenced = false;
-  std::istringstream       lines{std::string{text}};
-  std::string              line;
-  while (std::getline(lines, line)) {
-    if (contains(line, "queue-lint-ignore")) {
-      continue;
-    }
-    auto const first = line.find_first_not_of(" \t");
-    auto const body  = first == std::string::npos ? std::string_view{} : std::string_view{line}.substr(first);
-    if (body.starts_with("```")) {
-      fenced = !fenced;
-      continue;
-    }
-    if (fenced) {
-      if (starts_with_build_command(body)) {
-        found.push_back(line);
-      }
-      continue;
-    }
-    for (std::size_t open = line.find('`'); open != std::string::npos;) {
-      auto const close = line.find('`', open + 1);
-      if (close == std::string::npos) {
-        break;
-      }
-      if (starts_with_build_command(std::string_view{line}.substr(open + 1, close - open))) {
-        found.push_back(line);
-      }
-      open = line.find('`', close + 1);
-    }
-  }
-  return found;
-}
-
 } // namespace
 
 TEST_CASE("every role file and skill source carries the short form of the queue rule", "[cmd][agent][queue][roles]") {
@@ -157,18 +110,6 @@ TEST_CASE("every role file and skill source carries the short form of the queue 
   }
 }
 
-TEST_CASE("a role file or skill source gives no build or test command to run directly", "[cmd][agent][queue][roles]") {
-  for (auto const* rel : k_sources) {
-    DYNAMIC_SECTION(rel) {
-      auto const found = direct_build_instructions(read_file(repo(rel)));
-      for (auto const& line : found) {
-        INFO("direct build or test command: " << line);
-      }
-      CHECK(found.empty());
-    }
-  }
-}
-
 TEST_CASE("the coder's gate instructions use the queued form", "[cmd][agent][queue][roles]") {
   auto const text = flat(read_file(repo("agents/coder.md")));
   // Long profile commands are submitted detached, short ones run in the
@@ -192,13 +133,4 @@ TEST_CASE("no role file or skill source names a make target in a queue line", "[
       }
     }
   }
-}
-
-TEST_CASE("the direct-instruction check discriminates", "[cmd][agent][queue][roles]") {
-  CHECK(direct_build_instructions("Run `make test` first.\n").size() == 1);
-  CHECK(direct_build_instructions("```\nctest --test-dir build\n```\n").size() == 1);
-  CHECK(direct_build_instructions("  ```sh\n  cmake --build build/debug\n  ```\n").size() == 1);
-  CHECK(direct_build_instructions("Run `planar-agent queue run -- make test` first.\n").empty());
-  CHECK(direct_build_instructions("a ~9-minute ctest run\n").empty());
-  CHECK(direct_build_instructions("`make cpp-lint` names the gate. queue-lint-ignore\n").empty());
 }
