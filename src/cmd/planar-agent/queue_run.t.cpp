@@ -802,6 +802,57 @@ TEST_CASE("queue run: --timeout kills a command that ignores SIGTERM only after 
   CHECK(*row.ran_ms < 10000);
 }
 
+namespace {
+
+/// @brief Kills, when the case ends, the one process whose pid the command
+/// recorded in `file`: a straggler that a failing case would otherwise leave
+/// running for its whole sleep. Signals only that recorded pid.
+struct straggler_guard {
+  std::filesystem::path file;
+  ~straggler_guard() {
+    std::ifstream in(file);
+    long          pid = 0;
+    if (in >> pid && pid > 1) {
+      ::kill(static_cast<::pid_t>(pid), SIGKILL);
+    }
+  }
+};
+
+} // namespace
+
+TEST_CASE("queue run: a stopped command keeps its slot until every member of its group is gone",
+          "[cmd][agent][queue][hq-timeouts]") {
+  auto const arena = parity::make_arena("qr_timeout_group");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"1s\"\n");
+  gate            hold(arena.cpp_root / "hold.fifo");
+  auto const      straggler = arena.cpp_root / "straggler.pid";
+  release_all     guard{.gates = {&hold}};
+  straggler_guard reap{.file = straggler};
+
+  // The leader honours SIGTERM and dies of it at the limit. It leaves in its
+  // group a member that ignores SIGTERM and sleeps far longer than the case,
+  // which only the SIGKILL after the grace period can end.
+  auto const script = "( trap '' TERM; exec sleep 25 ) & echo \"$!\" > \"$1\"; read x < \"$2\"";
+  auto const run =
+      spawn_queue(arena, "grouped", sh_command(script, {straggler.string(), hold.path.string()}), {}, {"--timeout", "1s"});
+  await_file(straggler);
+  auto const running = await_entry(arena, 1, hq::entry_state::running);
+  REQUIRE(running.child_pgid.has_value());
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 124);
+
+  // The entry was removed, and its row written, only once the group was
+  // empty: the straggler was killed, not outlived.
+  auto const row = only_history(arena, 1);
+  CHECK(group_empty(*running.child_pgid));
+  CHECK(row.outcome == hq::history_outcome::timeout);
+  REQUIRE(row.ran_ms.has_value());
+  CHECK(*row.ran_ms >= 1900);
+  CHECK(*row.ran_ms < 20000);
+}
+
 TEST_CASE("queue run: --timeout is recorded as the entry's deadline and the default is thirty minutes",
           "[cmd][agent][queue][hq-timeouts]") {
   auto const arena = parity::make_arena("qr_deadline");

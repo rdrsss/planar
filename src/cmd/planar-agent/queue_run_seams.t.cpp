@@ -264,3 +264,78 @@ TEST_CASE("queue run: giving up after a poll cannot complete ends the entry as a
   REQUIRE(history.size() == 1);
   CHECK(history.front().outcome == hq::history_outcome::abandoned);
 }
+
+TEST_CASE("queue run: an entry another process already ended is still mapped to its stop reason, never 128 plus the signal",
+          "[cmd][agent][queue][hq-timeouts]") {
+  struct reason_case {
+    hq::stop_reason     reason;
+    hq::history_outcome outcome;
+    int                 code;
+  };
+  for (auto const& one : {reason_case{hq::stop_reason::timeout, hq::history_outcome::timeout, 124},
+                          reason_case{hq::stop_reason::cancelled, hq::history_outcome::cancelled, 125}}) {
+    INFO("reason " << hq::to_string(one.reason));
+    scratch sc;
+    bool    acted = false;
+
+    agent::handlers::queue_run_deps deps;
+    auto const                      settings = fast_settings();
+    deps.load_settings                       = [settings] {
+      return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{settings};
+    };
+    auto polls = std::make_shared<int>(0);
+    // At the first tick after the command has started, play "another
+    // process": mark the entry with the reason (which SIGTERMs the group), and
+    // then, seeing the group empty, end it. The entry is therefore gone, with
+    // its history row, before the submitter reaps its child.
+    deps.sleep = [&, polls](std::chrono::milliseconds) {
+      if (++*polls >= 300) {
+        throw std::runtime_error("queue run polled past the case's bound");
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (acted) {
+        return;
+      }
+      auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+      REQUIRE(opened.has_value());
+      auto const stored = hq::find(*opened, 1);
+      if (!stored || !stored->has_value() || !(*stored)->child_pgid) {
+        return;
+      }
+      acted = true;
+      ident::system_clock clock;
+      auto const          host = ident::host_identity(ident::native_identity_source());
+      hq::canceller const who{.vendor = "claude", .role = "operator", .pid = 1234};
+      auto const          real = hq::system_process_probe();
+      auto const          begun =
+          hq::begin_terminate(*opened,
+                              hq::begin_terminate_request{
+                                  .seq          = 1,
+                                  .reason       = one.reason,
+                                  .cancelled_by = one.reason == hq::stop_reason::cancelled ? std::optional{who} : std::nullopt,
+                                  .host_id      = host},
+                              clock, real, hq::system_group_signaller());
+      REQUIRE(begun.has_value());
+      REQUIRE(begun->status == hq::begin_status::marked);
+      auto empty              = real;
+      empty.group_has_members = [](std::int64_t) -> std::expected<bool, ident::error> { return false; };
+      auto const ended = hq::advance_terminations(*opened, hq::advance_request{.host_id = host, .grace_ms = 10'000, .seq = 1},
+                                                  clock, empty, hq::system_group_signaller());
+      REQUIRE(ended.has_value());
+      REQUIRE(ended->ended.size() == 1);
+    };
+
+    auto const got = run_queue(sc, {"/bin/sleep", "30"}, deps);
+    INFO("stderr:\n" << got.err);
+    CHECK(acted);
+    CHECK(got.code == one.code);
+
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    REQUIRE(opened.has_value());
+    CHECK(hq::list(*opened).value().empty());
+    auto const history = hq::list_history(*opened).value();
+    REQUIRE(history.size() == 1);
+    CHECK(history.front().outcome == one.outcome);
+    CHECK_FALSE(history.front().signal.has_value());
+  }
+}
