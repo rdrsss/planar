@@ -29,8 +29,9 @@ import std;
 
 namespace planar::textview {
 
-/// @brief The display columns a vendor, role or label may take in a text
-/// view before it is cut and marked with `…`.
+/// @brief The columns (measured after escaping, see `truncate_display`) a
+/// vendor, role or label may take in a text view before it is cut and marked
+/// with `…`.
 export inline constexpr std::size_t k_field_cap = 48;
 
 /// @brief The marker a cut value ends with.
@@ -71,6 +72,14 @@ export auto display_width(std::string_view text) -> std::size_t;
 /// @brief `text` unchanged when it takes at most `max_width` columns,
 /// otherwise its longest prefix that fits with `k_truncation_marker` after it
 /// in `max_width` columns. A code point is never split.
+///
+/// Width here is measured AFTER escaping, the way `quote_text` will show the
+/// value: 6 for a `\uXXXX` escape (control, C1 or format character), 4 for
+/// `\xNN` (an invalid byte), 2 for `\n`, `\r`, `\t`, `\\` and `\"`, and a
+/// combining mark counts 1 although it displays in 0 (so a run of them is
+/// bounded), else `display_width`'s figure. So a cut value's quoted form takes
+/// at most `max_width` columns plus its two quote characters, however it is
+/// made. `display_width` is unchanged and remains the column-alignment measure.
 /// @param text UTF-8 text.
 /// @param max_width The most columns the result may take; at least 1.
 /// @return The possibly cut text.

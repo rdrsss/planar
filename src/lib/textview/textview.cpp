@@ -84,6 +84,28 @@ auto cell_width(char32_t cp) -> std::size_t {
   return 1;
 }
 
+/// @brief Columns one decoded code point takes AFTER `quote_text` has escaped
+/// it, which is the measure `truncate_display` cuts on: 6 for a `\uXXXX`
+/// escape (control, C1, format character), 4 for `\xNN` (invalid byte), 2 for
+/// a short escape or an escaped quote or backslash, 1 for a combining mark
+/// (which displays in 0 but must still count toward a cut, or a run of them
+/// would pass raw with no limit), else its display width. Measured for every
+/// value whether or not it ends up quoted, so a cut never depends on the
+/// caller's quoting decision.
+auto escaped_width(const decoded& d) -> std::size_t {
+  if (!d.valid) {
+    return 4;
+  }
+  auto const cp = d.value;
+  if (cp == '\n' || cp == '\r' || cp == '\t' || cp == '\\' || cp == '"') {
+    return 2;
+  }
+  if (cp < 0x20 || cp == 0x7F || is_c1(cp) || is_format_char(cp)) {
+    return 6;
+  }
+  return std::max<std::size_t>(cell_width(cp), 1);
+}
+
 } // namespace
 
 auto is_format_char(char32_t cp) -> bool {
@@ -140,8 +162,14 @@ auto display_width(std::string_view text) -> std::size_t {
 }
 
 auto truncate_display(std::string_view text, std::size_t max_width) -> std::string {
-  max_width = std::max<std::size_t>(max_width, 1);
-  if (display_width(text) <= max_width) {
+  max_width         = std::max<std::size_t>(max_width, 1);
+  std::size_t total = 0;
+  for (std::size_t i = 0; i < text.size();) {
+    auto const d = decode_at(text, i);
+    total += escaped_width(d);
+    i += d.length;
+  }
+  if (total <= max_width) {
     return std::string{text};
   }
   auto const  budget = max_width - 1; // the marker takes one column
@@ -149,7 +177,7 @@ auto truncate_display(std::string_view text, std::size_t max_width) -> std::stri
   std::size_t end    = 0;
   for (std::size_t i = 0; i < text.size();) {
     auto const d = decode_at(text, i);
-    auto const w = d.valid ? cell_width(d.value) : 1;
+    auto const w = escaped_width(d);
     if (used + w > budget) {
       break;
     }

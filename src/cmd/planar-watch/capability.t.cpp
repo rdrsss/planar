@@ -379,15 +379,32 @@ TEST_CASE("the planar-watch binary does not link the queue terminate module", "[
   }
 }
 
-TEST_CASE("the liveness probe planar-watch uses sends signal 0 only", "[cmd][watch][capability][hq-watch-no-signaller]") {
-  // `system_process_probe` forwards to `process_exists` and `group_has_members`
-  // in `planar.process.identity`. Every `kill(` there but one passes the
-  // literal signal 0 (existence check); the one exception is `signal_group`.
-  auto const               identity = watch_source_dir().parent_path().parent_path() / "lib" / "process" / "identity.cpp";
-  auto const               text     = read_file(identity);
-  std::vector<std::string> nonzero;
+namespace {
+
+/// @brief Whether `line` calls `kill(` or `killpg(`, qualified or not: the
+/// name must not be the tail of a longer identifier (`skill(`, `do_kill(`).
+auto calls_kill(std::string_view line) -> bool {
+  for (std::string_view const name : {"kill(", "killpg("}) {
+    for (auto at = line.find(name); at != std::string_view::npos; at = line.find(name, at + 1)) {
+      auto const before = at == 0 ? ' ' : line[at - 1];
+      if (std::isalnum(static_cast<unsigned char>(before)) == 0 && before != '_') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/// @brief How many signal calls in `text` pass the literal signal 0, and the
+/// lines of the rest.
+struct kill_census {
   std::size_t              zero = 0;
-  std::string_view         rest = text;
+  std::vector<std::string> other;
+};
+
+auto count_kills(std::string_view text) -> kill_census {
+  kill_census      census;
+  std::string_view rest = text;
   while (!rest.empty()) {
     auto const end  = rest.find('\n');
     auto       line = rest.substr(0, end);
@@ -395,17 +412,41 @@ TEST_CASE("the liveness probe planar-watch uses sends signal 0 only", "[cmd][wat
     if (auto const c = line.find("//"); c != std::string_view::npos) {
       line = line.substr(0, c);
     }
-    if (line.contains("::kill(")) {
-      if (line.contains(", 0)")) {
-        ++zero;
-      } else {
-        nonzero.emplace_back(line);
-      }
+    if (!calls_kill(line)) {
+      continue;
+    }
+    if (line.contains(", 0)") && !line.contains("killpg(")) {
+      ++census.zero;
+    } else {
+      census.other.emplace_back(line);
     }
   }
-  CHECK(zero == 2);
-  REQUIRE(nonzero.size() == 1);
-  CHECK(nonzero.front().contains("sig)"));
+  return census;
+}
+
+} // namespace
+
+TEST_CASE("the liveness probe planar-watch uses sends signal 0 only", "[cmd][watch][capability][hq-watch-no-signaller]") {
+  // The census is exercised before it is trusted: qualified, unqualified and
+  // `killpg` spellings all count, an identifier that merely ends in `kill` does not.
+  CHECK(count_kills("rc = ::kill(pid, 0);").zero == 1);
+  CHECK(count_kills("rc = kill(pid, 0);").zero == 1);
+  CHECK(count_kills("rc = std::kill(pid, 0);").zero == 1);
+  CHECK(count_kills("::kill(pid, SIGKILL);").other.size() == 1);
+  CHECK(count_kills("kill(pid, SIGKILL);").other.size() == 1);
+  CHECK(count_kills("if (kill(-pgid, sig) == 0) {").other.size() == 1);
+  CHECK(count_kills("killpg(pgid, 0);").other.size() == 1);
+  CHECK(count_kills("auto x = skill(a, 0); do_kill(b, 1);").zero == 0);
+  CHECK(count_kills("// kill(pid, SIGKILL)").other.empty());
+
+  // `system_process_probe` forwards to `process_exists` and `group_has_members`
+  // in `planar.process.identity`. Every signal call there but one passes the
+  // literal signal 0 (existence check); the one exception is `signal_group`.
+  auto const identity = watch_source_dir().parent_path().parent_path() / "lib" / "process" / "identity.cpp";
+  auto const census   = count_kills(read_file(identity));
+  CHECK(census.zero == 2);
+  REQUIRE(census.other.size() == 1);
+  CHECK(census.other.front().contains("sig)"));
 }
 
 TEST_CASE("planar-watch's agent database handle is read-only, and a missing store is not created", "[cmd][watch][capability]") {

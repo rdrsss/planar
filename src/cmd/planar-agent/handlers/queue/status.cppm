@@ -29,8 +29,8 @@
 /// format character (bidirectional override, zero-width, line separator), a
 /// backslash or a leading double quote is shown double-quoted and escaped, so
 /// a quoted value is never mistaken for an unquoted one; a `label`, `vendor` or
-/// `role` (and the canceller's) longer than 48 display columns is cut and ends
-/// with `…`. `--json` is never cut and carries the exact bytes.
+/// `role` (and the canceller's) whose escaped form would pass 48 columns is cut
+/// and ends with `…`. `--json` is never cut and carries the exact bytes.
 ///
 /// ## Exit status
 ///

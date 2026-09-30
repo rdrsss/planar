@@ -13,8 +13,8 @@
 /// start a line of its own, move the cursor or reorder the text around it. A
 /// shell-quoted argv word holding a control or format character is shown the
 /// same way, double-quoted and escaped: that form is display text and is NOT a
-/// pasteable shell word. In text a vendor, role or label longer than
-/// `textview::k_field_cap` display columns is cut and marked with `…`
+/// pasteable shell word. In text a vendor, role or label whose escaped form would pass
+/// `textview::k_field_cap` columns is cut and marked with `…`
 /// (`field_cell`), and columns are padded by display width, not bytes. JSON is
 /// never cut and never uses the text escapes: `quote` there escapes the
 /// grammar's own characters plus DEL and C1 controls, and nothing else.
