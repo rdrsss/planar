@@ -178,8 +178,44 @@ auto group_has_members(std::int64_t pgid) -> std::expected<bool, error> {
   return exists_from_kill(::kill(static_cast<::pid_t>(-pgid), 0));
 }
 
-auto group_only_zombies(std::int64_t /*pgid*/) -> std::expected<bool, error> {
+auto group_only_zombies(std::int64_t pgid) -> std::expected<bool, error> {
+  if (!is_group(pgid)) {
+    return false;
+  }
+#if defined(__APPLE__)
+  // The kernel's own list of the group's processes and their states. A
+  // member can appear or go between the size query and the read, so the read
+  // is retried with fresh room when it does not fit.
+  std::array<int, 4> mib{CTL_KERN, KERN_PROC, KERN_PROC_PGRP, static_cast<int>(pgid)};
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    std::size_t bytes = 0;
+    if (::sysctl(mib.data(), static_cast<u_int>(mib.size()), nullptr, &bytes, nullptr, 0) != 0) {
+      return std::unexpected{error::query_failed};
+    }
+    std::vector<::kinfo_proc> members(bytes / sizeof(::kinfo_proc) + 8);
+    bytes = members.size() * sizeof(::kinfo_proc);
+    if (::sysctl(mib.data(), static_cast<u_int>(mib.size()), members.data(), &bytes, nullptr, 0) != 0) {
+      if (errno == ENOMEM) {
+        continue;
+      }
+      return std::unexpected{error::query_failed};
+    }
+    members.resize(bytes / sizeof(::kinfo_proc));
+    // SZOMB and P_WEXIT (sys/proc.h): a member that has exited and awaits its
+    // parent's wait, or that is being torn down after a fatal signal and is
+    // already beyond signalling (the kernel refuses it too, for a few
+    // milliseconds before it becomes a zombie).
+    constexpr char         k_zombie  = 5;
+    constexpr std::int32_t k_exiting = 0x00002000;
+    return !members.empty() && std::ranges::all_of(members, [](const ::kinfo_proc& one) {
+      return one.kp_proc.p_stat == k_zombie || (one.kp_proc.p_flag & k_exiting) != 0;
+    });
+  }
+  return std::unexpected{error::query_failed};
+#else
+  // No other kernel answers a signal to a group of zombies with EPERM.
   return false;
+#endif
 }
 
 auto signal_group(std::int64_t pgid, int sig) -> std::expected<void, error> {

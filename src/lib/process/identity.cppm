@@ -122,7 +122,8 @@ export auto process_exists(std::int64_t pid) -> std::expected<bool, error>;
 export auto group_has_members(std::int64_t pgid) -> std::expected<bool, error>;
 
 /// @brief Whether the process group `pgid` has at least one member and every
-/// member is an exited process nobody has reaped yet.
+/// member is an exited process nobody has reaped yet (or one already being
+/// torn down by the kernel, the moments between a fatal signal and the zombie).
 ///
 /// On macOS `kill(-pgid, sig)` (signal 0 included) fails with `EPERM` for such
 /// a group, because a zombie cannot be signalled, so `group_has_members`

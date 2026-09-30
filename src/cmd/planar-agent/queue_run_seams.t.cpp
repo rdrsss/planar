@@ -1583,8 +1583,9 @@ TEST_CASE("queue run: a submitter never signals a group whose leader is no longe
     probe.process_start_time = [real = probe.process_start_time,
                                 own](std::int64_t pid) -> std::expected<std::optional<ident::start_time>, ident::error> {
       auto found = real(pid);
-      if (found && found->has_value() && pid != own) {
-        return std::optional<ident::start_time>{**found + 1};
+      if (found && pid != own) {
+        // Whoever holds the child's id, alive or not, is not the process that was started.
+        return std::optional<ident::start_time>{found->has_value() ? **found + 1 : ident::start_time{1}};
       }
       return found;
     };

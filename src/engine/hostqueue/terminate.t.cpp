@@ -1341,28 +1341,54 @@ TEST_CASE("terminate: the kill an advance sends to a group of zombies is not rep
 }
 
 #if defined(__APPLE__)
-TEST_CASE("terminate: a real group whose leader exited unreaped is empty enough on macOS, and a live one still is not",
+TEST_CASE("terminate: on macOS a real group whose leader exited unreaped is empty enough, not a failed signal",
           "[engine][hostqueue][hq-eperm-zombie-group]") {
   // The EPERM comes from the kernel here, not from a fake signaller.
   scratch_dir scratch;
   auto        conn = open_store(scratch);
   fake_clock  clock;
 
+  // The leader waits for a release byte, so its start time can be read while it
+  // lives (the kernel will not tell it once the process is a zombie), and then
+  // exits without anyone reaping it.
+  std::array<int, 2> release{};
+  REQUIRE(::pipe(release.data()) == 0);
   ::pid_t const forked = ::fork();
   REQUIRE(forked >= 0);
   if (forked == 0) {
     ::setpgid(0, 0);
+    ::close(release[1]);
+    char byte = 0;
+    while (::read(release[0], &byte, 1) < 0 && errno == EINTR) {
+    }
     ::_exit(0);
   }
   ::setpgid(forked, forked);
+  ::close(release[0]);
   auto const pgid = static_cast<std::int64_t>(forked);
 
   auto const probe   = hq::system_process_probe();
+  auto const leader  = probe.process_start_time(pgid);
   auto const seq     = enqueue_one(conn, request_for(::getpid(), clock));
   auto const started = hq::poll(conn, poll_request_for(seq, 64), clock, probe);
   REQUIRE(started.has_value());
-  record_child_group(conn, seq, pgid, std::nullopt);
+  bool const have_start = leader.has_value() && leader->has_value();
+  if (!have_start) {
+    char const go = 'g';
+    (void)::write(release[1], &go, 1);
+    ::close(release[1]);
+    int status = 0;
+    while (::waitpid(forked, &status, 0) < 0 && errno == EINTR) {
+    }
+  }
+  REQUIRE(have_start);
+  record_child_group(conn, seq, pgid, static_cast<std::int64_t>(**leader));
   auto const e = entry_of(conn, seq);
+  {
+    char const go = 'g';
+    (void)::write(release[1], &go, 1);
+    ::close(release[1]);
+  }
 
   // Wait, bounded, for the exit to become a zombie the kernel refuses to signal.
   hq::signal_attempt attempt{};
@@ -1374,10 +1400,12 @@ TEST_CASE("terminate: a real group whose leader exited unreaped is empty enough 
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   } while (std::chrono::steady_clock::now() < deadline);
-  int status = 0;
+  bool const zombies = pid_ns::group_only_zombies(pgid).value_or(false);
+  bool const members = pid_ns::group_has_members(pgid).value_or(false);
+  int        status  = 0;
   while (::waitpid(forked, &status, 0) < 0 && errno == EINTR) {
   }
-  INFO("outcome " << static_cast<int>(attempt.outcome));
+  INFO("outcome " << static_cast<int>(attempt.outcome) << " zombies " << zombies << " members " << members);
   CHECK(attempt.outcome == hq::signal_outcome::group_empty);
   CHECK_FALSE(attempt.error.has_value());
 }

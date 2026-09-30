@@ -156,6 +156,14 @@ auto signal_child_group(const entry& e, stop_signal sig, std::string_view host_i
     break;
   }
   if (auto sent = signaller(*e.child_pgid, signal_number(sig)); !sent) {
+    // macOS refuses a signal to a group that holds nothing but exited
+    // processes nobody has reaped (EPERM, signal 0 included), which is a group
+    // with nothing left to stop. Only a group the probe VERIFIES to be all
+    // zombies is read that way; every other refusal stays a failure.
+    if (sent.error() == identity::error::not_permitted && group_has_only_zombies(probe, *e.child_pgid)) {
+      attempt.outcome = signal_outcome::group_empty;
+      return attempt;
+    }
     attempt.outcome = signal_outcome::failed;
     attempt.error   = sent.error();
     return attempt;

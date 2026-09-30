@@ -73,8 +73,12 @@ auto system_process_probe() -> process_probe {
   };
 }
 
-auto group_has_only_zombies(const process_probe& /*probe*/, std::int64_t /*pgid*/) -> bool {
-  return false;
+auto group_has_only_zombies(const process_probe& probe, std::int64_t pgid) -> bool {
+  if (!probe.group_only_zombies) {
+    return false;
+  }
+  auto const verdict = probe.group_only_zombies(pgid);
+  return verdict && *verdict;
 }
 
 auto is_fresh(std::int64_t refreshed_mono, const liveness_context& ctx) -> bool {
