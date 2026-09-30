@@ -243,7 +243,7 @@ struct spawned {
 /// background subshell closes its own streams, so a case that fails while
 /// its submitter is still waiting cannot keep the test process's pipes open.
 auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<std::string>& command,
-                 std::vector<pinned_var> extra = {}) -> spawned {
+                 std::vector<pinned_var> extra = {}, std::vector<std::string> flags = {}) -> spawned {
   auto vars = parity::pinned_env(arena.cpp_root);
   for (auto& var : extra) {
     vars.push_back(std::move(var));
@@ -251,7 +251,7 @@ auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<
   parity::require_agent_db_pinned(arena.cpp_root, vars);
 
   std::string child = parity::pinned_env_prefix(vars) + parity::shell_quote(agent_bin().string());
-  for (auto const& arg : queue_args(command)) {
+  for (auto const& arg : queue_args(command, std::move(flags))) {
     child += " " + parity::shell_quote(arg);
   }
   auto const path = [&](std::string_view suffix) {
@@ -698,6 +698,314 @@ TEST_CASE("queue run: no command is a parse failure and creates no entry", "[cmd
   }
   // A parse failure never opens the store.
   CHECK_FALSE(present(arena.cpp_root / "agent.db"));
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: run limit and wait limit (task hq-timeouts, 7014, with 7053 and
+// 7060). `--timeout` bounds how long the command may run (default thirty
+// minutes) and `--wait-timeout` bounds how long it may wait (default none).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The monotonic clock the entries' deadlines are measured against.
+auto mono_now() -> std::int64_t {
+  ident::system_clock clock;
+  auto const          now = clock.monotonic_ms();
+  REQUIRE(now.has_value());
+  return *now;
+}
+
+/// @brief True when the process group `pgid` has no member. Signal 0 only
+/// asks; `pgid` must be a real group this test recorded.
+auto group_empty(std::int64_t pgid) -> bool {
+  REQUIRE(pgid > 1);
+  return ::kill(-static_cast<::pid_t>(pgid), 0) != 0 && errno == ESRCH;
+}
+
+/// @brief The script of a command that records it started and then blocks on
+/// the FIFO `$2`. With `ignore_term` it ignores SIGTERM first, and records
+/// the start only after the trap is in place.
+auto blocked_script(bool ignore_term) -> std::string {
+  return std::string{ignore_term ? "trap '' TERM; " : ""} + "echo x > \"$1\"; read x < \"$2\"";
+}
+
+/// @brief The rows of the store after a run that ended: no entry is left and
+/// exactly the given history row exists.
+auto only_history(const parity::arena& arena, std::int64_t seq) -> hq::history_row {
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  REQUIRE(snap.history.size() == 1);
+  auto const* row = history_seq(snap, seq);
+  REQUIRE(row != nullptr);
+  return *row;
+}
+
+} // namespace
+
+TEST_CASE("queue run: --timeout stops a command that honours SIGTERM, exits 124 and records timeout",
+          "[cmd][agent][queue][hq-timeouts]") {
+  auto const arena = parity::make_arena("qr_timeout_term");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  release_all guard{.gates = {&hold}};
+
+  auto const run = spawn_queue(arena, "limited", sh_command(blocked_script(false), {started.string(), hold.path.string()}), {},
+                               {"--timeout", "1s"});
+  await_file(started);
+  auto const running = await_entry(arena, 1, hq::entry_state::running);
+  REQUIRE(running.child_pgid.has_value());
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 124);
+  CHECK(group_empty(*running.child_pgid));
+
+  auto const row = only_history(arena, 1);
+  CHECK(row.outcome == hq::history_outcome::timeout);
+  CHECK_FALSE(row.exit_code.has_value());
+  // It ran for its limit, not less: a limit that fired at once would end it
+  // in a few tens of milliseconds.
+  REQUIRE(row.ran_ms.has_value());
+  CHECK(*row.ran_ms >= 900);
+}
+
+TEST_CASE("queue run: --timeout kills a command that ignores SIGTERM only after the grace period",
+          "[cmd][agent][queue][hq-timeouts]") {
+  auto const arena = parity::make_arena("qr_timeout_kill");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"1s\"\n");
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  release_all guard{.gates = {&hold}};
+
+  auto const run = spawn_queue(arena, "stubborn", sh_command(blocked_script(true), {started.string(), hold.path.string()}), {},
+                               {"--timeout", "1s"});
+  await_file(started);
+  auto const running = await_entry(arena, 1, hq::entry_state::running);
+  REQUIRE(running.child_pgid.has_value());
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 124);
+  CHECK(group_empty(*running.child_pgid));
+
+  auto const row = only_history(arena, 1);
+  CHECK(row.outcome == hq::history_outcome::timeout);
+  // SIGTERM alone cannot have ended it: the limit (1s) plus the grace (1s)
+  // had to pass before the SIGKILL.
+  REQUIRE(row.ran_ms.has_value());
+  CHECK(*row.ran_ms >= 1900);
+}
+
+TEST_CASE("queue run: --timeout is recorded as the entry's deadline and the default is thirty minutes",
+          "[cmd][agent][queue][hq-timeouts]") {
+  auto const arena = parity::make_arena("qr_deadline");
+  write_config(arena, "[queue]\nslots = 2\npoll_interval = \"100ms\"\n");
+  gate        limited_gate(arena.cpp_root / "limited.fifo");
+  gate        default_gate(arena.cpp_root / "default.fifo");
+  auto const  started_limited = arena.cpp_root / "started_limited";
+  auto const  started_default = arena.cpp_root / "started_default";
+  release_all guard{.gates = {&limited_gate, &default_gate}};
+
+  constexpr std::int64_t k_five_minutes   = 5LL * 60 * 1000;
+  constexpr std::int64_t k_thirty_minutes = 30LL * 60 * 1000;
+
+  auto const before_limited = mono_now();
+  auto const limited        = spawn_queue(
+      arena, "limited", sh_command("echo x > \"$1\"; read x < \"$2\"", {started_limited.string(), limited_gate.path.string()}),
+      {}, {"--timeout", "5m"});
+  await_file(started_limited);
+  auto const limited_entry = await_entry(arena, 1, hq::entry_state::running);
+  auto const after_limited = mono_now();
+  REQUIRE(limited_entry.deadline_mono.has_value());
+  CHECK(*limited_entry.deadline_mono >= before_limited + k_five_minutes);
+  CHECK(*limited_entry.deadline_mono <= after_limited + k_five_minutes);
+  CHECK_FALSE(limited_entry.wait_deadline_mono.has_value());
+
+  auto const before_default = mono_now();
+  auto const defaulted      = spawn_queue(
+      arena, "default", sh_command("echo x > \"$1\"; read x < \"$2\"", {started_default.string(), default_gate.path.string()}));
+  await_file(started_default);
+  auto const default_entry = await_entry(arena, 2, hq::entry_state::running);
+  auto const after_default = mono_now();
+  REQUIRE(default_entry.deadline_mono.has_value());
+  CHECK(*default_entry.deadline_mono >= before_default + k_thirty_minutes);
+  CHECK(*default_entry.deadline_mono <= after_default + k_thirty_minutes);
+  CHECK_FALSE(default_entry.wait_deadline_mono.has_value());
+
+  limited_gate.release();
+  default_gate.release();
+  CHECK(finish(limited).code == 0);
+  CHECK(finish(defaulted).code == 0);
+}
+
+TEST_CASE("queue run: --wait-timeout removes a waiting entry at its limit, exits 125 and never runs the command",
+          "[cmd][agent][queue][hq-timeouts]") {
+  auto const arena = parity::make_arena("qr_wait_timeout");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  auto const  marker  = arena.cpp_root / "marker";
+  release_all guard{.gates = {&hold}};
+
+  auto const holder = spawn_queue(arena, "holder", sh_command(blocked_script(false), {started.string(), hold.path.string()}));
+  await_file(started);
+  await_entry(arena, 1, hq::entry_state::running);
+
+  auto const before  = mono_now();
+  auto const waiter  = spawn_queue(arena, "waiter", sh_command("touch \"$1\"", {marker.string()}), {}, {"--wait-timeout", "1s"});
+  auto const waiting = await_entry(arena, 2, hq::entry_state::waiting);
+  auto const after   = mono_now();
+  // The wait deadline the flag asked for is what the store holds.
+  REQUIRE(waiting.wait_deadline_mono.has_value());
+  CHECK(*waiting.wait_deadline_mono >= before + 1000);
+  CHECK(*waiting.wait_deadline_mono <= after + 1000);
+  CHECK_FALSE(waiting.deadline_mono.has_value());
+
+  auto const got = finish(waiter);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.out.empty());
+  CHECK_FALSE(present(marker));
+
+  // The waiter is gone from the queue with its one history row; the holder
+  // still holds the slot and has no row yet.
+  {
+    auto const snap = require_snapshot(arena);
+    REQUIRE(snap.entries.size() == 1);
+    CHECK(snap.entries.front().seq == 1);
+    CHECK(snap.entries.front().state == hq::entry_state::running);
+    REQUIRE(snap.history.size() == 1);
+    auto const* row = history_seq(snap, 2);
+    REQUIRE(row != nullptr);
+    CHECK(row->outcome == hq::history_outcome::wait_timeout);
+    CHECK_FALSE(row->started_at.has_value());
+  }
+
+  hold.release();
+  CHECK(finish(holder).code == 0);
+  CHECK_FALSE(present(marker));
+}
+
+TEST_CASE("queue run: a wait limit never cuts short a run that has started", "[cmd][agent][queue][hq-timeouts]") {
+  auto const arena = parity::make_arena("qr_wait_started");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  release_all guard{.gates = {&hold}};
+
+  // The turn is immediate, so the wait limit is over before it matters; the
+  // command outlives it and still exits with its own status.
+  auto const run =
+      spawn_queue(arena, "run", sh_command("echo x > \"$1\"; read x < \"$2\"; exit 4", {started.string(), hold.path.string()}),
+                  {}, {"--wait-timeout", "1s"});
+  await_file(started);
+  await_entry(arena, 1, hq::entry_state::running);
+  await_refreshes(arena, 1, 3);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+  CHECK(entry_seq(require_snapshot(arena), 1) != nullptr);
+  hold.release();
+  auto const got = finish(run);
+  CHECK(got.code == 4);
+  CHECK(only_history(arena, 1).outcome == hq::history_outcome::exited);
+}
+
+TEST_CASE("queue run: an invalid --timeout or --wait-timeout is refused at 2 and runs nothing",
+          "[cmd][agent][queue][hq-timeouts]") {
+  auto const arena  = parity::make_arena("qr_bad_duration");
+  auto const marker = arena.cpp_root / "marker";
+  struct bad_case {
+    std::string flag;
+    std::string value;
+  };
+  // A bare integer (unit unknown), zero, a negative, an unknown unit, no
+  // number, and one past the one-day cap the [queue] durations share.
+  std::vector<bad_case> const bad{
+      {"--timeout", "5"},   {"--timeout", "0s"},     {"--timeout", "-1s"},      {"--timeout", "5x"},      {"--timeout", "abc"},
+      {"--timeout", "25h"}, {"--wait-timeout", "5"}, {"--wait-timeout", "0ms"}, {"--wait-timeout", "1d"}, {"--wait-timeout", ""},
+  };
+  for (auto const& one : bad) {
+    INFO("flag " << one.flag << " value '" << one.value << "'");
+    // A value that starts with `-` must be attached, or the parser reads it
+    // as a flag of its own and this is a parse failure instead.
+    auto const flags = one.value.starts_with('-') ? std::vector<std::string>{one.flag + "=" + one.value}
+                                                  : std::vector<std::string>{one.flag, one.value};
+    auto const got   = run_queue(arena, "bad", sh_command("touch \"$1\"", {marker.string()}), flags);
+    INFO("stderr:\n" << got.err);
+    CHECK(got.code == 2);
+    CHECK(got.out.empty());
+    CHECK(got.err.contains(one.flag));
+    CHECK_FALSE(present(marker));
+    // Refused before the store is touched: nothing was enqueued or recorded.
+    auto const snap = try_snapshot(arena);
+    CHECK((!snap.has_value() || (snap->entries.empty() && snap->history.empty())));
+  }
+
+  // The shared grammar: every unit, and the cap itself, is accepted.
+  for (auto const* good : {"250ms", "30s", "1m", "1h", "24h"}) {
+    INFO("value " << good);
+    auto const got = run_queue(arena, "good", sh_command("exit 0"), {"--timeout", good, "--wait-timeout", good});
+    INFO("stderr:\n" << got.err);
+    CHECK(got.code == 0);
+  }
+}
+
+TEST_CASE("queue run: a command whose own entry carries a stop reason ends with that reason, never signaled",
+          "[cmd][agent][queue][hq-timeouts]") {
+  // The submitter's own entry is marked by another process (a `queue cancel`
+  // of milestone 3, or any poller enforcing a limit), which then SIGTERMs the
+  // group. The submitter observes its child killed by a signal, and must
+  // still end the entry with the reason the entry carries.
+  struct reason_case {
+    hq::stop_reason     reason;
+    hq::history_outcome outcome;
+    int                 code;
+    std::string_view    tag;
+  };
+  std::vector<reason_case> const cases{
+      {hq::stop_reason::timeout, hq::history_outcome::timeout, 124, "reason_timeout"},
+      {hq::stop_reason::cancelled, hq::history_outcome::cancelled, 125, "reason_cancelled"},
+  };
+  for (auto const& one : cases) {
+    INFO("reason " << hq::to_string(one.reason));
+    auto const arena = parity::make_arena(std::string{one.tag});
+    write_config(arena, k_fast_poll);
+    gate        hold(arena.cpp_root / "hold.fifo");
+    auto const  started = arena.cpp_root / "started";
+    release_all guard{.gates = {&hold}};
+
+    auto const run = spawn_queue(arena, "marked", sh_command(blocked_script(false), {started.string(), hold.path.string()}));
+    await_file(started);
+    auto const running = await_entry(arena, 1, hq::entry_state::running);
+    REQUIRE(running.child_pgid.has_value());
+
+    // The marker and the SIGTERM come from this process, through the same
+    // engine step `queue cancel` will use.
+    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    REQUIRE(opened.has_value());
+    ident::system_clock clock;
+    hq::canceller const who{.vendor = "claude", .role = "operator", .pid = static_cast<std::int64_t>(::getpid())};
+    auto const          begun = hq::begin_terminate(
+        *opened,
+        hq::begin_terminate_request{.seq          = 1,
+                                    .reason       = one.reason,
+                                    .cancelled_by = one.reason == hq::stop_reason::cancelled ? std::optional{who} : std::nullopt,
+                                    .host_id      = ident::host_identity(ident::native_identity_source())},
+        clock, hq::system_process_probe(), hq::system_group_signaller());
+    REQUIRE(begun.has_value());
+    REQUIRE(begun->status == hq::begin_status::marked);
+
+    auto const got = finish(run);
+    INFO("stderr:\n" << got.err);
+    CHECK(got.code == one.code);
+    auto const row = only_history(arena, 1);
+    CHECK(row.outcome == one.outcome);
+    CHECK_FALSE(row.signal.has_value());
+    if (one.reason == hq::stop_reason::cancelled) {
+      CHECK(row.cancelled_by == who);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
