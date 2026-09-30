@@ -6765,7 +6765,9 @@ The `children` array is always present, even when empty (the empty-`global` sign
 writes to `agent_work_claims`, `agent_actions`, `workflow_runs`,
 `context_records`, and the `routing_dispatch_*` authorization tables (behind
 `dispatch preview` / `dispatch confirm`), plus the bounded `tasks.status`
-transitions performed by atomic terminal operations. Operator-recovery verbs (`reconcile`, `abort`) live
+transitions performed by atomic terminal operations. It also owns the queue
+tables in the separate agent database (`queue_entries`, `queue_history`,
+behind `queue run`). Operator-recovery verbs (`reconcile`, `abort`) live
 here because the capability boundary tracks write ownership, not audience. See
 [Five-binary architecture](architecture.md#five-binary-architecture) for the
 binary split.
@@ -6863,6 +6865,11 @@ planar-agent context resolve --status consumed|superseded (--id <record-id> | --
 planar-agent dispatch preview --work-item <id> --project <id> --validation-policy <v> --routing-policy <v> --profile-rule <v> --vendor <s> --role <s> --tier small|medium|large --work-type <t> --complexity bounded|standard|high-risk --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --host <id> --class fallback|default|override|declared_experiment --evidence-state evidential|observational --expires-at <rfc3339> [--task <id>] [--experiment <id>] [--claim <token>] [--claim-status <s>] [--json]
 planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now <rfc3339> --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --vendor <s> --role <s> --tier <t> --work-type <t> --complexity <c> --validation-policy <v> --routing-policy <v> [--claim <token>] [--claim-status <s>] [--reviewer <disposition>] [--decision confirmed|overridden] [--json]
 
+# Host-wide build and test queue (plan 1080). Everything after `--` is the
+# command; it runs in the caller's directory with the caller's environment.
+# See "Queue verbs" below.
+planar-agent queue run  [--label <text>] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
+
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
 planar-agent version
 planar-agent schema
@@ -6875,6 +6882,25 @@ planar-agent schema
 Previously `--ttl` carried a hardcoded `600` default, so an omitted flag was indistinguishable from `--ttl 600` and silently cut a long lease to ten minutes. That made a faithfully-heartbeating long dispatch *more* likely to lose its claim than one that never heartbeated at all.
 
 **`planar-agent heartbeat --status <text>` (plan 467 M1):** When `--status` is provided, `heartbeat` inserts a closed `heartbeat`-kind `agent_actions` row with the text in the `summary` column alongside the lease refresh. This makes current activity visible in `planar-watch ps` (`activity:"<summary>"` text column) and `planar-watch feed`. When `--status` is omitted no action row is written (pre-M1 behavior preserved). The payload is capped at **256 bytes**; oversize values exit with `InvalidInput`. An explicit `--status ""` (empty string) writes an action row with an empty summary — distinct from omission.
+
+### Queue verbs
+
+`planar-agent queue` is the host-wide build and test queue (plan 1080). One queue per user per host serves every project, so a build or test one agent starts does not run on top of another's. There is no daemon: the process that submits a command is the process that runs it.
+
+The foreground form is `queue run` with an optional `--label <text>`, then the argument terminator and the command with its arguments (`queue run [--label <text>] <terminator> <command> [args...]`):
+
+1. It reads the `[queue]` configuration ([the `[queue]` table](#the-queue-table)). A configuration it cannot use refuses at exit **125** before anything is enqueued.
+2. It opens the **agent database**, `~/.planar/agent.db` (override `PLANAR_AGENT_DB`), creating and migrating it on first use, and inserts an entry in state `waiting`. This opens no part of `planar.db`, so the verb works while the main schema is locked. A store it cannot open refuses at exit **125** and does not run the command. Inserting the entry also deletes history rows older than `[queue] history_days` and their log files.
+3. It polls at `[queue] poll_interval` until the entry is among the first `slots` live entries by arrival order, then marks it `running`. Each poll reads `slots`, `poll_interval`, `stale_after` and `grace` again, so an edit to `config.toml` takes effect on the next poll. A configuration that cannot be read during the wait keeps the previous settings and is reported once on standard error.
+4. It runs the command in the caller's working directory, with the caller's environment plus `PLANAR_QUEUE_SLOT` set to the entry's sequence number, and with the caller's standard streams. Standard output and standard error carry the command's own output and nothing else, except a `warning: queue: ...` line on standard error when the queue itself hit a failure it could not act on (a stopping signal that failed, a terminating entry that could not be ended, a configuration that could not be reloaded).
+5. While the command runs it refreshes the entry at each poll, so an entry whose submitter is alive stays live.
+6. When the command ends it removes the entry and writes its one `queue_history` row in a single transaction, then exits with the command's status: its own exit code, or `128` plus the signal that terminated it.
+
+`command` is the argument vector, given after `--`. `--label` is stored with the entry and shown in listings. `queue run` with no command is a parse failure: exit **1**, nothing enqueued.
+
+The exit code passes the command's status through, so it is ambiguous by design (a command may exit `125` itself); `queue_history` records how each entry ended. The queue's own failure is exit **125** with one `error: queue: ...` line on standard error. `queue run` has no `--json`: standard output belongs to the command, so no envelope is written on any path.
+
+Not yet available in this build (later tasks of plan 1080): `--detach`, `--timeout`, `--wait-timeout`, `--vendor`, `--role`, `--claim`, `--notices`, `queue status`, `queue cancel`, `queue rule`, the model-launcher command guard, the 126/127 checks before the enqueue, signal forwarding to the command, and nested runs.
 
 ### Atomic operation transaction shapes
 
@@ -7025,10 +7051,13 @@ Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no beh
 
 A process invoked as `planar-agent` writes only to `agent_work_claims`,
 `agent_actions`, `workflow_runs`, and `context_records`, plus `tasks.status`
-inside atomic coordinated operations with status guards. It never writes plan,
-decision, question, scenario, artifact, annotation, or feedback-triage rows. A
-vendor hook configured with only `planar-agent` on its PATH therefore has a
-bounded planning-state blast radius.
+inside atomic coordinated operations with status guards, and, in the separate
+agent database, `queue_entries` and `queue_history` (through `queue run`). It
+never writes plan, decision, question, scenario, artifact, annotation, or
+feedback-triage rows. A vendor hook configured with only `planar-agent` on its
+PATH therefore has a bounded planning-state blast radius. `queue run` also
+executes the command its caller names; the queue is a coordination aid, not a
+security boundary.
 
 ---
 

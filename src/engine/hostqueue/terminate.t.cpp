@@ -1100,3 +1100,85 @@ TEST_CASE("terminate: a cancelled command that honours SIGTERM ends as cancelled
   CHECK(fence.delivered == std::vector<int>{SIGTERM});
   CHECK(fence.refused.empty());
 }
+
+// ---------------------------------------------------------------------------
+// Task 7055 (reviewer caveat C2 of task 7003): one entry's failed end must
+// not abort the advance and drop the kills it already sent.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("terminate: one entry that cannot be ended does not stop the advance", "[engine][hostqueue][hq-terminate]") {
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add_group(9'610); // Still alive: needs the SIGKILL.
+  host.add_group(9'620); // Empty by the time of the advance, but its history insert fails.
+  host.add_group(9'630); // Empty: ends normally, after the failing one.
+  auto const killed = running_entry(conn, 961, clock, host.probe(), 9'610);
+  auto const broken = running_entry(conn, 962, clock, host.probe(), 9'620);
+  auto const fine   = running_entry(conn, 963, clock, host.probe(), 9'630);
+  recorder   rec;
+  for (auto const seq : {killed, broken, fine}) {
+    REQUIRE(begin(conn, timeout_request(seq), clock, host.probe(), rec.signaller()).status == hq::begin_status::marked);
+  }
+  host.groups_with_members.erase(9'620);
+  host.groups_with_members.erase(9'630);
+  REQUIRE(conn.execute(std::format("create trigger refuse_history before insert on queue_history when new.seq = {} "
+                                   "begin select raise(abort, 'history refused'); end;",
+                                   broken))
+              .has_value());
+  clock.mono += k_grace + 1;
+
+  auto const result = hq::advance_terminations(conn, advance_request_for(), clock, host.probe(), rec.signaller());
+  REQUIRE(result.has_value());
+  // The kill sent before the failure is still reported.
+  REQUIRE(result->kills.size() == 1);
+  CHECK(result->kills[0].seq == killed);
+  CHECK(rec.count(SIGKILL) == 1);
+  // The entry after the failing one was still examined and ended.
+  REQUIRE(result->ended.size() == 1);
+  CHECK(result->ended[0].seq == fine);
+  CHECK_FALSE(exists(conn, fine));
+  // The failing entry is left in place for a later call, and named.
+  CHECK(exists(conn, broken));
+  REQUIRE(result->end_failures.size() == 1);
+  CHECK(result->end_failures[0].seq == broken);
+  CHECK(result->end_failures[0].error.message.contains("history refused"));
+}
+
+TEST_CASE("terminate: a cancelled entry with no readable canceller ends as abandoned", "[engine][hostqueue][hq-terminate]") {
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add_group(9'710);
+  host.add_group(9'720);
+  auto const missing   = running_entry(conn, 971, clock, host.probe(), 9'710);
+  auto const malformed = running_entry(conn, 972, clock, host.probe(), 9'720);
+  recorder   rec;
+  for (auto const seq : {missing, malformed}) {
+    REQUIRE(begin(conn, timeout_request(seq), clock, host.probe(), rec.signaller()).status == hq::begin_status::marked);
+  }
+  REQUIRE(conn.execute(std::format("update queue_entries set terminate_reason = 'cancelled', cancelled_by = null where seq = {}",
+                                   missing))
+              .has_value());
+  REQUIRE(conn.execute(std::format("update queue_entries set terminate_reason = 'cancelled', cancelled_by = 'not json' "
+                                   "where seq = {}",
+                                   malformed))
+              .has_value());
+  host.groups_with_members.clear();
+
+  auto const result = hq::advance_terminations(conn, advance_request_for(), clock, host.probe(), rec.signaller());
+  REQUIRE(result.has_value());
+  REQUIRE(result->ended.size() == 2);
+  for (auto const& ended : result->ended) {
+    CHECK(ended.outcome == hq::history_outcome::abandoned);
+  }
+  for (auto const seq : {missing, malformed}) {
+    CHECK_FALSE(exists(conn, seq));
+    auto const row = hq::find_history(conn, seq).value();
+    REQUIRE(row.has_value());
+    CHECK(row->outcome == hq::history_outcome::abandoned);
+    CHECK_FALSE(row->cancelled_by.has_value());
+  }
+}

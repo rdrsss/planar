@@ -343,3 +343,41 @@ TEST_CASE("agent migration 00002 rolls back and re-applies without losing schema
   REQUIRE(seq.has_value());
   CHECK(hq::find(conn, *seq).value().has_value());
 }
+
+TEST_CASE("record_child stores the group on a running entry and refuses a waiting or missing one",
+          "[engine][hostqueue][hq-enqueue]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const waiting = hq::enqueue(conn, full_request()).value();
+  auto       nested  = full_request();
+  nested.parent_seq  = waiting;
+  auto const running = hq::enqueue(conn, nested).value(); // Inserted running: it never waits for a slot.
+
+  SECTION("a running entry records the group and the leader's start time") {
+    auto const recorded = hq::record_child(conn, running, 4'321, 777'000'111);
+    REQUIRE(recorded.has_value());
+    CHECK(*recorded);
+    auto const found = hq::find(conn, running).value();
+    REQUIRE(found.has_value());
+    CHECK(found->child_pgid == 4'321);
+    CHECK(found->child_started == 777'000'111);
+    // Nothing else moved.
+    CHECK(found->state == hq::entry_state::running);
+    CHECK(found->pid == full_request().pid);
+  }
+  SECTION("a waiting entry is left alone") {
+    auto const recorded = hq::record_child(conn, waiting, 4'321, 777'000'111);
+    REQUIRE(recorded.has_value());
+    CHECK_FALSE(*recorded);
+    auto const found = hq::find(conn, waiting).value();
+    REQUIRE(found.has_value());
+    CHECK_FALSE(found->child_pgid.has_value());
+    CHECK_FALSE(found->child_started.has_value());
+  }
+  SECTION("an entry that does not exist writes nothing") {
+    auto const recorded = hq::record_child(conn, 9'999, 4'321, 777'000'111);
+    REQUIRE(recorded.has_value());
+    CHECK_FALSE(*recorded);
+  }
+}

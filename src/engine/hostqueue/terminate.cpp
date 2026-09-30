@@ -286,12 +286,32 @@ auto advance_terminations(db::connection& conn, const advance_request& request, 
     if (*verdict == group_verdict::empty || *verdict == group_verdict::reused) {
       // An empty group stays empty, and a reused id counts as empty, so the
       // judgement made outside the lock still holds when the end commits.
-      auto ended = end_entry(conn, e.seq, end_request{.outcome = *outcome, .ended_at = clock.wall_ms()});
+      end_request request_end{.outcome = *outcome, .ended_at = clock.wall_ms()};
+      if (*outcome == history_outcome::cancelled) {
+        // The rule a poll applies: `end_entry` refuses a cancellation with no
+        // readable canceller, which would fail every advance, so such a row
+        // ends as `abandoned`.
+        std::optional<canceller> who;
+        if (e.cancelled_by) {
+          if (auto decoded = decode_canceller(*e.cancelled_by); decoded) {
+            who = std::move(*decoded);
+          }
+        }
+        if (who) {
+          request_end.cancelled_by = std::move(who);
+        } else {
+          request_end.outcome = history_outcome::abandoned;
+        }
+      }
+      auto ended = end_entry(conn, e.seq, request_end);
       if (!ended) {
-        return std::unexpected(std::move(ended.error()));
+        // One entry's failure must not drop the kills already sent or skip
+        // the entries after it: record it and go on.
+        result.end_failures.push_back(end_failure{.seq = e.seq, .error = std::move(ended.error())});
+        continue;
       }
       if (*ended == end_result::ended) {
-        result.ended.push_back(ended_termination{.seq = e.seq, .outcome = *outcome});
+        result.ended.push_back(ended_termination{.seq = e.seq, .outcome = request_end.outcome});
       }
       continue;
     }

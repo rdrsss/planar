@@ -3,9 +3,10 @@
 // 1080, task 7007, test-spec scenario "Happy path — a handler's exit status
 // reaches the process").
 //
-// No verb in this build returns a pass-through status yet (`queue run` is
-// task 7008), so these cases register a TEST handler over an existing leaf
-// in a copy of the real table and drive the real `run`. The leaf's own
+// These cases register a TEST handler over an existing leaf in a copy of the
+// real table and drive the real `run`, so the pass-through rules are pinned
+// independently of any verb (`queue run`, task 7008, is the real user; its
+// own cases are in queue_run.t.cpp). The leaf's own
 // parse rules still apply; only the handler behind it is replaced.
 //
 // The last case shells the built binary and requires its exit code to equal

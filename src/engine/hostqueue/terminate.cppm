@@ -17,10 +17,10 @@
 ///   group is empty, or its id has been reused (which counts as empty), it
 ///   ends the entry through `end_entry` with the outcome named by
 ///   `terminate_reason` (`timeout`, or `cancelled` with the recorded
-///   canceller); when the group still has members and the entry has been
-///   terminating for longer than the grace period, it sends SIGKILL to the
-///   group. A terminating entry whose group has members is never removed, so
-///   it keeps its slot.
+///   canceller, or `abandoned` when a cancellation's canceller cannot be
+///   read); a failed end is recorded per entry and does not stop the rest; when the group still has members and the entry has
+///   been terminating for longer than the grace period, it sends SIGKILL to the group. A terminating entry whose group has
+///   members is never removed, so it keeps its slot.
 /// - `signal_child_group` is the one guarded path to a signal. The caller of
 ///   `poll` uses it to send SIGTERM to each entry the poll returned as newly
 ///   marked, after the poll has committed.
@@ -187,12 +187,19 @@ export struct ended_termination {
   history_outcome outcome = history_outcome::timeout; ///< The outcome written: `timeout` or `cancelled`.
 };
 
+/// @brief A terminating entry `advance_terminations` could not end.
+export struct end_failure {
+  std::int64_t seq = 0; ///< The entry, left in place for a later call.
+  queue_error  error;   ///< Why ending it failed.
+};
+
 /// @brief What `advance_terminations` did.
 export struct advance_result {
   std::int64_t                   now_mono = 0; ///< The monotonic time the grace period was measured against.
   std::vector<signal_attempt>    kills;        ///< Every SIGKILL attempt, in sequence order, sent or not.
   std::vector<ended_termination> ended;        ///< Entries this call ended, in sequence order.
   std::vector<signal_attempt>    failures;     ///< Entries whose group could not be judged; neither ended nor signalled.
+  std::vector<end_failure> end_failures; ///< Entries whose group was empty but whose end failed; the rest were still examined.
 };
 
 /// @brief Step two of stopping a command, as this module's description
@@ -207,8 +214,14 @@ export struct advance_result {
 /// @param probe The process queries.
 /// @param signaller Where SIGKILL goes.
 /// @return The result; `invalid_request` for a negative grace period or a
-/// connection in a transaction; `clock_failed`; or the SQLite failure. An
-/// entry ended or signalled before a SQLite failure stays so.
+/// connection in a transaction; `clock_failed`; or the SQLite failure of
+/// listing the entries. A failure to end one entry is not an error of the
+/// call: it is recorded in `end_failures`, the entry is left for a later
+/// call, and the remaining entries are still examined, so the kills already
+/// sent are never dropped. A cancelled entry whose `cancelled_by` is missing
+/// or unreadable ends as `abandoned`, as a poll ends it, because
+/// `end_entry` would refuse a `cancelled` row without a canceller and fail
+/// every advance.
 export auto advance_terminations(db::connection& conn, const advance_request& request, process::identity::clock& clock,
                                  const process_probe& probe, const group_signaller& signaller)
     -> std::expected<advance_result, queue_error>;

@@ -175,6 +175,28 @@ TEST_CASE("arena: run_pinned exports PLANAR_AGENT_DB under the arena root", "[ar
   REQUIRE(*agent == (arena.cpp_root / "agent.db").string());
   // The main database pin is unchanged and sits beside it.
   REQUIRE(got.out.contains(std::format("PLANAR_DB={}\n", (arena.cpp_root / "planar.db").string())));
+
+  // Task 7043: `planar-agent queue run` opens the agent database, so a run
+  // through `run_pinned` now creates its store, and only under the arena.
+  // Nothing may appear under the arena's HOME either, which is where the
+  // runtime's fallback would have put it had the variable been dropped.
+  auto const real_home = std::getenv("HOME") == nullptr ? std::filesystem::path{} : std::filesystem::path{std::getenv("HOME")};
+  auto const real_agent_db = real_home / ".planar" / "agent.db";
+  std::error_code ec;
+  // A live operator store may already exist there and change under other
+  // sessions, so only its ABSENCE is a usable baseline.
+  bool const real_store_absent_before = !real_home.empty() && !std::filesystem::exists(real_agent_db, ec);
+
+  REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "agent.db"));
+  auto const queued = run_pinned(std::filesystem::path{PLANAR_AGENT_CPP_BIN},
+                                 std::vector<std::string>{"queue", "run", "--", "/usr/bin/true"}, arena.cpp_root, "queue_true");
+  INFO("queue run stderr:\n" << queued.err);
+  REQUIRE(queued.code == 0);
+  REQUIRE(std::filesystem::exists(arena.cpp_root / "agent.db"));
+  REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "fakehome" / ".planar", ec));
+  if (real_store_absent_before) {
+    REQUIRE_FALSE(std::filesystem::exists(real_agent_db, ec));
+  }
 }
 
 TEST_CASE("arena: launch_pinned_detached exports the same PLANAR_AGENT_DB as run_pinned", "[arena][agentdb]") {
@@ -353,6 +375,21 @@ TEST_CASE("arena: agent_db_pin_error accepts the default map and refuses one tha
     REQUIRE(problem.has_value());
     REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring(home));
     REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("fallback"));
+  }
+  SECTION("a set-but-empty PLANAR_AGENT_DB is refused, as the runtime refuses it") {
+    // `resolve_agent_db_path` does not fall back to HOME for a variable that
+    // is set and empty; a harness that did would call a run pinned that the
+    // binary itself refuses (task 7043).
+    auto env = pinned_env(work);
+    for (auto& var : env) {
+      if (var.name == "PLANAR_AGENT_DB") {
+        var.value.clear();
+      }
+    }
+    auto const problem = agent_db_pin_error(work, env);
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("PLANAR_AGENT_DB"));
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("empty"));
   }
   SECTION("with neither variable the map is unpinned and refused") {
     std::vector<pinned_var> env;

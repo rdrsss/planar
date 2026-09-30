@@ -149,7 +149,7 @@ inline auto lexically_under(const std::filesystem::path& root, const std::filesy
 
 /// @brief The agent-database safety check: resolve the path the runtime
 /// would open from `env`, by the runtime's own rule (`PLANAR_AGENT_DB` when
-/// set and non-empty, else `$HOME/.planar/agent.db`, see
+/// set, refused when set but empty, else `$HOME/.planar/agent.db`, see
 /// `src/lib/db/agentdb.cppm`), and report it when it is not under `work`.
 ///
 /// This mirrors the rule rather than importing `planar.db.agentdb`, because
@@ -161,7 +161,14 @@ inline auto lexically_under(const std::filesystem::path& root, const std::filesy
 inline auto agent_db_pin_error(const std::filesystem::path& work, std::span<const pinned_var> env) -> std::optional<std::string> {
   std::filesystem::path resolved;
   std::string_view      source;
-  if (auto const direct = pinned_lookup(env, "PLANAR_AGENT_DB"); direct.has_value() && !direct->empty()) {
+  if (auto const direct = pinned_lookup(env, "PLANAR_AGENT_DB"); direct.has_value() && direct->empty()) {
+    // `resolve_agent_db_path` refuses a variable that is set and empty; it
+    // does not fall back to HOME. A harness that fell back would call a run
+    // pinned that the binary itself refuses (task 7043).
+    return std::format("parity harness: PLANAR_AGENT_DB is set but empty for arena root '{}'; the runtime refuses that "
+                       "rather than falling back to $HOME/.planar/agent.db",
+                       work.string());
+  } else if (direct.has_value()) {
     resolved = *direct;
     source   = "PLANAR_AGENT_DB";
   } else if (auto const home = pinned_lookup(env, "HOME"); home.has_value() && !home->empty()) {
