@@ -51,6 +51,27 @@
 /// A wait limit reached before the turn removes the entry with outcome
 /// `wait_timeout` and exits 125 without running the command.
 ///
+/// ## Signals
+///
+/// The handler catches SIGINT, SIGTERM and SIGHUP from just before the enqueue
+/// to its return, through a self-pipe: the handler only writes the signal
+/// number, and the wait loops act on it. While waiting, a signal removes the
+/// entry (outcome `cancelled`, attributed to the submitter's pid), runs nothing
+/// and exits 125 (decision 1188: cancelled). While the command runs, it is forwarded to
+/// the command's process group and supervision goes on; nothing escalates, so a
+/// command that survives the signal keeps its slot and the outcome and exit
+/// code are what the command did (`signaled`, 128 plus N, or `exited` with its
+/// own code). A signal ignored at start stays ignored. Only the recorded child
+/// group is signalled, through `runner::signal`.
+///
+/// ## Known limits
+///
+/// A queued command cannot read the terminal. It runs in its own process group,
+/// never the terminal's foreground group, so a terminal read stops it with
+/// SIGTTIN. The handler neither hands the terminal over nor redirects standard
+/// input: queued commands are non-interactive builds and tests (docs/
+/// cli-reference.md, "Known limits").
+///
 /// ## What is not here yet
 ///
 /// The command guard and the 126/127 checks run first (tasks hq-command-guard
@@ -58,7 +79,7 @@
 /// cannot be executed 126, each before the configuration or the store is
 /// touched, so nothing is enqueued. A program that cannot start at its turn ends
 /// its entry `not_started` with the same 127 or 126. Later tasks of the same
-/// milestone add signal forwarding, nested runs, missing-entry handling, `--notices`, `--vendor`
+/// milestone add nested runs, missing-entry handling, `--notices`, `--vendor`
 /// and `--role`, and `--claim`. This handler leaves them out and says so at
 /// each seam.
 module;
@@ -88,7 +109,8 @@ export struct queue_run_deps {
   /// @brief Loads the `[queue]` settings; reads the configuration file the
   /// context's environment names when empty.
   std::function<std::expected<engine::config::queue_settings, engine::config::queue_load_error>()> load_settings;
-  /// @brief Sleeps for a duration; `std::this_thread::sleep_for` when empty.
+  /// @brief Sleeps for a duration; when empty, waits on the signal relay, so a
+  /// forwarded signal ends the wait early.
   std::function<void(std::chrono::milliseconds)> sleep;
 };
 
