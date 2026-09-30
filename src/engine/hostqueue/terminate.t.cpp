@@ -1184,3 +1184,69 @@ TEST_CASE("terminate: a cancelled entry with no readable canceller ends as aband
     CHECK_FALSE(row->cancelled_by.has_value());
   }
 }
+
+TEST_CASE("terminate: cancel_waiting removes a waiting entry with its canceller and refuses one that has started",
+          "[engine][hostqueue][hq-queue-cancel]") {
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add_group(9'300);
+
+  hq::canceller const who{.vendor = "claude", .role = "reviewer", .pid = 4'242};
+
+  // A waiting entry is removed and leaves exactly one cancelled row.
+  auto const waiting = enqueue_one(conn, request_for(930, clock));
+  auto const removed = hq::cancel_waiting(conn, waiting, who, clock.wall.load());
+  REQUIRE(removed.has_value());
+  CHECK(removed->status == hq::cancel_waiting_status::removed);
+  CHECK_FALSE(exists(conn, waiting));
+  auto const row = hq::find_history(conn, waiting);
+  REQUIRE(row.has_value());
+  REQUIRE(row->has_value());
+  CHECK((*row)->outcome == hq::history_outcome::cancelled);
+  CHECK((*row)->cancelled_by == who);
+  CHECK((*row)->ended_at == clock.wall.load());
+  CHECK_FALSE(conn.in_transaction());
+
+  // A second call finds nothing, writes nothing.
+  auto const again = hq::cancel_waiting(conn, waiting, who, clock.wall.load());
+  REQUIRE(again.has_value());
+  CHECK(again->status == hq::cancel_waiting_status::missing);
+  CHECK(hq::list_history(conn).value().size() == 1);
+
+  // A number never issued is missing too.
+  CHECK(hq::cancel_waiting(conn, waiting + 50, who, clock.wall.load()).value().status == hq::cancel_waiting_status::missing);
+
+  // An entry that has started is left exactly as it was.
+  auto const running = running_entry(conn, 931, clock, host.probe(), 9'300);
+  auto const refused = hq::cancel_waiting(conn, running, who, clock.wall.load());
+  REQUIRE(refused.has_value());
+  CHECK(refused->status == hq::cancel_waiting_status::not_waiting);
+  REQUIRE(refused->stored.has_value());
+  CHECK(refused->stored->state == hq::entry_state::running);
+  CHECK(exists(conn, running));
+  CHECK_FALSE(entry_of(conn, running).terminating_since_mono.has_value());
+  CHECK(hq::list_history(conn).value().size() == 1);
+
+  // The engine's own cancellation of a running entry records the same
+  // canceller on the entry, and its end carries it to the history row.
+  recorder   rec;
+  auto const begun = begin(conn, cancel_request(running, who), clock, host.probe(), rec.signaller());
+  REQUIRE(begun.status == hq::begin_status::marked);
+  CHECK(entry_of(conn, running).cancelled_by == hq::encode_canceller(who));
+}
+
+TEST_CASE("terminate: cancel_waiting refuses a connection that is already in a transaction",
+          "[engine][hostqueue][hq-queue-cancel]") {
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  auto const  seq = enqueue_one(conn, request_for(940, clock));
+  REQUIRE(conn.execute("begin;").has_value());
+  auto const refused = hq::cancel_waiting(conn, seq, hq::canceller{.pid = 1}, clock.wall.load());
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error().kind == hq::queue_error_kind::invalid_request);
+  REQUIRE(conn.execute("rollback;").has_value());
+  CHECK(exists(conn, seq));
+}

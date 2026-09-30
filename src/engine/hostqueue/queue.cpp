@@ -54,11 +54,21 @@ auto optional_int(const db::statement& stmt, int index) -> std::optional<std::in
 }
 
 /// @brief The column list every read shares, in the order `read_entry`
-/// consumes it.
+/// consumes it, followed by `limit_columns_select`'s two limit columns.
 constexpr std::string_view k_entry_columns = "seq, state, host_id, pid, pid_started, child_pgid, child_started, parent_seq, "
                                              "terminating_since_mono, terminate_reason, cancelled_by, cwd, argv, label, "
                                              "vendor, role, claim_token, log_path, enqueued_at, started_at, "
                                              "refreshed_mono, deadline_mono, wait_deadline_mono";
+
+/// @brief `select <every entry column> from queue_entries`, with the limit
+/// columns read as null on a store that predates them.
+auto select_entries(db::connection& conn) -> std::expected<std::string, queue_error> {
+  auto limits = limit_columns_select(conn, "queue_entries");
+  if (!limits) {
+    return std::unexpected(std::move(limits.error()));
+  }
+  return std::format("select {}, {} from queue_entries", k_entry_columns, *limits);
+}
 
 /// @brief Materialises the current row of a `k_entry_columns` statement.
 auto read_entry(const db::statement& stmt) -> std::expected<entry, queue_error> {
@@ -104,6 +114,8 @@ auto read_entry(const db::statement& stmt) -> std::expected<entry, queue_error> 
   out.refreshed_mono     = stmt.column_int64(20);
   out.deadline_mono      = optional_int(stmt, 21);
   out.wait_deadline_mono = optional_int(stmt, 22);
+  out.run_limit_ms       = optional_int(stmt, 23);
+  out.wait_limit_ms      = optional_int(stmt, 24);
   return out;
 }
 
@@ -150,8 +162,8 @@ auto decode_argv(std::string_view text) -> std::expected<std::vector<std::string
 
 auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error> {
   auto stmt = conn.prepare("insert into queue_entries (state, host_id, pid, pid_started, parent_seq, cwd, argv, label, "
-                           "vendor, role, claim_token, log_path, enqueued_at, refreshed_mono, wait_deadline_mono) "
-                           "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning seq");
+                           "vendor, role, claim_token, log_path, enqueued_at, refreshed_mono, wait_deadline_mono, "
+                           "wait_limit_ms) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning seq");
   if (!stmt) {
     return sql_failure("prepare enqueue", stmt.error());
   }
@@ -159,7 +171,7 @@ auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expec
   // (roadmap M1, task hq-nested-entry owns the rest of that behaviour).
   auto const state = request.parent_seq ? entry_state::running : entry_state::waiting;
 
-  std::array<std::expected<void, db::db_error>, 15> const bound{{
+  std::array<std::expected<void, db::db_error>, 16> const bound{{
       stmt->bind_text(1, to_string(state)),
       stmt->bind_text(2, request.host_id),
       stmt->bind_int64(3, request.pid),
@@ -175,6 +187,7 @@ auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expec
       stmt->bind_int64(13, request.enqueued_at),
       stmt->bind_int64(14, request.refreshed_mono),
       bind_optional_int(*stmt, 15, request.wait_deadline_mono),
+      bind_optional_int(*stmt, 16, request.wait_limit_ms),
   }};
   for (auto const& result : bound) {
     if (!result) {
@@ -257,8 +270,82 @@ auto record_child(db::connection& conn, std::int64_t seq, std::int64_t child_pgi
   return true;
 }
 
+auto set_log_path(db::connection& conn, std::int64_t seq, std::string_view log_path) -> std::expected<bool, queue_error> {
+  auto stmt = conn.prepare("update queue_entries set log_path = ? where seq = ? returning seq");
+  if (!stmt) {
+    return sql_failure("prepare set log path", stmt.error());
+  }
+  if (auto bound = stmt->bind_text(1, log_path); !bound) {
+    return sql_failure("bind set log path", bound.error());
+  }
+  if (auto bound = stmt->bind_int64(2, seq); !bound) {
+    return sql_failure("bind set log path", bound.error());
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return sql_failure("set log path", stepped.error());
+  }
+  if (*stepped == db::step_result::done) {
+    return false;
+  }
+  if (auto done = stmt->step(); !done) {
+    return sql_failure("finish set log path", done.error());
+  }
+  return true;
+}
+
+auto discard_entry(db::connection& conn, std::int64_t seq) -> std::expected<bool, queue_error> {
+  auto stmt = conn.prepare("delete from queue_entries where seq = ? returning seq");
+  if (!stmt) {
+    return sql_failure("prepare discard entry", stmt.error());
+  }
+  if (auto bound = stmt->bind_int64(1, seq); !bound) {
+    return sql_failure("bind discard entry", bound.error());
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return sql_failure("discard queue entry", stepped.error());
+  }
+  if (*stepped == db::step_result::done) {
+    return false;
+  }
+  if (auto done = stmt->step(); !done) {
+    return sql_failure("finish discard entry", done.error());
+  }
+  return true;
+}
+
+auto limit_columns_select(db::connection& conn, std::string_view table) -> std::expected<std::string, queue_error> {
+  auto stmt = conn.prepare("select count(*) from pragma_table_info(?) where name in ('run_limit_ms', 'wait_limit_ms')");
+  if (!stmt) {
+    return sql_failure("prepare limit column check", stmt.error());
+  }
+  if (auto bound = stmt->bind_text(1, table); !bound) {
+    return sql_failure("bind limit column check", bound.error());
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return sql_failure("check limit columns", stepped.error());
+  }
+  if (*stepped != db::step_result::row) {
+    return std::unexpected(queue_error{
+        .kind        = queue_error_kind::query_failed,
+        .sqlite_code = 0,
+        .message     = "hostqueue: check limit columns returned no row",
+    });
+  }
+  // Agent migration 00003 adds both columns in one migration, so a store has
+  // both or neither.
+  return stmt->column_int64(0) == 2 ? std::string{"run_limit_ms, wait_limit_ms"}
+                                    : std::string{"null as run_limit_ms, null as wait_limit_ms"};
+}
+
 auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<entry>, queue_error> {
-  auto stmt = conn.prepare(std::format("select {} from queue_entries where seq = ?", k_entry_columns));
+  auto select = select_entries(conn);
+  if (!select) {
+    return std::unexpected(std::move(select.error()));
+  }
+  auto stmt = conn.prepare(std::format("{} where seq = ?", *select));
   if (!stmt) {
     return sql_failure("prepare find", stmt.error());
   }
@@ -280,7 +367,11 @@ auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional
 }
 
 auto list(db::connection& conn) -> std::expected<std::vector<entry>, queue_error> {
-  auto stmt = conn.prepare(std::format("select {} from queue_entries order by seq", k_entry_columns));
+  auto select = select_entries(conn);
+  if (!select) {
+    return std::unexpected(std::move(select.error()));
+  }
+  auto stmt = conn.prepare(std::format("{} order by seq", *select));
   if (!stmt) {
     return sql_failure("prepare list", stmt.error());
   }

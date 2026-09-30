@@ -139,6 +139,47 @@ TEST_CASE("open_agent_db creates the agent database at PLANAR_AGENT_DB on first 
   }
 }
 
+TEST_CASE("open_agent_db migrates a store written at agent schema version 2 to head and keeps every queue row",
+          "[db][agentdb][hq-queue-limit-columns]") {
+  // A store an older planar-agent created and filled: the chain up to 00002,
+  // one waiting and one running entry and one history row, written the way
+  // that binary wrote them (it never names the limit columns). The rows are
+  // seeded with raw SQL because no code at head writes a version-2 store.
+  scratch_dir scratch;
+  auto const  store = scratch.path_ / "agent.db";
+  auto const  chain = planar::db::agent::migrations();
+  REQUIRE(chain.size() >= 3);
+  {
+    auto conn = planar::db::connection::open(store.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 2), planar::db::k_agent_version_table).has_value());
+    REQUIRE(conn->execute("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, label, enqueued_at, "
+                          "refreshed_mono, wait_deadline_mono) values ('waiting', 'h', 11, 111, '/w', '[\"make\"]', 'old-w', "
+                          "1000, 5000, 9000);"
+                          "insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, label, enqueued_at, "
+                          "started_at, refreshed_mono, deadline_mono) values ('running', 'h', 12, 112, '/w', '[\"ctest\"]', "
+                          "'old-r', 1001, 1500, 5001, 7000);"
+                          "insert into queue_history (seq, outcome, exit_code, cwd, argv, label, enqueued_at, started_at, "
+                          "ended_at, waited_ms, ran_ms) values (7, 'exited', 0, '/w', '[\"true\"]', 'old-h', 900, 950, 990, "
+                          "50, 40);")
+                .has_value());
+    REQUIRE(planar::db::current_version(*conn, planar::db::k_agent_version_table).value() == 2);
+  }
+
+  auto opened = planar::db::agent::open_agent_db(env_of({{"PLANAR_AGENT_DB", store.string()}}));
+  REQUIRE(opened.has_value());
+  CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() == planar::db::embedded_max(chain));
+
+  CHECK(scalar(*opened, "select group_concat(seq || ':' || state || ':' || label || ':' || ifnull(deadline_mono, '-') || ':' || "
+                        "ifnull(wait_deadline_mono, '-'), ',') from (select * from queue_entries order by seq)") ==
+        "1:waiting:old-w:-:9000,2:running:old-r:7000:-");
+  CHECK(scalar(*opened, "select group_concat(seq || ':' || outcome || ':' || label || ':' || waited_ms || ':' || ran_ms, ',') "
+                        "from queue_history") == "7:exited:old-h:50:40");
+  // What the older binary never recorded reads as unknown, not as zero.
+  CHECK(scalar(*opened, "select count(*) from queue_entries where run_limit_ms is null and wait_limit_ms is null") == "2");
+  CHECK(scalar(*opened, "select count(*) from queue_history where run_limit_ms is null and wait_limit_ms is null") == "1");
+}
+
 TEST_CASE("open_agent_db falls back to $HOME/.planar/agent.db and never reads PLANAR_DB as the store path",
           "[db][agentdb][hq-agentdb-open]") {
   scratch_dir scratch;
@@ -512,9 +553,10 @@ TEST_CASE("every agent migration's compat value is pinned", "[db][agentdb][migra
   // after applying the chain one migration at a time to a scratch store,
   // so a migration whose insert disagrees with its own filename or with
   // this table is caught regardless of how the insert is spelled.
-  static constexpr std::array<std::pair<std::string_view, std::uint32_t>, 2> k_pinned_compat{{
+  static constexpr std::array<std::pair<std::string_view, std::uint32_t>, 3> k_pinned_compat{{
       {"00001_agent_foundation.up.sql", 1},
       {"00002_queue_tables.up.sql", 1}, // additive: two tables and their indexes (task hq-enqueue)
+      {"00003_queue_limits.up.sql", 1}, // additive: four nullable columns (task hq-queue-limit-columns)
   }};
 
   scratch_dir scratch;
@@ -562,4 +604,57 @@ TEST_CASE("every agent migration's compat value is pinned", "[db][agentdb][migra
     }
   }
   CHECK(seen.size() == k_pinned_compat.size());
+}
+
+TEST_CASE("open_agent_db_read_only_at opens strictly read-only and never creates the file, its directory or a migration",
+          "[db][agentdb][hq-queue-status]") {
+  scratch_dir scratch;
+  auto const  store = scratch.path_ / "nested" / "agent.db";
+
+  SECTION("a missing store is refused by path and nothing is created") {
+    auto opened = planar::db::agent::open_agent_db_read_only_at(store);
+    REQUIRE_FALSE(opened.has_value());
+    CHECK(opened.error().kind == planar::db::agent::open_error_kind::open_failed);
+    CHECK(opened.error().path == store);
+    CHECK(opened.error().message.find(store.string()) != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(store));
+    CHECK_FALSE(std::filesystem::exists(store.parent_path()));
+  }
+
+  SECTION("an existing store opens read-only and refuses every write") {
+    {
+      auto created = planar::db::agent::open_agent_db_at(store);
+      REQUIRE(created.has_value());
+    }
+    auto const before = read_bytes(store);
+    auto       opened = planar::db::agent::open_agent_db_read_only_at(store);
+    REQUIRE(opened.has_value());
+    CHECK(opened->is_read_only());
+    CHECK_FALSE(
+        opened->execute("insert into agent_schema_migrations (version, compat, description) values (99, 1, 'x')").has_value());
+    CHECK_FALSE(opened->execute("create table extra (a integer)").has_value());
+    opened = std::unexpected(planar::db::agent::open_error{}); // close it
+    CHECK(read_bytes(store) == before);
+  }
+
+  SECTION("a store that needs a newer binary is refused, as the read-write open refuses it") {
+    auto const binary_head = planar::db::agent::agent_schema_version();
+    static_cast<void>(seed_store_ahead(store, binary_head + 1, binary_head + 1));
+    auto opened = planar::db::agent::open_agent_db_read_only_at(store);
+    REQUIRE_FALSE(opened.has_value());
+    CHECK(opened.error().kind == planar::db::agent::open_error_kind::incompatible_store);
+  }
+
+  SECTION("the environment-resolving form reads the same store, and reports an unresolvable path") {
+    {
+      auto created = planar::db::agent::open_agent_db_at(store);
+      REQUIRE(created.has_value());
+    }
+    auto opened = planar::db::agent::open_agent_db_read_only(env_of({{"PLANAR_AGENT_DB", store.string()}}));
+    REQUIRE(opened.has_value());
+    CHECK(opened->is_read_only());
+    auto const unresolved = planar::db::agent::open_agent_db_read_only(env_of({}));
+    REQUIRE_FALSE(unresolved.has_value());
+    CHECK(unresolved.error().kind == planar::db::agent::open_error_kind::unresolved_path);
+  }
 }

@@ -119,8 +119,9 @@ TEST_CASE("planar-agent's declared verb set is exactly the oracle's", "[cmd][age
                      "abort", "action", "block", "claim", "claim-associate", "complete", "end", "fail", "heartbeat", "peek",
                      "pull", "reconcile", "release", "schema", "start", "version",
                      // Plan 1080: the host-wide build and test queue's domain
-                     // and its foreground verb. `run` is already a name above.
-                     "queue",
+                     // and its verbs. `run` is already a name above; `cancel`
+                     // (task hq-queue-cancel) is new.
+                     "queue", "cancel", "status",
                      // The nine declared by task 6065, which refuse at 64.
                      "add", "capsule", "confirm", "context", "dispatch", "ingest", "list", "preview", "resolve", "run"});
 }
@@ -141,14 +142,15 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  CHECK(leaves.size() == 26);
+  CHECK(leaves.size() == 28);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
   // Non-vacuous: the inventory must not have swallowed a verb that has a
   // real handler, which is the failure mode a bulk registration invites.
-  for (auto const& implemented : {"pull", "complete", "action start", "run start", "run end", "queue run", "schema", "version"}) {
+  for (auto const& implemented :
+       {"pull", "complete", "action start", "run start", "run end", "queue run", "queue cancel", "schema", "version"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
@@ -171,9 +173,9 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
   for (auto const* sub : planar::cliapp::children(*queue)) {
     verbs.insert(sub->get_name());
   }
-  // `status`, `cancel` and `rule` are later tasks of the same plan and each
-  // adds its name here in the change that adds the verb.
-  CHECK(verbs == std::set<std::string, std::less<>>{"run"});
+  // `rule` is a later task of the same plan and adds its name here in the
+  // change that adds the verb.
+  CHECK(verbs == std::set<std::string, std::less<>>{"cancel", "run", "status"});
 
   // `queue run`'s surface: the label, time-limit, vendor, role and notices flags, the command
   // positional, and nothing else (no `--json`: standard output belongs to the command).
@@ -186,9 +188,36 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
     }
     declared.insert(option->get_name(false, true));
   }
-  CHECK(declared == std::set<std::string, std::less<>>{"--label", "--notices", "--role", "--timeout", "--vendor",
+  CHECK(declared == std::set<std::string, std::less<>>{"--detach", "--label", "--notices", "--role", "--timeout", "--vendor",
                                                        "--wait-timeout", "command"});
 
+  // `queue cancel` (task hq-queue-cancel): the canceller's vendor and role
+  // and the entry's number, and nothing else. No `--json`, no `--force`:
+  // cancellation is open to every caller and is attributed, not gated.
+  auto const* cancel = queue->get_subcommand_no_throw("cancel");
+  REQUIRE(cancel != nullptr);
+  std::set<std::string, std::less<>> cancel_declared;
+  for (auto const* option : cancel->get_options()) {
+    if (option == cancel->get_help_ptr()) {
+      continue;
+    }
+    cancel_declared.insert(option->get_name(false, true));
+  }
+  CHECK(cancel_declared == std::set<std::string, std::less<>>{"--role", "--vendor", "seq"});
+
+  // `queue status` is the read-only verb (task hq-queue-status): the sequence
+  // number and `--json`, and nothing that could change what it reports (no
+  // flag to reap, refresh or select a store).
+  auto const* status = queue->get_subcommand_no_throw("status");
+  REQUIRE(status != nullptr);
+  std::set<std::string, std::less<>> status_declared;
+  for (auto const* option : status->get_options()) {
+    if (option == status->get_help_ptr()) {
+      continue;
+    }
+    status_declared.insert(option->get_name(false, true));
+  }
+  CHECK(status_declared == std::set<std::string, std::less<>>{"--json", "seq"});
   // Still refuses every planning verb, at any depth, with `queue` present.
   for (auto const& forbidden : planar::cmd::agent::forbidden_verbs()) {
     INFO("forbidden verb reachable: " << forbidden);

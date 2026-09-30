@@ -12,6 +12,12 @@
 ///   commits. Only then, and only when this call set the marker, does it send
 ///   SIGTERM to the entry's child group. Calling it on an entry that is
 ///   already terminating changes nothing and sends nothing.
+/// - `cancel_waiting` is a cancellation's other half (task hq-queue-cancel): a
+///   waiting entry has no command to stop, so it is removed, with its
+///   `cancelled` history row and the canceller, in one `BEGIN IMMEDIATE`
+///   transaction that first checks the entry is still waiting. An entry that
+///   has started is never removed by it, so a turn taken between the caller's
+///   read and this call cannot strand a running command without its entry.
 /// - `advance_terminations` is step two, and any process may run it. For each
 ///   terminating entry it examines, with no transaction open: when the child
 ///   group is empty, or its id has been reused (which counts as empty), it
@@ -82,6 +88,14 @@ export enum class stop_reason : std::uint8_t {
 /// @param reason The reason to name.
 /// @return `timeout` or `cancelled`.
 export auto to_string(stop_reason reason) -> std::string_view;
+
+/// @brief Whether the checker may use this entry's process ids: both host
+/// identities are known and equal (the rule liveness applies). A checker whose
+/// own identity is `unknown` may use none.
+/// @param e The entry.
+/// @param host_id The checker's host identity.
+/// @return True when the entry's pids and groups can be judged and signalled here.
+export auto same_host(const entry& e, std::string_view host_id) -> bool;
 
 /// @brief Which of the two stopping signals a call sends.
 export enum class stop_signal : std::uint8_t {
@@ -158,7 +172,7 @@ export struct begin_result {
 /// @brief Step one of stopping a command, as this module's description
 /// states: marks the entry in one committed transaction, then sends SIGTERM
 /// to its child group.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
 /// not inside a transaction.
 /// @param request The entry, the reason, the canceller and the checker's
 /// host identity.
@@ -173,6 +187,33 @@ export struct begin_result {
 export auto begin_terminate(db::connection& conn, const begin_terminate_request& request, process::identity::clock& clock,
                             const process_probe& probe, const group_signaller& signaller)
     -> std::expected<begin_result, queue_error>;
+
+/// @brief What `cancel_waiting` found and did.
+export enum class cancel_waiting_status : std::uint8_t {
+  removed,     ///< The entry was waiting; this call removed it and wrote its `cancelled` history row.
+  not_waiting, ///< The entry exists and is not waiting (it has started); nothing was written.
+  missing,     ///< No entry has that number; nothing was written.
+};
+
+/// @brief The result of `cancel_waiting`.
+export struct cancel_waiting_result {
+  cancel_waiting_status status = cancel_waiting_status::missing; ///< What was found and done.
+  std::optional<entry>  stored;                                  ///< The entry as it stood, for `not_waiting`.
+};
+
+/// @brief Removes a waiting entry as cancelled: one `BEGIN IMMEDIATE`
+/// transaction reads the entry and, only when it is waiting, ends it through
+/// `end_entry` with outcome `cancelled` and `who`.
+/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
+/// not inside a transaction.
+/// @param seq The entry to cancel.
+/// @param who The canceller, recorded on the history row.
+/// @param ended_at Wall clock at the cancellation, ms since the epoch; display only.
+/// @return What was found and done; `invalid_request` when the connection is
+/// already in a transaction; or the SQLite failure, after which nothing was
+/// written.
+export auto cancel_waiting(db::connection& conn, std::int64_t seq, const canceller& who, std::int64_t ended_at)
+    -> std::expected<cancel_waiting_result, queue_error>;
 
 /// @brief What the advancing process supplies to `advance_terminations`.
 export struct advance_request {
@@ -205,7 +246,7 @@ export struct advance_result {
 /// @brief Step two of stopping a command, as this module's description
 /// states. Only terminating entries on the checker's host that record a
 /// child group are examined; any other entry is left alone.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
 /// not inside a transaction.
 /// @param request The checker's host identity, the grace period and an
 /// optional single entry.
@@ -244,7 +285,7 @@ export struct poll_stop_result {
 /// module's description states: `poll`, then, with the poll committed and no
 /// transaction open, SIGTERM to each entry it marked, then
 /// `advance_terminations` over every terminating entry on this host.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
 /// not inside a transaction.
 /// @param request The poll request and the grace period.
 /// @param clock The monotonic and wall clocks, read by the poll and by the

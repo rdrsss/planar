@@ -13,8 +13,8 @@
 ///   arrival order, and ending it writes a history row marked `nested` that
 ///   names the parent (`end_entry`);
 /// - is in state `running` from the start, with `started_at` from the wall
-///   clock and `deadline_mono` = now + the run limit, like any entry whose
-///   turn has come;
+///   clock, `deadline_mono` = now + the run limit and `run_limit_ms` = the run
+///   limit, like any entry whose turn has come;
 /// - is refreshed at now.
 ///
 /// A parent may itself be a nested entry, so a nested run can contain
@@ -84,7 +84,7 @@ export struct nested_result {
 
 /// @brief Inserts a nested entry under `parent_seq`, as this module's
 /// description states, or refuses and inserts nothing.
-/// @param conn An open agent database at or above agent schema version 2,
+/// @param conn An open agent database at or above agent schema version 3,
 /// not inside a transaction.
 /// @param parent_seq The entry named by the slot marker.
 /// @param request What to record. `request.host_id` is also the checker's

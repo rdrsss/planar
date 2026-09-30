@@ -17,6 +17,7 @@ import planar.cmd.planar_agent.handler;
 import planar.cmd.planar_agent.handlers.action;
 import planar.cmd.planar_agent.handlers.claims;
 import planar.cmd.planar_agent.handlers.queue;
+import planar.cmd.planar_agent.handlers.queue.status;
 import planar.cmd.planar_agent.handlers.recovery;
 import planar.cmd.planar_agent.handlers.runs;
 import planar.cmd.planar_agent.handlers.schema;
@@ -105,6 +106,9 @@ auto handlers(const CLI::App& root) -> handler_table {
   // The host-wide build and test queue (plan 1080). Its handler returns the
   // command's exit status, which dispatch passes through unchanged.
   table.emplace("queue run", handlers::queue_run);
+  table.emplace("queue cancel", handlers::queue_cancel);
+  // Read-only: what became of one entry. Returns its own exit status too.
+  table.emplace("queue status", handlers::queue_status);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64; the inventory is generated alongside the surface
   // itself. `emplace` is a no-op on a key already present, so a stale

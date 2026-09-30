@@ -19,6 +19,16 @@
 /// the head of the embedded chain). A store ahead of the binary whose
 /// `compat` is not is opened as it is.
 ///
+/// Every READ path over the store must tolerate a store behind head.
+/// `open_agent_db_read_only_at` never migrates, so after an upgrade a
+/// read-only reader (`queue status`) keeps seeing the older schema until some
+/// read-write open brings the store to head, and older binaries keep writing
+/// it meanwhile. A column an additive migration added reads as NULL (unknown)
+/// on such a store, never as a query failure; see
+/// `planar.engine.hostqueue.queue::limit_columns_select` for the agent
+/// migration 00003 columns. Write paths need no such care: they run only on a
+/// connection `open_agent_db` has migrated to head.
+///
 /// The open path never reads `PLANAR_DB` and never opens the main
 /// database: a caller whose main database is locked out by a schema
 /// mismatch still opens the agent store (tech-spec § Open Questions "Where
@@ -125,6 +135,26 @@ export auto check_compat(connection& conn, const std::filesystem::path& path) ->
 /// version (or at the store's own higher, compatible version), or the
 /// failure naming `path`.
 export auto open_agent_db_at(const std::filesystem::path& path) -> std::expected<connection, open_error>;
+
+/// @brief Opens the agent database at an explicit path for READING ONLY:
+/// strictly read-only at the SQLite layer (`file:<path>?mode=ro` and
+/// `SQLITE_OPEN_READONLY`, as `planar-watch` opens the main database), so no
+/// statement run on the returned connection can write. Unlike
+/// `open_agent_db_at` it never creates the file or its directory, never sets
+/// the journal mode and never applies a migration: a store behind the head of
+/// the embedded chain is read as it is. It refuses a store `check_compat`
+/// refuses, which reads only.
+/// @param path The store's location.
+/// @return An open read-only connection, an `open_failed` error naming `path`
+/// when the file does not exist or cannot be opened, or the `check_compat`
+/// failure.
+export auto open_agent_db_read_only_at(const std::filesystem::path& path) -> std::expected<connection, open_error>;
+
+/// @brief Resolves the store's path from `env` (see `resolve_agent_db_path`)
+/// and opens it read-only (see `open_agent_db_read_only_at`).
+/// @param env The environment to read.
+/// @return An open read-only connection, or the first failure.
+export auto open_agent_db_read_only(const env_lookup& env) -> std::expected<connection, open_error>;
 
 /// @brief Resolves the store's path from `env` (see `resolve_agent_db_path`)
 /// and opens it (see `open_agent_db_at`).

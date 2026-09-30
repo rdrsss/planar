@@ -54,7 +54,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
+#include <fcntl.h>
 #include <fstream>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 import std;
@@ -333,4 +336,111 @@ TEST_CASE("capture passes its arguments through and discards the child's stderr"
   // a failing `gh` never reaches the operator's terminal.
   CHECK_FALSE(got.output.contains("THIS-MUST-NOT-BE-CAPTURED"));
   CHECK(got.output == std::format("{}\n", k_sentinel));
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: `own_thread_count` and `close_descriptors_except` (plan 1080,
+// tasks 7087 and 7085). Both are read in a forked child where a fixed answer
+// is wanted: the child of a fork has exactly one thread and only the
+// descriptors the test gave it, whatever the harness has open.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Runs `body` in a forked child and returns its exit status, or -1
+/// when the child did not exit normally. The child leaves with `_exit`.
+template <class Body> auto in_child(Body&& body) -> int {
+  auto const child = ::fork();
+  REQUIRE(child >= 0);
+  if (child == 0) {
+    ::_exit(body());
+  }
+  int status = 0;
+  while (::waitpid(child, &status, 0) < 0) {
+    REQUIRE(errno == EINTR);
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
+
+} // namespace
+
+TEST_CASE("own_thread_count reads 1 in a single-threaded process and one more for each live thread", "[process][threads]") {
+  // The child of a fork is single-threaded by construction, so its count is
+  // exactly 1 on every host that can answer.
+  CHECK(in_child([] {
+          auto const n = proc::own_thread_count();
+          return n.has_value() ? static_cast<int>(*n) : 99;
+        }) == 1);
+
+  auto const before = proc::own_thread_count();
+  REQUIRE(before.has_value());
+  std::atomic<bool> stop{false};
+  std::thread       worker([&] {
+    while (!stop.load()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  });
+  // A started thread may take a moment to be counted; bounded.
+  auto during = proc::own_thread_count();
+  for (int tries = 0; tries < 500 && during && *during != *before + 1; ++tries) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    during = proc::own_thread_count();
+  }
+  stop = true;
+  worker.join();
+  REQUIRE(during.has_value());
+  CHECK(*during == *before + 1);
+
+  // And the count is what a caller compares with 1 before forking: a process
+  // that has a second thread is not 1.
+  CHECK(*during != 1);
+}
+
+TEST_CASE("close_descriptors_except closes everything from 3 up, however high, and keeps the one it is told to",
+          "[process][descriptors]") {
+  constexpr int k_low  = 11;
+  constexpr int k_keep = 12;
+  constexpr int k_high = 9000; // Above the old 8192 cap.
+  struct rlimit limit{};
+  REQUIRE(::getrlimit(RLIMIT_NOFILE, &limit) == 0);
+  if (limit.rlim_cur < k_high + 64) {
+    limit.rlim_cur = limit.rlim_max == RLIM_INFINITY ? k_high + 64 : std::min<rlim_t>(k_high + 64, limit.rlim_max);
+    REQUIRE(::setrlimit(RLIMIT_NOFILE, &limit) == 0);
+    REQUIRE(limit.rlim_cur >= static_cast<rlim_t>(k_high + 64));
+  }
+
+  auto const status = in_child([&] {
+    auto const null = ::open("/dev/null", O_RDONLY);
+    if (null < 0) {
+      return 90;
+    }
+    for (auto const want : {k_low, k_keep, k_high}) {
+      if (::dup2(null, want) != want) {
+        return 91;
+      }
+    }
+    ::close(null);
+    proc::close_descriptors_except(k_keep);
+    auto const open = [](int fd) { return ::fcntl(fd, F_GETFD) != -1; };
+    int        bad  = 0;
+    bad |= open(k_low) ? 1 : 0;
+    bad |= open(k_high) ? 2 : 0;
+    bad |= open(k_keep) ? 0 : 4;       // The kept one survives.
+    bad |= open(STDIN_FILENO) ? 0 : 8; // Standard streams are not touched.
+    bad |= open(STDERR_FILENO) ? 0 : 16;
+    return bad;
+  });
+  CHECK(status == 0);
+}
+
+TEST_CASE("close_descriptors_except with no descriptor to keep closes them all", "[process][descriptors]") {
+  auto const status = in_child([] {
+    auto const null = ::open("/dev/null", O_RDONLY);
+    if (null < 3) {
+      return 90;
+    }
+    proc::close_descriptors_except(-1);
+    return ::fcntl(null, F_GETFD) == -1 ? 0 : 1;
+  });
+  CHECK(status == 0);
 }

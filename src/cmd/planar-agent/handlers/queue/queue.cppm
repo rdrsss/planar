@@ -42,9 +42,10 @@
 /// `[queue]` duration grammar (an integer and `ms`, `s`, `m` or `h`), share
 /// its 24-hour cap, and refuse zero, negative and unit-less values at exit 2
 /// before anything is enqueued. The run limit becomes the entry's
-/// `deadline_mono` when the entry starts; the wait limit is stored as
-/// `wait_deadline_mono` at enqueue. At its run limit the submitter marks its
-/// own entry terminating with reason `timeout` (SIGTERM) and advances that
+/// `deadline_mono` when the entry starts, and is recorded as `run_limit_ms`
+/// in the same statement; the wait limit is stored as `wait_deadline_mono`,
+/// and as `wait_limit_ms`, at enqueue (`queue status` reports both). At its
+/// run limit the submitter marks its own entry terminating with reason `timeout` (SIGTERM) and advances that
 /// entry each tick (SIGKILL after the `[queue]` grace period). The entry then
 /// ends with the outcome its stop reason names, never `signaled`: `timeout`
 /// (exit 124) or `cancelled` (exit 125), whichever process set the reason.
@@ -155,6 +156,27 @@
 /// standard error on the happy path. The `warning: queue:` diagnostics of a
 /// degraded path and the `error: queue:` lines are written either way.
 ///
+/// ## Detached runs
+///
+/// `--detach` (task hq-detach; tech spec 647 § Submitting, With `--detach`)
+/// runs the same submitter in a forked child. The invoked process refuses
+/// what it can on its own (the guard, 126/127, the duration flags) and then
+/// creates a pipe and forks BEFORE the configuration is read or the store is
+/// opened, so no store handle or thread exists at the fork. The child starts
+/// a session, closes every inherited descriptor but the pipe, reads
+/// `/dev/null`, inserts its entry, creates `<agent-db-directory>/queue-logs/
+/// <seq>.log` (`0600`), points standard output and error at it and only then
+/// writes the ticket to the pipe: `ok`, the sequence number and the path, or
+/// `err` and the error text. Until the log exists the child's standard error
+/// is a private buffer, so every refusal it would have printed is the message
+/// the invoked process prints; it exits 125 with it. End of file with nothing
+/// written (the child died) is 125 with "no ticket was issued". A log that
+/// cannot be created, or a ticket that cannot be delivered, takes the entry
+/// back out with `engine::hostqueue::discard_entry` and writes no history row.
+/// The child never returns to the caller's stack: it leaves with `_exit`. The
+/// invoked process prints the sequence number and the path, one per line, and
+/// exits 0. `queue_run_deps::detach_hook` is the test seam for the stages.
+///
 /// ## Vendor and role
 ///
 /// `--vendor` and `--role` (task hq-vendor-role) name the submitting agent.
@@ -162,6 +184,35 @@
 /// `$PLANAR_ROLE` when set and not empty, else stored empty (SQL NULL). The
 /// values reach the entry, its history row, a rejoined entry and a nested
 /// entry.
+///
+/// ## Cancelling (`queue cancel <seq>`)
+///
+/// `queue_cancel` (task hq-queue-cancel; tech spec 647 § CLI surface, Stopping
+/// a command) cancels one entry, whoever submitted it and whether or not its
+/// submitter is alive. A WAITING entry is removed in one transaction
+/// (`engine::hostqueue::cancel_waiting`), with a `cancelled` history row that
+/// names the canceller; its submitter finds the row and exits 125. A RUNNING
+/// entry is stopped by the two steps under Stopping a command:
+/// `begin_terminate` records the marker and the canceller and commits, and only
+/// then sends SIGTERM to the child group. Cancel does not rely on a later poll
+/// by anyone: it then advances that entry itself (`advance_terminations`) until
+/// its child group is empty and the entry is gone, which sends the overdue
+/// SIGKILL once the entry has been terminating for the grace period. Cancelling
+/// an entry that is already terminating (a run limit, or an earlier cancel)
+/// changes no marker and sends SIGKILL at once when the grace period has
+/// passed. The whole wait is bounded by the grace period plus
+/// `k_drain_slack_ms`; a group that survives that leaves the entry marked, live
+/// because its group has members, for the next poll of any process to finish,
+/// and cancel exits 125 and says so. The canceller is the process that ran
+/// `queue cancel`: `--vendor` and `--role` as for `queue run`, and its pid. A
+/// nested entry is cancelled like any other; its parent is not touched. A
+/// detached entry has no terminal and is cancelled the same way.
+///
+/// Exit codes: 0 the entry was cancelled (or, already stopping for another
+/// reason, was stopped and ended); 1 no entry has that number; 2 the argument is
+/// not a positive integer; 6 the entry has already ended (the message names the
+/// outcome); 125 the store or the configuration is unusable, or the group could
+/// not be emptied in time. Standard output carries one line on success.
 module;
 
 export module planar.cmd.planar_agent.handlers.queue;
@@ -206,6 +257,12 @@ export struct queue_run_deps {
       db::connection&, std::int64_t, const engine::hostqueue::enqueue_request&)>;
   /// @brief Rejoins the queue; `engine::hostqueue::rejoin` when empty.
   rejoiner rejoin;
+  /// @brief A test seam for `--detach`, called with a stage name: `before_fork`
+  /// in the invoked process, then `after_setsid`, `after_insert` and
+  /// `before_report` in the detached child. It runs in whichever process
+  /// reaches the stage, so a hook that calls `_exit` makes the child die at
+  /// that point. Empty in production.
+  std::function<void(std::string_view)> detach_hook;
 };
 
 /// @brief `planar-agent queue run -- <command>` with the production
@@ -221,5 +278,20 @@ export auto queue_run(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// @param deps The clock, probe, signaller, settings loader and sleeper.
 /// @return The command's exit status, or 125 when the queue failed.
 export auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps) -> handler_outcome;
+
+/// @brief `planar-agent queue cancel <seq>` with the production defaults.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments: the `seq` positional, `--vendor`, `--role`.
+/// @return The exit status described in the module's cancelling section.
+export auto queue_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_outcome;
+
+/// @brief `queue_cancel` with its seams supplied. Reads `clock`, `probe`,
+/// `signaller`, `load_settings` and `sleep` from `deps`; the other members
+/// are `queue run`'s and are ignored.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @param deps The seams.
+/// @return The exit status described in the module's cancelling section.
+export auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps) -> handler_outcome;
 
 } // namespace planar::cmd::agent::handlers

@@ -50,12 +50,6 @@ auto clock_failure(std::string_view operation) -> std::unexpected<queue_error> {
   });
 }
 
-/// @brief Whether the checker may use this entry's process ids: both host
-/// identities are known and equal (the rule liveness applies).
-auto same_host(const entry& e, std::string_view host_id) -> bool {
-  return e.host_id == host_id && e.host_id != identity::k_unknown_host_identity;
-}
-
 /// @brief Whether the entry records a child group that can be verified: an
 /// id above 1 (never the caller's own group, init's, or every process) and
 /// the start time of the group's leader.
@@ -110,6 +104,10 @@ auto outcome_for(std::string_view reason) -> std::optional<history_outcome> {
 }
 
 } // namespace
+
+auto same_host(const entry& e, std::string_view host_id) -> bool {
+  return e.host_id == host_id && e.host_id != identity::k_unknown_host_identity;
+}
 
 auto to_string(stop_reason reason) -> std::string_view {
   switch (reason) {
@@ -235,6 +233,39 @@ auto begin_terminate(db::connection& conn, const begin_terminate_request& reques
   // The marker is committed and the write lock released: now signal.
   result.sigterm = signal_child_group(*result.stored, stop_signal::term, request.host_id, probe, signaller);
   return result;
+}
+
+auto cancel_waiting(db::connection& conn, std::int64_t seq, const canceller& who, std::int64_t ended_at)
+    -> std::expected<cancel_waiting_result, queue_error> {
+  constexpr std::string_view op = "cancel waiting";
+  if (conn.in_transaction()) {
+    return invalid(op, "the connection is already in a transaction");
+  }
+  auto txn = conn.begin_transaction(db::lock_mode::immediate);
+  if (!txn) {
+    return sql_failure("begin cancel waiting", txn.error());
+  }
+  auto found = find(conn, seq);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
+  }
+  if (!found->has_value()) {
+    return cancel_waiting_result{.status = cancel_waiting_status::missing, .stored = std::nullopt};
+  }
+  if ((*found)->state != entry_state::waiting) {
+    return cancel_waiting_result{.status = cancel_waiting_status::not_waiting, .stored = std::move(**found)};
+  }
+  // `end_entry` runs as a savepoint inside this transaction, so the read above
+  // and the removal are one atomic step.
+  auto ended =
+      end_entry(conn, seq, end_request{.outcome = history_outcome::cancelled, .cancelled_by = who, .ended_at = ended_at});
+  if (!ended) {
+    return std::unexpected(std::move(ended.error()));
+  }
+  if (auto committed = txn->commit(); !committed) {
+    return sql_failure("commit cancel waiting", committed.error());
+  }
+  return cancel_waiting_result{.status = cancel_waiting_status::removed, .stored = std::nullopt};
 }
 
 auto advance_terminations(db::connection& conn, const advance_request& request, process::identity::clock& clock,

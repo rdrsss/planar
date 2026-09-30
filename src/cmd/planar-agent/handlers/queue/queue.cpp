@@ -8,12 +8,15 @@ module;
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 module planar.cmd.planar_agent.handlers.queue;
 
 import std;
 import planar.cliapp.args;
+import planar.core.check;
 import planar.cmd.internal.config_path;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
@@ -22,6 +25,7 @@ import planar.db;
 import planar.db.agentdb;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
+import planar.process;
 import planar.process.identity;
 import planar.process.runner;
 
@@ -255,6 +259,20 @@ auto describe(const qcfg::queue_load_error& err) -> std::string {
     text += std::format("; {}: {}", finding.key, finding.message);
   }
   return text;
+}
+
+/// @brief The loader of the `[queue]` settings from the file the context's
+/// environment names, exactly as `planar config` resolves it; when the path
+/// cannot be resolved (no HOME and no PLANAR_CONFIG_PATH) the defaults apply.
+/// @param ctx The invocation context, which must outlive the returned loader.
+auto default_settings_loader(context& ctx) -> std::function<std::expected<qcfg::queue_settings, qcfg::queue_load_error>()> {
+  return [&ctx]() -> std::expected<qcfg::queue_settings, qcfg::queue_load_error> {
+    auto const path = internal::resolve_config_path(ctx.env());
+    if (!path) {
+      return qcfg::default_queue_settings();
+    }
+    return qcfg::load_queue_settings(*path);
+  };
 }
 
 /// @brief One identity field of a submission: the flag when it is given and not
@@ -513,6 +531,333 @@ auto start_failure_text(int code) -> std::string_view {
   return code == 127 ? "no such program" : code == 126 ? "not executable" : "the command could not be started";
 }
 
+/// @brief What a detached child holds while it runs the ordinary submitter:
+/// the write end of the ticket pipe, a capture of its standard error until the
+/// log file exists, and the seams a test hooks (tech spec 647 § Submitting,
+/// With `--detach`).
+///
+/// Until the ticket is reported, the child's standard error is a private
+/// buffer, so every refusal the submitter writes (a configuration that cannot
+/// be read, an unreachable store, a log file that cannot be created) is text
+/// the invoked process can print; the invoked process is the only one with a
+/// terminal to say it on. From the moment the log exists, standard error is
+/// the log again.
+///
+/// Invariants: one link per detached child, used only by that child, which is
+/// single-threaded; `write_fd` is -1 once the pipe has been closed.
+struct detach_link {
+  std::ostream*                         err      = nullptr; ///< The context's error stream, whose buffer is swapped.
+  std::streambuf*                       original = nullptr; ///< The stream's own buffer, put back once the log exists.
+  std::stringbuf                        capture;            ///< What was written to `err` before the log existed.
+  int                                   write_fd = -1;      ///< The pipe to the invoked process.
+  bool                                  reported = false;   ///< Whether the ticket or a failure has been sent.
+  std::filesystem::path                 log_dir;            ///< `<agent-db-directory>/queue-logs`.
+  std::function<void(std::string_view)> hook;               ///< The test seam; may be empty.
+
+  /// @brief Points the error stream at the private buffer.
+  void begin_capture(std::ostream& stream) {
+    err      = &stream;
+    original = stream.rdbuf(&capture);
+  }
+
+  /// @brief Puts the stream's own buffer back and moves what was captured to it.
+  void end_capture() {
+    if (err == nullptr || original == nullptr) {
+      return;
+    }
+    auto const held = capture.str();
+    err->rdbuf(original);
+    original = nullptr;
+    *err << std::unitbuf;
+    *err << held;
+    err->flush();
+  }
+
+  /// @brief Runs the test seam for `stage`, when there is one.
+  void at(std::string_view stage) const {
+    if (hook) {
+      hook(stage);
+    }
+  }
+};
+
+/// @brief Writes all of `text` to `fd`. A closed reader is a failed write, not
+/// a signal: SIGPIPE is ignored for the duration and put back.
+auto write_all(int fd, std::string_view text) -> bool {
+  struct sigaction ignore{};
+  struct sigaction previous{};
+  ignore.sa_handler = SIG_IGN;
+  sigemptyset(&ignore.sa_mask);
+  ::sigaction(SIGPIPE, &ignore, &previous);
+  bool ok = true;
+  while (!text.empty()) {
+    auto const n = ::write(fd, text.data(), text.size());
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      ok = false;
+      break;
+    }
+    text.remove_prefix(static_cast<std::size_t>(n));
+  }
+  ::sigaction(SIGPIPE, &previous, nullptr);
+  return ok;
+}
+
+/// @brief The text of an `errno` value.
+auto errno_text(int code) -> std::string {
+  return std::error_code(code, std::generic_category()).message();
+}
+
+/// @brief Sends a failure to the invoked process, once, and closes the pipe.
+/// What was captured from standard error is the message; a child that failed
+/// without writing anything says only that no ticket was issued.
+void report_failure(detach_link& link, std::string_view fallback) {
+  if (link.reported || link.write_fd < 0) {
+    return;
+  }
+  auto text = link.capture.str();
+  if (text.empty()) {
+    text = std::format("error: queue: no ticket was issued: {}\n", fallback);
+  } else if (!text.ends_with('\n')) {
+    text += '\n';
+  }
+  static_cast<void>(write_all(link.write_fd, "err\n" + text));
+  ::close(link.write_fd);
+  link.write_fd = -1;
+  link.reported = true;
+}
+
+/// @brief The invoked process's half of a detached submission: reads the
+/// pipe to its end and turns what came through into the ticket, the child's
+/// failure, or a message that no ticket was issued (tech spec 647 §
+/// Submitting, step 6). It never waits on the child itself: end of file on
+/// the pipe means every holder of the write end is gone, which is the
+/// child's death or its report.
+auto await_ticket(context& ctx, int read_fd, ::pid_t child) -> handler_outcome {
+  std::string text;
+  char        buffer[512];
+  while (true) {
+    auto const n = ::read(read_fd, buffer, sizeof buffer);
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n <= 0) {
+      break;
+    }
+    text.append(buffer, static_cast<std::size_t>(n));
+  }
+  ::close(read_fd);
+
+  if (text.starts_with("ok\n") && text.ends_with('\n')) {
+    auto const body = std::string_view{text}.substr(3);
+    auto const nl   = body.find('\n');
+    if (nl != std::string_view::npos && nl + 1 < body.size()) {
+      ctx.out() << body;
+      ctx.out().flush();
+      return exit_status{0};
+    }
+  }
+  // The child is finished or finishing; collect it when it already is, so a
+  // caller that stays alive (a test) does not keep a zombie. Bounded: the
+  // child is never waited for.
+  for (int tries = 0; tries < 20; ++tries) {
+    int status = 0;
+    if (::waitpid(child, &status, WNOHANG) != 0) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (text.starts_with("err\n")) {
+    auto message = text.substr(4);
+    if (!message.ends_with('\n')) {
+      message += '\n';
+    }
+    ctx.err() << message;
+    return exit_status{exit_internal_error};
+  }
+  ctx.err() << "error: queue: no ticket was issued: the detached submitter ended before it reported\n";
+  return exit_status{exit_internal_error};
+}
+
+/// @brief Why an existing log directory may not hold logs, or nothing when it
+/// may: it must be a directory owned by the current effective user that
+/// neither group nor others can write to (task 7086). The directory is created
+/// 0700, but one that was already there could have been made by anyone, and
+/// another user able to write into it could plant a link where a log is to be
+/// created or remove a log from under a run. Refused rather than tightened: a
+/// directory someone else owns cannot be tightened, and changing the mode of
+/// one the operator made is not this verb's call. Follows a symbolic link, so
+/// `queue-logs` may point at an owned directory elsewhere.
+auto log_directory_problem(const std::filesystem::path& dir) -> std::optional<std::string> {
+  struct stat info{};
+  if (::stat(dir.c_str(), &info) != 0) {
+    return std::format("cannot examine the log directory {}: {}", dir.string(), errno_text(errno));
+  }
+  if (!S_ISDIR(info.st_mode)) {
+    return std::format("the log directory {} is not a directory", dir.string());
+  }
+  if (info.st_uid != ::geteuid()) {
+    return std::format("the log directory {} is owned by user {}, not by the current user ({}); logs are not written into it",
+                       dir.string(), static_cast<unsigned long>(info.st_uid), static_cast<unsigned long>(::geteuid()));
+  }
+  if ((info.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+    return std::format("the log directory {} is writable by group or others (mode {:04o}); run chmod go-w on it", dir.string(),
+                       static_cast<unsigned>(info.st_mode & 07777));
+  }
+  return std::nullopt;
+}
+
+/// @brief Steps 4 and 5 of a detached submission, in the child: creates
+/// `queue-logs/<seq>.log`, records it on the entry, points standard output and
+/// standard error at it, and writes the sequence number and the path to the
+/// pipe. Any failure removes the entry (no history row: it never became a
+/// run) and the log, and is returned as the message to refuse with.
+auto publish_ticket(detach_link& link, db::connection& conn, std::int64_t seq) -> std::expected<void, std::string> {
+  link.at("after_insert");
+  auto const path = link.log_dir / std::format("{}.log", seq);
+  auto const undo = [&](std::string why, bool remove_file) -> std::expected<void, std::string> {
+    if (remove_file) {
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+    }
+    static_cast<void>(hq::discard_entry(conn, seq));
+    return std::unexpected(std::move(why));
+  };
+
+  if (::mkdir(link.log_dir.c_str(), 0700) != 0 && errno != EEXIST) {
+    return undo(std::format("cannot create the log directory {}: {}", link.log_dir.string(), errno_text(errno)), false);
+  }
+  if (auto const unsafe = log_directory_problem(link.log_dir)) {
+    return undo(*unsafe, false);
+  }
+  auto const fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC, 0600);
+  if (fd < 0) {
+    // O_EXCL: a log that already exists belongs to an earlier run (the store was
+    // recreated and sequence numbers restarted), so it is neither appended to
+    // nor removed here; `undo` is told it did not create the file.
+    return undo(std::format("cannot create the log file {}: {}", path.string(), errno_text(errno)), false);
+  }
+  auto const recorded = hq::set_log_path(conn, seq, path.string());
+  if (!recorded || !*recorded) {
+    ::close(fd);
+    return undo(recorded ? std::format("entry {} disappeared before its log was recorded", seq)
+                         : std::format("cannot record the log file: {}", recorded.error().message),
+                true);
+  }
+  if (::dup2(fd, STDOUT_FILENO) < 0 || ::dup2(fd, STDERR_FILENO) < 0) {
+    auto const why = errno_text(errno);
+    ::close(fd);
+    return undo(std::format("cannot redirect output to the log file {}: {}", path.string(), why), true);
+  }
+  ::close(fd);
+  link.end_capture();
+  link.at("before_report");
+  if (!write_all(link.write_fd, std::format("ok\n{}\n{}\n", seq, path.string()))) {
+    return undo("the invoking process went away before it received the ticket; entry removed", true);
+  }
+  ::close(link.write_fd);
+  link.write_fd = -1;
+  link.reported = true;
+  return {};
+}
+
+auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, std::vector<std::string> argv,
+            std::int64_t run_limit_ms, std::optional<std::int64_t> wait_limit_ms, detach_link* link) -> handler_outcome;
+
+/// @brief The detached child: becomes the submitter (tech spec 647 §
+/// Submitting, With `--detach`, steps 2 to 5). It never returns to its
+/// caller's stack, which belongs to the invoked process's copy of `main`: it
+/// leaves with `_exit`.
+[[noreturn]] void run_detached_child(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps,
+                                     std::vector<std::string> argv, std::int64_t run_limit_ms,
+                                     std::optional<std::int64_t> wait_limit_ms, int read_fd, int write_fd) {
+  ::close(read_fd);
+  // Every descriptor the invoked process passed down goes, however high its
+  // number, so this submitter holds nothing of its caller's: a reader waiting
+  // for the end of a pipe the caller passed down would otherwise wait for the
+  // whole run (task 7085).
+  process::close_descriptors_except(write_fd);
+
+  detach_link link;
+  link.write_fd = write_fd;
+  link.hook     = deps.detach_hook;
+  int code      = exit_internal_error;
+  try {
+    // Step 2: a new session. The child of a fork is never a process-group
+    // leader, so this cannot fail for that reason.
+    if (::setsid() < 0) {
+      link.begin_capture(ctx.err());
+      ctx.err() << std::format("error: queue: cannot start a new session: {}\n", errno_text(errno));
+    } else {
+      // Standard input is nothing; output is the log once it exists.
+      if (auto const null = ::open("/dev/null", O_RDWR); null >= 0) {
+        ::dup2(null, STDIN_FILENO);
+        if (null > STDERR_FILENO) {
+          ::close(null);
+        }
+      }
+      link.begin_capture(ctx.err());
+      link.at("after_setsid");
+      auto const dir = db::agent::resolve_agent_db_path(ctx.env());
+      if (!dir) {
+        ctx.err() << std::format("error: queue: {}\n", dir.error().message);
+      } else {
+        link.log_dir = dir->parent_path() / "queue-logs";
+        auto outcome = submit(ctx, args, std::move(deps), std::move(argv), run_limit_ms, wait_limit_ms, &link);
+        if (auto const* status = std::get_if<exit_status>(&outcome)) {
+          code = status->code;
+        }
+      }
+    }
+  } catch (...) {
+    // Fall through: nothing may unwind into the invoked process's frames.
+  }
+  report_failure(link, "the detached submitter failed before it reported");
+  link.end_capture();
+  ctx.err().flush();
+  ::_exit(code);
+}
+
+/// @brief The invoked process's half of `--detach`: creates the pipe, forks
+/// before any store handle or thread exists, and reads the ticket.
+auto detach(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, std::vector<std::string> argv,
+            std::int64_t run_limit_ms, std::optional<std::int64_t> wait_limit_ms) -> handler_outcome {
+  if (deps.detach_hook) {
+    deps.detach_hook("before_fork");
+  }
+  int ends[2]{-1, -1};
+  if (::pipe(ends) != 0) {
+    return refuse(ctx, std::format("cannot detach: {}", errno_text(errno)));
+  }
+  for (auto const fd : ends) {
+    ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+  }
+  // The child runs ordinary C++ (allocation, streams, SQLite), which is safe
+  // after `fork` only when no other thread of this process could have held a
+  // lock at the instant of the fork. Nothing here starts a thread; this makes
+  // a future one fail loudly instead of deadlocking a child (task 7087). A
+  // platform that cannot say is let through: an unreadable count is not a
+  // second thread.
+  auto const threads = process::own_thread_count();
+  check(!threads.has_value() || *threads == 1, "the process is single-threaded when it forks a detached submitter");
+  ctx.out().flush();
+  ctx.err().flush();
+  auto const child = ::fork();
+  if (child < 0) {
+    auto const why = errno_text(errno);
+    ::close(ends[0]);
+    ::close(ends[1]);
+    return refuse(ctx, std::format("cannot detach: {}", why));
+  }
+  if (child == 0) {
+    run_detached_child(ctx, args, std::move(deps), std::move(argv), run_limit_ms, wait_limit_ms, ends[0], ends[1]);
+  }
+  ::close(ends[1]);
+  return await_ticket(ctx, ends[0], child);
+}
+
 } // namespace
 
 auto queue_run(context& ctx, const cliapp::parsed_args& args) -> handler_outcome {
@@ -564,6 +909,25 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     return exit_status{code};
   }
 
+  // With `--detach` the invoked process forks here, after every refusal it
+  // can make on its own and before it opens anything (tech spec 647 §
+  // Submitting).
+  if (cliapp::flag_bool(args, "--detach")) {
+    return detach(ctx, args, std::move(deps), argv, run_limit_ms, wait_limit_ms);
+  }
+  return submit(ctx, args, std::move(deps), argv, run_limit_ms, wait_limit_ms, nullptr);
+}
+
+namespace {
+
+/// @brief Everything `queue run` does once the command has been checked: the
+/// configuration, the store, the entry, the wait, the run and the end. The
+/// foreground form calls it in the invoked process; the detached form calls it
+/// in the detached child, with `link` set.
+/// @param link The detached child's hold on the ticket pipe, or null in the
+/// foreground.
+auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, std::vector<std::string> argv,
+            std::int64_t run_limit_ms, std::optional<std::int64_t> wait_limit_ms, detach_link* link) -> handler_outcome {
   auto const vendor = identity_field(args, "--vendor", ctx.env(), "PLANAR_VENDOR");
   auto const role   = identity_field(args, "--role", ctx.env(), "PLANAR_ROLE");
   notices    notice{ctx.err(), cliapp::flag_bool(args, "--notices")};
@@ -579,16 +943,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   // store is touched. The path is the context's environment's, exactly as
   // `planar config` resolves it; when it cannot be resolved (no HOME and no
   // PLANAR_CONFIG_PATH) the defaults apply.
-  auto load = deps.load_settings;
-  if (!load) {
-    load = [&ctx]() -> std::expected<qcfg::queue_settings, qcfg::queue_load_error> {
-      auto const path = internal::resolve_config_path(ctx.env());
-      if (!path) {
-        return qcfg::default_queue_settings();
-      }
-      return qcfg::load_queue_settings(*path);
-    };
-  }
+  auto            load = deps.load_settings ? deps.load_settings : default_settings_loader(ctx);
   settings_source settings{std::move(load)};
   if (auto first = settings.initial(); !first) {
     return refuse(ctx, describe(first.error()));
@@ -705,6 +1060,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
         .enqueued_at        = clock.wall_ms(),
         .refreshed_mono     = refreshed_mono,
         .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
+        .wait_limit_ms      = wait_limit_ms,
     };
   };
   std::int64_t seq = 0;
@@ -718,6 +1074,15 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     seq = enqueued->seq;
     for (auto const& failure : enqueued->pruned.log_failures) {
       ctx.err() << std::format("warning: queue: cannot remove pruned log file {}: {}\n", failure.path, failure.message);
+    }
+  }
+
+  // A detached child now has its sequence number: it creates the log, points
+  // its standard streams at it and hands the ticket over (steps 4 and 5). A
+  // failure takes the entry back out, without a history row.
+  if (link != nullptr) {
+    if (auto published = publish_ticket(*link, conn, seq); !published) {
+      return refuse(ctx, published.error());
     }
   }
 
@@ -735,15 +1100,17 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
 
   // Ends the entry with `request`, reporting a store failure. The command's
   // status is the caller's to return either way.
-  auto const end = [&](hq::end_request request) {
+  // Returns true when the entry was already gone: `already_gone` (the entry
+  // was removed under us) writes nothing, because the process that removed it
+  // wrote the row (tech spec 647 § Waiting and claiming a turn).
+  auto const end = [&](hq::end_request request) -> bool {
     request.ended_at = clock.wall_ms();
     auto ended       = hq::end_entry(conn, seq, request);
     if (!ended) {
       ctx.err() << std::format("warning: queue: cannot record the end of entry {}: {}\n", seq, ended.error().message);
+      return false;
     }
-    // `already_gone` (the entry was removed under us) writes nothing: the
-    // process that removed it wrote the row (tech spec 647 § Waiting and
-    // claiming a turn).
+    return *ended == hq::end_result::already_gone;
   };
 
   // A refusal after the entry exists: the `error: queue:` line, then, with
@@ -1156,14 +1523,238 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     return exit_status{exit_internal_error};
   }
 
+  bool const removed_first = final_status.kind == runner::state::signalled
+                                 ? end(hq::end_request{.outcome = hq::history_outcome::signaled, .signal = final_status.code})
+                                 : end(hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = final_status.code});
+  if (removed_first) {
+    // Another process ended the entry after the stop reason was read above (a
+    // cancel that found the command's group already empty, or a poll). Its
+    // history row is the record (decision 1188: `queue status` is
+    // authoritative), so report ITS outcome, as the path above does.
+    if (auto const row = hq::find_history(conn, seq); row && *row) {
+      if ((*row)->outcome == hq::history_outcome::cancelled) {
+        notice.line(seq, "cancelled");
+        return exit_status{exit_internal_error};
+      }
+      if ((*row)->outcome == hq::history_outcome::timeout) {
+        notice.line(seq, "stopped at its run limit");
+        return exit_status{exit_run_limit};
+      }
+      // Any other outcome (a reaped `abandoned`) keeps the documented notice
+      // below: what this submitter observed of its command.
+    }
+  }
   if (final_status.kind == runner::state::signalled) {
-    end(hq::end_request{.outcome = hq::history_outcome::signaled, .signal = final_status.code});
     notice.line(seq, std::format("terminated by signal {}", final_status.code));
   } else {
-    end(hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = final_status.code});
     notice.line(seq, std::format("exited with code {}", final_status.code));
   }
   return exit_status{status_code(final_status)};
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// queue cancel (task hq-queue-cancel)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The exit for an entry that has already ended, or never existed:
+/// the history row decides which. A history row makes it 6 (the entry ended,
+/// and the message names how); no row makes it 1 (no such entry, or one whose
+/// history has been pruned).
+auto ended_or_unknown(context& ctx, db::connection& conn, std::int64_t seq) -> handler_outcome {
+  auto const row = hq::find_history(conn, seq);
+  if (!row) {
+    return refuse(ctx, std::format("cancel: cannot read the history of entry {}: {}", seq, row.error().message));
+  }
+  if (!row->has_value()) {
+    ctx.err() << std::format("error: queue: cancel: no entry {} is in the queue or its history\n", seq);
+    return exit_status{exit_generic_failure};
+  }
+  ctx.err() << std::format("error: queue: cancel: entry {} has already ended as {}\n", seq, hq::to_string((*row)->outcome));
+  return exit_status{exit_precondition_conflict};
+}
+
+/// @brief What cancel reports once a stopped entry has left the queue: reads
+/// the row that ended it. An entry that ended for another reason than the
+/// cancellation (a run limit that was already under way) says so.
+auto report_stopped(context& ctx, db::connection& conn, std::int64_t seq, bool killed, bool signalled) -> handler_outcome {
+  auto const row = hq::find_history(conn, seq);
+  if (!row || !row->has_value()) {
+    ctx.err() << std::format("warning: queue: cancel: entry {} left the queue but its history row cannot be read\n", seq);
+    return exit_status{exit_success};
+  }
+  if ((*row)->outcome == hq::history_outcome::cancelled) {
+    if (!signalled) {
+      // Nothing was sent: the command's group was already empty when cancel
+      // looked, so it had exited on its own.
+      ctx.out() << std::format("cancelled entry {}: its command had already exited, so no signal was sent\n", seq);
+    } else {
+      ctx.out() << std::format("cancelled entry {}: its command was stopped{}\n", seq,
+                               killed ? " (SIGKILL after the grace period)" : "");
+    }
+    return exit_status{exit_success};
+  }
+  if ((*row)->outcome == hq::history_outcome::timeout) {
+    ctx.out() << std::format("entry {} was already stopping and ended as {}\n", seq, hq::to_string((*row)->outcome));
+    return exit_status{exit_success};
+  }
+  // The command's own submitter ended the entry with what it observed (its
+  // command exited) before it read the marker: the cancellation did not take
+  // effect, and the entry has ended.
+  ctx.err() << std::format("error: queue: cancel: entry {} ended as {} before the cancellation took effect\n", seq,
+                           hq::to_string((*row)->outcome));
+  return exit_status{exit_precondition_conflict};
+}
+
+} // namespace
+
+auto queue_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_outcome {
+  return queue_cancel_with(ctx, args, queue_run_deps{});
+}
+
+auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps) -> handler_outcome {
+  auto const numbers = cliapp::positional_strings(args, "seq");
+  if (numbers.empty()) {
+    ctx.err() << "error: queue: cancel: no entry number given\n";
+    return exit_status{exit_generic_failure};
+  }
+  std::int64_t seq  = 0;
+  auto const&  text = numbers.front();
+  if (auto const parsed = std::from_chars(text.data(), text.data() + text.size(), seq);
+      text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || seq <= 0) {
+    ctx.err() << std::format("error: queue: cancel: '{}' is not an entry number (a positive integer)\n", text);
+    return exit_status{exit_user_input};
+  }
+
+  auto const vendor = identity_field(args, "--vendor", ctx.env(), "PLANAR_VENDOR");
+  auto const role   = identity_field(args, "--role", ctx.env(), "PLANAR_ROLE");
+
+  ident::system_clock system_clock;
+  ident::clock&       clock     = deps.clock ? *deps.clock : static_cast<ident::clock&>(system_clock);
+  auto const          probe     = deps.probe ? *deps.probe : hq::system_process_probe();
+  auto const          signaller = deps.signaller ? deps.signaller : hq::system_group_signaller();
+  auto const          sleep =
+      deps.sleep ? deps.sleep : std::function<void(std::chrono::milliseconds)>{[](auto d) { std::this_thread::sleep_for(d); }};
+
+  settings_source settings{deps.load_settings ? deps.load_settings : default_settings_loader(ctx)};
+  if (auto first = settings.initial(); !first) {
+    return refuse(ctx, describe(first.error()));
+  }
+  auto opened = db::agent::open_agent_db(ctx.env());
+  if (!opened) {
+    return refuse(ctx, opened.error().message);
+  }
+  db::connection& conn = *opened;
+
+  auto const          host = ident::host_identity(ident::native_identity_source());
+  hq::canceller const who{.vendor = vendor, .role = role, .pid = static_cast<std::int64_t>(::getpid())};
+
+  // A waiting entry has no command: remove it.
+  auto removed = hq::cancel_waiting(conn, seq, who, clock.wall_ms());
+  if (!removed) {
+    return refuse(ctx, std::format("cancel: {}", removed.error().message));
+  }
+  if (removed->status == hq::cancel_waiting_status::removed) {
+    ctx.out() << std::format("cancelled entry {}: removed before its turn\n", seq);
+    return exit_status{exit_success};
+  }
+  if (removed->status == hq::cancel_waiting_status::missing) {
+    return ended_or_unknown(ctx, conn, seq);
+  }
+
+  // A running entry: step one, the marker and SIGTERM after its commit.
+  auto begun = hq::begin_terminate(
+      conn, hq::begin_terminate_request{.seq = seq, .reason = hq::stop_reason::cancelled, .cancelled_by = who, .host_id = host},
+      clock, probe, signaller);
+  if (!begun) {
+    return refuse(ctx, std::format("cancel: {}", begun.error().message));
+  }
+  switch (begun->status) {
+  case hq::begin_status::missing:
+    return ended_or_unknown(ctx, conn, seq);
+  case hq::begin_status::not_running:
+    return refuse(ctx, std::format("cancel: entry {} changed state while it was being cancelled; try again", seq));
+  case hq::begin_status::marked:
+  case hq::begin_status::already_terminating:
+    break;
+  }
+  // An entry of another host identity cannot be judged or signalled from here
+  // (its process ids mean nothing on this host), whether this call marked it
+  // or it was already terminating: refuse at once instead of waiting for a
+  // group that `advance_terminations` will never examine.
+  if (begun->stored && !hq::same_host(*begun->stored, host)) {
+    ctx.err() << std::format("error: queue: cancel: entry {} belongs to another host identity; it is {}, and a poll on "
+                             "that host will stop it\n",
+                             seq,
+                             begun->status == hq::begin_status::marked ? "now marked cancelled" : "already marked terminating");
+    return exit_status{exit_internal_error};
+  }
+  reporter report{ctx.err()};
+  bool     term_pending = false;
+  bool     signalled    = false; // Whether cancel itself delivered a signal to the command's group.
+  if (begun->sigterm) {
+    signalled = begun->sigterm->outcome == hq::signal_outcome::sent;
+    report_signal_failure(*begun->sigterm, report);
+    // The entry's submitter had not yet recorded the command's group: nothing
+    // could be signalled, and nothing else will send this SIGTERM.
+    term_pending = begun->sigterm->outcome == hq::signal_outcome::no_group;
+  }
+
+  // Step two, here and now: advance this entry until its group is empty and it
+  // is gone. The overdue SIGKILL is sent by the advance once the entry has been
+  // terminating for the grace period. Bounded, so a group that survives
+  // SIGKILL cannot hold cancel for ever.
+  auto const grace_ms = settings.current().grace_ms;
+  auto const started  = clock.monotonic_ms();
+  bool       killed   = false;
+  if (!started) {
+    return refuse(ctx, "cannot read the monotonic clock");
+  }
+  while (true) {
+    auto advanced = hq::advance_terminations(conn, hq::advance_request{.host_id = host, .grace_ms = grace_ms, .seq = seq}, clock,
+                                             probe, signaller);
+    if (advanced) {
+      surface_advance(*advanced, report);
+      killed = killed || std::ranges::any_of(advanced->kills,
+                                             [](const hq::signal_attempt& k) { return k.outcome == hq::signal_outcome::sent; });
+      signalled = signalled || killed;
+      if (!advanced->ended.empty()) {
+        return report_stopped(ctx, conn, seq, killed, signalled);
+      }
+    } else {
+      report.once(std::format("warning: queue: cannot advance the stop of entry {}: {}", seq, advanced.error().message));
+    }
+    auto const stored = hq::find(conn, seq);
+    if (stored && !stored->has_value()) {
+      // Ended by its own submitter, which read the marker.
+      return report_stopped(ctx, conn, seq, killed, signalled);
+    }
+    if (stored && term_pending) {
+      if (auto const attempt = hq::signal_child_group(**stored, hq::stop_signal::term, host, probe, signaller);
+          attempt.outcome != hq::signal_outcome::no_group) {
+        term_pending = false;
+        signalled    = signalled || attempt.outcome == hq::signal_outcome::sent;
+        report_signal_failure(attempt, report);
+      }
+    }
+    auto const now = clock.monotonic_ms();
+    if (now && *now - *started > grace_ms + k_drain_slack_ms) {
+      if (term_pending) {
+        ctx.err() << std::format("error: queue: cancel: entry {}'s command group was never recorded, so no signal was sent; the "
+                                 "entry stays marked and the next poll will end it\n",
+                                 seq);
+      } else {
+        ctx.err() << std::format("error: queue: cancel: entry {}'s process group still has members {}; the entry stays marked "
+                                 "and the next poll will end it\n",
+                                 seq, killed ? "after SIGKILL" : "and no SIGKILL could be sent");
+      }
+      return exit_status{exit_internal_error};
+    }
+    sleep(k_child_tick);
+  }
 }
 
 } // namespace planar::cmd::agent::handlers

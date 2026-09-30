@@ -87,6 +87,7 @@ export struct enqueue_request {
   std::int64_t                enqueued_at    = 0; ///< Wall clock at submission, ms since the epoch; display only.
   std::int64_t                refreshed_mono = 0; ///< Monotonic clock at submission, ms; the freshness baseline.
   std::optional<std::int64_t> wait_deadline_mono; ///< Monotonic ms after which waiting gives up, when limited.
+  std::optional<std::int64_t> wait_limit_ms;      ///< The wait limit `wait_deadline_mono` was computed from, ms, when limited.
   std::optional<std::int64_t> parent_seq;         ///< The enclosing running entry, for a nested run.
 };
 
@@ -115,6 +116,8 @@ export struct entry {
   std::int64_t                refreshed_mono = 0;           ///< Monotonic ms of the last refresh.
   std::optional<std::int64_t> deadline_mono;                ///< Monotonic ms after which a running command is stopped.
   std::optional<std::int64_t> wait_deadline_mono;           ///< Monotonic ms after which waiting gives up.
+  std::optional<std::int64_t> run_limit_ms;                 ///< The run limit `deadline_mono` was computed from, once started.
+  std::optional<std::int64_t> wait_limit_ms;                ///< The wait limit it was submitted with, when limited.
 };
 
 /// @brief Encodes an argument vector as the JSON array of strings the
@@ -136,7 +139,8 @@ export auto decode_argv(std::string_view text) -> std::expected<std::vector<std:
 /// state `waiting`, or `running` when `request.parent_seq` is set (a nested
 /// run never waits for a slot). The number is higher than that of every entry
 /// ever inserted into this store, deleted or not.
-/// @param conn An open agent database at or above agent schema version 2.
+/// @param conn An open agent database at or above agent schema version 3
+/// (the version that added `wait_limit_ms`).
 /// @param request What to record.
 /// @return The assigned sequence number, or the SQLite failure.
 export auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error>;
@@ -168,7 +172,7 @@ export struct enqueued {
 /// the enqueue, because the entry is already committed and the caller's
 /// command must still run. The queue verbs call this form with the
 /// configured `[queue] history_days`.
-/// @param conn An open agent database at or above agent schema version 2.
+/// @param conn An open agent database at or above agent schema version 3.
 /// @param request What to record; `enqueued_at` is the prune's "now".
 /// @param history_days The retention in days; must not be negative.
 /// @return The sequence number and the prune report; `invalid_request` for a
@@ -193,15 +197,56 @@ export auto enqueue(db::connection& conn, const enqueue_request& request, std::i
 export auto record_child(db::connection& conn, std::int64_t seq, std::int64_t child_pgid, std::int64_t child_started)
     -> std::expected<bool, queue_error>;
 
-/// @brief Reads one entry by sequence number.
+/// @brief Records the output file of a detached run on its entry (tech spec
+/// 647 § Submitting, With `--detach`): the path is `queue-logs/<seq>.log`, so
+/// it is only known once the store has assigned the sequence number.
+/// @param conn An open agent database at or above agent schema version 2.
+/// @param seq The submitter's entry.
+/// @param log_path The output file's path.
+/// @return `true` when the entry exists and now records the path; `false`
+/// when there is no such entry and nothing was written; or the SQLite failure.
+export auto set_log_path(db::connection& conn, std::int64_t seq, std::string_view log_path) -> std::expected<bool, queue_error>;
+
+/// @brief Takes an entry back out of the queue WITHOUT writing a history row.
+/// It is for an entry that was inserted and never became a run, so no history
+/// is owed: a detached submitter that cannot create its log file, or cannot
+/// hand its ticket over, removes the entry it inserted with this (tech spec
+/// 647 § Submitting, With `--detach`, step 4). An entry that has run is ended
+/// with `end_entry`, which writes the one history row.
 /// @param conn An open agent database.
+/// @param seq The entry to remove.
+/// @return `true` when an entry was removed; `false` when there was none; or
+/// the SQLite failure.
+export auto discard_entry(db::connection& conn, std::int64_t seq) -> std::expected<bool, queue_error>;
+
+/// @brief The select-list fragment for the limit columns agent migration 00003
+/// added to `table`: `run_limit_ms, wait_limit_ms` when `table` has both, and
+/// `null as run_limit_ms, null as wait_limit_ms` when it has neither, as on a
+/// store still at agent schema version 2.
+///
+/// Every read of `queue_entries` or `queue_history` goes through this, because
+/// a read-only connection (`queue status`) never migrates: after an upgrade the
+/// store stays behind head until a submitter of the new binary opens it
+/// read-write, and an additive column must then read as unknown rather than
+/// fail the query. It costs one `pragma_table_info` query per read call, not
+/// per row. Writers never need it: they run only on a connection that
+/// `open_agent_db` has brought to head.
+/// @param conn An open agent database; a read-only connection is enough.
+/// @param table `queue_entries` or `queue_history`.
+/// @return The fragment, or the SQLite failure.
+export auto limit_columns_select(db::connection& conn, std::string_view table) -> std::expected<std::string, queue_error>;
+
+/// @brief Reads one entry by sequence number.
+/// @param conn An open agent database at agent schema version 2 or later; on a
+/// store below 3 the entry's limits read as empty.
 /// @param seq The sequence number.
 /// @return The entry, `std::nullopt` when no entry has that number (it never
 /// existed, or it has ended and been removed), or the failure.
 export auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<entry>, queue_error>;
 
 /// @brief Reads every entry, in sequence order.
-/// @param conn An open agent database.
+/// @param conn An open agent database at agent schema version 2 or later; on a
+/// store below 3 the limits read as empty.
 /// @return The entries, lowest sequence number first; empty when the queue
 /// is empty.
 export auto list(db::connection& conn) -> std::expected<std::vector<entry>, queue_error>;
