@@ -11,6 +11,15 @@ module;
 #include <sys/wait.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <sys/proc_info.h>
+#endif
+#if defined(__linux__)
+#include <dirent.h>
+#include <sys/syscall.h>
+#endif
+
 module planar.process;
 
 import std;
@@ -187,6 +196,122 @@ auto capture(std::string_view program, std::span<const std::string_view> args) -
     exit_code = WEXITSTATUS(status);
   }
   return {.spawned = true, .exit_code = exit_code, .output = std::move(output)};
+}
+
+auto own_thread_count() -> std::optional<std::size_t> {
+#if defined(__APPLE__)
+  proc_taskinfo info{};
+  auto const    got = ::proc_pidinfo(::getpid(), PROC_PIDTASKINFO, 0, &info, static_cast<int>(sizeof info));
+  if (got != static_cast<int>(sizeof info) || info.pti_threadnum < 1) {
+    return std::nullopt;
+  }
+  return static_cast<std::size_t>(info.pti_threadnum);
+#elif defined(__linux__)
+  std::ifstream in{"/proc/self/status"};
+  std::string   line;
+  while (std::getline(in, line)) {
+    constexpr std::string_view key = "Threads:";
+    if (!line.starts_with(key)) {
+      continue;
+    }
+    auto const start = line.find_first_of("0123456789", key.size());
+    if (start == std::string::npos) {
+      return std::nullopt;
+    }
+    std::size_t value = 0;
+    if (std::from_chars(line.data() + start, line.data() + line.size(), value).ec != std::errc{} || value < 1) {
+      return std::nullopt;
+    }
+    return value;
+  }
+  return std::nullopt;
+#else
+  return std::nullopt;
+#endif
+}
+
+namespace {
+
+/// @brief Closes every number from 3 up to the open-file limit but `keep`.
+/// The last resort, used only when the open descriptors cannot be listed.
+void close_by_limit(int keep) {
+  auto const limit = ::sysconf(_SC_OPEN_MAX);
+  for (long fd = 3; fd < (limit < 0 ? 65536 : limit); ++fd) {
+    if (fd != keep) {
+      ::close(static_cast<int>(fd));
+    }
+  }
+}
+
+} // namespace
+
+void close_descriptors_except(int keep) {
+#if defined(__APPLE__)
+  // The list is a snapshot taken before any close; closing a number in it
+  // cannot open another, and the buffer is a vector, which opens nothing.
+  auto bytes = ::proc_pidinfo(::getpid(), PROC_PIDLISTFDS, 0, nullptr, 0);
+  if (bytes <= 0) {
+    close_by_limit(keep);
+    return;
+  }
+  std::vector<proc_fdinfo> table;
+  int                      got = 0;
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    table.resize(static_cast<std::size_t>(bytes) / sizeof(proc_fdinfo) + 32);
+    auto const capacity = static_cast<int>(table.size() * sizeof(proc_fdinfo));
+    got                 = ::proc_pidinfo(::getpid(), PROC_PIDLISTFDS, 0, table.data(), capacity);
+    if (got <= 0) {
+      close_by_limit(keep);
+      return;
+    }
+    if (got < capacity) {
+      break;
+    }
+    bytes = capacity * 2; // Filled to the brim: there may be more.
+  }
+  for (std::size_t i = 0; i < static_cast<std::size_t>(got) / sizeof(proc_fdinfo); ++i) {
+    auto const fd = table[i].proc_fd;
+    if (fd >= 3 && fd != keep) {
+      ::close(fd);
+    }
+  }
+#elif defined(__linux__)
+#if defined(SYS_close_range)
+  constexpr unsigned k_last = std::numeric_limits<unsigned>::max();
+  bool               closed = true;
+  if (keep > 3) {
+    closed = ::syscall(SYS_close_range, 3U, static_cast<unsigned>(keep - 1), 0U) == 0;
+  }
+  if (closed) {
+    auto const first = static_cast<unsigned>(keep >= 3 ? keep + 1 : 3);
+    closed           = ::syscall(SYS_close_range, first, k_last, 0U) == 0;
+  }
+  if (closed) {
+    return;
+  }
+#endif
+  // No close_range (an old kernel, or a filter that refuses it): list
+  // /proc/self/fd, then close what was listed. The directory's own descriptor
+  // is in the list and is closed with the rest.
+  std::vector<int> found;
+  if (auto* dir = ::opendir("/proc/self/fd")) {
+    while (auto const* item = ::readdir(dir)) {
+      int        value = -1;
+      auto const name  = std::string_view{item->d_name};
+      if (std::from_chars(name.data(), name.data() + name.size(), value).ec == std::errc{} && value >= 3 && value != keep) {
+        found.push_back(value);
+      }
+    }
+    ::closedir(dir);
+    for (auto const fd : found) {
+      ::close(fd);
+    }
+    return;
+  }
+  close_by_limit(keep);
+#else
+  close_by_limit(keep);
+#endif
 }
 
 } // namespace planar::process

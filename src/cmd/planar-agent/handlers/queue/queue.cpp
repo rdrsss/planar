@@ -16,6 +16,7 @@ module planar.cmd.planar_agent.handlers.queue;
 
 import std;
 import planar.cliapp.args;
+import planar.core.check;
 import planar.cmd.internal.config_path;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
@@ -24,6 +25,7 @@ import planar.db;
 import planar.db.agentdb;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
+import planar.process;
 import planar.process.identity;
 import planar.process.runner;
 
@@ -613,21 +615,6 @@ void report_failure(detach_link& link, std::string_view fallback) {
   link.reported = true;
 }
 
-/// @brief Closes every descriptor a detached submitter inherited except
-/// `keep`, so it holds nothing of its caller's: a reader waiting for the end
-/// of a pipe the caller passed down would otherwise wait for the whole run.
-void close_inherited_descriptors(int keep) {
-  auto limit = ::sysconf(_SC_OPEN_MAX);
-  if (limit < 0 || limit > 8192) {
-    limit = 8192;
-  }
-  for (int fd = 3; fd < limit; ++fd) {
-    if (fd != keep) {
-      ::close(fd);
-    }
-  }
-}
-
 /// @brief The invoked process's half of a detached submission: reads the
 /// pipe to its end and turns what came through into the ticket, the child's
 /// failure, or a message that no ticket was issued (tech spec 647 §
@@ -680,6 +667,34 @@ auto await_ticket(context& ctx, int read_fd, ::pid_t child) -> handler_outcome {
   return exit_status{exit_internal_error};
 }
 
+/// @brief Why an existing log directory may not hold logs, or nothing when it
+/// may: it must be a directory owned by the current effective user that
+/// neither group nor others can write to (task 7086). The directory is created
+/// 0700, but one that was already there could have been made by anyone, and
+/// another user able to write into it could plant a link where a log is to be
+/// created or remove a log from under a run. Refused rather than tightened: a
+/// directory someone else owns cannot be tightened, and changing the mode of
+/// one the operator made is not this verb's call. Follows a symbolic link, so
+/// `queue-logs` may point at an owned directory elsewhere.
+auto log_directory_problem(const std::filesystem::path& dir) -> std::optional<std::string> {
+  struct stat info{};
+  if (::stat(dir.c_str(), &info) != 0) {
+    return std::format("cannot examine the log directory {}: {}", dir.string(), errno_text(errno));
+  }
+  if (!S_ISDIR(info.st_mode)) {
+    return std::format("the log directory {} is not a directory", dir.string());
+  }
+  if (info.st_uid != ::geteuid()) {
+    return std::format("the log directory {} is owned by user {}, not by the current user ({}); logs are not written into it",
+                       dir.string(), static_cast<unsigned long>(info.st_uid), static_cast<unsigned long>(::geteuid()));
+  }
+  if ((info.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+    return std::format("the log directory {} is writable by group or others (mode {:04o}); run chmod go-w on it", dir.string(),
+                       static_cast<unsigned>(info.st_mode & 07777));
+  }
+  return std::nullopt;
+}
+
 /// @brief Steps 4 and 5 of a detached submission, in the child: creates
 /// `queue-logs/<seq>.log`, records it on the entry, points standard output and
 /// standard error at it, and writes the sequence number and the path to the
@@ -699,6 +714,9 @@ auto publish_ticket(detach_link& link, db::connection& conn, std::int64_t seq) -
 
   if (::mkdir(link.log_dir.c_str(), 0700) != 0 && errno != EEXIST) {
     return undo(std::format("cannot create the log directory {}: {}", link.log_dir.string(), errno_text(errno)), false);
+  }
+  if (auto const unsafe = log_directory_problem(link.log_dir)) {
+    return undo(*unsafe, false);
   }
   auto const fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC, 0600);
   if (fd < 0) {
@@ -742,7 +760,11 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
                                      std::vector<std::string> argv, std::int64_t run_limit_ms,
                                      std::optional<std::int64_t> wait_limit_ms, int read_fd, int write_fd) {
   ::close(read_fd);
-  close_inherited_descriptors(write_fd);
+  // Every descriptor the invoked process passed down goes, however high its
+  // number, so this submitter holds nothing of its caller's: a reader waiting
+  // for the end of a pipe the caller passed down would otherwise wait for the
+  // whole run (task 7085).
+  process::close_descriptors_except(write_fd);
 
   detach_link link;
   link.write_fd = write_fd;
@@ -798,6 +820,14 @@ auto detach(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   for (auto const fd : ends) {
     ::fcntl(fd, F_SETFD, FD_CLOEXEC);
   }
+  // The child runs ordinary C++ (allocation, streams, SQLite), which is safe
+  // after `fork` only when no other thread of this process could have held a
+  // lock at the instant of the fork. Nothing here starts a thread; this makes
+  // a future one fail loudly instead of deadlocking a child (task 7087). A
+  // platform that cannot say is let through: an unreadable count is not a
+  // second thread.
+  auto const threads = process::own_thread_count();
+  check(!threads.has_value() || *threads == 1, "the process is single-threaded when it forks a detached submitter");
   ctx.out().flush();
   ctx.err().flush();
   auto const child = ::fork();

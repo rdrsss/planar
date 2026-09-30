@@ -188,6 +188,7 @@ planar_binary(planar_agent
     engine_planning
     engine_hostqueue
     engine_config
+    core
     process)
 
 # `--metadata` is validated with glz::validate_json -- the same purpose-built
