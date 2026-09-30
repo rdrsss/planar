@@ -14,9 +14,8 @@ export auto add(CLI::App& root) -> void {
   queue->require_subcommand(0);
 
   // --- queue run ----------------------------------------------------------
-  // The foreground form. `--detach`, `--vendor`, `--role`, `--claim` and
-  // `--notices` are declared by the tasks that implement them (tech spec
-  // 647 § CLI surface).
+  // The foreground form. `--detach` and `--claim` are declared by the tasks
+  // that implement them (tech spec 647 § CLI surface).
   CLI::App* run = queue->add_subcommand(
       "run", "Run a command in turn, host-wide: wait for the command's turn in the queue, run it in the caller's directory "
              "with the caller's environment, and exit with its status.");
@@ -29,6 +28,14 @@ export auto add(CLI::App& root) -> void {
           "How long the entry may wait for its turn before it is removed without running: an integer and a unit, ms, s, m "
           "or h, at most 24h; default no limit");
   run->add_option("--label")->description("Operator-facing label recorded with the queue entry");
+  run->add_option("--vendor")
+      ->description(
+          "The submitting agent's vendor, recorded with the queue entry; default $PLANAR_VENDOR, empty when neither is set");
+  run->add_option("--role")->description(
+      "The submitting agent's role, recorded with the queue entry; default $PLANAR_ROLE, empty when neither is set");
+  run->add_flag("--notices")
+      ->description(
+          "Write the entry's queue position, start and final outcome to standard error; standard output is never touched");
   run->add_option("command")->description("The command and its arguments, after `--`")->required()->expected(1, -1);
 }
 } // namespace planar::cmd::agent::handlers::queue_cli
