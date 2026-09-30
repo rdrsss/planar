@@ -518,7 +518,7 @@ TEST_CASE("queue view: one running and two waiting entries list in order with th
   hold.release();
 }
 
-TEST_CASE("queue view: running entries come first, then waiting entries in queue order, with positions among the waiting",
+TEST_CASE("queue view: entries list in sequence order, running or waiting, with positions among the waiting",
           "[cmd][watch][queue][hq-watch-queue]") {
   auto const arena  = parity::make_arena("wq_order");
   auto       conn   = open_store(arena);
@@ -526,25 +526,27 @@ TEST_CASE("queue view: running entries come first, then waiting entries in queue
   auto const middle = enqueue_or_fail(conn, alive_request("/w/two", {"b"}));
   auto const last   = enqueue_or_fail(conn, alive_request("/w/three", {"c"}));
   // Two slots: the second entry starts while the first still waits, so the
-  // running entry has a HIGHER sequence number than a waiting one.
+  // running entry has a HIGHER sequence number than a waiting one. Rows stay
+  // in sequence order (test spec 649); position counts waiting entries only.
   start_entry(conn, middle, 2);
 
   auto const rows = rows_of(run_queue(arena, "order_json"));
   REQUIRE(rows.size() == 3);
-  CHECK(int_of(rows[0], "seq") == middle);
-  CHECK(text_of(rows[0], "state") == "running");
-  CHECK(is_null(rows[0], "position"));
-  CHECK(int_of(rows[1], "seq") == first);
-  CHECK(text_of(rows[1], "state") == "waiting");
-  CHECK(int_of(rows[1], "position") == 1);
+  CHECK(int_of(rows[0], "seq") == first);
+  CHECK(text_of(rows[0], "state") == "waiting");
+  CHECK(int_of(rows[0], "position") == 1);
+  CHECK(int_of(rows[1], "seq") == middle);
+  CHECK(text_of(rows[1], "state") == "running");
+  CHECK(is_null(rows[1], "position"));
   CHECK(int_of(rows[2], "seq") == last);
+  CHECK(text_of(rows[2], "state") == "waiting");
   CHECK(int_of(rows[2], "position") == 2);
 
   auto const text  = run_queue(arena, "order_text", false);
   auto const lines = lines_of(text.out);
   REQUIRE(lines.size() == 4);
-  CHECK(leading_tokens(lines[1], 3) == std::vector<std::string>{std::to_string(middle), "running", "-"});
-  CHECK(leading_tokens(lines[2], 3) == std::vector<std::string>{std::to_string(first), "waiting", "1"});
+  CHECK(leading_tokens(lines[1], 3) == std::vector<std::string>{std::to_string(first), "waiting", "1"});
+  CHECK(leading_tokens(lines[2], 3) == std::vector<std::string>{std::to_string(middle), "running", "-"});
   CHECK(leading_tokens(lines[3], 3) == std::vector<std::string>{std::to_string(last), "waiting", "2"});
 }
 
