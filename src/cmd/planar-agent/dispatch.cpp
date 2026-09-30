@@ -105,6 +105,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // The host-wide build and test queue (plan 1080). Its handler returns the
   // command's exit status, which dispatch passes through unchanged.
   table.emplace("queue run", handlers::queue_run);
+  table.emplace("queue cancel", handlers::queue_cancel);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64; the inventory is generated alongside the surface
   // itself. `emplace` is a no-op on a key already present, so a stale

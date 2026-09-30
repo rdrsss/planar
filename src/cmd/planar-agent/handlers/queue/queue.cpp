@@ -259,6 +259,20 @@ auto describe(const qcfg::queue_load_error& err) -> std::string {
   return text;
 }
 
+/// @brief The loader of the `[queue]` settings from the file the context's
+/// environment names, exactly as `planar config` resolves it; when the path
+/// cannot be resolved (no HOME and no PLANAR_CONFIG_PATH) the defaults apply.
+/// @param ctx The invocation context, which must outlive the returned loader.
+auto default_settings_loader(context& ctx) -> std::function<std::expected<qcfg::queue_settings, qcfg::queue_load_error>()> {
+  return [&ctx]() -> std::expected<qcfg::queue_settings, qcfg::queue_load_error> {
+    auto const path = internal::resolve_config_path(ctx.env());
+    if (!path) {
+      return qcfg::default_queue_settings();
+    }
+    return qcfg::load_queue_settings(*path);
+  };
+}
+
 /// @brief One identity field of a submission: the flag when it is given and not
 /// empty, else the environment variable when it is set and not empty, else
 /// nothing (task hq-vendor-role). An empty value reads as absent, as
@@ -899,16 +913,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   // store is touched. The path is the context's environment's, exactly as
   // `planar config` resolves it; when it cannot be resolved (no HOME and no
   // PLANAR_CONFIG_PATH) the defaults apply.
-  auto load = deps.load_settings;
-  if (!load) {
-    load = [&ctx]() -> std::expected<qcfg::queue_settings, qcfg::queue_load_error> {
-      auto const path = internal::resolve_config_path(ctx.env());
-      if (!path) {
-        return qcfg::default_queue_settings();
-      }
-      return qcfg::load_queue_settings(*path);
-    };
-  }
+  auto            load = deps.load_settings ? deps.load_settings : default_settings_loader(ctx);
   settings_source settings{std::move(load)};
   if (auto first = settings.initial(); !first) {
     return refuse(ctx, describe(first.error()));
@@ -1496,5 +1501,179 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
 }
 
 } // namespace
+
+// ---------------------------------------------------------------------------
+// queue cancel (task hq-queue-cancel)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The exit for an entry that has already ended, or never existed:
+/// the history row decides which. A history row makes it 6 (the entry ended,
+/// and the message names how); no row makes it 1 (no such entry, or one whose
+/// history has been pruned).
+auto ended_or_unknown(context& ctx, db::connection& conn, std::int64_t seq) -> handler_outcome {
+  auto const row = hq::find_history(conn, seq);
+  if (!row) {
+    return refuse(ctx, std::format("cancel: cannot read the history of entry {}: {}", seq, row.error().message));
+  }
+  if (!row->has_value()) {
+    ctx.err() << std::format("error: queue: cancel: no entry {} is in the queue or its history\n", seq);
+    return exit_status{exit_generic_failure};
+  }
+  ctx.err() << std::format("error: queue: cancel: entry {} has already ended as {}\n", seq, hq::to_string((*row)->outcome));
+  return exit_status{exit_precondition_conflict};
+}
+
+/// @brief What cancel reports once a stopped entry has left the queue: reads
+/// the row that ended it. An entry that ended for another reason than the
+/// cancellation (a run limit that was already under way) says so.
+auto report_stopped(context& ctx, db::connection& conn, std::int64_t seq, bool killed) -> handler_outcome {
+  auto const row = hq::find_history(conn, seq);
+  if (!row || !row->has_value()) {
+    ctx.err() << std::format("warning: queue: cancel: entry {} left the queue but its history row cannot be read\n", seq);
+    return exit_status{exit_success};
+  }
+  if ((*row)->outcome == hq::history_outcome::cancelled) {
+    ctx.out() << std::format("cancelled entry {}: its command was stopped{}\n", seq,
+                             killed ? " (SIGKILL after the grace period)" : "");
+    return exit_status{exit_success};
+  }
+  ctx.out() << std::format("entry {} was already stopping and ended as {}\n", seq, hq::to_string((*row)->outcome));
+  return exit_status{exit_success};
+}
+
+} // namespace
+
+auto queue_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_outcome {
+  return queue_cancel_with(ctx, args, queue_run_deps{});
+}
+
+auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps) -> handler_outcome {
+  auto const numbers = cliapp::positional_strings(args, "seq");
+  if (numbers.empty()) {
+    ctx.err() << "error: queue: cancel: no entry number given\n";
+    return exit_status{exit_generic_failure};
+  }
+  std::int64_t seq  = 0;
+  auto const&  text = numbers.front();
+  if (auto const parsed = std::from_chars(text.data(), text.data() + text.size(), seq);
+      text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() || seq <= 0) {
+    ctx.err() << std::format("error: queue: cancel: '{}' is not an entry number (a positive integer)\n", text);
+    return exit_status{exit_user_input};
+  }
+
+  auto const vendor = identity_field(args, "--vendor", ctx.env(), "PLANAR_VENDOR");
+  auto const role   = identity_field(args, "--role", ctx.env(), "PLANAR_ROLE");
+
+  ident::system_clock system_clock;
+  ident::clock&       clock     = deps.clock ? *deps.clock : static_cast<ident::clock&>(system_clock);
+  auto const          probe     = deps.probe ? *deps.probe : hq::system_process_probe();
+  auto const          signaller = deps.signaller ? deps.signaller : hq::system_group_signaller();
+  auto const          sleep =
+      deps.sleep ? deps.sleep : std::function<void(std::chrono::milliseconds)>{[](auto d) { std::this_thread::sleep_for(d); }};
+
+  settings_source settings{deps.load_settings ? deps.load_settings : default_settings_loader(ctx)};
+  if (auto first = settings.initial(); !first) {
+    return refuse(ctx, describe(first.error()));
+  }
+  auto opened = db::agent::open_agent_db(ctx.env());
+  if (!opened) {
+    return refuse(ctx, opened.error().message);
+  }
+  db::connection& conn = *opened;
+
+  auto const          host = ident::host_identity(ident::native_identity_source());
+  hq::canceller const who{.vendor = vendor, .role = role, .pid = static_cast<std::int64_t>(::getpid())};
+
+  // A waiting entry has no command: remove it.
+  auto removed = hq::cancel_waiting(conn, seq, who, clock.wall_ms());
+  if (!removed) {
+    return refuse(ctx, std::format("cancel: {}", removed.error().message));
+  }
+  if (removed->status == hq::cancel_waiting_status::removed) {
+    ctx.out() << std::format("cancelled entry {}: removed before its turn\n", seq);
+    return exit_status{exit_success};
+  }
+  if (removed->status == hq::cancel_waiting_status::missing) {
+    return ended_or_unknown(ctx, conn, seq);
+  }
+
+  // A running entry: step one, the marker and SIGTERM after its commit.
+  auto begun = hq::begin_terminate(
+      conn, hq::begin_terminate_request{.seq = seq, .reason = hq::stop_reason::cancelled, .cancelled_by = who, .host_id = host},
+      clock, probe, signaller);
+  if (!begun) {
+    return refuse(ctx, std::format("cancel: {}", begun.error().message));
+  }
+  switch (begun->status) {
+  case hq::begin_status::missing:
+    return ended_or_unknown(ctx, conn, seq);
+  case hq::begin_status::not_running:
+    return refuse(ctx, std::format("cancel: entry {} changed state while it was being cancelled; try again", seq));
+  case hq::begin_status::marked:
+  case hq::begin_status::already_terminating:
+    break;
+  }
+  reporter report{ctx.err()};
+  bool     term_pending = false;
+  if (begun->sigterm) {
+    report_signal_failure(*begun->sigterm, report);
+    if (begun->sigterm->outcome == hq::signal_outcome::other_host) {
+      ctx.err() << std::format("error: queue: cancel: entry {} belongs to another host identity; it is marked cancelled, and a "
+                               "poll on that host will stop it\n",
+                               seq);
+      return exit_status{exit_internal_error};
+    }
+    // The entry's submitter had not yet recorded the command's group: nothing
+    // could be signalled, and nothing else will send this SIGTERM.
+    term_pending = begun->sigterm->outcome == hq::signal_outcome::no_group;
+  }
+
+  // Step two, here and now: advance this entry until its group is empty and it
+  // is gone. The overdue SIGKILL is sent by the advance once the entry has been
+  // terminating for the grace period. Bounded, so a group that survives
+  // SIGKILL cannot hold cancel for ever.
+  auto const grace_ms = settings.current().grace_ms;
+  auto const started  = clock.monotonic_ms();
+  bool       killed   = false;
+  if (!started) {
+    return refuse(ctx, "cannot read the monotonic clock");
+  }
+  while (true) {
+    auto advanced = hq::advance_terminations(conn, hq::advance_request{.host_id = host, .grace_ms = grace_ms, .seq = seq}, clock,
+                                             probe, signaller);
+    if (advanced) {
+      surface_advance(*advanced, report);
+      killed = killed || std::ranges::any_of(advanced->kills,
+                                             [](const hq::signal_attempt& k) { return k.outcome == hq::signal_outcome::sent; });
+      if (!advanced->ended.empty()) {
+        return report_stopped(ctx, conn, seq, killed);
+      }
+    } else {
+      report.once(std::format("warning: queue: cannot advance the stop of entry {}: {}", seq, advanced.error().message));
+    }
+    auto const stored = hq::find(conn, seq);
+    if (stored && !stored->has_value()) {
+      // Ended by its own submitter, which read the marker.
+      return report_stopped(ctx, conn, seq, killed);
+    }
+    if (stored && term_pending) {
+      if (auto const attempt = hq::signal_child_group(**stored, hq::stop_signal::term, host, probe, signaller);
+          attempt.outcome != hq::signal_outcome::no_group) {
+        term_pending = false;
+        report_signal_failure(attempt, report);
+      }
+    }
+    auto const now = clock.monotonic_ms();
+    if (now && *now - *started > grace_ms + k_drain_slack_ms) {
+      ctx.err() << std::format("error: queue: cancel: entry {}'s process group still has members after SIGKILL; the entry stays "
+                               "marked and the next poll will end it\n",
+                               seq);
+      return exit_status{exit_internal_error};
+    }
+    sleep(k_child_tick);
+  }
+}
 
 } // namespace planar::cmd::agent::handlers

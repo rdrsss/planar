@@ -237,6 +237,39 @@ auto begin_terminate(db::connection& conn, const begin_terminate_request& reques
   return result;
 }
 
+auto cancel_waiting(db::connection& conn, std::int64_t seq, const canceller& who, std::int64_t ended_at)
+    -> std::expected<cancel_waiting_result, queue_error> {
+  constexpr std::string_view op = "cancel waiting";
+  if (conn.in_transaction()) {
+    return invalid(op, "the connection is already in a transaction");
+  }
+  auto txn = conn.begin_transaction(db::lock_mode::immediate);
+  if (!txn) {
+    return sql_failure("begin cancel waiting", txn.error());
+  }
+  auto found = find(conn, seq);
+  if (!found) {
+    return std::unexpected(std::move(found.error()));
+  }
+  if (!found->has_value()) {
+    return cancel_waiting_result{.status = cancel_waiting_status::missing, .stored = std::nullopt};
+  }
+  if ((*found)->state != entry_state::waiting) {
+    return cancel_waiting_result{.status = cancel_waiting_status::not_waiting, .stored = std::move(**found)};
+  }
+  // `end_entry` runs as a savepoint inside this transaction, so the read above
+  // and the removal are one atomic step.
+  auto ended =
+      end_entry(conn, seq, end_request{.outcome = history_outcome::cancelled, .cancelled_by = who, .ended_at = ended_at});
+  if (!ended) {
+    return std::unexpected(std::move(ended.error()));
+  }
+  if (auto committed = txn->commit(); !committed) {
+    return sql_failure("commit cancel waiting", committed.error());
+  }
+  return cancel_waiting_result{.status = cancel_waiting_status::removed, .stored = std::nullopt};
+}
+
 auto advance_terminations(db::connection& conn, const advance_request& request, process::identity::clock& clock,
                           const process_probe& probe, const group_signaller& signaller)
     -> std::expected<advance_result, queue_error> {

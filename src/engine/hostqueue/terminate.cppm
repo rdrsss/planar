@@ -12,6 +12,12 @@
 ///   commits. Only then, and only when this call set the marker, does it send
 ///   SIGTERM to the entry's child group. Calling it on an entry that is
 ///   already terminating changes nothing and sends nothing.
+/// - `cancel_waiting` is a cancellation's other half (task hq-queue-cancel): a
+///   waiting entry has no command to stop, so it is removed, with its
+///   `cancelled` history row and the canceller, in one `BEGIN IMMEDIATE`
+///   transaction that first checks the entry is still waiting. An entry that
+///   has started is never removed by it, so a turn taken between the caller's
+///   read and this call cannot strand a running command without its entry.
 /// - `advance_terminations` is step two, and any process may run it. For each
 ///   terminating entry it examines, with no transaction open: when the child
 ///   group is empty, or its id has been reused (which counts as empty), it
@@ -173,6 +179,33 @@ export struct begin_result {
 export auto begin_terminate(db::connection& conn, const begin_terminate_request& request, process::identity::clock& clock,
                             const process_probe& probe, const group_signaller& signaller)
     -> std::expected<begin_result, queue_error>;
+
+/// @brief What `cancel_waiting` found and did.
+export enum class cancel_waiting_status : std::uint8_t {
+  removed,     ///< The entry was waiting; this call removed it and wrote its `cancelled` history row.
+  not_waiting, ///< The entry exists and is not waiting (it has started); nothing was written.
+  missing,     ///< No entry has that number; nothing was written.
+};
+
+/// @brief The result of `cancel_waiting`.
+export struct cancel_waiting_result {
+  cancel_waiting_status status = cancel_waiting_status::missing; ///< What was found and done.
+  std::optional<entry>  stored;                                  ///< The entry as it stood, for `not_waiting`.
+};
+
+/// @brief Removes a waiting entry as cancelled: one `BEGIN IMMEDIATE`
+/// transaction reads the entry and, only when it is waiting, ends it through
+/// `end_entry` with outcome `cancelled` and `who`.
+/// @param conn An open agent database at or above agent schema version 2,
+/// not inside a transaction.
+/// @param seq The entry to cancel.
+/// @param who The canceller, recorded on the history row.
+/// @param ended_at Wall clock at the cancellation, ms since the epoch; display only.
+/// @return What was found and done; `invalid_request` when the connection is
+/// already in a transaction; or the SQLite failure, after which nothing was
+/// written.
+export auto cancel_waiting(db::connection& conn, std::int64_t seq, const canceller& who, std::int64_t ended_at)
+    -> std::expected<cancel_waiting_result, queue_error>;
 
 /// @brief What the advancing process supplies to `advance_terminations`.
 export struct advance_request {

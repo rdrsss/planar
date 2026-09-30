@@ -469,8 +469,9 @@ TEST_CASE("queue cancel: a waiting entry is removed, attributed to its canceller
 // ---------------------------------------------------------------------------
 // Scenario: Happy path: cancelling a running entry
 // ---------------------------------------------------------------------------
-TEST_CASE("queue cancel: a running command that honours SIGTERM ends cancelled, its submitter exits 125 and the next entry starts",
-          "[cmd][agent][queue][hq-queue-cancel]") {
+TEST_CASE(
+    "queue cancel: a running command that honours SIGTERM ends cancelled, its submitter exits 125 and the next entry starts",
+    "[cmd][agent][queue][hq-queue-cancel]") {
   auto const arena = parity::make_arena("qc_running");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
@@ -488,7 +489,7 @@ TEST_CASE("queue cancel: a running command that honours SIGTERM ends cancelled, 
   b = spawn_queue(arena, "b", sh_command("echo b > \"$1\"", {started_b.string()}));
   await_entry(arena, 2, hq::entry_state::waiting);
 
-  canceller = spawn_agent(arena, "cancel", cancel_args("1", {"--vendor", "codex", "--role", "operator"}));
+  canceller            = spawn_agent(arena, "cancel", cancel_args("1", {"--vendor", "codex", "--role", "operator"}));
   auto const cancelled = finish(canceller);
   INFO("cancel stderr:\n" << cancelled.err);
   CHECK(cancelled.code == 0);

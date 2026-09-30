@@ -42,5 +42,22 @@ export auto add(CLI::App& root) -> void {
       ->description(
           "Write the entry's queue position, start and final outcome to standard error; standard output is never touched");
   run->add_option("command")->description("The command and its arguments, after `--`")->required()->expected(1, -1);
+
+  // --- queue cancel -------------------------------------------------------
+  // Any caller that can open the store may cancel any entry; the canceller is
+  // recorded (tech spec 647 § CLI surface, § Cancellation is open to every
+  // caller and is attributed).
+  CLI::App* cancel = queue->add_subcommand(
+      "cancel", "Cancel a queue entry: remove a waiting one, or stop a running one (SIGTERM to its command's process group, "
+                "then SIGKILL after the grace period if the group still has members) and wait until its group is empty.");
+  cancel->add_option("--vendor")
+      ->description(
+          "The cancelling agent's vendor, recorded as who cancelled; default $PLANAR_VENDOR, empty when neither is set");
+  cancel->add_option("--role")->description(
+      "The cancelling agent's role, recorded as who cancelled; default $PLANAR_ROLE, empty when neither is set");
+  cancel->add_option("seq")
+      ->description("The entry's sequence number, as `queue run --detach` and the notices name it")
+      ->required()
+      ->expected(1);
 }
 } // namespace planar::cmd::agent::handlers::queue_cli
