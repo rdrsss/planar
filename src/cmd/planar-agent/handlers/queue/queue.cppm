@@ -35,6 +35,22 @@
 /// engine never sees the config module: the handler copies values into the
 /// engine's request structs.
 ///
+/// ## Time limits
+///
+/// `--timeout <duration>` (default 30 minutes) is the run limit and
+/// `--wait-timeout <duration>` (default none) the wait limit. Both take the
+/// `[queue]` duration grammar (an integer and `ms`, `s`, `m` or `h`), share
+/// its 24-hour cap, and refuse zero, negative and unit-less values at exit 2
+/// before anything is enqueued. The run limit becomes the entry's
+/// `deadline_mono` when the entry starts; the wait limit is stored as
+/// `wait_deadline_mono` at enqueue. At its run limit the submitter marks its
+/// own entry terminating with reason `timeout` (SIGTERM) and advances that
+/// entry each tick (SIGKILL after the `[queue]` grace period). The entry then
+/// ends with the outcome its stop reason names, never `signaled`: `timeout`
+/// (exit 124) or `cancelled` (exit 125), whichever process set the reason.
+/// A wait limit reached before the turn removes the entry with outcome
+/// `wait_timeout` and exits 125 without running the command.
+///
 /// ## What is not here yet
 ///
 /// The command guard and the 126/127 checks run first (tasks hq-command-guard
@@ -42,8 +58,7 @@
 /// cannot be executed 126, each before the configuration or the store is
 /// touched, so nothing is enqueued. A program that cannot start at its turn ends
 /// its entry `not_started` with the same 127 or 126. Later tasks of the same
-/// milestone add `--timeout` and `--wait-timeout`, signal
-/// forwarding, nested runs, missing-entry handling, `--notices`, `--vendor`
+/// milestone add signal forwarding, nested runs, missing-entry handling, `--notices`, `--vendor`
 /// and `--role`, and `--claim`. This handler leaves them out and says so at
 /// each seam.
 module;

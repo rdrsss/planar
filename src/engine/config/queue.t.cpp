@@ -14,6 +14,7 @@ import planar.engine.config.queue;
 
 using planar::engine::config::default_queue_settings;
 using planar::engine::config::load_queue_settings;
+using planar::engine::config::parse_duration_flag;
 using planar::engine::config::parse_toml;
 using planar::engine::config::queue_from_map;
 using planar::engine::config::queue_load_error;
@@ -258,4 +259,31 @@ TEST_CASE("queue loader: an unreadable path is reported, not defaulted", "[engin
   auto const got = load_queue_settings(dir.path());
   REQUIRE_FALSE(got.has_value());
   CHECK(got.error().kind_ == queue_load_error::kind::unreadable);
+}
+
+TEST_CASE("queue config: a duration flag takes the configuration grammar and refuses zero, negatives and the unitless",
+          "[engine][config][hq-timeouts]") {
+  // Same units as the configuration keys.
+  CHECK(parse_duration_flag("250ms") == std::int64_t{250});
+  CHECK(parse_duration_flag("30s") == std::int64_t{30'000});
+  CHECK(parse_duration_flag("5m") == std::int64_t{300'000});
+  CHECK(parse_duration_flag("1h") == std::int64_t{3'600'000});
+  // The one-day cap is shared, and inclusive.
+  CHECK(parse_duration_flag("24h") == std::int64_t{86'400'000});
+  CHECK_FALSE(parse_duration_flag("25h").has_value());
+  CHECK_FALSE(parse_duration_flag("86400001ms").has_value());
+  CHECK_FALSE(parse_duration_flag("99999999999999999999h").has_value());
+  // A flag has no meaningful zero.
+  CHECK_FALSE(parse_duration_flag("0s").has_value());
+  CHECK_FALSE(parse_duration_flag("0ms").has_value());
+  CHECK_FALSE(parse_duration_flag("-5s").has_value());
+  // A bare integer is refused rather than guessed at, and so is anything else.
+  CHECK_FALSE(parse_duration_flag("5").has_value());
+  CHECK_FALSE(parse_duration_flag("").has_value());
+  CHECK_FALSE(parse_duration_flag("s").has_value());
+  CHECK_FALSE(parse_duration_flag("5d").has_value());
+  CHECK_FALSE(parse_duration_flag("1.5s").has_value());
+  CHECK_FALSE(parse_duration_flag(" 5s").has_value());
+  // The refusal names the value.
+  CHECK(parse_duration_flag("7x").error().contains("7x"));
 }

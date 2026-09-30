@@ -189,6 +189,21 @@ auto judge(const toml_map& doc) -> judged {
 
 } // namespace
 
+auto parse_duration_flag(std::string_view text) -> std::expected<std::int64_t, std::string> {
+  auto const parsed = parse_duration(text);
+  if (!parsed.has_value()) {
+    return std::unexpected(
+        std::format("'{}' is not a duration: use an integer followed by a unit (ms, s, m, h), such as 30s or 5m", text));
+  }
+  if (parsed->negative || parsed->ms < 1) {
+    return std::unexpected(std::format("'{}' must be greater than zero", text));
+  }
+  if (parsed->ms > k_max_duration_ms) {
+    return std::unexpected(std::format("'{}' must be at most 24h", text));
+  }
+  return parsed->ms;
+}
+
 auto default_queue_settings() -> queue_settings {
   return {};
 }
