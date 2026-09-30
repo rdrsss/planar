@@ -2252,3 +2252,341 @@ TEST_CASE("queue run: a waiter stopped until it is reaped rejoins behind the ent
   CHECK(new_row->outcome == hq::history_outcome::exited);
   CHECK(new_row->exit_code == 0);
 }
+
+// ---------------------------------------------------------------------------
+// Scenarios: notices and the submitter's vendor and role (tasks hq-notices
+// and hq-vendor-role, tech spec 647 § CLI surface).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The lines of `text`, without their newlines.
+auto split_lines(std::string_view text) -> std::vector<std::string> {
+  std::vector<std::string> lines;
+  while (!text.empty()) {
+    auto const end = text.find('\n');
+    lines.emplace_back(text.substr(0, end));
+    text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+  }
+  return lines;
+}
+
+/// @brief The lines of `text` that are queue notices, in order.
+auto notice_lines(std::string_view text) -> std::vector<std::string> {
+  std::vector<std::string> notices;
+  for (auto& line : split_lines(text)) {
+    if (line.starts_with("queue: ")) {
+      notices.push_back(std::move(line));
+    }
+  }
+  return notices;
+}
+
+/// @brief The lines of `text` that are not queue notices, in order.
+auto other_lines(std::string_view text) -> std::vector<std::string> {
+  std::vector<std::string> others;
+  for (auto& line : split_lines(text)) {
+    if (!line.starts_with("queue: ")) {
+      others.push_back(std::move(line));
+    }
+  }
+  return others;
+}
+
+/// @brief What a spawned submitter has written to standard error so far.
+auto err_so_far(const spawned& run) -> std::string {
+  return read_all(run.root / std::format("{}.err", run.tag));
+}
+
+/// @brief Waits until a spawned submitter's standard error holds `text`.
+void await_err_contains(const spawned& run, std::string_view text) {
+  INFO("waiting for " << run.tag << " to write: " << text);
+  REQUIRE(await([&] { return err_so_far(run).find(text) != std::string::npos; }));
+}
+
+/// @brief `queue run` under the arena's pinned map plus `extra`, which wins
+/// over the map for a name it repeats.
+auto run_with_env(const parity::arena& arena, std::string_view tag, const std::vector<std::string>& command,
+                  std::vector<std::string> flags, std::vector<pinned_var> extra) -> capture {
+  auto env = parity::pinned_env(arena.cpp_root);
+  for (auto& var : extra) {
+    env.push_back(std::move(var));
+  }
+  auto const args = queue_args(command, std::move(flags));
+  return parity::run_pinned(agent_bin(), args, arena.cpp_root, tag, env);
+}
+
+/// @brief The vendor and role variables, set to `vendor` and `role`; an empty
+/// value is how a case says "not set" without inheriting the operator's own.
+auto identity_env(std::string vendor, std::string role) -> std::vector<pinned_var> {
+  return {pinned_var{.name = "PLANAR_VENDOR", .value = std::move(vendor)},
+          pinned_var{.name = "PLANAR_ROLE", .value = std::move(role)}};
+}
+
+} // namespace
+
+TEST_CASE("queue run: --notices tells a waiting submitter its position, then its start and its outcome",
+          "[cmd][agent][queue][hq-notices]") {
+  auto const arena = parity::make_arena("qr_notices");
+  write_config(arena, k_fast_poll);
+  gate        hold_a(arena.cpp_root / "hold_a.fifo");
+  gate        hold_b(arena.cpp_root / "hold_b.fifo");
+  auto const  started_a = arena.cpp_root / "started_a";
+  auto const  started_b = arena.cpp_root / "started_b";
+  auto const  blocked   = std::string{"echo x > \"$1\"; read x < \"$2\""};
+  spawned     a;
+  spawned     b;
+  spawned     c;
+  release_all guard{.gates = {&hold_a, &hold_b}};
+
+  a = spawn_queue(arena, "a", sh_command(blocked, {started_a.string(), hold_a.path.string()}));
+  await_file(started_a);
+  b = spawn_queue(arena, "b", sh_command(blocked, {started_b.string(), hold_b.path.string()}), {}, {"--notices"});
+  await_err_contains(b, "queue: entry 2 waiting at position 1\n");
+  c = spawn_queue(arena, "c", sh_command("echo out; echo err >&2; exit 3"), {}, {"--notices"});
+  await_err_contains(c, "queue: entry 3 waiting at position 2\n");
+
+  // The first entry ends: B starts and C moves up, and says so while it waits.
+  hold_a.release();
+  await_file(started_b);
+  await_err_contains(c, "queue: entry 3 waiting at position 1\n");
+  hold_b.release();
+
+  auto const got_a = finish(a);
+  auto const got_b = finish(b);
+  auto const got_c = finish(c);
+  CHECK(got_a.code == 0);
+  CHECK(got_a.err.empty());
+  CHECK(got_b.code == 0);
+  CHECK(got_b.err == "queue: entry 2 waiting at position 1\nqueue: entry 2 started\nqueue: entry 2 exited with code 0\n");
+
+  INFO("c stderr:\n" << got_c.err);
+  CHECK(got_c.code == 3);
+  CHECK(notice_lines(got_c.err) == std::vector<std::string>{"queue: entry 3 waiting at position 2",
+                                                            "queue: entry 3 waiting at position 1", "queue: entry 3 started",
+                                                            "queue: entry 3 exited with code 3"});
+  // The command's own line is untouched, and the outcome is the last line.
+  CHECK(other_lines(got_c.err) == std::vector<std::string>{"err"});
+  CHECK(split_lines(got_c.err).back() == "queue: entry 3 exited with code 3");
+  CHECK(got_c.out == "out\n");
+}
+
+TEST_CASE("queue run: --notices names a command a signal ended and a command stopped at its run limit",
+          "[cmd][agent][queue][hq-notices]") {
+  auto const arena = parity::make_arena("qr_notices_ends");
+  write_config(arena, k_fast_poll);
+  auto const killed = run_queue(arena, "killed", sh_command("kill -TERM $$"), {"--notices"});
+  CHECK(killed.code == 128 + SIGTERM);
+  CHECK(notice_lines(killed.err) == std::vector<std::string>{"queue: entry 1 started", "queue: entry 1 terminated by signal 15"});
+  CHECK(killed.out.empty());
+
+  auto const limited = run_queue(arena, "limited", sh_command("sleep 30"), {"--notices", "--timeout", "300ms"});
+  CHECK(limited.code == 124);
+  auto const notices = notice_lines(limited.err);
+  REQUIRE(notices.size() == 2);
+  CHECK(notices.front() == "queue: entry 2 started");
+  CHECK(notices.back() == "queue: entry 2 stopped at its run limit");
+  CHECK(split_lines(limited.err).back() == notices.back());
+}
+
+TEST_CASE("queue run: standard output is the command's output byte for byte, with and without --notices",
+          "[cmd][agent][queue][hq-notices]") {
+  auto const arena  = parity::make_arena("qr_notices_out");
+  auto const script = std::string{"printf 'one\\ntwo'; echo e >&2; printf 'three\\n'"};
+
+  auto const direct = parity::run_pinned("/bin/sh", std::vector<std::string>{"-c", script}, arena.cpp_root, "direct");
+  REQUIRE(direct.code == 0);
+  auto const plain    = run_queue(arena, "plain", sh_command(script));
+  auto const noticing = run_queue(arena, "noticing", sh_command(script), {"--notices"});
+  INFO("stderr with notices:\n" << noticing.err);
+
+  CHECK(plain.code == 0);
+  CHECK(noticing.code == 0);
+  CHECK(plain.out == direct.out);
+  CHECK(noticing.out == direct.out);
+  CHECK(direct.out == "one\ntwothree\n");
+
+  // Without --notices the happy path's standard error is the command's own.
+  CHECK(plain.err == direct.err);
+  CHECK(direct.err == "e\n");
+  // With it, the command's own lines are unchanged and the notices are added.
+  CHECK(other_lines(noticing.err) == split_lines(direct.err));
+  CHECK(notice_lines(noticing.err) == std::vector<std::string>{"queue: entry 2 started", "queue: entry 2 exited with code 0"});
+  CHECK(split_lines(noticing.err).back() == "queue: entry 2 exited with code 0");
+}
+
+TEST_CASE("queue run: without --notices a waiting submitter writes nothing to standard error",
+          "[cmd][agent][queue][hq-notices]") {
+  auto const arena = parity::make_arena("qr_notices_off");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  spawned     a;
+  spawned     b;
+  release_all guard{.gates = {&hold}};
+
+  a = spawn_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  b = spawn_queue(arena, "b", sh_command("echo out; echo err >&2"));
+  static_cast<void>(await_entry(arena, 2, hq::entry_state::waiting));
+  await_refreshes(arena, 2, 3);
+  CHECK(err_so_far(b).empty());
+  hold.release();
+  static_cast<void>(finish(a));
+  auto const got = finish(b);
+  CHECK(got.code == 0);
+  CHECK(got.out == "out\n");
+  CHECK(got.err == "err\n");
+}
+
+TEST_CASE("queue run: the vendor and role come from the flags, then the environment, and are stored empty otherwise",
+          "[cmd][agent][queue][hq-vendor-role]") {
+  auto const arena = parity::make_arena("qr_identity");
+
+  // 1: flags only. 2: environment only. 3: both, and the flags win. 4: neither.
+  // 5: empty flags with nothing in the environment. 6: empty flags fall back
+  // to the environment.
+  REQUIRE(
+      run_with_env(arena, "flags", sh_command("exit 0"), {"--vendor", "flagv", "--role", "flagr"}, identity_env("", "")).code ==
+      0);
+  REQUIRE(run_with_env(arena, "env", sh_command("exit 0"), {}, identity_env("envv", "envr")).code == 0);
+  REQUIRE(
+      run_with_env(arena, "both", sh_command("exit 0"), {"--vendor", "flagv", "--role", "flagr"}, identity_env("envv", "envr"))
+          .code == 0);
+  REQUIRE(run_with_env(arena, "neither", sh_command("exit 0"), {}, identity_env("", "")).code == 0);
+  REQUIRE(run_with_env(arena, "emptyflags", sh_command("exit 0"), {"--vendor", "", "--role", ""}, identity_env("", "")).code ==
+          0);
+  REQUIRE(
+      run_with_env(arena, "emptyflags_env", sh_command("exit 0"), {"--vendor", "", "--role", ""}, identity_env("envv", "envr"))
+          .code == 0);
+
+  auto const snap = require_snapshot(arena);
+  REQUIRE(snap.history.size() == 6);
+  auto const check_row = [&](std::int64_t seq, std::optional<std::string> vendor, std::optional<std::string> role) {
+    INFO("history row " << seq);
+    auto const* row = history_seq(snap, seq);
+    REQUIRE(row != nullptr);
+    CHECK(row->vendor == vendor);
+    CHECK(row->role == role);
+  };
+  check_row(1, "flagv", "flagr");
+  check_row(2, "envv", "envr");
+  check_row(3, "flagv", "flagr");
+  check_row(4, std::nullopt, std::nullopt);
+  check_row(5, std::nullopt, std::nullopt);
+  check_row(6, "envv", "envr");
+}
+
+TEST_CASE("queue run: a live entry carries the vendor and role it was submitted with", "[cmd][agent][queue][hq-vendor-role]") {
+  auto const arena = parity::make_arena("qr_identity_live");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  spawned     run;
+  release_all guard{.gates = {&hold}};
+
+  // The flag names the vendor; the role is left to the environment.
+  auto env = identity_env("envv", "envr");
+  run      = spawn_queue(arena, "run", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}),
+                         std::move(env), {"--vendor", "flagv"});
+  await_file(started);
+  auto const live = await_child_recorded(arena, 1);
+  CHECK(live.vendor == "flagv");
+  CHECK(live.role == "envr");
+  hold.release();
+  CHECK(finish(run).code == 0);
+
+  auto const  snap = require_snapshot(arena);
+  auto const* row  = history_seq(snap, 1);
+  REQUIRE(row != nullptr);
+  CHECK(row->vendor == "flagv");
+  CHECK(row->role == "envr");
+}
+
+TEST_CASE("queue run: a nested run records its own vendor and role, from its flags or the inherited environment",
+          "[cmd][agent][queue][hq-vendor-role]") {
+  auto const arena  = parity::make_arena("qr_identity_nested");
+  auto const script = std::string{"\"$1\" queue run --vendor nestedv --role nestedr -- true; "
+                                  "\"$1\" queue run -- true"};
+  auto const got    = run_with_env(arena, "outer", sh_command(script, {agent_bin().string()}),
+                                   {"--vendor", "outerv", "--role", "outerr"}, identity_env("envv", "envr"));
+  INFO("stderr:\n" << got.err);
+  REQUIRE(got.code == 0);
+
+  auto const snap = require_snapshot(arena);
+  REQUIRE(snap.history.size() == 3);
+  auto const* outer  = history_seq(snap, 1);
+  auto const* first  = history_seq(snap, 2);
+  auto const* second = history_seq(snap, 3);
+  REQUIRE(outer != nullptr);
+  REQUIRE(first != nullptr);
+  REQUIRE(second != nullptr);
+  CHECK_FALSE(outer->nested);
+  CHECK(outer->vendor == "outerv");
+  CHECK(outer->role == "outerr");
+  CHECK(first->nested);
+  CHECK(first->vendor == "nestedv");
+  CHECK(first->role == "nestedr");
+  CHECK(second->nested);
+  CHECK(second->vendor == "envv");
+  CHECK(second->role == "envr");
+}
+
+TEST_CASE("queue run: a rejoined entry keeps the vendor and role of the one that was reaped",
+          "[cmd][agent][queue][hq-vendor-role]") {
+  auto const arena = parity::make_arena("qr_identity_rejoin");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\nstale_after = \"2s\"\n");
+  gate       hold(arena.cpp_root / "hold.fifo");
+  auto const started = arena.cpp_root / "started";
+
+  spawned          holder;
+  spawned          waiter;
+  spawned          later;
+  release_all      guard{.gates = {&hold}};
+  continue_on_exit resume;
+
+  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  static_cast<void>(await_child_recorded(arena, 1));
+  waiter =
+      spawn_queue(arena, "waiter", sh_command("exit 0"), identity_env("envv", ""), {"--vendor", "rejoinv", "--role", "rejoinr"});
+  static_cast<void>(await_entry(arena, 2, hq::entry_state::waiting));
+
+  REQUIRE(waiter.still_mine());
+  resume.run = &waiter;
+  stop_outside_a_transaction(arena, waiter);
+  later = spawn_queue(arena, "later", sh_command("exit 0"));
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    return snap && history_seq(*snap, 2) != nullptr;
+  }));
+  REQUIRE(::kill(static_cast<::pid_t>(waiter.pid), SIGCONT) == 0);
+
+  std::int64_t successor = 0;
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    if (!snap || history_seq(*snap, 2) == nullptr || !history_seq(*snap, 2)->successor_seq) {
+      return false;
+    }
+    successor = *history_seq(*snap, 2)->successor_seq;
+    return true;
+  }));
+  auto const rejoined = await_entry(arena, successor, hq::entry_state::waiting);
+  CHECK(rejoined.vendor == "rejoinv");
+  CHECK(rejoined.role == "rejoinr");
+
+  hold.release();
+  CHECK(finish(holder).code == 0);
+  CHECK(finish(waiter).code == 0);
+  CHECK(finish(later).code == 0);
+
+  auto const  snap    = require_snapshot(arena);
+  auto const* old_row = history_seq(snap, 2);
+  auto const* new_row = history_seq(snap, successor);
+  REQUIRE(old_row != nullptr);
+  REQUIRE(new_row != nullptr);
+  CHECK(old_row->vendor == "rejoinv");
+  CHECK(old_row->role == "rejoinr");
+  CHECK(new_row->vendor == "rejoinv");
+  CHECK(new_row->role == "rejoinr");
+}
