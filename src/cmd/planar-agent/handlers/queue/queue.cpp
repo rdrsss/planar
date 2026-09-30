@@ -8,6 +8,8 @@ module;
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 module planar.cmd.planar_agent.handlers.queue;
@@ -513,6 +515,302 @@ auto start_failure_text(int code) -> std::string_view {
   return code == 127 ? "no such program" : code == 126 ? "not executable" : "the command could not be started";
 }
 
+/// @brief What a detached child holds while it runs the ordinary submitter:
+/// the write end of the ticket pipe, a capture of its standard error until the
+/// log file exists, and the seams a test hooks (tech spec 647 § Submitting,
+/// With `--detach`).
+///
+/// Until the ticket is reported, the child's standard error is a private
+/// buffer, so every refusal the submitter writes (a configuration that cannot
+/// be read, an unreachable store, a log file that cannot be created) is text
+/// the invoked process can print; the invoked process is the only one with a
+/// terminal to say it on. From the moment the log exists, standard error is
+/// the log again.
+///
+/// Invariants: one link per detached child, used only by that child, which is
+/// single-threaded; `write_fd` is -1 once the pipe has been closed.
+struct detach_link {
+  std::ostream*                         err      = nullptr; ///< The context's error stream, whose buffer is swapped.
+  std::streambuf*                       original = nullptr; ///< The stream's own buffer, put back once the log exists.
+  std::stringbuf                        capture;            ///< What was written to `err` before the log existed.
+  int                                   write_fd = -1;      ///< The pipe to the invoked process.
+  bool                                  reported = false;   ///< Whether the ticket or a failure has been sent.
+  std::filesystem::path                 log_dir;            ///< `<agent-db-directory>/queue-logs`.
+  std::function<void(std::string_view)> hook;               ///< The test seam; may be empty.
+
+  /// @brief Points the error stream at the private buffer.
+  void begin_capture(std::ostream& stream) {
+    err      = &stream;
+    original = stream.rdbuf(&capture);
+  }
+
+  /// @brief Puts the stream's own buffer back and moves what was captured to it.
+  void end_capture() {
+    if (err == nullptr || original == nullptr) {
+      return;
+    }
+    auto const held = capture.str();
+    err->rdbuf(original);
+    original = nullptr;
+    *err << std::unitbuf;
+    *err << held;
+    err->flush();
+  }
+
+  /// @brief Runs the test seam for `stage`, when there is one.
+  void at(std::string_view stage) const {
+    if (hook) {
+      hook(stage);
+    }
+  }
+};
+
+/// @brief Writes all of `text` to `fd`. A closed reader is a failed write, not
+/// a signal: SIGPIPE is ignored for the duration and put back.
+auto write_all(int fd, std::string_view text) -> bool {
+  struct sigaction ignore{};
+  struct sigaction previous{};
+  ignore.sa_handler = SIG_IGN;
+  sigemptyset(&ignore.sa_mask);
+  ::sigaction(SIGPIPE, &ignore, &previous);
+  bool ok = true;
+  while (!text.empty()) {
+    auto const n = ::write(fd, text.data(), text.size());
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      ok = false;
+      break;
+    }
+    text.remove_prefix(static_cast<std::size_t>(n));
+  }
+  ::sigaction(SIGPIPE, &previous, nullptr);
+  return ok;
+}
+
+/// @brief The text of an `errno` value.
+auto errno_text(int code) -> std::string {
+  return std::error_code(code, std::generic_category()).message();
+}
+
+/// @brief Sends a failure to the invoked process, once, and closes the pipe.
+/// What was captured from standard error is the message; a child that failed
+/// without writing anything says only that no ticket was issued.
+void report_failure(detach_link& link, std::string_view fallback) {
+  if (link.reported || link.write_fd < 0) {
+    return;
+  }
+  auto text = link.capture.str();
+  if (text.empty()) {
+    text = std::format("error: queue: no ticket was issued: {}\n", fallback);
+  } else if (!text.ends_with('\n')) {
+    text += '\n';
+  }
+  static_cast<void>(write_all(link.write_fd, "err\n" + text));
+  ::close(link.write_fd);
+  link.write_fd = -1;
+  link.reported = true;
+}
+
+/// @brief Closes every descriptor a detached submitter inherited except
+/// `keep`, so it holds nothing of its caller's: a reader waiting for the end
+/// of a pipe the caller passed down would otherwise wait for the whole run.
+void close_inherited_descriptors(int keep) {
+  auto limit = ::sysconf(_SC_OPEN_MAX);
+  if (limit < 0 || limit > 8192) {
+    limit = 8192;
+  }
+  for (int fd = 3; fd < limit; ++fd) {
+    if (fd != keep) {
+      ::close(fd);
+    }
+  }
+}
+
+/// @brief The invoked process's half of a detached submission: reads the
+/// pipe to its end and turns what came through into the ticket, the child's
+/// failure, or a message that no ticket was issued (tech spec 647 §
+/// Submitting, step 6). It never waits on the child itself: end of file on
+/// the pipe means every holder of the write end is gone, which is the
+/// child's death or its report.
+auto await_ticket(context& ctx, int read_fd, ::pid_t child) -> handler_outcome {
+  std::string text;
+  char        buffer[512];
+  while (true) {
+    auto const n = ::read(read_fd, buffer, sizeof buffer);
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n <= 0) {
+      break;
+    }
+    text.append(buffer, static_cast<std::size_t>(n));
+  }
+  ::close(read_fd);
+
+  if (text.starts_with("ok\n") && text.ends_with('\n')) {
+    auto const body = std::string_view{text}.substr(3);
+    auto const nl   = body.find('\n');
+    if (nl != std::string_view::npos && nl + 1 < body.size()) {
+      ctx.out() << body;
+      ctx.out().flush();
+      return exit_status{0};
+    }
+  }
+  // The child is finished or finishing; collect it when it already is, so a
+  // caller that stays alive (a test) does not keep a zombie. Bounded: the
+  // child is never waited for.
+  for (int tries = 0; tries < 20; ++tries) {
+    int status = 0;
+    if (::waitpid(child, &status, WNOHANG) != 0) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (text.starts_with("err\n")) {
+    auto message = text.substr(4);
+    if (!message.ends_with('\n')) {
+      message += '\n';
+    }
+    ctx.err() << message;
+    return exit_status{exit_internal_error};
+  }
+  ctx.err() << "error: queue: no ticket was issued: the detached submitter ended before it reported\n";
+  return exit_status{exit_internal_error};
+}
+
+/// @brief Steps 4 and 5 of a detached submission, in the child: creates
+/// `queue-logs/<seq>.log`, records it on the entry, points standard output and
+/// standard error at it, and writes the sequence number and the path to the
+/// pipe. Any failure removes the entry (no history row: it never became a
+/// run) and the log, and is returned as the message to refuse with.
+auto publish_ticket(detach_link& link, db::connection& conn, std::int64_t seq) -> std::expected<void, std::string> {
+  link.at("after_insert");
+  auto const path = link.log_dir / std::format("{}.log", seq);
+  auto const undo = [&](std::string why, bool remove_file) -> std::expected<void, std::string> {
+    if (remove_file) {
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+    }
+    static_cast<void>(hq::discard_entry(conn, seq));
+    return std::unexpected(std::move(why));
+  };
+
+  if (::mkdir(link.log_dir.c_str(), 0700) != 0 && errno != EEXIST) {
+    return undo(std::format("cannot create the log directory {}: {}", link.log_dir.string(), errno_text(errno)), false);
+  }
+  auto const fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  if (fd < 0) {
+    return undo(std::format("cannot create the log file {}: {}", path.string(), errno_text(errno)), false);
+  }
+  auto const recorded = hq::set_log_path(conn, seq, path.string());
+  if (!recorded || !*recorded) {
+    ::close(fd);
+    return undo(recorded ? std::format("entry {} disappeared before its log was recorded", seq)
+                         : std::format("cannot record the log file: {}", recorded.error().message),
+                true);
+  }
+  if (::dup2(fd, STDOUT_FILENO) < 0 || ::dup2(fd, STDERR_FILENO) < 0) {
+    auto const why = errno_text(errno);
+    ::close(fd);
+    return undo(std::format("cannot redirect output to the log file {}: {}", path.string(), why), true);
+  }
+  ::close(fd);
+  link.end_capture();
+  link.at("before_report");
+  if (!write_all(link.write_fd, std::format("ok\n{}\n{}\n", seq, path.string()))) {
+    return undo("the invoking process went away before it received the ticket; entry removed", true);
+  }
+  ::close(link.write_fd);
+  link.write_fd = -1;
+  link.reported = true;
+  return {};
+}
+
+auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, std::vector<std::string> argv,
+            std::int64_t run_limit_ms, std::optional<std::int64_t> wait_limit_ms, detach_link* link) -> handler_outcome;
+
+/// @brief The detached child: becomes the submitter (tech spec 647 §
+/// Submitting, With `--detach`, steps 2 to 5). It never returns to its
+/// caller's stack, which belongs to the invoked process's copy of `main`: it
+/// leaves with `_exit`.
+[[noreturn]] void run_detached_child(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps,
+                                     std::vector<std::string> argv, std::int64_t run_limit_ms,
+                                     std::optional<std::int64_t> wait_limit_ms, int read_fd, int write_fd) {
+  ::close(read_fd);
+  close_inherited_descriptors(write_fd);
+
+  detach_link link;
+  link.write_fd = write_fd;
+  link.hook     = deps.detach_hook;
+  int code      = exit_internal_error;
+  try {
+    // Step 2: a new session. The child of a fork is never a process-group
+    // leader, so this cannot fail for that reason.
+    if (::setsid() < 0) {
+      link.begin_capture(ctx.err());
+      ctx.err() << std::format("error: queue: cannot start a new session: {}\n", errno_text(errno));
+    } else {
+      // Standard input is nothing; output is the log once it exists.
+      if (auto const null = ::open("/dev/null", O_RDWR); null >= 0) {
+        ::dup2(null, STDIN_FILENO);
+        if (null > STDERR_FILENO) {
+          ::close(null);
+        }
+      }
+      link.begin_capture(ctx.err());
+      link.at("after_setsid");
+      auto const dir = db::agent::resolve_agent_db_path(ctx.env());
+      if (!dir) {
+        ctx.err() << std::format("error: queue: {}\n", dir.error().message);
+      } else {
+        link.log_dir = dir->parent_path() / "queue-logs";
+        auto outcome = submit(ctx, args, std::move(deps), std::move(argv), run_limit_ms, wait_limit_ms, &link);
+        if (auto const* status = std::get_if<exit_status>(&outcome)) {
+          code = status->code;
+        }
+      }
+    }
+  } catch (...) {
+    // Fall through: nothing may unwind into the invoked process's frames.
+  }
+  report_failure(link, "the detached submitter failed before it reported");
+  link.end_capture();
+  ctx.err().flush();
+  ::_exit(code);
+}
+
+/// @brief The invoked process's half of `--detach`: creates the pipe, forks
+/// before any store handle or thread exists, and reads the ticket.
+auto detach(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, std::vector<std::string> argv,
+            std::int64_t run_limit_ms, std::optional<std::int64_t> wait_limit_ms) -> handler_outcome {
+  if (deps.detach_hook) {
+    deps.detach_hook("before_fork");
+  }
+  int ends[2]{-1, -1};
+  if (::pipe(ends) != 0) {
+    return refuse(ctx, std::format("cannot detach: {}", errno_text(errno)));
+  }
+  for (auto const fd : ends) {
+    ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+  }
+  ctx.out().flush();
+  ctx.err().flush();
+  auto const child = ::fork();
+  if (child < 0) {
+    auto const why = errno_text(errno);
+    ::close(ends[0]);
+    ::close(ends[1]);
+    return refuse(ctx, std::format("cannot detach: {}", why));
+  }
+  if (child == 0) {
+    run_detached_child(ctx, args, std::move(deps), std::move(argv), run_limit_ms, wait_limit_ms, ends[0], ends[1]);
+  }
+  ::close(ends[1]);
+  return await_ticket(ctx, ends[0], child);
+}
+
 } // namespace
 
 auto queue_run(context& ctx, const cliapp::parsed_args& args) -> handler_outcome {
@@ -564,6 +862,25 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     return exit_status{code};
   }
 
+  // With `--detach` the invoked process forks here, after every refusal it
+  // can make on its own and before it opens anything (tech spec 647 §
+  // Submitting).
+  if (cliapp::flag_bool(args, "--detach")) {
+    return detach(ctx, args, std::move(deps), argv, run_limit_ms, wait_limit_ms);
+  }
+  return submit(ctx, args, std::move(deps), argv, run_limit_ms, wait_limit_ms, nullptr);
+}
+
+namespace {
+
+/// @brief Everything `queue run` does once the command has been checked: the
+/// configuration, the store, the entry, the wait, the run and the end. The
+/// foreground form calls it in the invoked process; the detached form calls it
+/// in the detached child, with `link` set.
+/// @param link The detached child's hold on the ticket pipe, or null in the
+/// foreground.
+auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, std::vector<std::string> argv,
+            std::int64_t run_limit_ms, std::optional<std::int64_t> wait_limit_ms, detach_link* link) -> handler_outcome {
   auto const vendor = identity_field(args, "--vendor", ctx.env(), "PLANAR_VENDOR");
   auto const role   = identity_field(args, "--role", ctx.env(), "PLANAR_ROLE");
   notices    notice{ctx.err(), cliapp::flag_bool(args, "--notices")};
@@ -718,6 +1035,15 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     seq = enqueued->seq;
     for (auto const& failure : enqueued->pruned.log_failures) {
       ctx.err() << std::format("warning: queue: cannot remove pruned log file {}: {}\n", failure.path, failure.message);
+    }
+  }
+
+  // A detached child now has its sequence number: it creates the log, points
+  // its standard streams at it and hands the ticket over (steps 4 and 5). A
+  // failure takes the entry back out, without a history row.
+  if (link != nullptr) {
+    if (auto published = publish_ticket(*link, conn, seq); !published) {
+      return refuse(ctx, published.error());
     }
   }
 
@@ -1165,5 +1491,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   }
   return exit_status{status_code(final_status)};
 }
+
+} // namespace
 
 } // namespace planar::cmd::agent::handlers

@@ -2826,7 +2826,7 @@ auto parse_ticket(const std::string& out) -> ticket {
   auto const second = out.find('\n', first + 1);
   REQUIRE(second != std::string::npos);
   REQUIRE(second + 1 == out.size());
-  ticket result;
+  ticket      result;
   auto const* head = out.data();
   REQUIRE(std::from_chars(head, head + first, result.seq).ec == std::errc{});
   result.path = out.substr(first + 1, second - first - 1);
@@ -2839,7 +2839,7 @@ struct detached_submitter {
   std::int64_t pid     = 0;
   std::int64_t started = 0;
 
-  detached_submitter() = default;
+  detached_submitter()                                     = default;
   detached_submitter(const detached_submitter&)            = delete;
   detached_submitter& operator=(const detached_submitter&) = delete;
   ~detached_submitter() {
@@ -2910,11 +2910,12 @@ auto run_detached_from_leader(const parity::arena& arena, std::string tag, const
   auto vars = parity::pinned_env(arena.cpp_root);
   vars.push_back(parity::pinned_var{.name = "QD_RC", .value = (arena.cpp_root / (tag + ".rc")).string()});
   parity::require_agent_db_pinned(arena.cpp_root, vars);
-  auto const script = kill_group ? std::string{"setpgrp(0,0); system(@ARGV); open(F, '>'.$ENV{QD_RC}); print F $?>>8, qq(\\n); "
-                                               "close F; kill 'KILL', -$$;"}
-                                 : std::string{"setpgrp(0,0); exec @ARGV;"};
+  auto const  script = kill_group ? std::string{"setpgrp(0,0); system(@ARGV); open(F, '>'.$ENV{QD_RC}); print F $?>>8, qq(\\n); "
+                                                "close F; kill 'KILL', -$$;"}
+                                  : std::string{"setpgrp(0,0); exec @ARGV;"};
   std::string line   = "cd " + parity::shell_quote((arena.cpp_root / "proj").string()) + " && ";
-  line += parity::pinned_env_prefix(vars) + "perl -e " + parity::shell_quote(script) + " " + parity::shell_quote(agent_bin().string());
+  line += parity::pinned_env_prefix(vars) + "perl -e " + parity::shell_quote(script) + " " +
+          parity::shell_quote(agent_bin().string());
   for (auto const& arg : queue_args(command, std::move(flags))) {
     line += " " + parity::shell_quote(arg);
   }
@@ -2922,6 +2923,9 @@ auto run_detached_from_leader(const parity::arena& arena, std::string tag, const
   auto const err = arena.cpp_root / (tag + ".err");
   line += " > " + parity::shell_quote(out.string()) + " 2> " + parity::shell_quote(err.string()) + " ; echo $? > " +
           parity::shell_quote((arena.cpp_root / (tag + ".code")).string());
+  // The subshell reports a killed job on its own stderr; that is the point of
+  // the case, not output for the test log.
+  line = "( " + line + " ) 2>/dev/null";
   static_cast<void>(std::system(line.c_str()));
   int code = -1;
   if (kill_group) {
@@ -2957,11 +2961,12 @@ TEST_CASE("queue run: --detach returns a ticket at once and the command's output
   spawned            holder;
   detached_submitter submitter;
 
-  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
+  holder =
+      spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
   await_file(holder_started);
   static_cast<void>(await_child_recorded(arena, 1));
 
-  auto const script = std::string{"echo out; echo err >&2; [ -z \"$(cat)\" ] && echo stdin-empty; read x < \"$1\"; exit 3"};
+  auto const script    = std::string{"echo out; echo err >&2; [ -z \"$(cat)\" ] && echo stdin-empty; read x < \"$1\"; exit 3"};
   auto const submitted = run_queue(arena, "detached", sh_command(script, {release.path.string()}), {"--detach"});
   INFO("stderr:\n" << submitted.err);
   REQUIRE(submitted.code == 0);
@@ -2986,7 +2991,7 @@ TEST_CASE("queue run: --detach returns a ticket at once and the command's output
   CHECK(file_mode(ticket.path) == 0600);
   CHECK(submitter.still_mine());
   CHECK(process_group_of(entry->pid) == entry->pid);
-  CHECK(entry->cwd == std::filesystem::canonical(proj(arena)).string());
+  CHECK(std::filesystem::equivalent(entry->cwd, proj(arena)));
 
   hold.release();
   static_cast<void>(await_entry(arena, ticket.seq, hq::entry_state::running));
@@ -2996,8 +3001,8 @@ TEST_CASE("queue run: --detach returns a ticket at once and the command's output
     auto const now = try_snapshot(arena);
     return now && history_seq(*now, ticket.seq) != nullptr;
   }));
-  auto const done = require_snapshot(arena);
-  auto const* row = history_seq(done, ticket.seq);
+  auto const  done = require_snapshot(arena);
+  auto const* row  = history_seq(done, ticket.seq);
   REQUIRE(row != nullptr);
   CHECK(row->outcome == hq::history_outcome::exited);
   CHECK(row->exit_code == 3);
@@ -3033,7 +3038,7 @@ TEST_CASE("queue run: --detach hands its ticket back through a pipe that nothing
   auto const status = ::pclose(pipe);
   auto const got    = parse_ticket(text);
   CHECK(status == 0);
-  auto const snap = require_snapshot(arena);
+  auto const  snap  = require_snapshot(arena);
   auto const* entry = entry_seq(snap, got.seq);
   REQUIRE(entry != nullptr); // still there: the reader did not wait for the command
   submitter.record(*entry);
@@ -3053,7 +3058,7 @@ TEST_CASE("queue run: a detached submitter survives its caller's process group b
   auto const ticket = parse_ticket(submitted.out);
 
   // The whole group of the invoking helper has been killed by now.
-  auto const snap = require_snapshot(arena);
+  auto const  snap  = require_snapshot(arena);
   auto const* entry = entry_seq(snap, ticket.seq);
   REQUIRE(entry != nullptr);
   submitter.record(*entry);
@@ -3081,16 +3086,17 @@ TEST_CASE("queue run: --detach from a process-group leader returns a ticket and 
   spawned            follower;
   detached_submitter submitter;
 
-  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
+  holder =
+      spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
   await_file(holder_started);
   static_cast<void>(await_child_recorded(arena, 1));
 
   auto const submitted = run_detached_from_leader(arena, "leader", sh_command("exit 0"), false);
   INFO("stderr:\n" << submitted.err);
   REQUIRE(submitted.code == 0);
-  auto const ticket = parse_ticket(submitted.out);
-  auto const snap   = require_snapshot(arena);
-  auto const* entry = entry_seq(snap, ticket.seq);
+  auto const  ticket = parse_ticket(submitted.out);
+  auto const  snap   = require_snapshot(arena);
+  auto const* entry  = entry_seq(snap, ticket.seq);
   REQUIRE(entry != nullptr);
   submitter.record(*entry);
   CHECK(submitter.still_mine());
@@ -3179,8 +3185,8 @@ TEST_CASE("queue run: a detached run that cannot create its log file is refused 
     std::ofstream blocker(arena.cpp_root / "queue-logs");
     blocker << "not a directory\n";
   }
-  auto const ran  = arena.cpp_root / "ran";
-  auto const got  = run_queue(arena, "nolog", sh_command("echo x > \"$1\"", {ran.string()}), {"--detach"});
+  auto const ran = arena.cpp_root / "ran";
+  auto const got = run_queue(arena, "nolog", sh_command("echo x > \"$1\"", {ran.string()}), {"--detach"});
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
   CHECK(got.out.empty());
@@ -3205,7 +3211,8 @@ TEST_CASE("queue run: --detach writes notices and the wait-limit refusal to the 
   spawned            holder;
   detached_submitter submitter;
 
-  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
+  holder =
+      spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
   await_file(holder_started);
   static_cast<void>(await_child_recorded(arena, 1));
 

@@ -155,6 +155,27 @@
 /// standard error on the happy path. The `warning: queue:` diagnostics of a
 /// degraded path and the `error: queue:` lines are written either way.
 ///
+/// ## Detached runs
+///
+/// `--detach` (task hq-detach; tech spec 647 § Submitting, With `--detach`)
+/// runs the same submitter in a forked child. The invoked process refuses
+/// what it can on its own (the guard, 126/127, the duration flags) and then
+/// creates a pipe and forks BEFORE the configuration is read or the store is
+/// opened, so no store handle or thread exists at the fork. The child starts
+/// a session, closes every inherited descriptor but the pipe, reads
+/// `/dev/null`, inserts its entry, creates `<agent-db-directory>/queue-logs/
+/// <seq>.log` (`0600`), points standard output and error at it and only then
+/// writes the ticket to the pipe: `ok`, the sequence number and the path, or
+/// `err` and the error text. Until the log exists the child's standard error
+/// is a private buffer, so every refusal it would have printed is the message
+/// the invoked process prints; it exits 125 with it. End of file with nothing
+/// written (the child died) is 125 with "no ticket was issued". A log that
+/// cannot be created, or a ticket that cannot be delivered, takes the entry
+/// back out with `engine::hostqueue::discard_entry` and writes no history row.
+/// The child never returns to the caller's stack: it leaves with `_exit`. The
+/// invoked process prints the sequence number and the path, one per line, and
+/// exits 0. `queue_run_deps::detach_hook` is the test seam for the stages.
+///
 /// ## Vendor and role
 ///
 /// `--vendor` and `--role` (task hq-vendor-role) name the submitting agent.
@@ -206,6 +227,12 @@ export struct queue_run_deps {
       db::connection&, std::int64_t, const engine::hostqueue::enqueue_request&)>;
   /// @brief Rejoins the queue; `engine::hostqueue::rejoin` when empty.
   rejoiner rejoin;
+  /// @brief A test seam for `--detach`, called with a stage name: `before_fork`
+  /// in the invoked process, then `after_setsid`, `after_insert` and
+  /// `before_report` in the detached child. It runs in whichever process
+  /// reaches the stage, so a hook that calls `_exit` makes the child die at
+  /// that point. Empty in production.
+  std::function<void(std::string_view)> detach_hook;
 };
 
 /// @brief `planar-agent queue run -- <command>` with the production

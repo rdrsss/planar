@@ -257,6 +257,51 @@ auto record_child(db::connection& conn, std::int64_t seq, std::int64_t child_pgi
   return true;
 }
 
+auto set_log_path(db::connection& conn, std::int64_t seq, std::string_view log_path) -> std::expected<bool, queue_error> {
+  auto stmt = conn.prepare("update queue_entries set log_path = ? where seq = ? returning seq");
+  if (!stmt) {
+    return sql_failure("prepare set log path", stmt.error());
+  }
+  if (auto bound = stmt->bind_text(1, log_path); !bound) {
+    return sql_failure("bind set log path", bound.error());
+  }
+  if (auto bound = stmt->bind_int64(2, seq); !bound) {
+    return sql_failure("bind set log path", bound.error());
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return sql_failure("set log path", stepped.error());
+  }
+  if (*stepped == db::step_result::done) {
+    return false;
+  }
+  if (auto done = stmt->step(); !done) {
+    return sql_failure("finish set log path", done.error());
+  }
+  return true;
+}
+
+auto discard_entry(db::connection& conn, std::int64_t seq) -> std::expected<bool, queue_error> {
+  auto stmt = conn.prepare("delete from queue_entries where seq = ? returning seq");
+  if (!stmt) {
+    return sql_failure("prepare discard entry", stmt.error());
+  }
+  if (auto bound = stmt->bind_int64(1, seq); !bound) {
+    return sql_failure("bind discard entry", bound.error());
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return sql_failure("discard queue entry", stepped.error());
+  }
+  if (*stepped == db::step_result::done) {
+    return false;
+  }
+  if (auto done = stmt->step(); !done) {
+    return sql_failure("finish discard entry", done.error());
+  }
+  return true;
+}
+
 auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<entry>, queue_error> {
   auto stmt = conn.prepare(std::format("select {} from queue_entries where seq = ?", k_entry_columns));
   if (!stmt) {

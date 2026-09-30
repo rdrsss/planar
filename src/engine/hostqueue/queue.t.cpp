@@ -471,3 +471,38 @@ TEST_CASE("a store ahead of the binary with its compat unchanged accepts an enqu
   // The newer store's own version row is untouched.
   CHECK(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == binary_head + 1);
 }
+
+TEST_CASE("set_log_path names the output file of an entry and refuses a missing one", "[engine][hostqueue][hq-detach]") {
+  scratch_dir scratch;
+  auto        conn  = open_scratch_store(scratch);
+  auto const  seq   = hq::enqueue(conn, full_request()).value();
+  auto const  other = hq::enqueue(conn, full_request()).value();
+
+  auto const set = hq::set_log_path(conn, seq, "/logs/1.log");
+  REQUIRE(set.has_value());
+  CHECK(*set);
+  CHECK(hq::find(conn, seq).value()->log_path == "/logs/1.log");
+  CHECK_FALSE(hq::find(conn, other).value()->log_path.has_value());
+
+  auto const missing = hq::set_log_path(conn, 9'999, "/logs/9999.log");
+  REQUIRE(missing.has_value());
+  CHECK_FALSE(*missing);
+}
+
+TEST_CASE("discard_entry removes an entry and writes no history row", "[engine][hostqueue][hq-detach]") {
+  scratch_dir scratch;
+  auto        conn  = open_scratch_store(scratch);
+  auto const  seq   = hq::enqueue(conn, full_request()).value();
+  auto const  other = hq::enqueue(conn, full_request()).value();
+
+  auto const gone = hq::discard_entry(conn, seq);
+  REQUIRE(gone.has_value());
+  CHECK(*gone);
+  CHECK_FALSE(hq::find(conn, seq).value().has_value());
+  CHECK(hq::find(conn, other).value().has_value());
+  CHECK(hq::list_history(conn).value().empty());
+
+  auto const again = hq::discard_entry(conn, seq);
+  REQUIRE(again.has_value());
+  CHECK_FALSE(*again);
+}

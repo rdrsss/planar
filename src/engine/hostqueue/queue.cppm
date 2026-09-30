@@ -193,6 +193,28 @@ export auto enqueue(db::connection& conn, const enqueue_request& request, std::i
 export auto record_child(db::connection& conn, std::int64_t seq, std::int64_t child_pgid, std::int64_t child_started)
     -> std::expected<bool, queue_error>;
 
+/// @brief Records the output file of a detached run on its entry (tech spec
+/// 647 § Submitting, With `--detach`): the path is `queue-logs/<seq>.log`, so
+/// it is only known once the store has assigned the sequence number.
+/// @param conn An open agent database at or above agent schema version 2.
+/// @param seq The submitter's entry.
+/// @param log_path The output file's path.
+/// @return `true` when the entry exists and now records the path; `false`
+/// when there is no such entry and nothing was written; or the SQLite failure.
+export auto set_log_path(db::connection& conn, std::int64_t seq, std::string_view log_path) -> std::expected<bool, queue_error>;
+
+/// @brief Takes an entry back out of the queue WITHOUT writing a history row.
+/// It is for an entry that was inserted and never became a run, so no history
+/// is owed: a detached submitter that cannot create its log file, or cannot
+/// hand its ticket over, removes the entry it inserted with this (tech spec
+/// 647 § Submitting, With `--detach`, step 4). An entry that has run is ended
+/// with `end_entry`, which writes the one history row.
+/// @param conn An open agent database.
+/// @param seq The entry to remove.
+/// @return `true` when an entry was removed; `false` when there was none; or
+/// the SQLite failure.
+export auto discard_entry(db::connection& conn, std::int64_t seq) -> std::expected<bool, queue_error>;
+
 /// @brief Reads one entry by sequence number.
 /// @param conn An open agent database.
 /// @param seq The sequence number.

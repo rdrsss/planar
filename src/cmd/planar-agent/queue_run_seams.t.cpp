@@ -10,6 +10,7 @@
 // database.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <signal.h>
 #include <unistd.h>
@@ -1226,4 +1227,88 @@ TEST_CASE("queue run: a start failure that is neither 126 nor 127 ends the entry
   CHECK(row->outcome == hq::history_outcome::abandoned);
   CHECK_FALSE(row->exit_code.has_value());
   CHECK(hq::list(*opened).value().empty());
+}
+
+// ---------------------------------------------------------------------------
+// `queue run --detach`: the child's order and its death (plan 1080, task
+// hq-detach; tech spec 647 § Submitting). The black-box cases in
+// queue_run.t.cpp cannot observe the moment before the fork or make the
+// child die on demand; the `detach_hook` seam runs in whichever process
+// reaches each stage, so a hook that calls `_exit` is a child that died there.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Appends one line to `path`.
+void mark(const std::filesystem::path& path, const std::string& line) {
+  std::ofstream out(path, std::ios::app);
+  out << line << '\n';
+}
+
+/// @brief The handler's arguments for a detached `queue run -- true`.
+auto detach_args() -> planar::cliapp::parsed_args {
+  auto args              = queue_args({"/bin/sh", "-c", "exit 0"});
+  args.flags["--detach"] = {"true"};
+  return args;
+}
+
+} // namespace
+
+TEST_CASE("queue run: --detach forks before it opens the store, and the child is a session leader when it starts",
+          "[cmd][agent][queue][hq-detach]") {
+  scratch    sc;
+  auto const marks = sc.root / "marks";
+  auto const store = sc.root / "agent.db";
+
+  agent::handlers::queue_run_deps deps;
+  deps.detach_hook = [&](std::string_view stage) {
+    auto const state = std::format("{} store={} leader={}", stage, std::filesystem::exists(store), ::getsid(0) == ::getpid());
+    mark(marks, state);
+    if (stage == "after_setsid") {
+      ::_exit(3); // The child ends here, before it opens anything.
+    }
+  };
+  fixture fx{sc, store.string()};
+  ::alarm(60); // A parent that waits for a dead child for ever fails the case instead of hanging it.
+  auto const outcome = agent::handlers::queue_run_with(fx.ctx, detach_args(), std::move(deps));
+  ::alarm(0);
+  auto const* status = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  CHECK(status->code == 125);
+
+  std::ifstream            in(marks);
+  std::string              line;
+  std::vector<std::string> lines;
+  while (std::getline(in, line)) {
+    lines.push_back(line);
+  }
+  REQUIRE(lines.size() == 2);
+  // In the invoked process the store does not exist yet, and neither does the
+  // child's session; in the child the store still does not exist, and it now
+  // leads a session of its own.
+  CHECK(lines[0] == "before_fork store=false leader=false");
+  CHECK(lines[1] == "after_setsid store=false leader=true");
+}
+
+TEST_CASE("queue run: --detach whose child dies before it reports exits 125 with no ticket and does not hang",
+          "[cmd][agent][queue][hq-detach]") {
+  auto const stage = GENERATE(as<std::string>{}, "after_setsid", "after_insert", "before_report");
+  INFO("the child dies at " << stage);
+  scratch sc;
+
+  agent::handlers::queue_run_deps deps;
+  deps.detach_hook = [&](std::string_view at) {
+    if (at == stage) {
+      ::_exit(9);
+    }
+  };
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  ::alarm(60);
+  auto const outcome = agent::handlers::queue_run_with(fx.ctx, detach_args(), std::move(deps));
+  ::alarm(0);
+  auto const* status = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  CHECK(status->code == 125);
+  CHECK(fx.out.str().empty());
+  CHECK(fx.err.str() == "error: queue: no ticket was issued: the detached submitter ended before it reported\n");
 }

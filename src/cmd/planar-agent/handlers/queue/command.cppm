@@ -14,11 +14,16 @@ export auto add(CLI::App& root) -> void {
   queue->require_subcommand(0);
 
   // --- queue run ----------------------------------------------------------
-  // The foreground form. `--detach` and `--claim` are declared by the tasks
-  // that implement them (tech spec 647 § CLI surface).
+  // The foreground form and, with `--detach`, the detached form. `--claim` is
+  // declared by the task that implements it (tech spec 647 § CLI surface).
   CLI::App* run = queue->add_subcommand(
       "run", "Run a command in turn, host-wide: wait for the command's turn in the queue, run it in the caller's directory "
              "with the caller's environment, and exit with its status.");
+  run->add_flag("--detach")
+      ->description(
+          "Return a ticket at once and let a detached submitter wait, run the command and record its history: print the "
+          "sequence number and the path of the output file <agent-db-directory>/queue-logs/<seq>.log, one per line, and "
+          "exit 0; exit 125 when no ticket could be issued");
   run->add_option("--timeout")
       ->description(
           "How long the command may run before it is stopped (SIGTERM, then SIGKILL after the grace period): an integer "
