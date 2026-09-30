@@ -26,11 +26,13 @@ other agent on the host.
 Check once per session that the installed Planar has the queue:
 
 ```
-planar-agent queue --help
+planar-agent queue rule >/dev/null
 ```
 
 If it exits 0, use the queue as described below. If it exits with any other
-status, follow "If Planar has no queue" below.
+status, follow "If Planar has no queue" below. Do not use `--help` for this
+check: an older Planar answers an unknown command's `--help` with its general
+help and exits 0, so the check would pass when there is no queue.
 
 ### Submit, then poll
 
@@ -53,6 +55,12 @@ not guess them.
 On success the command prints two lines and exits 0: the ticket's sequence
 number, then the path of the output file. Keep both. The command has not
 run yet.
+
+A non-zero exit from the submit means no ticket was issued and nothing was
+queued. With 126 or 127 the command could not be executed or was not found:
+fix the command line. With 1 or 2 the invocation is wrong, the program is a
+model launcher, or a duration is invalid: fix the invocation. With 125 the
+queue failed: stop and report, as in "If the queue refuses" below.
 
 Then ask for the ticket's state every 30 seconds:
 
@@ -92,7 +100,7 @@ Use it, not a guess from other output.
 | `cancelled` | Someone cancelled the entry; `cancelled_by` says who | Do not resubmit unless told to. Report it |
 | `wait_timeout` | The `--wait-timeout` you set ran out before the command's turn | Report it, or submit again with a longer limit |
 | `not_started` | The command could not be started at its turn: not found (127) or not executable (126) | Fix the command line and submit again |
-| `abandoned` | The submitter died before the command ran. The command did not run | Submit again once. If it is abandoned again, report it |
+| `abandoned` | The entry was removed before it finished: its submitter died, or another process removed it. The command may not have run | Read the output file to see whether it ran, then submit again once. If it is abandoned again, report it |
 
 An entry that has not ended and shows `live: false` has lost its submitter.
 Poll again. If it is still there after two polls, report it.
@@ -121,20 +129,29 @@ sequence number and the outcome, and `queue status <seq>` gives the record.
 
 ### If the queue refuses (exit 125): stop and report
 
-A queue command that exits 125 means the queue exists and cannot be used:
-its store cannot be opened, the wait limit was reached, the entry was
-cancelled, or the queue failed inside. The command did not run.
+A queue command that exits 125 means the queue exists and failed: its store
+cannot be opened, the wait limit was reached, the entry was cancelled, or the
+queue failed inside. Usually the command did not run. It may have, if a
+running entry was cancelled, and a command can itself exit 125. If you passed
+`--notices`, the last line on standard error says whether the queue or the
+command produced the 125. `queue status <seq>` gives the record.
 
-Stop. Report the `error:` line to the operator, word for word, and say which
-command you were trying to run. The command must not be run directly. Do not
-retry in a loop, and do not look for another way to run the build. The
-operator decided that an unreachable queue is refused, not bypassed.
+When a submit exits 125, or the queue cannot be used (its store cannot be
+opened, or it failed inside), stop. Report the `error:` line to the operator,
+word for word, and say which command you were trying to run. The command must
+not be run directly. Do not retry in a loop, and do not look for another way
+to run the build. The operator decided that an unreachable queue is refused,
+not bypassed.
+
+An entry that ended `cancelled` or `wait_timeout` is not this case. It is an
+outcome of a ticket you hold, and the table above says what to do. The
+command is still never run directly.
 
 ### If Planar has no queue: run directly and say so
 
-Use this only when `planar-agent queue --help` exits with a non-zero status.
-That means the installed Planar is older than the queue, or `planar-agent` is
-not installed, and there is no queue to use.
+Use this only when `planar-agent queue rule >/dev/null` exits with a non-zero
+status. That means the installed Planar is older than the queue, or
+`planar-agent` is not installed, and there is no queue to use.
 
 Run the build or test command directly. Then tell the operator that Planar
 needs upgrading so that builds and tests can go through the queue.
@@ -143,9 +160,9 @@ needs upgrading so that builds and tests can go through the queue.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `planar-agent queue --help` exits with a non-zero status | There is no queue | Run the command directly and tell the operator Planar needs upgrading |
+| `planar-agent queue rule >/dev/null` exits with a non-zero status | There is no queue | Run the command directly and tell the operator Planar needs upgrading |
 | Any queue command exits 125 | The queue exists and refused | Stop and report. Do not run the command directly |
 
-The first row is a fact about the installed Planar, checked once with `--help`.
+The first row is a fact about the installed Planar, checked once with `queue rule`.
 The second is an answer from a queue that is there. Never treat the second as
 the first.

@@ -6993,7 +6993,8 @@ The text is one authored file, `src/engine/hostqueue/queue-rule.md`, embedded in
 - the instruction to pass `--vendor` and `--role`;
 - what to do on each outcome `queue status` reports;
 - the instruction to stop and report when a queue command exits **125**, and that the command must not then be run directly;
-- the check for a Planar without the queue (`planar-agent queue --help` exits non-zero), the fallback of running the command directly and telling the operator that Planar needs upgrading, and a table that sets this apart from exit 125.
+- what a non-zero exit from the detached submit means (no ticket was issued) and the route for each code;
+- the check for a Planar without the queue (`planar-agent queue rule >/dev/null` exits non-zero), the fallback of running the command directly and telling the operator that Planar needs upgrading, and a table that sets this apart from exit 125. The check is `queue rule`, not `--help`: an older Planar answers an unknown command's `--help` with its general help and exits 0, so a `--help` check would pass where there is no queue. `queue rule` exits non-zero there and opens no database.
 
 `queue rule` **opens no database**: not `planar.db` (the `queue` domain is exempt from the main database check) and not the agent database. It reads no environment variable and no configuration file, so it prints the same text with `PLANAR_DB` and `PLANAR_AGENT_DB` unusable and with `HOME` unset, and it creates nothing on disk. It is the one queue verb that needs no store.
 

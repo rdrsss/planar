@@ -75,10 +75,21 @@ auto section(std::string_view text, std::string_view key) -> std::string {
   return {};
 }
 
+/// @brief Lower-cased text with every run of white space collapsed to one
+/// space, so a check does not depend on where the text wraps.
 auto lower(std::string_view text) -> std::string {
-  std::string out{text};
-  for (auto& c : out) {
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  std::string out;
+  bool        space = false;
+  for (auto const c : text) {
+    if (std::isspace(static_cast<unsigned char>(c)) != 0) {
+      space = !out.empty();
+      continue;
+    }
+    if (space) {
+      out.push_back(' ');
+      space = false;
+    }
+    out.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
   }
   return out;
 }
@@ -268,6 +279,14 @@ TEST_CASE("the rule text carries every element an agent needs", "[cmd][agent][qu
     CHECK(contains(text, "output file"));
   }
 
+  SECTION("what a non-zero exit from the submit means") {
+    // No ticket exists then, and each code has its own route.
+    CHECK(contains(text, "a non-zero exit from the submit means no ticket was issued"));
+    CHECK(contains(text, "126 or 127"));
+    CHECK(contains(text, "1 or 2"));
+    CHECK(contains(text, "with 125"));
+  }
+
   SECTION("the instruction to pass vendor and role") {
     CHECK(contains(source, "--vendor <vendor>"));
     CHECK(contains(source, "--role <role>"));
@@ -280,6 +299,9 @@ TEST_CASE("the rule text carries every element an agent needs", "[cmd][agent][qu
       // A table row names it; the bare word also appears in prose.
       CHECK(contains(source, std::format("| `{}`", outcome)));
     }
+    // An abandoned entry may have started: the text must not say it never ran.
+    CHECK(contains(text, "| `abandoned` | the entry was removed before it finished"));
+    CHECK(contains(text, "may not have run"));
   }
 
   SECTION("the exit codes of the foreground form") {
@@ -301,20 +323,84 @@ TEST_CASE("the rule text cannot be read as permission to bypass the queue on exi
 
   auto const fallback = lower(section(source, "has no queue"));
   REQUIRE_FALSE(fallback.empty());
-  // The fallback's only trigger is the `--help` check, and it does not name 125.
-  CHECK(contains(fallback, "planar-agent queue --help"));
+  // The fallback's only trigger is the `queue rule` check, and it does not name 125.
+  CHECK(contains(fallback, "planar-agent queue rule >/dev/null"));
   CHECK(contains(fallback, "non-zero"));
   CHECK(contains(fallback, "needs upgrading"));
   CHECK_FALSE(contains(fallback, "125"));
 
-  // The refusal names no `--help` check, so it cannot be read as the fallback.
+  // The refusal names no `queue rule` check, so it cannot be read as the fallback.
+  CHECK_FALSE(contains(refusal, "queue rule"));
   CHECK_FALSE(contains(refusal, "--help"));
+  // It covers a command that itself exits 125, and tells how to tell the two apart.
+  CHECK(contains(refusal, "--notices"));
+  // A wait limit or a cancellation is an outcome of a ticket, not this case.
+  CHECK(contains(refusal, "`wait_timeout`"));
+
+  // The check is never `--help`: an older Planar answers an unknown command's
+  // `--help` with its general help and exits 0.
+  for (auto const& command : shown_commands(source)) {
+    INFO("command: " << command);
+    CHECK(command != "planar-agent queue --help");
+  }
 
   // The two are also set side by side in one labelled table.
   auto const confused = lower(section(source, "Do not confuse"));
   REQUIRE_FALSE(confused.empty());
   CHECK(contains(confused, "125"));
-  CHECK(contains(confused, "--help"));
+  CHECK(contains(confused, "queue rule"));
+}
+
+TEST_CASE("the no-queue check discriminates: it passes on this binary and fails where the verb is unknown",
+          "[cmd][agent][queue][rule]") {
+  // The rule's check is `planar-agent queue rule >/dev/null`. It is sound only
+  // if an unknown domain followed by `rule` fails, and if `--help` could not
+  // serve instead. An older Planar is modelled by an unknown domain: to it,
+  // `queue` is exactly as unknown as `nosuch-domain`.
+  auto const arena = parity::make_arena("queue-rule-check");
+  auto const env   = parity::pinned_env(arena.cpp_root);
+
+  auto const present = run_rule(arena, "present", env, {"queue", "rule"});
+  CHECK(present.code == 0);
+
+  auto const absent = run_rule(arena, "absent", env, {"nosuch-domain", "rule"});
+  INFO("stderr:\n" << absent.err);
+  CHECK(absent.code != 0);
+  CHECK(absent.out.empty());
+
+  // The check the TEXT gives is the one held to that: take the command from
+  // "Before the first submission", run it as written, then run it with the
+  // `queue` domain made unknown, which is what an older Planar is to it.
+  auto const before = section(rule_source(), "Before the first submission");
+  REQUIRE_FALSE(before.empty());
+  auto const commands = shown_commands(before);
+  REQUIRE(commands.size() == 1);
+  std::vector<std::string> as_written;
+  for (auto const& word : words(commands.front())) {
+    if (word == "planar-agent") {
+      continue;
+    }
+    if (word.starts_with(">")) {
+      break; // the redirection to /dev/null, not an argument
+    }
+    as_written.push_back(word);
+  }
+  REQUIRE(as_written.size() >= 2);
+  REQUIRE(as_written.front() == "queue");
+  auto const checked = run_rule(arena, "as-written", env, as_written);
+  CHECK(checked.code == 0);
+
+  auto old_planar    = as_written;
+  old_planar.front() = "nosuch-domain";
+  auto const fails   = run_rule(arena, "as-written-old", env, old_planar);
+  INFO("the check as written, on a Planar that does not know `queue`: exit " << fails.code);
+  CHECK(fails.code != 0);
+
+  // The reason `--help` is not the check: an unknown command's `--help` is
+  // answered with the general help and exit 0, so it would pass with no queue.
+  auto const help = run_rule(arena, "help", env, {"nosuch-domain", "--help"});
+  CHECK(help.code == 0);
+  CHECK_FALSE(help.out.empty());
 }
 
 TEST_CASE("every planar-agent command the rule shows exists, with the flags it uses", "[cmd][agent][queue][rule]") {
