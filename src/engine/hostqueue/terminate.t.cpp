@@ -1250,3 +1250,135 @@ TEST_CASE("terminate: cancel_waiting refuses a connection that is already in a t
   REQUIRE(conn.execute("rollback;").has_value());
   CHECK(exists(conn, seq));
 }
+
+// ---------------------------------------------------------------------------
+// Task 7072: EPERM on a group that holds only exited, unreaped processes
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// @brief A signaller that refuses every signal the way the kernel refuses a group it may not signal.
+auto refusing_signaller(std::shared_ptr<int> calls) -> hq::group_signaller {
+  return [calls](std::int64_t, int) -> std::expected<void, pid_ns::error> {
+    ++*calls;
+    return std::unexpected(pid_ns::error::not_permitted);
+  };
+}
+
+} // namespace
+
+TEST_CASE("terminate: EPERM on a group that only holds zombies is an empty group, not a failed signal",
+          "[engine][hostqueue][hq-eperm-zombie-group]") {
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add_group(9'300);
+  auto const seq = running_entry(conn, 931, clock, host.probe(), 9'300);
+  auto const e   = entry_of(conn, seq);
+
+  auto       probe = host.probe();
+  auto const calls = std::make_shared<int>(0);
+
+  SECTION("the probe verified that every member is a zombie") {
+    probe.group_only_zombies = [](std::int64_t pgid) -> std::expected<bool, pid_ns::error> { return pgid == 9'300; };
+    auto const attempt       = hq::signal_child_group(e, hq::stop_signal::kill, k_host, probe, refusing_signaller(calls));
+    CHECK(*calls == 1); // the signal was still tried; only its refusal is reinterpreted
+    CHECK(attempt.outcome == hq::signal_outcome::group_empty);
+    CHECK_FALSE(attempt.error.has_value());
+  }
+  SECTION("the probe says a member is live: the refusal is real") {
+    probe.group_only_zombies = [](std::int64_t) -> std::expected<bool, pid_ns::error> { return false; };
+    auto const attempt       = hq::signal_child_group(e, hq::stop_signal::kill, k_host, probe, refusing_signaller(calls));
+    CHECK(attempt.outcome == hq::signal_outcome::failed);
+    REQUIRE(attempt.error.has_value());
+    CHECK(*attempt.error == pid_ns::error::not_permitted);
+  }
+  SECTION("the probe cannot tell: the refusal is real") {
+    probe.group_only_zombies = [](std::int64_t) -> std::expected<bool, pid_ns::error> {
+      return std::unexpected(pid_ns::error::query_failed);
+    };
+    auto const attempt = hq::signal_child_group(e, hq::stop_signal::kill, k_host, probe, refusing_signaller(calls));
+    CHECK(attempt.outcome == hq::signal_outcome::failed);
+    REQUIRE(attempt.error.has_value());
+    CHECK(*attempt.error == pid_ns::error::not_permitted);
+  }
+  SECTION("the probe has no such question (a fake that leaves it unset): the refusal is real") {
+    REQUIRE_FALSE(static_cast<bool>(probe.group_only_zombies));
+    auto const attempt = hq::signal_child_group(e, hq::stop_signal::kill, k_host, probe, refusing_signaller(calls));
+    CHECK(attempt.outcome == hq::signal_outcome::failed);
+  }
+  SECTION("a failure that is not a refusal is never reinterpreted, whatever the probe says") {
+    probe.group_only_zombies = [](std::int64_t) -> std::expected<bool, pid_ns::error> { return true; };
+    auto const attempt       = hq::signal_child_group(
+        e, hq::stop_signal::kill, k_host, probe,
+        [](std::int64_t, int) -> std::expected<void, pid_ns::error> { return std::unexpected(pid_ns::error::query_failed); });
+    CHECK(attempt.outcome == hq::signal_outcome::failed);
+  }
+}
+
+TEST_CASE("terminate: the kill an advance sends to a group of zombies is not reported as failed",
+          "[engine][hostqueue][hq-eperm-zombie-group]") {
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add_group(9'310);
+  auto const seq = running_entry(conn, 932, clock, host.probe(), 9'310);
+
+  auto probe               = host.probe();
+  probe.group_only_zombies = [](std::int64_t) -> std::expected<bool, pid_ns::error> { return true; };
+  auto const calls         = std::make_shared<int>(0);
+  auto const signaller     = refusing_signaller(calls);
+
+  clock.mono += 1'000;
+  REQUIRE(begin(conn, timeout_request(seq), clock, probe, signaller).status == hq::begin_status::marked);
+  clock.mono += k_grace + 1;
+  auto const advanced = advance(conn, advance_request_for(), clock, probe, signaller);
+  REQUIRE(advanced.kills.size() == 1);
+  CHECK(advanced.kills.front().outcome != hq::signal_outcome::failed);
+  CHECK_FALSE(advanced.kills.front().error.has_value());
+}
+
+#if defined(__APPLE__)
+TEST_CASE("terminate: a real group whose leader exited unreaped is empty enough on macOS, and a live one still is not",
+          "[engine][hostqueue][hq-eperm-zombie-group]") {
+  // The EPERM comes from the kernel here, not from a fake signaller.
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+
+  ::pid_t const forked = ::fork();
+  REQUIRE(forked >= 0);
+  if (forked == 0) {
+    ::setpgid(0, 0);
+    ::_exit(0);
+  }
+  ::setpgid(forked, forked);
+  auto const pgid = static_cast<std::int64_t>(forked);
+
+  auto const probe   = hq::system_process_probe();
+  auto const seq     = enqueue_one(conn, request_for(::getpid(), clock));
+  auto const started = hq::poll(conn, poll_request_for(seq, 64), clock, probe);
+  REQUIRE(started.has_value());
+  record_child_group(conn, seq, pgid, std::nullopt);
+  auto const e = entry_of(conn, seq);
+
+  // Wait, bounded, for the exit to become a zombie the kernel refuses to signal.
+  hq::signal_attempt attempt{};
+  auto const         deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  do {
+    attempt = hq::signal_child_group(e, hq::stop_signal::kill, k_host, probe, hq::system_group_signaller());
+    if (attempt.outcome != hq::signal_outcome::sent) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  } while (std::chrono::steady_clock::now() < deadline);
+  int status = 0;
+  while (::waitpid(forked, &status, 0) < 0 && errno == EINTR) {
+  }
+  INFO("outcome " << static_cast<int>(attempt.outcome));
+  CHECK(attempt.outcome == hq::signal_outcome::group_empty);
+  CHECK_FALSE(attempt.error.has_value());
+}
+#endif

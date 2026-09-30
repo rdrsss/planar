@@ -257,6 +257,13 @@ export struct queue_run_deps {
       db::connection&, std::int64_t, const engine::hostqueue::enqueue_request&)>;
   /// @brief Rejoins the queue; `engine::hostqueue::rejoin` when empty.
   rejoiner rejoin;
+  /// @brief Records the child's process group on the entry: what
+  /// `engine::hostqueue::record_child` does with its arguments. A test
+  /// replaces it to make the store refuse the record.
+  using child_recorder = std::function<std::expected<bool, engine::hostqueue::queue_error>(
+      db::connection&, std::int64_t seq, std::int64_t child_pgid, std::int64_t child_started)>;
+  /// @brief Records the child group; `engine::hostqueue::record_child` when empty.
+  child_recorder record_child;
   /// @brief A test seam for `--detach`, called with a stage name: `before_fork`
   /// in the invoked process, then `after_setsid`, `after_insert` and
   /// `before_report` in the detached child. It runs in whichever process

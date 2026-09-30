@@ -69,7 +69,12 @@ auto system_process_probe() -> process_probe {
       .process_exists     = [](std::int64_t pid) { return identity::process_exists(pid); },
       .process_start_time = [](std::int64_t pid) { return identity::process_start_time(pid); },
       .group_has_members  = [](std::int64_t pgid) { return identity::group_has_members(pgid); },
+      .group_only_zombies = [](std::int64_t pgid) { return identity::group_only_zombies(pgid); },
   };
+}
+
+auto group_has_only_zombies(const process_probe& /*probe*/, std::int64_t /*pgid*/) -> bool {
+  return false;
 }
 
 auto is_fresh(std::int64_t refreshed_mono, const liveness_context& ctx) -> bool {

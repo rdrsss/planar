@@ -938,6 +938,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   auto const          signaller = deps.signaller ? deps.signaller : hq::system_group_signaller();
   auto const          rejoin_fn = deps.rejoin ? deps.rejoin : queue_run_deps::rejoiner{hq::rejoin};
   auto const          nested_fn = deps.enqueue_nested ? deps.enqueue_nested : queue_run_deps::nested_enqueuer{hq::enqueue_nested};
+  auto const          record_fn = deps.record_child ? deps.record_child : queue_run_deps::child_recorder{hq::record_child};
 
   // Configuration first: an unusable configuration must refuse before the
   // store is touched. The path is the context's environment's, exactly as
@@ -1326,7 +1327,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   // Record the child group on the entry, so that the entry stays live while
   // the group has members even if this process is killed. A store failure is
   // reported and supervision goes on.
-  if (auto recorded = hq::record_child(conn, seq, child.pgid, static_cast<std::int64_t>(child.started)); !recorded) {
+  if (auto recorded = record_fn(conn, seq, child.pgid, static_cast<std::int64_t>(child.started)); !recorded) {
     report.once(std::format("warning: queue: cannot record the command's process group: {}", recorded.error().message));
   }
 
@@ -1428,7 +1429,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     // The child was just observed running, so it is not yet reaped and its
     // group id cannot have been reused.
     for (auto const sig : relay->drain()) {
-      if (auto sent = runner::signal(child, sig); !sent && sent.error() != runner::error::no_such_process) {
+      if (auto sent = signaller(child.pgid, sig); !sent && sent.error() != ident::error::no_such_process) {
         report.once(std::format("warning: queue: {} to the command's process group failed", signal_name(sig)));
       }
     }

@@ -178,6 +178,10 @@ auto group_has_members(std::int64_t pgid) -> std::expected<bool, error> {
   return exists_from_kill(::kill(static_cast<::pid_t>(-pgid), 0));
 }
 
+auto group_only_zombies(std::int64_t /*pgid*/) -> std::expected<bool, error> {
+  return false;
+}
+
 auto signal_group(std::int64_t pgid, int sig) -> std::expected<void, error> {
   if (!is_group(pgid)) {
     return std::unexpected{error::no_such_process};
