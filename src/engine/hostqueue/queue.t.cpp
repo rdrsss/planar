@@ -328,6 +328,11 @@ TEST_CASE("agent migration 00002 rolls back and re-applies without losing schema
   REQUIRE(second.version_ == 2);
 
   auto const before = schema_dump(conn);
+  // A down runs against a store at its own version, so the migrations above
+  // 00002 (00003 added the limit columns) are rolled back first, newest first.
+  for (auto i = chain.size(); i > 2; --i) {
+    REQUIRE(conn.execute(chain[i - 1].down_sql_).has_value());
+  }
   REQUIRE(conn.execute(second.down_sql_).has_value());
   CHECK_FALSE(has_table(conn, "queue_entries"));
   CHECK_FALSE(has_table(conn, "queue_history"));
@@ -505,4 +510,43 @@ TEST_CASE("discard_entry removes an entry and writes no history row", "[engine][
   auto const again = hq::discard_entry(conn, seq);
   REQUIRE(again.has_value());
   CHECK_FALSE(*again);
+}
+
+TEST_CASE("enqueue records the wait limit it is given, and none when there is none",
+          "[engine][hostqueue][hq-enqueue][hq-queue-limit-columns]") {
+  // Task hq-queue-limit-columns: `queue status` reports `wait_limit_ms`, so
+  // enqueue stores the limit next to the deadline computed from it. The run
+  // limit is recorded at the start, so a fresh entry has none.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto limited               = full_request();
+  limited.wait_deadline_mono = limited.refreshed_mono + 600'000;
+  limited.wait_limit_ms      = 600'000;
+  auto const with_limit      = hq::enqueue(conn, limited);
+  REQUIRE(with_limit.has_value());
+
+  auto unlimited               = full_request();
+  unlimited.wait_deadline_mono = std::nullopt;
+  unlimited.wait_limit_ms      = std::nullopt;
+  auto const without           = hq::enqueue(conn, unlimited);
+  REQUIRE(without.has_value());
+
+  auto const first = hq::find(conn, *with_limit);
+  REQUIRE((first.has_value() && first->has_value()));
+  CHECK((*first)->wait_limit_ms == 600'000);
+  CHECK((*first)->wait_deadline_mono == limited.refreshed_mono + 600'000);
+  CHECK_FALSE((*first)->run_limit_ms.has_value());
+
+  auto const second = hq::find(conn, *without);
+  REQUIRE((second.has_value() && second->has_value()));
+  CHECK_FALSE((*second)->wait_limit_ms.has_value());
+  CHECK_FALSE((*second)->run_limit_ms.has_value());
+
+  // `list` reads the same columns as `find`.
+  auto const all = hq::list(conn);
+  REQUIRE(all.has_value());
+  REQUIRE(all->size() == 2);
+  CHECK(all->front().wait_limit_ms == 600'000);
+  CHECK_FALSE(all->back().wait_limit_ms.has_value());
 }

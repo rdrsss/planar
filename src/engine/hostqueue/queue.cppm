@@ -87,6 +87,7 @@ export struct enqueue_request {
   std::int64_t                enqueued_at    = 0; ///< Wall clock at submission, ms since the epoch; display only.
   std::int64_t                refreshed_mono = 0; ///< Monotonic clock at submission, ms; the freshness baseline.
   std::optional<std::int64_t> wait_deadline_mono; ///< Monotonic ms after which waiting gives up, when limited.
+  std::optional<std::int64_t> wait_limit_ms;      ///< The wait limit `wait_deadline_mono` was computed from, ms, when limited.
   std::optional<std::int64_t> parent_seq;         ///< The enclosing running entry, for a nested run.
 };
 
@@ -115,6 +116,8 @@ export struct entry {
   std::int64_t                refreshed_mono = 0;           ///< Monotonic ms of the last refresh.
   std::optional<std::int64_t> deadline_mono;                ///< Monotonic ms after which a running command is stopped.
   std::optional<std::int64_t> wait_deadline_mono;           ///< Monotonic ms after which waiting gives up.
+  std::optional<std::int64_t> run_limit_ms;                 ///< The run limit `deadline_mono` was computed from, once started.
+  std::optional<std::int64_t> wait_limit_ms;                ///< The wait limit it was submitted with, when limited.
 };
 
 /// @brief Encodes an argument vector as the JSON array of strings the
@@ -136,7 +139,8 @@ export auto decode_argv(std::string_view text) -> std::expected<std::vector<std:
 /// state `waiting`, or `running` when `request.parent_seq` is set (a nested
 /// run never waits for a slot). The number is higher than that of every entry
 /// ever inserted into this store, deleted or not.
-/// @param conn An open agent database at or above agent schema version 2.
+/// @param conn An open agent database at or above agent schema version 3
+/// (the version that added `wait_limit_ms`).
 /// @param request What to record.
 /// @return The assigned sequence number, or the SQLite failure.
 export auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error>;
@@ -168,7 +172,7 @@ export struct enqueued {
 /// the enqueue, because the entry is already committed and the caller's
 /// command must still run. The queue verbs call this form with the
 /// configured `[queue] history_days`.
-/// @param conn An open agent database at or above agent schema version 2.
+/// @param conn An open agent database at or above agent schema version 3.
 /// @param request What to record; `enqueued_at` is the prune's "now".
 /// @param history_days The retention in days; must not be negative.
 /// @return The sequence number and the prune report; `invalid_request` for a

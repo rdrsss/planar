@@ -34,21 +34,23 @@ auto describe_entry(db::connection& conn, std::int64_t asked, const entry& e, co
   }
 
   queue_status status;
-  status.seq         = asked;
-  status.state       = e.state == entry_state::waiting ? status_state::waiting : status_state::running;
-  status.nested      = e.parent_seq.has_value();
-  status.parent_seq  = e.parent_seq;
-  status.cwd         = e.cwd;
-  status.argv        = e.argv;
-  status.label       = e.label;
-  status.vendor      = e.vendor;
-  status.role        = e.role;
-  status.log_path    = e.log_path;
-  status.enqueued_at = e.enqueued_at;
-  status.started_at  = e.started_at;
-  status.terminating = e.terminate_reason;
-  status.slots       = settings->slots;
-  status.grace_ms    = settings->grace_ms;
+  status.seq           = asked;
+  status.state         = e.state == entry_state::waiting ? status_state::waiting : status_state::running;
+  status.nested        = e.parent_seq.has_value();
+  status.parent_seq    = e.parent_seq;
+  status.cwd           = e.cwd;
+  status.argv          = e.argv;
+  status.label         = e.label;
+  status.vendor        = e.vendor;
+  status.role          = e.role;
+  status.log_path      = e.log_path;
+  status.enqueued_at   = e.enqueued_at;
+  status.started_at    = e.started_at;
+  status.terminating   = e.terminate_reason;
+  status.run_limit_ms  = e.run_limit_ms;
+  status.wait_limit_ms = e.wait_limit_ms;
+  status.slots         = settings->slots;
+  status.grace_ms      = settings->grace_ms;
 
   if (e.cancelled_by.has_value()) {
     auto who = decode_canceller(*e.cancelled_by);
@@ -92,25 +94,27 @@ auto describe_entry(db::connection& conn, std::int64_t asked, const entry& e, co
 /// @brief The description of an entry that has ended.
 auto describe_history(std::int64_t asked, const history_row& row) -> queue_status {
   queue_status status;
-  status.seq          = asked;
-  status.state        = status_state::ended;
-  status.outcome      = row.outcome;
-  status.exit_code    = row.exit_code;
-  status.signal       = row.signal;
-  status.cancelled_by = row.cancelled_by;
-  status.nested       = row.nested;
-  status.parent_seq   = row.parent_seq;
-  status.cwd          = row.cwd;
-  status.argv         = row.argv;
-  status.label        = row.label;
-  status.vendor       = row.vendor;
-  status.role         = row.role;
-  status.log_path     = row.log_path;
-  status.enqueued_at  = row.enqueued_at;
-  status.started_at   = row.started_at;
-  status.ended_at     = row.ended_at;
-  status.waited_ms    = row.waited_ms;
-  status.ran_ms       = row.ran_ms;
+  status.seq           = asked;
+  status.state         = status_state::ended;
+  status.outcome       = row.outcome;
+  status.exit_code     = row.exit_code;
+  status.signal        = row.signal;
+  status.cancelled_by  = row.cancelled_by;
+  status.nested        = row.nested;
+  status.parent_seq    = row.parent_seq;
+  status.cwd           = row.cwd;
+  status.argv          = row.argv;
+  status.label         = row.label;
+  status.vendor        = row.vendor;
+  status.role          = row.role;
+  status.log_path      = row.log_path;
+  status.enqueued_at   = row.enqueued_at;
+  status.started_at    = row.started_at;
+  status.ended_at      = row.ended_at;
+  status.waited_ms     = row.waited_ms;
+  status.ran_ms        = row.ran_ms;
+  status.run_limit_ms  = row.run_limit_ms;
+  status.wait_limit_ms = row.wait_limit_ms;
   return status;
 }
 

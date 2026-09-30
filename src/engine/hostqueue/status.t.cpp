@@ -232,3 +232,72 @@ TEST_CASE("query_status: a read-only connection answers, and refuses every write
   REQUIRE((still.has_value() && still->has_value()));
   CHECK((*still)->refreshed_mono == k_now_mono);
 }
+
+TEST_CASE("query_status: reports the limits the entry recorded, from the entry and then from its history row",
+          "[engine][hostqueue][hq-queue-status][hq-queue-limit-columns]") {
+  // Task hq-queue-limit-columns. The wait limit is recorded at enqueue, the
+  // run limit when the entry starts (here by a real poll), and ending the
+  // entry copies both into the row the answer then comes from.
+  scratch_dir scratch;
+  auto        conn           = open_scratch_store(scratch);
+  auto        limited        = request_for("limited");
+  limited.wait_deadline_mono = k_now_mono + 600'000;
+  limited.wait_limit_ms      = 600'000;
+  auto const seq             = enqueue_ok(conn, limited);
+  auto const unlimited       = enqueue_ok(conn, request_for("unlimited"));
+
+  auto const waiting = hq::query_status(conn, seq, status_request(fixed_probe(true)));
+  REQUIRE((waiting.has_value() && waiting->has_value()));
+  CHECK((*waiting)->wait_limit_ms == 600'000);
+  CHECK_FALSE((*waiting)->run_limit_ms.has_value());
+  auto const none = hq::query_status(conn, unlimited, status_request(fixed_probe(true)));
+  REQUIRE((none.has_value() && none->has_value()));
+  CHECK_FALSE((*none)->wait_limit_ms.has_value());
+
+  ident::system_clock clock;
+  auto const          polled = hq::poll(
+      conn, hq::poll_request{.seq = seq, .host_id = "host-a", .slots = 1, .stale_after_ms = 30'000, .run_limit_ms = 300'000},
+      clock, fixed_probe(true));
+  REQUIRE(polled.has_value());
+  REQUIRE(polled->started);
+  auto const running = hq::query_status(conn, seq, status_request(fixed_probe(true)));
+  REQUIRE((running.has_value() && running->has_value()));
+  CHECK((*running)->state == hq::status_state::running);
+  CHECK((*running)->run_limit_ms == 300'000);
+  CHECK((*running)->wait_limit_ms == 600'000);
+
+  REQUIRE(
+      hq::end_entry(conn, seq, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_now_wall})
+          .has_value());
+  auto const ended = hq::query_status(conn, seq, status_request(fixed_probe(true)));
+  REQUIRE((ended.has_value() && ended->has_value()));
+  CHECK((*ended)->state == hq::status_state::ended);
+  CHECK((*ended)->run_limit_ms == 300'000);
+  CHECK((*ended)->wait_limit_ms == 600'000);
+}
+
+TEST_CASE("query_status: settings without a slot count or grace period report both as unknown and still judge liveness",
+          "[engine][hostqueue][hq-queue-status][hq-status-degrade-config]") {
+  // Task hq-status-degrade-config: the degraded settings `queue status`
+  // supplies for an unusable configuration. Liveness uses the window given.
+  scratch_dir scratch;
+  auto        conn  = open_scratch_store(scratch);
+  auto const  fresh = enqueue_ok(conn, request_for("fresh", k_now_mono - 20'000));
+
+  auto request     = status_request(fixed_probe(true));
+  request.settings = []() -> std::expected<hq::status_settings, std::string> {
+    return hq::status_settings{.slots = std::nullopt, .stale_after_ms = 30'000, .grace_ms = std::nullopt};
+  };
+  auto const answer = hq::query_status(conn, fresh, request);
+  REQUIRE((answer.has_value() && answer->has_value()));
+  CHECK_FALSE((*answer)->slots.has_value());
+  CHECK_FALSE((*answer)->grace_ms.has_value());
+  CHECK((*answer)->live == std::optional<bool>{true});
+
+  request.settings = []() -> std::expected<hq::status_settings, std::string> {
+    return hq::status_settings{.slots = std::nullopt, .stale_after_ms = 10'000, .grace_ms = std::nullopt};
+  };
+  auto const tighter = hq::query_status(conn, fresh, request);
+  REQUIRE((tighter.has_value() && tighter->has_value()));
+  CHECK((*tighter)->live == std::optional<bool>{false});
+}

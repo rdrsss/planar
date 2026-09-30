@@ -44,17 +44,19 @@ auto refused(nested_refusal why, std::int64_t now) -> nested_result {
   return nested_result{.status = nested_status::queue_normally, .refusal = why, .now_mono = now};
 }
 
-/// @brief Sets the start time and deadline of the just-inserted entry `seq`.
-auto set_started(db::connection& conn, std::int64_t seq, std::int64_t started_at, std::int64_t deadline_mono)
-    -> std::expected<void, queue_error> {
-  auto stmt = conn.prepare("update queue_entries set started_at = ?, deadline_mono = ? where seq = ?");
+/// @brief Sets the start time, the deadline and the run limit the deadline
+/// was computed from on the just-inserted entry `seq`.
+auto set_started(db::connection& conn, std::int64_t seq, std::int64_t started_at, std::int64_t deadline_mono,
+                 std::int64_t run_limit_ms) -> std::expected<void, queue_error> {
+  auto stmt = conn.prepare("update queue_entries set started_at = ?, deadline_mono = ?, run_limit_ms = ? where seq = ?");
   if (!stmt) {
     return sql_failure("prepare nested start", stmt.error());
   }
-  std::array<std::expected<void, db::db_error>, 3> const bound{{
+  std::array<std::expected<void, db::db_error>, 4> const bound{{
       stmt->bind_int64(1, started_at),
       stmt->bind_int64(2, deadline_mono),
-      stmt->bind_int64(3, seq),
+      stmt->bind_int64(3, run_limit_ms),
+      stmt->bind_int64(4, seq),
   }};
   for (auto const& result : bound) {
     if (!result) {
@@ -132,7 +134,7 @@ auto enqueue_nested(db::connection& conn, std::int64_t parent_seq, const enqueue
   }
   auto const started_at = clock.wall_ms();
   auto const deadline   = saturating_add(*now, limits.run_limit_ms);
-  if (auto started = set_started(conn, *seq, started_at, deadline); !started) {
+  if (auto started = set_started(conn, *seq, started_at, deadline, limits.run_limit_ms); !started) {
     return std::unexpected(std::move(started.error()));
   }
 

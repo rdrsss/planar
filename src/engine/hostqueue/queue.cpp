@@ -58,7 +58,7 @@ auto optional_int(const db::statement& stmt, int index) -> std::optional<std::in
 constexpr std::string_view k_entry_columns = "seq, state, host_id, pid, pid_started, child_pgid, child_started, parent_seq, "
                                              "terminating_since_mono, terminate_reason, cancelled_by, cwd, argv, label, "
                                              "vendor, role, claim_token, log_path, enqueued_at, started_at, "
-                                             "refreshed_mono, deadline_mono, wait_deadline_mono";
+                                             "refreshed_mono, deadline_mono, wait_deadline_mono, run_limit_ms, wait_limit_ms";
 
 /// @brief Materialises the current row of a `k_entry_columns` statement.
 auto read_entry(const db::statement& stmt) -> std::expected<entry, queue_error> {
@@ -104,6 +104,8 @@ auto read_entry(const db::statement& stmt) -> std::expected<entry, queue_error> 
   out.refreshed_mono     = stmt.column_int64(20);
   out.deadline_mono      = optional_int(stmt, 21);
   out.wait_deadline_mono = optional_int(stmt, 22);
+  out.run_limit_ms       = optional_int(stmt, 23);
+  out.wait_limit_ms      = optional_int(stmt, 24);
   return out;
 }
 
@@ -150,8 +152,8 @@ auto decode_argv(std::string_view text) -> std::expected<std::vector<std::string
 
 auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error> {
   auto stmt = conn.prepare("insert into queue_entries (state, host_id, pid, pid_started, parent_seq, cwd, argv, label, "
-                           "vendor, role, claim_token, log_path, enqueued_at, refreshed_mono, wait_deadline_mono) "
-                           "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning seq");
+                           "vendor, role, claim_token, log_path, enqueued_at, refreshed_mono, wait_deadline_mono, "
+                           "wait_limit_ms) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning seq");
   if (!stmt) {
     return sql_failure("prepare enqueue", stmt.error());
   }
@@ -159,7 +161,7 @@ auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expec
   // (roadmap M1, task hq-nested-entry owns the rest of that behaviour).
   auto const state = request.parent_seq ? entry_state::running : entry_state::waiting;
 
-  std::array<std::expected<void, db::db_error>, 15> const bound{{
+  std::array<std::expected<void, db::db_error>, 16> const bound{{
       stmt->bind_text(1, to_string(state)),
       stmt->bind_text(2, request.host_id),
       stmt->bind_int64(3, request.pid),
@@ -175,6 +177,7 @@ auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expec
       stmt->bind_int64(13, request.enqueued_at),
       stmt->bind_int64(14, request.refreshed_mono),
       bind_optional_int(*stmt, 15, request.wait_deadline_mono),
+      bind_optional_int(*stmt, 16, request.wait_limit_ms),
   }};
   for (auto const& result : bound) {
     if (!result) {

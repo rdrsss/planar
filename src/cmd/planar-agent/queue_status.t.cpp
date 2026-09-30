@@ -479,8 +479,13 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
   REQUIRE(hq::end_entry(conn, ended_seq,
                         hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 5, .ended_at = wall_now()})
               .has_value());
-  auto const running_seq = enqueue_or_fail(conn, alive_request("running", "/logs/running.log"));
-  start_entry(conn, running_seq, 2);
+  // Test-spec "status carries the documented fields": `--timeout 5m` and
+  // `--wait-timeout 10m` in force for the running entry. The wait limit is
+  // what enqueue records; the run limit is the poll's, recorded at the start.
+  auto running_request          = alive_request("running", "/logs/running.log");
+  running_request.wait_limit_ms = 600'000;
+  auto const running_seq        = enqueue_or_fail(conn, running_request);
+  start_entry(conn, running_seq, 2, 300'000);
   // Both of the two slots are taken before the waiting entry arrives.
   start_entry(conn, enqueue_or_fail(conn, alive_request("second-runner")), 2);
   auto const waiting_seq = enqueue_or_fail(conn, alive_request("waiting"));
@@ -496,6 +501,8 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
   CHECK(text_of(running, "state") == "running");
   CHECK(int_of(running, "slots") == 2);
   CHECK(int_of(running, "grace_ms") == 3000);
+  CHECK(int_of(running, "run_limit_ms") == 300'000);
+  CHECK(int_of(running, "wait_limit_ms") == 600'000);
   CHECK(text_of(running, "cwd") == "/work/project");
   auto const& argv = member(running, "argv");
   REQUIRE(argv.kind == json::json_kind::array);
@@ -517,6 +524,8 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
   CHECK(is_null(waiting, "ran_ms"));
   CHECK(is_null(waiting, "outcome"));
   CHECK(is_null(waiting, "exit_code"));
+  CHECK(is_null(waiting, "run_limit_ms"));  // not started
+  CHECK(is_null(waiting, "wait_limit_ms")); // submitted without one
 
   auto const ended = status_object(run_status(arena, "st_fields_ended", ended_seq));
   CHECK(text_of(ended, "state") == "ended");
@@ -529,6 +538,8 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
   CHECK(text_of(ended, "outcome") == "exited");
   CHECK(int_of(ended, "exit_code") == 5);
   CHECK(text_of(ended, "log_path") == "/logs/ended.log");
+  CHECK(is_null(ended, "run_limit_ms")); // ended without ever starting
+  CHECK(is_null(ended, "wait_limit_ms"));
 }
 
 // Task 7089 (hq-queue-limit-columns): the limits are the ones the submitter
