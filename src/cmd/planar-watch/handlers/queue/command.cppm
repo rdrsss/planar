@@ -13,8 +13,8 @@ namespace planar::cmd::watch::handlers::queue_cli {
 export auto add(CLI::App& root) -> void {
   // --- queue ----------------------------------------------------------
   CLI::App* queue = root.add_subcommand(
-      "queue", "Lists every running and waiting entry of the host build and test queue, read-only.\n\n  Running entries come "
-               "first, then waiting entries in queue order (POS is the place among the\n  waiting entries). An entry that "
+      "queue", "Lists every running and waiting entry of the host build and test queue, read-only.\n\n  Entries are in "
+               "sequence order, running and waiting alike (POS is the place among the\n  waiting entries). An entry that "
                "fails the liveness rules is marked NOT-LIVE and is left in\n  place: this view never reaps, refreshes or "
                "writes. Nested entries are marked nested:<parent>.\n  A missing agent database is an empty queue.\n\n  "
                "Text: one line per entry, columns SEQ STATE POS NOTES WAITED RAN VENDOR ROLE LABEL DIRECTORY\n  COMMAND, "

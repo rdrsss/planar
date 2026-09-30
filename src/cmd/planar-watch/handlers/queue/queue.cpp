@@ -169,17 +169,13 @@ auto staleness_window(context& ctx) -> std::int64_t {
   return qcfg::default_queue_settings().stale_after_ms;
 }
 
-/// @brief Running entries first, then waiting entries, each in sequence order;
+/// @brief Entries in sequence order, running and waiting alike;
 /// liveness judged, positions and durations derived. Reads only.
 auto build_rows(context& ctx, std::vector<hq::entry> entries) -> std::expected<std::vector<row>, domain_error> {
   if (entries.empty()) {
     return std::vector<row>{};
   }
-  std::ranges::stable_sort(entries, [](const hq::entry& a, const hq::entry& b) {
-    auto const a_waiting = a.state == hq::entry_state::waiting;
-    auto const b_waiting = b.state == hq::entry_state::waiting;
-    return a_waiting != b_waiting ? !a_waiting : a.seq < b.seq;
-  });
+  std::ranges::sort(entries, [](const hq::entry& a, const hq::entry& b) { return a.seq < b.seq; });
 
   ident::system_clock clock;
   auto const          now_mono = clock.monotonic_ms();

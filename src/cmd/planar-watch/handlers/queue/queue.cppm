@@ -10,7 +10,8 @@
 ///
 /// ## Order and position
 ///
-/// Running entries first, then waiting entries, each group in sequence order.
+/// Every entry in sequence order, running and waiting alike (test spec 649: rows "in
+/// sequence order").
 /// `position` is the place among the WAITING entries from 1 (a running entry
 /// holds a slot and is not in the waiting order) and is null for a running
 /// entry.

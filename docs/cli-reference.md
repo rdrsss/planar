@@ -7397,14 +7397,14 @@ Read-only listing of every running and waiting entry of the host-wide queue that
 planar-watch queue [--json]
 ```
 
-**What it lists.** Running entries first, then waiting entries in queue order. `POS` is the place among the *waiting* entries from 1; a running entry holds a slot and has none. Each entry is judged by the same liveness rules a queue poll applies, against the `stale_after` window of the [`[queue]` table](#the-queue-table), but the judgement is only reported: this verb never reaps, refreshes or removes an entry, and the store's bytes and modification time are unchanged by it. An entry that is not live stays listed and is marked `NOT-LIVE`; a nested entry is marked `nested:<parent seq>`; an entry being stopped is marked `stopping:<reason>`. When the `[queue]` table cannot be used, the default window applies and one `warning: queue: ...` line goes to standard error (the same degradation as `planar-agent queue status`).
+**What it lists.** Entries are listed in sequence order, running and waiting alike. `POS` is the place among the *waiting* entries from 1; a running entry holds a slot and has none. Each entry is judged by the same liveness rules a queue poll applies, against the `stale_after` window of the [`[queue]` table](#the-queue-table), but the judgement is only reported: this verb never reaps, refreshes or removes an entry, and the store's bytes and modification time are unchanged by it. An entry that is not live stays listed and is marked `NOT-LIVE`; a nested entry is marked `nested:<parent seq>`; an entry being stopped is marked `stopping:<reason>`. When the `[queue]` table cannot be used, the default window applies and one `warning: queue: ...` line goes to standard error (the same degradation as `planar-agent queue status`).
 
 **Human output.** A header and one line per entry, columns padded: `SEQ  STATE  POS  NOTES  WAITED  RAN  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `NOTES` is `-` or a comma-joined list of `NOT-LIVE`, `LIVE-UNKNOWN` (the process query failed), `nested:<n>`, `stopping:<reason>`. An empty value is `-`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m`. `COMMAND` is the argument vector with each word shell-quoted. An empty queue prints nothing. A value that holds a control character, a space or a double quote is written as a double-quoted string with `\n` / `\u00xx` escapes, so a submitted label, vendor, role, directory or argument cannot start a line of its own; a command word holding a control character is escaped the same way. Bidirectional-text and other Unicode format characters are not escaped yet (task 7082).
 
 ```
-SEQ  STATE    POS  NOTES     WAITED  RAN   VENDOR  ROLE   LABEL       DIRECTORY   COMMAND
-41   running  -    -         0s      3m12s claude  coder  -           /work/a     make test
-42   waiting  1    NOT-LIVE  4m10s   -     codex   tester "my label"  /work/b     ctest -j 8
+SEQ  STATE    POS  NOTES     WAITED  RAN    VENDOR  ROLE    LABEL       DIRECTORY  COMMAND
+41   running  -    -         0s      3m12s  claude  coder   -           /work/a    make test
+42   waiting  1    NOT-LIVE  4m10s   -      codex   tester  "my label"  /work/b    ctest -j 8
 ```
 
 **JSON output.** One array, `[]` when the queue is empty, of objects with exactly these members in this order; a member that does not apply is `null`:
