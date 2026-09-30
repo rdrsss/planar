@@ -942,12 +942,15 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // turn, or could not be started at all.
     auto const code = start_exit_code(started_child.error());
     ctx.err() << std::format("error: queue: cannot start '{}': {}\n", argv.front(), start_failure_text(code));
+    // `not_started` is the outcome of a 126 or 127 (tech spec 647); any other
+    // start failure ends the entry `abandoned`, and the notice says the same.
     if (code == 127 || code == 126) {
       end(hq::end_request{.outcome = hq::history_outcome::not_started, .exit_code = code});
+      notice.line(seq, "not started");
     } else {
       end(hq::end_request{.outcome = hq::history_outcome::abandoned});
+      notice.line(seq, "abandoned, could not be started");
     }
-    notice.line(seq, "not started");
     return exit_status{code};
   }
   auto const child = *started_child;
