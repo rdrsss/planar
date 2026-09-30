@@ -42,6 +42,7 @@ import planar.cmd.planar_watch.agentstore;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.dispatch;
 import planar.cmd.planar_watch.exit;
+import planar.cmd.planar_watch.handler;
 import planar.cmd.planar_watch.surface;
 import planar.cmd.planar_watch.main;
 
@@ -192,6 +193,55 @@ TEST_CASE("no planar-watch handler is unreachable from argv", "[cmd][watch][disp
   auto const dead  = planar::cmd::watch::unreachable_handlers(*root, table);
   INFO("handlers no argv can reach: " << dead.size());
   CHECK(dead.empty());
+}
+
+TEST_CASE("planar-watch applies the general dual-node rule: every node is reachable and only a handlerless group prints help",
+          "[cmd][watch][dispatch][hq-watch-dispatch-general-rule]") {
+  auto const root  = planar::cmd::watch::root_app();
+  auto       table = planar::cmd::watch::handlers(*root);
+  REQUIRE(planar::cmd::watch::unreachable_handlers(*root, table).empty());
+
+  planar::cmd::watch::handler_fn const noop = [](planar::cmd::watch::context&, const planar::cliapp::parsed_args&)
+      -> planar::cmd::watch::handler_result { return {}; };
+
+  // Every node counts as reachable, not only the childless ones: a handler
+  // registered on ANY group is dual, the way `planar` treats `handoff`, so no
+  // list of allowed groups exists to be edited when the next one appears.
+  auto with_group = table;
+  with_group.emplace("run", noop);
+  CHECK(planar::cmd::watch::unreachable_handlers(*root, with_group).empty());
+
+  // A key that names no node at all is still dead, groups and leaves alike.
+  auto with_typo = table;
+  with_typo.emplace("queue histroy", noop);
+  with_typo.emplace("verison", noop);
+  CHECK(planar::cmd::watch::unreachable_handlers(*root, with_typo) == std::vector<std::string>{"queue histroy", "verison"});
+
+  // The group `run` has no handler in the shipped table, so naming it prints
+  // help; giving it one makes it run that handler instead of help.
+  auto const run_group = [&](const planar::cmd::watch::handler_table& t) {
+    std::ostringstream          out;
+    std::ostringstream          err;
+    planar::cmd::watch::context ctx{{"planar-watch", "run"}, planar::cmd::watch::map_env({}), std::filesystem::path{},
+                                    std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err), out, err};
+    auto const                  fresh = planar::cmd::watch::root_app();
+    auto const                  code  = planar::cmd::watch::run(ctx, *fresh, t);
+    return std::pair{code, out.str()};
+  };
+  auto const helped = run_group(table);
+  CHECK(helped.first == 0);
+  CHECK(helped.second.contains("list"));
+  CHECK(helped.second.contains("show"));
+  bool ran = false;
+  with_group["run"] = [&ran](planar::cmd::watch::context&, const planar::cliapp::parsed_args&)
+      -> planar::cmd::watch::handler_result {
+    ran = true;
+    return {};
+  };
+  auto const dual = run_group(with_group);
+  CHECK(dual.first == 0);
+  CHECK(ran);
+  CHECK_FALSE(dual.second.contains("Subcommands"));
 }
 
 TEST_CASE("planar-watch's agent database handle is read-only, and a missing store is not created", "[cmd][watch][capability]") {
