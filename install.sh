@@ -20,9 +20,10 @@
 #     bin/centuriond                  # stock Centurion workflow daemon
 #     share/centurion/                # centuriond migrations + build identity
 #     install-manifest.json           # managed vendor projections
-#     planar.db                       # created on first `planar init`
+#     planar.db                       # created on first `planar init` (0600;
+#                                     # the install root is 0700)
 #     agent.db                        # agent-state database (override with
-#                                     # PLANAR_AGENT_DB); created on first use
+#                                     # PLANAR_AGENT_DB); created 0600 on first use
 #     queue-logs/                     # detached queue-run output, beside agent.db
 #     migrations/00001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at configure
@@ -205,6 +206,34 @@ vlog()  { [[ "$VERBOSE" -eq 1 ]] && printf '  %s%s%s\n' "$C_DIM" "$*" "$C_RESET"
 ok()    { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn()  { WARN_COUNT=$((WARN_COUNT + 1)); printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 err()   { printf '\n%sinstall.sh: %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
+
+# harden_planar_home — make the install root private (decision 1210).
+# planar.db and agent.db both store task claim tokens, which authorise
+# heartbeats and terminal verbs on a claim, so the install root is 0700 and
+# the databases (with their -wal/-shm sidecars) are 0600. Creates the root
+# when absent, tightens an existing install in place, and touches nothing
+# else: queue-logs/ is already created 0700 with 0600 logs by `queue run`, and
+# PLANAR_DB / PLANAR_AGENT_DB overrides outside the root are the operator's.
+# A symlinked database is left alone rather than chmodding its target.
+harden_planar_home() {
+  mkdir -p "$PLANAR_HOME"
+  # A chmod that fails is a warning, never an abort: a live -wal/-shm can be
+  # checkpointed away between the test and the chmod, and a file the user can
+  # write but does not own cannot be chmodded. Under `set -e` and the ERR trap
+  # either would end the install.
+  chmod 700 "$PLANAR_HOME" 2>/dev/null || warn "could not restrict $PLANAR_HOME to mode 700"
+  local db
+  for db in planar.db planar.db-wal planar.db-shm agent.db agent.db-wal agent.db-shm; do
+    if [[ -f "$PLANAR_HOME/$db" && ! -L "$PLANAR_HOME/$db" ]]; then
+      if chmod 600 "$PLANAR_HOME/$db" 2>/dev/null; then
+        vlog "$db: mode 600"
+      else
+        warn "could not restrict $PLANAR_HOME/$db to mode 600"
+      fi
+    fi
+  done
+  vlog "$PLANAR_HOME: mode 700"
+}
 
 # set -e + this ERR trap turn a raw mid-script failure (a bad CMake build, a
 # failed `cp`) into a framed message naming the phase that died, instead of a
@@ -404,8 +433,8 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     # all — `PLANAR_HOME=$HOME ./install.sh --uninstall --force` deletes the
     # operator's home directory outright, and even without --force the
     # find-and-delete two lines down removes every top-level entry of
-    # $PLANAR_HOME except the preserved data entries (planar.db, agent.db
-    # and its SQLite sidecars, queue-logs/).
+    # $PLANAR_HOME except the preserved data entries (planar.db, agent.db,
+    # their SQLite sidecars, queue-logs/).
     #
     # Two checks, in order:
     #   1. $PLANAR_HOME normalized (plain `realpath`, not `-m` — GNU's `-m`
@@ -434,18 +463,19 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     fi
 
     log "removing install root: $PLANAR_HOME"
-    log "(planar.db, agent.db and queue-logs/ are preserved if you have data — re-run with --force or rm manually)"
+    log "(planar.db, agent.db, their -wal/-shm sidecars and queue-logs/ are preserved if you have data — re-run with --force or rm manually)"
     if [[ "$FORCE" -eq 1 ]]; then
       rm -rf "$PLANAR_HOME"
     else
       # Preserve the databases and the agent database's detached-run output;
-      # remove everything else. agent.db's SQLite sidecars (-wal / -shm) hold
-      # committed data not yet checkpointed into the main file, so they stay
-      # with it. Both planar.db and agent.db default to this directory;
+      # remove everything else. The SQLite sidecars (-wal / -shm) of both
+      # databases hold committed data not yet checkpointed into the main file
+      # (both run in WAL mode, so an unclean exit leaves them behind), so they
+      # stay with their database. Both planar.db and agent.db default to this directory;
       # PLANAR_DB / PLANAR_AGENT_DB overrides live wherever the operator put
       # them and are never touched here.
       find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 \
-        ! -name 'planar.db' \
+        ! -name 'planar.db' ! -name 'planar.db-wal' ! -name 'planar.db-shm' \
         ! -name 'agent.db' ! -name 'agent.db-wal' ! -name 'agent.db-shm' \
         ! -name 'queue-logs' \
         -exec rm -rf {} +
@@ -605,6 +635,7 @@ fi
 
 title "Building the Planar binaries"
 
+harden_planar_home
 mkdir -p "$PLANAR_HOME/bin"
 # CMake configures, builds, and installs all FIVE executable targets:
 #
@@ -1313,6 +1344,9 @@ vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_ROW_VENDOR[@
 # Mark $PLANAR_HOME as a Planar-managed install. The prefix ownership guard
 # reads this on re-install to distinguish "our tree" from a mis-typed --prefix.
 printf 'planar-install %s\nbuild %s\n' "$INSTALLER_VERSION" "${PLANAR_BUILD_ID:-unknown}" > "$PLANAR_STAMP"
+
+# A database the install itself created or replaced is private too.
+harden_planar_home
 
 # ---------- summary ----------
 

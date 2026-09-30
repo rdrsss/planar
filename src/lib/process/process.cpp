@@ -255,7 +255,8 @@ void close_descriptors_except(int keep) {
     return;
   }
   std::vector<proc_fdinfo> table;
-  int                      got = 0;
+  int                      got      = 0;
+  bool                     complete = false;
   for (int attempt = 0; attempt < 8; ++attempt) {
     table.resize(static_cast<std::size_t>(bytes) / sizeof(proc_fdinfo) + 32);
     auto const capacity = static_cast<int>(table.size() * sizeof(proc_fdinfo));
@@ -265,9 +266,18 @@ void close_descriptors_except(int keep) {
       return;
     }
     if (got < capacity) {
+      complete = true;
       break;
     }
     bytes = capacity * 2; // Filled to the brim: there may be more.
+  }
+  if (!complete) {
+    // The last read was still full, so the table may be missing descriptors
+    // (the process keeps opening them faster than the list can be read).
+    // Closing a partial list would leave the rest open; fall back to the
+    // exhaustive sweep instead.
+    close_by_limit(keep);
+    return;
   }
   for (std::size_t i = 0; i < static_cast<std::size_t>(got) / sizeof(proc_fdinfo); ++i) {
     auto const fd = table[i].proc_fd;

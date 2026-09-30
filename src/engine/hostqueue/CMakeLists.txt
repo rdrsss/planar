@@ -36,10 +36,17 @@
 # commits). poll does not import terminate, so the interfaces form no cycle.
 #
 # `nested.cppm` (task hq-nested-entry) inserts a nested run's entry after
-# checking its parent; it imports queue and liveness from this bucket.
+# checking its parent; it imports queue and liveness from this bucket, and
+# `nested.cpp` imports terminate for its `same_host` test (decision 1209; an
+# implementation-unit import, so the interfaces form no cycle).
 #
 # `guard.cppm` (task hq-command-guard) is the pure command guard: it imports
 # nothing but the standard library.
+#
+# `rule.cppm` (task hq-rule-text) exposes the agent rule text. The one
+# authored source, `queue-rule.md`, lives in the layer-1 `queuerule` module
+# (`src/lib/queuerule/`, task 7110), which embeds it; `rule.cpp` forwards to
+# that module's `queue_rule_text()` so the API here is unchanged.
 #
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
@@ -54,6 +61,7 @@ planar_module(engine_hostqueue
     nested.cppm
     status.cppm
     guard.cppm
+    rule.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
@@ -64,15 +72,21 @@ planar_module(engine_hostqueue
     nested.cpp
     status.cpp
     guard.cpp
+    rule.cpp
   DEPENDS
     db
     json_dom
     json_text
-    process)
+    process
+    queuerule)
 
 if(TARGET planar_engine_hostqueue_tests)
   # The test binary opens real on-disk scratch stores through
   # planar.db.agentdb and probes the schema with raw SQL, exactly as
   # engine/closure's suite does.
   target_link_libraries(planar_engine_hostqueue_tests PRIVATE SQLite::SQLite3)
+  # rule_methodology.t.cpp reads the authored agents/methodology.md from the
+  # source tree to compare its queue section with the embedded rule text.
+  target_compile_definitions(planar_engine_hostqueue_tests PRIVATE
+    "PLANAR_METHODOLOGY_PATH=\"${PROJECT_SOURCE_DIR}/agents/methodology.md\"")
 endif()

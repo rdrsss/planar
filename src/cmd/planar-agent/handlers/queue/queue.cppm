@@ -270,6 +270,7 @@ import planar.db;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.process.identity;
+import planar.process.runner;
 
 namespace planar::cmd::agent::handlers {
 
@@ -309,6 +310,12 @@ export struct queue_run_deps {
       db::connection&, std::int64_t seq, std::int64_t child_pgid, std::int64_t child_started)>;
   /// @brief Records the child group; `engine::hostqueue::record_child` when empty.
   child_recorder record_child;
+  /// @brief Checks on the running command: what `process::runner::poll` does
+  /// with its argument. A test replaces it to make the status unobservable.
+  using child_poller =
+      std::function<std::expected<process::runner::status, process::runner::error>(const process::runner::child&)>;
+  /// @brief Polls the child; `process::runner::poll` when empty.
+  child_poller poll_child;
   /// @brief A test seam for `--detach`, called with a stage name: `before_fork`
   /// in the invoked process, then `after_setsid`, `after_insert` and
   /// `before_report` in the detached child. It runs in whichever process

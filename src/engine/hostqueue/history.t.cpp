@@ -337,7 +337,7 @@ TEST_CASE("an ended nested entry is recorded as nested with its parent's sequenc
   auto const parent            = enqueue_one(conn, request_for("parent"));
   auto       nested_req        = request_for("nested");
   nested_req.parent_seq        = parent;
-  auto const            nested = enqueue_one(conn, nested_req);
+  auto const            nested = hq::insert_nested_entry(conn, nested_req).value();
   hq::end_request const ok     = {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_enqueued_at + 50};
 
   end_one(conn, nested, ok);

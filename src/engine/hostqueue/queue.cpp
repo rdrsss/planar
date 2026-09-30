@@ -160,17 +160,19 @@ auto decode_argv(std::string_view text) -> std::expected<std::vector<std::string
   return argv;
 }
 
-auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error> {
+namespace {
+
+/// @brief Inserts `request` in `state` and returns the assigned sequence
+/// number. The one insert statement behind `enqueue` (waiting) and
+/// `insert_nested_entry` (running).
+auto insert_entry(db::connection& conn, const enqueue_request& request, entry_state state)
+    -> std::expected<std::int64_t, queue_error> {
   auto stmt = conn.prepare("insert into queue_entries (state, host_id, pid, pid_started, parent_seq, cwd, argv, label, "
                            "vendor, role, claim_token, log_path, enqueued_at, refreshed_mono, wait_deadline_mono, "
                            "wait_limit_ms) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning seq");
   if (!stmt) {
     return sql_failure("prepare enqueue", stmt.error());
   }
-  // A nested run is inserted running: it never takes a slot or a turn
-  // (roadmap M1, task hq-nested-entry owns the rest of that behaviour).
-  auto const state = request.parent_seq ? entry_state::running : entry_state::waiting;
-
   std::array<std::expected<void, db::db_error>, 16> const bound{{
       stmt->bind_text(1, to_string(state)),
       stmt->bind_text(2, request.host_id),
@@ -213,6 +215,34 @@ auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expec
     return sql_failure("finish queue entry insert", done.error());
   }
   return seq;
+}
+
+} // namespace
+
+auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error> {
+  // Decision 1191: a nested entry is created only by `enqueue_nested`, which
+  // checks the parent and records started_at and the deadline. A request that
+  // names a parent is a caller mistake that is reachable from data (a marker
+  // read from the environment), so it is a refusal, not a check().
+  if (request.parent_seq) {
+    return std::unexpected(queue_error{
+        .kind        = queue_error_kind::invalid_request,
+        .sqlite_code = 0,
+        .message     = "hostqueue: enqueue: a request naming a parent entry must go through enqueue_nested",
+    });
+  }
+  return insert_entry(conn, request, entry_state::waiting);
+}
+
+auto insert_nested_entry(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error> {
+  if (!request.parent_seq) {
+    return std::unexpected(queue_error{
+        .kind        = queue_error_kind::invalid_request,
+        .sqlite_code = 0,
+        .message     = "hostqueue: insert nested entry: the request names no parent entry",
+    });
+  }
+  return insert_entry(conn, request, entry_state::running);
 }
 
 auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t history_days)

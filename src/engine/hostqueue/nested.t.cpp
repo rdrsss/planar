@@ -451,6 +451,59 @@ TEST_CASE("nested: a running parent that is not live is refused and nothing is i
   CHECK(entry_of(conn, parent).state == hq::entry_state::running);
 }
 
+TEST_CASE("nested: a fresh running parent on another host identity is refused and nothing is inserted",
+          "[engine][hostqueue][hq-nested-entry][hq-nested-host]") {
+  // Decision 1209: nesting asserts the parent's command started this run,
+  // which can only hold on the parent's own host. Freshness alone must not
+  // admit a marker that names another host's entry.
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add(1'001);
+  host.add(1'002);
+
+  auto const parent = running_entry(conn, 1'001, clock, host);
+
+  SECTION("the parent names a different host") {
+    REQUIRE(conn.execute(std::format("update queue_entries set host_id = 'host-b' where seq = {}", parent)).has_value());
+    // Fresh by the window, and its pid exists here: only the host differs.
+    require_refused(conn, parent, 1'002, clock, host, hq::nested_refusal::parent_other_host);
+  }
+
+  SECTION("the parent's host identity is unknown") {
+    REQUIRE(conn.execute(std::format("update queue_entries set host_id = 'unknown' where seq = {}", parent)).has_value());
+    require_refused(conn, parent, 1'002, clock, host, hq::nested_refusal::parent_other_host);
+  }
+
+  SECTION("the checker's own host identity is unknown") {
+    REQUIRE(conn.execute(std::format("update queue_entries set host_id = 'unknown' where seq = {}", parent)).has_value());
+    auto request      = request_for(1'002, clock);
+    request.host_id   = "unknown";
+    auto const before = all_entries(conn).size();
+    auto const result = hq::enqueue_nested(conn, parent, request, k_limits, clock, host.probe());
+    REQUIRE(result.has_value());
+    CHECK(result->status == hq::nested_status::queue_normally);
+    CHECK(result->refusal == hq::nested_refusal::parent_other_host);
+    CHECK(all_entries(conn).size() == before);
+  }
+}
+
+TEST_CASE("nested: a running parent on the same host identity still nests",
+          "[engine][hostqueue][hq-nested-entry][hq-nested-host]") {
+  scratch_dir scratch;
+  auto        conn = open_store(scratch);
+  fake_clock  clock;
+  fake_host   host;
+  host.add(1'101);
+  host.add(1'102);
+
+  auto const parent = running_entry(conn, 1'101, clock, host);
+  auto const nested = nest_ok(conn, parent, 1'102, clock, host);
+  CHECK(entry_of(conn, nested).parent_seq == parent);
+  CHECK(entry_of(conn, nested).host_id == std::string(k_host));
+}
+
 TEST_CASE("nested: a running parent whose command outlives its submitter is accepted", "[engine][hostqueue][hq-nested-entry]") {
   // Liveness, not the stored state alone, decides: a running entry whose
   // submitter is gone is live while its child group has a member.

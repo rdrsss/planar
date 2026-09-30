@@ -46,6 +46,12 @@ amalgamation, so no system SQLite library is required.
   terminal verbs (`complete` / `fail` / `release` / `block`) flip the claim and
   the task status in a single transaction, which is why the claim ritual must
   not be split across two commands.
+  It also hosts the **host build and test queue**: `planar-agent queue run --
+  <command>` waits its turn in a queue shared by every project on the machine,
+  so two agents do not build at once, and keeps its state in a separate agent
+  database (`~/.planar/agent.db`). `planar-agent queue rule` prints the rule
+  that tells an agent to queue its builds and tests, for pasting into a
+  project's own agent guide; `planar-watch queue` shows the queue.
 - **`planar-watch`** — the read-only viewer. Opens SQLite via `file:?mode=ro`
   and performs no writes at all. Agent observability — action topology, live
   claims, feeds — lives here.
@@ -134,6 +140,10 @@ cmake --preset debug
 cmake --build build/debug
 ctest --test-dir build/debug --output-on-failure
 ```
+
+On a machine where several agents build at once, send builds and tests through
+the host queue instead of running them directly, for example `planar-agent
+queue run --detach -- make test` (see [docs/testing.md](docs/testing.md)).
 
 For ad-hoc migration work against a scratch database, install the optional sqlx CLI:
 

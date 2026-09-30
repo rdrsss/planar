@@ -150,6 +150,11 @@
 #     five buckets: planning, identity, entitylink, promotion, runtime.
 #
 # `workspace.cppm` is the umbrella re-export.
+#
+# `regenerate.cpp` imports the layer-1 `planar.queuerule` module (plan 1080,
+# tasks hq-workspace-guide and 7110) so the generated guide carries the host
+# queue rule. The bytes come through a real `queuerule` edge; there is no
+# `engine_hostqueue` edge and no cross-directory `#embed`.
 
 planar_module(engine_workspace
   INTERFACE
@@ -169,6 +174,7 @@ planar_module(engine_workspace
     json_dom
     json_text
     docs_manifest
+    queuerule
   EMBED)
 
 # Glaze (D8) parses `associations.config_json`, which is operator-written JSON

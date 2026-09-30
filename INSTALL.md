@@ -155,6 +155,8 @@ The default database lives at `~/.planar/planar.db`. Override it with the `PLANA
 
 Agent state lives in a second database, `~/.planar/agent.db`, with its own migration stream. `planar-agent` creates it on first use; no `init` step is needed. Override its path with `PLANAR_AGENT_DB`. Detached queue runs write their output files under `queue-logs/` in the directory that holds `agent.db`.
 
+Both databases hold task claim tokens, which authorise heartbeats and terminal verbs on a claim, so they are private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` and `agent.db` (with their `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `planar-agent` creates `agent.db` `0600` and ensures `~/.planar` is `0700` on first open; a directory you choose through `PLANAR_AGENT_DB` is never chmodded. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
+
 ## Build from source
 
 If you want to develop on Planar or contribute back:
@@ -211,11 +213,11 @@ make uninstall-full
 
 This removes:
 - All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
-- Everything in `~/.planar/` *except* your data: `planar.db`, `agent.db` (with its SQLite sidecars `agent.db-wal` and `agent.db-shm`), and the `queue-logs/` directory of detached queue-run output.
+- Everything in `~/.planar/` *except* your data: `planar.db` and `agent.db` (each with its SQLite sidecars, `-wal` and `-shm`), and the `queue-logs/` directory of detached queue-run output.
 
 A prefix that holds only a preserved `planar.db` or `agent.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
 
-Databases relocated with `PLANAR_DB` or `PLANAR_AGENT_DB` live outside `~/.planar/` and are never touched by the uninstall.
+Only the default file names directly under `~/.planar/` are preserved. A database relocated with `PLANAR_DB` or `PLANAR_AGENT_DB` to a path outside `~/.planar/` is never touched by the uninstall; one relocated to another file name *inside* `~/.planar/` is not preserved, and a non-force uninstall deletes it.
 
 To remove the databases and the queue logs too:
 
@@ -330,8 +332,8 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   └── centuriond                      # stock Centurion workflow daemon
 ├── share/centurion/                    # centuriond migrations + build-identity.json
 ├── install-manifest.json               # versioned managed-projection authority
-├── planar.db                           # SQLite database (after `planar init`)
-├── agent.db                            # agent-state database (created on first use;
+├── planar.db                           # SQLite database (after `planar init`; mode 0600)
+├── agent.db                            # agent-state database (created 0600 on first use;
 │                                       # `agent.db-wal` / `agent.db-shm` may sit beside it)
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
 ├── migrations/
