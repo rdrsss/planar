@@ -663,6 +663,206 @@ TEST_CASE("queue status: a store still at agent schema version 2 is answered wit
 }
 
 // ---------------------------------------------------------------------------
+// A store ONE MIGRATION BEHIND the binary, for every migration there ever
+// is (task 7091; review caveat on 7089).
+//
+// `queue status` opens the store read-only and never migrates it, so after an
+// upgrade it reads whatever the older, still running submitters left: the
+// store at (head - 1). Each additive agent migration must therefore leave
+// every read path tolerant of a store without its columns. The v2 tests above
+// pin that for migration 00003 by name; this case pins it for WHATEVER the
+// newest migration is, so a migration that adds a column the reads select
+// without a fallback fails here on the day it lands, with no edit to the test.
+//
+// How it adapts when a migration lands:
+//   * The store is built by applying all but the last migration of
+//     `planar::db::agent::migrations()`, so "head - 1" moves by itself.
+//   * Rows are inserted with raw SQL, as the older binary wrote them, but the
+//     column list is read from the store (`pragma_table_info`) instead of
+//     being spelled per version: a seed value below is used for each column
+//     the store at (head - 1) has, and a column it lacks is skipped. Columns
+//     with neither a seed value nor a default are left to their default.
+//   * The one thing that needs a human is a NEW `not null` column with no
+//     default. It cannot be inserted without a value, so the case FAILS and
+//     names the column: add a value for it to `k_entry_seed` or
+//     `k_history_seed` below. (A migration that adds such a column to a table
+//     with rows cannot be applied in place at all, so this is rare.)
+//   * Nothing else changes. A column added at head has no seed value; the
+//     store at (head - 1) does not have it, which is the situation under test.
+//
+// The reads exercised are the four the engine exposes (`find`, `list`,
+// `find_history`, `list_history`) and `queue status` through the built binary,
+// in JSON and in text, for a waiting entry, a running entry and a history row.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief One column's value, as SQL text.
+struct seed_value {
+  std::string column;
+  std::string sql;
+
+  // A constructor, not an aggregate: `{"cwd", "'/work'"}` would otherwise read
+  // as a pair of iterators when both members are string literals.
+  seed_value(std::string_view name, std::string value) : column(name), sql(std::move(value)) {
+  }
+};
+
+using seed_row = std::vector<seed_value>;
+
+auto sql_quoted(std::string_view text) -> std::string {
+  std::string out{"'"};
+  for (auto const c : text) {
+    out += c == '\'' ? std::string{"''"} : std::string{c};
+  }
+  out += '\'';
+  return out;
+}
+
+/// @brief Inserts `row` into `table` of `raw`, using only the columns the
+/// table has, and failing the case, by name, when the table has a `not null`
+/// column without a default that the row does not supply.
+void seed_row_into(planar::db::connection& raw, std::string_view table, const seed_row& row) {
+  auto stmt = raw.prepare("select name, \"notnull\", dflt_value is null, pk from pragma_table_info(?)");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_text(1, table).has_value());
+  std::vector<std::string> columns;
+  std::vector<std::string> values;
+  for (auto stepped = stmt->step(); stepped.has_value() && *stepped == planar::db::step_result::row; stepped = stmt->step()) {
+    auto const name     = stmt->column_text(0);
+    auto const required = stmt->column_int64(1) != 0 && stmt->column_int64(2) != 0 && stmt->column_int64(3) == 0;
+    auto const supplied = std::ranges::find(row, name, &seed_value::column);
+    if (supplied != row.end()) {
+      columns.push_back(name);
+      values.push_back(supplied->sql);
+    } else if (required) {
+      FAIL("agent table " << table << " has a not-null column '" << name
+                          << "' without a default that this test does not seed: add a value for it to the seed rows in "
+                             "queue_status.t.cpp (task 7091)");
+    }
+  }
+  std::string names;
+  std::string vals;
+  for (std::size_t i = 0; i < columns.size(); ++i) {
+    names += (i == 0 ? "" : ", ") + columns[i];
+    vals += (i == 0 ? "" : ", ") + values[i];
+  }
+  REQUIRE(raw.execute(std::format("insert into {} ({}) values ({});", table, names, vals)).has_value());
+}
+
+} // namespace
+
+TEST_CASE("queue status and every engine read answer on a store one migration behind the binary, and leave it there",
+          "[cmd][agent][queue][hq-queue-status][hq-status-behind-head]") {
+  auto const arena = parity::make_arena("qs_behind");
+  auto const chain = planar::db::agent::migrations();
+  REQUIRE(chain.size() >= 2);
+  auto const previous = chain.size() - 1; // The version the store is left at.
+
+  auto const host    = sql_quoted(this_host());
+  auto const pid     = std::to_string(this_pid());
+  auto const started = std::to_string(this_start());
+  auto const mono    = mono_now();
+  auto const entry   = [&](std::string state, std::string label, seed_row extra) {
+    seed_row row;
+    row.emplace_back("state", sql_quoted(state));
+    row.emplace_back("host_id", host);
+    row.emplace_back("pid", pid);
+    row.emplace_back("pid_started", started);
+    row.emplace_back("cwd", "'/work/project'");
+    row.emplace_back("argv", "'[\"make\",\"test\"]'");
+    row.emplace_back("label", sql_quoted(label));
+    row.emplace_back("enqueued_at", std::to_string(wall_now()));
+    row.emplace_back("refreshed_mono", std::to_string(mono));
+    for (auto& more : extra) {
+      row.push_back(std::move(more));
+    }
+    return row;
+  };
+  auto const history = seed_row{{"seq", "40"},
+                                {"outcome", "'exited'"},
+                                {"exit_code", "3"},
+                                {"cwd", "'/work/project'"},
+                                {"argv", "'[\"true\"]'"},
+                                {"label", "'prev-ended'"},
+                                {"enqueued_at", "900"},
+                                {"started_at", "950"},
+                                {"ended_at", "990"},
+                                {"waited_ms", "50"},
+                                {"ran_ms", "40"}};
+  {
+    auto raw = planar::db::connection::open(store_path(arena).string());
+    REQUIRE(raw.has_value());
+    REQUIRE(planar::db::apply_all(*raw, chain.subspan(0, previous), planar::db::k_agent_version_table).has_value());
+    seed_row_into(*raw, "queue_entries",
+                  entry("waiting", "prev-waiter", {{"wait_deadline_mono", std::to_string(mono + 600'000)}}));
+    seed_row_into(*raw, "queue_entries",
+                  entry("running", "prev-runner",
+                        {{"started_at", std::to_string(wall_now())},
+                         {"child_pgid", pid},
+                         {"child_started", started},
+                         {"deadline_mono", std::to_string(mono + 600'000)}}));
+    seed_row_into(*raw, "queue_history", history);
+    REQUIRE(static_cast<std::size_t>(planar::db::current_version(*raw, planar::db::k_agent_version_table).value()) == previous);
+  }
+
+  // The engine reads, on a read-only connection as `queue status` has.
+  {
+    auto opened = planar::db::agent::open_agent_db_read_only_at(store_path(arena));
+    REQUIRE(opened.has_value());
+    auto& conn = *opened;
+
+    auto const found = hq::find(conn, 1);
+    REQUIRE(found.has_value());
+    REQUIRE(found->has_value());
+    CHECK((*found)->label == "prev-waiter");
+    CHECK((*found)->state == hq::entry_state::waiting);
+    CHECK_FALSE((*found)->run_limit_ms.has_value());
+    CHECK_FALSE((*found)->wait_limit_ms.has_value());
+
+    auto const all = hq::list(conn);
+    REQUIRE(all.has_value());
+    REQUIRE(all->size() == 2);
+    CHECK(all->at(1).label == "prev-runner");
+    CHECK(all->at(1).state == hq::entry_state::running);
+
+    auto const row = hq::find_history(conn, 40);
+    REQUIRE(row.has_value());
+    REQUIRE(row->has_value());
+    CHECK((*row)->label == "prev-ended");
+    CHECK((*row)->ran_ms == 40);
+    CHECK_FALSE((*row)->run_limit_ms.has_value());
+    CHECK_FALSE((*row)->wait_limit_ms.has_value());
+
+    auto const rows = hq::list_history(conn);
+    REQUIRE(rows.has_value());
+    REQUIRE(rows->size() == 1);
+    CHECK(rows->front().seq == 40);
+  }
+
+  // `queue status`, through the built binary.
+  for (auto const [seq, label, state] : {std::tuple{1, "prev-waiter", "waiting"}, std::tuple{2, "prev-runner", "running"},
+                                         std::tuple{40, "prev-ended", "ended"}}) {
+    INFO("entry " << seq);
+    auto const doc = status_object(run_status(arena, std::format("behind_{}", seq), seq));
+    CHECK(keys_of(doc) == k_fields);
+    CHECK(text_of(doc, "state") == state);
+    CHECK(text_of(doc, "label") == label);
+    CHECK(is_null(doc, "run_limit_ms"));
+    CHECK(is_null(doc, "wait_limit_ms"));
+    auto const text = run_status(arena, std::format("behind_text_{}", seq), seq, false);
+    INFO("stderr:\n" << text.err);
+    CHECK(text.code == 0);
+    CHECK(text_value(text_lines(text.out), "label") == label);
+  }
+
+  // Read-only: the store is still where the older binary left it.
+  auto after = planar::db::agent::open_agent_db_read_only_at(store_path(arena));
+  REQUIRE(after.has_value());
+  CHECK(static_cast<std::size_t>(planar::db::current_version(*after, planar::db::k_agent_version_table).value()) == previous);
+}
+
+// ---------------------------------------------------------------------------
 // An unusable configuration (task 7090, hq-status-degrade-config).
 // ---------------------------------------------------------------------------
 
