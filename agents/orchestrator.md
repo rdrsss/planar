@@ -49,7 +49,7 @@ planar-agent queue run --detach --vendor <vendor> --role <role> -- <command> [ar
 It prints the ticket's sequence number and the output file's path, and the
 command has not run yet. Poll `planar-agent queue status <seq>` every 30
 seconds until its `state` line is `ended`, keep working on anything that does
-not need the result, and act on the `outcome` line. The command's output is in
+not change the files the command builds or tests, and act on the `outcome` line. The command's output is in
 the output file; read its end first. For a short command, or in a script, leave
 out `--detach` and run it in the foreground.
 

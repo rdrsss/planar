@@ -474,6 +474,31 @@ auto render_template(std::string_view src, const agents_view& view) -> std::opti
   return out;
 }
 
+/// @brief Does the template place the queue rule itself? True when some
+/// `{{ ... }}` directive, trimmed the way `parse_directive` trims, is exactly
+/// `.QueueRule`.
+auto places_queue_rule(std::string_view body) -> bool {
+  std::size_t pos = 0;
+  while ((pos = body.find("{{", pos)) != std::string_view::npos) {
+    const auto close = body.find("}}", pos + 2);
+    if (close == std::string_view::npos) {
+      return false;
+    }
+    auto inner = body.substr(pos + 2, close - pos - 2);
+    while (!inner.empty() && std::string_view{" \t\r\n-"}.contains(inner.front())) {
+      inner.remove_prefix(1);
+    }
+    while (!inner.empty() && std::string_view{" \t\r\n-"}.contains(inner.back())) {
+      inner.remove_suffix(1);
+    }
+    if (inner == ".QueueRule") {
+      return true;
+    }
+    pos = close + 2;
+  }
+  return false;
+}
+
 auto agents_template_path(const identity::env_lookup& env) -> std::optional<std::filesystem::path> {
   auto home = identity::planar_home(env);
   if (!home.has_value()) {
@@ -548,6 +573,17 @@ auto regenerate(db::connection& conn, const identity::env_lookup& env, std::int6
   if (!rendered.has_value()) {
     return std::unexpected(
         failure{.kind = error_kind::generic_failure, .message = "regenerating AGENTS.md failed: TemplateError"});
+  }
+
+  // Every generated guide carries the queue rule exactly once: a template
+  // that does not place it with `{{.QueueRule}}` (an operator's installed
+  // `doc-prompts/agents.md` replaces the embedded default) gets it appended.
+  if (!places_queue_rule(body)) {
+    if (!rendered->empty() && rendered->back() != '\n') {
+      rendered->push_back('\n');
+    }
+    rendered->push_back('\n');
+    rendered->append(k_queue_rule);
   }
 
   std::error_code ec;

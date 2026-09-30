@@ -61,14 +61,20 @@ they are the coder's job to get right before handoff.
    and 6343 were all this exact shape (task 6346). So:
    - **Run break-probes FIRST, then the long gates.** Probes are the evidence
      only you can produce; gates are reproducible by anyone downstream.
-   - **Submit the long gates detached** and keep working while they wait and
-     run, rather than blocking a whole turn on one command:
+   - **Submit the long gates detached** rather than blocking a whole turn on
+     one command:
      `planar-agent queue run --detach --vendor <vendor> --role coder -- make test`
      and
      `planar-agent queue run --detach --vendor <vendor> --role coder -- make cpp-lint`.
      Poll each ticket with `planar-agent queue status <seq>` every 30 seconds.
      A short gate may run in the foreground instead:
      `planar-agent queue run --vendor <vendor> --role coder -- make fmt-check`.
+   - **A detached gate builds when its turn comes, not when you submit it.**
+     Submit a gate only once the tree is final for that gate, and do not edit
+     the tree from submitting it until its ticket ends; an edit made while it
+     waits or runs leaks into its result. Use the wait for work that leaves the
+     tree alone: reading, the report, the next probe's plan. Submit probes
+     through the queue too, one at a time.
    - **Never let a probe rebuild race a queued gate.** Submit probe rebuilds
      through the queue too. They and a gate write the same build directory,
      and concurrent access to one build dir manufactures failures that look
@@ -127,7 +133,7 @@ planar-agent queue run --detach --vendor <vendor> --role <role> -- <command> [ar
 It prints the ticket's sequence number and the output file's path, and the
 command has not run yet. Poll `planar-agent queue status <seq>` every 30
 seconds until its `state` line is `ended`, keep working on anything that does
-not need the result, and act on the `outcome` line. The command's output is in
+not change the files the command builds or tests, and act on the `outcome` line. The command's output is in
 the output file; read its end first. For a short command, or in a script, leave
 out `--detach` and run it in the foreground.
 
