@@ -211,6 +211,30 @@ qcheck 126 126 "queue run: not executable"                   -- -- "$noexec_file
 qcheck 127 127 "queue run: program not found"                -- -- exit-code-contract-no-such-program
 qcheck 143 128 "queue run: terminated by SIGTERM (128+N)"    -- -- sh -c 'kill -TERM $$'
 qcheck 7   own "queue run: pass-through status"              -- -- sh -c 'exit 7'
+
+# --- `planar-agent queue cancel` (plan 1080, task 7023) ----------------------
+# Only what needs no live process: the entries the cases above ended (1 is the
+# `--timeout` overrun, so its history row exists), a number nothing issued, a
+# bad number, and (below) an unreachable store. Cancelling a waiting or a
+# running entry needs a live submitter and is pinned by queue_cancel.t.cpp.
+declare -a cancel_rows=()
+ccheck() { # <expected> <table-row> <label> -- <queue cancel argv...>
+  local want="$1" row="$2" label="$3"; shift 3
+  shift # the --
+  (cd "$workdir" && "$bin_dir/planar-agent" queue cancel "$@" >/dev/null 2>&1)
+  local got=$?
+  checked=$((checked + 1))
+  cancel_rows+=("$row")
+  if [ "$got" -ne "$want" ]; then
+    printf 'MISMATCH  %-46s want %-3s got %s   (queue cancel %s)\n' "$label" "$want" "$got" "$*"
+    failures=$((failures + 1))
+  fi
+}
+ccheck 6 6 "queue cancel: entry already ended"               -- 1
+ccheck 1 1 "queue cancel: no such entry"                     -- 999999
+ccheck 1 1 "queue cancel: no argument (parse failure)"       --
+ccheck 2 2 "queue cancel: not a positive integer"            -- abc
+ccheck 2 2 "queue cancel: zero"                              -- 0
 # An unreachable store: PLANAR_AGENT_DB (left at the pinned path, so every
 # invocation in this script keeps it beside PLANAR_DB) names a DIRECTORY. Run
 # last, because the cases above create it as a database file. (The other
@@ -220,6 +244,7 @@ qcheck 7   own "queue run: pass-through status"              -- -- sh -c 'exit 7
 rm -f "$PLANAR_AGENT_DB" "$PLANAR_AGENT_DB-wal" "$PLANAR_AGENT_DB-shm"
 mkdir "$PLANAR_AGENT_DB"
 qcheck 125 125 "queue run: store path is a directory"        -- -- true
+ccheck 125 125 "queue cancel: store path is a directory"     -- 1
 rmdir "$PLANAR_AGENT_DB"
 
 printf 'exit-code-contract: %d behaviour cases checked\n' "$checked"
@@ -241,7 +266,7 @@ done
 # Its own section, so a code that is only documented in the general table
 # above does not satisfy it. The rows a case is filed under must all exist,
 # and each row must say what the code means (a swapped meaning fails).
-queue_section="$(sed -n '/^#### Queue run exit codes/,/^#\{1,4\} [^Q]/p' "$doc")"
+queue_section="$(sed -n '/^#### Queue run exit codes/,/^#\{1,4\} /p' "$doc")"
 if [ -z "$queue_section" ]; then
   printf 'exit-code-contract: could not find the "Queue run exit codes" section in %s\n' "$doc" >&2
   exit 1
@@ -278,6 +303,33 @@ if ! printf '%s\n' "$queue_section" | grep -qF 'outside 0..255'; then
   printf 'UNDOCUMENTED  the queue run table does not say a status outside 0..255 exits 125\n'
   failures=$((failures + 1))
 fi
+
+# --- direction 2c: the `planar-agent queue cancel` table ---------------------
+cancel_section="$(sed -n '/^#### Queue cancel exit codes/,/^#\{1,4\} /p' "$doc")"
+if [ -z "$cancel_section" ]; then
+  printf 'exit-code-contract: could not find the "Queue cancel exit codes" section in %s\n' "$doc" >&2
+  exit 1
+fi
+cancel_meaning() { # <row> -> a grep -E pattern the row's line must match
+  case "$1" in
+    0)   printf 'cancelled' ;;
+    1)   printf 'no such entry' ;;
+    2)   printf 'refused input' ;;
+    6)   printf 'already ended' ;;
+    125) printf 'queue failed' ;;
+    *)   printf '.' ;;
+  esac
+}
+for row in 0 $(printf '%s\n' "${cancel_rows[@]}" | sort -u); do
+  line="$(printf '%s\n' "$cancel_section" | grep -E "^\| \`$row\`" | head -n 1)"
+  if [ -z "$line" ]; then
+    printf 'UNDOCUMENTED  exit %s is returned by a checked queue cancel case but has no row in the queue cancel table of %s\n' "$row" "$doc"
+    failures=$((failures + 1))
+  elif ! printf '%s\n' "$line" | grep -qiE "$(cancel_meaning "$row")"; then
+    printf 'MISDOCUMENTED  queue cancel row %s does not carry its meaning (%s): %s\n' "$row" "$(cancel_meaning "$row")" "$line"
+    failures=$((failures + 1))
+  fi
+done
 
 if [ "$failures" -ne 0 ]; then
   printf 'exit-code-contract: FAILED — %d problem(s).\n' "$failures" >&2
