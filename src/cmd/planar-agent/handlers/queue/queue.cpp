@@ -700,8 +700,11 @@ auto publish_ticket(detach_link& link, db::connection& conn, std::int64_t seq) -
   if (::mkdir(link.log_dir.c_str(), 0700) != 0 && errno != EEXIST) {
     return undo(std::format("cannot create the log directory {}: {}", link.log_dir.string(), errno_text(errno)), false);
   }
-  auto const fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+  auto const fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC, 0600);
   if (fd < 0) {
+    // O_EXCL: a log that already exists belongs to an earlier run (the store was
+    // recreated and sequence numbers restarted), so it is neither appended to
+    // nor removed here; `undo` is told it did not create the file.
     return undo(std::format("cannot create the log file {}: {}", path.string(), errno_text(errno)), false);
   }
   auto const recorded = hq::set_log_path(conn, seq, path.string());

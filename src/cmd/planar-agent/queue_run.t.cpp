@@ -3238,3 +3238,105 @@ TEST_CASE("queue run: --detach writes notices and the wait-limit refusal to the 
   hold.release();
   CHECK(finish(holder).code == 0);
 }
+
+namespace {
+
+/// @brief The pids whose parent is `parent`, from `ps`.
+auto children_of(std::int64_t parent) -> std::vector<std::int64_t> {
+  std::vector<std::int64_t> found;
+  auto*                     pipe = ::popen("ps -axo pid=,ppid= 2>/dev/null", "r");
+  if (pipe == nullptr) {
+    return found;
+  }
+  std::string text;
+  char        buffer[4096];
+  while (auto const n = std::fread(buffer, 1, sizeof buffer, pipe)) {
+    text.append(buffer, n);
+  }
+  ::pclose(pipe);
+  std::istringstream in(text);
+  std::int64_t       pid  = 0;
+  std::int64_t       ppid = 0;
+  while (in >> pid >> ppid) {
+    if (ppid == parent) {
+      found.push_back(pid);
+    }
+  }
+  return found;
+}
+
+} // namespace
+
+TEST_CASE("queue run: a detached submitter whose caller died before the ticket removes its entry and its log",
+          "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_gone");
+  write_config(arena, k_fast_poll);
+  // Create and migrate the store with an ordinary run, so the lock below
+  // stalls the child at its insert and not at the migration.
+  REQUIRE(run_queue(arena, "seed", sh_command("exit 0")).code == 0);
+
+  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto lock = opened->begin_transaction(planar::db::lock_mode::immediate);
+  REQUIRE(lock.has_value());
+
+  // The child forks, starts its session and then blocks on the lock we hold,
+  // before it can insert. Kill the invoked process once the child exists: the
+  // pipe then has no reader when the child comes to write the ticket.
+  auto         invoker = spawn_queue(arena, "gone", sh_command("exit 0"), {}, {"--detach"});
+  std::int64_t child   = 0;
+  REQUIRE(await([&] {
+    auto const kids = children_of(invoker.pid);
+    if (kids.empty()) {
+      return false;
+    }
+    child = kids.front();
+    return true;
+  }));
+  detached_submitter straggler; // stops the child if the case fails before it ends
+  straggler.pid = child;
+  if (auto const at = ident::process_start_time(child); at && at->has_value()) {
+    straggler.started = static_cast<std::int64_t>(**at);
+  }
+  REQUIRE(invoker.still_mine());
+  REQUIRE(::kill(static_cast<::pid_t>(invoker.pid), SIGKILL) == 0);
+  REQUIRE(await([&] { return invoker.ended(); }));
+
+  REQUIRE(lock->commit().has_value()); // The child's insert now goes through.
+  REQUIRE(await([&] { return !straggler.still_mine(); }));
+
+  // It found nobody to hand the ticket to: no entry, no history row, no log.
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  CHECK(snap.history.size() == 1); // The seed run's row and nothing else.
+  auto logs = std::vector<std::string>{};
+  if (present(arena.cpp_root / "queue-logs")) {
+    for (auto const& item : std::filesystem::directory_iterator(arena.cpp_root / "queue-logs")) {
+      logs.push_back(item.path().filename().string());
+    }
+  }
+  CHECK(logs.empty());
+}
+
+TEST_CASE("queue run: a detached run never writes into a log that already exists", "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_excl");
+  // A log left by an earlier store: sequence numbers restarted, so the next
+  // run is entry 1 and its log path is already taken.
+  std::filesystem::create_directories(arena.cpp_root / "queue-logs");
+  auto const old = arena.cpp_root / "queue-logs" / "1.log";
+  {
+    std::ofstream out(old, std::ios::binary);
+    out << "old run\n";
+  }
+  auto const ran = arena.cpp_root / "ran";
+  auto const got = run_queue(arena, "excl", sh_command("echo x > \"$1\"", {ran.string()}), {"--detach"});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.out.empty());
+  CHECK(got.err.starts_with("error: queue: cannot create the log file"));
+  CHECK(read_all(old) == "old run\n"); // Neither appended to nor removed.
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  CHECK(snap.history.empty());
+  CHECK_FALSE(present(ran));
+}
