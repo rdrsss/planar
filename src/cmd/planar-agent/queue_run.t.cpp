@@ -3502,21 +3502,27 @@ TEST_CASE("queue run: --detach accepts an existing queue-logs directory that onl
 
 TEST_CASE("queue run: --detach refuses an existing queue-logs directory owned by another user",
           "[cmd][agent][queue][hq-detach][hq-detach-logdir]") {
-  // A foreign owner can only be built by root. As any other user the check is
-  // covered by the mode cases above; this case then asserts nothing rather
-  // than skip, because the expected skip tally is zero.
-  if (::geteuid() != 0) {
-    SUCCEED("not root: a directory owned by another user cannot be made");
-    return;
-  }
+  // A directory of another user is built two ways. As root, by giving one away
+  // (chown). As anyone else, by pointing `queue-logs` at `/`, which root owns
+  // and which is not writable by group or others, so only the OWNER rule can
+  // refuse it: without that rule the run would go on to fail at opening the
+  // log with a different message.
   auto const arena = parity::make_arena("qd_foreign");
   auto const dir   = arena.cpp_root / "queue-logs";
-  std::filesystem::create_directories(dir);
-  REQUIRE(::chmod(dir.c_str(), 0700) == 0);
-  REQUIRE(::chown(dir.c_str(), 12345, static_cast<gid_t>(-1)) == 0);
+  if (::geteuid() == 0) {
+    std::filesystem::create_directories(dir);
+    REQUIRE(::chmod(dir.c_str(), 0700) == 0);
+    REQUIRE(::chown(dir.c_str(), 12345, static_cast<gid_t>(-1)) == 0);
+  } else {
+    REQUIRE(::symlink("/", dir.c_str()) == 0);
+  }
   auto const got = run_queue(arena, "foreign", sh_command("exit 0"), {"--detach"});
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(got.err.find("owned by") != std::string::npos);
-  CHECK(require_snapshot(arena).entries.empty());
+  CHECK(got.out.empty());
+  CHECK(got.err.starts_with("error: queue: the log directory "));
+  CHECK(got.err.find("is owned by user") != std::string::npos);
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  CHECK(snap.history.empty());
 }
