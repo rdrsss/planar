@@ -277,7 +277,8 @@ TEST_CASE("the rule text carries every element an agent needs", "[cmd][agent][qu
   SECTION("what to do on each outcome") {
     for (auto const* outcome : {"exited", "signaled", "timeout", "cancelled", "wait_timeout", "not_started", "abandoned"}) {
       INFO("outcome: " << outcome);
-      CHECK(contains(source, outcome));
+      // A table row names it; the bare word also appears in prose.
+      CHECK(contains(source, std::format("| `{}`", outcome)));
     }
   }
 
