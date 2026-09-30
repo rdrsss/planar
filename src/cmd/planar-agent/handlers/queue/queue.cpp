@@ -1104,10 +1104,14 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   if (!started || !started->has_value()) {
     return refuse(ctx, "cannot read this process's start time");
   }
-  auto const now_mono = clock.monotonic_ms();
-  if (!now_mono) {
+  auto const first_mono = clock.monotonic_ms();
+  if (!first_mono) {
     return refuse(ctx, "cannot read the monotonic clock");
   }
+  // The reading the normal enqueue is stamped with. The nested attempt below
+  // can spend time (a busy store is retried at the poll interval), so a
+  // fallback to the normal enqueue reads the clock again (task 7077).
+  std::int64_t now_mono = *first_mono;
 
   // From here on SIGINT, SIGTERM and SIGHUP are caught: a waiting submitter
   // removes its entry, a running one forwards the signal to its command. The
@@ -1202,7 +1206,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
         .claim_token        = claim,
         .enqueued_at        = clock.wall_ms(),
         .refreshed_mono     = refreshed_mono,
-        .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{*now_mono + *wait_limit_ms} : std::nullopt,
+        .wait_deadline_mono = wait_limit_ms ? std::optional<std::int64_t>{now_mono + *wait_limit_ms} : std::nullopt,
         .wait_limit_ms      = wait_limit_ms,
     };
   };
@@ -1210,7 +1214,14 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   if (nested) {
     seq = nested->seq;
   } else {
-    auto enqueued = hq::enqueue(conn, make_request(*now_mono), settings.current().history_days);
+    if (marker) {
+      auto const fresh = clock.monotonic_ms();
+      if (!fresh) {
+        return refuse(ctx, "cannot read the monotonic clock");
+      }
+      now_mono = *fresh;
+    }
+    auto enqueued = hq::enqueue(conn, make_request(now_mono), settings.current().history_days);
     if (!enqueued) {
       return refuse(ctx, enqueued.error().message);
     }
@@ -1438,7 +1449,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     }
     // The wait limit. It is judged after the poll, so an entry whose turn has
     // come at its limit runs rather than being removed.
-    if (wait_limit_ms && now && *now >= *now_mono + *wait_limit_ms) {
+    if (wait_limit_ms && now && *now >= now_mono + *wait_limit_ms) {
       end(hq::end_request{.outcome = hq::history_outcome::wait_timeout});
       auto const refused =
           refuse(ctx, std::format("entry {} waited longer than --wait-timeout and was removed; the command was not run", seq));
@@ -1449,7 +1460,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     // limit is honoured to the millisecond rather than to the next poll.
     auto nap = settings.current().poll_interval_ms;
     if (wait_limit_ms && now) {
-      nap = std::clamp(*now_mono + *wait_limit_ms - *now, std::int64_t{1}, nap);
+      nap = std::clamp(now_mono + *wait_limit_ms - *now, std::int64_t{1}, nap);
     }
     // ... or the claim's renewal falls inside it.
     if (renewer && now) {
