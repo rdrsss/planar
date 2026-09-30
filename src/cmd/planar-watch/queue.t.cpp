@@ -709,7 +709,8 @@ TEST_CASE("queue view: control characters in submitted values are escaped, in te
   auto const evil_role   = std::string{"r\x7f"
                                        "del"};
   auto const evil_cwd    = std::string{"/w/a\nb"};
-  auto const evil_arg    = std::string{"line1\nline2\r\x1b[2J"};
+  auto const evil_arg    = std::string{"line1\nline2\r\x1b[2J\xc2\x9b"
+                                       "31m"};
   {
     auto conn      = open_store(arena);
     auto request   = alive_request(evil_cwd, {"echo", evil_arg, "tab\there"});
@@ -733,6 +734,9 @@ TEST_CASE("queue view: control characters in submitted values are escaped, in te
   CHECK(text.out.contains("\\n"));
   CHECK(text.out.contains("\\u001b"));
   CHECK(text.out.contains("\\u007f"));
+  // A C1 control (CSI, U+009B) is escaped too, in text and in JSON.
+  CHECK(text.out.contains("\\u009b"));
+  CHECK_FALSE(text.out.contains("\xc2\x9b"));
 
   // JSON carries the exact bytes, escaped by the grammar, and none raw.
   auto const json_run = run_queue(arena, "escape_json");
@@ -741,6 +745,7 @@ TEST_CASE("queue view: control characters in submitted values are escaped, in te
     CHECK_FALSE((u < 0x20 && c != '\n'));
     CHECK(u != 0x7f);
   }
+  CHECK_FALSE(json_run.out.contains("\xc2\x9b"));
   auto const rows = rows_of(json_run);
   REQUIRE(rows.size() == 1);
   CHECK(text_of(rows[0], "label") == evil_label);
