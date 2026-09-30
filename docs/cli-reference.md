@@ -6906,7 +6906,7 @@ The foreground form is `queue run` with optional `--timeout <duration>`, `--wait
 
 `--notices` writes queue notices to standard error, one line each, in the form `queue: entry <seq> <what happened>`: `waiting at position <n>` (the entry's place among the waiting entries, counting from 1, when it first waits and each time its place changes; a rejoined entry says it again under its new number), `started`, and last, the outcome: `exited with code <n>`, `terminated by signal <n>`, `stopped at its run limit`, `cancelled`, `cancelled before its turn`, `removed at its wait limit`, `not started`, or, for an entry that ended without this submitter or that the queue gave up on, a short truthful text (`cancelled`, `ended as <outcome> without this submitter`, `ended without a history row`, `abandoned, rejoin limit reached`, `abandoned, could not be polled`, `abandoned, cannot observe the command's status`, `ended: cannot rejoin the queue`, `ended: store busy while rejoining`, `ended: cannot read the clock`). An entry whose start failed for a reason other than a missing or unexecutable program ends `abandoned` and says `abandoned, could not be started`. A notice describes what this submitter observed of its command, while `queue status` holds the entry's record, and the two can differ: a running entry that another process removed shows `exited with code <n>` in the notice but `abandoned` in its history. Every exit after the entry exists ends with one of these lines, written after any `error: queue: ...` line. The last line on standard error therefore names the sequence number and how the entry ended. Standard output is never written by the queue, with or without the flag, and without `--notices` the queue writes nothing to standard error on the happy path, so the stream is byte-identical to a direct run. `started` is written once the command has been spawned, so it is not ordered against the command's own output: the command's first bytes on standard error may come before it. The `warning: queue: ...` diagnostics of a degraded path (a failed signal, a configuration that could not be reloaded, a rejoin, a store that could not be reached) and the `error: queue: ...` lines are the documented exception: they are written with or without `--notices`.
 
-`--timeout <duration>` is the **run limit**, default `30m`: how long the command may run once it has started. The limit is recorded on the entry as its deadline when the entry starts. At the deadline the submitter marks its own entry terminating with reason `timeout` and sends SIGTERM to the command's process group; if the group still has members once the `[queue] grace` period has passed, it sends SIGKILL. The entry is removed only when the group is empty, so a stopped command keeps its slot until it is gone: after the command's first process is reaped, the submitter keeps advancing the stop (sending the SIGKILL once the grace period has passed) until the engine has ended the entry, and only then exits. If a member survives SIGKILL for `[queue] grace` plus 15 seconds, the submitter exits anyway and leaves the entry, still live while its group has members, for the next poll of any submitter to end. The entry ends with outcome `timeout` and the submitter exits **124**, whatever signal ended the command. The same holds when another process marked the entry (a cancellation ends it `cancelled`, exit **125**); a stopped command is never recorded as `signaled`.
+`--timeout <duration>` is the **run limit**, default `30m`: how long the command may run once it has started. The limit is recorded on the entry as its deadline when the entry starts. At the deadline the submitter marks its own entry terminating with reason `timeout` and sends SIGTERM to the command's process group; if the group still has members once the `[queue] grace` period has passed, it sends SIGKILL. The entry is removed only when the group is empty, so a stopped command keeps its slot until it is gone: after the command's first process is reaped, the submitter keeps advancing the stop (sending the SIGKILL once the grace period has passed) until the engine has ended the entry, and only then exits. If a member survives SIGKILL for `[queue] grace` plus 15 seconds, the submitter exits anyway and leaves the entry, still live while its group has members, for the next poll of any submitter to end. The entry ends with outcome `timeout` and the submitter exits **124**, whatever signal ended the command. The same holds when another process marked the entry (a cancellation ends it `cancelled`, exit **125**); a stopped command is never recorded as `signaled`. **When the entry cannot carry the limit** the submitter stops the command itself, directly: SIGTERM at the deadline it holds, SIGKILL once `[queue] grace` has passed, both to the process group it started, and only while that group's leader still has the start time the submitter read when it started the command (a group id that came to belong to another process is never signalled; the submitter says so on standard error instead). That is the case in two situations. If the store refuses to record the command's process group on the entry, the submitter retries at the poll interval, five more times; an entry that still names no group cannot be signalled by any other process, so at the limit the submitter stops the command as above and then ends the entry itself with outcome `timeout`, so the history and the exit **124** agree (a helper the command left behind in its group is not chased in that case). And if the entry is removed while the command runs, the submitter keeps its own deadline and does the same; the row the removing process wrote stays the only history row, and the submitter exits **124** and says on standard error that the entry is no longer in the queue and the limit is still enforced.
 
 `--wait-timeout <duration>` is the **wait limit**, default none: how long the entry may wait for its turn. The limit is recorded on the entry (as `wait_deadline_mono`) when it is enqueued. A submitter whose turn has not come when the limit passes removes its entry with outcome `wait_timeout`, does not run the command, and exits **125** with one `error: queue: ...` line. An entry whose turn comes at the limit runs; the wait limit never cuts short a command that has started.
 
@@ -6931,7 +6931,7 @@ From then on the child is the submitter of the ordinary run described above (wai
 
 The variable is advisory. A value that is not a positive integer, that names no entry (never existed, or already ended), that names an entry still waiting, or that names an entry that is not live, is ignored: the command queues normally and is not marked nested. A session can copy a real sequence number to skip the queue, and a long-lived process a queued command left running keeps the variable until its parent ends; both are accepted, and the history makes them visible. If the store stays busy past its timeout while the nested entry is inserted, the insert is retried at the poll interval for as long as `[queue] stale_after`, then refused at exit **125** with `error: queue: the store stayed busy ...; the command was not run`. It is not queued normally, because it would then wait behind the entry that waits for it, and it is not run unqueued, because nobody checked the marker. Any other failure of the insert is refused at exit **125** at once.
 
-**A submitter whose own entry goes missing** reads the history row for its sequence number. A *waiting* submitter whose row says `abandoned` (another submitter reaped it while it was stopped, for example by `SIGSTOP` or a suspended laptop) rejoins the queue: it inserts a new entry, which has a higher sequence number and so waits behind everything that arrived meanwhile, and records the new number as the old row's `successor_seq`, in one transaction, so `queue status` can follow the chain. The new entry keeps the original `--wait-timeout` deadline, so the limit bounds the whole wait. A submitter rejoins at most three times and then exits **125**; the command is not run. A row saying `cancelled` (or any other outcome), or no row at all (never written, or pruned by retention), exits **125** without running the command. A *running* submitter whose entry disappears keeps supervising its command, never rejoins and never runs the command a second time, and exits with what it observed of the command; because the run limit is a property of the entry, it is no longer enforced, and the submitter says so once on standard error. A waiting submitter that cannot complete any poll for longer than `stale_after` ends its own entry as `abandoned` (no exit code, signal, start time, run time or successor, since the command never ran) and exits **125**.
+**A submitter whose own entry goes missing** reads the history row for its sequence number. A *waiting* submitter whose row says `abandoned` (another submitter reaped it while it was stopped, for example by `SIGSTOP` or a suspended laptop) rejoins the queue: it inserts a new entry, which has a higher sequence number and so waits behind everything that arrived meanwhile, and records the new number as the old row's `successor_seq`, in one transaction, so `queue status` can follow the chain. The new entry keeps the original `--wait-timeout` deadline, so the limit bounds the whole wait. A submitter rejoins at most three times and then exits **125**; the command is not run. A row saying `cancelled` (or any other outcome), or no row at all (never written, or pruned by retention), exits **125** without running the command. A *running* submitter whose entry disappears keeps supervising its command, never rejoins and never runs the command a second time, and exits with what it observed of the command. Its run limit is still enforced: the submitter holds the deadline itself and stops the command directly at it (see `--timeout` above), exits **124**, and says once on standard error that the entry is no longer in the queue. A waiting submitter that cannot complete any poll for longer than `stale_after` ends its own entry as `abandoned` (no exit code, signal, start time, run time or successor, since the command never ran) and exits **125**.
 
 **Reading a ticket (`queue status`).** `planar-agent queue status <seq> [--json]` reports what became of one entry. The sequence number is the first line of the ticket `queue run --detach` prints. It answers from the entry while it is in the queue and from its `queue_history` row afterwards, and it is the authoritative record of how a command ended: the exit code of `queue run` is ambiguous by design, `outcome` is not.
 
@@ -6960,7 +6960,7 @@ The `--json` output is one object with exactly these fields, in this order. A fi
 
 **A successor is followed.** When the number asked for was reaped while its submitter was stopped and the submitter rejoined the queue (see above), its history row names the new number. `queue status` then describes the new entry (its `state`, `position` and so on, and its end once it has one), sets `superseded_by` to the new number and keeps `seq` as the number asked for. A chain of rejoins is followed to its end; a successor whose history was pruned ends the chain at the last row that exists.
 
-Without `--json` the same answer is printed as `key: value` lines, one per field that applies, in the order above (`cancelled_by` reads `vendor=<v> role=<r> pid=<n>`, `argv` is a compact JSON array, and a value with a control character is quoted as a JSON string).
+Without `--json` the same answer is printed as `key: value` lines, one per field that applies, in the order above (`cancelled_by` reads `vendor=<v> role=<r> pid=<n>`, `argv` is a compact JSON array). A value with a control character, a Unicode format character (bidirectional override, zero-width mark, line or paragraph separator), a byte that is not valid UTF-8, a backslash or a leading double quote is shown double-quoted with `\n` / `\u00xx` / `\u202e`-style escapes, so a quoted value is never mistaken for an unquoted one; a `label`, `vendor` or `role` (and the canceller's) is cut, ending with `…`, once its escaped form would pass 48 columns (counted as for `planar-watch queue`). `--json` is never cut and carries the exact bytes.
 
 **Exit codes of `queue status`** (decision 1188 fixes the queue's own codes; it does not list this verb's, so these follow this binary's table):
 
@@ -6982,6 +6982,7 @@ Not yet available in this build (later tasks of plan 1080): `--claim` and `queue
 These are accepted, and stated here so they are not rediscovered.
 
 - **A queued command cannot read the terminal.** The command runs in a process group of its own, never the terminal's foreground group, so a read from the terminal stops it with SIGTTIN (a write to it may stop it with SIGTTOU when the terminal sets `tostop`). The queue does not hand the terminal over and does not redirect standard input: the command inherits the submitter's standard streams as they are. Queued commands are builds and tests, which do not read the terminal; a command that prompts belongs outside the queue. Run with standard input from a file, a pipe or `/dev/null` (as agent harnesses and CI do) and the limit never arises.
+- **A signal to a group of exited processes is refused on macOS.** `kill(-pgid, sig)` fails with `EPERM` for a process group whose every member has exited without being reaped (and for the few milliseconds a killed member spends being torn down), so a SIGKILL sent to a stopped command's group can come back "not permitted" for a group with nothing left to stop. `queue run` and `queue cancel` read that refusal as an empty group, and stay silent, only when the kernel's own process list shows every member of the group in that state; any other `EPERM` (a group owned by another user, for one) is still reported as `warning: queue: SIGKILL to entry <seq>'s process group failed: not permitted`. Linux never answers this way, so nothing changes there.
 
 #### The queue command guard
 
@@ -7206,8 +7207,8 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/`) registers exactly nine read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
-2. The bootstrap calls `db::connection::open_read_only` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`.
+1. The command tree (`src/cmd/planar-watch/`) registers exactly ten read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `queue` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
+2. The bootstrap calls `db::connection::open_read_only` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`. The `queue` verb reads a second store, the agent database, through the same kind of handle (`planar.db.agentdb::open_agent_db_read_only_at`); `capability.t.cpp` asserts that handle refuses a write and that running the verb leaves the store's bytes and modification time unchanged.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
 
@@ -7243,6 +7244,10 @@ planar-watch run show <id> [--json]
 
 # Sync-event ledger (plan 638 addition — read-only view over sync_events).
 planar-watch sync-events [--plan <id>] [--system <slug>] [--entity <kind:id>] [--outcome <value>] [--since <ISO8601>] [--limit <n>] [--json]
+
+# Host build and test queue (plan 1080 — read-only view over the agent database).
+planar-watch queue [--json]
+planar-watch queue history [--since <duration>] [--json]
 
 # Conventional helpers.
 planar-watch version
@@ -7385,6 +7390,104 @@ id    at                         direction  outcome   link_id  detail
 - `0` — success (empty result is not an error).
 - `1` — invalid flag value (non-integer `--plan` or `--limit`, malformed `--entity` reference, invalid `--since` timestamp).
 
+### `planar-watch queue` — the host build and test queue (plan 1080)
+
+Read-only listing of every running and waiting entry of the host-wide queue that `planar-agent queue run` feeds, across every project. It reads the **agent database** (`PLANAR_AGENT_DB`, else `~/.planar/agent.db`), not the main database, so it works when the main database cannot be located.
+
+**Synopsis:**
+```
+planar-watch queue [--json]
+```
+
+**What it lists.** Entries are listed in sequence order, running and waiting alike. `POS` is the place among the *waiting* entries from 1; a running entry holds a slot and has none. Each entry is judged by the same liveness rules a queue poll applies, against the `stale_after` window of the [`[queue]` table](#the-queue-table), but the judgement is only reported: this verb never reaps, refreshes or removes an entry, never sends a signal to any process (the liveness check is a signal-0 existence probe, which delivers nothing), and the store's bytes and modification time are unchanged by it. An entry that is not live stays listed and is marked `NOT-LIVE`; a nested entry is marked `nested:<parent seq>`; an entry being stopped is marked `stopping:<reason>`. When the `[queue]` table cannot be used, the default window applies and one `warning: queue: ...` line goes to standard error (the same degradation as `planar-agent queue status`).
+
+**Human output.** A header and one line per entry, columns padded: `SEQ  STATE  POS  NOTES  WAITED  RAN  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `NOTES` is `-` or a comma-joined list of `NOT-LIVE`, `LIVE-UNKNOWN` (the process query failed), `nested:<n>`, `stopping:<reason>`. An empty value is `-`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m`. `COMMAND` is the argument vector with each word shell-quoted. An empty queue prints nothing. A value that holds a control character, a Unicode format character (the bidirectional overrides and isolates U+202A-U+202E and U+2066-U+2069, the zero-width and directional marks U+200B-U+200F, U+2060-U+2064, U+206A-U+206F, U+061C, the byte-order mark U+FEFF, and the line and paragraph separators U+2028 and U+2029), a byte that is not valid UTF-8, a space, a double quote or a backslash is written as a double-quoted string with `\n` / `\u00xx` / `\u202e`-style escapes (`\xNN` for an invalid byte), so a submitted label, vendor, role, directory or argument cannot start a line of its own, move the cursor or reorder the text around it. A command word holding a control or format character is escaped the same way: it is then shown double-quoted with those escapes, which is display text and **not a pasteable shell word**. A `VENDOR`, `ROLE` or `LABEL` is cut, and ends with `…`, once its **escaped** form would pass 48 columns (a `\uXXXX` escape counts 6, `\xNN` 4, `\n`, `\\` and `\"` 2, a combining mark 1 although it displays in 0, else its display width), so a value made of invisible or control characters cannot widen a column; it is cut before quoting, so an escape is never split, and the quoted cell adds its two quote characters; `--json` is never cut. Columns are padded by display width, not bytes: a code point counts one column, a wide East Asian or emoji code point two and a combining or format character none. This is an approximation, not a full Unicode width table, so a terminal that measures differently may still show a small misalignment.
+
+```
+SEQ  STATE    POS  NOTES     WAITED  RAN    VENDOR  ROLE    LABEL       DIRECTORY  COMMAND
+41   running  -    -         0s      3m12s  claude  coder   -           /work/a    make test
+42   waiting  1    NOT-LIVE  4m10s   -      codex   tester  "my label"  /work/b    ctest -j 8
+```
+
+**JSON output.** One array, `[]` when the queue is empty, of objects with exactly these members in this order; a member that does not apply is `null`:
+
+| Field | Meaning |
+|---|---|
+| `seq` | The sequence number |
+| `state` | `waiting` or `running` |
+| `live` | Whether the entry passes the liveness rules; `null` when the process query failed |
+| `position` | Place among the waiting entries, from 1; `null` for a running entry |
+| `terminating` | The reason (`timeout`, `cancelled`) while the entry is being stopped |
+| `nested`, `parent_seq` | Nesting |
+| `cwd`, `argv` | As submitted; `argv` is an array |
+| `label`, `vendor`, `role` | As submitted |
+| `log_path` | The output file of a detached run |
+| `enqueued_at`, `started_at` | Wall-clock milliseconds |
+| `waited_ms`, `ran_ms` | Durations at the moment of the listing |
+| `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` on a store still at agent schema version 2 |
+
+**Schema effects:** Reads `queue_entries` in the agent database. No writes; a missing agent database is an empty queue and is not created.
+
+**Exit codes:**
+- `0` — success, an empty or missing queue included.
+- `1` — the file at the agent database path is not an agent store (a database with other tables) or cannot be read; a parse failure.
+- `7` — the store was written by a newer release (its `compat` is above this binary's agent schema version); both versions are named.
+
+**Main database.** The `queue` domain (`queue` and `queue history`) is the one that does not need the main database's path. Every other verb still exits `1` with `neither PLANAR_DB nor HOME is set` when neither variable is; the `queue` verbs resolve their own store from `PLANAR_AGENT_DB` / `HOME`.
+
+### `planar-watch queue history` — what the host queue has run (plan 1080)
+
+Read-only listing of the entries that have **ended**, from the same agent database `planar-watch queue` reads. It answers "what went through the queue, how did it end, and who used it": every row carries the submitting vendor, role, directory and command, so a project that builds and never appears here is not following the rule. `planar-watch queue` (bare) is unchanged and still lists running and waiting entries; `queue` is both a verb and the group `history` sits under.
+
+**Synopsis:**
+```
+planar-watch queue history [--since <duration>] [--json]
+```
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--since <duration>` | Only rows that ended within this long: `ended_at` at or after now minus the duration. An integer followed by `ms`, `s`, `m`, `h` or `d`, greater than zero and at most `36500d`, the history retention maximum. It has its own parser: `planar-agent queue run --timeout` and `--wait-timeout` take no `d` and stop at `24h`. | all rows |
+| `--json` | One JSON array. | text |
+
+**Order.** Oldest first: by end time, then sequence number.
+
+**Human output.** A header and one line per row, columns padded: `SEQ  OUTCOME  RESULT  ENDED  WAITED  RAN  NOTES  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `OUTCOME` is `exited`, `signaled`, `timeout`, `cancelled`, `wait_timeout`, `not_started` or `abandoned`. `RESULT` is `code:<n>`, `signal:<n>` or `-`. `ENDED` is UTC, `YYYY-MM-DDTHH:MM:SSZ`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m` (`RAN` is `-` for an entry that never started). `NOTES` is `-` or a comma-joined list of `cancelled-by:<vendor>/<role>/<pid>`, `superseded-by:<seq>` and `nested:<parent>`. An empty value is `-`. `COMMAND` is the argument vector with each word shell-quoted. An empty history prints nothing. Values are escaped, cut and aligned exactly as in `planar-watch queue`, including the `VENDOR`, `ROLE` and `LABEL` of a `cancelled-by:` note.
+
+```
+SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES                            VENDOR  ROLE      LABEL  DIRECTORY  COMMAND
+41   exited     code:0    2026-09-30T14:03:22Z  1s      1m05s  -                                claude  coder     build  /work/a    make test
+42   cancelled  -         2026-09-30T14:10:01Z  4m10s   12s    cancelled-by:claude/reviewer/91  codex   tester    -      /work/b    ctest -j 8
+```
+
+**JSON output.** One array, `[]` when empty, of objects with exactly these members in this order; a member that does not apply is `null`:
+
+| Field | Meaning |
+|---|---|
+| `seq` | The sequence number |
+| `outcome` | As above |
+| `exit_code`, `signal` | How the command ended |
+| `cancelled_by` | The canceller as an object with `vendor`, `role` (each `null` when not given) and `pid`, when cancelled |
+| `superseded_by` | The successor's sequence number, when the entry was re-enqueued (the name `queue status --json` uses). A row whose entry was reaped and then re-enqueued (`abandoned`) names the new entry here |
+| `nested`, `parent_seq` | Nesting |
+| `cwd`, `argv` | As submitted; `argv` is an array |
+| `label`, `vendor`, `role` | As submitted |
+| `log_path` | The output file of a detached run |
+| `enqueued_at`, `started_at`, `ended_at` | Wall-clock milliseconds |
+| `waited_ms`, `ran_ms` | Durations, from the recorded times |
+| `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` on a store still at agent schema version 2 |
+
+**Schema effects:** Reads `queue_history` in the agent database. No writes; a missing agent database is an empty history and is not created. A store still at agent schema version 2 is read as it is and stays there.
+
+**Exit codes:**
+- `0` — success, an empty or missing history included.
+- `1` — the file at the agent database path is not an agent store or cannot be read; a parse failure (unknown flag, missing value).
+- `2` — `--since` is not a duration in the accepted grammar or range (an integer plus `ms`, `s`, `m`, `h` or `d`; zero, a bare integer and more than `36500d` are refused); the message names the value and nothing is printed on standard output.
+- `7` — the store was written by a newer release; both versions are named.
+
+Like `queue`, this verb does not need the main database's path: it resolves its store from `PLANAR_AGENT_DB` / `HOME` only.
+
 ---
 
 ### JSON shapes
@@ -7461,9 +7564,9 @@ latest_action: { kind: string, summary: string, started_at: ISO8601 } | null
 | Code | Meaning |
 |------|---------|
 | 0 | Success (and the `--follow` graceful-SIGINT exit). |
-| 1 | Generic failure (DB I/O error), and every parse failure — unknown flag, a flag value outside its accepted set. |
+| 1 | Generic failure (DB I/O error), and every parse failure — unknown flag, a flag value outside its accepted set. `queue`: a file that is not an agent store. |
 | 2 | Invalid input raised by a handler (missing required filter on `log`, an `--entity` value that is not `kind:id`). |
-| 7 | Schema version mismatch (DB older than binary's embedded minimum, OR newer than its embedded max). `planar-agent` and `planar-ext` fold both directions into `7` the same way; `planar` returns `7` only for a newer schema and `1` for an older one. |
+| 7 | Schema version mismatch (DB older than binary's embedded minimum, OR newer than its embedded max); for `queue`, an agent database written by a newer release. `planar-agent` and `planar-ext` fold both directions into `7` the same way; `planar` returns `7` only for a newer schema and `1` for an older one. |
 
 ### `--follow` and SIGINT
 

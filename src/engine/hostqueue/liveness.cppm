@@ -61,7 +61,18 @@ export struct process_probe {
       process_start_time;
   /// @brief Whether the process group with this id has at least one member.
   std::function<std::expected<bool, process::identity::error>(std::int64_t)> group_has_members;
+  /// @brief Whether the process group with this id has members and every one of them is an exited process
+  /// that has not been reaped. Left empty (as a test's fake leaves it), it answers "no".
+  std::function<std::expected<bool, process::identity::error>(std::int64_t)> group_only_zombies;
 };
+
+/// @brief Whether `probe` says the group `pgid` holds nothing but unreaped
+/// exited processes. An unset probe member, or a failed query, is "no": the
+/// caller then treats the group as it would have without the question.
+/// @param probe The process queries.
+/// @param pgid The group id.
+/// @return True only when the probe verified it.
+export auto group_has_only_zombies(const process_probe& probe, std::int64_t pgid) -> bool;
 
 /// @brief The probe that asks the host, through `planar.process.identity`.
 /// @return A probe whose members forward to `process_exists`,

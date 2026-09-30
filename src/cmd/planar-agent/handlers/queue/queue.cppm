@@ -110,10 +110,23 @@
 ///
 /// A RUNNING submitter keeps supervising its command, never rejoins, never
 /// runs the command a second time, and exits with what it observed of the
-/// child. The run limit is a property of the entry (the submitter marks its
-/// entry terminating), so with the entry gone it is no longer enforced; the
-/// submitter says so once on standard error. A store that cannot be reached
-/// changes nothing.
+/// child. The run limit stays enforced (task hq-vanished-entry-run-limit): the
+/// submitter holds its deadline itself and, with the entry gone, stops the
+/// command directly, SIGTERM at the deadline and SIGKILL after the grace
+/// period, to the group it started, only while the group leader's start time is
+/// still the one it read at start. It exits 124 and says so on standard error;
+/// the entry's history row is the one the removing process wrote. A store that
+/// cannot be reached changes nothing.
+///
+/// ## A command whose group was never recorded
+///
+/// If the store refuses to record the child's group on the entry, the record is
+/// retried at the poll interval (five more times). An entry that still names no
+/// group cannot be signalled by any other process, so at its run limit the
+/// submitter stops the command the same direct way, and then ends the entry
+/// itself with outcome `timeout` (task hq-unrecorded-group-timeout), so the
+/// history and the exit (124) agree instead of a later poll reaping it as
+/// `abandoned`.
 ///
 /// ## Give-up
 ///
@@ -257,6 +270,13 @@ export struct queue_run_deps {
       db::connection&, std::int64_t, const engine::hostqueue::enqueue_request&)>;
   /// @brief Rejoins the queue; `engine::hostqueue::rejoin` when empty.
   rejoiner rejoin;
+  /// @brief Records the child's process group on the entry: what
+  /// `engine::hostqueue::record_child` does with its arguments. A test
+  /// replaces it to make the store refuse the record.
+  using child_recorder = std::function<std::expected<bool, engine::hostqueue::queue_error>(
+      db::connection&, std::int64_t seq, std::int64_t child_pgid, std::int64_t child_started)>;
+  /// @brief Records the child group; `engine::hostqueue::record_child` when empty.
+  child_recorder record_child;
   /// @brief A test seam for `--detach`, called with a stage name: `before_fork`
   /// in the invoked process, then `after_setsid`, `after_insert` and
   /// `before_report` in the detached child. It runs in whichever process

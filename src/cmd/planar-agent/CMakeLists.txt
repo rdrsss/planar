@@ -184,6 +184,7 @@ planar_binary(planar_agent
     engine_runtime
     engine_routing
     json_text
+    textview
     json_dom
     engine_planning
     engine_hostqueue

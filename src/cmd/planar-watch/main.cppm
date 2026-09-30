@@ -14,6 +14,7 @@ import planar.cmd.planar_watch.handlers.log.command;
 import planar.cmd.planar_watch.handlers.tree.command;
 import planar.cmd.planar_watch.handlers.run.command;
 import planar.cmd.planar_watch.handlers.sync_events.command;
+import planar.cmd.planar_watch.handlers.queue.command;
 import planar.cmd.planar_watch.handlers.version.command;
 import planar.cmd.planar_watch.handlers.completion.command;
 import planar.cmd.planar_watch.handlers.schema.command;
@@ -79,6 +80,7 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::tree_cli::add(*app);
   handlers::run_cli::add(*app);
   handlers::sync_events_cli::add(*app);
+  handlers::queue_cli::add(*app);
   handlers::version_cli::add(*app);
   handlers::completion_cli::add(*app);
   handlers::schema_cli::add(*app);

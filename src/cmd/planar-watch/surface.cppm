@@ -74,6 +74,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar-watch run list", "List workflow runs (filterable by plan, status, and source arm)."},
       {"planar-watch run show", "Show one workflow run plus its context_records grouped by stage."},
       {"planar-watch sync-events", "List sync_events rows with optional filters (read-only)."},
+      {"planar-watch queue", "List the host build and test queue: running and waiting entries, marking any that are not live."},
       {"planar-watch version", "Print the planar-watch version, commit, and C++ toolchain."},
       {"planar-watch completion", "Generate the autocompletion script for the specified shell."},
       {"planar-watch schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals)."},

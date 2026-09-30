@@ -121,7 +121,7 @@ export enum class signal_outcome : std::uint8_t {
   sent,        ///< The signaller delivered the signal to the group.
   other_host,  ///< The entry's host identity is not the checker's (or one is `unknown`); its ids are never used here.
   no_group,    ///< The entry records no child group id above 1, or no leader start time; nothing can be verified.
-  group_empty, ///< The group has no member.
+  group_empty, ///< The group has no member, or (macOS) only exited members nobody has reaped, which the kernel refuses to signal.
   reused,      ///< A process with the group's id has a different start time; the id belongs to someone else.
   failed,      ///< A process query or the signal itself failed; `error` says which.
 };

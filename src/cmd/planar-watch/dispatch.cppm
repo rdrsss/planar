@@ -90,11 +90,14 @@ export auto handlers(const CLI::App& root) -> handler_table;
 /// @return The unwired leaf keys, in tree-walk order.
 export auto unregistered_leaves(const CLI::App& root, const handler_table& table) -> std::vector<std::string>;
 
-/// @brief Every table key that does not correspond to a leaf in `root`.
+/// @brief Every table key that does not correspond to a node in `root`.
 ///
 /// The other direction of the same gate: a handler registered under a
 /// misspelled or removed path is dead code that no argv can reach, and
-/// looks exactly like working coverage until someone tries the verb.
+/// looks exactly like working coverage until someone tries the verb. EVERY
+/// node counts as reachable, not only the childless ones: a group that also
+/// carries a handler (`queue`) is dual and runs it when named alone, the rule
+/// `planar` applies to `handoff` and `resume` (task 7100).
 /// @param root The command tree.
 /// @param table The handler table.
 /// @return The unreachable table keys, sorted.

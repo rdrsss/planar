@@ -100,6 +100,7 @@ planar_binary(planar_watch
     exit.cppm
     context.cppm
     database.cppm
+    agentstore.cppm
     handler.cppm
     main.cppm
     handlers/shared/cli.cppm
@@ -112,6 +113,7 @@ planar_binary(planar_watch
     handlers/tree/command.cppm
     handlers/run/command.cppm
     handlers/sync_events/command.cppm
+    handlers/queue/command.cppm
     handlers/version/command.cppm
     handlers/completion/command.cppm
     handlers/schema/command.cppm
@@ -127,10 +129,14 @@ planar_binary(planar_watch
     handlers/shared/live.cppm
     handlers/run/run.cppm
     handlers/sync_events/syncevents.cppm
+    handlers/queue/render.cppm
+    handlers/queue/queue.cppm
+    handlers/queue/history.cppm
     dispatch.cppm
   SOURCES
     context.cpp
     database.cpp
+    agentstore.cpp
     handlers/shared/format.cpp
     handlers/version/version.cpp
     handlers/schema/schema.cpp
@@ -141,14 +147,22 @@ planar_binary(planar_watch
     handlers/shared/live.cpp
     handlers/run/run.cpp
     handlers/sync_events/syncevents.cpp
+    handlers/queue/render.cpp
+    handlers/queue/queue.cpp
+    handlers/queue/history.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal
     cliapp
     db
     json_text
+    textview
     engine_planning
-    engine_runtime)
+    engine_runtime
+    engine_hostqueue
+    engine_config
+    json_dom
+    process)
 
 # Each binary builds its own CLI::App tree directly (plan 996, task 6123),
 # so the CLI11 module target is linked per binary rather than laundered
