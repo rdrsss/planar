@@ -1615,16 +1615,20 @@ auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_
   case hq::begin_status::already_terminating:
     break;
   }
+  // An entry of another host identity cannot be judged or signalled from here
+  // (its process ids mean nothing on this host), whether this call marked it
+  // or it was already terminating: refuse at once instead of waiting for a
+  // group that `advance_terminations` will never examine.
+  if (begun->stored && !(begun->stored->host_id == host && host != ident::k_unknown_host_identity)) {
+    ctx.err() << std::format("error: queue: cancel: entry {} belongs to another host identity; it is {} cancelled, and a poll on "
+                             "that host will stop it\n",
+                             seq, begun->status == hq::begin_status::marked ? "now marked" : "already marked");
+    return exit_status{exit_internal_error};
+  }
   reporter report{ctx.err()};
   bool     term_pending = false;
   if (begun->sigterm) {
     report_signal_failure(*begun->sigterm, report);
-    if (begun->sigterm->outcome == hq::signal_outcome::other_host) {
-      ctx.err() << std::format("error: queue: cancel: entry {} belongs to another host identity; it is marked cancelled, and a "
-                               "poll on that host will stop it\n",
-                               seq);
-      return exit_status{exit_internal_error};
-    }
     // The entry's submitter had not yet recorded the command's group: nothing
     // could be signalled, and nothing else will send this SIGTERM.
     term_pending = begun->sigterm->outcome == hq::signal_outcome::no_group;
@@ -1667,9 +1671,15 @@ auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_
     }
     auto const now = clock.monotonic_ms();
     if (now && *now - *started > grace_ms + k_drain_slack_ms) {
-      ctx.err() << std::format("error: queue: cancel: entry {}'s process group still has members after SIGKILL; the entry stays "
-                               "marked and the next poll will end it\n",
-                               seq);
+      if (term_pending) {
+        ctx.err() << std::format("error: queue: cancel: entry {}'s command group was never recorded, so no signal was sent; the "
+                                 "entry stays marked and the next poll will end it\n",
+                                 seq);
+      } else {
+        ctx.err() << std::format("error: queue: cancel: entry {}'s process group still has members {}; the entry stays marked "
+                                 "and the next poll will end it\n",
+                                 seq, killed ? "after SIGKILL" : "and no SIGKILL could be sent");
+      }
       return exit_status{exit_internal_error};
     }
     sleep(k_child_tick);

@@ -404,6 +404,24 @@ auto detached_blocked_script(bool ignore_term) -> std::string {
          "echo x > \"$1\"; exec >/dev/null 2>&1 </dev/null 3>&-; read x < \"$2\"";
 }
 
+/// @brief `queue status <seq> --json`, which must succeed.
+auto status_json(const parity::arena& arena, std::string_view tag, std::int64_t seq) -> std::string {
+  auto const got = parity::run_pinned(agent_bin(), std::vector<std::string>{"queue", "status", std::to_string(seq), "--json"},
+                                      arena.cpp_root, tag);
+  INFO("status stderr:\n" << got.err);
+  REQUIRE(got.code == 0);
+  return got.out;
+}
+
+/// @brief What `queue status --json` must say about a cancelled entry: the
+/// outcome and the canceller as the `{vendor, role, pid}` object cancel wrote.
+void check_status_names_canceller(const std::string& json, std::string_view vendor, std::string_view role, std::int64_t pid) {
+  INFO("status json:\n" << json);
+  CHECK(json.find("\"outcome\":\"cancelled\"") != std::string::npos);
+  CHECK(json.find(std::format("\"cancelled_by\":{{\"vendor\":\"{}\",\"role\":\"{}\",\"pid\":{}}}", vendor, role, pid)) !=
+        std::string::npos);
+}
+
 /// @brief Whether the process recorded on `e` is still the one that submitted it.
 auto submitter_alive(const hq::entry& e) -> bool {
   auto const now = ident::process_start_time(e.pid);
@@ -454,6 +472,7 @@ TEST_CASE("queue cancel: a waiting entry is removed, attributed to its canceller
   CHECK(row.cancelled_by->role == "reviewer");
   CHECK(row.cancelled_by->pid == canceller.pid);
   CHECK(history_seq(snap, 1) == nullptr);
+  check_status_names_canceller(status_json(arena, "status_w", 2), "claude", "reviewer", canceller.pid);
 
   // Its submitter exits 125 without running the command, and says why.
   auto const submitted = finish(b);
@@ -504,6 +523,7 @@ TEST_CASE(
   CHECK(row.cancelled_by->vendor == "codex");
   CHECK(row.cancelled_by->role == "operator");
   CHECK(row.cancelled_by->pid == canceller.pid);
+  check_status_names_canceller(status_json(arena, "status_r", 1), "codex", "operator", canceller.pid);
 
   auto const submitted = finish(a);
   INFO("submitter stderr:\n" << submitted.err);
@@ -741,4 +761,60 @@ TEST_CASE("queue cancel: the vendor and role come from the flags, then the envir
   }
   hold.release();
   CHECK(finish(holder).code == 0);
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: Edge: cancel racing the command's own exit
+// ---------------------------------------------------------------------------
+TEST_CASE("queue cancel: racing the command's own exit leaves exactly one history row, cancelled or exited",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  auto const arena = parity::make_arena("qc_race");
+  write_config(arena, k_fast_poll);
+  constexpr int k_rounds         = 24;
+  int           cancelled_rounds = 0;
+  int           exited_rounds    = 0;
+
+  for (int round = 0; round < k_rounds; ++round) {
+    INFO("round " << round);
+    auto const  seq = static_cast<std::int64_t>(round + 1);
+    gate        hold(arena.cpp_root / std::format("hold{}.fifo", round));
+    auto const  started = arena.cpp_root / std::format("started{}", round);
+    release_all guard{.gates = {&hold}};
+
+    auto submitter = spawn_queue(arena, std::format("sub{}", round),
+                                 sh_command(blocked_script(false), {started.string(), hold.path.string()}));
+    await_file(started);
+    static_cast<void>(await_child_recorded(arena, seq));
+
+    // The cancel is started first and the command is told to exit a varying
+    // number of milliseconds later, so the exit lands before the cancel has
+    // marked the entry, while it marks it, and after its SIGTERM.
+    auto const canceller = spawn_agent(arena, std::format("can{}", round), cancel_args(std::to_string(seq)));
+    std::this_thread::sleep_for(std::chrono::milliseconds((round % 12) * 6));
+    hold.release();
+
+    auto const cancelled = finish(canceller);
+    auto const submitted = finish(submitter);
+    INFO("cancel stderr:\n" << cancelled.err << "submitter stderr:\n" << submitted.err);
+
+    // Exactly one history row, no entry left, and every party agrees on it.
+    auto const snap = require_snapshot(arena);
+    CHECK(entry_seq(snap, seq) == nullptr);
+    auto const rows = std::ranges::count_if(snap.history, [&](const hq::history_row& r) { return r.seq == seq; });
+    REQUIRE(rows == 1);
+    auto const outcome = history_seq(snap, seq)->outcome;
+    if (outcome == hq::history_outcome::cancelled) {
+      ++cancelled_rounds;
+      CHECK(cancelled.code == 0);
+      CHECK(submitted.code == 125);
+    } else {
+      REQUIRE(outcome == hq::history_outcome::exited);
+      ++exited_rounds;
+      CHECK(cancelled.code == 6);
+      CHECK(submitted.code == 0);
+    }
+  }
+  INFO("cancelled " << cancelled_rounds << ", exited " << exited_rounds);
+  CHECK(cancelled_rounds + exited_rounds == k_rounds);
+  CHECK(require_snapshot(arena).history.size() == static_cast<std::size_t>(k_rounds));
 }

@@ -170,23 +170,26 @@ struct world {
 };
 
 /// @brief Seeds a RUNNING entry whose submitter is this test process, with its
-/// command's group recorded (or not).
-auto seed_running(const scratch& sc, world& w, bool record_group = true) -> std::int64_t {
+/// command's group recorded (or not). `host` overrides the entry's host
+/// identity, to seed an entry that belongs to another host.
+auto seed_running(const scratch& sc, world& w, bool record_group = true, std::optional<std::string> host = std::nullopt)
+    -> std::int64_t {
   w.store     = sc.root / "agent.db";
   auto opened = planar::db::agent::open_agent_db_at(w.store);
   REQUIRE(opened.has_value());
-  auto const host = ident::host_identity(ident::native_identity_source());
-  auto const pid  = static_cast<std::int64_t>(::getpid());
-  auto const seq  = hq::enqueue(*opened, hq::enqueue_request{.host_id        = host,
-                                                             .pid            = pid,
-                                                             .pid_started    = 1,
-                                                             .cwd            = "/seeded",
-                                                             .argv           = {"make", "test"},
-                                                             .enqueued_at    = w.clock->wall,
-                                                             .refreshed_mono = w.clock->mono});
+  auto const entry_host = host ? *host : ident::host_identity(ident::native_identity_source());
+  auto const pid        = static_cast<std::int64_t>(::getpid());
+  auto const seq        = hq::enqueue(*opened, hq::enqueue_request{.host_id        = entry_host,
+                                                                   .pid            = pid,
+                                                                   .pid_started    = k_started,
+                                                                   .cwd            = "/seeded",
+                                                                   .argv           = {"make", "test"},
+                                                                   .enqueued_at    = w.clock->wall,
+                                                                   .refreshed_mono = w.clock->mono});
   REQUIRE(seq.has_value());
   auto const polled = hq::poll(
-      *opened, hq::poll_request{.seq = *seq, .host_id = host, .slots = 1, .stale_after_ms = 3'600'000, .run_limit_ms = 3'600'000},
+      *opened,
+      hq::poll_request{.seq = *seq, .host_id = entry_host, .slots = 8, .stale_after_ms = 3'600'000, .run_limit_ms = 3'600'000},
       *w.clock, w.probe());
   REQUIRE(polled.has_value());
   REQUIRE(polled->running);
@@ -196,6 +199,21 @@ auto seed_running(const scratch& sc, world& w, bool record_group = true) -> std:
   }
   w.seq = *seq;
   return *seq;
+}
+
+/// @brief Marks `seq` terminating as another process already did: SIGTERM is
+/// sent through the world's signaller, and the signal record is then cleared,
+/// so a case sees only what the cancel under test sends.
+auto pre_mark(const scratch& sc, world& w, std::int64_t seq, hq::stop_reason reason, std::optional<hq::canceller> who,
+              const std::string& host_id) -> void {
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const begun = hq::begin_terminate(
+      *opened, hq::begin_terminate_request{.seq = seq, .reason = reason, .cancelled_by = who, .host_id = host_id}, *w.clock,
+      w.probe(), w.signaller());
+  REQUIRE(begun.has_value());
+  REQUIRE(begun->status == hq::begin_status::marked);
+  w.signals.clear();
 }
 
 auto cancel_args(std::int64_t seq) -> planar::cliapp::parsed_args {
@@ -378,4 +396,183 @@ TEST_CASE("queue cancel: the canceller's vendor and role come from the flags, th
     CHECK(row->cancelled_by->vendor == v.vendor);
     CHECK(row->cancelled_by->role == v.role);
   }
+}
+
+TEST_CASE("queue cancel: an entry already stopping by a cancel keeps its first canceller and gets no second SIGTERM",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch sc;
+  world   w;
+  w.honours_term          = false; // The first cancel's SIGTERM did nothing.
+  auto const          seq = seed_running(sc, w);
+  hq::canceller const first{.vendor = "first", .role = "one", .pid = 111};
+  pre_mark(sc, w, seq, hq::stop_reason::cancelled, first, ident::host_identity(ident::native_identity_source()));
+
+  auto    deps = w.deps(1'000, 250);
+  fixture fx{sc};
+  auto    args           = cancel_args(seq);
+  args.flags["--vendor"] = {"second"};
+  args.flags["--role"]   = {"two"};
+  auto const outcome     = agent::handlers::queue_cancel_with(fx.ctx, args, std::move(deps));
+  REQUIRE(std::get_if<agent::exit_status>(&outcome) != nullptr);
+  CHECK(std::get<agent::exit_status>(outcome).code == 0);
+
+  // Only the overdue SIGKILL was sent: no second SIGTERM.
+  REQUIRE_FALSE(w.signals.empty());
+  CHECK(std::ranges::none_of(w.signals, [](const auto& s) { return s.sig == SIGTERM; }));
+  CHECK(w.signals.front().sig == SIGKILL);
+
+  // The row names the first canceller; the second was not recorded.
+  auto const row = history_now(sc, seq);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::cancelled);
+  REQUIRE(row->cancelled_by.has_value());
+  CHECK(*row->cancelled_by == first);
+}
+
+TEST_CASE("queue cancel: SIGKILL is sent at once when the grace period has already passed",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch sc;
+  world   w;
+  w.honours_term = false;
+  auto const seq = seed_running(sc, w);
+  pre_mark(sc, w, seq, hq::stop_reason::cancelled, hq::canceller{.pid = 111},
+           ident::host_identity(ident::native_identity_source()));
+
+  w.clock->mono += 5'000; // Well past the one-second grace.
+  auto const before = w.clock->mono;
+  auto const got    = run_cancel(sc, seq, w.deps(1'000, 250));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  REQUIRE_FALSE(w.signals.empty());
+  CHECK(w.signals.front().sig == SIGKILL);
+  CHECK(w.signals.front().mono == before); // No time passed before it.
+  CHECK(w.sleeps <= 1);
+}
+
+TEST_CASE("queue cancel: an entry already stopping at its run limit ends as timeout and cancel exits 0",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch sc;
+  world   w;
+  w.honours_term = false;
+  auto const seq = seed_running(sc, w);
+  pre_mark(sc, w, seq, hq::stop_reason::timeout, std::nullopt, ident::host_identity(ident::native_identity_source()));
+
+  w.clock->mono += 5'000;
+  auto const got = run_cancel(sc, seq, w.deps(1'000, 250));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(got.out.find("already stopping and ended as timeout") != std::string::npos);
+  auto const row = history_now(sc, seq);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::timeout);
+  CHECK_FALSE(row->cancelled_by.has_value());
+}
+
+TEST_CASE("queue cancel: an entry of another host is marked, nothing is signalled and cancel exits 125 at once",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch    sc;
+  world      w;
+  auto const seq = seed_running(sc, w, true, "other-host");
+
+  auto const before = w.clock->mono;
+  auto const got    = run_cancel(sc, seq, w.deps(1'000, 250));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.find("another host identity") != std::string::npos);
+  CHECK(got.err.find("now marked") != std::string::npos);
+  CHECK(got.err.find("after SIGKILL") == std::string::npos);
+  CHECK(w.signals.empty());
+  CHECK(w.sleeps == 0);
+  CHECK(w.clock->mono == before);
+
+  auto const stored = entry_now(sc, seq);
+  REQUIRE(stored.has_value());
+  CHECK(stored->terminate_reason == "cancelled");
+  CHECK(stored->terminating_since_mono.has_value());
+  CHECK_FALSE(history_now(sc, seq).has_value());
+}
+
+TEST_CASE("queue cancel: an entry of another host that is already terminating is refused at once, not after a false wait",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch    sc;
+  world      w;
+  auto const seq = seed_running(sc, w, true, "other-host");
+  pre_mark(sc, w, seq, hq::stop_reason::timeout, std::nullopt, "other-host");
+
+  auto const before = w.clock->mono;
+  auto const got    = run_cancel(sc, seq, w.deps(1'000, 250));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.find("another host identity") != std::string::npos);
+  CHECK(got.err.find("already marked") != std::string::npos);
+  CHECK(got.err.find("after SIGKILL") == std::string::npos);
+  CHECK(w.signals.empty());
+  CHECK(w.sleeps == 0);
+  CHECK(w.clock->mono == before);
+  CHECK(entry_now(sc, seq).has_value());
+}
+
+TEST_CASE("queue cancel: a group that was never recorded is reported as such, not as surviving SIGKILL",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch    sc;
+  world      w;
+  auto const seq = seed_running(sc, w, /*record_group=*/false);
+
+  auto const got = run_cancel(sc, seq, w.deps(1'000, 500));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.find("never recorded") != std::string::npos);
+  CHECK(got.err.find("after SIGKILL") == std::string::npos);
+  CHECK(w.signals.empty()); // Nothing could be signalled.
+  auto const stored = entry_now(sc, seq);
+  REQUIRE(stored.has_value());
+  CHECK(stored->terminating_since_mono.has_value());
+}
+
+TEST_CASE("queue cancel: cancelling a nested entry stops its own group and leaves the parent untouched",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch    sc;
+  world      w;
+  auto const parent = seed_running(sc, w);
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const host = ident::host_identity(ident::native_identity_source());
+  auto const nested =
+      hq::enqueue_nested(*opened, parent,
+                         hq::enqueue_request{.host_id        = host,
+                                             .pid            = static_cast<std::int64_t>(::getpid()),
+                                             .pid_started    = k_started,
+                                             .cwd            = "/seeded",
+                                             .argv           = {"make", "inner"},
+                                             .enqueued_at    = w.clock->wall,
+                                             .refreshed_mono = w.clock->mono},
+                         hq::nested_limits{.stale_after_ms = 3'600'000, .run_limit_ms = 3'600'000}, *w.clock, w.probe());
+  REQUIRE(nested.has_value());
+  REQUIRE(nested->status == hq::nested_status::inserted);
+  auto const             child_seq      = nested->seq;
+  constexpr std::int64_t k_nested_group = k_group + 1;
+  REQUIRE(hq::record_child(*opened, child_seq, k_nested_group, k_started).has_value());
+  w.live.insert(k_nested_group);
+  w.seq = child_seq;
+
+  auto const got = run_cancel(sc, child_seq, w.deps(10'000));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+
+  // Only the nested entry's group was signalled, and only it ended.
+  REQUIRE(w.signals.size() == 1);
+  CHECK(w.signals[0].pgid == k_nested_group);
+  CHECK(w.live.contains(k_group));
+  auto const row = history_now(sc, child_seq);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::cancelled);
+  CHECK(row->nested);
+  CHECK(row->parent_seq == parent);
+
+  auto const kept = entry_now(sc, parent);
+  REQUIRE(kept.has_value());
+  CHECK(kept->state == hq::entry_state::running);
+  CHECK_FALSE(kept->terminating_since_mono.has_value());
+  CHECK_FALSE(history_now(sc, parent).has_value());
 }
