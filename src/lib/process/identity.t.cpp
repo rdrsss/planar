@@ -106,6 +106,58 @@ private:
   ::pid_t _pid = 0;
 };
 
+// @brief What watching a group whose members the test has all reaped found.
+enum class drain_verdict {
+  emptied,         // No process is in the group any more.
+  still_populated, // The group kept a member for the whole bound, and no process holds its id.
+  pid_reused,      // Some other process now holds the group's id, so the group is not this test's any more.
+};
+
+// @brief Watches `pgid`, whose every member this test has reaped, until it is
+// empty, for at most a bound.
+//
+// Two things make a single `group_has_members` call right after the reap an
+// unreliable verdict on a loaded host (measured: 1 failure in 304 runs at -j16
+// beside busy loops and fork churn). The kernel may still list the group for a
+// moment after `waitpid` returns, which a bounded wait absorbs. And the id of
+// a reaped leader is free for any other process to take; if one becomes a
+// group leader, `kill(-pgid, 0)` succeeds for that unrelated group for as long
+// as it lives. That cannot be waited out, so it is detected (the id then names
+// a live process, and this test reaped its own) and reported, so the caller
+// can rerun the scenario with a fresh group instead of judging a group that is
+// not its own. What the production function returns is asserted unchanged.
+auto watch_group_drain(std::int64_t pgid) -> drain_verdict {
+  auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (true) {
+    auto const members = pid_ns::group_has_members(pgid);
+    REQUIRE(members.has_value());
+    if (!*members) {
+      return drain_verdict::emptied;
+    }
+    auto const holder = pid_ns::process_exists(pgid);
+    REQUIRE(holder.has_value());
+    if (*holder) {
+      return drain_verdict::pid_reused;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return drain_verdict::still_populated;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+}
+
+// @brief Runs `scenario` until it does not report that its group id was reused
+// by another process, at most a few times. `scenario` returns true for reuse.
+template <class Scenario> void with_fresh_group(Scenario&& scenario) {
+  constexpr int k_attempts = 5;
+  for (int attempt = 0; attempt < k_attempts; ++attempt) {
+    if (!scenario()) {
+      return;
+    }
+  }
+  FAIL("the group id was taken by another process in every one of " << k_attempts << " attempts");
+}
+
 // @brief Fork a child that exits at once, reap it, and return its pid,
 // which then names no process.
 auto reaped_pid() -> std::int64_t {
@@ -202,18 +254,23 @@ TEST_CASE("exists_from_errno: a process that cannot be signalled still exists", 
 }
 
 TEST_CASE("group_has_members: a process group is a member of itself until it is empty", "[lib][process][identity]") {
-  sleeping_child child;
-  auto const     pgid = child.pid();
+  with_fresh_group([] {
+    sleeping_child child;
+    auto const     pgid = child.pid();
 
-  auto const populated = pid_ns::group_has_members(pgid);
-  REQUIRE(populated.has_value());
-  CHECK(*populated);
+    auto const populated = pid_ns::group_has_members(pgid);
+    REQUIRE(populated.has_value());
+    CHECK(*populated);
 
-  child.reap();
+    child.reap();
 
-  auto const emptied = pid_ns::group_has_members(pgid);
-  REQUIRE(emptied.has_value());
-  CHECK_FALSE(*emptied);
+    auto const verdict = watch_group_drain(pgid);
+    if (verdict == drain_verdict::pid_reused) {
+      return true;
+    }
+    CHECK(verdict == drain_verdict::emptied);
+    return false;
+  });
 }
 
 TEST_CASE("group_has_members and signal_group: a group outlives its dead leader until its last member is signalled",
@@ -221,51 +278,61 @@ TEST_CASE("group_has_members and signal_group: a group outlives its dead leader 
   // An orphaned helper whose leader has died is the case the engine uses
   // the group form for. The leader is reaped first, so a call that targeted
   // the pid `pgid` instead of the group `-pgid` would find nothing.
-  sleeping_child leader;
-  auto const     pgid = leader.pid();
-  sleeping_child member{static_cast<::pid_t>(pgid)};
-  REQUIRE(::getpgid(static_cast<::pid_t>(member.pid())) == static_cast<::pid_t>(pgid));
+  with_fresh_group([] {
+    sleeping_child leader;
+    auto const     pgid = leader.pid();
+    sleeping_child member{static_cast<::pid_t>(pgid)};
+    REQUIRE(::getpgid(static_cast<::pid_t>(member.pid())) == static_cast<::pid_t>(pgid));
 
-  leader.reap();
-  REQUIRE_FALSE(*pid_ns::process_exists(pgid));
+    leader.reap();
+    REQUIRE_FALSE(*pid_ns::process_exists(pgid));
 
-  auto const orphaned = pid_ns::group_has_members(pgid);
-  REQUIRE(orphaned.has_value());
-  CHECK(*orphaned);
+    auto const orphaned = pid_ns::group_has_members(pgid);
+    REQUIRE(orphaned.has_value());
+    CHECK(*orphaned);
 
-  auto const sent = pid_ns::signal_group(pgid, SIGTERM);
-  REQUIRE(sent.has_value());
+    auto const sent = pid_ns::signal_group(pgid, SIGTERM);
+    REQUIRE(sent.has_value());
 
-  int status = 0;
-  while (::waitpid(static_cast<::pid_t>(member.pid()), &status, 0) < 0 && errno == EINTR) {
-  }
-  member.forget();
-  REQUIRE(WIFSIGNALED(status));
-  CHECK(WTERMSIG(status) == SIGTERM);
+    int status = 0;
+    while (::waitpid(static_cast<::pid_t>(member.pid()), &status, 0) < 0 && errno == EINTR) {
+    }
+    member.forget();
+    REQUIRE(WIFSIGNALED(status));
+    CHECK(WTERMSIG(status) == SIGTERM);
 
-  auto const emptied = pid_ns::group_has_members(pgid);
-  REQUIRE(emptied.has_value());
-  CHECK_FALSE(*emptied);
+    auto const verdict = watch_group_drain(pgid);
+    if (verdict == drain_verdict::pid_reused) {
+      return true;
+    }
+    CHECK(verdict == drain_verdict::emptied);
+    return false;
+  });
 }
 
 TEST_CASE("signal_group: a signal reaches every member of a group this test created", "[lib][process][identity]") {
-  sleeping_child child;
-  auto const     pgid = child.pid();
+  with_fresh_group([] {
+    sleeping_child child;
+    auto const     pgid = child.pid();
 
-  auto const sent = pid_ns::signal_group(pgid, SIGTERM);
-  REQUIRE(sent.has_value());
+    auto const sent = pid_ns::signal_group(pgid, SIGTERM);
+    REQUIRE(sent.has_value());
 
-  int status = 0;
-  while (::waitpid(static_cast<::pid_t>(pgid), &status, 0) < 0 && errno == EINTR) {
-  }
-  REQUIRE(WIFSIGNALED(status));
-  CHECK(WTERMSIG(status) == SIGTERM);
+    int status = 0;
+    while (::waitpid(static_cast<::pid_t>(pgid), &status, 0) < 0 && errno == EINTR) {
+    }
+    REQUIRE(WIFSIGNALED(status));
+    CHECK(WTERMSIG(status) == SIGTERM);
 
-  // Reaped by hand above, so the holder has nothing left to wait on.
-  child.forget();
-  auto const empty = pid_ns::group_has_members(pgid);
-  REQUIRE(empty.has_value());
-  CHECK_FALSE(*empty);
+    // Reaped by hand above, so the holder has nothing left to wait on.
+    child.forget();
+    auto const verdict = watch_group_drain(pgid);
+    if (verdict == drain_verdict::pid_reused) {
+      return true;
+    }
+    CHECK(verdict == drain_verdict::emptied);
+    return false;
+  });
 }
 
 TEST_CASE("signal_group: a group id that names no group is the module's error, not a crash", "[lib][process][identity]") {
