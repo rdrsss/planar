@@ -189,6 +189,15 @@ auto leading_tokens(std::string_view line, std::size_t count) -> std::vector<std
   return tokens;
 }
 
+/// @brief Token `index` of `line`; a line with fewer tokens fails the case
+/// rather than reading past the end.
+auto token_of(std::string_view line, std::size_t index) -> std::string {
+  auto const tokens = leading_tokens(line, index + 1);
+  INFO("line: " << line);
+  REQUIRE(tokens.size() > index);
+  return tokens[index];
+}
+
 /// @brief A FIFO the test holds open read-write; a command reading it blocks
 /// until `release()`.
 struct gate {
@@ -497,6 +506,9 @@ TEST_CASE("queue view: one running and two waiting entries list in order with th
   auto const first  = leading_tokens(lines[1], 9);
   auto const second = leading_tokens(lines[2], 9);
   auto const third  = leading_tokens(lines[3], 11);
+  REQUIRE(first.size() == 9);
+  REQUIRE(second.size() == 9);
+  REQUIRE(third.size() == 11);
   CHECK(first[0] == std::to_string(holder));
   CHECK(first[1] == "running");
   CHECK(first[2] == "-");
@@ -589,9 +601,9 @@ TEST_CASE("queue view: a dead or stale entry is marked not live and is left in t
   auto const text  = run_queue(arena, "dead_text", false);
   auto const lines = lines_of(text.out);
   REQUIRE(lines.size() == 4);
-  CHECK(leading_tokens(lines[1], 4)[3] == "-");
-  CHECK(leading_tokens(lines[2], 4)[3] == "NOT-LIVE");
-  CHECK(leading_tokens(lines[3], 4)[3] == "NOT-LIVE");
+  CHECK(token_of(lines[1], 3) == "-");
+  CHECK(token_of(lines[2], 3) == "NOT-LIVE");
+  CHECK(token_of(lines[3], 3) == "NOT-LIVE");
 
   // Nothing was reaped, refreshed or recorded: the entries are all still
   // there, and the main file did not change.
@@ -676,8 +688,8 @@ TEST_CASE("queue view: a nested entry is marked with its parent", "[cmd][watch][
 
   auto const lines = lines_of(run_queue(arena, "nested_text", false).out);
   REQUIRE(lines.size() == 3);
-  CHECK(leading_tokens(lines[1], 4)[3] == "-");
-  CHECK(leading_tokens(lines[2], 4)[3] == std::format("nested:{}", parent));
+  CHECK(token_of(lines[1], 3) == "-");
+  CHECK(token_of(lines[2], 3) == std::format("nested:{}", parent));
 }
 
 TEST_CASE("queue view: an entry being stopped shows the reason", "[cmd][watch][queue][hq-watch-queue]") {
@@ -700,7 +712,7 @@ TEST_CASE("queue view: an entry being stopped shows the reason", "[cmd][watch][q
   CHECK(text_of(rows[0], "terminating") == "timeout");
   auto const lines = lines_of(run_queue(arena, "terminating_text", false).out);
   REQUIRE(lines.size() == 2);
-  CHECK(leading_tokens(lines[1], 4)[3] == "stopping:timeout");
+  CHECK(token_of(lines[1], 3) == "stopping:timeout");
 }
 
 // ---------------------------------------------------------------------------
@@ -731,7 +743,7 @@ TEST_CASE("queue view: control characters in submitted values are escaped, in te
   REQUIRE(text.code == 0);
   // A header and exactly one row; no raw control byte other than the two
   // line terminators reaches the terminal.
-  CHECK(lines_of(text.out).size() == 2);
+  REQUIRE(lines_of(text.out).size() == 2);
   for (auto const c : text.out) {
     auto const u = static_cast<unsigned char>(c);
     CHECK_FALSE((u < 0x20 && c != '\n'));
@@ -804,7 +816,7 @@ TEST_CASE("queue view: Unicode format characters are escaped in text and kept in
   auto const text = run_queue(arena, "format_text", false);
   INFO("stdout:\n" << text.out);
   REQUIRE(text.code == 0);
-  CHECK(lines_of(text.out).size() == 2);
+  REQUIRE(lines_of(text.out).size() == 2);
   for (auto const raw : {k_rlo, k_zwsp, k_line_sep, k_isolate, k_bom}) {
     CHECK_FALSE(text.out.contains(raw));
   }
@@ -1013,7 +1025,7 @@ TEST_CASE("queue view: works with no main database to locate, while every other 
   CHECK(text_of(rows[0], "cwd") == "/w/only");
   auto const text = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue"}, arena.cpp_root, "nomain_text", env);
   CHECK(text.code == 0);
-  CHECK(lines_of(text.out).size() == 2);
+  REQUIRE(lines_of(text.out).size() == 2);
 
   // The exemption is the `queue` domain's alone: every other verb keeps the
   // exit and the message it had.
@@ -1229,8 +1241,8 @@ TEST_CASE(
   auto const lines = lines_of(text.out);
   REQUIRE(lines.size() == 4);
   CHECK(leading_tokens(lines[0], 3) == std::vector<std::string>{"SEQ", "OUTCOME", "RESULT"});
-  CHECK(leading_tokens(lines[1], 3)[1] == "exited");
-  CHECK(leading_tokens(lines[1], 3)[2] == "code:3");
+  CHECK(token_of(lines[1], 1) == "exited");
+  CHECK(token_of(lines[1], 2) == "code:3");
   CHECK(lines[3].contains("cancelled-by:claude/reviewer/"));
 }
 
@@ -1294,6 +1306,7 @@ TEST_CASE("queue history: every outcome lists its columns, in JSON and in text",
     add(anonymous, 4);
 
     // The abandoned waiter rejoins the queue: its history row names the new entry.
+    REQUIRE(seqs.size() >= 6);
     auto const back = hq::rejoin(conn, seqs[5], alive_request("/w/history", {"make", "test"}));
     REQUIRE(back.has_value());
     REQUIRE(back->status == hq::rejoin_status::rejoined);
@@ -1310,6 +1323,7 @@ TEST_CASE("queue history: every outcome lists its columns, in JSON and in text",
     CHECK(is_null(row, "log_path"));
   }
   // Oldest end first, which here is also sequence order.
+  REQUIRE(seqs.size() >= rows.size());
   for (std::size_t i = 0; i < rows.size(); ++i) {
     CHECK(int_of(rows[i], "seq") == seqs[i]);
   }
@@ -1389,7 +1403,7 @@ TEST_CASE("queue history: every outcome lists its columns, in JSON and in text",
   CHECK(leading_tokens(lines[3], 3) == std::vector<std::string>{std::to_string(seqs[2]), "timeout", "-"});
   CHECK(lines[4].contains("cancelled-by:claude/reviewer/4242"));
   CHECK(leading_tokens(lines[5], 3) == std::vector<std::string>{std::to_string(seqs[4]), "not_started", "code:127"});
-  CHECK(leading_tokens(lines[6], 6)[5] == "-"); // an abandoned waiter never ran
+  CHECK(token_of(lines[6], 5) == "-"); // an abandoned waiter never ran
   CHECK(lines[6].contains(std::format("superseded-by:{}", rejoined)));
   CHECK(lines[7].contains("wait_timeout"));
   CHECK(lines[8].contains("cancelled-by:-/-/77"));
@@ -1416,9 +1430,14 @@ TEST_CASE("queue history: --since keeps only rows that ended within the duration
       spec.end       = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = now - ms_ago};
       return seed_ended(conn, std::move(spec));
     };
+    // The rows sit minutes from every cutoff probed below, because the cutoff
+    // is taken from the real clock when the binary runs, possibly seconds
+    // after these rows were seeded on a loaded host. The exact-to-the-
+    // millisecond boundary is pinned against a fixed `now` by the
+    // `since_cutoff_ms` case below.
     two_hours   = add(2 * 3'600'000);
-    inside      = add(58'000);
-    outside     = add(62'000);
+    outside     = add(40 * 60'000);
+    inside      = add(10 * 60'000);
     two_minutes = add(2 * 60'000);
   }
   auto const seqs_of = [&](const std::vector<json::json_value>& rows) {
@@ -1430,27 +1449,28 @@ TEST_CASE("queue history: --since keeps only rows that ended within the duration
   };
 
   // The spec's own example: two hours ago and two minutes ago, `--since 1h`
-  // returns the recent ones only (the two 6x-second rows are boundary probes).
-  // Oldest end first: 2m ago, 62s ago, 58s ago.
+  // returns the recent ones only. Oldest end first: 40m ago, 10m ago, 2m ago.
   CHECK(seqs_of(rows_of(run_history(arena, "since_1h_order", {"--since", "1h", "--json"}))) ==
-        std::vector<std::int64_t>{two_minutes, outside, inside});
+        std::vector<std::int64_t>{outside, inside, two_minutes});
   CHECK(seqs_of(rows_of(run_history(arena, "since_3h", {"--since", "3h", "--json"}))) ==
-        std::vector<std::int64_t>{two_hours, two_minutes, outside, inside});
-  // A minute: the row that ended 58s ago stays, the one that ended 62s ago and everything older goes.
-  CHECK(seqs_of(rows_of(run_history(arena, "since_1m", {"--since", "1m", "--json"}))) == std::vector<std::int64_t>{inside});
+        std::vector<std::int64_t>{two_hours, outside, inside, two_minutes});
+  // Five minutes: only the row that ended 2m ago stays; 10m, 40m and 2h go.
+  CHECK(seqs_of(rows_of(run_history(arena, "since_5m", {"--since", "5m", "--json"}))) == std::vector<std::int64_t>{two_minutes});
   // Milliseconds and seconds spell the same cutoff.
-  CHECK(seqs_of(rows_of(run_history(arena, "since_60s", {"--since", "60s", "--json"}))) == std::vector<std::int64_t>{inside});
-  CHECK(seqs_of(rows_of(run_history(arena, "since_60000ms", {"--since", "60000ms", "--json"}))) ==
-        std::vector<std::int64_t>{inside});
+  CHECK(seqs_of(rows_of(run_history(arena, "since_300s", {"--since", "300s", "--json"}))) ==
+        std::vector<std::int64_t>{two_minutes});
+  CHECK(seqs_of(rows_of(run_history(arena, "since_300000ms", {"--since", "300000ms", "--json"}))) ==
+        std::vector<std::int64_t>{two_minutes});
   // Nothing ended in the last second.
   CHECK(rows_of(run_history(arena, "since_1s", {"--since", "1s", "--json"})).empty());
   // Text honours it too, and the flag order does not matter.
-  auto const text = run_history(arena, "since_text", {"--since", "1m"});
+  auto const text = run_history(arena, "since_text", {"--since", "5m"});
   REQUIRE(text.code == 0);
-  CHECK(lines_of(text.out).size() == 2);
-  CHECK(leading_tokens(lines_of(text.out)[1], 1)[0] == std::to_string(inside));
-  auto const flipped = run_history(arena, "since_flipped", {"--json", "--since", "1m"});
-  CHECK(seqs_of(rows_of(flipped)) == std::vector<std::int64_t>{inside});
+  auto const text_lines = lines_of(text.out);
+  REQUIRE(text_lines.size() == 2);
+  CHECK(token_of(text_lines[1], 0) == std::to_string(two_minutes));
+  auto const flipped = run_history(arena, "since_flipped", {"--json", "--since", "5m"});
+  CHECK(seqs_of(rows_of(flipped)) == std::vector<std::int64_t>{two_minutes});
 }
 
 TEST_CASE("queue history: --since takes days and keeps a week of history",
@@ -1552,6 +1572,7 @@ TEST_CASE("queue history: the --since cutoff is exact to the millisecond and a r
   auto const kept = store->history(cutoff);
   REQUIRE(kept.has_value());
   REQUIRE(kept->size() == 2);
+  REQUIRE(seqs.size() == 3);
   CHECK(kept->at(0).seq == seqs[1]);
   CHECK(kept->at(1).seq == seqs[2]);
   CHECK(store->history()->size() == 3);
@@ -1586,7 +1607,7 @@ TEST_CASE("queue history: a store still at agent schema version 2 lists with nul
 
   auto const text = run_history(arena, "v2_text", {});
   CHECK(text.code == 0);
-  CHECK(lines_of(text.out).size() == 2);
+  REQUIRE(lines_of(text.out).size() == 2);
   CHECK(rows_of(run_history(arena, "v2_since", {"--since", "1h", "--json"})).empty());
 
   CHECK(bytes_of(store_path(arena)) == before);
@@ -1711,7 +1732,7 @@ TEST_CASE("queue history: control characters in submitted values are escaped, in
   auto const text = run_history(arena, "escape_text", {});
   INFO("stdout:\n" << text.out);
   REQUIRE(text.code == 0);
-  CHECK(lines_of(text.out).size() == 2);
+  REQUIRE(lines_of(text.out).size() == 2);
   for (auto const c : text.out) {
     auto const u = static_cast<unsigned char>(c);
     CHECK_FALSE((u < 0x20 && c != '\n'));
@@ -1786,7 +1807,7 @@ TEST_CASE("queue history: format characters, long values and display width are h
   auto const text = run_history(arena, "display_text", {});
   INFO("stdout:\n" << text.out);
   REQUIRE(text.code == 0);
-  CHECK(lines_of(text.out).size() == 3);
+  REQUIRE(lines_of(text.out).size() == 3);
   CHECK_FALSE(text.out.contains(k_rlo));
   CHECK_FALSE(text.out.contains(k_line_sep));
   CHECK(text.out.contains("\\u202e"));
@@ -1879,7 +1900,7 @@ TEST_CASE("queue history: works with no main database to locate", "[cmd][watch][
   auto const text = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "history", "--since", "1h"}, arena.cpp_root,
                                        "nomain_text", env);
   CHECK(text.code == 0);
-  CHECK(lines_of(text.out).size() == 2);
+  REQUIRE(lines_of(text.out).size() == 2);
 }
 
 } // namespace

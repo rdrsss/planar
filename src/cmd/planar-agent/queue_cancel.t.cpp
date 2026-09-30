@@ -786,11 +786,28 @@ TEST_CASE("queue cancel: racing the command's own exit leaves exactly one histor
     await_file(started);
     static_cast<void>(await_child_recorded(arena, seq));
 
-    // The cancel is started first and the command is told to exit a varying
-    // number of milliseconds later, so the exit lands before the cancel has
-    // marked the entry, while it marks it, and after its SIGTERM.
+    // Two ways to land the exit inside the cancel. Odd rounds are synchronised
+    // on state, not on time: the command is told to exit only once the cancel
+    // has committed its marker (or the entry is already gone), so the exit
+    // races the SIGTERM and the cancel's own end however loaded the host is.
+    // Even rounds keep the timing race: the exit lands a varying number of
+    // milliseconds after the cancel starts, before it marks the entry, while
+    // it marks it, and after its SIGTERM. Under load a fixed delay lands the
+    // exit first every time, which is why only the odd rounds pin the cancel
+    // branch.
     auto const canceller = spawn_agent(arena, std::format("can{}", round), cancel_args(std::to_string(seq)));
-    std::this_thread::sleep_for(std::chrono::milliseconds((round % 12) * 6));
+    if (round % 2 == 1) {
+      REQUIRE(await([&] {
+        auto const snap = try_snapshot(arena);
+        if (!snap) {
+          return false;
+        }
+        auto const* found = entry_seq(*snap, seq);
+        return found == nullptr || found->terminating_since_mono.has_value();
+      }));
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds((round % 12) * 3));
+    }
     hold.release();
 
     auto const cancelled = finish(canceller);
@@ -803,6 +820,10 @@ TEST_CASE("queue cancel: racing the command's own exit leaves exactly one histor
     auto const rows = std::ranges::count_if(snap.history, [&](const hq::history_row& r) { return r.seq == seq; });
     REQUIRE(rows == 1);
     auto const outcome = history_seq(snap, seq)->outcome;
+    if (round % 2 == 1) {
+      // The marker was committed before the command exited, so the cancel won.
+      CHECK(outcome == hq::history_outcome::cancelled);
+    }
     if (outcome == hq::history_outcome::cancelled) {
       ++cancelled_rounds;
       CHECK(cancelled.code == 0);
