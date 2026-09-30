@@ -25,8 +25,14 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdio.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#if defined(__APPLE__)
+#include <libproc.h>
+#include <sys/proc_info.h>
+#endif
 
 import std;
 import planar.db;
@@ -3339,4 +3345,178 @@ TEST_CASE("queue run: a detached run never writes into a log that already exists
   CHECK(snap.entries.empty());
   CHECK(snap.history.empty());
   CHECK_FALSE(present(ran));
+}
+
+namespace {
+
+/// @brief The descriptor numbers process `pid` holds open right now, read from
+/// the operating system (`proc_pidinfo` on macOS, `/proc/<pid>/fd` on Linux).
+/// An unreadable process is a failed case, never an empty answer.
+auto open_descriptors_of(std::int64_t pid) -> std::vector<int> {
+  std::vector<int> found;
+#if defined(__APPLE__)
+  auto const bytes = ::proc_pidinfo(static_cast<int>(pid), PROC_PIDLISTFDS, 0, nullptr, 0);
+  REQUIRE(bytes > 0);
+  std::vector<proc_fdinfo> table(static_cast<std::size_t>(bytes) / sizeof(proc_fdinfo) + 16);
+  auto const               got = ::proc_pidinfo(static_cast<int>(pid), PROC_PIDLISTFDS, 0, table.data(),
+                                                static_cast<int>(table.size() * sizeof(proc_fdinfo)));
+  REQUIRE(got > 0);
+  for (std::size_t i = 0; i < static_cast<std::size_t>(got) / sizeof(proc_fdinfo); ++i) {
+    found.push_back(table[i].proc_fd);
+  }
+#else
+  std::error_code ec;
+  for (auto const& item : std::filesystem::directory_iterator(std::format("/proc/{}/fd", pid), ec)) {
+    int value = -1;
+    auto const name = item.path().filename().string();
+    if (std::from_chars(name.data(), name.data() + name.size(), value).ec == std::errc{}) {
+      found.push_back(value);
+    }
+  }
+  REQUIRE_FALSE(ec);
+#endif
+  return found;
+}
+
+/// @brief Holds `number` open in this process as a duplicate of /dev/null and
+/// closes it on the way out.
+struct held_descriptor {
+  int number = -1;
+
+  explicit held_descriptor(int wanted) {
+    auto const null = ::open("/dev/null", O_RDONLY);
+    REQUIRE(null >= 0);
+    number = ::dup2(null, wanted);
+    ::close(null);
+    REQUIRE(number == wanted);
+  }
+  held_descriptor(const held_descriptor&)            = delete;
+  held_descriptor& operator=(const held_descriptor&) = delete;
+  ~held_descriptor() {
+    if (number >= 0) {
+      ::close(number);
+    }
+  }
+};
+
+/// @brief Raises this process's soft descriptor limit to at least `wanted`.
+/// The case fails when the host will not allow it.
+void require_descriptor_limit(rlim_t wanted) {
+  struct rlimit limit{};
+  REQUIRE(::getrlimit(RLIMIT_NOFILE, &limit) == 0);
+  if (limit.rlim_cur >= wanted) {
+    return;
+  }
+  limit.rlim_cur = limit.rlim_max == RLIM_INFINITY ? wanted : std::min(wanted, limit.rlim_max);
+  REQUIRE(::setrlimit(RLIMIT_NOFILE, &limit) == 0);
+  REQUIRE(limit.rlim_cur >= wanted);
+}
+
+} // namespace
+
+TEST_CASE("queue run: --detach leaves the submitter holding none of its caller's descriptors, however high their number",
+          "[cmd][agent][queue][hq-detach][hq-detach-fds]") {
+  // The child used to close only descriptors below min(sysconf(_SC_OPEN_MAX),
+  // 8192); one above that survived into a submitter that lives as long as its
+  // command, and a reader waiting on it waited as long.
+  constexpr int k_low  = 37;
+  constexpr int k_high = 9000;
+  require_descriptor_limit(k_high + 64);
+  auto const arena = parity::make_arena("qd_fds");
+  write_config(arena, k_fast_poll);
+  gate               release(arena.cpp_root / "release.fifo");
+  release_all        guard{.gates = {&release}};
+  detached_submitter submitter;
+  held_descriptor    low(k_low);
+  held_descriptor    high(k_high);
+
+  auto const submitted = run_queue(arena, "fds", sh_command("read x < \"$1\"", {release.path.string()}), {"--detach"});
+  INFO("stderr:\n" << submitted.err);
+  REQUIRE(submitted.code == 0);
+  auto const  ticket = parse_ticket(submitted.out);
+  auto const  snap   = require_snapshot(arena);
+  auto const* entry  = entry_seq(snap, ticket.seq);
+  REQUIRE(entry != nullptr);
+  submitter.record(*entry);
+  REQUIRE(submitter.still_mine());
+
+  auto const held = open_descriptors_of(entry->pid);
+  INFO("descriptors held by the submitter: " << held.size());
+  CHECK(std::ranges::find(held, k_low) == held.end());
+  CHECK(std::ranges::find(held, k_high) == held.end());
+  // Not vacuous: the standard streams and the store are still there.
+  CHECK(std::ranges::find(held, STDOUT_FILENO) != held.end());
+  CHECK(held.size() >= 4);
+  release.release();
+}
+
+TEST_CASE("queue run: --detach refuses an existing queue-logs directory that group or others can write to",
+          "[cmd][agent][queue][hq-detach][hq-detach-logdir]") {
+  auto const arena = parity::make_arena("qd_loose");
+  auto const dir   = arena.cpp_root / "queue-logs";
+  std::filesystem::create_directories(dir);
+  auto const ran = arena.cpp_root / "ran";
+
+  struct loose {
+    std::string tag;
+    mode_t      mode;
+  };
+  for (auto const& c : {loose{"world", 0777}, loose{"group", 0770}, loose{"other", 0702}}) {
+    INFO("mode " << std::format("{:o}", static_cast<unsigned>(c.mode)));
+    REQUIRE(::chmod(dir.c_str(), c.mode) == 0);
+    auto const got = run_queue(arena, c.tag, sh_command("echo x > \"$1\"", {ran.string()}), {"--detach"});
+    INFO("stderr:\n" << got.err);
+    CHECK(got.code == 125);
+    CHECK(got.out.empty());
+    CHECK(got.err.starts_with("error: queue: "));
+    CHECK(got.err.find("queue-logs") != std::string::npos);
+    CHECK(got.err.find("writable") != std::string::npos);
+    auto const snap = require_snapshot(arena);
+    CHECK(snap.entries.empty());
+    CHECK(snap.history.empty());
+    CHECK_FALSE(present(ran));
+    CHECK(std::filesystem::is_empty(dir)); // Nothing written into it, and it was not tightened behind the operator's back.
+    CHECK(file_mode(dir) == static_cast<unsigned>(c.mode));
+  }
+}
+
+TEST_CASE("queue run: --detach accepts an existing queue-logs directory that only its owner can write to",
+          "[cmd][agent][queue][hq-detach][hq-detach-logdir]") {
+  auto const arena = parity::make_arena("qd_tight");
+  auto const dir   = arena.cpp_root / "queue-logs";
+  std::filesystem::create_directories(dir);
+  for (auto const mode : {mode_t{0700}, mode_t{0755}}) {
+    INFO("mode " << std::format("{:o}", static_cast<unsigned>(mode)));
+    REQUIRE(::chmod(dir.c_str(), mode) == 0);
+    auto const got = run_queue(arena, "tight", sh_command("exit 0"), {"--detach"});
+    INFO("stderr:\n" << got.err);
+    REQUIRE(got.code == 0);
+    auto const ticket = parse_ticket(got.out);
+    CHECK(present(ticket.path));
+    REQUIRE(await([&] {
+      auto const now = try_snapshot(arena);
+      return now && history_seq(*now, ticket.seq) != nullptr;
+    }));
+  }
+}
+
+TEST_CASE("queue run: --detach refuses an existing queue-logs directory owned by another user",
+          "[cmd][agent][queue][hq-detach][hq-detach-logdir]") {
+  // A foreign owner can only be built by root. As any other user the check is
+  // covered by the mode cases above; this case then asserts nothing rather
+  // than skip, because the expected skip tally is zero.
+  if (::geteuid() != 0) {
+    SUCCEED("not root: a directory owned by another user cannot be made");
+    return;
+  }
+  auto const arena = parity::make_arena("qd_foreign");
+  auto const dir   = arena.cpp_root / "queue-logs";
+  std::filesystem::create_directories(dir);
+  REQUIRE(::chmod(dir.c_str(), 0700) == 0);
+  REQUIRE(::chown(dir.c_str(), 12345, static_cast<gid_t>(-1)) == 0);
+  auto const got = run_queue(arena, "foreign", sh_command("exit 0"), {"--detach"});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.find("owned by") != std::string::npos);
+  CHECK(require_snapshot(arena).entries.empty());
 }
