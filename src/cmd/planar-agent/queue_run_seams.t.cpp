@@ -264,3 +264,149 @@ TEST_CASE("queue run: giving up after a poll cannot complete ends the entry as a
   REQUIRE(history.size() == 1);
   CHECK(history.front().outcome == hq::history_outcome::abandoned);
 }
+
+TEST_CASE("queue run: an entry another process already ended is still mapped to its stop reason, never 128 plus the signal",
+          "[cmd][agent][queue][hq-timeouts]") {
+  struct reason_case {
+    hq::stop_reason     reason;
+    hq::history_outcome outcome;
+    int                 code;
+  };
+  for (auto const& one : {reason_case{hq::stop_reason::timeout, hq::history_outcome::timeout, 124},
+                          reason_case{hq::stop_reason::cancelled, hq::history_outcome::cancelled, 125}}) {
+    INFO("reason " << hq::to_string(one.reason));
+    scratch sc;
+    bool    acted = false;
+
+    agent::handlers::queue_run_deps deps;
+    auto const                      settings = fast_settings();
+    deps.load_settings                       = [settings] {
+      return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{settings};
+    };
+    auto polls = std::make_shared<int>(0);
+    // At the first tick after the command has started, play "another
+    // process": mark the entry with the reason (which SIGTERMs the group), and
+    // then, seeing the group empty, end it. The entry is therefore gone, with
+    // its history row, before the submitter reaps its child.
+    deps.sleep = [&, polls](std::chrono::milliseconds) {
+      if (++*polls >= 300) {
+        throw std::runtime_error("queue run polled past the case's bound");
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (acted) {
+        return;
+      }
+      auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+      REQUIRE(opened.has_value());
+      auto const stored = hq::find(*opened, 1);
+      if (!stored || !stored->has_value() || !(*stored)->child_pgid) {
+        return;
+      }
+      acted = true;
+      ident::system_clock clock;
+      auto const          host = ident::host_identity(ident::native_identity_source());
+      hq::canceller const who{.vendor = "claude", .role = "operator", .pid = 1234};
+      auto const          real = hq::system_process_probe();
+      auto const          begun =
+          hq::begin_terminate(*opened,
+                              hq::begin_terminate_request{
+                                  .seq          = 1,
+                                  .reason       = one.reason,
+                                  .cancelled_by = one.reason == hq::stop_reason::cancelled ? std::optional{who} : std::nullopt,
+                                  .host_id      = host},
+                              clock, real, hq::system_group_signaller());
+      REQUIRE(begun.has_value());
+      REQUIRE(begun->status == hq::begin_status::marked);
+      auto empty              = real;
+      empty.group_has_members = [](std::int64_t) -> std::expected<bool, ident::error> { return false; };
+      auto const ended = hq::advance_terminations(*opened, hq::advance_request{.host_id = host, .grace_ms = 10'000, .seq = 1},
+                                                  clock, empty, hq::system_group_signaller());
+      REQUIRE(ended.has_value());
+      REQUIRE(ended->ended.size() == 1);
+    };
+
+    auto const got = run_queue(sc, {"/bin/sleep", "30"}, deps);
+    INFO("stderr:\n" << got.err);
+    CHECK(acted);
+    CHECK(got.code == one.code);
+
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    REQUIRE(opened.has_value());
+    CHECK(hq::list(*opened).value().empty());
+    auto const history = hq::list_history(*opened).value();
+    REQUIRE(history.size() == 1);
+    CHECK(history.front().outcome == one.outcome);
+    CHECK_FALSE(history.front().signal.has_value());
+  }
+}
+
+namespace {
+
+/// @brief The system clock, counting how often the monotonic clock is read.
+class counting_clock final : public ident::clock {
+public:
+  ident::system_clock inner;
+  int                 reads = 0;
+
+  [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, ident::error> override {
+    ++reads;
+    return inner.monotonic_ms();
+  }
+  [[nodiscard]] auto wall_ms() -> std::int64_t override {
+    return inner.wall_ms();
+  }
+};
+
+} // namespace
+
+TEST_CASE("queue run: a run limit that cannot mark a missing entry retries at the poll interval, not at every tick",
+          "[cmd][agent][queue][hq-timeouts]") {
+  scratch sc;
+  auto    clock = std::make_shared<counting_clock>();
+  bool    acted = false;
+  int     ticks = 0;
+
+  agent::handlers::queue_run_deps deps;
+  deps.clock = clock;
+  // A poll interval far longer than the case: the regular poll never runs, so
+  // only the run-limit marking reads the store.
+  auto const settings = planar::engine::config::queue_settings{
+      .slots = 1, .poll_interval_ms = 60'000, .stale_after_ms = 3'600'000, .grace_ms = 10'000, .history_days = 30};
+  deps.load_settings = [settings] {
+    return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{settings};
+  };
+  deps.sleep = [&](std::chrono::milliseconds) {
+    if (++ticks >= 2000) {
+      throw std::runtime_error("queue run ticked past the case's bound");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    if (acted) {
+      return;
+    }
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    REQUIRE(opened.has_value());
+    auto const stored = hq::find(*opened, 1);
+    if (!stored || !stored->has_value() || !(*stored)->child_pgid) {
+      return;
+    }
+    // The entry disappears from under the running submitter; its run limit
+    // (300 ms) passes while the command still runs, so every tick would try to mark it and find it missing.
+    acted = true;
+    REQUIRE(opened->execute("delete from queue_entries where seq = 1;").has_value());
+  };
+
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args            = queue_args({"/bin/sleep", "1"});
+  args.flags["--timeout"] = {"300ms"};
+  auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status      = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(acted);
+  CHECK(status->code == 0);
+  REQUIRE(ticks > 50);
+  // Two clock reads per tick are the loop's own (the run-limit check and the
+  // poll schedule). A mark attempted at every tick reads a third, inside
+  // `begin_terminate`.
+  CHECK(clock->reads <= 2 * ticks + 20);
+}

@@ -73,6 +73,17 @@ export struct queue_load_error {
   std::vector<queue_finding> findings;                 ///< The refused values, for `kind::invalid`.
 };
 
+/// @brief Parses a duration given on the command line (`queue run --timeout`,
+/// `--wait-timeout`) with the grammar and the one-day cap `[queue]` durations
+/// use, so a flag and a configuration key spelled the same mean the same.
+/// Unlike a configuration key, a flag has no meaningful zero: a run limit or a
+/// wait limit of zero would end the entry before it began, so zero and
+/// negative values are refused.
+/// @param text The value, an integer immediately followed by `ms`, `s`, `m` or `h`.
+/// @return The milliseconds, between 1 and 24 hours inclusive, or a one-line
+/// reason the text is refused.
+export auto parse_duration_flag(std::string_view text) -> std::expected<std::int64_t, std::string>;
+
 /// @brief The settings used when no `[queue]` table is present.
 /// @return One slot, a 1s poll, a 30s staleness window, a 10s grace and 30 days of history.
 export auto default_queue_settings() -> queue_settings;

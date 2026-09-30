@@ -6868,7 +6868,7 @@ planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now
 # Host-wide build and test queue (plan 1080). Everything after `--` is the
 # command; it runs in the caller's directory with the caller's environment.
 # See "Queue verbs" below.
-planar-agent queue run  [--label <text>] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
+planar-agent queue run  [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
 
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
 planar-agent version
@@ -6887,7 +6887,7 @@ Previously `--ttl` carried a hardcoded `600` default, so an omitted flag was ind
 
 `planar-agent queue` is the host-wide build and test queue (plan 1080). One queue per user per host serves every project, so a build or test one agent starts does not run on top of another's. There is no daemon: the process that submits a command is the process that runs it.
 
-The foreground form is `queue run` with an optional `--label <text>`, then the argument terminator and the command with its arguments (`queue run [--label <text>] <terminator> <command> [args...]`):
+The foreground form is `queue run` with optional `--timeout <duration>`, `--wait-timeout <duration>` and `--label <text>`, then the argument terminator and the command with its arguments (`queue run [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] <terminator> <command> [args...]`):
 
 1. It checks the command before touching the configuration or the store, in this order. **The command guard**: a command whose program is on the model-launcher list is refused at exit **2**, with one `error: queue: ...` line on standard error that names the program. **Resolution**: a program that cannot be found is refused at exit **127**, and a program that exists but cannot be executed (a file without the execute bit, or a directory) at exit **126**, each with one `error: queue: ...` line naming the program. None of the three creates an entry, a ticket or a history row, and the command is never started; the caller learns of them from the exit code of `queue run` itself. See [the command guard](#the-queue-command-guard).
 2. It reads the `[queue]` configuration ([the `[queue]` table](#the-queue-table)). A configuration it cannot use refuses at exit **125** before anything is enqueued.
@@ -6897,13 +6897,19 @@ The foreground form is `queue run` with an optional `--label <text>`, then the a
 6. While the command runs it refreshes the entry at each poll, so an entry whose submitter is alive stays live.
 7. When the command ends it removes the entry and writes its one `queue_history` row in a single transaction, then exits with the command's status: its own exit code, or `128` plus the signal that terminated it.
 
-`command` is the argument vector, given after `--`. `--label` is stored with the entry and shown in listings. `queue run` with no command is a parse failure: exit **1**, nothing enqueued.
+`command` is the argument vector, given after `--`. `--label` is stored with the entry and shown in listings.
+
+`--timeout <duration>` is the **run limit**, default `30m`: how long the command may run once it has started. The limit is recorded on the entry as its deadline when the entry starts. At the deadline the submitter marks its own entry terminating with reason `timeout` and sends SIGTERM to the command's process group; if the group still has members once the `[queue] grace` period has passed, it sends SIGKILL. The entry is removed only when the group is empty, so a stopped command keeps its slot until it is gone: after the command's first process is reaped, the submitter keeps advancing the stop (sending the SIGKILL once the grace period has passed) until the engine has ended the entry, and only then exits. If a member survives SIGKILL for `[queue] grace` plus 15 seconds, the submitter exits anyway and leaves the entry, still live while its group has members, for the next poll of any submitter to end. The entry ends with outcome `timeout` and the submitter exits **124**, whatever signal ended the command. The same holds when another process marked the entry (a cancellation ends it `cancelled`, exit **125**); a stopped command is never recorded as `signaled`.
+
+`--wait-timeout <duration>` is the **wait limit**, default none: how long the entry may wait for its turn. The limit is recorded on the entry (as `wait_deadline_mono`) when it is enqueued. A submitter whose turn has not come when the limit passes removes its entry with outcome `wait_timeout`, does not run the command, and exits **125** with one `error: queue: ...` line. An entry whose turn comes at the limit runs; the wait limit never cuts short a command that has started.
+
+Both flags take the [`[queue]` duration grammar](#the-queue-table): an integer immediately followed by `ms`, `s`, `m` or `h`, at most `24h`. The flags refuse what a configuration key would not need to: zero, a negative value, a bare integer and an unknown unit are refused at exit **2** with an `error: queue: run: <flag>: ...` line, before the configuration or the store is touched, so nothing is enqueued. (An unknown flag or a flag with no value is a parse failure, exit **1**.) `queue run` with no command is a parse failure: exit **1**, nothing enqueued.
 
 A command that passes both checks can still fail to start at its turn: the program vanished or lost its execute permission while the entry waited, or it is a file with the execute bit but no interpreter line, which passes resolution and fails when it is executed. The entry then ends with outcome `not_started` and one `queue_history` row (exit code **127** for a missing program, **126** otherwise), the submitter exits with that code and writes `error: queue: cannot start '<program>': ...` on standard error, and the next entry takes its turn.
 
 The exit code passes the command's status through, so it is ambiguous by design (a command may exit `125` itself); `queue_history` records how each entry ended. The queue's own failure is exit **125** with one `error: queue: ...` line on standard error. `queue run` has no `--json`: standard output belongs to the command, so no envelope is written on any path.
 
-Not yet available in this build (later tasks of plan 1080): `--detach`, `--timeout`, `--wait-timeout`, `--vendor`, `--role`, `--claim`, `--notices`, `queue status`, `queue cancel`, `queue rule`, signal forwarding to the command, and nested runs.
+Not yet available in this build (later tasks of plan 1080): `--detach`, `--vendor`, `--role`, `--claim`, `--notices`, `queue status`, `queue cancel`, `queue rule`, signal forwarding to the command, and nested runs.
 
 #### The queue command guard
 

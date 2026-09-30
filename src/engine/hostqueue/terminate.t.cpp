@@ -816,9 +816,11 @@ public:
     }
     if (forked == 0) {
       ::setpgid(0, 0);
-      if (ignore_term) {
-        ::signal(SIGTERM, SIG_IGN);
-      }
+      // The fork inherits the test runner's SIGTERM handler, which would
+      // catch the signal, report it as a failure of the forked copy and exit
+      // 0. The leader must instead ignore SIGTERM or die of it, so the
+      // disposition is set explicitly both ways (as orphan.t.cpp does).
+      ::signal(SIGTERM, ignore_term ? SIG_IGN : SIG_DFL);
       ::close(ready[0]);
       ::close(release[1]);
       if (with_helper && ::fork() == 0) {

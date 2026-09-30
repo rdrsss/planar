@@ -175,8 +175,8 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
   // adds its name here in the change that adds the verb.
   CHECK(verbs == std::set<std::string, std::less<>>{"run"});
 
-  // `queue run`'s surface: the label flag, the command positional, and
-  // nothing else (no `--json`: standard output belongs to the command).
+  // `queue run`'s surface: the label and time-limit flags, the command
+  // positional, and nothing else (no `--json`: standard output belongs to the command).
   auto const* run = queue->get_subcommand_no_throw("run");
   REQUIRE(run != nullptr);
   std::set<std::string, std::less<>> declared;
@@ -186,7 +186,7 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
     }
     declared.insert(option->get_name(false, true));
   }
-  CHECK(declared == std::set<std::string, std::less<>>{"--label", "command"});
+  CHECK(declared == std::set<std::string, std::less<>>{"--label", "--timeout", "--wait-timeout", "command"});
 
   // Still refuses every planning verb, at any depth, with `queue` present.
   for (auto const& forbidden : planar::cmd::agent::forbidden_verbs()) {
