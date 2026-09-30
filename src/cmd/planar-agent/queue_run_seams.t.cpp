@@ -496,7 +496,7 @@ TEST_CASE("queue run: a run limit that cannot mark a missing entry retries at th
   REQUIRE(status != nullptr);
   INFO("stderr:\n" << fx.err.str());
   CHECK(acted);
-  CHECK(status->code == 0);
+  CHECK(status->code == 124); // task 7080: with the entry gone the submitter stops the command itself at the limit
   REQUIRE(ticks > 50);
   // Two clock reads per tick are the loop's own (the run-limit check and the
   // poll schedule). A mark attempted at every tick reads a third, inside
@@ -1010,17 +1010,14 @@ TEST_CASE("queue run: a running submitter whose entry was reaped keeps supervisi
   CHECK_FALSE(history.front().successor_seq.has_value());
 }
 
-TEST_CASE("queue run: a running submitter whose entry is missing has no run limit to enforce and says so once",
-          "[cmd][agent][queue][hq-missing-entry]") {
-  // The run limit is a property of the entry (tech spec 647 § Running, step 3:
-  // the submitter marks its ENTRY terminating). With the entry gone there is
-  // nothing to mark, so the command runs to its own end and the submitter
-  // exits with what it observed, as the spec says a running submitter does.
-  // The run limit (100 ms) is read on a steered clock that stands still until
-  // the entry has been removed and is then moved past the limit. The order
-  // "entry gone, THEN the limit passes" is therefore fixed by the case; on the
-  // system clock a loaded machine let the limit pass first, the submitter
-  // marked the entry and stopped the command (exit 124).
+TEST_CASE("queue run: a running submitter whose entry is missing still stops its command at the run limit and says so",
+          "[cmd][agent][queue][hq-missing-entry][hq-vanished-entry-run-limit]") {
+  // Task 7080 (superseding the 7017 reading that the limit went with the
+  // entry): the submitter keeps supervising a command whose entry is gone
+  // (tech spec 647 § Waiting and claiming a turn), and supervising includes the
+  // limit it was given. The limit (100 ms) is read on a steered clock that
+  // stands still until the entry has been removed and is then moved past the
+  // limit, so the order "entry gone, THEN the limit passes" is fixed by the case.
   scratch    sc;
   auto const marker = sc.root / "ran";
   auto const clock  = std::make_shared<steered_clock>();
@@ -1043,9 +1040,17 @@ TEST_CASE("queue run: a running submitter whose entry is missing has no run limi
   REQUIRE(status != nullptr);
   INFO("stderr:\n" << fx.err.str());
   CHECK(done);
-  CHECK(status->code == 0);
-  CHECK(marker_lines(marker) == 1);
+  CHECK(status->code == 124);
+  CHECK(marker_lines(marker) == 0); // the command was stopped, not left to finish
   CHECK(fx.err.str().contains("run limit"));
+  CHECK(last_line(fx.err.str()) == "queue: entry 1 stopped at its run limit");
+
+  // The other process that removed the entry wrote its row; the submitter wrote none.
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == 1);
+  CHECK(history.front().outcome == hq::history_outcome::abandoned);
 }
 
 TEST_CASE("queue run: a give-up exit leaves an abandoned row with the fields of an entry that never started",
@@ -1409,4 +1414,281 @@ TEST_CASE("queue run: --detach aborts before it forks when the process has a sec
   // The hook ran once, in the invoked process, before the check; a child that
   // had been forked would have reported `after_setsid` as well.
   CHECK(seen == "before_fork\n");
+}
+
+// ---------------------------------------------------------------------------
+// Task 7068 (hq-unrecorded-group-timeout), task 7080
+// (hq-vanished-entry-run-limit) and task 7072 (hq-eperm-zombie-group): the
+// submitter's own run-limit enforcement when the entry cannot carry it, and the
+// EPERM a macOS kernel answers a group of zombies with.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The failure a store that refuses to record the child group reports.
+auto record_failure() -> hq::queue_error {
+  return hq::queue_error{.kind        = hq::queue_error_kind::query_failed,
+                         .sqlite_code = 5,
+                         .message     = "hostqueue: record child group: database is locked (sqlite 5)"};
+}
+
+/// @brief Every signal the submitter sent, in order, delivered to the real
+/// group (the commands under test are this case's own children).
+struct signal_log {
+  std::shared_ptr<std::vector<int>> sent = std::make_shared<std::vector<int>>();
+
+  [[nodiscard]] auto signaller() const -> hq::group_signaller {
+    auto const log = sent;
+    return [log](std::int64_t pgid, int sig) {
+      log->push_back(sig);
+      return ident::signal_group(pgid, sig);
+    };
+  }
+  [[nodiscard]] auto count(int sig) const -> std::ptrdiff_t {
+    return std::ranges::count(*sent, sig);
+  }
+};
+
+/// @brief A command that ignores SIGTERM (and passes the disposition on to its
+/// children, as `exec` does), writes `ready` once the trap is in place, and
+/// then waits (at most thirty seconds, so a case that fails before it can
+/// kill the command does not leave it behind); only SIGKILL ends it early.
+auto term_ignoring_command(const std::filesystem::path& ready) -> std::vector<std::string> {
+  return {"/bin/sh", "-c",
+          std::format("trap '' TERM; echo ready > '{}'; n=0; while [ $n -lt 30 ]; do sleep 1; n=$((n+1)); done", ready.string())};
+}
+
+/// @brief Settings with a short grace period, so a SIGKILL follows a SIGTERM
+/// after 150 ms on the steered clock.
+auto short_grace_settings() -> planar::engine::config::queue_settings {
+  return planar::engine::config::queue_settings{
+      .slots = 1, .poll_interval_ms = 10, .stale_after_ms = 3'600'000, .grace_ms = 150, .history_days = 30};
+}
+
+} // namespace
+
+TEST_CASE("queue run: a child group that could not be recorded is recorded by a retry at the poll interval",
+          "[cmd][agent][queue][hq-unrecorded-group-timeout]") {
+  scratch                         sc;
+  agent::handlers::queue_run_deps deps;
+  auto const                      calls    = std::make_shared<int>(0);
+  bool                            recorded = false;
+  deps.record_child                        = [calls](planar::db::connection& conn, std::int64_t seq, std::int64_t pgid,
+                                                     std::int64_t started) -> std::expected<bool, hq::queue_error> {
+    if (++*calls == 1) {
+      return std::unexpected(record_failure());
+    }
+    return hq::record_child(conn, seq, pgid, started);
+  };
+  script(deps, sc, fast_settings(), [&](planar::db::connection& conn) {
+    auto const stored = hq::find(conn, 1).value();
+    if (stored && stored->child_pgid) {
+      recorded = true;
+    }
+  });
+  auto const got = run_queue(sc, {"/bin/sleep", "0.4"}, deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(*calls >= 2);
+  CHECK(recorded);                          // the entry carried the group while the command ran
+  CHECK(got.err.contains("cannot record")); // the first failure was still said, once
+}
+
+TEST_CASE("queue run: a command whose group was never recorded is stopped at its run limit and the entry ends as timeout",
+          "[cmd][agent][queue][hq-unrecorded-group-timeout]") {
+  // The store refuses to record the group every time. The entry then names no
+  // group, so no other process can signal it; the submitter, which holds the
+  // child unreaped, signals the group it knows itself, and ends the entry
+  // itself, so the history and the exit (124) agree.
+  scratch                         sc;
+  signal_log                      log;
+  agent::handlers::queue_run_deps deps;
+  deps.signaller    = log.signaller();
+  deps.record_child = [](planar::db::connection&, std::int64_t, std::int64_t,
+                         std::int64_t) -> std::expected<bool, hq::queue_error> { return std::unexpected(record_failure()); };
+  script(deps, sc, fast_settings(), [](planar::db::connection&) {}, 3000);
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args            = queue_args({"/bin/sleep", "30"});
+  args.flags["--timeout"] = {"100ms"};
+  auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status      = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(status->code == 124);
+  CHECK(last_line(fx.err.str()) == "queue: entry 1 stopped at its run limit");
+  CHECK(log.count(SIGTERM) == 1);
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  CHECK(hq::list(*opened).value().empty()); // ended by the submitter, not left for a poll to reap as abandoned
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == 1);
+  CHECK(history.front().outcome == hq::history_outcome::timeout);
+}
+
+TEST_CASE("queue run: a command with no recorded group that ignores SIGTERM is killed after the grace period",
+          "[cmd][agent][queue][hq-unrecorded-group-timeout]") {
+  scratch                         sc;
+  signal_log                      log;
+  auto const                      clock = std::make_shared<steered_clock>();
+  auto const                      ready = sc.root / "ready";
+  agent::handlers::queue_run_deps deps;
+  deps.clock        = clock;
+  deps.signaller    = log.signaller();
+  deps.record_child = [](planar::db::connection&, std::int64_t, std::int64_t,
+                         std::int64_t) -> std::expected<bool, hq::queue_error> { return std::unexpected(record_failure()); };
+  int stage         = 0;
+  script(deps, sc, short_grace_settings(), [&](planar::db::connection&) {
+    if (stage == 0 && std::filesystem::exists(ready)) {
+      stage = 1;
+      clock->advance(1'000); // past the run limit: SIGTERM goes next tick
+    } else if (stage == 1 && log.count(SIGTERM) == 1) {
+      stage = 2;
+      clock->advance(151); // past the grace period: SIGKILL goes next tick
+    }
+  });
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args            = queue_args(term_ignoring_command(ready));
+  args.flags["--timeout"] = {"100ms"};
+  auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status      = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(stage == 2);
+  CHECK(status->code == 124);
+  CHECK(log.count(SIGTERM) == 1);
+  CHECK(log.count(SIGKILL) >= 1);
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == 1);
+  CHECK(history.front().outcome == hq::history_outcome::timeout);
+}
+
+TEST_CASE("queue run: a submitter never signals a group whose leader is no longer the command it started",
+          "[cmd][agent][queue][hq-unrecorded-group-timeout][hq-vanished-entry-run-limit]") {
+  // The identity guard: the group id the submitter holds is only signalled
+  // while the leader's start time is the one it recorded. A probe that reports
+  // another start time for the child stands for a reused id.
+  for (bool const vanished : {false, true}) {
+    INFO(std::string{vanished ? "entry removed while running" : "group never recorded"});
+    scratch                         sc;
+    signal_log                      log;
+    auto const                      clock = std::make_shared<steered_clock>();
+    agent::handlers::queue_run_deps deps;
+    deps.clock               = clock;
+    deps.signaller           = log.signaller();
+    auto       probe         = hq::system_process_probe();
+    auto const own           = static_cast<std::int64_t>(::getpid());
+    probe.process_start_time = [real = probe.process_start_time,
+                                own](std::int64_t pid) -> std::expected<std::optional<ident::start_time>, ident::error> {
+      auto found = real(pid);
+      if (found && pid != own) {
+        // Whoever holds the child's id, alive or not, is not the process that was started.
+        return std::optional<ident::start_time>{found->has_value() ? **found + 1 : ident::start_time{1}};
+      }
+      return found;
+    };
+    deps.probe = probe;
+    if (!vanished) {
+      deps.record_child = [](planar::db::connection&, std::int64_t, std::int64_t,
+                             std::int64_t) -> std::expected<bool, hq::queue_error> { return std::unexpected(record_failure()); };
+    }
+    bool       done  = false;
+    auto const ready = sc.root / "ready";
+    script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+      if (done || !std::filesystem::exists(ready)) {
+        return; // the command has not started yet
+      }
+      auto const stored = hq::find(conn, 1).value();
+      if (!stored) {
+        return;
+      }
+      if (vanished) {
+        if (!stored->child_pgid) {
+          return;
+        }
+        end_as(conn, 1, hq::history_outcome::abandoned);
+      }
+      done = true;
+      clock->advance(1'000);
+    });
+    fixture fx{sc, (sc.root / "agent.db").string()};
+    auto    args            = queue_args({"/bin/sh", "-c", std::format("echo ready > '{}'; sleep 0.3", ready.string())});
+    args.flags["--timeout"] = {"100ms"};
+    auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+    auto const* status      = std::get_if<agent::exit_status>(&outcome);
+    REQUIRE(status != nullptr);
+    INFO("stderr:\n" << fx.err.str());
+    CHECK(done);
+    CHECK(log.sent->empty());
+    CHECK(status->code == 0); // the command ended on its own; nothing was signalled
+    CHECK(fx.err.str().contains("reused"));
+  }
+}
+
+TEST_CASE("queue run: a command whose entry vanished and that ignores SIGTERM is killed after the configured grace period",
+          "[cmd][agent][queue][hq-vanished-entry-run-limit]") {
+  scratch                         sc;
+  signal_log                      log;
+  auto const                      clock = std::make_shared<steered_clock>();
+  auto const                      ready = sc.root / "ready";
+  agent::handlers::queue_run_deps deps;
+  deps.clock     = clock;
+  deps.signaller = log.signaller();
+  int stage      = 0;
+  script(deps, sc, short_grace_settings(), [&](planar::db::connection& conn) {
+    if (stage == 0 && std::filesystem::exists(ready) && hq::find(conn, 1).value() && hq::find(conn, 1).value()->child_pgid) {
+      end_as(conn, 1, hq::history_outcome::abandoned);
+      stage = 1;
+      clock->advance(1'000);
+    } else if (stage == 1 && log.count(SIGTERM) == 1) {
+      stage = 2;
+      clock->advance(151);
+    }
+  });
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  auto    args            = queue_args(term_ignoring_command(ready));
+  args.flags["--timeout"] = {"100ms"};
+  auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status      = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(stage == 2);
+  CHECK(status->code == 124);
+  REQUIRE(log.sent->size() >= 2);
+  CHECK(log.sent->front() == SIGTERM);
+  CHECK(log.count(SIGKILL) >= 1);
+  CHECK(fx.err.str().contains("run limit"));
+}
+
+TEST_CASE("queue run: a forwarded signal that the kernel refuses for a group of zombies is not reported as a failure",
+          "[cmd][agent][queue][hq-eperm-zombie-group]") {
+  // The signaller stands for a macOS kernel that answers EPERM for a group
+  // whose only members are exited processes; the probe says whether that is
+  // what the group holds.
+  for (bool const zombies : {true, false}) {
+    INFO(std::string{zombies ? "the group holds only zombies" : "the group has a live member: the refusal is real"});
+    scratch                         sc;
+    agent::handlers::queue_run_deps deps;
+    deps.signaller = [](std::int64_t, int) -> std::expected<void, ident::error> {
+      return std::unexpected(ident::error::not_permitted);
+    };
+    auto probe               = hq::system_process_probe();
+    probe.group_only_zombies = [zombies](std::int64_t) -> std::expected<bool, ident::error> { return zombies; };
+    deps.probe               = probe;
+    bool raised              = false;
+    script(deps, sc, fast_settings(), [&](planar::db::connection& conn) {
+      auto const stored = hq::find(conn, 1).value();
+      if (!raised && stored && stored->child_pgid) {
+        raised = true;
+        ::raise(SIGTERM);
+      }
+    });
+    auto const got = run_queue(sc, {"/bin/sleep", "0.3"}, deps);
+    INFO("stderr:\n" << got.err);
+    CHECK(raised);
+    CHECK(got.code == 0); // the fake signaller delivered nothing, so the command ran to its end
+    CHECK(got.err.contains("SIGTERM to the command's process group failed") == !zombies);
+  }
 }

@@ -487,3 +487,106 @@ TEST_CASE("clock: a fake clock can be driven through the interface", "[lib][proc
   CHECK(*second == 1'250);
   CHECK(as_interface.wall_ms() == 1'700'000'000'000);
 }
+
+// ---------------------------------------------------------------------------
+// Task 7072: a group of exited-but-unreaped processes
+// ---------------------------------------------------------------------------
+
+TEST_CASE("group_only_zombies: a live group, an empty group and an id no group can have are not all zombies",
+          "[lib][process][identity][hq-eperm-zombie-group]") {
+  {
+    sleeping_child child;
+    auto const     live = pid_ns::group_only_zombies(child.pid());
+    REQUIRE(live.has_value());
+    CHECK_FALSE(*live);
+  }
+  for (std::int64_t const id : {std::int64_t{0}, std::int64_t{1}, std::int64_t{-7}}) {
+    INFO("id " << id);
+    auto const verdict = pid_ns::group_only_zombies(id);
+    REQUIRE(verdict.has_value());
+    CHECK_FALSE(*verdict);
+  }
+}
+
+#if defined(__APPLE__)
+TEST_CASE("group_only_zombies: a group whose only member is an exited leader nobody reaped is all zombies, and macOS refuses to "
+          "signal it",
+          "[lib][process][identity][hq-eperm-zombie-group]") {
+  // macOS answers kill(-pgid, sig) with EPERM for such a group, signal 0
+  // included, so `group_has_members` says "populated" and `signal_group` says
+  // "not permitted" for a group that holds nothing that can run. This case
+  // pins that premise, and the verification that tells it from a real refusal.
+  ::pid_t const forked = ::fork();
+  REQUIRE(forked >= 0);
+  if (forked == 0) {
+    ::setpgid(0, 0);
+    ::_exit(0);
+  }
+  ::setpgid(forked, forked);
+  auto const pgid = static_cast<std::int64_t>(forked);
+
+  // The kernel takes a moment to turn the exit into a zombie; wait for it, bounded.
+  bool       zombies  = false;
+  auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto const verdict = pid_ns::group_only_zombies(pgid);
+    REQUIRE(verdict.has_value());
+    if (*verdict) {
+      zombies = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(zombies);
+
+  auto const refused = pid_ns::signal_group(pgid, SIGKILL);
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error() == pid_ns::error::not_permitted);
+
+  int status = 0;
+  while (::waitpid(forked, &status, 0) < 0 && errno == EINTR) {
+  }
+  // Reaped: the group is empty, which is not "only zombies".
+  auto const after = pid_ns::group_only_zombies(pgid);
+  REQUIRE(after.has_value());
+  CHECK_FALSE(*after);
+}
+
+TEST_CASE("group_only_zombies: a zombie leader does not make a group with a live member all zombies",
+          "[lib][process][identity][hq-eperm-zombie-group]") {
+  std::array<int, 2> fds{};
+  REQUIRE(::pipe(fds.data()) == 0);
+  ::pid_t const leader = ::fork();
+  REQUIRE(leader >= 0);
+  if (leader == 0) {
+    ::setpgid(0, 0);
+    ::close(fds[0]);
+    if (::fork() == 0) {
+      // The member: stays in the leader's group until released by the pipe closing.
+      char byte = 0;
+      (void)::write(fds[1], &byte, 1);
+      ::close(fds[1]);
+      ::sleep(30);
+      ::_exit(0);
+    }
+    ::_exit(0);
+  }
+  ::setpgid(leader, leader);
+  ::close(fds[1]);
+  char byte = 0;
+  while (::read(fds[0], &byte, 1) < 0 && errno == EINTR) {
+  }
+  ::close(fds[0]);
+  auto const pgid = static_cast<std::int64_t>(leader);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100)); // let the leader exit into zombie
+
+  auto const verdict = pid_ns::group_only_zombies(pgid);
+  // Every member this test made is signalled and reaped before any assertion can end the case.
+  ::kill(-leader, SIGKILL);
+  int status = 0;
+  while (::waitpid(leader, &status, 0) < 0 && errno == EINTR) {
+  }
+  REQUIRE(verdict.has_value());
+  CHECK_FALSE(*verdict);
+}
+#endif

@@ -121,6 +121,22 @@ export auto process_exists(std::int64_t pid) -> std::expected<bool, error>;
 /// @return `true` when any member exists, `false` when the group is empty.
 export auto group_has_members(std::int64_t pgid) -> std::expected<bool, error>;
 
+/// @brief Whether the process group `pgid` has at least one member and every
+/// member is an exited process nobody has reaped yet (or one already being
+/// torn down by the kernel, the moments between a fatal signal and the zombie).
+///
+/// On macOS `kill(-pgid, sig)` (signal 0 included) fails with `EPERM` for such
+/// a group, because a zombie cannot be signalled, so `group_has_members`
+/// reports members and `signal_group` reports `not_permitted` for a group that
+/// is, for every purpose here, empty. This is the verification that tells that
+/// case from a genuine refusal (a group of another user's processes). Off
+/// macOS the kernel never gives that answer, so this is always false and the
+/// callers' behaviour is unchanged.
+/// @param pgid The process group id.
+/// @return True when the group has members and all are zombies; false for an
+/// empty group, one with a live member, or an id no group can have.
+export auto group_only_zombies(std::int64_t pgid) -> std::expected<bool, error>;
+
 /// @brief Send `sig` to every member of the process group `pgid`, by
 /// `kill(-pgid, sig)`.
 /// @param pgid The process group id.

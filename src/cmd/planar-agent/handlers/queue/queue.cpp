@@ -61,6 +61,13 @@ constexpr std::int64_t k_drain_slack_ms = 15'000;
 /// so three is far more than a healthy host ever needs.
 constexpr int k_max_rejoins = 3;
 
+/// @brief How many times a running submitter tries again to record its
+/// child's group on the entry after the first attempt failed (task
+/// hq-unrecorded-group-timeout), one attempt per poll interval. A store that
+/// refuses every one leaves the entry without a group, and the submitter then
+/// stops the command itself at its run limit.
+constexpr int k_max_record_retries = 5;
+
 /// @brief How often a running submitter looks at its child. The queue is
 /// polled at the configured interval; the child is checked more often so
 /// the submitter exits promptly when the command does.
@@ -938,6 +945,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   auto const          signaller = deps.signaller ? deps.signaller : hq::system_group_signaller();
   auto const          rejoin_fn = deps.rejoin ? deps.rejoin : queue_run_deps::rejoiner{hq::rejoin};
   auto const          nested_fn = deps.enqueue_nested ? deps.enqueue_nested : queue_run_deps::nested_enqueuer{hq::enqueue_nested};
+  auto const          record_fn = deps.record_child ? deps.record_child : queue_run_deps::child_recorder{hq::record_child};
 
   // Configuration first: an unusable configuration must refuse before the
   // store is touched. The path is the context's environment's, exactly as
@@ -1325,10 +1333,23 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
 
   // Record the child group on the entry, so that the entry stays live while
   // the group has members even if this process is killed. A store failure is
-  // reported and supervision goes on.
-  if (auto recorded = hq::record_child(conn, seq, child.pgid, static_cast<std::int64_t>(child.started)); !recorded) {
-    report.once(std::format("warning: queue: cannot record the command's process group: {}", recorded.error().message));
-  }
+  // reported and supervision goes on; the attempt is repeated at the poll
+  // interval a few times (`k_max_record_retries`), because an entry that names
+  // no group is one no other process can signal.
+  bool       group_recorded      = false;
+  int        record_retries_left = k_max_record_retries;
+  auto const try_record          = [&] {
+    auto recorded = record_fn(conn, seq, child.pgid, static_cast<std::int64_t>(child.started));
+    if (!recorded) {
+      report.once(std::format("warning: queue: cannot record the command's process group: {}", recorded.error().message));
+    } else if (*recorded) {
+      group_recorded = true;
+    } else {
+      // The entry is not a running entry any more; there is nothing to record on.
+      record_retries_left = 0;
+    }
+  };
+  try_record();
 
   // SIGINT, SIGTERM and SIGHUP received from here on are forwarded to the
   // child group (tech spec 647 § Signals are forwarded and the entry is always
@@ -1354,25 +1375,75 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   // A running submitter whose entry was removed (reaped, or ended by another
   // process) keeps supervising its command and exits with what it observed of
   // it; it never rejoins the queue and never runs the command a second time
-  // (tech spec 647 § Waiting and claiming a turn). The entry's run limit and
-  // its slot went with it. A removal by a stop (`timeout`, `cancelled`) is
-  // already accounted for by the stop; any other says so, once.
+  // (tech spec 647 § Waiting and claiming a turn). Its slot went with the
+  // entry, but the run limit did not: the submitter holds the deadline itself
+  // and stops the command directly (`stop_locally`). A removal by a stop
+  // (`timeout`, `cancelled`) is already accounted for by the stop; any other
+  // says so, once.
   auto const entry_removed = [&] {
     entry_gone     = true;
     auto const row = hq::find_history(conn, seq);
     if (row && *row && ((*row)->outcome == hq::history_outcome::cancelled || (*row)->outcome == hq::history_outcome::timeout)) {
       return;
     }
-    report.once(std::format("warning: queue: entry {} is no longer in the queue; its command keeps running to its end, and its "
-                            "run limit is no longer enforced",
+    report.once(std::format("warning: queue: entry {} is no longer in the queue; this submitter keeps supervising its command "
+                            "and still stops it at its run limit",
                             seq));
+  };
+  // The submitter's own stop of a command that no entry can stop for it: the
+  // entry is gone (task hq-vanished-entry-run-limit), or it names no group
+  // because the record failed (task hq-unrecorded-group-timeout). SIGTERM at
+  // the deadline the submitter holds, SIGKILL once the configured grace period
+  // has passed, both to the group the submitter itself started. The child is
+  // never reaped before `runner::poll` says so, so its pid cannot have been
+  // reused; the leader's start time is still compared with the one read at
+  // start, so a group id that came to belong to someone else is never signalled.
+  bool                        local_timeout = false; // A stopping signal was sent by this submitter at its own deadline.
+  std::optional<std::int64_t> local_term_at;         // When it sent SIGTERM.
+  bool                        local_killed     = false;
+  auto const                  signal_own_group = [&](int sig) -> bool {
+    auto const leader = probe.process_start_time(child.pgid);
+    if (!leader) {
+      report.once(std::format("warning: queue: cannot verify the command's process group before stopping it: {}",
+                              describe(leader.error())));
+      return false;
+    }
+    if (leader->has_value() && **leader != child.started) {
+      report.once(std::format("warning: queue: not stopping entry {}'s command at its run limit: process group {} no longer "
+                              "belongs to it (the id was reused)",
+                              seq, child.pgid));
+      return false;
+    }
+    if (auto sent = signaller(child.pgid, sig); !sent && sent.error() != ident::error::no_such_process) {
+      if (!(sent.error() == ident::error::not_permitted && hq::group_has_only_zombies(probe, child.pgid))) {
+        report.once(std::format("warning: queue: {} to the command's process group failed: {}", signal_name(sig),
+                                describe(sent.error())));
+      }
+    }
+    return true;
+  };
+  auto const stop_locally = [&](std::int64_t now) {
+    if (!local_term_at) {
+      if (now >= *own_deadline && signal_own_group(SIGTERM)) {
+        local_term_at = now;
+        local_timeout = true;
+      }
+    } else if (!local_killed && now - *local_term_at > settings.current().grace_ms) {
+      local_killed = signal_own_group(SIGKILL);
+    }
   };
   auto const enforce_run_limit = [&] {
     auto const now = clock.monotonic_ms();
     if (!now) {
       return;
     }
-    if (!stopping && !entry_gone && *now >= *own_deadline && (!next_mark_attempt || *now >= *next_mark_attempt)) {
+    if (entry_gone || !group_recorded) {
+      // No entry can stop this command: its record is gone, or it names no
+      // group for another process to signal.
+      stop_locally(*now);
+    }
+    if (group_recorded && !stopping && !entry_gone && *now >= *own_deadline &&
+        (!next_mark_attempt || *now >= *next_mark_attempt)) {
       auto begun =
           hq::begin_terminate(conn, hq::begin_terminate_request{.seq = seq, .reason = hq::stop_reason::timeout, .host_id = host},
                               clock, probe, signaller);
@@ -1428,7 +1499,9 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     // The child was just observed running, so it is not yet reaped and its
     // group id cannot have been reused.
     for (auto const sig : relay->drain()) {
-      if (auto sent = runner::signal(child, sig); !sent && sent.error() != runner::error::no_such_process) {
+      if (auto sent = signaller(child.pgid, sig);
+          !sent && sent.error() != ident::error::no_such_process &&
+          !(sent.error() == ident::error::not_permitted && hq::group_has_only_zombies(probe, child.pgid))) {
         report.once(std::format("warning: queue: {} to the command's process group failed", signal_name(sig)));
       }
     }
@@ -1436,6 +1509,10 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     sleep(k_child_tick);
     auto const now = clock.monotonic_ms();
     if (now && *now >= next_poll) {
+      if (!group_recorded && !local_term_at && !entry_gone && record_retries_left > 0) {
+        --record_retries_left;
+        try_record();
+      }
       // A refresh that fails keeps supervising: a running submitter that
       // cannot reach the store never stops its command.
       if (auto polled = poll.poll_once(); !polled) {
@@ -1454,7 +1531,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   // process may already have ended the entry once its group was empty; then
   // the history row it wrote names the reason.
   std::optional<hq::stop_reason> reason;
-  if (timed_out_here) {
+  if (timed_out_here || local_timeout) {
     reason = hq::stop_reason::timeout;
   } else if (auto stored = hq::find(conn, seq); stored && *stored) {
     if ((*stored)->terminate_reason == hq::to_string(hq::stop_reason::timeout)) {
@@ -1472,7 +1549,16 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     }
   }
 
-  if (reason) {
+  if (reason == hq::stop_reason::timeout && local_timeout && !group_recorded && !entry_gone) {
+    // The entry names no group, so no process but this one can judge it empty
+    // and end it; the engine's advance skips it, and waiting for that would
+    // spin out the drain bound and leave a running entry for a later poll to
+    // reap as `abandoned`, contradicting the exit. The submitter ends it here,
+    // with the outcome the exit will name. (A helper the command left behind
+    // in its group is not chased: the group cannot be judged once its leader
+    // is reaped.) `end` writes nothing when another process already ended it.
+    end(hq::end_request{.outcome = hq::history_outcome::timeout});
+  } else if (reason) {
     // A stopped entry keeps its slot until its child group is empty (tech spec
     // 647 § Stopping a command). The leader is reaped, but members it left
     // behind may still run, and one that ignores SIGTERM needs the SIGKILL
