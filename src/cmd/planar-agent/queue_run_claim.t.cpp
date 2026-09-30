@@ -516,6 +516,39 @@ TEST_CASE("queue run --claim: renewal stops when the command ends", "[cmd][agent
   CHECK(expiry(arena, token) == at_end);
 }
 
+TEST_CASE("queue run --claim: renewal stops when the command has ended, even while its group drains",
+          "[cmd][agent][queue][hq-claim]") {
+  auto const arena = parity::make_arena("qc_drain");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"6s\"\n");
+  seed_main(arena);
+  auto const  token = mint_claim(arena);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  release_all guard{.gates = {&hold}};
+
+  // The leader dies of the SIGTERM sent at the run limit and leaves a member
+  // that ignores it, so the submitter goes on draining the group until the
+  // SIGKILL after the grace period. The command has ended for that whole time.
+  auto const straggler = arena.cpp_root / "straggler.pid";
+  auto const script    = "( trap '' TERM; exec sleep 20 ) & echo \"$!\" > \"$1\"; read x < \"$2\"";
+  auto const run       = spawn_queue(arena, "drain", sh_command(script, {straggler.string(), hold.path.string()}),
+                                     {"--claim", token, "--timeout", "1s"});
+  await_file(straggler);
+  REQUIRE(await([&] {
+    auto const  snap  = try_snapshot(arena);
+    auto const* found = snap ? entry_seq(*snap, 1) : nullptr;
+    return found != nullptr && found->terminating_since_mono.has_value();
+  }));
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  auto const at_end = expiry(arena, token);
+  std::this_thread::sleep_for(std::chrono::milliseconds(3500));
+  CHECK(expiry(arena, token) == at_end);
+  CHECK_FALSE(run.ended());
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 124);
+}
+
 TEST_CASE("queue run: without --claim the main database is never touched", "[cmd][agent][queue][hq-claim]") {
   auto const arena = parity::make_arena("qc_none");
   write_config(arena, k_fast_poll);
