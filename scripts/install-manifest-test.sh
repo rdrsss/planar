@@ -193,4 +193,64 @@ fi
 grep -Fq 'does not look like a Planar install' "$TMP/guard-foreign-stderr" \
   || fail "install-side ownership guard refused for an unexpected reason"
 
-printf 'install-manifest tests: 7 passed\n'
+# Decision 1210 (task 7102): the installer makes the install root 0700 and
+# tightens an existing planar.db / agent.db (and their sidecars) to 0600,
+# since both hold task claim tokens. The function is exercised through the
+# exact block extracted from install.sh, like the ownership guard above.
+mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+assert_mode() { [[ "$(mode_of "$1")" == "$2" ]] || fail "expected mode $2 on $1, got $(mode_of "$1")"; }
+sed -n '/^harden_planar_home() {/,/^}/p' "$ROOT/install.sh" > "$TMP/harden.sh"
+grep -Fq 'chmod' "$TMP/harden.sh" || fail "harden_planar_home not found in install.sh"
+run_harden() {
+  PLANAR_HOME="$1" HARDEN="$TMP/harden.sh" bash -c '
+    set -eEuo pipefail
+    log() { :; }
+    source "$HARDEN"
+    harden_planar_home
+  '
+}
+MODES_PREFIX="$TMP/modes_home/.planar"
+mkdir -p "$MODES_PREFIX/queue-logs"
+chmod 755 "$MODES_PREFIX"
+for f in planar.db planar.db-wal planar.db-shm agent.db agent.db-wal agent.db-shm; do
+  printf 'data\n' > "$MODES_PREFIX/$f"
+  chmod 644 "$MODES_PREFIX/$f"
+done
+printf 'foreign\n' > "$MODES_PREFIX/notes.txt"
+chmod 644 "$MODES_PREFIX/notes.txt"
+printf 'log\n' > "$MODES_PREFIX/queue-logs/1.log"
+chmod 600 "$MODES_PREFIX/queue-logs/1.log"
+chmod 700 "$MODES_PREFIX/queue-logs"
+run_harden "$MODES_PREFIX" || fail "harden_planar_home failed on an existing install"
+assert_mode "$MODES_PREFIX" 700
+for f in planar.db planar.db-wal planar.db-shm agent.db agent.db-wal agent.db-shm; do
+  assert_mode "$MODES_PREFIX/$f" 600
+done
+assert_mode "$MODES_PREFIX/notes.txt" 644
+assert_mode "$MODES_PREFIX/queue-logs" 700
+assert_mode "$MODES_PREFIX/queue-logs/1.log" 600
+
+# A prefix with no databases yet is made 0700 and nothing is invented in it.
+FRESH_PREFIX="$TMP/fresh_modes/.planar"
+mkdir -p "$FRESH_PREFIX"
+chmod 755 "$FRESH_PREFIX"
+run_harden "$FRESH_PREFIX" || fail "harden_planar_home failed on an empty prefix"
+assert_mode "$FRESH_PREFIX" 700
+[[ -z "$(ls -A "$FRESH_PREFIX")" ]] || fail "harden_planar_home created files in an empty prefix"
+
+# The installer runs it after the dry-run exit, so a dry run changes nothing.
+_call_line="$(grep -n '^harden_planar_home$' "$ROOT/install.sh" | head -1 | cut -d: -f1)"
+_dry_line="$(grep -n 'Re-run without --dry-run to apply' "$ROOT/install.sh" | head -1 | cut -d: -f1)"
+[[ -n "$_call_line" && -n "$_dry_line" && "$_call_line" -gt "$_dry_line" ]] \
+  || fail "install.sh must call harden_planar_home after the dry-run exit"
+
+# An uninstall keeps the tightened modes on the files it preserves.
+MODES_HOME="$TMP/modes_home"
+run_uninstall "$MODES_HOME" >"$TMP/modes-uninstall-stdout" 2>"$TMP/modes-uninstall-stderr" \
+  || fail "uninstall of a hardened prefix failed: $(cat "$TMP/modes-uninstall-stderr")"
+assert_present "$MODES_PREFIX/agent.db"
+assert_mode "$MODES_PREFIX/agent.db" 600
+assert_mode "$MODES_PREFIX/planar.db" 600
+assert_mode "$MODES_PREFIX" 700
+
+printf 'install-manifest tests: 8 passed\n'

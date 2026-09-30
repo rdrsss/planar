@@ -19,6 +19,8 @@
 // Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
+#include <sys/stat.h>
+
 import std;
 import planar.db;
 import planar.db.migrate;
@@ -656,5 +658,106 @@ TEST_CASE("open_agent_db_read_only_at opens strictly read-only and never creates
     auto const unresolved = planar::db::agent::open_agent_db_read_only(env_of({}));
     REQUIRE_FALSE(unresolved.has_value());
     CHECK(unresolved.error().kind == planar::db::agent::open_error_kind::unresolved_path);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Decision 1210 (task hq-agentdb-file-modes): the agent database holds claim
+// tokens, so it is created owner-only, and so is the directory this module
+// creates for it.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The permission bits of `path` (no type bits), or 0xFFFF when it
+/// cannot be read.
+auto mode_bits(const std::filesystem::path& path) -> unsigned {
+  struct ::stat info{};
+  if (::stat(path.c_str(), &info) != 0) {
+    return 0xFFFFU;
+  }
+  return static_cast<unsigned>(info.st_mode) & 07777U;
+}
+
+/// @brief Sets the process umask to the usual 022 for one case and restores
+/// the previous value, so a file's mode is never 0600 merely because the
+/// environment's umask happened to be strict.
+struct usual_umask {
+  ::mode_t previous;
+  usual_umask() : previous(::umask(022)) {
+  }
+  ~usual_umask() {
+    ::umask(previous);
+  }
+  usual_umask(const usual_umask&)            = delete;
+  usual_umask& operator=(const usual_umask&) = delete;
+};
+
+} // namespace
+
+TEST_CASE("a created agent database is owner-only, with its -wal and -shm", "[db][agentdb][hq-agentdb-modes]") {
+  usual_umask umask_guard;
+  scratch_dir scratch;
+  auto const  store = scratch.path_ / "agent.db";
+
+  auto opened = planar::db::agent::open_agent_db_at(store);
+  REQUIRE(opened.has_value());
+  // A write keeps the WAL sidecars in existence for as long as the connection
+  // is open; SQLite creates them with the main file's mode.
+  REQUIRE(opened->execute("create table if not exists modes_probe (a integer)").has_value());
+  REQUIRE(opened->execute("insert into modes_probe values (1)").has_value());
+
+  CHECK(mode_bits(store) == 0600U);
+  auto const wal = std::filesystem::path{store.string() + "-wal"};
+  auto const shm = std::filesystem::path{store.string() + "-shm"};
+  REQUIRE(std::filesystem::exists(wal));
+  REQUIRE(std::filesystem::exists(shm));
+  CHECK(mode_bits(wal) == 0600U);
+  CHECK(mode_bits(shm) == 0600U);
+}
+
+TEST_CASE("the directories the agent database open path creates are 0700; an existing one is left alone",
+          "[db][agentdb][hq-agentdb-modes]") {
+  usual_umask umask_guard;
+  scratch_dir scratch;
+
+  SECTION("every missing component of an explicit path is created 0700") {
+    auto const store = scratch.path_ / "a" / "b" / "agent.db";
+    auto       env   = env_of({{"PLANAR_AGENT_DB", store.string()}});
+    auto       open  = planar::db::agent::open_agent_db(env);
+    REQUIRE(open.has_value());
+    CHECK(mode_bits(scratch.path_ / "a") == 0700U);
+    CHECK(mode_bits(scratch.path_ / "a" / "b") == 0700U);
+    CHECK(mode_bits(store) == 0600U);
+  }
+
+  SECTION("a directory that already exists, chosen by the user, is never chmodded") {
+    auto const shared = scratch.path_ / "shared";
+    std::filesystem::create_directories(shared);
+    ::chmod(shared.c_str(), 0755);
+    auto const store = shared / "agent.db";
+    auto       open  = planar::db::agent::open_agent_db(env_of({{"PLANAR_AGENT_DB", store.string()}}));
+    REQUIRE(open.has_value());
+    CHECK(mode_bits(shared) == 0755U);
+    CHECK(mode_bits(store) == 0600U);
+  }
+
+  SECTION("the default location creates $HOME/.planar 0700") {
+    auto const home = scratch.path_ / "home";
+    std::filesystem::create_directories(home);
+    auto open = planar::db::agent::open_agent_db(env_of({{"HOME", home.string()}}));
+    REQUIRE(open.has_value());
+    CHECK(mode_bits(home / ".planar") == 0700U);
+    CHECK(mode_bits(home / ".planar" / "agent.db") == 0600U);
+    CHECK(mode_bits(home) != 0700U); // only Planar's own directory is ensured
+  }
+
+  SECTION("the default location tightens an existing $HOME/.planar to 0700") {
+    auto const planar_home = scratch.path_ / "home" / ".planar";
+    std::filesystem::create_directories(planar_home);
+    ::chmod(planar_home.c_str(), 0755);
+    auto open = planar::db::agent::open_agent_db(env_of({{"HOME", (scratch.path_ / "home").string()}}));
+    REQUIRE(open.has_value());
+    CHECK(mode_bits(planar_home) == 0700U);
   }
 }
