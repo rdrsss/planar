@@ -84,6 +84,16 @@ export struct queue_load_error {
 /// reason the text is refused.
 export auto parse_duration_flag(std::string_view text) -> std::expected<std::int64_t, std::string>;
 
+/// @brief Parses `planar-watch queue history --since`: the same grammar as
+/// `parse_duration_flag` plus the `d` (24 hour) unit, capped at the history
+/// retention maximum (`history_days`' upper bound, 36500 days) rather than
+/// at one day. `parse_duration_flag`, and so `queue run --timeout` and
+/// `--wait-timeout`, does not accept `d` and keeps its one-day cap.
+/// @param text The value, an integer immediately followed by `ms`, `s`, `m`, `h` or `d`.
+/// @return The milliseconds, between 1 and 36500 days inclusive, or a one-line
+/// reason the text is refused.
+export auto parse_history_since(std::string_view text) -> std::expected<std::int64_t, std::string>;
+
 /// @brief The settings used when no `[queue]` table is present.
 /// @return One slot, a 1s poll, a 30s staleness window, a 10s grace and 30 days of history.
 export auto default_queue_settings() -> queue_settings;

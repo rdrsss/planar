@@ -29,11 +29,11 @@ export auto add(CLI::App& root) -> void {
       "Lists the entries of the host build and test queue that have ended, read-only.\n\n  Oldest first (by end time). Each "
       "row gives the outcome (exited, signaled, timeout, cancelled, wait_timeout,\n  not_started or abandoned), the exit "
       "code or signal, how long it waited and ran, who submitted it, and\n  who cancelled it or which entry replaced "
-      "it. --since <duration> keeps only rows that ended within that\n  long (an integer and a unit ms, s, m or h, "
-      "at most 24h). A missing agent database is an empty history.\n\n  Text: one line per row, columns SEQ OUTCOME "
+      "it. --since <duration> keeps only rows that ended within that\n  long (an integer and a unit ms, s, m, h or d, "
+      "at most 36500d). A missing agent database is an empty history.\n\n  Text: one line per row, columns SEQ OUTCOME "
       "RESULT ENDED WAITED RAN NOTES VENDOR ROLE LABEL DIRECTORY\n  COMMAND. --json: an array of objects, one per row.");
   history->add_option("--since")->description(
-      "Only rows that ended within this long: an integer and a unit (ms, s, m, h), at most 24h");
+      "Only rows that ended within this long: an integer and a unit (ms, s, m, h, d), at most 36500d");
   shared::add_json(*history);
 }
 } // namespace planar::cmd::watch::handlers::queue_cli

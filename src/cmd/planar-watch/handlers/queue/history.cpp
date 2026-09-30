@@ -142,7 +142,7 @@ auto queue_history(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // same way whether or not a store exists.
   std::optional<std::int64_t> since_ms;
   if (auto const text = cliapp::flag_string(args, "--since")) {
-    auto const parsed = qcfg::parse_duration_flag(*text);
+    auto const parsed = qcfg::parse_history_since(*text);
     if (!parsed) {
       return std::unexpected(
           error_from_body(domain_error_kind::invalid_input, std::format("queue history: --since {}", parsed.error())));

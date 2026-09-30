@@ -15,6 +15,7 @@ import planar.engine.config.queue;
 using planar::engine::config::default_queue_settings;
 using planar::engine::config::load_queue_settings;
 using planar::engine::config::parse_duration_flag;
+using planar::engine::config::parse_history_since;
 using planar::engine::config::parse_toml;
 using planar::engine::config::queue_from_map;
 using planar::engine::config::queue_load_error;
@@ -287,4 +288,27 @@ TEST_CASE("queue config: a duration flag takes the configuration grammar and ref
   CHECK_FALSE(parse_duration_flag(" 5s").has_value());
   // The refusal names the value.
   CHECK(parse_duration_flag("7x").error().contains("7x"));
+}
+
+TEST_CASE("queue config: a history --since takes days and the retention maximum as its cap", "[engine][config][hq-since-days]") {
+  CHECK(parse_history_since("250ms") == std::int64_t{250});
+  CHECK(parse_history_since("30s") == std::int64_t{30'000});
+  CHECK(parse_history_since("5m") == std::int64_t{300'000});
+  CHECK(parse_history_since("48h") == std::int64_t{172'800'000}); // beyond the shared 24h cap
+  CHECK(parse_history_since("7d") == std::int64_t{604'800'000});
+  CHECK(parse_history_since("36500d") == std::int64_t{36500} * 86'400'000);
+  CHECK(parse_history_since("876000h") == std::int64_t{36500} * 86'400'000);
+  CHECK_FALSE(parse_history_since("36501d").has_value());
+  CHECK_FALSE(parse_history_since("876001h").has_value());
+  CHECK_FALSE(parse_history_since("99999999999999999999d").has_value());
+  CHECK_FALSE(parse_history_since("0d").has_value());
+  CHECK_FALSE(parse_history_since("-1d").has_value());
+  CHECK_FALSE(parse_history_since("7").has_value());
+  CHECK_FALSE(parse_history_since("d").has_value());
+  CHECK_FALSE(parse_history_since("1w").has_value());
+  CHECK_FALSE(parse_history_since("1.5d").has_value());
+  CHECK(parse_history_since("36501d").error().contains("36501d"));
+  // The shared flag grammar is untouched: no days, one-day cap.
+  CHECK_FALSE(parse_duration_flag("1d").has_value());
+  CHECK_FALSE(parse_duration_flag("48h").has_value());
 }
