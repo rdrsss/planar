@@ -2102,7 +2102,8 @@ struct nested_under_holder {
   release_all   guard;
 
   explicit nested_under_holder(std::string_view tag)
-      : arena(parity::make_arena(tag)), hold((write_config(arena, k_fast_poll), arena.cpp_root / "hold.fifo")), guard{.gates = {&hold}} {
+      : arena(parity::make_arena(tag)), hold((write_config(arena, k_fast_poll), arena.cpp_root / "hold.fifo")),
+        guard{.gates = {&hold}} {
     auto const held = arena.cpp_root / "held";
     holder          = spawn_queue(arena, "holder", sh_command(blocked_script(false), {held.string(), hold.path.string()}));
     await_file(held);
@@ -2167,8 +2168,9 @@ void nested_command_traps_forwarded(int sig) {
   auto const          marker = fx.arena.cpp_root / "marker";
   auto const          stop   = fx.arena.cpp_root / "stop";
 
-  auto run = spawn_queue(fx.arena, "nested", sh_command(trapping_script(sig, true), {ready.string(), marker.string(), stop.string()}),
-                         {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "1"}}, {}, true);
+  auto run =
+      spawn_queue(fx.arena, "nested", sh_command(trapping_script(sig, true), {ready.string(), marker.string(), stop.string()}),
+                  {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "1"}}, {}, true);
   touch_on_exit stopper{stop};
   await_file(ready);
   auto const running = await_child_recorded(fx.arena, 2);
@@ -2201,11 +2203,13 @@ void nested_command_traps_forwarded(int sig) {
 
 } // namespace
 
-TEST_CASE("queue run: SIGTERM to a nested submitter reaches its command, which traps it", "[cmd][agent][queue][hq-nested-run][hq-signals]") {
+TEST_CASE("queue run: SIGTERM to a nested submitter reaches its command, which traps it",
+          "[cmd][agent][queue][hq-nested-run][hq-signals]") {
   nested_command_traps_forwarded(SIGTERM);
 }
 
-TEST_CASE("queue run: SIGINT to a nested submitter reaches its command, which traps it", "[cmd][agent][queue][hq-nested-run][hq-signals]") {
+TEST_CASE("queue run: SIGINT to a nested submitter reaches its command, which traps it",
+          "[cmd][agent][queue][hq-nested-run][hq-signals]") {
   nested_command_traps_forwarded(SIGINT);
 }
 

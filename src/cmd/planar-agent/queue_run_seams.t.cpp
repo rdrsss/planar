@@ -826,10 +826,9 @@ TEST_CASE("queue run: a nested attempt that falls back to the normal enqueue rea
   auto const marker = sc.root / "ran";
 
   agent::handlers::queue_run_deps deps;
-  deps.clock = clock;
-  deps.enqueue_nested =
-      [clock](planar::db::connection&, std::int64_t, const hq::enqueue_request&, const hq::nested_limits&, ident::clock&,
-              const hq::process_probe&) -> std::expected<hq::nested_result, hq::queue_error> {
+  deps.clock          = clock;
+  deps.enqueue_nested = [clock](planar::db::connection&, std::int64_t, const hq::enqueue_request&, const hq::nested_limits&,
+                                ident::clock&, const hq::process_probe&) -> std::expected<hq::nested_result, hq::queue_error> {
     clock->advance(7'000);
     return hq::nested_result{.status = hq::nested_status::queue_normally, .refusal = hq::nested_refusal::parent_missing};
   };
@@ -1887,8 +1886,8 @@ TEST_CASE("queue run: a waiter that finds its entry gone and cannot read the clo
   auto const holder = seed_live_parent(sc, clock.get());
 
   agent::handlers::queue_run_deps deps;
-  deps.clock    = clock;
-  bool removed  = false;
+  deps.clock   = clock;
+  bool removed = false;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
     if (!removed) {
       removed = true;
@@ -1932,7 +1931,9 @@ TEST_CASE("queue run: the submitter's own stop at its run limit does not report 
       deps.probe               = probe;
       if (path == how::unrecorded_group) {
         deps.record_child = [](planar::db::connection&, std::int64_t, std::int64_t,
-                               std::int64_t) -> std::expected<bool, hq::queue_error> { return std::unexpected(record_failure()); };
+                               std::int64_t) -> std::expected<bool, hq::queue_error> {
+          return std::unexpected(record_failure());
+        };
       }
       bool advanced = false;
       script(deps, sc, fast_settings(), [&](planar::db::connection& conn) {

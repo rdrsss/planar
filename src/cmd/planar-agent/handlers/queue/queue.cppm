@@ -312,7 +312,8 @@ export struct queue_run_deps {
   child_recorder record_child;
   /// @brief Checks on the running command: what `process::runner::poll` does
   /// with its argument. A test replaces it to make the status unobservable.
-  using child_poller = std::function<std::expected<process::runner::status, process::runner::error>(const process::runner::child&)>;
+  using child_poller =
+      std::function<std::expected<process::runner::status, process::runner::error>(const process::runner::child&)>;
   /// @brief Polls the child; `process::runner::poll` when empty.
   child_poller poll_child;
   /// @brief A test seam for `--detach`, called with a stage name: `before_fork`
