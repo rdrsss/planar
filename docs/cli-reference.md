@@ -7032,7 +7032,7 @@ Each code is checked against the built binary by `make exit-code-contract` where
 | `0` | The entry was **cancelled**: a waiting entry removed, or a running entry stopped and ended. | The history row has outcome `cancelled` (or, for an entry already stopping at its run limit, the outcome that stop names). |
 | `1` | **No such entry**: no entry has that number and there is no history row for it (never issued, or pruned by retention). A missing argument is a parse failure and also exits `1`. | Nothing is written. |
 | `2` | **Refused input**: `<seq>` is not a positive integer. | Before the store is touched. |
-| `6` | The entry has **already ended**; the message names its outcome. | Nothing is written. |
+| `6` | The entry has **already ended**; the message names its outcome. Also returned when cancel marked a running entry but its own submitter ended it with what its command did (`exited`) before reading the marker: the cancellation did not take effect. | Cancel writes nothing (the entry's one history row is the submitter's). |
 | `125` | The **queue failed**: the store or the configuration is unusable, the entry's process group was not empty after SIGKILL and the bounded wait, or the entry belongs to another host identity, whether this call marked it or it was already terminating (it is refused at once; a poll on that host will stop it). | The entry may be left marked terminating. |
 
 ### Atomic operation transaction shapes

@@ -576,3 +576,32 @@ TEST_CASE("queue cancel: cancelling a nested entry stops its own group and leave
   CHECK_FALSE(kept->terminating_since_mono.has_value());
   CHECK_FALSE(history_now(sc, parent).has_value());
 }
+
+TEST_CASE("queue cancel: an entry its own submitter ends as exited after the mark is reported as ended, exit 6, not as cancelled",
+          "[cmd][agent][queue][hq-queue-cancel]") {
+  scratch sc;
+  world   w;
+  w.honours_term = false; // The command is already on its way out, so SIGTERM changes nothing here.
+  auto const seq = seed_running(sc, w);
+
+  // After cancel has marked the entry, the submitter ends it with what it
+  // observed of its command, having read the entry before the mark.
+  w.on_sleep = [&] {
+    if (w.sleeps == 1) {
+      auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+      REQUIRE(opened.has_value());
+      auto const ended =
+          hq::end_entry(*opened, seq, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = 1});
+      REQUIRE(ended.has_value());
+      w.live.erase(k_group);
+    }
+  };
+  auto const got = run_cancel(sc, seq, w.deps(10'000));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 6);
+  CHECK(got.err.find("ended as exited before the cancellation took effect") != std::string::npos);
+  CHECK(got.out.empty());
+  auto const row = history_now(sc, seq);
+  REQUIRE(row.has_value());
+  CHECK(row->outcome == hq::history_outcome::exited);
+}

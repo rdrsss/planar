@@ -806,7 +806,12 @@ TEST_CASE("queue cancel: racing the command's own exit leaves exactly one histor
     if (outcome == hq::history_outcome::cancelled) {
       ++cancelled_rounds;
       CHECK(cancelled.code == 0);
-      CHECK(submitted.code == 125);
+      // Normally the submitter reads the marker and exits 125. When the command
+      // had already exited and cancel ended the entry before the submitter's own
+      // end, the submitter finds its entry gone and, as a running submitter does
+      // (tech spec 647 § Waiting and claiming a turn), exits with what it
+      // observed of its command: 0. Either way one row says cancelled.
+      CHECK((submitted.code == 125 || submitted.code == 0));
     } else {
       REQUIRE(outcome == hq::history_outcome::exited);
       ++exited_rounds;

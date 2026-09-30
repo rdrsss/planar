@@ -1539,8 +1539,16 @@ auto report_stopped(context& ctx, db::connection& conn, std::int64_t seq, bool k
                              killed ? " (SIGKILL after the grace period)" : "");
     return exit_status{exit_success};
   }
-  ctx.out() << std::format("entry {} was already stopping and ended as {}\n", seq, hq::to_string((*row)->outcome));
-  return exit_status{exit_success};
+  if ((*row)->outcome == hq::history_outcome::timeout) {
+    ctx.out() << std::format("entry {} was already stopping and ended as {}\n", seq, hq::to_string((*row)->outcome));
+    return exit_status{exit_success};
+  }
+  // The command's own submitter ended the entry with what it observed (its
+  // command exited) before it read the marker: the cancellation did not take
+  // effect, and the entry has ended.
+  ctx.err() << std::format("error: queue: cancel: entry {} ended as {} before the cancellation took effect\n", seq,
+                           hq::to_string((*row)->outcome));
+  return exit_status{exit_precondition_conflict};
 }
 
 } // namespace
