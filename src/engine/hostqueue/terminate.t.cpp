@@ -1341,9 +1341,12 @@ TEST_CASE("terminate: the kill an advance sends to a group of zombies is not rep
 }
 
 #if defined(__APPLE__)
-TEST_CASE("terminate: on macOS a real group whose leader exited unreaped is empty enough, not a failed signal",
+TEST_CASE("terminate: on macOS a real group whose leader exited unreaped is never reported as a failed signal",
           "[engine][hostqueue][hq-eperm-zombie-group]") {
-  // The EPERM comes from the kernel here, not from a fake signaller.
+  // The kernel answers here, not a fake signaller, and its answer depends on
+  // the caller's session and terminal: a foreground terminal run gets EPERM
+  // (read as an empty group), a setsid'd caller with no controlling terminal
+  // has the kill accepted (read as sent). Either is fine; a failed signal is not.
   scratch_dir scratch;
   auto        conn = open_store(scratch);
   fake_clock  clock;
@@ -1390,12 +1393,12 @@ TEST_CASE("terminate: on macOS a real group whose leader exited unreaped is empt
     ::close(release[1]);
   }
 
-  // Wait, bounded, for the exit to become a zombie the kernel refuses to signal.
+  // Wait, bounded, for the exit to become a zombie, signalling as we go.
   hq::signal_attempt attempt{};
   auto const         deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   do {
     attempt = hq::signal_child_group(e, hq::stop_signal::kill, k_host, probe, hq::system_group_signaller());
-    if (attempt.outcome != hq::signal_outcome::sent) {
+    if (attempt.outcome != hq::signal_outcome::sent || pid_ns::group_only_zombies(pgid).value_or(false)) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1406,7 +1409,8 @@ TEST_CASE("terminate: on macOS a real group whose leader exited unreaped is empt
   while (::waitpid(forked, &status, 0) < 0 && errno == EINTR) {
   }
   INFO("outcome " << static_cast<int>(attempt.outcome) << " zombies " << zombies << " members " << members);
-  CHECK(attempt.outcome == hq::signal_outcome::group_empty);
+  CHECK(zombies);
+  CHECK((attempt.outcome == hq::signal_outcome::group_empty || attempt.outcome == hq::signal_outcome::sent));
   CHECK_FALSE(attempt.error.has_value());
 }
 #endif
