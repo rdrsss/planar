@@ -21,15 +21,14 @@ namespace {
 namespace fs = std::filesystem;
 
 /// @brief A small `planar-agent schema` catalog: the queue verbs only.
-constexpr std::string_view k_schema =
-    R"({"commands":[)"
-    R"({"command":"planar-agent","subcommands":["queue"],"flags":[]},)"
-    R"({"command":"planar-agent queue","subcommands":["run","status"],"flags":[]},)"
-    R"({"command":"planar-agent queue run","subcommands":[],"flags":[)"
-    R"({"long":"--detach"},{"long":"--vendor"},{"long":"--role"},{"long":"--timeout"},)"
-    R"({"long":"--wait-timeout"},{"long":"--claim"},{"long":"--notices"}]},)"
-    R"({"command":"planar-agent queue status","subcommands":[],"flags":[{"long":"--json"}]})"
-    R"(]})";
+constexpr std::string_view k_schema = R"({"commands":[)"
+                                      R"({"command":"planar-agent","subcommands":["queue"],"flags":[]},)"
+                                      R"({"command":"planar-agent queue","subcommands":["run","status"],"flags":[]},)"
+                                      R"({"command":"planar-agent queue run","subcommands":[],"flags":[)"
+                                      R"({"long":"--detach"},{"long":"--vendor"},{"long":"--role"},{"long":"--timeout"},)"
+                                      R"({"long":"--wait-timeout"},{"long":"--claim"},{"long":"--notices"}]},)"
+                                      R"({"command":"planar-agent queue status","subcommands":[],"flags":[{"long":"--json"}]})"
+                                      R"(]})";
 
 /// @brief A scratch repository root holding a fake `planar-agent`. Removed on
 /// destruction; named `planar_*` so the arena-sweep listener reaps it too.
@@ -72,10 +71,10 @@ struct run_result {
 
 /// @brief Run the tool over `repo`, merging stdout and stderr.
 auto run_lint(repo_root const& repo) -> run_result {
-  auto const out_path = repo.root / "lint-output.txt";
-  auto const cmd      = std::format("'{}' '{}' '{}' > '{}' 2>&1", PLANAR_CLI_USAGE_LINT_BIN, repo.root.string(),
-                                    (repo.root / "bin" / "planar-agent").string(), out_path.string());
-  int const  status   = std::system(cmd.c_str());
+  auto const    out_path = repo.root / "lint-output.txt";
+  auto const    cmd      = std::format("'{}' '{}' '{}' > '{}' 2>&1", PLANAR_CLI_USAGE_LINT_BIN, repo.root.string(),
+                                       (repo.root / "bin" / "planar-agent").string(), out_path.string());
+  int const     status   = std::system(cmd.c_str());
   std::ifstream in(out_path, std::ios::binary);
   std::string   text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   REQUIRE(WIFEXITED(status));
