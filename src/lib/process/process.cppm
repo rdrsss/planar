@@ -118,4 +118,38 @@ export struct capture_result {
 /// @return What the child produced.
 export auto capture(std::string_view program, std::span<const std::string_view> args) -> capture_result;
 
+/// @brief How many threads this process has right now, or nothing when the
+/// platform will not say.
+///
+/// A `fork` whose child goes on to run more than async-signal-safe calls is
+/// safe only when no other thread can hold a lock the child needs (the
+/// allocator's, `stdio`'s), so a caller that forks checks that this is 1
+/// first. The read is a single small file read or one `proc_pidinfo` call and
+/// allocates nothing that outlives it.
+///
+/// | Platform | Source |
+/// |---|---|
+/// | macOS | `proc_pidinfo` with `PROC_PIDTASKINFO`, `pti_threadnum` |
+/// | Linux | the `Threads:` line of `/proc/self/status` |
+/// @return The thread count (at least 1); `std::nullopt` when it cannot be
+/// read, which a caller must not read as "one".
+export auto own_thread_count() -> std::optional<std::size_t>;
+
+/// @brief Closes every open descriptor of this process at or above 3, except
+/// `keep`, however high its number.
+///
+/// For the child of a `fork` that must hold nothing of its caller's: a reader
+/// waiting for end-of-file on a pipe the caller passed down would otherwise
+/// wait for as long as this process lives. There is no cap: Linux uses
+/// `close_range` over the ranges either side of `keep` (falling back to
+/// `/proc/self/fd` when the kernel lacks it), and macOS lists the open
+/// descriptors with `proc_pidinfo(PROC_PIDLISTFDS)` and closes each. Only when
+/// the open descriptors cannot be listed at all does it close every number up
+/// to `sysconf(_SC_OPEN_MAX)`. Descriptors 0 to 2 are left alone. Not
+/// thread-safe against a concurrent `open`: call it in a single-threaded
+/// child.
+/// @param keep The one descriptor to leave open (for example a report pipe);
+/// a negative or below-3 value keeps nothing extra.
+export void close_descriptors_except(int keep);
+
 } // namespace planar::process

@@ -13,6 +13,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 import std;
@@ -1311,4 +1312,55 @@ TEST_CASE("queue run: --detach whose child dies before it reports exits 125 with
   CHECK(status->code == 125);
   CHECK(fx.out.str().empty());
   CHECK(fx.err.str() == "error: queue: no ticket was issued: the detached submitter ended before it reported\n");
+}
+
+TEST_CASE("queue run: --detach aborts before it forks when the process has a second thread", "[cmd][agent][queue][hq-detach]") {
+  // The abort cannot be observed in this process, so it is provoked in a
+  // forked one: that child starts a thread and then submits detached. The
+  // check is at the fork's call site, so the proof is that the child dies of
+  // SIGABRT and that no detached submitter ever reached its first stage. The
+  // stages come back over a pipe, not a file: Catch2's fatal-signal handler
+  // unwinds the dying child's frames, which would delete a scratch directory,
+  // so the child takes the default action for SIGABRT instead.
+  scratch sc;
+  fixture fx{sc, (sc.root / "agent.db").string()};
+  int     ends[2]{-1, -1};
+  REQUIRE(::pipe(ends) == 0);
+  ::alarm(60);
+  auto const pid = ::fork();
+  REQUIRE(pid >= 0);
+  if (pid == 0) {
+    ::close(ends[0]);
+    ::signal(SIGABRT, SIG_DFL); // Catch2 would report the abort as a failed case.
+    std::thread                     lingering([] { std::this_thread::sleep_for(std::chrono::seconds(30)); });
+    agent::handlers::queue_run_deps deps;
+    deps.detach_hook = [&](std::string_view stage) {
+      static_cast<void>(::write(ends[1], std::string{stage}.append("\n").c_str(), stage.size() + 1));
+    };
+    static_cast<void>(agent::handlers::queue_run_with(fx.ctx, detach_args(), std::move(deps)));
+    ::_exit(7); // Not reached when the check holds.
+  }
+  ::close(ends[1]);
+  int status = 0;
+  while (::waitpid(pid, &status, 0) < 0) {
+    REQUIRE(errno == EINTR);
+  }
+  ::alarm(0);
+  std::string seen;
+  char        buffer[128];
+  while (auto const n = ::read(ends[0], buffer, sizeof buffer)) {
+    if (n < 0 && errno == EINTR) {
+      continue;
+    }
+    if (n < 0) {
+      break;
+    }
+    seen.append(buffer, static_cast<std::size_t>(n));
+  }
+  ::close(ends[0]);
+  REQUIRE(WIFSIGNALED(status));
+  CHECK(WTERMSIG(status) == SIGABRT);
+  // The hook ran once, in the invoked process, before the check; a child that
+  // had been forked would have reported `after_setsid` as well.
+  CHECK(seen == "before_fork\n");
 }

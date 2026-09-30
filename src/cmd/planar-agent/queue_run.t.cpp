@@ -3367,8 +3367,8 @@ auto open_descriptors_of(std::int64_t pid) -> std::vector<int> {
 #else
   std::error_code ec;
   for (auto const& item : std::filesystem::directory_iterator(std::format("/proc/{}/fd", pid), ec)) {
-    int value = -1;
-    auto const name = item.path().filename().string();
+    int        value = -1;
+    auto const name  = item.path().filename().string();
     if (std::from_chars(name.data(), name.data() + name.size(), value).ec == std::errc{}) {
       found.push_back(value);
     }
