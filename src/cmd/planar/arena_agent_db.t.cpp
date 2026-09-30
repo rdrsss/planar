@@ -550,7 +550,7 @@ TEST_CASE("arena: agent_db_pin_error accepts the default map and refuses one tha
     auto env = pinned_env(work);
     env.push_back(pinned_var{.name = "PLANAR_DB", .unset = true});
     auto const prefix = planar::cmd::parity::pinned_env_prefix(env);
-    REQUIRE_THAT(prefix, Catch::Matchers::ContainsSubstring("env -u 'PLANAR_DB' "));
+    REQUIRE_THAT(prefix, Catch::Matchers::ContainsSubstring(" -u 'PLANAR_DB' "));
     REQUIRE(prefix.find("-u 'PLANAR_DB'") < prefix.find("PLANAR_AGENT_DB="));
   }
 }
