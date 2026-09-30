@@ -2089,6 +2089,126 @@ TEST_CASE("queue run: a marker that outlives its parent queues normally", "[cmd]
   CHECK(row->exit_code == 4);
 }
 
+namespace {
+
+/// @brief A nested run under a holder that has the only slot: the holder
+/// (entry 1) blocks on a FIFO and the nested submitter (entry 2) carries the
+/// holder's marker. Kept in one place so the nested timeout and signal cases
+/// below start from the same state (task 7078).
+struct nested_under_holder {
+  parity::arena arena;
+  gate          hold;
+  spawned       holder;
+  release_all   guard;
+
+  explicit nested_under_holder(std::string_view tag)
+      : arena(parity::make_arena(tag)), hold((write_config(arena, k_fast_poll), arena.cpp_root / "hold.fifo")), guard{.gates = {&hold}} {
+    auto const held = arena.cpp_root / "held";
+    holder          = spawn_queue(arena, "holder", sh_command(blocked_script(false), {held.string(), hold.path.string()}));
+    await_file(held);
+    static_cast<void>(await_child_recorded(arena, 1));
+  }
+};
+
+} // namespace
+
+TEST_CASE("queue run: a nested entry that reaches its own --timeout is stopped, drained and recorded as timeout",
+          "[cmd][agent][queue][hq-nested-run][hq-timeouts]") {
+  // Task 7078. The nested entry has its own deadline (its own --timeout, never
+  // the parent's), and ending at it must empty the nested command's group and
+  // leave the parent running and untouched.
+  nested_under_holder fx{"qr_nested_timeout"};
+  auto const          started = fx.arena.cpp_root / "nested_started";
+  auto const          gate_fd = fx.arena.cpp_root / "nested.fifo";
+  gate                nested_hold(gate_fd);
+  release_all         nested_guard{.gates = {&nested_hold}};
+
+  auto const run = spawn_queue(fx.arena, "nested", sh_command(blocked_script(false), {started.string(), gate_fd.string()}),
+                               {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "1"}}, {"--timeout", "1s"});
+  await_file(started);
+  auto const running = await_child_recorded(fx.arena, 2);
+  REQUIRE(running.child_pgid.has_value());
+  REQUIRE(running.parent_seq.has_value());
+  CHECK(*running.parent_seq == 1);
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 124);
+  CHECK(group_empty(*running.child_pgid));
+
+  auto const snap = require_snapshot(fx.arena);
+  // The nested entry is gone and left one row; the parent still runs.
+  CHECK(entry_seq(snap, 2) == nullptr);
+  REQUIRE(entry_seq(snap, 1) != nullptr);
+  CHECK(entry_seq(snap, 1)->state == hq::entry_state::running);
+  CHECK_FALSE(entry_seq(snap, 1)->terminate_reason.has_value());
+  REQUIRE(snap.history.size() == 1);
+  auto const* row = history_seq(snap, 2);
+  REQUIRE(row != nullptr);
+  CHECK(row->nested);
+  CHECK(row->parent_seq == 1);
+  CHECK(row->outcome == hq::history_outcome::timeout);
+  CHECK_FALSE(row->exit_code.has_value());
+  REQUIRE(row->ran_ms.has_value());
+  CHECK(*row->ran_ms >= 900); // its own limit, not an immediate stop
+
+  fx.hold.release();
+  CHECK(finish(fx.holder).code == 0);
+}
+
+namespace {
+
+/// @brief A signal sent to the submitter of a NESTED run reaches the nested
+/// command, which traps it and exits 42; the nested submitter exits 42 and
+/// records `exited`, and the holder it runs under is not disturbed.
+void nested_command_traps_forwarded(int sig) {
+  nested_under_holder fx{std::format("qr_nested_sig_{}", signal_label(sig))};
+  auto const          ready  = fx.arena.cpp_root / "ready";
+  auto const          marker = fx.arena.cpp_root / "marker";
+  auto const          stop   = fx.arena.cpp_root / "stop";
+
+  auto run = spawn_queue(fx.arena, "nested", sh_command(trapping_script(sig, true), {ready.string(), marker.string(), stop.string()}),
+                         {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "1"}}, {}, true);
+  touch_on_exit stopper{stop};
+  await_file(ready);
+  auto const running = await_child_recorded(fx.arena, 2);
+  REQUIRE(running.child_pgid.has_value());
+  REQUIRE(running.parent_seq.has_value());
+  auto const victim = submitter_pid(run, fx.arena, 2);
+  REQUIRE(::kill(victim, sig) == 0);
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 42);
+  CHECK(read_all(marker) == "got\n");
+  CHECK(group_empty(*running.child_pgid));
+
+  auto const snap = require_snapshot(fx.arena);
+  CHECK(entry_seq(snap, 2) == nullptr);
+  REQUIRE(entry_seq(snap, 1) != nullptr);
+  CHECK(entry_seq(snap, 1)->state == hq::entry_state::running); // the holder was not signalled
+  REQUIRE(snap.history.size() == 1);
+  auto const* row = history_seq(snap, 2);
+  REQUIRE(row != nullptr);
+  CHECK(row->nested);
+  CHECK(row->outcome == hq::history_outcome::exited);
+  CHECK(row->exit_code == 42);
+  CHECK_FALSE(row->signal.has_value());
+
+  fx.hold.release();
+  CHECK(finish(fx.holder).code == 0);
+}
+
+} // namespace
+
+TEST_CASE("queue run: SIGTERM to a nested submitter reaches its command, which traps it", "[cmd][agent][queue][hq-nested-run][hq-signals]") {
+  nested_command_traps_forwarded(SIGTERM);
+}
+
+TEST_CASE("queue run: SIGINT to a nested submitter reaches its command, which traps it", "[cmd][agent][queue][hq-nested-run][hq-signals]") {
+  nested_command_traps_forwarded(SIGINT);
+}
+
 // ---------------------------------------------------------------------------
 // Task 7017 (hq-missing-entry): a submitter that finds its own entry missing
 // reads the history row. Scenarios "a reaped waiter rejoins at the back" and
