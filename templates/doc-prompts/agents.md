@@ -71,3 +71,5 @@ Cross-repo coordination tasks live in `org:{{.WorkspaceSlug}}`.
 Repo-specific work belongs in the per-project scope. Pass
 `--scope <slug>` explicitly when running write verbs from outside
 the target repo; the strict resolver refuses to guess.
+
+{{.QueueRule}}

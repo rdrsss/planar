@@ -1476,6 +1476,110 @@ TEST_CASE("workspace regenerate writes AGENTS.md and its xxh64 manifest", "[cmd]
   CHECK(as_json.out.ends_with("}\n"));
 }
 
+TEST_CASE("a generated workspace guide carries the host queue rule", "[cmd][handlers][workspace][queue]") {
+  // Plan 1080, task hq-workspace-guide: the guide at a workspace root reaches
+  // agents that read no Planar role file. The rule is read from its one
+  // authored file, so the guide cannot carry an older copy.
+  std::ifstream rule_input(std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "src/engine/hostqueue/queue-rule.md",
+                           std::ios::binary);
+  REQUIRE(rule_input.good());
+  const std::string rule{std::istreambuf_iterator<char>(rule_input), std::istreambuf_iterator<char>()};
+  REQUIRE_FALSE(rule.empty());
+
+  auto const fx        = make_fixture("wrgqueue");
+  auto const state_dir = seed_org(fx);
+  write_routing_table(state_dir, R"({"schema_version":1,"workspace_id":1,"workspace_slug":"acme","workspace_name":"Acme",)"
+                                 R"("generated_at":"2026-08-31T00:00:00Z","generator_version":"test","projects":[],)"
+                                 R"("cross_repo":{"dependency_edges":[]}})");
+  REQUIRE(dispatch(fx, {"workspace", "regenerate"}).code == 0);
+
+  std::ifstream     agents_input(state_dir / "AGENTS.md", std::ios::binary);
+  const std::string agents{std::istreambuf_iterator<char>(agents_input), std::istreambuf_iterator<char>()};
+  CHECK(agents.contains(rule));
+  // Regenerating again keeps exactly one copy.
+  REQUIRE(dispatch(fx, {"workspace", "regenerate"}).code == 0);
+  std::ifstream     again_input(state_dir / "AGENTS.md", std::ios::binary);
+  const std::string again{std::istreambuf_iterator<char>(again_input), std::istreambuf_iterator<char>()};
+  auto const        first = again.find(rule);
+  REQUIRE(first != std::string::npos);
+  CHECK(again.find(rule, first + 1) == std::string::npos);
+}
+
+namespace {
+
+auto slurp_file(const std::filesystem::path& path) -> std::string {
+  std::ifstream input(path, std::ios::binary);
+  REQUIRE(input.good());
+  return std::string{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
+
+auto count_of(std::string_view haystack, std::string_view needle) -> std::size_t {
+  std::size_t n = 0;
+  for (auto at = haystack.find(needle); at != std::string_view::npos; at = haystack.find(needle, at + 1)) {
+    ++n;
+  }
+  return n;
+}
+
+/// @brief Install `body` as the operator's agents template in the fixture's
+/// PLANAR_HOME, regenerate twice, and return the generated guide.
+auto regenerate_with_template(std::string_view tag, std::string_view body) -> std::string {
+  auto const fx        = make_fixture(tag);
+  auto const state_dir = seed_org(fx);
+  write_routing_table(state_dir, R"({"schema_version":1,"workspace_id":1,"workspace_slug":"acme","workspace_name":"Acme",)"
+                                 R"("generated_at":"2026-08-31T00:00:00Z","generator_version":"test","projects":[],)"
+                                 R"("cross_repo":{"dependency_edges":[]}})");
+  auto const dir = fx.root / "home" / "templates" / "doc-prompts";
+  std::filesystem::create_directories(dir);
+  {
+    std::ofstream file(dir / "agents.md", std::ios::binary);
+    file << body;
+  }
+  REQUIRE(dispatch(fx, {"workspace", "regenerate"}).code == 0);
+  REQUIRE(dispatch(fx, {"workspace", "regenerate"}).code == 0);
+  return slurp_file(state_dir / "AGENTS.md");
+}
+
+auto queue_rule_source() -> std::string {
+  return slurp_file(std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "src/engine/hostqueue/queue-rule.md");
+}
+
+} // namespace
+
+TEST_CASE("a custom agents template without the rule directive still yields a guide with one copy of the rule",
+          "[cmd][handlers][workspace][queue]") {
+  auto const rule   = queue_rule_source();
+  auto const guide  = regenerate_with_template("wgnodir", "# Mine for {{.WorkspaceSlug}}\n\nLast line.\n");
+  auto const custom = guide.find("Last line.");
+  REQUIRE(custom != std::string::npos);
+  CHECK(count_of(guide, rule) == 1);
+  CHECK(guide.find(rule) > custom);
+}
+
+TEST_CASE("a custom agents template that places the rule keeps its placement and one copy", "[cmd][handlers][workspace][queue]") {
+  auto const rule  = queue_rule_source();
+  auto const guide = regenerate_with_template("wgdir", "# Mine\n\n{{ .QueueRule }}\nTail line.\n");
+  CHECK(count_of(guide, rule) == 1);
+  auto const at = guide.find(rule);
+  REQUIRE(at != std::string::npos);
+  CHECK(guide.find("Tail line.") > at);
+}
+
+TEST_CASE("the installed default agents template carries the rule", "[cmd][handlers][workspace][queue]") {
+  // install.sh copies templates/doc-prompts/agents.md over the embedded default,
+  // so an installed host renders from that file.
+  auto const rule  = queue_rule_source();
+  auto const root  = std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT};
+  auto const guide = regenerate_with_template("wginstalled", slurp_file(root / "templates/doc-prompts/agents.md"));
+  CHECK(count_of(guide, rule) == 1);
+}
+
+TEST_CASE("the installed and embedded default agents templates are the same file", "[cmd][handlers][workspace][queue]") {
+  auto const root = std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT};
+  CHECK(slurp_file(root / "templates/doc-prompts/agents.md") ==
+        slurp_file(root / "src/engine/workspace/default_agents_template.md"));
+}
+
 TEST_CASE("workspace routing build --json reports the hardcoded enrich fields", "[cmd][handlers][parity]") {
   auto const fx        = make_fixture("wrbjson");
   auto const state_dir = seed_org(fx);

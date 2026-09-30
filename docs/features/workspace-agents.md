@@ -42,6 +42,11 @@ table across every member project[^workspace_product_spec].
   against the routing table plus live database queries. The
   manifest layer from the outward-docs system tracks
   drift[^workspace_roadmap].
+- Always carries the host build and test queue rule in the generated
+  AGENTS.md, once. The default template places it with `{{.QueueRule}}`;
+  a template in `~/.planar/templates/doc-prompts/agents.md` that does not
+  place it gets the rule appended after the rendered text, and one that
+  does keeps its own placement.
 - Maintains symlink lifecycle as a first-class concern: atomic
   creation, repair when the link points at a stale path or has been
   flipped to a regular file, and clean removal when the workspace
