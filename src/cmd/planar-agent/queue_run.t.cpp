@@ -164,6 +164,28 @@ auto await_entry(const parity::arena& arena, std::int64_t seq, hq::entry_state s
   return *seen;
 }
 
+/// @brief Waits for entry `seq` to be running AND to have its child group
+/// recorded, and returns it. The handler marks the entry running before it
+/// starts the command and records the group afterwards, so a command can
+/// signal that it started before `child_pgid` is committed; a case that needs
+/// the group waits on this, not on `await_entry`.
+auto await_child_recorded(const parity::arena& arena, std::int64_t seq) -> hq::entry {
+  std::optional<hq::entry> seen;
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    if (!snap) {
+      return false;
+    }
+    auto const* found = entry_seq(*snap, seq);
+    if (found != nullptr && found->state == hq::entry_state::running && found->child_pgid.has_value()) {
+      seen = *found;
+      return true;
+    }
+    return false;
+  }));
+  return *seen;
+}
+
 /// @brief Waits for entry `seq` to be refreshed at least `polls` more times.
 void await_refreshes(const parity::arena& arena, std::int64_t seq, int polls) {
   auto const  start = require_snapshot(arena);
@@ -392,7 +414,7 @@ TEST_CASE("queue run: a second submitter waits for the first and starts only aft
 
   // The first entry is running, its child group is recorded, and its
   // submitter keeps refreshing it while the command runs.
-  auto const running = await_entry(arena, 1, hq::entry_state::running);
+  auto const running = await_child_recorded(arena, 1);
   CHECK(running.child_pgid.has_value());
   CHECK(running.child_started.has_value());
   CHECK(running.started_at.has_value());
@@ -609,7 +631,7 @@ TEST_CASE("queue run: a killed submitter does not free the slot while its comman
                   sh_command("echo x > \"$1\"; exec >/dev/null 2>&1 </dev/null 3>&-; read x < \"$2\"",
                              {started_a.string(), gate_a.path.string()}));
   await_file(started_a);
-  auto const running = await_entry(arena, 1, hq::entry_state::running);
+  auto const running = await_child_recorded(arena, 1);
   REQUIRE(running.child_pgid.has_value());
   REQUIRE(running.pid > 1);
   REQUIRE(running.pid != static_cast<std::int64_t>(::getpid()));
@@ -754,7 +776,7 @@ TEST_CASE("queue run: --timeout stops a command that honours SIGTERM, exits 124 
   auto const run = spawn_queue(arena, "limited", sh_command(blocked_script(false), {started.string(), hold.path.string()}), {},
                                {"--timeout", "1s"});
   await_file(started);
-  auto const running = await_entry(arena, 1, hq::entry_state::running);
+  auto const running = await_child_recorded(arena, 1);
   REQUIRE(running.child_pgid.has_value());
 
   auto const got = finish(run);
@@ -785,7 +807,7 @@ TEST_CASE("queue run: --timeout kills a command that ignores SIGTERM only after 
   auto const run = spawn_queue(arena, "stubborn", sh_command(blocked_script(true), {started.string(), hold.path.string()}), {},
                                {"--timeout", "1s"});
   await_file(started);
-  auto const running = await_entry(arena, 1, hq::entry_state::running);
+  auto const running = await_child_recorded(arena, 1);
   REQUIRE(running.child_pgid.has_value());
 
   auto const got = finish(run);
@@ -836,7 +858,7 @@ TEST_CASE("queue run: a stopped command keeps its slot until every member of its
   auto const run =
       spawn_queue(arena, "grouped", sh_command(script, {straggler.string(), hold.path.string()}), {}, {"--timeout", "1s"});
   await_file(straggler);
-  auto const running = await_entry(arena, 1, hq::entry_state::running);
+  auto const running = await_child_recorded(arena, 1);
   REQUIRE(running.child_pgid.has_value());
 
   auto const got = finish(run);
@@ -1032,7 +1054,7 @@ TEST_CASE("queue run: a command whose own entry carries a stop reason ends with 
 
     auto const run = spawn_queue(arena, "marked", sh_command(blocked_script(false), {started.string(), hold.path.string()}));
     await_file(started);
-    auto const running = await_entry(arena, 1, hq::entry_state::running);
+    auto const running = await_child_recorded(arena, 1);
     REQUIRE(running.child_pgid.has_value());
 
     // The marker and the SIGTERM come from this process, through the same
