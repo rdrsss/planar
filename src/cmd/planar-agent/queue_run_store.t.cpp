@@ -136,6 +136,29 @@ auto permissions_bind() -> bool {
   return ::geteuid() != 0;
 }
 
+/// @brief Sets an environment variable for one scope and puts the previous
+/// state back, so a failed REQUIRE cannot leak the variable into later cases.
+struct scoped_env {
+  std::string                name;
+  std::optional<std::string> previous;
+
+  scoped_env(std::string variable, const std::string& value) : name(std::move(variable)) {
+    if (auto const* old = std::getenv(name.c_str()); old != nullptr) {
+      previous = old;
+    }
+    ::setenv(name.c_str(), value.c_str(), 1);
+  }
+  scoped_env(const scoped_env&)            = delete;
+  scoped_env& operator=(const scoped_env&) = delete;
+  ~scoped_env() {
+    if (previous) {
+      ::setenv(name.c_str(), previous->c_str(), 1);
+    } else {
+      ::unsetenv(name.c_str());
+    }
+  }
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -149,9 +172,15 @@ TEST_CASE("queue run store cases: a variable the map removes is absent from the 
   // the run would use (and migrate) stores outside the arena. The child here
   // is `env` itself, printing what it received.
   auto const arena = parity::make_arena("qs_removal");
-  REQUIRE(::setenv("PLANAR_PROBE_INHERITED", "yes", 1) == 0);
+  // Planted in this process's own environment (restored on every exit path,
+  // including a failed REQUIRE), so neither check depends on what the runner
+  // happens to have exported.
+  auto const       planted_db = (arena.cpp_root / "planted.db").string();
+  scoped_env const probe{"PLANAR_PROBE_INHERITED", "yes"};
+  scoped_env const planar_db{"PLANAR_DB", planted_db};
 
-  auto       env     = parity::pinned_env(arena.cpp_root);
+  auto env = parity::pinned_env(arena.cpp_root);
+  set_var(env, "PLANAR_DB", planted_db);
   auto const printed = [&](std::string_view tag) {
     return parity::run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, tag, env);
   };
@@ -164,6 +193,7 @@ TEST_CASE("queue run store cases: a variable the map removes is absent from the 
   auto const control = printed("qs_removal_control");
   REQUIRE(control.code == 0);
   CHECK(has_line(control.out, "PLANAR_PROBE_INHERITED=yes"));
+  CHECK(has_line(control.out, std::format("PLANAR_DB={}", planted_db)));
 
   remove_var(env, "PLANAR_PROBE_INHERITED");
   remove_var(env, "PLANAR_DB");
@@ -175,7 +205,6 @@ TEST_CASE("queue run store cases: a variable the map removes is absent from the 
   CHECK_FALSE(has_line(got.out, "PLANAR_DB="));
   CHECK_FALSE(has_line(got.out, "HOME="));
   CHECK(has_line(got.out, std::format("PLANAR_AGENT_DB={}", (arena.cpp_root / "agent.db").string())));
-  ::unsetenv("PLANAR_PROBE_INHERITED");
 }
 
 // ---------------------------------------------------------------------------
