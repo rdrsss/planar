@@ -1263,14 +1263,23 @@ def grade_coherence(root: Path = ROOT) -> None:
         if not (root / relative).is_file():
             raise EvalFailure(f"orchestrator-coherence: missing core contract: {relative}")
 
-    def forbid(pattern: str, relatives: Sequence[str], *, ignore_case: bool = True) -> None:
+    def forbid(
+        pattern: str,
+        relatives: Sequence[str],
+        *,
+        ignore_case: bool = True,
+        allow: str | None = None,
+    ) -> None:
         flags = re.MULTILINE | (re.IGNORECASE if ignore_case else 0)
         compiled = re.compile(pattern, flags)
+        allowed = re.compile(allow) if allow else None
         hits: list[str] = []
         for relative in relatives:
             for number, line in enumerate(
                 (root / relative).read_text(encoding="utf-8").splitlines(), 1
             ):
+                if allowed and allowed.search(line):
+                    continue
                 if compiled.search(line):
                     hits.append(f"{relative}:{number}:{line}")
         if hits:
@@ -1292,6 +1301,10 @@ def grade_coherence(root: Path = ROOT) -> None:
     forbid(
         r"make (fmt-check|build|test|test-integration)|scriptorium check -config",
         core_rel,
+        # The host queue rule (plan 1080) names generic build and test commands
+        # as examples of what to queue, and the role files show the queue's own
+        # submit line; neither is a target-repository validation command.
+        allow=r"^Examples: `make`, `make test`|planar-agent queue run ",
     )
     forbid(
         r"recommended for:.*(mechanical|docs-polish|single-verb)",
