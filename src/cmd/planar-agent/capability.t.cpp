@@ -186,7 +186,7 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
     }
     declared.insert(option->get_name(false, true));
   }
-  CHECK(declared == std::set<std::string, std::less<>>{"--label", "--notices", "--role", "--timeout", "--vendor",
+  CHECK(declared == std::set<std::string, std::less<>>{"--detach", "--label", "--notices", "--role", "--timeout", "--vendor",
                                                        "--wait-timeout", "command"});
 
   // Still refuses every planning verb, at any depth, with `queue` present.

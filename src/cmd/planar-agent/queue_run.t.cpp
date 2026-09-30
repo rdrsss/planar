@@ -24,6 +24,7 @@
 
 #include <fcntl.h>
 #include <signal.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -2795,4 +2796,547 @@ TEST_CASE("queue run: --notices tells a rejoined submitter its position again un
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 0);
   CHECK(split_lines(got.err).back() == std::format("queue: entry {} exited with code 0", successor));
+}
+
+// ---------------------------------------------------------------------------
+// Scenarios: `queue run --detach` (plan 1080, task hq-detach; tech spec 647
+// § Submitting, With `--detach`).
+//
+// A detached submitter is a process the test did not start directly: the
+// invoked `queue run` forks it and exits. Every case that makes one records
+// its pid and start time from the entry the child inserted, and the
+// `detached_submitter` guard stops it on the way out, so a failed assertion
+// leaves no submitter behind. Nothing is signalled by name, and never pid 0,
+// 1 or a group.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The ticket `queue run --detach` prints: the sequence number, then
+/// the log path, one per line.
+struct ticket {
+  std::int64_t seq = 0;
+  std::string  path;
+};
+
+auto parse_ticket(const std::string& out) -> ticket {
+  INFO("ticket output:\n" << out);
+  auto const first = out.find('\n');
+  REQUIRE(first != std::string::npos);
+  auto const second = out.find('\n', first + 1);
+  REQUIRE(second != std::string::npos);
+  REQUIRE(second + 1 == out.size());
+  ticket      result;
+  auto const* head = out.data();
+  REQUIRE(std::from_chars(head, head + first, result.seq).ec == std::errc{});
+  result.path = out.substr(first + 1, second - first - 1);
+  return result;
+}
+
+/// @brief Owns one detached submitter: stops it, bounded, when it is still
+/// the process the entry named.
+struct detached_submitter {
+  std::int64_t pid     = 0;
+  std::int64_t started = 0;
+
+  detached_submitter()                                     = default;
+  detached_submitter(const detached_submitter&)            = delete;
+  detached_submitter& operator=(const detached_submitter&) = delete;
+  ~detached_submitter() {
+    stop();
+  }
+
+  void record(const hq::entry& entry) {
+    pid     = entry.pid;
+    started = entry.pid_started;
+  }
+
+  [[nodiscard]] auto still_mine() const -> bool {
+    if (pid <= 1) {
+      return false;
+    }
+    auto const now = ident::process_start_time(pid);
+    return now && now->has_value() && static_cast<std::int64_t>(**now) == started;
+  }
+
+  void stop() {
+    if (!still_mine()) {
+      return;
+    }
+    ::kill(static_cast<::pid_t>(pid), SIGTERM);
+    if (!await([&] { return !still_mine(); }, std::chrono::seconds(10)) && still_mine()) {
+      ::kill(static_cast<::pid_t>(pid), SIGKILL);
+      await([&] { return !still_mine(); }, std::chrono::seconds(10));
+    }
+  }
+};
+
+/// @brief The process group of `pid`, from `ps`.
+auto process_group_of(std::int64_t pid) -> std::optional<std::int64_t> {
+  auto* pipe = ::popen(std::format("ps -o pgid= -p {} 2>/dev/null", pid).c_str(), "r");
+  if (pipe == nullptr) {
+    return std::nullopt;
+  }
+  std::string text;
+  char        buffer[64];
+  while (auto const n = std::fread(buffer, 1, sizeof buffer, pipe)) {
+    text.append(buffer, n);
+  }
+  ::pclose(pipe);
+  std::int64_t value = 0;
+  auto const   start = text.find_first_not_of(" \t");
+  if (start == std::string::npos || std::from_chars(text.data() + start, text.data() + text.size(), value).ec != std::errc{}) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+auto file_mode(const std::filesystem::path& path) -> unsigned {
+  struct stat info{};
+  REQUIRE(::stat(path.c_str(), &info) == 0);
+  return static_cast<unsigned>(info.st_mode & 07777);
+}
+
+auto log_of(const parity::arena& arena, std::int64_t seq) -> std::filesystem::path {
+  return arena.cpp_root / "queue-logs" / std::format("{}.log", seq);
+}
+
+/// @brief Runs `queue run --detach ...` from a helper that first makes itself
+/// a process-group leader; with `kill_group`, the helper then kills its whole
+/// group. Returns the invoked process's exit status and streams, read back
+/// from files, since the helper cannot report its own.
+auto run_detached_from_leader(const parity::arena& arena, std::string tag, const std::vector<std::string>& command,
+                              bool kill_group, std::vector<std::string> flags = {"--detach"}) -> capture {
+  auto vars = parity::pinned_env(arena.cpp_root);
+  vars.push_back(parity::pinned_var{.name = "QD_RC", .value = (arena.cpp_root / (tag + ".rc")).string()});
+  parity::require_agent_db_pinned(arena.cpp_root, vars);
+  auto const  script = kill_group ? std::string{"setpgrp(0,0); system(@ARGV); open(F, '>'.$ENV{QD_RC}); print F $?>>8, qq(\\n); "
+                                                "close F; kill 'KILL', -$$;"}
+                                  : std::string{"setpgrp(0,0); exec @ARGV;"};
+  std::string line   = "cd " + parity::shell_quote((arena.cpp_root / "proj").string()) + " && ";
+  line += parity::pinned_env_prefix(vars) + "perl -e " + parity::shell_quote(script) + " " +
+          parity::shell_quote(agent_bin().string());
+  for (auto const& arg : queue_args(command, std::move(flags))) {
+    line += " " + parity::shell_quote(arg);
+  }
+  auto const out = arena.cpp_root / (tag + ".out");
+  auto const err = arena.cpp_root / (tag + ".err");
+  line += " > " + parity::shell_quote(out.string()) + " 2> " + parity::shell_quote(err.string()) + " ; echo $? > " +
+          parity::shell_quote((arena.cpp_root / (tag + ".code")).string());
+  // The subshell reports a killed job on its own stderr; that is the point of
+  // the case, not output for the test log.
+  line = "( " + line + " ) 2>/dev/null";
+  static_cast<void>(std::system(line.c_str()));
+  int code = -1;
+  if (kill_group) {
+    auto const rc = read_all(arena.cpp_root / (tag + ".rc"));
+    std::from_chars(rc.data(), rc.data() + rc.size() - (rc.ends_with('\n') ? 1 : 0), code);
+  } else {
+    auto const raw = read_all(arena.cpp_root / (tag + ".code"));
+    std::from_chars(raw.data(), raw.data() + raw.size() - (raw.ends_with('\n') ? 1 : 0), code);
+  }
+  return capture{.code = code, .out = read_all(out), .err = read_all(err)};
+}
+
+auto split_out_lines(std::string_view text) -> std::vector<std::string> {
+  std::vector<std::string> lines;
+  while (!text.empty()) {
+    auto const end = text.find('\n');
+    lines.emplace_back(text.substr(0, end));
+    text = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+  }
+  return lines;
+}
+
+} // namespace
+
+TEST_CASE("queue run: --detach returns a ticket at once and the command's output lands in the log",
+          "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_happy");
+  write_config(arena, k_fast_poll);
+  gate               hold(arena.cpp_root / "hold.fifo");
+  gate               release(arena.cpp_root / "release.fifo");
+  auto const         holder_started = arena.cpp_root / "holder.started";
+  release_all        guard{.gates = {&hold, &release}};
+  spawned            holder;
+  detached_submitter submitter;
+
+  holder =
+      spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
+  await_file(holder_started);
+  static_cast<void>(await_child_recorded(arena, 1));
+
+  auto const script    = std::string{"echo out; echo err >&2; [ -z \"$(cat)\" ] && echo stdin-empty; read x < \"$1\"; exit 3"};
+  auto const submitted = run_queue(arena, "detached", sh_command(script, {release.path.string()}), {"--detach"});
+  INFO("stderr:\n" << submitted.err);
+  REQUIRE(submitted.code == 0);
+  CHECK(submitted.err.empty());
+  auto const ticket = parse_ticket(submitted.out);
+
+  // It returned while another entry still holds the only slot, and the entry
+  // it named exists and is waiting, with the log path it printed.
+  auto const snap = require_snapshot(arena);
+  REQUIRE(entry_seq(snap, 1) != nullptr);
+  CHECK(entry_seq(snap, 1)->state == hq::entry_state::running);
+  auto const* entry = entry_seq(snap, ticket.seq);
+  REQUIRE(entry != nullptr);
+  submitter.record(*entry);
+  CHECK(entry->state == hq::entry_state::waiting);
+  CHECK(entry->log_path == ticket.path);
+  CHECK(ticket.path == log_of(arena, ticket.seq).string());
+
+  // The log exists already, is private to its owner, and the submitter that
+  // outlived the invoked process is a session leader of its own.
+  CHECK(present(ticket.path));
+  CHECK(file_mode(ticket.path) == 0600);
+  CHECK(submitter.still_mine());
+  CHECK(process_group_of(entry->pid) == entry->pid);
+  CHECK(std::filesystem::equivalent(entry->cwd, proj(arena)));
+
+  hold.release();
+  static_cast<void>(await_entry(arena, ticket.seq, hq::entry_state::running));
+  REQUIRE(await([&] { return read_all(ticket.path).ends_with("stdin-empty\n"); }));
+  release.release();
+  REQUIRE(await([&] {
+    auto const now = try_snapshot(arena);
+    return now && history_seq(*now, ticket.seq) != nullptr;
+  }));
+  auto const  done = require_snapshot(arena);
+  auto const* row  = history_seq(done, ticket.seq);
+  REQUIRE(row != nullptr);
+  CHECK(row->outcome == hq::history_outcome::exited);
+  CHECK(row->exit_code == 3);
+  CHECK(row->log_path == ticket.path);
+  CHECK(read_all(ticket.path) == "out\nerr\nstdin-empty\n");
+  CHECK(finish(holder).code == 0);
+}
+
+TEST_CASE("queue run: --detach hands its ticket back through a pipe that nothing else holds open",
+          "[cmd][agent][queue][hq-detach]") {
+  // A submitter that kept the invoked process's standard streams (or any
+  // descriptor it inherited) would keep a reader waiting for end-of-file
+  // until the command ended. The command here runs for a long time, so a
+  // reader that returns while the entry still exists proves nothing holds it.
+  auto const arena = parity::make_arena("qd_pipe");
+  write_config(arena, k_fast_poll);
+  detached_submitter submitter;
+  auto const         vars = parity::pinned_env(arena.cpp_root);
+  parity::require_agent_db_pinned(arena.cpp_root, vars);
+  std::string line = "cd " + parity::shell_quote((arena.cpp_root / "proj").string()) + " && " + parity::pinned_env_prefix(vars) +
+                     parity::shell_quote(agent_bin().string());
+  for (auto const& arg : queue_args(sh_command("sleep 8; echo late"), {"--detach"})) {
+    line += " " + parity::shell_quote(arg);
+  }
+  line += " 2>&1";
+  auto* pipe = ::popen(line.c_str(), "r");
+  REQUIRE(pipe != nullptr);
+  std::string text;
+  char        buffer[256];
+  while (auto const n = std::fread(buffer, 1, sizeof buffer, pipe)) {
+    text.append(buffer, n);
+  }
+  auto const status = ::pclose(pipe);
+  auto const got    = parse_ticket(text);
+  CHECK(status == 0);
+  auto const  snap  = require_snapshot(arena);
+  auto const* entry = entry_seq(snap, got.seq);
+  REQUIRE(entry != nullptr); // still there: the reader did not wait for the command
+  submitter.record(*entry);
+}
+
+TEST_CASE("queue run: a detached submitter survives its caller's process group being killed", "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_group");
+  write_config(arena, k_fast_poll);
+  gate               release(arena.cpp_root / "release.fifo");
+  release_all        guard{.gates = {&release}};
+  detached_submitter submitter;
+
+  auto const submitted =
+      run_detached_from_leader(arena, "leader", sh_command("read x < \"$1\"; exit 4", {release.path.string()}), true);
+  INFO("stderr:\n" << submitted.err);
+  REQUIRE(submitted.code == 0);
+  auto const ticket = parse_ticket(submitted.out);
+
+  // The whole group of the invoking helper has been killed by now.
+  auto const  snap  = require_snapshot(arena);
+  auto const* entry = entry_seq(snap, ticket.seq);
+  REQUIRE(entry != nullptr);
+  submitter.record(*entry);
+  CHECK(submitter.still_mine());
+  static_cast<void>(await_child_recorded(arena, ticket.seq));
+
+  release.release();
+  REQUIRE(await([&] {
+    auto const now = try_snapshot(arena);
+    return now && history_seq(*now, ticket.seq) != nullptr;
+  }));
+  auto const done = require_snapshot(arena);
+  CHECK(history_seq(done, ticket.seq)->outcome == hq::history_outcome::exited);
+  CHECK(history_seq(done, ticket.seq)->exit_code == 4);
+}
+
+TEST_CASE("queue run: --detach from a process-group leader returns a ticket and a poll by another entry does not reap it",
+          "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_leader");
+  write_config(arena, k_fast_poll);
+  gate               hold(arena.cpp_root / "hold.fifo");
+  release_all        guard{.gates = {&hold}};
+  auto const         holder_started = arena.cpp_root / "holder.started";
+  spawned            holder;
+  spawned            follower;
+  detached_submitter submitter;
+
+  holder =
+      spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
+  await_file(holder_started);
+  static_cast<void>(await_child_recorded(arena, 1));
+
+  auto const submitted = run_detached_from_leader(arena, "leader", sh_command("exit 0"), false);
+  INFO("stderr:\n" << submitted.err);
+  REQUIRE(submitted.code == 0);
+  auto const  ticket = parse_ticket(submitted.out);
+  auto const  snap   = require_snapshot(arena);
+  auto const* entry  = entry_seq(snap, ticket.seq);
+  REQUIRE(entry != nullptr);
+  submitter.record(*entry);
+  CHECK(submitter.still_mine());
+  CHECK(entry->state == hq::entry_state::waiting);
+
+  // Another submitter queues behind it and polls; the detached entry is live
+  // by the recorded pid and start time, so those polls leave it in place.
+  follower = spawn_queue(arena, "follower", sh_command("exit 0"));
+  static_cast<void>(await_entry(arena, ticket.seq + 1, hq::entry_state::waiting));
+  await_refreshes(arena, ticket.seq + 1, 4);
+  auto const later = require_snapshot(arena);
+  REQUIRE(entry_seq(later, ticket.seq) != nullptr);
+  CHECK(history_seq(later, ticket.seq) == nullptr);
+
+  hold.release();
+  CHECK(finish(follower).code == 0);
+  CHECK(finish(holder).code == 0);
+  REQUIRE(await([&] {
+    auto const now = try_snapshot(arena);
+    return now && history_seq(*now, ticket.seq) != nullptr;
+  }));
+  CHECK(history_seq(require_snapshot(arena), ticket.seq)->outcome == hq::history_outcome::exited);
+}
+
+TEST_CASE("queue run: a refused detached command detaches nothing and prints no ticket", "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_refused");
+  {
+    std::ofstream plain(proj(arena) / "notexec");
+    plain << "#!/bin/sh\n";
+  }
+  ::chmod((proj(arena) / "notexec").c_str(), 0644);
+
+  struct refusal {
+    std::string              tag;
+    std::vector<std::string> command;
+    std::vector<std::string> flags;
+    int                      code;
+  };
+  std::vector<refusal> const cases{
+      {"guard", {"claude"}, {"--detach"}, 2},
+      {"missing", {"planar-no-such-program-7021"}, {"--detach"}, 127},
+      {"notexec", {"./notexec"}, {"--detach"}, 126},
+      {"duration", {"true"}, {"--detach", "--timeout", "0s"}, 2},
+      {"waitduration", {"true"}, {"--detach", "--wait-timeout", "12"}, 2},
+  };
+  for (auto const& c : cases) {
+    INFO("case " << c.tag);
+    auto const got = run_queue(arena, c.tag, c.command, c.flags);
+    INFO("stderr:\n" << got.err);
+    CHECK(got.code == c.code);
+    CHECK(got.out.empty());
+    CHECK_FALSE(got.err.empty());
+    // Refused in the invoked process: the store was never opened and no log
+    // directory was made, so nothing was forked to do either.
+    CHECK_FALSE(present(arena.cpp_root / "agent.db"));
+    CHECK_FALSE(present(arena.cpp_root / "queue-logs"));
+  }
+}
+
+TEST_CASE("queue run: --detach with an unreachable store exits 125 and issues no ticket", "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_store");
+  {
+    std::ofstream blocker(arena.cpp_root / "blocker");
+    blocker << "not a directory\n";
+  }
+  auto vars = parity::pinned_env(arena.cpp_root);
+  for (auto& var : vars) {
+    if (var.name == "PLANAR_AGENT_DB") {
+      var.value = (arena.cpp_root / "blocker" / "agent.db").string();
+    }
+  }
+  auto const args = queue_args({"true"}, {"--detach"});
+  auto const got  = parity::run_pinned(agent_bin(), args, arena.cpp_root, "unreachable", vars);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.out.empty());
+  CHECK(got.err.starts_with("error: queue: "));
+  CHECK_FALSE(present(arena.cpp_root / "queue-logs"));
+}
+
+TEST_CASE("queue run: a detached run that cannot create its log file is refused and leaves no entry",
+          "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_nolog");
+  // A plain file where the log directory belongs: the directory cannot be made.
+  {
+    std::ofstream blocker(arena.cpp_root / "queue-logs");
+    blocker << "not a directory\n";
+  }
+  auto const ran = arena.cpp_root / "ran";
+  auto const got = run_queue(arena, "nolog", sh_command("echo x > \"$1\"", {ran.string()}), {"--detach"});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.out.empty());
+  CHECK(got.err.starts_with("error: queue: "));
+  CHECK(got.err.find("log") != std::string::npos);
+
+  // The child opened the store, inserted the entry, failed, and took the
+  // entry back out before it reported: no entry, no history row, no command.
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  CHECK(snap.history.empty());
+  CHECK_FALSE(present(ran));
+}
+
+TEST_CASE("queue run: --detach writes notices and the wait-limit refusal to the log, not to the invoked process",
+          "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_notices");
+  write_config(arena, k_fast_poll);
+  gate               hold(arena.cpp_root / "hold.fifo");
+  release_all        guard{.gates = {&hold}};
+  auto const         holder_started = arena.cpp_root / "holder.started";
+  spawned            holder;
+  detached_submitter submitter;
+
+  holder =
+      spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {holder_started.string(), hold.path.string()}));
+  await_file(holder_started);
+  static_cast<void>(await_child_recorded(arena, 1));
+
+  auto const submitted = run_queue(arena, "detached", sh_command("exit 0"), {"--detach", "--notices", "--wait-timeout", "300ms"});
+  INFO("stderr:\n" << submitted.err);
+  REQUIRE(submitted.code == 0);
+  CHECK(submitted.err.empty());
+  auto const ticket = parse_ticket(submitted.out);
+  auto const snap   = require_snapshot(arena);
+  REQUIRE(entry_seq(snap, ticket.seq) != nullptr);
+  submitter.record(*entry_seq(snap, ticket.seq));
+
+  REQUIRE(await([&] {
+    auto const now = try_snapshot(arena);
+    return now && history_seq(*now, ticket.seq) != nullptr;
+  }));
+  CHECK(history_seq(require_snapshot(arena), ticket.seq)->outcome == hq::history_outcome::wait_timeout);
+  REQUIRE(await([&] { return read_all(ticket.path).find("removed at its wait limit") != std::string::npos; }));
+  auto const lines = split_out_lines(read_all(ticket.path));
+  REQUIRE_FALSE(lines.empty());
+  CHECK(lines.front() == std::format("queue: entry {} waiting at position 1", ticket.seq));
+  CHECK(lines.back() == std::format("queue: entry {} removed at its wait limit", ticket.seq));
+  hold.release();
+  CHECK(finish(holder).code == 0);
+}
+
+namespace {
+
+/// @brief The pids whose parent is `parent`, from `ps`.
+auto children_of(std::int64_t parent) -> std::vector<std::int64_t> {
+  std::vector<std::int64_t> found;
+  auto*                     pipe = ::popen("ps -axo pid=,ppid= 2>/dev/null", "r");
+  if (pipe == nullptr) {
+    return found;
+  }
+  std::string text;
+  char        buffer[4096];
+  while (auto const n = std::fread(buffer, 1, sizeof buffer, pipe)) {
+    text.append(buffer, n);
+  }
+  ::pclose(pipe);
+  std::istringstream in(text);
+  std::int64_t       pid  = 0;
+  std::int64_t       ppid = 0;
+  while (in >> pid >> ppid) {
+    if (ppid == parent) {
+      found.push_back(pid);
+    }
+  }
+  return found;
+}
+
+} // namespace
+
+TEST_CASE("queue run: a detached submitter whose caller died before the ticket removes its entry and its log",
+          "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_gone");
+  write_config(arena, k_fast_poll);
+  // Create and migrate the store with an ordinary run, so the lock below
+  // stalls the child at its insert and not at the migration.
+  REQUIRE(run_queue(arena, "seed", sh_command("exit 0")).code == 0);
+
+  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto lock = opened->begin_transaction(planar::db::lock_mode::immediate);
+  REQUIRE(lock.has_value());
+
+  // The child forks, starts its session and then blocks on the lock we hold,
+  // before it can insert. Kill the invoked process once the child exists: the
+  // pipe then has no reader when the child comes to write the ticket.
+  auto         invoker = spawn_queue(arena, "gone", sh_command("exit 0"), {}, {"--detach"});
+  std::int64_t child   = 0;
+  REQUIRE(await([&] {
+    auto const kids = children_of(invoker.pid);
+    if (kids.empty()) {
+      return false;
+    }
+    child = kids.front();
+    return true;
+  }));
+  detached_submitter straggler; // stops the child if the case fails before it ends
+  straggler.pid = child;
+  if (auto const at = ident::process_start_time(child); at && at->has_value()) {
+    straggler.started = static_cast<std::int64_t>(**at);
+  }
+  REQUIRE(invoker.still_mine());
+  REQUIRE(::kill(static_cast<::pid_t>(invoker.pid), SIGKILL) == 0);
+  REQUIRE(await([&] { return invoker.ended(); }));
+
+  REQUIRE(lock->commit().has_value()); // The child's insert now goes through.
+  REQUIRE(await([&] { return !straggler.still_mine(); }));
+
+  // It found nobody to hand the ticket to: no entry, no history row, no log.
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  CHECK(snap.history.size() == 1); // The seed run's row and nothing else.
+  auto logs = std::vector<std::string>{};
+  if (present(arena.cpp_root / "queue-logs")) {
+    for (auto const& item : std::filesystem::directory_iterator(arena.cpp_root / "queue-logs")) {
+      logs.push_back(item.path().filename().string());
+    }
+  }
+  CHECK(logs.empty());
+}
+
+TEST_CASE("queue run: a detached run never writes into a log that already exists", "[cmd][agent][queue][hq-detach]") {
+  auto const arena = parity::make_arena("qd_excl");
+  // A log left by an earlier store: sequence numbers restarted, so the next
+  // run is entry 1 and its log path is already taken.
+  std::filesystem::create_directories(arena.cpp_root / "queue-logs");
+  auto const old = arena.cpp_root / "queue-logs" / "1.log";
+  {
+    std::ofstream out(old, std::ios::binary);
+    out << "old run\n";
+  }
+  auto const ran = arena.cpp_root / "ran";
+  auto const got = run_queue(arena, "excl", sh_command("echo x > \"$1\"", {ran.string()}), {"--detach"});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.out.empty());
+  CHECK(got.err.starts_with("error: queue: cannot create the log file"));
+  CHECK(read_all(old) == "old run\n"); // Neither appended to nor removed.
+  auto const snap = require_snapshot(arena);
+  CHECK(snap.entries.empty());
+  CHECK(snap.history.empty());
+  CHECK_FALSE(present(ran));
 }
