@@ -34,6 +34,30 @@ auto has_table(db::connection& conn, std::string_view name) -> std::expected<boo
   return *step == db::step_result::row && stmt->column_int64(0) != 0;
 }
 
+/// @brief Refuses a file that has tables but is not an agent store: no
+/// `agent_schema_migrations` table. A file with no tables at all is a store
+/// created and not yet migrated and passes.
+auto require_agent_store(db::connection& conn, const std::filesystem::path& path) -> std::expected<void, domain_error> {
+  auto stmt = conn.prepare("select count(*), coalesce(sum(name = 'agent_schema_migrations'), 0) from sqlite_master "
+                           "where type = 'table' and name not like 'sqlite_%'");
+  if (!stmt) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           std::format("agent database read failed: {}", stmt.error().message_)));
+  }
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           std::format("agent database read failed: {}", step.error().message_)));
+  }
+  if (*step == db::step_result::row && stmt->column_int64(0) > 0 && stmt->column_int64(1) == 0) {
+    return std::unexpected(error_from_body(
+        domain_error_kind::generic_failure,
+        std::format("{} is a database but not an agent store (it has no agent_schema_migrations table); check PLANAR_AGENT_DB",
+                    path.string())));
+  }
+  return {};
+}
+
 } // namespace
 
 agent_store::agent_store(std::filesystem::path path, std::optional<db::connection> connection)
@@ -109,6 +133,9 @@ auto open_agent_store_at(const std::filesystem::path& path) -> std::expected<age
       return agent_store{path, std::nullopt}; // Removed between the check and the open.
     }
     return std::unexpected(agent_open_error(opened.error()));
+  }
+  if (auto agent = require_agent_store(*opened, path); !agent) {
+    return std::unexpected(std::move(agent.error()));
   }
   return agent_store{path, std::move(*opened)};
 }

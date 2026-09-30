@@ -9,9 +9,12 @@
 ///  - the path comes from `PLANAR_AGENT_DB`, else `$HOME/.planar/agent.db`
 ///    (`planar.db.agentdb::resolve_agent_db_path`, shared with `planar-agent`);
 ///  - the store is opened with `planar.db.agentdb::open_agent_db_read_only_at`
-///    (`file:...?mode=ro`, `SQLITE_OPEN_READONLY`): it never creates the file,
-///    its directory or a `-wal` / `-shm` sidecar, never sets a journal mode and
-///    never migrates, so a store behind head is read as it is;
+///    (`file:...?mode=ro`, `SQLITE_OPEN_READONLY`): it never creates the
+///    database file or its directory, never sets a journal mode and never
+///    migrates, so a store behind head is read as it is. SQLite itself may
+///    create empty `-wal` / `-shm` sidecars beside an existing WAL store,
+///    exactly as for the main database. `immutable=1` would avoid that, but
+///    it hides a live writer's uncheckpointed rows, so it is not used;
 ///  - the agent compatibility check runs at open, and a store whose highest
 ///    `compat` is above this binary's agent schema version is refused as
 ///    `schema_version_ahead` (exit 7), naming both values;
@@ -19,7 +22,10 @@
 ///    submitted. `open_agent_store` succeeds with a store whose `present()` is
 ///    false and whose reads are empty. Any other open failure (an unreadable
 ///    file, something that is not a SQLite database) is an error, never
-///    "empty".
+///    "empty". So is a file that has tables but no `agent_schema_migrations`
+///    table (`PLANAR_AGENT_DB` pointed at another database by mistake): it is
+///    refused as not an agent store, exit 1. A zero-byte file, or one with no
+///    tables at all, is a store created and not yet migrated, and reads empty.
 ///
 /// Reads go through `planar.engine.hostqueue`'s `list` and `list_history`,
 /// which select the limit columns agent migration 00003 added through

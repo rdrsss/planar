@@ -351,3 +351,23 @@ TEST_CASE("a file that is not a SQLite database is an error, never an empty queu
   CHECK(planar::cmd::watch::exit_code(opened.error()) == 1);
   CHECK(opened.error().text.find(store.string()) != std::string::npos);
 }
+
+TEST_CASE("a valid SQLite file that is not an agent store is refused and left untouched", "[cmd][watch][agentstore]") {
+  // PLANAR_AGENT_DB pointed at another database by mistake must not read as
+  // an empty queue.
+  scratch    sc("foreign");
+  auto const store = sc.root / "agent.db";
+  {
+    auto raw = planar::db::connection::open(store.string());
+    REQUIRE(raw.has_value());
+    REQUIRE(raw->execute("create table plans (id integer primary key); insert into plans values (1)").has_value());
+  }
+  auto const before_bytes = bytes_of(store);
+
+  auto opened = planar::cmd::watch::open_agent_store_at(store);
+  REQUIRE_FALSE(opened.has_value());
+  CHECK(planar::cmd::watch::exit_code(opened.error()) == 1);
+  CHECK(opened.error().text.find(store.string()) != std::string::npos);
+  CHECK(opened.error().text.find("not an agent store") != std::string::npos);
+  CHECK(bytes_of(store) == before_bytes);
+}
