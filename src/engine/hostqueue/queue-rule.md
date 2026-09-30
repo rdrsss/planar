@@ -72,7 +72,10 @@ Use 30 seconds. The waiting entry advances on its own every second, so a
 faster poll finishes nothing sooner. It only spends your turns. A longer
 interval makes you notice a finished build late. Keep doing any work that
 does not need the build's result between polls. If you hold a task claim,
-keep renewing it between polls as you do during any long step.
+add `--claim <token>` to the submit: the queue renews that claim while the
+entry waits and while the command runs, so you do not renew it between polls.
+A renewal that fails is reported in the output file and does not stop the
+command.
 
 Read the `state` line:
 
@@ -120,7 +123,8 @@ output comes straight back:
 planar-agent queue run --vendor <vendor> --role <role> -- <command> [args...]
 ```
 
-The exit status is the command's own. The queue adds these: 124, the command
+If you hold a task claim, add `--claim <token>` here too. The exit status is
+the command's own. The queue adds these: 124, the command
 was stopped at its run limit; 125, the queue failed; 126, the command could
 not be executed; 127, the command was not found; 128 plus N, a signal N
 terminated it. A command can exit with any of those itself, so when the code

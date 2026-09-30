@@ -6991,6 +6991,7 @@ The text is one authored file, `src/engine/hostqueue/queue-rule.md`, embedded in
 - what counts as a build or test command, with examples, and what does not;
 - the detached submit and poll procedure: submit with `queue run --detach`, then read `queue status <seq>` every 30 seconds until the entry has ended;
 - the instruction to pass `--vendor` and `--role`;
+- the instruction, for an agent that holds a task claim, to pass `--claim <token>` to `queue run` (detached and foreground) so the queue renews the claim while the entry waits and runs, in place of renewing it by hand between polls;
 - what to do on each outcome `queue status` reports;
 - the instruction to stop and report when a queue command exits **125**, and that the command must not then be run directly;
 - what a non-zero exit from the detached submit means (no ticket was issued) and the route for each code;
