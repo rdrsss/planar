@@ -150,6 +150,10 @@
 #     five buckets: planning, identity, entitylink, promotion, runtime.
 #
 # `workspace.cppm` is the umbrella re-export.
+#
+# `regenerate.cpp` also `#embed`s `../hostqueue/queue-rule.md` (plan 1080, task
+# hq-workspace-guide) so the generated guide carries the host queue rule. That
+# is a file embed, not a module import: there is no `engine_hostqueue` edge.
 
 planar_module(engine_workspace
   INTERFACE

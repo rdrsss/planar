@@ -52,6 +52,17 @@ constexpr unsigned char k_default_template_bytes[] = {
 const std::string_view k_default_template(reinterpret_cast<const char*>(k_default_template_bytes),
                                           sizeof(k_default_template_bytes));
 
+// The host build and test queue rule (plan 1080, task hq-workspace-guide),
+// the same authored file `planar-agent queue rule` prints. It is embedded from
+// its one source by relative path rather than through `engine_hostqueue`:
+// D15/D18 forbid an `engine_* -> engine_*` edge, and a second copy in this
+// directory would be a second thing to keep in step. The default template
+// places it with `{{.QueueRule}}`.
+constexpr unsigned char k_queue_rule_bytes[] = {
+#embed "../hostqueue/queue-rule.md"
+};
+const std::string_view k_queue_rule(reinterpret_cast<const char*>(k_queue_rule_bytes), sizeof(k_queue_rule_bytes));
+
 // ===========================================================================
 // Data queried for the render, beyond the routing table itself.
 // ===========================================================================
@@ -204,6 +215,9 @@ auto eval_truthy(std::string_view path, const agents_view& view, const current_i
   if (path == ".SourcePath") {
     return !view.source_path.empty();
   }
+  if (path == ".QueueRule") {
+    return !k_queue_rule.empty();
+  }
   return false;
 }
 
@@ -271,6 +285,9 @@ auto resolve_expr(std::string_view expr, const agents_view& view, const current_
   }
   if (expr == ".SourcePath") {
     return std::string{view.source_path};
+  }
+  if (expr == ".QueueRule") {
+    return std::string{k_queue_rule};
   }
   return std::nullopt;
 }
