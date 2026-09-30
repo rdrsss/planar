@@ -23,13 +23,14 @@ working in that area. `AGENTS.md` is a symlink to this file.
 
 ## Binaries and their write surfaces
 
-Each binary has a disjoint write surface over the shared database. The
-boundary is each binary's verb set, not a runtime ACL.
+Each binary has a disjoint write surface over the shared database, with one
+separate store beside it (below). The boundary is each binary's verb set,
+not a runtime ACL.
 
 | Binary | Role | Writes |
 |--------|------|--------|
 | `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. |
-| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, the `routing_dispatch_*` tables, and `tasks.status` as part of a coordinated operation. |
+| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, the `routing_dispatch_*` tables, and `tasks.status` as part of a coordinated operation. Also the separate agent database (`~/.planar/agent.db`, `PLANAR_AGENT_DB`): `queue_entries` and `queue_history`, through `queue run`. |
 | `planar-watch` | Read-only viewer | Nothing. Opens SQLite with `mode=ro`. |
 | `planar-ext` | Jira and GitHub Issues adapters | `external_links`, `external_systems`, `sync_events` only, enforced by a `sqlite3_set_authorizer` allowlist. Read-only on planning tables. |
 | `planar-execute` | Workflow entry point and client | Nothing. Holds no SQLite handle; reaches state by shelling `planar` and `planar-agent`. |
@@ -37,6 +38,18 @@ boundary is each binary's verb set, not a runtime ACL.
 - `planar-agent`, `planar-watch` and `planar-ext` each have a
   `capability.t.cpp` that locks the boundary. `planar`'s surface is pinned by
   `src/cmd/planar/parity.t.cpp` and the `schema` catalog.
+- **`planar-agent` executes commands and owns a second store (plan 1080,
+  accepted by the operator on 2026-09-28).** `planar-agent queue run --
+  <command>` is the host-wide build and test queue: it waits in a queue shared
+  by every project on the host, runs the command it was given in the caller's
+  directory with the caller's environment, and exits with the command's
+  status. Its state lives in the agent database, `~/.planar/agent.db`
+  (override `PLANAR_AGENT_DB`), a separate SQLite file with its own migration
+  stream (`migrations-agent/`) and version table. Only `planar-agent` writes
+  `queue_entries` and `queue_history`. `planar-agent` opens that file without
+  opening `planar.db`, so `queue run` works while the main schema is locked.
+  The queue is a coordination aid and not a security boundary; `queue` is a
+  domain of `planar-agent` and never of `planar`.
 - There is no `planar agent <verb>` namespace. Agent observability is on
   `planar-watch`; agent-table writes are on `planar-agent`.
 - The `ext` and `sync` verb domains are on `planar-ext`, not `planar`.

@@ -5543,6 +5543,35 @@ work_type)`; see `skills/src/pl-orchestrator.md` § Dispatch preview and model
 tiers), and other workflow callers all resolve through
 it; there is no separate `execute-config.toml`.
 
+#### The `[queue]` table
+
+The host-wide build and test queue (`planar-agent queue run`) reads its
+settings from an optional `[queue]` table. Every key is optional; the values
+shown are the defaults.
+
+```toml
+[queue]
+slots         = 1       # integer, 1..1024: commands that may run at once
+poll_interval = "1s"    # duration, above zero: how often a submitter polls
+stale_after   = "30s"   # duration, above zero, not below poll_interval
+grace         = "10s"   # duration, zero or more: SIGTERM-to-SIGKILL grace
+history_days  = 30      # integer, 1..36500: days history rows and logs are kept
+```
+
+A duration is an integer followed by a unit: `ms`, `s`, `m` or `h` (at most
+`24h`). A bare integer is refused: the unit of a bare number is not guessed.
+The queue reads the file at each poll, so an edit takes effect without
+restarting a waiting submitter; lowering `slots` stops no running command, and
+no new one starts until the running count is below the new value. The queue
+reads only `config.toml`: it never opens `planar.db`, so it keeps working when
+the main database is schema-locked. `planar config show --effective` reports
+each `queue.*` key with its provenance.
+
+`planar config validate` refuses a `[queue]` value outside those ranges, a key
+of a wrong type, and an unknown `[queue]` key, and names the key on each
+finding (`error: queue.stale_after: stale_after must not be negative, got
+"-5s"`).
+
 ---
 
 ### `planar config show`
@@ -5631,7 +5660,8 @@ planar config validate
 - TOML syntax.
 - Sensitive-data invariant: keys matching the secret-name denylist must not carry literal values.
 - Cross-reference consistency (e.g. `auth = "token-env"` requires `token_env` to name an env var).
-- Unknown keys produce a **warning**, not an error, preserving forward-compatibility.
+- The `[queue]` table: every key within its range, no unknown key, and `stale_after` not shorter than `poll_interval` (see [The `[queue]` table](#the-queue-table)).
+- Unknown keys outside `[queue]` produce a **warning**, not an error, preserving forward-compatibility; an unknown key inside `[queue]` is refused (see above).
 
 Each issue is printed with its line number and key path.
 
@@ -6735,7 +6765,9 @@ The `children` array is always present, even when empty (the empty-`global` sign
 writes to `agent_work_claims`, `agent_actions`, `workflow_runs`,
 `context_records`, and the `routing_dispatch_*` authorization tables (behind
 `dispatch preview` / `dispatch confirm`), plus the bounded `tasks.status`
-transitions performed by atomic terminal operations. Operator-recovery verbs (`reconcile`, `abort`) live
+transitions performed by atomic terminal operations. It also owns the queue
+tables in the separate agent database (`queue_entries`, `queue_history`,
+behind `queue run`). Operator-recovery verbs (`reconcile`, `abort`) live
 here because the capability boundary tracks write ownership, not audience. See
 [Five-binary architecture](architecture.md#five-binary-architecture) for the
 binary split.
@@ -6833,6 +6865,11 @@ planar-agent context resolve --status consumed|superseded (--id <record-id> | --
 planar-agent dispatch preview --work-item <id> --project <id> --validation-policy <v> --routing-policy <v> --profile-rule <v> --vendor <s> --role <s> --tier small|medium|large --work-type <t> --complexity bounded|standard|high-risk --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --host <id> --class fallback|default|override|declared_experiment --evidence-state evidential|observational --expires-at <rfc3339> [--task <id>] [--experiment <id>] [--claim <token>] [--claim-status <s>] [--json]
 planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now <rfc3339> --packet-digest <d> --profile-digest <d> --policy-digest <d> --capability-digest <d> --candidate <row-id> --vendor <s> --role <s> --tier <t> --work-type <t> --complexity <c> --validation-policy <v> --routing-policy <v> [--claim <token>] [--claim-status <s>] [--reviewer <disposition>] [--decision confirmed|overridden] [--json]
 
+# Host-wide build and test queue (plan 1080). Everything after `--` is the
+# command; it runs in the caller's directory with the caller's environment.
+# See "Queue verbs" below.
+planar-agent queue run  [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] [--vendor <name>] [--role <name>] [--notices] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
+
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
 planar-agent version
 planar-agent schema
@@ -6845,6 +6882,77 @@ planar-agent schema
 Previously `--ttl` carried a hardcoded `600` default, so an omitted flag was indistinguishable from `--ttl 600` and silently cut a long lease to ten minutes. That made a faithfully-heartbeating long dispatch *more* likely to lose its claim than one that never heartbeated at all.
 
 **`planar-agent heartbeat --status <text>` (plan 467 M1):** When `--status` is provided, `heartbeat` inserts a closed `heartbeat`-kind `agent_actions` row with the text in the `summary` column alongside the lease refresh. This makes current activity visible in `planar-watch ps` (`activity:"<summary>"` text column) and `planar-watch feed`. When `--status` is omitted no action row is written (pre-M1 behavior preserved). The payload is capped at **256 bytes**; oversize values exit with `InvalidInput`. An explicit `--status ""` (empty string) writes an action row with an empty summary — distinct from omission.
+
+### Queue verbs
+
+`planar-agent queue` is the host-wide build and test queue (plan 1080). One queue per user per host serves every project, so a build or test one agent starts does not run on top of another's. There is no daemon: the process that submits a command is the process that runs it.
+
+The foreground form is `queue run` with optional `--timeout <duration>`, `--wait-timeout <duration>`, `--label <text>`, `--vendor <name>`, `--role <name>` and `--notices`, then the argument terminator and the command with its arguments (`queue run [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] [--vendor <name>] [--role <name>] [--notices] <terminator> <command> [args...]`):
+
+1. It checks the command before touching the configuration or the store, in this order. **The command guard**: a command whose program is on the model-launcher list is refused at exit **2**, with one `error: queue: ...` line on standard error that names the program. **Resolution**: a program that cannot be found is refused at exit **127**, and a program that exists but cannot be executed (a file without the execute bit, or a directory) at exit **126**, each with one `error: queue: ...` line naming the program. None of the three creates an entry, a ticket or a history row, and the command is never started; the caller learns of them from the exit code of `queue run` itself. See [the command guard](#the-queue-command-guard).
+2. It reads the `[queue]` configuration ([the `[queue]` table](#the-queue-table)). A configuration it cannot use refuses at exit **125** before anything is enqueued.
+3. It opens the **agent database**, `~/.planar/agent.db` (override `PLANAR_AGENT_DB`), creating and migrating it on first use, and inserts an entry in state `waiting`. This opens no part of `planar.db`, so the verb works while the main schema is locked, and it does not need the main database's path either: with `PLANAR_AGENT_DB` set it runs with neither `PLANAR_DB` nor `HOME` in the environment (every other `planar-agent` verb still exits 1 there). A store it cannot open or write refuses at exit **125**, with one `error: queue: ...` line naming the reason, and does not run the command: the file or its directory is not writable, the path is a directory, the parent is not a directory, the file is not a database, the store needs a newer binary, or neither `PLANAR_AGENT_DB` nor `HOME` is set so no location can be found. The command is never run directly as a fallback. Inserting the entry also deletes history rows older than `[queue] history_days` and their log files.
+4. It polls at `[queue] poll_interval` until the entry is among the first `slots` live entries by arrival order, then marks it `running`. Each poll reads `slots`, `poll_interval`, `stale_after` and `grace` again, so an edit to `config.toml` takes effect on the next poll. A configuration that cannot be read during the wait keeps the previous settings and is reported once on standard error.
+5. It runs the command in the caller's working directory, with the caller's environment plus `PLANAR_QUEUE_SLOT` set to the entry's sequence number, and with the caller's standard streams. Standard output carries the command's own output and nothing else, with or without `--notices`. Standard error carries the command's own output too, plus queue notices only when `--notices` is given, and otherwise nothing else, except the `error: queue: ...` lines and the `warning: queue: ...` lines, which are written with or without `--notices`: a warning is written when the queue itself hit a failure it could not act on (for example a stopping signal that failed, a terminating entry that could not be ended, or a configuration that could not be reloaded; the `--notices` paragraph below lists more).
+6. While the command runs it refreshes the entry at each poll, so an entry whose submitter is alive stays live.
+7. When the command ends it removes the entry and writes its one `queue_history` row in a single transaction, then exits with the command's status: its own exit code, or `128` plus the signal that terminated it.
+8. It catches SIGINT, SIGTERM and SIGHUP for the whole submission and never leaves the entry behind. **While waiting**, a signal removes the entry with outcome `cancelled` (attributed to the submitter's own pid), the command is not started, and the submitter exits **125**, the queue's cancelled exit, because the command never ran (`128` plus N is for a command a signal ended), with one `error: queue: ... was interrupted by <signal> before its turn; the command was not run` line on standard error. A signal that arrives while the turn is being taken is treated the same way; only a signal in the short window between that check and the start of the command is forwarded to the command instead. The entry behind it takes its turn as usual. **While the command runs**, the signal is forwarded to the command's process group and the submitter keeps supervising: it neither marks the entry terminating nor escalates. What happens next is the command's choice. A command that dies of the signal ends the entry `signaled` and the submitter exits `128` plus the signal; one that traps it and exits ends the entry `exited` with the command's own code, which the submitter passes through; one that carries on keeps its slot until it ends, or until its run limit stops it, and a second signal is forwarded again. A signal that was ignored when the submitter started (`nohup`, or a shell's background job for SIGINT) stays ignored and is not forwarded. Only the process group recorded for the command is ever signalled. A signal received while a stopped command's process group drains (after a run limit or a cancellation has begun the stop, once the command's first process has been reaped) is not forwarded: the reaped process's group id is no longer proof of the group, and the stop's own SIGKILL already follows once the `[queue] grace` period has passed, so a forwarded signal would add nothing.
+
+`command` is the argument vector, given after `--`. `--label` is stored with the entry and shown in listings.
+
+`--vendor <name>` and `--role <name>` name the submitting agent, and are stored with the entry and its `queue_history` row so the operator can see which vendors and roles use the queue. Each is the flag when it is given and not empty, else the environment variable `PLANAR_VENDOR` or `PLANAR_ROLE` when it is set and not empty, else it is stored empty (no value; listings show it as absent). Planar does not guess either value, and neither flag has a format rule beyond that: the text is stored as given. The values carry over to a rejoined entry (see below) and to a nested run, which takes its own flags, or the inherited environment, since a nested command's environment is the submitter's.
+
+`--notices` writes queue notices to standard error, one line each, in the form `queue: entry <seq> <what happened>`: `waiting at position <n>` (the entry's place among the waiting entries, counting from 1, when it first waits and each time its place changes; a rejoined entry says it again under its new number), `started`, and last, the outcome: `exited with code <n>`, `terminated by signal <n>`, `stopped at its run limit`, `cancelled`, `cancelled before its turn`, `removed at its wait limit`, `not started`, or, for an entry that ended without this submitter or that the queue gave up on, a short truthful text (`cancelled`, `ended as <outcome> without this submitter`, `ended without a history row`, `abandoned, rejoin limit reached`, `abandoned, could not be polled`, `abandoned, cannot observe the command's status`, `ended: cannot rejoin the queue`, `ended: store busy while rejoining`, `ended: cannot read the clock`). An entry whose start failed for a reason other than a missing or unexecutable program ends `abandoned` and says `abandoned, could not be started`. A notice describes what this submitter observed of its command, while `queue status` holds the entry's record, and the two can differ: a running entry that another process removed shows `exited with code <n>` in the notice but `abandoned` in its history. Every exit after the entry exists ends with one of these lines, written after any `error: queue: ...` line. The last line on standard error therefore names the sequence number and how the entry ended. Standard output is never written by the queue, with or without the flag, and without `--notices` the queue writes nothing to standard error on the happy path, so the stream is byte-identical to a direct run. `started` is written once the command has been spawned, so it is not ordered against the command's own output: the command's first bytes on standard error may come before it. The `warning: queue: ...` diagnostics of a degraded path (a failed signal, a configuration that could not be reloaded, a rejoin, a store that could not be reached) and the `error: queue: ...` lines are the documented exception: they are written with or without `--notices`.
+
+`--timeout <duration>` is the **run limit**, default `30m`: how long the command may run once it has started. The limit is recorded on the entry as its deadline when the entry starts. At the deadline the submitter marks its own entry terminating with reason `timeout` and sends SIGTERM to the command's process group; if the group still has members once the `[queue] grace` period has passed, it sends SIGKILL. The entry is removed only when the group is empty, so a stopped command keeps its slot until it is gone: after the command's first process is reaped, the submitter keeps advancing the stop (sending the SIGKILL once the grace period has passed) until the engine has ended the entry, and only then exits. If a member survives SIGKILL for `[queue] grace` plus 15 seconds, the submitter exits anyway and leaves the entry, still live while its group has members, for the next poll of any submitter to end. The entry ends with outcome `timeout` and the submitter exits **124**, whatever signal ended the command. The same holds when another process marked the entry (a cancellation ends it `cancelled`, exit **125**); a stopped command is never recorded as `signaled`.
+
+`--wait-timeout <duration>` is the **wait limit**, default none: how long the entry may wait for its turn. The limit is recorded on the entry (as `wait_deadline_mono`) when it is enqueued. A submitter whose turn has not come when the limit passes removes its entry with outcome `wait_timeout`, does not run the command, and exits **125** with one `error: queue: ...` line. An entry whose turn comes at the limit runs; the wait limit never cuts short a command that has started.
+
+Both flags take the [`[queue]` duration grammar](#the-queue-table): an integer immediately followed by `ms`, `s`, `m` or `h`, at most `24h`. The flags refuse what a configuration key would not need to: zero, a negative value, a bare integer and an unknown unit are refused at exit **2** with an `error: queue: run: <flag>: ...` line, before the configuration or the store is touched, so nothing is enqueued. (An unknown flag or a flag with no value is a parse failure, exit **1**.) `queue run` with no command is a parse failure: exit **1**, nothing enqueued.
+
+A command that passes both checks can still fail to start at its turn: the program vanished or lost its execute permission while the entry waited, or it is a file with the execute bit but no interpreter line, which passes resolution and fails when it is executed. The entry then ends with outcome `not_started` and one `queue_history` row (exit code **127** for a missing program, **126** otherwise), the submitter exits with that code and writes `error: queue: cannot start '<program>': ...` on standard error, and the next entry takes its turn.
+
+The exit code passes the command's status through, so it is ambiguous by design (a command may exit `125` itself); `queue_history` records how each entry ended. The queue's own failure is exit **125** with one `error: queue: ...` line on standard error. `queue run` has no `--json`: standard output belongs to the command, so no envelope is written on any path.
+
+**Nested runs.** A queued command that itself calls `queue run` does not wait behind its own entry. The variable `PLANAR_QUEUE_SLOT` in the command's environment carries the entry's sequence number; a `queue run` that finds it naming a live running entry inserts its own entry in state `running`, with `parent_seq` set to that number, outside the slot count and the arrival order, and runs the command at once. The nested entry has its own sequence number, its own deadline (its own `--timeout`, or the 30-minute default, not what is left of the parent's), and its own `queue_history` row with `nested` set and the parent's sequence number. A nested command sees its own sequence number in the variable, so a third level nests under the second. The inner exit code passes through as for any run. `--wait-timeout` has nothing to bound on a nested run and is ignored.
+
+The variable is advisory. A value that is not a positive integer, that names no entry (never existed, or already ended), that names an entry still waiting, or that names an entry that is not live, is ignored: the command queues normally and is not marked nested. A session can copy a real sequence number to skip the queue, and a long-lived process a queued command left running keeps the variable until its parent ends; both are accepted, and the history makes them visible. If the store stays busy past its timeout while the nested entry is inserted, the insert is retried at the poll interval for as long as `[queue] stale_after`, then refused at exit **125** with `error: queue: the store stayed busy ...; the command was not run`. It is not queued normally, because it would then wait behind the entry that waits for it, and it is not run unqueued, because nobody checked the marker. Any other failure of the insert is refused at exit **125** at once.
+
+**A submitter whose own entry goes missing** reads the history row for its sequence number. A *waiting* submitter whose row says `abandoned` (another submitter reaped it while it was stopped, for example by `SIGSTOP` or a suspended laptop) rejoins the queue: it inserts a new entry, which has a higher sequence number and so waits behind everything that arrived meanwhile, and records the new number as the old row's `successor_seq`, in one transaction, so `queue status` can follow the chain. The new entry keeps the original `--wait-timeout` deadline, so the limit bounds the whole wait. A submitter rejoins at most three times and then exits **125**; the command is not run. A row saying `cancelled` (or any other outcome), or no row at all (never written, or pruned by retention), exits **125** without running the command. A *running* submitter whose entry disappears keeps supervising its command, never rejoins and never runs the command a second time, and exits with what it observed of the command; because the run limit is a property of the entry, it is no longer enforced, and the submitter says so once on standard error. A waiting submitter that cannot complete any poll for longer than `stale_after` ends its own entry as `abandoned` (no exit code, signal, start time, run time or successor, since the command never ran) and exits **125**.
+
+Not yet available in this build (later tasks of plan 1080): `--detach`, `--vendor`, `--role`, `--claim`, `--notices`, `queue status`, `queue cancel` and `queue rule`.
+
+#### Known limits
+
+These are accepted, and stated here so they are not rediscovered.
+
+- **A queued command cannot read the terminal.** The command runs in a process group of its own, never the terminal's foreground group, so a read from the terminal stops it with SIGTTIN (a write to it may stop it with SIGTTOU when the terminal sets `tostop`). The queue does not hand the terminal over and does not redirect standard input: the command inherits the submitter's standard streams as they are. Queued commands are builds and tests, which do not read the terminal; a command that prompts belongs outside the queue. Run with standard input from a file, a pipe or `/dev/null` (as agent harnesses and CI do) and the limit never arises.
+
+#### The queue command guard
+
+`queue run` refuses a command that would start a model, because a model launcher queued behind builds and tests holds a slot for as long as a conversation lasts. The list is short and purpose-built (it is not derived from `planar-execute`'s host-function deny list): `claude`, `codex`, `gemini`, `copilot`, `aider`, `opencode` and `cursor-agent`.
+
+- The guard matches the **basename** of the program, whole and without regard to ASCII case: `/usr/local/bin/claude`, `claude` and `Claude` are refused, while `codex-lint-report` and `claude_fixture` are queued, because a name that only contains a listed word is a different program. Case is ignored because macOS's default volumes are case-insensitive, where looking up `Claude` on `PATH` runs `claude`; the same folding applies to `env`. The refusal names the listed spelling (`claude`).
+- Before choosing the program the guard skips leading `NAME=value` assignments and a leading `env` (by basename) with its options and the assignments after it: the flags that need no value (`-i`, `-0`, `-v`), the ones that take a value, in their separate, attached and long forms (`-u NAME`, `-C DIR`, `-P PATH`, `-a NAME`, FreeBSD's `-L USER` and `-U USER` (macOS and GNU `env` reject them, so a command using one fails inside `env` before anything runs; the guard consumes their value anyway, which is harmless), and the long `--unset`, `--chdir` and `--argv0`), clustered short options such as `-iu NAME`, and the `--` that ends the options. The string given to `env -S` (or `--split-string`) is split on white space, honouring quotes, and read as the start of the command. The skipping repeats, so `env env claude` is refused too. A command that is only `env`, with nothing after it to run, has no program and is not refused.
+- The guard is a denylist and looks no deeper: a launcher run through `sh -c`, an interpreter or a wrapper script of your own is not seen.
+
+A refusal exits **2**, writes `error: queue: refusing to queue '<program>': it is a model launcher` on standard error, and enqueues nothing. The full exit-code table for `queue run` is [Queue run exit codes](#queue-run-exit-codes).
+
+#### Queue run exit codes
+
+Foreground `queue run` exits with the command's own exit status (decision 1188). The codes below belong to the queue; each is checked against the built binary by `make exit-code-contract`.
+
+| Code | Meaning | When |
+|------|---------|------|
+| `1` | **Parse failure**: an unknown flag, a flag with no value, or no command given. | Before anything is enqueued. |
+| `2` | **Refused input**: a command the guard refuses (a model launcher), or an invalid `--timeout` / `--wait-timeout` value. | Before the configuration or the store is touched. |
+| `124` | The command was **stopped at its run limit** (`--timeout`), whatever signal ended it. | The entry ends `timeout`. |
+| `125` | The **queue failed**: store unreachable, configuration unusable, wait limit reached, cancelled before its turn, or an internal error. Also returned when a handler passes through a status outside 0..255. | The command was not run (except an internal error after it started). |
+| `126` | The command was found and **could not be executed**. | The entry ends `not_started` if it had been enqueued. |
+| `127` | The command was **not found**. | The entry ends `not_started` if it had been enqueued. |
+| `128` + N | The command was **terminated by signal N** (`143` for SIGTERM), capped at 255. | The entry ends `signaled`. |
+
+Any other value is the command's own exit status, passed through unchanged (`7` is `7`); the status of a command that exits `0` is `0`. Because a command may itself exit with any of the values above, the exit code alone is ambiguous: `queue status <seq>` is the authoritative record (its `outcome` field says whether the command ran), and with `--notices` the submitter's last line on standard error names the sequence number and the outcome. A status outside 0..255 cannot be reported by a process, so the dispatcher refuses it with one `error:` line and exits `125`.
 
 ### Atomic operation transaction shapes
 
@@ -6995,10 +7103,13 @@ Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no beh
 
 A process invoked as `planar-agent` writes only to `agent_work_claims`,
 `agent_actions`, `workflow_runs`, and `context_records`, plus `tasks.status`
-inside atomic coordinated operations with status guards. It never writes plan,
-decision, question, scenario, artifact, annotation, or feedback-triage rows. A
-vendor hook configured with only `planar-agent` on its PATH therefore has a
-bounded planning-state blast radius.
+inside atomic coordinated operations with status guards, and, in the separate
+agent database, `queue_entries` and `queue_history` (through `queue run`). It
+never writes plan, decision, question, scenario, artifact, annotation, or
+feedback-triage rows. A vendor hook configured with only `planar-agent` on its
+PATH therefore has a bounded planning-state blast radius. `queue run` also
+executes the command its caller names; the queue is a coordination aid, not a
+security boundary.
 
 ---
 

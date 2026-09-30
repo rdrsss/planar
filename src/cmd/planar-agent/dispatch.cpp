@@ -16,6 +16,7 @@ import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
 import planar.cmd.planar_agent.handlers.action;
 import planar.cmd.planar_agent.handlers.claims;
+import planar.cmd.planar_agent.handlers.queue;
 import planar.cmd.planar_agent.handlers.recovery;
 import planar.cmd.planar_agent.handlers.runs;
 import planar.cmd.planar_agent.handlers.schema;
@@ -101,6 +102,9 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("run start", handlers::run_start);
   table.emplace("run end", handlers::run_end);
   table.emplace("run heartbeat", handlers::run_heartbeat);
+  // The host-wide build and test queue (plan 1080). Its handler returns the
+  // command's exit status, which dispatch passes through unchanged.
+  table.emplace("queue run", handlers::queue_run);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64; the inventory is generated alongside the surface
   // itself. `emplace` is a no-op on a key already present, so a stale
@@ -185,7 +189,20 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
     return exit_code(err);
   }
 
-  auto const outcome = found->second(ctx, args);
+  auto const handled = found->second(ctx, args);
+  if (auto const* status = std::get_if<exit_status>(&handled)) {
+    // Task 7007: the handler's exit code IS another process's status. It
+    // is returned verbatim and never reported, even when it equals one of
+    // this binary's own codes. A status no process can report without
+    // truncation is a handler bug, refused with the internal-error code.
+    if (status->code < exit_status_min || status->code > exit_status_max) {
+      ctx.err() << std::format("error: {}: exit status {} is outside {}..{}\n", key, status->code, exit_status_min,
+                               exit_status_max);
+      return exit_internal_error;
+    }
+    return status->code;
+  }
+  auto const& outcome = std::get<handler_result>(handled);
   if (!outcome) {
     report(outcome.error(), ctx.err());
     if (want_json_envelope) {

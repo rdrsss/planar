@@ -142,6 +142,7 @@ planar_binary(planar_agent
     handlers/run/command.cppm
     handlers/dispatch/command.cppm
     handlers/context/command.cppm
+    handlers/queue/command.cppm
 
     surface.cppm
     handlers/shared/support.cppm
@@ -154,6 +155,7 @@ planar_binary(planar_agent
     handlers/dispatch/dispatch.cppm
     handlers/context/context.cppm
     handlers/run/runs.cppm
+    handlers/queue/queue.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -170,6 +172,7 @@ planar_binary(planar_agent
     handlers/context/context.cpp
     handlers/ingest/ingest.cpp
     handlers/run/runs.cpp
+    handlers/queue/queue.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal
@@ -179,7 +182,10 @@ planar_binary(planar_agent
     engine_runtime
     engine_routing
     json_text
-    engine_planning)
+    engine_planning
+    engine_hostqueue
+    engine_config
+    process)
 
 # `--metadata` is validated with glz::validate_json -- the same purpose-built
 # probe engine/config and engine/runs use, and the only one that enables

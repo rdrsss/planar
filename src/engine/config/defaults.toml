@@ -34,6 +34,25 @@ default_set = "default"
 # `centurion` is refused at dispatch until the Centurion host lands.
 engine = "embedded"
 
+[queue]
+# Host-wide build and test queue (`planar-agent queue run`). Read at each
+# poll, so an edit takes effect without restarting a waiting submitter.
+#
+# How many queued commands may run at once. At least 1. Lowering it never
+# stops a running command; no new one starts until the running count is
+# below the new value.
+slots = 1
+# How often a waiting submitter polls. A duration: an integer and a unit
+# (ms, s, m, h). Above zero.
+poll_interval = "1s"
+# How long an entry may go unrefreshed before it is judged dead. Above zero
+# and not shorter than poll_interval.
+stale_after = "30s"
+# How long a stopping command has between SIGTERM and SIGKILL. Zero or more.
+grace = "10s"
+# How many days finished-entry history and its log files are kept. At least 1.
+history_days = 30
+
 [external.jira]
 # Base URL of the Jira instance. Required for ext-sync against Jira.
 # base_url = "https://your-org.atlassian.net"

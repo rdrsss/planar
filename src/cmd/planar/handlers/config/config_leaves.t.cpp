@@ -466,12 +466,18 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   CHECK(r.code == 0);
   CHECK(r.err.empty());
   CHECK_FALSE(r.db_open);
-  // A file-free HOME still lists the embedded defaults — 23 keys, and the
+  // A file-free HOME still lists the embedded defaults — 28 keys, and the
   // count is asserted so a resolver that silently stopped emitting a family
   // cannot pass on the two keys the case happens to name. (22 until plan 1033
   // task 6485 added `execute.engine`, which `planar-execute` reads from this
-  // very listing.)
-  CHECK(lines_of(r.out).size() == 23);
+  // very listing; 28 since plan 1080 task hq-config added the five
+  // `queue.*` keys.)
+  CHECK(lines_of(r.out).size() == 28);
+  CHECK(line_for(r.out, "queue.slots") == "queue.slots = 1");
+  CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s");
+  CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s");
+  CHECK(line_for(r.out, "queue.grace") == "queue.grace = 10s");
+  CHECK(line_for(r.out, "queue.history_days") == "queue.history_days = 30");
   CHECK(line_for(r.out, "defaults.vendor") == "defaults.vendor = claude");
   CHECK(line_for(r.out, "execute.engine") == "execute.engine = embedded");
   CHECK(line_for(r.out, "workbench.root") == "workbench.root = ~/.planar/workbench");
@@ -493,6 +499,25 @@ TEST_CASE("config show renders provenance under --effective", "[cmd][config][sho
   // A SCALAR tier is a one-element list and must render with NO candidates
   // clause — the difference is `candidates.size() > 1`, not `> 0`.
   CHECK(line_for(r.out, "models.claude.large") == "models.claude.large = claude-opus-5  [config file]");
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective labels queue keys set in the file [config file] and the rest [embedded default]",
+          "[cmd][config][show][effective][hq-config]") {
+  auto const fx = make_fixture("showqueue");
+  write_config(fx, "[queue]\nslots = 3\ngrace = \"20s\"\n");
+  auto const r = dispatch(fx, {"config", "show", "--effective"});
+  CHECK(r.code == 0);
+  CHECK(line_for(r.out, "queue.slots") == "queue.slots = 3  [config file]");
+  CHECK(line_for(r.out, "queue.grace") == "queue.grace = 20s  [config file]");
+  CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s  [embedded default]");
+  CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s  [embedded default]");
+  CHECK(line_for(r.out, "queue.history_days") == "queue.history_days = 30  [embedded default]");
+  // Known limitation (task 7058, inherited from `pick_int`): a key of the
+  // wrong type in the file (`slots = "3"`) still reports `[config file]` with
+  // the default's value, because pick_int records the fallback under the file's
+  // provenance. `config validate` is what refuses that value; this view is not
+  // the place a wrong type is caught.
   cleanup(fx);
 }
 
@@ -655,8 +680,10 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   // Oracle-measured byte count (3057) plus the 309-byte `[execute]` block
   // plan 1033 task 6485 added, and the content markers that prove it is the
   // DEFAULTS file rather than the operator's (which is what `--raw` would
-  // have printed).
-  CHECK(r.out.size() == 3366);
+  // have printed). Plus the 781-byte `[queue]` block plan 1080 task
+  // hq-config added (4147 in all).
+  CHECK(r.out.size() == 4147);
+  CHECK(r.out.contains("[queue]\n"));
   CHECK(r.out.contains("[execute]\n"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
   CHECK_FALSE(r.out.contains("claude-fable-5"));
@@ -673,7 +700,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 3366);
+  CHECK(r.out.size() == 4147);
   cleanup(fx);
 }
 

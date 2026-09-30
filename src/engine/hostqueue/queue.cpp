@@ -63,9 +63,22 @@ constexpr std::string_view k_entry_columns = "seq, state, host_id, pid, pid_star
 /// @brief Materialises the current row of a `k_entry_columns` statement.
 auto read_entry(const db::statement& stmt) -> std::expected<entry, queue_error> {
   entry out;
-  out.seq                    = stmt.column_int64(0);
-  auto const state           = stmt.column_text(1);
-  out.state                  = state == "running" ? entry_state::running : entry_state::waiting;
+  out.seq          = stmt.column_int64(0);
+  auto const state = stmt.column_text(1);
+  if (state == "running") {
+    out.state = entry_state::running;
+  } else if (state == "waiting") {
+    out.state = entry_state::waiting;
+  } else {
+    // The CHECK constraint keeps any other text out of a store this binary
+    // wrote. A later migration that adds a state must not be misread by an
+    // older binary as a waiting entry, which would take a turn.
+    return std::unexpected(queue_error{
+        .kind        = queue_error_kind::unknown_state,
+        .sqlite_code = 0,
+        .message     = std::format("hostqueue: entry {} has state '{}', which this binary does not know", out.seq, state),
+    });
+  }
   out.host_id                = stmt.column_text(2);
   out.pid                    = stmt.column_int64(3);
   out.pid_started            = stmt.column_int64(4);
@@ -117,7 +130,7 @@ auto decode_argv(std::string_view text) -> std::expected<std::vector<std::string
     return std::unexpected(queue_error{
         .kind        = queue_error_kind::malformed_argv,
         .sqlite_code = 0,
-        .message     = std::format("hostqueue: stored argv is not a JSON array of strings: {}", text),
+        .message     = std::format("hostqueue: stored argv ({} bytes) is not a JSON array of strings", text.size()),
     });
   };
   auto parsed = json_dom::parse_json(text);
@@ -212,6 +225,36 @@ auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t 
       .seq    = *seq,
       .pruned = prune_report{.rows_deleted = expired->rows_deleted, .log_failures = remove_log_files(expired->log_paths)},
   };
+}
+
+auto record_child(db::connection& conn, std::int64_t seq, std::int64_t child_pgid, std::int64_t child_started)
+    -> std::expected<bool, queue_error> {
+  auto stmt = conn.prepare("update queue_entries set child_pgid = ?, child_started = ? "
+                           "where seq = ? and state = 'running' returning seq");
+  if (!stmt) {
+    return sql_failure("prepare record child", stmt.error());
+  }
+  std::array<std::expected<void, db::db_error>, 3> const bound{{
+      stmt->bind_int64(1, child_pgid),
+      stmt->bind_int64(2, child_started),
+      stmt->bind_int64(3, seq),
+  }};
+  for (auto const& result : bound) {
+    if (!result) {
+      return sql_failure("bind record child", result.error());
+    }
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return sql_failure("record child group", stepped.error());
+  }
+  if (*stepped == db::step_result::done) {
+    return false;
+  }
+  if (auto done = stmt->step(); !done) {
+    return sql_failure("finish record child", done.error());
+  }
+  return true;
 }
 
 auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<entry>, queue_error> {

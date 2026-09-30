@@ -83,6 +83,13 @@ export using start_time = std::uint64_t;
 /// fails with `EPERM`). A rule of "exists and start time matches" reads such
 /// a process as dead. Queue entries are normally the checking user's own,
 /// where `hidepid` hides nothing.
+///
+/// Documented limit: on macOS, `proc_pidinfo` fails for another user's
+/// process, so this reports `error::query_failed` for it while
+/// `process_exists` reports that it exists (`kill` fails with `EPERM`). A
+/// liveness check on such a process errors instead of deciding, so a queue
+/// entry it owns is never reaped until that process exits. Queues whose
+/// entries all belong to the checking user are unaffected.
 /// @param pid The process id to look up.
 /// @return The start time; `std::nullopt` when no process with that id
 /// exists; an `error` only when the query itself failed.

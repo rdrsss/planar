@@ -36,6 +36,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <stdlib.h>
+
 import std;
 
 #include "parity_harness.hpp"
@@ -175,6 +177,28 @@ TEST_CASE("arena: run_pinned exports PLANAR_AGENT_DB under the arena root", "[ar
   REQUIRE(*agent == (arena.cpp_root / "agent.db").string());
   // The main database pin is unchanged and sits beside it.
   REQUIRE(got.out.contains(std::format("PLANAR_DB={}\n", (arena.cpp_root / "planar.db").string())));
+
+  // Task 7043: `planar-agent queue run` opens the agent database, so a run
+  // through `run_pinned` now creates its store, and only under the arena.
+  // Nothing may appear under the arena's HOME either, which is where the
+  // runtime's fallback would have put it had the variable been dropped.
+  auto const real_home = std::getenv("HOME") == nullptr ? std::filesystem::path{} : std::filesystem::path{std::getenv("HOME")};
+  auto const real_agent_db = real_home / ".planar" / "agent.db";
+  std::error_code ec;
+  // A live operator store may already exist there and change under other
+  // sessions, so only its ABSENCE is a usable baseline.
+  bool const real_store_absent_before = !real_home.empty() && !std::filesystem::exists(real_agent_db, ec);
+
+  REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "agent.db"));
+  auto const queued = run_pinned(std::filesystem::path{PLANAR_AGENT_CPP_BIN},
+                                 std::vector<std::string>{"queue", "run", "--", "/usr/bin/true"}, arena.cpp_root, "queue_true");
+  INFO("queue run stderr:\n" << queued.err);
+  REQUIRE(queued.code == 0);
+  REQUIRE(std::filesystem::exists(arena.cpp_root / "agent.db"));
+  REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "fakehome" / ".planar", ec));
+  if (real_store_absent_before) {
+    REQUIRE_FALSE(std::filesystem::exists(real_agent_db, ec));
+  }
 }
 
 TEST_CASE("arena: launch_pinned_detached exports the same PLANAR_AGENT_DB as run_pinned", "[arena][agentdb]") {
@@ -198,6 +222,92 @@ TEST_CASE("arena: launch_pinned_detached exports the same PLANAR_AGENT_DB as run
   auto const agent = agent_db_from_env_dump(dump);
   REQUIRE(agent.has_value());
   REQUIRE(*agent == (arena.cpp_root / "agent.db").string());
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: Edge — the arena strips an inherited slot marker (task 7061)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Sets an environment variable for one scope and puts the previous
+/// state back, so a case that plants `PLANAR_QUEUE_SLOT` in this process (as a
+/// suite run under `queue run -- make test` inherits it) leaves nothing behind.
+struct scoped_env {
+  std::string                name;
+  std::optional<std::string> previous;
+
+  scoped_env(std::string variable, const std::string& value) : name(std::move(variable)) {
+    if (auto const* old = std::getenv(name.c_str()); old != nullptr) {
+      previous = old;
+    }
+    ::setenv(name.c_str(), value.c_str(), 1);
+  }
+  scoped_env(const scoped_env&)            = delete;
+  scoped_env& operator=(const scoped_env&) = delete;
+  ~scoped_env() {
+    if (previous) {
+      ::setenv(name.c_str(), previous->c_str(), 1);
+    } else {
+      ::unsetenv(name.c_str());
+    }
+  }
+};
+
+/// @brief The value `PLANAR_QUEUE_SLOT` has in an `env` dump, when the line
+/// is there.
+auto slot_from_env_dump(const std::string& dump) -> std::optional<std::string> {
+  std::istringstream in(dump);
+  std::string        line;
+  while (std::getline(in, line)) {
+    if (line.starts_with("PLANAR_QUEUE_SLOT=")) {
+      return line.substr(std::string_view{"PLANAR_QUEUE_SLOT="}.size());
+    }
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+TEST_CASE("arena: run_pinned and launch_pinned_detached strip an inherited PLANAR_QUEUE_SLOT", "[arena][queue]") {
+  // A suite run under `planar-agent queue run -- make test` inherits the
+  // marker, and every arena submitter would then look nested.
+  scoped_env const inherited{"PLANAR_QUEUE_SLOT", "424242"};
+  REQUIRE(std::getenv("PLANAR_QUEUE_SLOT") != nullptr); // the plant took effect
+
+  auto const arena = make_arena("slot_run");
+  auto const got   = run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump");
+  INFO("env dump:\n" << got.out);
+  REQUIRE(got.code == 0);
+  REQUIRE(got.out.contains("PLANAR_AGENT_DB=")); // the dump is a real one
+  CHECK_FALSE(slot_from_env_dump(got.out).has_value());
+
+  launch_pinned_detached("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump_detached");
+  REQUIRE(await_sentinel(arena.cpp_root / "envdump_detached.out", true, std::chrono::seconds(10)).has_value());
+  std::string dump;
+  for (int i = 0; i < 200; ++i) {
+    dump = read_all(arena.cpp_root / "envdump_detached.out");
+    if (dump.contains("PLANAR_AGENT_DB=") && dump.ends_with('\n')) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  INFO("detached env dump:\n" << dump);
+  REQUIRE(dump.contains("PLANAR_AGENT_DB="));
+  CHECK_FALSE(slot_from_env_dump(dump).has_value());
+}
+
+TEST_CASE("arena: a map that names PLANAR_QUEUE_SLOT still delivers it", "[arena][queue]") {
+  // Stripping is the default, not a ban: a case that plays a queued command
+  // hands the marker over explicitly, and that value must arrive.
+  scoped_env const inherited{"PLANAR_QUEUE_SLOT", "424242"};
+  auto const       arena = make_arena("slot_explicit");
+  auto             vars  = planar::cmd::parity::pinned_env(arena.cpp_root);
+  vars.push_back(planar::cmd::parity::pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "5"});
+  auto const got = run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump", vars);
+  INFO("env dump:\n" << got.out);
+  REQUIRE(got.code == 0);
+  CHECK(slot_from_env_dump(got.out) == std::optional<std::string>{"5"});
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +464,21 @@ TEST_CASE("arena: agent_db_pin_error accepts the default map and refuses one tha
     REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring(home));
     REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("fallback"));
   }
+  SECTION("a set-but-empty PLANAR_AGENT_DB is refused, as the runtime refuses it") {
+    // `resolve_agent_db_path` does not fall back to HOME for a variable that
+    // is set and empty; a harness that did would call a run pinned that the
+    // binary itself refuses (task 7043).
+    auto env = pinned_env(work);
+    for (auto& var : env) {
+      if (var.name == "PLANAR_AGENT_DB") {
+        var.value.clear();
+      }
+    }
+    auto const problem = agent_db_pin_error(work, env);
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("PLANAR_AGENT_DB"));
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("empty"));
+  }
   SECTION("with neither variable the map is unpinned and refused") {
     std::vector<pinned_var> env;
     for (auto& var : pinned_env(work)) {
@@ -364,6 +489,69 @@ TEST_CASE("arena: agent_db_pin_error accepts the default map and refuses one tha
     auto const problem = agent_db_pin_error(work, env);
     REQUIRE(problem.has_value());
     REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("unpinned"));
+  }
+  SECTION("with both variables explicitly REMOVED the map is provably unresolvable and accepted") {
+    auto env = pinned_env(work);
+    for (auto& var : env) {
+      if (var.name == "PLANAR_AGENT_DB" || var.name == "HOME") {
+        var.unset = true;
+      }
+    }
+    REQUIRE_FALSE(agent_db_pin_error(work, env).has_value());
+  }
+  SECTION("removing only PLANAR_AGENT_DB, or only HOME with PLANAR_AGENT_DB outside, is judged on what is left") {
+    auto only_agent_db = pinned_env(work);
+    for (auto& var : only_agent_db) {
+      if (var.name == "PLANAR_AGENT_DB") {
+        var.unset = true;
+      }
+    }
+    REQUIRE_FALSE(agent_db_pin_error(work, only_agent_db).has_value()); // The scratch HOME still contains the fallback.
+
+    auto env = env_with(work, (std::filesystem::temp_directory_path() / "planar_agentdb_elsewhere" / "agent.db").string());
+    for (auto& var : env) {
+      if (var.name == "HOME") {
+        var.unset = true;
+      }
+    }
+    REQUIRE(agent_db_pin_error(work, env).has_value()); // HOME removed does not excuse an outside PLANAR_AGENT_DB.
+  }
+  SECTION("removing PLANAR_AGENT_DB while HOME is merely ABSENT is refused: the child would inherit the operator's HOME") {
+    std::vector<pinned_var> env;
+    for (auto& var : pinned_env(work)) {
+      if (var.name == "HOME") {
+        continue; // Erased, not removed: `env` would pass the caller's HOME through.
+      }
+      if (var.name == "PLANAR_AGENT_DB") {
+        var.unset = true;
+      }
+      env.push_back(std::move(var));
+    }
+    auto const problem = agent_db_pin_error(work, env);
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("unpinned"));
+  }
+  SECTION("removing HOME while PLANAR_AGENT_DB is merely ABSENT is refused") {
+    std::vector<pinned_var> env;
+    for (auto& var : pinned_env(work)) {
+      if (var.name == "PLANAR_AGENT_DB") {
+        continue;
+      }
+      if (var.name == "HOME") {
+        var.unset = true;
+      }
+      env.push_back(std::move(var));
+    }
+    auto const problem = agent_db_pin_error(work, env);
+    REQUIRE(problem.has_value());
+    REQUIRE_THAT(*problem, Catch::Matchers::ContainsSubstring("unpinned"));
+  }
+  SECTION("an unset entry is exported as env -u, before the assignments") {
+    auto env = pinned_env(work);
+    env.push_back(pinned_var{.name = "PLANAR_DB", .unset = true});
+    auto const prefix = planar::cmd::parity::pinned_env_prefix(env);
+    REQUIRE_THAT(prefix, Catch::Matchers::ContainsSubstring(" -u 'PLANAR_DB' "));
+    REQUIRE(prefix.find("-u 'PLANAR_DB'") < prefix.find("PLANAR_AGENT_DB="));
   }
 }
 

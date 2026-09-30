@@ -116,6 +116,10 @@ auto pick_bool(std::string_view key, const toml_map& file_map, const toml_map& d
 
 /// @brief Resolve an int-typed key: file, then default. Mirrors zig's
 /// `pickInt`.
+///
+/// A key present in the file with a non-integer type falls back to the default
+/// value but is still recorded as `config_file`; `config validate` is what
+/// refuses such a value, not this resolver (task 7058).
 auto pick_int(std::string_view key, const toml_map& file_map, const toml_map& def_map, effective_map& eff,
               std::int64_t default_val) -> std::int64_t {
   if (auto it = file_map.find(key); it != file_map.end()) {
@@ -440,6 +444,16 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
   const auto claude_path  = pick_str("introspection.transcripts.claude_path", "", env, std::nullopt, file_map, *def_map, eff);
   const auto codex_path   = pick_str("introspection.transcripts.codex_path", "", env, std::nullopt, file_map, *def_map, eff);
   const auto copilot_path = pick_str("introspection.transcripts.copilot_path", "", env, std::nullopt, file_map, *def_map, eff);
+
+  // `[queue]` (plan 1080, task hq-config). Recorded only in `eff`, so
+  // `config show --effective` reports the values and their provenance; the
+  // typed, range-checked view is `planar.engine.config.queue`, which the
+  // queue's loader reads straight from the file.
+  static_cast<void>(pick_int("queue.slots", file_map, *def_map, eff, 1));
+  static_cast<void>(pick_str("queue.poll_interval", "", env, std::nullopt, file_map, *def_map, eff));
+  static_cast<void>(pick_str("queue.stale_after", "", env, std::nullopt, file_map, *def_map, eff));
+  static_cast<void>(pick_str("queue.grace", "", env, std::nullopt, file_map, *def_map, eff));
+  static_cast<void>(pick_int("queue.history_days", file_map, *def_map, eff, 30));
 
   // `planar-execute`'s engine selector (plan 1033, task 6485, decision 1017).
   // Recorded only in `eff`, not in the `config` struct: `planar` itself never
