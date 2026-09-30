@@ -39,6 +39,12 @@ constexpr std::int64_t k_default_run_limit_ms = 30LL * 60 * 1000;
 /// 1188).
 constexpr int exit_run_limit = 124;
 
+/// @brief How long past the grace period a submitter keeps advancing a stop
+/// whose command group still has members, before it leaves the entry for the
+/// next poll (of any process) to finish. Bounds the drain loop; SIGKILL has
+/// been sent by then, so only an unkillable member outlasts it.
+constexpr std::int64_t k_drain_slack_ms = 15'000;
+
 /// @brief How often a running submitter looks at its child. The queue is
 /// polled at the configured interval; the child is checked more often so
 /// the submitter exits promptly when the command does.
@@ -486,14 +492,15 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // not, derive it from the limit rather than run without one.
     own_deadline = clock.monotonic_ms().value_or(0) + run_limit_ms;
   }
-  bool       stopping          = false; // The entry carries a stop reason this submitter is advancing.
-  bool       timed_out_here    = false; // This submitter set the reason `timeout`.
-  auto const enforce_run_limit = [&] {
+  bool                        stopping       = false; // The entry carries a stop reason this submitter is advancing.
+  bool                        timed_out_here = false; // This submitter set the reason `timeout`.
+  std::optional<std::int64_t> next_mark_attempt;      // Earliest monotonic ms to try marking the entry again.
+  auto const                  enforce_run_limit = [&] {
     auto const now = clock.monotonic_ms();
     if (!now) {
       return;
     }
-    if (!stopping && *now >= *own_deadline) {
+    if (!stopping && *now >= *own_deadline && (!next_mark_attempt || *now >= *next_mark_attempt)) {
       auto begun =
           hq::begin_terminate(conn, hq::begin_terminate_request{.seq = seq, .reason = hq::stop_reason::timeout, .host_id = host},
                               clock, probe, signaller);
@@ -507,6 +514,14 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
       }
       stopping       = begun->status == hq::begin_status::marked || begun->status == hq::begin_status::already_terminating;
       timed_out_here = begun->status == hq::begin_status::marked;
+      if (!stopping) {
+        // SEAM (task hq-missing-entry): the entry is missing or not running
+        // although this submitter is supervising its command; what to do
+        // about that belongs to that task. Until then the mark is retried at
+        // the poll interval, not at every tick, so a store that keeps saying
+        // so is not hit with a write transaction every 20 ms.
+        next_mark_attempt = *now + settings.current().poll_interval_ms;
+      }
     }
     if (stopping) {
       auto advanced = hq::advance_terminations(
@@ -553,7 +568,6 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   // process may already have ended the entry once its group was empty; then
   // the history row it wrote names the reason.
   std::optional<hq::stop_reason> reason;
-  std::optional<hq::canceller>   who;
   if (timed_out_here) {
     reason = hq::stop_reason::timeout;
   } else if (auto stored = hq::find(conn, seq); stored && *stored) {
@@ -561,11 +575,6 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
       reason = hq::stop_reason::timeout;
     } else if ((*stored)->terminate_reason == hq::to_string(hq::stop_reason::cancelled)) {
       reason = hq::stop_reason::cancelled;
-      if ((*stored)->cancelled_by) {
-        if (auto decoded = hq::decode_canceller(*(*stored)->cancelled_by); decoded) {
-          who = std::move(*decoded);
-        }
-      }
     }
   } else if (stored) {
     if (auto row = hq::find_history(conn, seq); row && *row) {
@@ -573,20 +582,52 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
         reason = hq::stop_reason::timeout;
       } else if ((*row)->outcome == hq::history_outcome::cancelled) {
         reason = hq::stop_reason::cancelled;
-        who    = (*row)->cancelled_by;
       }
     }
   }
 
+  if (reason) {
+    // A stopped entry keeps its slot until its child group is empty (tech spec
+    // 647 § Stopping a command). The leader is reaped, but members it left
+    // behind may still run, and one that ignores SIGTERM needs the SIGKILL
+    // that only `advance_terminations` sends once the grace period has passed.
+    // So the submitter keeps advancing its own entry each tick until the
+    // engine has ended it, with the outcome its reason names, and only then
+    // maps the reason to an exit code. The loop is bounded: a member that
+    // survives SIGKILL past the grace period plus a slack leaves the entry in
+    // place, live because its group has members, for the next poll of any
+    // process to finish.
+    auto const drain_started = clock.monotonic_ms().value_or(0);
+    auto const gone          = [&] {
+      auto const stored = hq::find(conn, seq);
+      return stored && !stored->has_value();
+    };
+    while (!gone()) {
+      auto advanced = hq::advance_terminations(
+          conn, hq::advance_request{.host_id = host, .grace_ms = settings.current().grace_ms, .seq = seq}, clock, probe,
+          signaller);
+      if (advanced) {
+        surface_advance(*advanced, report);
+      } else {
+        report.once(std::format("warning: queue: cannot advance the stop of entry {}: {}", seq, advanced.error().message));
+      }
+      if (gone()) {
+        break;
+      }
+      auto const now = clock.monotonic_ms();
+      if (now && *now - drain_started > settings.current().grace_ms + k_drain_slack_ms) {
+        report.once(std::format("warning: queue: entry {}'s process group still has members after SIGKILL; leaving the entry "
+                                "for the next poll to end",
+                                seq));
+        break;
+      }
+      sleep(k_child_tick);
+    }
+  }
   if (reason == hq::stop_reason::timeout) {
-    end(hq::end_request{.outcome = hq::history_outcome::timeout});
     return exit_status{exit_run_limit};
   }
   if (reason == hq::stop_reason::cancelled) {
-    // A cancellation without a readable canceller ends as `abandoned`, as the
-    // terminate module ends it, because a `cancelled` row needs one.
-    end(who ? hq::end_request{.outcome = hq::history_outcome::cancelled, .cancelled_by = *who}
-            : hq::end_request{.outcome = hq::history_outcome::abandoned});
     return exit_status{exit_internal_error};
   }
 
