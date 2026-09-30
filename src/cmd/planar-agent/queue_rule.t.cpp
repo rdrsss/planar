@@ -58,8 +58,8 @@ auto section(std::string_view text, std::string_view key) -> std::string {
       auto const start = pos;
       auto       next  = nl == std::string_view::npos ? text.size() : nl + 1;
       while (next < text.size()) {
-        auto const e    = text.find('\n', next);
-        auto const ln   = text.substr(next, e == std::string_view::npos ? std::string_view::npos : e - next);
+        auto const e  = text.find('\n', next);
+        auto const ln = text.substr(next, e == std::string_view::npos ? std::string_view::npos : e - next);
         if (ln.starts_with("## ") || ln.starts_with("### ")) {
           break;
         }
@@ -275,8 +275,7 @@ TEST_CASE("the rule text carries every element an agent needs", "[cmd][agent][qu
   }
 
   SECTION("what to do on each outcome") {
-    for (auto const* outcome :
-         {"exited", "signaled", "timeout", "cancelled", "wait_timeout", "not_started", "abandoned"}) {
+    for (auto const* outcome : {"exited", "signaled", "timeout", "cancelled", "wait_timeout", "not_started", "abandoned"}) {
       INFO("outcome: " << outcome);
       CHECK(contains(source, outcome));
     }
@@ -311,7 +310,7 @@ TEST_CASE("the rule text cannot be read as permission to bypass the queue on exi
   CHECK_FALSE(contains(refusal, "--help"));
 
   // The two are also set side by side in one labelled table.
-  auto const confused = lower(section(source, "do not confuse"));
+  auto const confused = lower(section(source, "Do not confuse"));
   REQUIRE_FALSE(confused.empty());
   CHECK(contains(confused, "125"));
   CHECK(contains(confused, "--help"));
@@ -323,7 +322,7 @@ TEST_CASE("every planar-agent command the rule shows exists, with the flags it u
   // A parser that found nothing would pass every check below.
   REQUIRE(commands.size() >= 5);
 
-  auto const root  = planar::cmd::agent::root_app();
+  auto const  root  = planar::cmd::agent::root_app();
   auto const* queue = root->get_subcommand_no_throw("queue");
   REQUIRE(queue != nullptr);
 

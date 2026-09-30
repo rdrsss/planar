@@ -6871,6 +6871,7 @@ planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now
 planar-agent queue run  [--detach] [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] [--vendor <name>] [--role <name>] [--notices] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
 planar-agent queue cancel [--vendor <name>] [--role <name>] <seq>
 planar-agent queue status <seq> [--json]
+planar-agent queue rule
 
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
 planar-agent version
@@ -6975,7 +6976,26 @@ Without `--json` the same answer is printed as `key: value` lines, one per field
 
 A refusal writes `error: queue status: <message>` on standard error. With `--json` it also writes one object on standard output, `{"error":{"verb":"queue status","tag":"<tag>","message":"<message>"}}` (plus `"seq"` for exit 1), so a script reads the reason without parsing prose. The tags are `not_found`, `invalid_input`, `store_unreachable`, `store_unreadable` and `internal`.
 
-Not yet available in this build (later tasks of plan 1080): `--claim` and `queue rule`.
+Not yet available in this build (a later task of plan 1080): `--claim`.
+
+#### Printing the agent rule (`queue rule`)
+
+```
+planar-agent queue rule
+```
+
+`queue rule` prints the rule that tells an agent to send its builds and tests through the queue, so the operator can paste it into a project's own agent guide. It writes the text to standard output, byte for byte, and exits **0**. It takes no argument and no flag (there is no `--json`; the text is Markdown, and it begins with the `##` heading "Builds and tests go through the host queue").
+
+The text is one authored file, `src/engine/hostqueue/queue-rule.md`, embedded into `planar-agent` at build time. It holds:
+
+- what counts as a build or test command, with examples, and what does not;
+- the detached submit and poll procedure: submit with `queue run --detach`, then read `queue status <seq>` every 30 seconds until the entry has ended;
+- the instruction to pass `--vendor` and `--role`;
+- what to do on each outcome `queue status` reports;
+- the instruction to stop and report when a queue command exits **125**, and that the command must not then be run directly;
+- the check for a Planar without the queue (`planar-agent queue --help` exits non-zero), the fallback of running the command directly and telling the operator that Planar needs upgrading, and a table that sets this apart from exit 125.
+
+`queue rule` **opens no database**: not `planar.db` (the `queue` domain is exempt from the main database check) and not the agent database. It reads no environment variable and no configuration file, so it prints the same text with `PLANAR_DB` and `PLANAR_AGENT_DB` unusable and with `HOME` unset, and it creates nothing on disk. It is the one queue verb that needs no store.
 
 #### Known limits
 

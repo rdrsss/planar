@@ -157,6 +157,7 @@ planar_binary(planar_agent
     handlers/run/runs.cppm
     handlers/queue/queue.cppm
     handlers/queue/status.cppm
+    handlers/queue/rule.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -175,6 +176,7 @@ planar_binary(planar_agent
     handlers/run/runs.cpp
     handlers/queue/queue.cpp
     handlers/queue/status.cpp
+    handlers/queue/rule.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal

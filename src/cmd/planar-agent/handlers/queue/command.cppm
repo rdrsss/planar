@@ -70,5 +70,9 @@ export auto add(CLI::App& root) -> void {
       ->description("The sequence number, the first line of the ticket `queue run --detach` prints")
       ->required();
   status->add_flag("--json")->description("Print one JSON object with the documented fields, null where a field does not apply");
+  // --- queue rule ---------------------------------------------------------
+  // Prints the embedded agent rule text; opens no database, takes no flag.
+  queue->add_subcommand("rule", "Print the rule text that tells an agent to send builds and tests through the queue, for pasting "
+                                "into a project's own agent guide. Opens no database.");
 }
 } // namespace planar::cmd::agent::handlers::queue_cli

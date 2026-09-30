@@ -120,8 +120,9 @@ TEST_CASE("planar-agent's declared verb set is exactly the oracle's", "[cmd][age
                      "pull", "reconcile", "release", "schema", "start", "version",
                      // Plan 1080: the host-wide build and test queue's domain
                      // and its verbs. `run` is already a name above; `cancel`
-                     // (task hq-queue-cancel) is new.
-                     "queue", "cancel", "status",
+                     // (task hq-queue-cancel), `status` and `rule` (task
+                     // hq-queue-rule-verb) are new.
+                     "queue", "cancel", "status", "rule",
                      // The nine declared by task 6065, which refuse at 64.
                      "add", "capsule", "confirm", "context", "dispatch", "ingest", "list", "preview", "resolve", "run"});
 }
@@ -142,15 +143,15 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  CHECK(leaves.size() == 28);
+  CHECK(leaves.size() == 29);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
   // Non-vacuous: the inventory must not have swallowed a verb that has a
   // real handler, which is the failure mode a bulk registration invites.
-  for (auto const& implemented :
-       {"pull", "complete", "action start", "run start", "run end", "queue run", "queue cancel", "schema", "version"}) {
+  for (auto const& implemented : {"pull", "complete", "action start", "run start", "run end", "queue run", "queue cancel",
+                                  "queue rule", "schema", "version"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
