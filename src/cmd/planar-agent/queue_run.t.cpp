@@ -398,7 +398,8 @@ TEST_CASE("queue run: a second submitter waits for the first and starts only aft
   await_refreshes(arena, 1, 2);
 
   // The second is submitted while the first runs, and waits.
-  second             = spawn_queue(arena, "second", sh_command("echo b > \"$1\"", {started_b.string()}));
+  // The second records the slot marker it was given.
+  second             = spawn_queue(arena, "second", sh_command("echo \"$PLANAR_QUEUE_SLOT\" > \"$1\"", {started_b.string()}));
   auto const waiting = await_entry(arena, 2, hq::entry_state::waiting);
   CHECK_FALSE(waiting.child_pgid.has_value());
   await_refreshes(arena, 2, 3);
@@ -433,6 +434,13 @@ TEST_CASE("queue run: a second submitter waits for the first and starts only aft
   // The second's start is not earlier than the first's end.
   REQUIRE(two->started_at.has_value());
   CHECK(*two->started_at >= one->ended_at);
+
+  // PLANAR_QUEUE_SLOT is each entry's OWN sequence number, read from the
+  // store rather than assumed: the first command saw its seq, the second
+  // (which is not entry 1) saw a different one.
+  REQUIRE(two->seq != one->seq);
+  CHECK(read_all(started_a) == std::format("{}\n", one->seq));
+  CHECK(read_all(started_b) == std::format("{}\n", two->seq));
 }
 
 // ---------------------------------------------------------------------------
@@ -711,7 +719,19 @@ TEST_CASE("queue run: works while the main database's schema is ahead of the bin
   auto const got = run_queue(arena, "maindb", sh_command("exit 0"));
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 0);
+  CHECK(got.err.empty());
   CHECK(read_all(main_db) == before);
+  CHECK(require_snapshot(arena).history.size() == 1);
+}
+
+TEST_CASE("queue run: never creates the main database", "[cmd][agent][queue]") {
+  auto const arena = parity::make_arena("qr_nomaindb");
+  REQUIRE_FALSE(present(arena.cpp_root / "planar.db"));
+  auto const got = run_queue(arena, "nomain", sh_command("exit 0"));
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK_FALSE(present(arena.cpp_root / "planar.db"));
   CHECK(require_snapshot(arena).history.size() == 1);
 }
 
@@ -807,7 +827,9 @@ TEST_CASE("queue run: a terminating entry that cannot be ended is reported on st
   REQUIRE(run_queue(arena, "prime", sh_command("exit 0")).code == 0);
   auto const stuck = seed_unendable_entry(arena);
 
-  auto const got = run_queue(arena, "advance", sh_command("echo done"));
+  // Bounded: a regression in slot counting must fail this case, not hang it.
+  auto const run = spawn_queue(arena, "advance", sh_command("echo done"));
+  auto const got = finish(run);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 0);
   CHECK(got.out == "done\n");

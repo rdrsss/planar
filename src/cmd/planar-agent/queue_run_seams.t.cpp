@@ -98,6 +98,31 @@ auto fast_settings() -> planar::engine::config::queue_settings {
       .slots = 2, .poll_interval_ms = 10, .stale_after_ms = 3'600'000, .grace_ms = 10'000, .history_days = 30};
 }
 
+/// @brief A sleep seam that bounds a case: it really sleeps a millisecond,
+/// counts the polls, and once `limit` polls have gone by it makes the settings
+/// loader return a slot count nothing can lack, so a submitter that should
+/// have started at once but is waiting on a regression starts anyway and the
+/// case FAILS on `polls` instead of hanging.
+struct poll_bound {
+  static constexpr int limit = 300;
+  std::shared_ptr<int> polls = std::make_shared<int>(0);
+
+  void bind(agent::handlers::queue_run_deps& deps, planar::engine::config::queue_settings settings) const {
+    auto const count = polls;
+    deps.sleep       = [count](std::chrono::milliseconds) {
+      ++*count;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    };
+    deps.load_settings = [count, settings]() mutable {
+      auto now = settings;
+      if (*count >= limit) {
+        now.slots = 1000;
+      }
+      return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{now};
+    };
+  }
+};
+
 } // namespace
 
 TEST_CASE("queue run: a SIGTERM that fails on an overdue orphan is reported on stderr and the command still runs",
@@ -145,10 +170,9 @@ TEST_CASE("queue run: a SIGTERM that fails on an overdue orphan is reported on s
   int sigterms = 0;
 
   agent::handlers::queue_run_deps deps;
-  deps.probe         = probe;
-  deps.load_settings = [] {
-    return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{fast_settings()};
-  };
+  deps.probe = probe;
+  poll_bound bound;
+  bound.bind(deps, fast_settings());
   deps.signaller = [&sigterms](std::int64_t, int) -> std::expected<void, ident::error> {
     ++sigterms;
     return std::unexpected(ident::error::not_permitted);
@@ -157,7 +181,8 @@ TEST_CASE("queue run: a SIGTERM that fails on an overdue orphan is reported on s
   auto const got = run_queue(sc, {"/usr/bin/true"}, deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 0);
-  CHECK(got.out.empty());
+  // Bounded: the submitter started on its first polls, not after the bound.
+  CHECK(*bound.polls < poll_bound::limit);
   // The engine tried the signal exactly once, and the handler said so: the
   // entry number, the signal, and why.
   CHECK(sigterms == 1);
@@ -203,4 +228,37 @@ TEST_CASE("queue run: an unopenable agent database refuses at 125 and does not r
   CHECK(fx.out.str().empty());
   CHECK(fx.err.str().contains("blocker"));
   CHECK_FALSE(std::filesystem::exists(sc.root / "marker"));
+}
+
+TEST_CASE("queue run: giving up after a poll cannot complete ends the entry as abandoned", "[cmd][agent][queue]") {
+  scratch sc;
+  {
+    // A store whose refresh always fails but whose delete and history insert
+    // work: the poll's update of entry 1 is refused by a trigger.
+    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    REQUIRE(opened.has_value());
+    REQUIRE(opened
+                ->execute("create trigger refuse_refresh before update on queue_entries "
+                          "begin select raise(abort, 'refresh refused'); end;")
+                .has_value());
+  }
+  agent::handlers::queue_run_deps deps;
+  // A short staleness window so the give-up is reached in a few polls.
+  poll_bound bound;
+  bound.bind(deps, planar::engine::config::queue_settings{
+                       .slots = 1, .poll_interval_ms = 5, .stale_after_ms = 50, .grace_ms = 10'000, .history_days = 30});
+
+  auto const got = run_queue(sc, {"/usr/bin/true"}, deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("giving up"));
+  CHECK(*bound.polls < poll_bound::limit);
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  // The entry was not left behind for a reaper: it ended, once, as abandoned.
+  CHECK(hq::list(*opened).value().empty());
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == 1);
+  CHECK(history.front().outcome == hq::history_outcome::abandoned);
 }

@@ -341,7 +341,10 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
         if (!failing_since) {
           failing_since = *now;
         } else if (*now - *failing_since > settings.current().stale_after_ms) {
-          // By now other submitters may have reaped this entry.
+          // By now other submitters may have reaped this entry. Best effort:
+          // end it ourselves as abandoned (the entry's fate when its submitter
+          // stops being live) so it is not left for a reaper, then give up.
+          end(hq::end_request{.outcome = hq::history_outcome::abandoned});
           return refuse(ctx, std::format("entry {} could not be polled for longer than the staleness window; giving up", seq));
         }
       }
