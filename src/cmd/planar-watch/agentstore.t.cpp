@@ -135,8 +135,9 @@ TEST_CASE("the agent store path resolves like planar-agent's, and never from PLA
 
   SECTION("PLANAR_AGENT_DB wins") {
     auto const explicit_path = sc.root / "here" / "agent.db";
-    auto       opened        = planar::cmd::watch::open_agent_store(planar::db::agent::map_env(
-        {{"PLANAR_AGENT_DB", explicit_path.string()}, {"HOME", (sc.root / "home").string()}, {"PLANAR_DB", "/nonexistent/x.db"}}));
+    auto opened = planar::cmd::watch::open_agent_store(planar::db::agent::map_env({{"PLANAR_AGENT_DB", explicit_path.string()},
+                                                                                   {"HOME", (sc.root / "home").string()},
+                                                                                   {"PLANAR_DB", "/nonexistent/x.db"}}));
     REQUIRE(opened.has_value());
     CHECK(opened->path() == explicit_path);
     CHECK_FALSE(opened->present());
@@ -325,7 +326,9 @@ TEST_CASE("an existing file with no queue tables yet reads as empty", "[cmd][wat
   // A submitter that has created the file and not yet migrated it.
   scratch    sc("fresh");
   auto const store = sc.root / "agent.db";
-  { std::ofstream(store, std::ios::binary).flush(); }
+  {
+    std::ofstream(store, std::ios::binary).flush();
+  }
   REQUIRE(fs::file_size(store) == 0);
 
   auto opened = planar::cmd::watch::open_agent_store_at(store);

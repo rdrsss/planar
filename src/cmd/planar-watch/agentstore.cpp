@@ -86,7 +86,7 @@ auto agent_store::history(std::optional<std::int64_t> ended_since)
 
 auto agent_open_error(const db::agent::open_error& error) -> domain_error {
   auto const kind = error.kind == db::agent::open_error_kind::incompatible_store ? domain_error_kind::schema_version_ahead
-                                                                                  : domain_error_kind::generic_failure;
+                                                                                 : domain_error_kind::generic_failure;
   return error_from_body(kind, error.message);
 }
 
