@@ -644,7 +644,7 @@ target-specific commands.
 - [ ] No references to files that have been renamed or deleted (grep for
       all file paths cited in changed documents).
 
-<!-- queue-lint-ignore-begin: the queue rule text below is pinned byte for byte to src/engine/hostqueue/queue-rule.md and its Examples line lists the programs -->
+<!-- queue-lint-ignore-begin: the queue rule text below is pinned byte for byte to src/lib/queuerule/queue-rule.md and its Examples line lists the programs -->
 ## Builds and tests go through the host queue
 
 Every build and every test run on this machine goes through one host-wide

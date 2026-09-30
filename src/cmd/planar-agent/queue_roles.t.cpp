@@ -52,7 +52,7 @@ auto contains(std::string_view text, std::string_view needle) -> bool {
 
 /// @brief The submit command line, taken from the authored rule file.
 auto rule_command_line() -> std::string {
-  auto const         rule = read_file(repo("src/engine/hostqueue/queue-rule.md"));
+  auto const         rule = read_file(repo("src/lib/queuerule/queue-rule.md"));
   std::istringstream lines(rule);
   std::string        line;
   while (std::getline(lines, line)) {

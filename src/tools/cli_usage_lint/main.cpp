@@ -59,7 +59,7 @@ constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills/src", "d
 
 /// Single authored files, outside those directories, that carry commands
 /// agents are told to run.
-constexpr std::array<std::string_view, 1> k_scan_files{"src/engine/hostqueue/queue-rule.md"};
+constexpr std::array<std::string_view, 1> k_scan_files{"src/lib/queuerule/queue-rule.md"};
 
 /// The commands a bare flag span (`` `--wait-timeout` ``, `` `--timeout <duration>` ``)
 /// in one of `k_scan_files` is judged against: the rule text names flags in

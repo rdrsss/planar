@@ -6,9 +6,11 @@
 /// The rule tells an agent what counts as a build or test command, how to
 /// submit one detached and poll for it, what to do on each outcome, when to
 /// stop on exit 125, and how to tell a Planar without the queue from a queue
-/// that refused. It is ONE authored file, `queue-rule.md` in this directory,
-/// embedded into the binary at build time by `#embed`. The text is the
-/// file's bytes, unchanged.
+/// that refused. It is ONE authored file, `queue-rule.md` in `src/lib/queuerule/`,
+/// embedded into the binary at build time by the layer-1 `planar.queuerule`
+/// module (task 7110), which this module forwards to so `engine_workspace`
+/// can share the same bytes without an `engine_* -> engine_*` edge. The text
+/// is the file's bytes, unchanged.
 ///
 /// Later surfaces copy it (`agents/methodology.md`) or shorten it (role files,
 /// the workspace guide template). Each compares against `queue_rule_text()`,

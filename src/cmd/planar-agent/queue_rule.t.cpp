@@ -3,7 +3,7 @@
 // and § The rule text has one authored source; test spec 649 scenarios citing
 // either task).
 //
-// The rule text is one authored file, `src/engine/hostqueue/queue-rule.md`,
+// The rule text is one authored file, `src/lib/queuerule/queue-rule.md`,
 // embedded into `planar-agent` at configure time. These cases read that file
 // from the repository and hold the built binary to it: what `queue rule`
 // prints is the file byte for byte, it is printed without opening either
