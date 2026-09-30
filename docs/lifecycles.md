@@ -419,7 +419,7 @@ Two-phase, immutable-evidence flow in `src/engine/routing/`:
 
 ```mermaid
 flowchart LR
-    P[dispatch preview] -->|insert routing_dispatch_previewsunderbr/>mint single-use preview_token| T{dispatch confirm<br/>revalidate binding}
+    P[dispatch preview] -->|insert routing_dispatch_previews<br/>mint single-use preview_token| T{dispatch confirm<br/>revalidate binding}
     T -->|unchanged| S[insert routing_dispatch_snapshots<br/>mark preview consumed]
     T -->|drift| E[stale_preview: expired, already_consumed,<br/>packet/profile/policy/capability/<br/>cohort/claim/candidate_changed]
     S --> V[routing_dispatch_events<br/>attempt_started → attempt_finished → outcome → supersession]

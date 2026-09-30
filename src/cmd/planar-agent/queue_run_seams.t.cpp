@@ -27,6 +27,7 @@ import planar.db.agentdb;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.process.identity;
+import planar.process.runner;
 
 namespace {
 
@@ -174,6 +175,32 @@ private:
   ident::system_clock _system;
   std::int64_t        _base   = _system.monotonic_ms().value_or(0);
   std::int64_t        _offset = 0;
+};
+
+/// @brief A monotonic clock that reads normally until `arm(n)` is called and
+/// then fails on its n-th reading after that call (and only that one), so a
+/// case can make one specific read fail without knowing how many the run made
+/// before it. Wall time is the system's.
+class failing_clock final : public ident::clock {
+public:
+  /// @brief The n-th reading after this call fails; every other one succeeds.
+  void arm(int n) {
+    _left = n;
+  }
+
+  [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, ident::error> override {
+    if (_left > 0 && --_left == 0) {
+      return std::unexpected(ident::error::clock_failed);
+    }
+    return _system.monotonic_ms();
+  }
+  [[nodiscard]] auto wall_ms() -> std::int64_t override {
+    return _system.wall_ms();
+  }
+
+private:
+  ident::system_clock _system;
+  int                 _left = 0;
 };
 
 /// @brief Seeds the scratch store with a RUNNING entry that is live: its
@@ -785,6 +812,52 @@ auto touch_command(const std::filesystem::path& marker) -> std::vector<std::stri
 }
 
 } // namespace
+
+TEST_CASE("queue run: a nested attempt that falls back to the normal enqueue reads the clock again for the entry it queues",
+          "[cmd][agent][queue][hq-nested-run]") {
+  // Task 7077. The nested attempt can spend time (a busy store retried at the
+  // poll interval), so the clock reading the handler took before it is stale by
+  // the time the entry is enqueued normally. The seam below moves the steered
+  // clock while it declines the nested run; the entry's wait deadline, which
+  // is that reading plus the wait limit, must be measured from the later one.
+  scratch    sc;
+  auto const clock  = std::make_shared<steered_clock>();
+  auto const holder = seed_live_parent(sc, clock.get());
+  auto const marker = sc.root / "ran";
+
+  agent::handlers::queue_run_deps deps;
+  deps.clock          = clock;
+  deps.enqueue_nested = [clock](planar::db::connection&, std::int64_t, const hq::enqueue_request&, const hq::nested_limits&,
+                                ident::clock&, const hq::process_probe&) -> std::expected<hq::nested_result, hq::queue_error> {
+    clock->advance(7'000);
+    return hq::nested_result{.status = hq::nested_status::queue_normally, .refusal = hq::nested_refusal::parent_missing};
+  };
+  std::optional<std::int64_t> deadline;
+  std::optional<std::int64_t> clock_at_enqueue;
+  bool                        released = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!released) {
+      released = true;
+      if (auto const entry = hq::find(conn, holder + 1).value()) {
+        deadline = entry->wait_deadline_mono;
+      }
+      clock_at_enqueue = clock->monotonic_ms().value_or(0);
+      end_as(conn, holder, hq::history_outcome::exited);
+    }
+  });
+
+  fixture fx{sc, (sc.root / "agent.db").string(), {{"PLANAR_QUEUE_SLOT", "987654"}}};
+  auto    args                 = queue_args(touch_command(marker));
+  args.flags["--wait-timeout"] = {"1h"};
+  auto const  outcome          = agent::handlers::queue_run_with(fx.ctx, args, deps);
+  auto const* status           = std::get_if<agent::exit_status>(&outcome);
+  REQUIRE(status != nullptr);
+  INFO("stderr:\n" << fx.err.str());
+  CHECK(status->code == 0);
+  REQUIRE(deadline.has_value());
+  REQUIRE(clock_at_enqueue.has_value());
+  CHECK(*deadline == *clock_at_enqueue + 3'600'000);
+}
 
 TEST_CASE("queue run: a waiting submitter reaped as abandoned rejoins behind later arrivals, records its successor and runs once",
           "[cmd][agent][queue][hq-missing-entry]") {
@@ -1766,4 +1839,127 @@ TEST_CASE("queue run --claim: a renewal that keeps failing is reported once acro
   }
   CHECK(warnings == 1);
   CHECK(last_line(text) == "queue: entry 1 exited with code 4");
+}
+
+TEST_CASE("queue run: a command whose status cannot be observed ends the entry abandoned and the notice says so",
+          "[cmd][agent][queue][hq-notices]") {
+  // Task 7083. `runner::poll` failing is not something a real child produces on
+  // demand, so the seam stands in for it. The submitter cannot know what became
+  // of the command, so it gives the entry up as abandoned and exits 125.
+  scratch                         sc;
+  agent::handlers::queue_run_deps deps;
+  poll_bound                      bound;
+  bound.bind(deps, fast_settings());
+  auto const polls = std::make_shared<int>(0);
+  deps.poll_child  = [polls](const planar::process::runner::child&)
+      -> std::expected<planar::process::runner::status, planar::process::runner::error> {
+    ++*polls;
+    return std::unexpected(planar::process::runner::error::wait_failed);
+  };
+
+  auto const got = run_queue(sc, {"/bin/sh", "-c", "exit 0"}, deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(*polls == 1);
+  CHECK(got.err.contains("error: queue: cannot observe the command's status"));
+  CHECK(last_line(got.err) == "queue: entry 1 abandoned, cannot observe the command's status");
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  CHECK(hq::list(*opened).value().empty());
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == 1);
+  CHECK(history.front().outcome == hq::history_outcome::abandoned);
+}
+
+TEST_CASE("queue run: a waiter that finds its entry gone and cannot read the clock ends with that notice",
+          "[cmd][agent][queue][hq-notices]") {
+  // Task 7083. Each waiting tick reads the clock in the poll, in the stopping
+  // step that follows it and for its own bookkeeping, and a fourth time when
+  // the poll reports the entry missing. The clock is armed to fail that fourth
+  // reading, after another process ended the entry, so the refusal names the
+  // clock and the last line is the outcome. A change to the number of readings
+  // per tick moves the failure onto another path, and the case fails rather
+  // than passing vacuously.
+  scratch    sc;
+  auto const clock  = std::make_shared<failing_clock>();
+  auto const holder = seed_live_parent(sc, clock.get());
+
+  agent::handlers::queue_run_deps deps;
+  deps.clock   = clock;
+  bool removed = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!removed) {
+      removed = true;
+      end_as(conn, holder + 1, hq::history_outcome::abandoned);
+      clock->arm(4);
+    }
+  });
+  auto const marker = sc.root / "ran";
+  auto const got    = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(removed);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("error: queue: cannot read the monotonic clock"));
+  CHECK(last_line(got.err) == "queue: entry 2 ended: cannot read the clock");
+  CHECK_FALSE(std::filesystem::exists(marker));
+}
+
+TEST_CASE("queue run: the submitter's own stop at its run limit does not report a refusal for a group of zombies",
+          "[cmd][agent][queue][hq-eperm-zombie-group]") {
+  // Task 7097. When no entry can stop the command for the submitter (its
+  // group was never recorded, or its entry vanished), the submitter signals the
+  // group itself, and the kernel's refusal of a group of zombies is not a
+  // failure to report. The signaller refuses every signal with EPERM; the probe
+  // says whether the group holds nothing but zombies, so the warning must be
+  // absent when it does and present when it does not. The clock is steered past
+  // the limit once the entry is running.
+  enum class how { unrecorded_group, vanished_entry };
+  for (auto const path : {how::unrecorded_group, how::vanished_entry}) {
+    for (bool const zombies : {true, false}) {
+      INFO(std::string{path == how::unrecorded_group ? "the group was never recorded" : "the entry vanished"}
+           << (zombies ? ": the group holds only zombies" : ": the group has a live member, so the refusal is real"));
+      scratch                         sc;
+      auto const                      clock = std::make_shared<steered_clock>();
+      agent::handlers::queue_run_deps deps;
+      deps.clock     = clock;
+      deps.signaller = [](std::int64_t, int) -> std::expected<void, ident::error> {
+        return std::unexpected(ident::error::not_permitted);
+      };
+      auto probe               = hq::system_process_probe();
+      probe.group_only_zombies = [zombies](std::int64_t) -> std::expected<bool, ident::error> { return zombies; };
+      deps.probe               = probe;
+      if (path == how::unrecorded_group) {
+        deps.record_child = [](planar::db::connection&, std::int64_t, std::int64_t,
+                               std::int64_t) -> std::expected<bool, hq::queue_error> {
+          return std::unexpected(record_failure());
+        };
+      }
+      bool advanced = false;
+      script(deps, sc, fast_settings(), [&](planar::db::connection& conn) {
+        auto const stored = hq::find(conn, 1).value();
+        if (advanced || !stored || stored->state != hq::entry_state::running) {
+          return;
+        }
+        if (path == how::vanished_entry) {
+          if (!stored->child_pgid) {
+            return;
+          }
+          end_as(conn, 1, hq::history_outcome::abandoned);
+        }
+        advanced = true;
+        clock->advance(1'000);
+      });
+      fixture fx{sc, (sc.root / "agent.db").string()};
+      auto    args            = queue_args({"/bin/sleep", "0.3"});
+      args.flags["--timeout"] = {"100ms"};
+      auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
+      auto const* status      = std::get_if<agent::exit_status>(&outcome);
+      REQUIRE(status != nullptr);
+      INFO("stderr:\n" << fx.err.str());
+      CHECK(advanced);
+      CHECK(status->code == 124);
+      CHECK(fx.err.str().contains("SIGTERM to the command's process group failed: not permitted") == !zombies);
+    }
+  }
 }

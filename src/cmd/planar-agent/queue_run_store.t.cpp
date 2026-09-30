@@ -130,10 +130,20 @@ struct mode_guard {
 };
 
 /// @brief Whether permission bits can make a path unwritable here. Root
-/// ignores them, so the two cases that rely on them assert nothing there and
-/// the rest of this file carries the contract.
+/// ignores them, so the two cases that rely on them assert nothing there; the
+/// symbolic-link-loop cases below reach the same refusals by a path root
+/// respects, and the two permission cases say so visibly when they stand down
+/// (task 7073).
 auto permissions_bind() -> bool {
   return ::geteuid() != 0;
+}
+
+/// @brief The visible note the two permission-bit cases leave when they stand
+/// down for root, so a green run as root is not read as proof that an
+/// unwritable directory or file was exercised.
+void note_permissions_do_not_bind() {
+  WARN("running as root: permission bits do not bind, so this case asserted nothing; the symbolic-link-loop cases cover the "
+       "same refusals for this user");
 }
 
 /// @brief Sets an environment variable for one scope and puts the previous
@@ -220,6 +230,7 @@ TEST_CASE("queue run: a store in a directory that cannot be written refuses at 1
   std::filesystem::permissions(dir, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
   mode_guard const restore{dir};
   if (!permissions_bind()) {
+    note_permissions_do_not_bind();
     return;
   }
 
@@ -240,6 +251,7 @@ TEST_CASE("queue run: a store file that cannot be written refuses at 125 and run
   std::filesystem::permissions(store, std::filesystem::perms::owner_read);
   mode_guard const restore{store};
   if (!permissions_bind()) {
+    note_permissions_do_not_bind();
     return;
   }
 
@@ -248,6 +260,36 @@ TEST_CASE("queue run: a store file that cannot be written refuses at 125 and run
   auto const got = run_probe(arena, "rofile", env);
   require_refused(arena, got, store.string());
   CHECK(std::filesystem::file_size(store) == 0);
+}
+
+TEST_CASE("queue run: a store file that is a symbolic-link loop refuses at 125 and runs nothing, whoever runs it",
+          "[cmd][agent][queue][queue-store]") {
+  // Task 7073: the permission-bit cases above prove nothing as root, which
+  // ignores them. Opening a loop fails with ELOOP for every user.
+  auto const arena = parity::make_arena("qs_loopfile");
+  make_probe(arena);
+  auto const store = arena.cpp_root / "loop.db";
+  std::filesystem::create_symlink(store, store);
+
+  auto env = base_env(arena);
+  set_var(env, "PLANAR_AGENT_DB", store.string());
+  auto const got = run_probe(arena, "loopfile", env);
+  require_refused(arena, got, store.string());
+  CHECK(std::filesystem::is_symlink(store));
+}
+
+TEST_CASE("queue run: a store in a directory that is a symbolic-link loop refuses at 125 and runs nothing, whoever runs it",
+          "[cmd][agent][queue][queue-store]") {
+  auto const arena = parity::make_arena("qs_loopdir");
+  make_probe(arena);
+  auto const dir = arena.cpp_root / "loopdir";
+  std::filesystem::create_directory_symlink(dir, dir);
+
+  auto env = base_env(arena);
+  set_var(env, "PLANAR_AGENT_DB", (dir / "agent.db").string());
+  auto const got = run_probe(arena, "loopdir", env);
+  require_refused(arena, got, "agent.db");
+  CHECK(std::filesystem::is_symlink(dir));
 }
 
 TEST_CASE("queue run: a store path that is a directory refuses at 125 and runs nothing", "[cmd][agent][queue][queue-store]") {
