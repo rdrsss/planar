@@ -100,6 +100,7 @@ planar_binary(planar_watch
     exit.cppm
     context.cppm
     database.cppm
+    agentstore.cppm
     handler.cppm
     main.cppm
     handlers/shared/cli.cppm
@@ -131,6 +132,7 @@ planar_binary(planar_watch
   SOURCES
     context.cpp
     database.cpp
+    agentstore.cpp
     handlers/shared/format.cpp
     handlers/version/version.cpp
     handlers/schema/schema.cpp
@@ -148,7 +150,8 @@ planar_binary(planar_watch
     db
     json_text
     engine_planning
-    engine_runtime)
+    engine_runtime
+    engine_hostqueue)
 
 # Each binary builds its own CLI::App tree directly (plan 996, task 6123),
 # so the CLI11 module target is linked per binary rather than laundered

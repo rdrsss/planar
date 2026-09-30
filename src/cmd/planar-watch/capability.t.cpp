@@ -36,6 +36,9 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.cliapp.walk;
+import planar.db;
+import planar.db.agentdb;
+import planar.cmd.planar_watch.agentstore;
 import planar.cmd.planar_watch.dispatch;
 import planar.cmd.planar_watch.surface;
 import planar.cmd.planar_watch.main;
@@ -180,4 +183,37 @@ TEST_CASE("no planar-watch handler is unreachable from argv", "[cmd][watch][disp
   auto const dead  = planar::cmd::watch::unreachable_handlers(*root, table);
   INFO("handlers no argv can reach: " << dead.size());
   CHECK(dead.empty());
+}
+
+TEST_CASE("planar-watch's agent database handle is read-only, and a missing store is not created", "[cmd][watch][capability]") {
+  // Level 2 for the SECOND store (plan 1080, task hq-watch-agentdb): the
+  // agent database must not widen the viewer's write surface. The handle the
+  // access policy hands out refuses a write, and the policy never creates
+  // the store it was pointed at.
+  auto const dir = std::filesystem::temp_directory_path() /
+                   std::format("planar_watch_cap_agent_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::filesystem::create_directories(dir);
+  auto const store = dir / "agent.db";
+  {
+    auto seeded = planar::db::agent::open_agent_db_at(store);
+    REQUIRE(seeded.has_value());
+  }
+
+  auto opened = planar::cmd::watch::open_agent_store_at(store);
+  REQUIRE(opened.has_value());
+  auto* conn = opened->connection();
+  REQUIRE(conn != nullptr);
+  CHECK(conn->prepare("select count(*) from queue_entries").has_value());
+  CHECK_FALSE(conn->execute("delete from queue_entries").has_value());
+  CHECK_FALSE(conn->execute("create table watch_cap_probe (id integer)").has_value());
+  CHECK(conn->is_read_only());
+
+  auto const absent = dir / "absent" / "agent.db";
+  auto const view   = planar::cmd::watch::open_agent_store_at(absent);
+  REQUIRE(view.has_value());
+  CHECK_FALSE(view->present());
+  CHECK_FALSE(std::filesystem::exists(absent.parent_path()));
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
 }
