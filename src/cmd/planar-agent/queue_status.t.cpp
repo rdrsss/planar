@@ -47,9 +47,10 @@ constexpr auto k_budget = std::chrono::seconds(30);
 
 /// @brief The field set the tech spec names for `queue status --json`, in its order.
 const std::vector<std::string> k_fields{
-    "seq",     "state",   "live",     "position", "outcome",       "exit_code",     "signal",   "terminating", "cancelled_by",
-    "superseded_by", "nested", "parent_seq", "cwd", "argv",       "label",         "vendor",   "role",        "log_path",
-    "enqueued_at", "started_at", "ended_at", "waited_ms", "ran_ms", "run_limit_ms", "wait_limit_ms", "slots", "grace_ms"};
+    "seq",         "state",        "live",          "position",      "outcome",     "exit_code",  "signal",
+    "terminating", "cancelled_by", "superseded_by", "nested",        "parent_seq",  "cwd",        "argv",
+    "label",       "vendor",       "role",          "log_path",      "enqueued_at", "started_at", "ended_at",
+    "waited_ms",   "ran_ms",       "run_limit_ms",  "wait_limit_ms", "slots",       "grace_ms"};
 
 auto agent_bin() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_CPP_BIN};
@@ -370,15 +371,13 @@ auto enqueue_or_fail(planar::db::connection& conn, const hq::enqueue_request& re
 }
 
 /// @brief Starts entry `seq` the way a poll does, as its submitter (this process).
-void start_entry(planar::db::connection& conn, std::int64_t seq, std::int64_t slots = 1,
-                 std::int64_t run_limit_ms = 300'000) {
+void start_entry(planar::db::connection& conn, std::int64_t seq, std::int64_t slots = 1, std::int64_t run_limit_ms = 300'000) {
   ident::system_clock clock;
-  auto const          polled = hq::poll(conn, hq::poll_request{.seq            = seq,
-                                                               .host_id        = this_host(),
-                                                               .slots          = slots,
-                                                               .stale_after_ms = 60'000,
-                                                               .run_limit_ms   = run_limit_ms},
-                                        clock, hq::system_process_probe());
+  auto const          polled =
+      hq::poll(conn,
+               hq::poll_request{
+                   .seq = seq, .host_id = this_host(), .slots = slots, .stale_after_ms = 60'000, .run_limit_ms = run_limit_ms},
+               clock, hq::system_process_probe());
   REQUIRE(polled.has_value());
   REQUIRE(polled->running);
 }
@@ -394,8 +393,8 @@ TEST_CASE("queue status: a detached run is polled from waiting through running t
   gate            hold(arena.cpp_root / "hold.fifo");
   submitter_guard guard;
 
-  auto const holder = submit_detached(arena, "holder", sh_command("read x < \"$1\"", {hold.path.string()}), {"--label", "holder"},
-                                      guard);
+  auto const holder =
+      submit_detached(arena, "holder", sh_command("read x < \"$1\"", {hold.path.string()}), {"--label", "holder"}, guard);
   await_state(arena, holder.seq, hq::entry_state::running);
   auto const second = submit_detached(arena, "second", sh_command("echo second-out; exit 5"),
                                       {"--label", "second", "--vendor", "codex", "--role", "tester"}, guard);
@@ -482,8 +481,9 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
               .has_value());
   auto const running_seq = enqueue_or_fail(conn, alive_request("running", "/logs/running.log"));
   start_entry(conn, running_seq, 2);
-  auto const waiting_seq = enqueue_or_fail(conn, alive_request("waiting"));
+  // Both of the two slots are taken before the waiting entry arrives.
   start_entry(conn, enqueue_or_fail(conn, alive_request("second-runner")), 2);
+  auto const waiting_seq = enqueue_or_fail(conn, alive_request("waiting"));
 
   for (auto const seq : {waiting_seq, running_seq, ended_seq}) {
     INFO("seq " << seq);
@@ -537,8 +537,8 @@ TEST_CASE("queue status: a waiting, a running and an ended entry each return exa
 
 TEST_CASE("queue status: with one running entry and two waiting, the second waiting entry is at position 2",
           "[cmd][agent][queue][hq-queue-status]") {
-  auto const arena = parity::make_arena("qs_position");
-  auto       conn  = open_store(arena);
+  auto const arena  = parity::make_arena("qs_position");
+  auto       conn   = open_store(arena);
   auto const runner = enqueue_or_fail(conn, alive_request("runner"));
   start_entry(conn, runner);
   auto const first  = enqueue_or_fail(conn, alive_request("first"));
@@ -577,7 +577,7 @@ TEST_CASE("queue status: a cancelled entry shows who cancelled it, in history an
   CHECK(text_of(by, "role") == "reviewer");
   CHECK(int_of(by, "pid") == 4242);
 
-  auto const text  = run_status(arena, "st_cancelled_text", ended, false);
+  auto const text = run_status(arena, "st_cancelled_text", ended, false);
   REQUIRE(text.code == 0);
   CHECK(text_value(text_lines(text.out), "cancelled_by") == "vendor=codex role=reviewer pid=4242");
 
@@ -623,14 +623,14 @@ TEST_CASE("queue status: a cancelled entry shows who cancelled it, in history an
 
 TEST_CASE("queue status: a reaped waiter's old sequence number reports the successor's state, through a chain",
           "[cmd][agent][queue][hq-queue-status]") {
-  auto const arena = parity::make_arena("qs_successor");
-  auto       conn  = open_store(arena);
+  auto const arena  = parity::make_arena("qs_successor");
+  auto       conn   = open_store(arena);
   auto const runner = enqueue_or_fail(conn, alive_request("runner"));
   start_entry(conn, runner);
 
   auto const first = enqueue_or_fail(conn, alive_request("waiter"));
-  REQUIRE(hq::end_entry(conn, first, hq::end_request{.outcome = hq::history_outcome::abandoned, .ended_at = wall_now()})
-              .has_value());
+  REQUIRE(
+      hq::end_entry(conn, first, hq::end_request{.outcome = hq::history_outcome::abandoned, .ended_at = wall_now()}).has_value());
   auto const rejoined = hq::rejoin(conn, first, alive_request("waiter"));
   REQUIRE(rejoined.has_value());
   REQUIRE(rejoined->status == hq::rejoin_status::rejoined);
@@ -664,11 +664,13 @@ TEST_CASE("queue status: a reaped waiter's old sequence number reports the succe
   CHECK(text_of(chain, "state") == "waiting");
 
   // The final entry starts and ends: the old number now reports that ending.
-  REQUIRE(hq::end_entry(conn, runner, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()})
-              .has_value());
+  REQUIRE(
+      hq::end_entry(conn, runner, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()})
+          .has_value());
   start_entry(conn, third);
-  REQUIRE(hq::end_entry(conn, third, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 9, .ended_at = wall_now()})
-              .has_value());
+  REQUIRE(
+      hq::end_entry(conn, third, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 9, .ended_at = wall_now()})
+          .has_value());
   auto const finished = status_object(run_status(arena, "st_succ3", first));
   CHECK(int_of(finished, "seq") == first);
   CHECK(int_of(finished, "superseded_by") == third);
@@ -726,10 +728,10 @@ auto dump_rows(planar::db::connection& conn) -> std::string {
   auto const  entries = hq::list(conn);
   REQUIRE(entries.has_value());
   for (auto const& e : *entries) {
-    text += std::format("E {} {} {} {} {} {} {} {} {} {}|{}|{}\n", e.seq, hq::to_string(e.state), e.pid, e.pid_started,
-                        e.refreshed_mono, e.started_at.value_or(-1), e.child_pgid.value_or(-1),
-                        e.terminating_since_mono.value_or(-1), e.terminate_reason.value_or("-"), e.cancelled_by.value_or("-"),
-                        e.label.value_or("-"), e.cwd);
+    text +=
+        std::format("E {} {} {} {} {} {} {} {} {} {}|{}|{}\n", e.seq, hq::to_string(e.state), e.pid, e.pid_started,
+                    e.refreshed_mono, e.started_at.value_or(-1), e.child_pgid.value_or(-1), e.terminating_since_mono.value_or(-1),
+                    e.terminate_reason.value_or("-"), e.cancelled_by.value_or("-"), e.label.value_or("-"), e.cwd);
   }
   auto const history = hq::list_history(conn);
   REQUIRE(history.has_value());
@@ -742,18 +744,17 @@ auto dump_rows(planar::db::connection& conn) -> std::string {
 
 TEST_CASE("queue status: asking about every kind of entry leaves the store byte for byte as it was",
           "[cmd][agent][queue][hq-queue-status]") {
-  auto const arena = parity::make_arena("qs_readonly");
+  auto const                arena = parity::make_arena("qs_readonly");
   std::vector<std::int64_t> seqs;
   std::string               rows_before;
   {
-    auto conn = open_store(arena);
+    auto conn         = open_store(arena);
     auto dead_request = alive_request("dead");
     dead_request.pid  = dead_pid();
-    seqs.push_back(enqueue_or_fail(conn, dead_request));     // waiting, not live, unreaped
+    seqs.push_back(enqueue_or_fail(conn, dead_request)); // waiting, not live, unreaped
     seqs.push_back(enqueue_or_fail(conn, alive_request("waiting")));
     auto const ended = enqueue_or_fail(conn, alive_request("ended"));
-    REQUIRE(hq::end_entry(conn, ended,
-                          hq::end_request{.outcome = hq::history_outcome::abandoned, .ended_at = wall_now()})
+    REQUIRE(hq::end_entry(conn, ended, hq::end_request{.outcome = hq::history_outcome::abandoned, .ended_at = wall_now()})
                 .has_value());
     auto const rejoin = hq::rejoin(conn, ended, alive_request("ended"));
     REQUIRE(rejoin.has_value());
@@ -771,13 +772,14 @@ TEST_CASE("queue status: asking about every kind of entry leaves the store byte 
   REQUIRE(run_status(arena, "ro_unknown", 9999).code != 0);
 
   CHECK(read_all(store_path(arena)) == db_before);
+  // SQLite may leave its `-shm` WAL-index sidecar behind; it holds no store
+  // content, so the proof is the database file, its WAL and every row.
   CHECK(read_all(std::filesystem::path{store_path(arena).string() + "-wal"}) == wal_before);
   auto conn = open_store(arena);
   CHECK(dump_rows(conn) == rows_before);
 }
 
-TEST_CASE("queue status: a missing store is refused at 125 and is not created",
-          "[cmd][agent][queue][hq-queue-status]") {
+TEST_CASE("queue status: a missing store is refused at 125 and is not created", "[cmd][agent][queue][hq-queue-status]") {
   auto const arena = parity::make_arena("qs_nostore");
   REQUIRE_FALSE(std::filesystem::exists(store_path(arena)));
 

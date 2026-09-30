@@ -6869,6 +6869,7 @@ planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now
 # command; it runs in the caller's directory with the caller's environment.
 # See "Queue verbs" below.
 planar-agent queue run  [--detach] [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] [--vendor <name>] [--role <name>] [--notices] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
+planar-agent queue status <seq> [--json]
 
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
 planar-agent version
@@ -6931,7 +6932,47 @@ The variable is advisory. A value that is not a positive integer, that names no 
 
 **A submitter whose own entry goes missing** reads the history row for its sequence number. A *waiting* submitter whose row says `abandoned` (another submitter reaped it while it was stopped, for example by `SIGSTOP` or a suspended laptop) rejoins the queue: it inserts a new entry, which has a higher sequence number and so waits behind everything that arrived meanwhile, and records the new number as the old row's `successor_seq`, in one transaction, so `queue status` can follow the chain. The new entry keeps the original `--wait-timeout` deadline, so the limit bounds the whole wait. A submitter rejoins at most three times and then exits **125**; the command is not run. A row saying `cancelled` (or any other outcome), or no row at all (never written, or pruned by retention), exits **125** without running the command. A *running* submitter whose entry disappears keeps supervising its command, never rejoins and never runs the command a second time, and exits with what it observed of the command; because the run limit is a property of the entry, it is no longer enforced, and the submitter says so once on standard error. A waiting submitter that cannot complete any poll for longer than `stale_after` ends its own entry as `abandoned` (no exit code, signal, start time, run time or successor, since the command never ran) and exits **125**.
 
-Not yet available in this build (later tasks of plan 1080): `--claim`, `queue status`, `queue cancel` and `queue rule`.
+**Reading a ticket (`queue status`).** `planar-agent queue status <seq> [--json]` reports what became of one entry. The sequence number is the first line of the ticket `queue run --detach` prints. It answers from the entry while it is in the queue and from its `queue_history` row afterwards, and it is the authoritative record of how a command ended: the exit code of `queue run` is ambiguous by design, `outcome` is not.
+
+`queue status` **reads and changes nothing.** It opens the agent database read-only at the SQLite layer, so it cannot reap, refresh, mark or end an entry, migrate the store, or create one that does not exist (SQLite may leave its `-shm` WAL-index sidecar next to the store; it holds no store content). It judges liveness by the rules a poll applies (a waiting entry is live when its submitter's process exists, its start time matches the recorded one and the entry was refreshed within `stale_after`; a running entry is also live while its child group has members) and reports the verdict without acting on it: an entry whose submitter is gone reports `live` false and stays in the store until a poll reaps it. It does not open `planar.db`, so it works when the main database is locked out.
+
+The `--json` output is one object with exactly these fields, in this order. A field that does not apply is `null`.
+
+| Field | Meaning |
+|---|---|
+| `seq` | The sequence number asked for |
+| `state` | `waiting`, `running` or `ended` |
+| `live` | Whether the entry passes the liveness rules; `null` when ended (or when a process query failed) |
+| `position` | Place among the waiting entries, counting from 1; running entries do not count |
+| `outcome` | The history outcome (`exited`, `signaled`, `timeout`, `cancelled`, `wait_timeout`, `not_started`, `abandoned`), when ended |
+| `exit_code`, `signal` | How the command ended |
+| `terminating` | The reason (`timeout` or `cancelled`), while the entry is being stopped |
+| `cancelled_by` | An object with `vendor`, `role` and `pid` (`vendor` and `role` are `null` when the canceller gave none), when cancelled, in history or while being stopped |
+| `superseded_by` | The sequence number that replaced this one, when it was re-enqueued |
+| `nested`, `parent_seq` | Nesting |
+| `cwd`, `argv`, `label`, `vendor`, `role` | As submitted; `argv` is an array |
+| `log_path` | The output file, for a detached run |
+| `enqueued_at`, `started_at`, `ended_at` | Wall-clock milliseconds |
+| `waited_ms`, `ran_ms` | Durations: for an entry still in the queue, up to now |
+| `run_limit_ms`, `wait_limit_ms` | Always `null` in this build: the store records a monotonic deadline, not the limit an entry was submitted with |
+| `slots`, `grace_ms` | The `[queue]` settings in force now, for an entry still in the queue; `null` when ended |
+
+**A successor is followed.** When the number asked for was reaped while its submitter was stopped and the submitter rejoined the queue (see above), its history row names the new number. `queue status` then describes the new entry (its `state`, `position` and so on, and its end once it has one), sets `superseded_by` to the new number and keeps `seq` as the number asked for. A chain of rejoins is followed to its end; a successor whose history was pruned ends the chain at the last row that exists.
+
+Without `--json` the same answer is printed as `key: value` lines, one per field that applies, in the order above (`cancelled_by` reads `vendor=<v> role=<r> pid=<n>`, `argv` is a compact JSON array, and a value with a control character is quoted as a JSON string).
+
+**Exit codes of `queue status`** (decision 1188 fixes the queue's own codes; it does not list this verb's, so these follow this binary's table):
+
+| Code | Meaning |
+|---|---|
+| 0 | The entry was found; the answer is on standard output |
+| 1 | No entry and no history row has that sequence number (never issued, or its history was pruned), or no sequence number was given (a parse failure, as everywhere in this binary) |
+| 2 | The argument is not a positive integer |
+| 125 | The queue failed: the agent database does not exist or cannot be read, the `[queue]` configuration cannot be used (asked for only when the entry is still in the queue), or an internal error |
+
+A refusal writes `error: queue status: <message>` on standard error. With `--json` it also writes one object on standard output, `{"error":{"verb":"queue status","tag":"<tag>","message":"<message>"}}` (plus `"seq"` for exit 1), so a script reads the reason without parsing prose. The tags are `not_found`, `invalid_input`, `store_unreachable`, `store_unreadable`, `config_unusable` and `internal`.
+
+Not yet available in this build (later tasks of plan 1080): `--claim`, `queue cancel` and `queue rule`.
 
 #### Known limits
 
