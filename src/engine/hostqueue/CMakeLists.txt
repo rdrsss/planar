@@ -41,6 +41,11 @@
 # `guard.cppm` (task hq-command-guard) is the pure command guard: it imports
 # nothing but the standard library.
 #
+# `rule.cppm` (task hq-rule-text) exposes the agent rule text, which
+# `rule.cpp` `#embed`s from `queue-rule.md` beside it. That file is the one
+# authored source; EMBED scopes the `-Wno-c23-extensions` `#embed` needs to
+# this target (cmake/module.cmake).
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
@@ -54,6 +59,7 @@ planar_module(engine_hostqueue
     nested.cppm
     status.cppm
     guard.cppm
+    rule.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
@@ -64,11 +70,13 @@ planar_module(engine_hostqueue
     nested.cpp
     status.cpp
     guard.cpp
+    rule.cpp
   DEPENDS
     db
     json_dom
     json_text
-    process)
+    process
+  EMBED)
 
 if(TARGET planar_engine_hostqueue_tests)
   # The test binary opens real on-disk scratch stores through
