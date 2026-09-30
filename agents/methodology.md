@@ -644,6 +644,7 @@ target-specific commands.
 - [ ] No references to files that have been renamed or deleted (grep for
       all file paths cited in changed documents).
 
+<!-- queue-lint-ignore-begin: the queue rule text below is pinned byte for byte to src/engine/hostqueue/queue-rule.md and its Examples line lists the programs -->
 ## Builds and tests go through the host queue
 
 Every build and every test run on this machine goes through one host-wide
@@ -817,6 +818,8 @@ The first row is a fact about the installed Planar, checked once with `queue rul
 The second is an answer from a queue that is there. Never treat the second as
 the first.
 
+<!-- queue-lint-ignore-end -->
+
 ## Failures that impersonate regressions
 
 Some failures are environmental, look exactly like a code regression, and
@@ -829,7 +832,7 @@ this repo before anyone checked the environment instead of the diff (tasks
 | Mass `conn.has_value() == false`, reading as a database-layer regression | Disk exhaustion — the suite had leaked temp arenas until the volume filled (task 6311) | `df` the volume. A real DB regression does not fail every connection in the suite at once. |
 | Exit 138, zero diagnostics, reading as "the known flake" | A doxygen SIGBUS retry loop masking a genuine failure — it hid one three times (task 6315) | Signal death is not a lint verdict. Distinguish a signal exit from a non-zero *diagnostic* exit before retrying. |
 | `39 failed`, large `NOT_BUILT` population | Two builds racing in one build directory; `clang-scan-deps` lost a temp-file rename to a concurrent ninja (task 6350) | **Which exit code is non-zero.** `BUILD_EXIT != 0` with `NOT_BUILT` tests means the suite never ran. A real regression gives `CTEST_EXIT != 0` with *named* failing tests. |
-| A backgrounded `ctest` reads as an incomplete or truncated suite, or as nothing at all | The OS OOM-killed the ctest process for low memory; no verdict was ever reached (task 6662, M11 wave 5) | **No summary line at all.** A real run — pass or fail — always prints `N tests failed out of M`. Absence of that line means the suite did not finish, not that it finished badly. Re-run; do not investigate the code. Long-lived orchestrations that keep a build directory hot for hours (many `clang++` processes, shrinking free disk) are exactly the workload that meets this one. |
+| A backgrounded `ctest` reads as an incomplete or truncated suite, or as nothing at all | The OS OOM-killed the ctest process for low memory; no verdict was ever reached (task 6662, M11 wave 5) | **No summary line at all.** A real run — pass or fail — always prints `N tests failed out of M`. Absence of that line means the suite did not finish, not that it finished badly. Re-run; do not investigate the code. Long-lived orchestrations that keep a build directory hot for hours (many `clang++` processes, shrinking free disk) are exactly the workload that meets this one. <!-- queue-lint-ignore: failure signature, names the process the OS killed --> |
 
 The third one generalizes past its own signature, and that is the part worth
 carrying forward. A historical variant — two parity runs sharing one build

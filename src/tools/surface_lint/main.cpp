@@ -38,6 +38,8 @@ constexpr std::string_view contract            = "surface-contract-missing";
 constexpr std::string_view path                = "surface-path-missing";
 constexpr std::string_view suppression_invalid = "surface-suppression-invalid";
 constexpr std::string_view suppression_unused  = "surface-suppression-unused";
+constexpr std::string_view queue_command       = "surface-queue-command";
+constexpr std::string_view queue_marker        = "surface-queue-marker-invalid";
 } // namespace code
 
 constexpr std::array<std::string_view, 7> k_suppressible_codes{code::link,    code::legacy,   code::artifacts, code::capability,
@@ -1211,6 +1213,176 @@ auto check_feedback_contract(std::string const& file, std::string_view content, 
 }
 
 // ---------------------------------------------------------------------------
+// checkQueueCommands (plan 1080, task hq-rule-lint) — the queue rule for
+// authored agent and skill sources.
+//
+// Every build and test run on a host goes through `planar-agent queue run`
+// (agents/methodology.md § Builds and tests go through the host queue). The
+// rule only works when the text agents read never tells them to run such a
+// command directly, so this pass flags an inline code span, or a line of a
+// fenced code block, whose FIRST word is a build or test program and which
+// is therefore not given to the queue: a command given to the queue begins
+// `planar-agent queue run`, and its program follows a bare `--`.
+//
+// The program list is the product spec's "What counts as a build or test
+// command", exactly: make, cmake --build, ninja, ctest, cargo build/test, go
+// build/test, npm test, pytest, tox, gradle build. "Linters that build first"
+// have no program name to match and are the reader's judgement. `cmake
+// --preset` (a configure) and `npm install` are not builds and are not
+// listed. A program word is matched whole: `make:` and `makefile` are not
+// `make`.
+//
+// SCOPE: agents/ and skills/src/ only. docs/ describes the tools and is not
+// an instruction to an agent. Prose outside a span or block is never read.
+//
+// Escape hatches, deliberately separate from `surface-lint-ignore` (which
+// needs a code and a rationale comment on the line above, and cannot sit
+// inside a table row or a verbatim section):
+//   - a line carrying `queue-lint-ignore` is exempt. Use it on a line that
+//     must keep the command, such as a failure-signature table row, and say
+//     why beside it.
+//   - a region between a `<!-- queue-lint-ignore-begin ... -->` line and a
+//     `<!-- queue-lint-ignore-end -->` line is exempt. It exists for text
+//     that is pinned byte for byte elsewhere, where a per-line marker would
+//     change the bytes: the queue rule's own section in agents/methodology.md.
+//     The marker lines sit outside the pinned text. A marker that is
+//     unbalanced is itself a finding, so a typo cannot exempt the rest of a
+//     file.
+// ---------------------------------------------------------------------------
+
+constexpr std::string_view k_queue_ignore       = "queue-lint-ignore";
+constexpr std::string_view k_queue_region_begin = "<!-- queue-lint-ignore-begin";
+constexpr std::string_view k_queue_region_end   = "<!-- queue-lint-ignore-end";
+
+/// A build or test program: its first word, and the second word that must
+/// follow it (empty when the program alone is enough).
+struct build_program_t {
+  std::string_view first;
+  std::string_view second;
+};
+
+constexpr std::array<build_program_t, 12> k_build_programs{{{"make", ""},
+                                                            {"ninja", ""},
+                                                            {"ctest", ""},
+                                                            {"pytest", ""},
+                                                            {"tox", ""},
+                                                            {"cmake", "--build"},
+                                                            {"cargo", "build"},
+                                                            {"cargo", "test"},
+                                                            {"go", "build"},
+                                                            {"go", "test"},
+                                                            {"npm", "test"},
+                                                            {"gradle", "build"}}};
+
+/// @brief The next run of non-blank characters of `text` from `cursor`;
+/// advances `cursor` past it.
+auto next_word(std::string_view text, std::size_t& cursor) -> std::string_view {
+  while (cursor < text.size() && is_ws(text[cursor]))
+    ++cursor;
+  std::size_t const start = cursor;
+  while (cursor < text.size() && !is_ws(text[cursor]))
+    ++cursor;
+  return text.substr(start, cursor - start);
+}
+
+/// @brief Is `text`, taken as one command, a build or test command: does it
+/// begin (after an optional `$ ` prompt) with a listed program?
+auto begins_with_build_program(std::string_view text) -> bool {
+  std::size_t cursor = 0;
+  auto        first  = next_word(text, cursor);
+  if (first == "$")
+    first = next_word(text, cursor);
+  if (first.empty())
+    return false;
+  auto const second = next_word(text, cursor);
+  for (auto const& program : k_build_programs) {
+    if (first == program.first && (program.second.empty() || second == program.second))
+      return true;
+  }
+  return false;
+}
+
+auto queue_command_finding(std::vector<finding_t>& findings, std::string const& file, std::size_t line_no, std::string_view text)
+    -> void {
+  findings.push_back({.code    = code::queue_command,
+                      .file    = file,
+                      .line    = line_no,
+                      .message = std::format("build or test command is not given to `planar-agent queue run`: `{}`", text)});
+}
+
+auto check_queue_commands(std::string const& file, std::vector<std::string_view> const& lines, std::vector<finding_t>& findings)
+    -> void {
+  std::optional<fence_t>     fence;
+  std::optional<std::size_t> region_line;
+  for (std::size_t idx = 0; idx < lines.size(); ++idx) {
+    std::size_t const      line_no = idx + 1;
+    std::string_view const line    = lines[idx];
+    std::string_view const trimmed = trim(line, " \t\r");
+    if (advance_fence(trimmed, fence))
+      continue;
+    if (!fence.has_value()) {
+      if (trimmed.starts_with(k_queue_region_begin) && trimmed.ends_with("-->")) {
+        if (region_line.has_value())
+          findings.push_back(
+              {.code    = code::queue_marker,
+               .file    = file,
+               .line    = line_no,
+               .message = std::format("`queue-lint-ignore-begin` inside the region opened at line {}", *region_line)});
+        else
+          region_line = line_no;
+        continue;
+      }
+      if (trimmed.starts_with(k_queue_region_end) && trimmed.ends_with("-->")) {
+        if (region_line.has_value())
+          region_line.reset();
+        else
+          findings.push_back({.code    = code::queue_marker,
+                              .file    = file,
+                              .line    = line_no,
+                              .message = "`queue-lint-ignore-end` without a matching `queue-lint-ignore-begin`"});
+        continue;
+      }
+    }
+    if (region_line.has_value() || line.find(k_queue_ignore) != std::string_view::npos)
+      continue;
+    if (fence.has_value()) {
+      if (begins_with_build_program(trimmed))
+        queue_command_finding(findings, file, line_no, trimmed);
+      continue;
+    }
+    std::size_t cursor = 0;
+    while (true) {
+      auto const open = line.find('`', cursor);
+      if (open == std::string_view::npos)
+        break;
+      std::size_t const          run_len = marker_run_length(line, open, '`');
+      std::size_t                search  = open + run_len;
+      std::optional<std::size_t> close;
+      while (true) {
+        auto const candidate_close = line.find('`', search);
+        if (candidate_close == std::string_view::npos)
+          break;
+        std::size_t const candidate_len = marker_run_length(line, candidate_close, '`');
+        if (candidate_len == run_len) {
+          close = candidate_close;
+          break;
+        }
+        search = candidate_close + candidate_len;
+      }
+      if (!close.has_value())
+        break;
+      std::string_view const span = trim(line.substr(open + run_len, *close - (open + run_len)), " \t");
+      if (begins_with_build_program(span))
+        queue_command_finding(findings, file, line_no, span);
+      cursor = *close + run_len;
+    }
+  }
+  if (region_line.has_value())
+    findings.push_back(
+        {.code = code::queue_marker, .file = file, .line = *region_line, .message = "`queue-lint-ignore-begin` is never closed"});
+}
+
+// ---------------------------------------------------------------------------
 // scanFile / scanRepository.
 // ---------------------------------------------------------------------------
 
@@ -1249,6 +1421,8 @@ auto scan_file_impl(fs::path const& root, std::string const& rel_file, fs::path 
     check_command(rel_file, line_no, line, result.findings, suppressions);
     check_deferred_command(rel_file, line_no, line, fence.has_value(), result.findings, suppressions);
   }
+  if (rel_file.starts_with("agents/") || rel_file.starts_with("skills/src/"))
+    check_queue_commands(rel_file, lines, result.findings);
   if (rel_file.starts_with("skills/src/") && !frontmatter_literal_true(content, "internal_only"))
     check_feedback_contract(rel_file, content, result.findings, suppressions);
   for (auto const& s : suppressions) {

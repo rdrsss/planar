@@ -38,7 +38,7 @@ Table below without consulting Planar configuration.
 > Correct under the new ownership, since there is no longer an external
 > authority to check it against — but it means a stale or internally
 > inconsistent table will not be caught for you; the opt-in
-> `make eval-candidate-spawn` lane is the closest gate.
+> `make eval-candidate-spawn` lane is the closest gate. <!-- queue-lint-ignore: an operator-run live probe of the model CLIs, not a build or test -->
 
 ## Tier Table
 
@@ -68,7 +68,7 @@ changes.
 parses it, and never checks it against a list of supported models — that is the
 whole point of decision 884. A typo here is therefore recorded faithfully and
 surfaces only when a dispatch tries to spawn it. Nothing downstream will catch
-a wrong id for you, which is why `make eval-candidate-spawn` exists.
+a wrong id for you, which is why `make eval-candidate-spawn` exists. <!-- queue-lint-ignore: an operator-run live probe of the model CLIs, not a build or test -->
 
 **A `Use when` cell may not rest on marketing.** Vendor capability claims,
 benchmark scores, and release ordering are inadmissible as routing evidence: a
@@ -154,7 +154,7 @@ models remain explicit legacy fallbacks rather than silently disappearing.
 > below spawns, because neither CLI is installed on this machine. They are
 > recorded so the catalog is complete, not because they are usable: listing
 > them unmarked would imply a check that never happened. Run
-> `make eval-candidate-spawn` on a machine with the CLI present to promote them
+> `make eval-candidate-spawn` on a machine with the CLI present to promote them <!-- queue-lint-ignore: an operator-run live probe of the model CLIs, not a build or test -->
 > from claim to verified fact, then remove this marker.
 
 No per-candidate distinctions are recorded either. One candidate per tier, so
