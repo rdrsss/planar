@@ -27,7 +27,11 @@
 import std;
 import planar.db;
 import planar.db.agentdb;
+import planar.db.migrate;
+import planar.db.migrations_agent;
 import planar.json_dom;
+import planar.cmd.planar_watch.agentstore;
+import planar.cmd.planar_watch.handlers.queue.history;
 import planar.process.identity;
 import planar.engine.hostqueue;
 
@@ -862,6 +866,755 @@ TEST_CASE("queue view: works with no main database to locate, while every other 
   auto const bare = parity::run_pinned(watch_bin(), std::vector<std::string>{}, arena.cpp_root, "nomain_bare", env);
   CHECK(bare.code == 1);
   CHECK(bare.err == "error: neither PLANAR_DB nor HOME is set; cannot locate the Planar database\n");
+}
+
+// ===========================================================================
+// `planar-watch queue history` (plan 1080, task hq-watch-history; tech spec
+// 647 § CLI surface; test spec 649 scenarios citing task:hq-watch-history).
+// ===========================================================================
+
+/// @brief The history row's JSON fields, in order.
+const std::vector<std::string> k_history_fields{
+    "seq",         "outcome",    "exit_code", "signal",    "cancelled_by", "superseded_by", "nested",
+    "parent_seq",  "cwd",        "argv",      "label",     "vendor",       "role",          "log_path",
+    "enqueued_at", "started_at", "ended_at",  "waited_ms", "ran_ms",       "run_limit_ms",  "wait_limit_ms"};
+
+/// @brief `planar-watch queue history [flags]` under the arena's pinned environment.
+auto run_history(const parity::arena& arena, std::string_view tag, std::vector<std::string> flags = {"--json"}) -> capture {
+  std::vector<std::string> args{"queue", "history"};
+  for (auto& flag : flags) {
+    args.push_back(std::move(flag));
+  }
+  return parity::run_pinned(watch_bin(), args, arena.cpp_root, tag);
+}
+
+/// @brief A clock whose wall reading the test sets; the monotonic reading is the host's.
+class wall_clock_at final : public ident::clock {
+public:
+  std::int64_t wall = 0;
+
+  [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, ident::error> override {
+    return real.monotonic_ms();
+  }
+  [[nodiscard]] auto wall_ms() -> std::int64_t override {
+    return wall;
+  }
+
+private:
+  ident::system_clock real;
+};
+
+/// @brief One ended entry to seed through the engine.
+struct ended_spec {
+  std::string                 cwd = "/w/history";
+  std::vector<std::string>    argv{"make", "test"};
+  std::optional<std::string>  label;
+  std::optional<std::string>  vendor    = "claude";
+  std::optional<std::string>  role      = "coder";
+  std::int64_t                waited_ms = 1000;
+  std::optional<std::int64_t> ran_ms    = 2000; ///< Empty: the entry never started.
+  std::optional<std::int64_t> wait_limit_ms;
+  hq::end_request             end; ///< `ended_at` is the case's own choice and is set here.
+};
+
+/// @brief Enqueues, starts (when it ran) and ends one entry so that its history
+/// row has exactly the wait and run times and end time the spec names.
+auto seed_ended(planar::db::connection& conn, ended_spec spec) -> std::int64_t {
+  auto const ran        = spec.ran_ms.value_or(0);
+  auto       request    = alive_request(spec.cwd, spec.argv);
+  request.label         = spec.label;
+  request.vendor        = spec.vendor;
+  request.role          = spec.role;
+  request.enqueued_at   = spec.end.ended_at - spec.waited_ms - ran;
+  request.wait_limit_ms = spec.wait_limit_ms;
+  auto const seq        = enqueue_or_fail(conn, request);
+  if (spec.ran_ms) {
+    wall_clock_at clock;
+    clock.wall        = request.enqueued_at + spec.waited_ms;
+    auto const polled = hq::poll(
+        conn, hq::poll_request{.seq = seq, .host_id = this_host(), .slots = 1, .stale_after_ms = 60'000, .run_limit_ms = 300'000},
+        clock, hq::system_process_probe());
+    REQUIRE(polled.has_value());
+    REQUIRE(polled->running);
+  }
+  auto const ended = hq::end_entry(conn, seq, spec.end);
+  REQUIRE(ended.has_value());
+  REQUIRE(*ended == hq::end_result::ended);
+  return seq;
+}
+
+auto iso_utc(std::int64_t ms) -> std::string {
+  return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::sys_seconds{std::chrono::seconds{ms / 1000}});
+}
+
+// ---- empty -----------------------------------------------------------------
+
+TEST_CASE("queue history: a missing store lists nothing, exits 0 and creates no file", "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena = parity::make_arena("wh_missing");
+  REQUIRE_FALSE(fs::exists(store_path(arena)));
+
+  auto const json_run = run_history(arena, "missing_json");
+  INFO("stderr:\n" << json_run.err);
+  CHECK(json_run.code == 0);
+  CHECK(json_run.out == "[]\n");
+  CHECK(json_run.err.empty());
+
+  auto const text_run = run_history(arena, "missing_text", {});
+  CHECK(text_run.code == 0);
+  CHECK(text_run.out.empty());
+  CHECK(text_run.err.empty());
+
+  auto const since_run = run_history(arena, "missing_since", {"--since", "1h", "--json"});
+  CHECK(since_run.code == 0);
+  CHECK(since_run.out == "[]\n");
+  CHECK_FALSE(fs::exists(store_path(arena)));
+}
+
+TEST_CASE("queue history: a store whose only entries are still running lists no history",
+          "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena = parity::make_arena("wh_empty");
+  {
+    auto conn = open_store(arena);
+    enqueue_or_fail(conn, alive_request("/w/only", {"make"}));
+  }
+  auto const json_run = run_history(arena, "empty_json");
+  CHECK(json_run.code == 0);
+  CHECK(json_run.out == "[]\n");
+  auto const text_run = run_history(arena, "empty_text", {});
+  CHECK(text_run.code == 0);
+  CHECK(text_run.out.empty());
+}
+
+// ---- real runs -------------------------------------------------------------
+
+TEST_CASE(
+    "queue history: commands that really ended as exited, timeout and cancelled are listed with outcome, times and canceller",
+    "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena = parity::make_arena("wh_real");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"200ms\"\n");
+  gate            hold(arena.cpp_root / "hold.fifo");
+  submitter_guard guard;
+
+  // 1. A foreground command that exits 3.
+  auto const exited = parity::run_pinned(agent_bin(),
+                                         std::vector<std::string>{"queue", "run", "--label", "exits-three", "--vendor", "claude",
+                                                                  "--role", "coder", "--", "sh", "-c", "exit 3"},
+                                         arena.cpp_root, "real_exit");
+  INFO("stderr:\n" << exited.err);
+  REQUIRE(exited.code == 3);
+
+  // 2. A command stopped at its run limit.
+  auto const timed = parity::run_pinned(
+      agent_bin(),
+      std::vector<std::string>{"queue", "run", "--timeout", "300ms", "--label", "too-slow", "--", "sh", "-c", "sleep 30"},
+      arena.cpp_root, "real_timeout");
+  INFO("stderr:\n" << timed.err);
+  REQUIRE(timed.code == 124);
+
+  // 3. A detached holder that another agent cancels.
+  auto const held = submit_detached(arena, "real_hold", sh_command("read x < \"$1\"", {hold.path.string()}),
+                                    {"--label", "cancel-me", "--vendor", "codex", "--role", "tester"}, guard);
+  await_state(arena, held, hq::entry_state::running);
+  auto const cancelled = parity::run_pinned(
+      agent_bin(), std::vector<std::string>{"queue", "cancel", std::to_string(held), "--vendor", "claude", "--role", "reviewer"},
+      arena.cpp_root, "real_cancel");
+  INFO("stderr:\n" << cancelled.err);
+  REQUIRE(cancelled.code == 0);
+  REQUIRE(await([&] {
+    auto opened = planar::db::agent::open_agent_db_at(store_path(arena));
+    if (!opened) {
+      return false;
+    }
+    auto found = hq::find_history(*opened, held);
+    return found && found->has_value();
+  }));
+
+  auto const rows = rows_of(run_history(arena, "real_json"));
+  REQUIRE(rows.size() == 3);
+  for (auto const& row : rows) {
+    CHECK(keys_of(row) == k_history_fields);
+    CHECK(int_of(row, "waited_ms") >= 0);
+    CHECK(int_of(row, "ended_at") >= int_of(row, "enqueued_at"));
+  }
+  // Oldest first by end time: the exit, the timeout, then the cancel.
+  CHECK(text_of(rows[0], "outcome") == "exited");
+  CHECK(int_of(rows[0], "exit_code") == 3);
+  CHECK(is_null(rows[0], "signal"));
+  CHECK(is_null(rows[0], "cancelled_by"));
+  CHECK(text_of(rows[0], "label") == "exits-three");
+  CHECK(text_of(rows[0], "vendor") == "claude");
+  CHECK(text_of(rows[0], "role") == "coder");
+  CHECK(int_of(rows[0], "ran_ms") >= 0);
+
+  CHECK(text_of(rows[1], "outcome") == "timeout");
+  CHECK(text_of(rows[1], "label") == "too-slow");
+  CHECK(int_of(rows[1], "ran_ms") >= 250);
+  CHECK(int_of(rows[1], "run_limit_ms") == 300);
+
+  CHECK(int_of(rows[2], "seq") == held);
+  CHECK(text_of(rows[2], "outcome") == "cancelled");
+  CHECK(text_of(rows[2], "label") == "cancel-me");
+  CHECK(text_of(rows[2], "vendor") == "codex");
+  auto const& who = member(rows[2], "cancelled_by");
+  REQUIRE(who.kind == json::json_kind::object);
+  CHECK(keys_of(who) == std::vector<std::string>{"vendor", "role", "pid"});
+  CHECK(text_of(who, "vendor") == "claude");
+  CHECK(text_of(who, "role") == "reviewer");
+  CHECK(int_of(who, "pid") > 1);
+
+  auto const text = run_history(arena, "real_text", {});
+  REQUIRE(text.code == 0);
+  auto const lines = lines_of(text.out);
+  REQUIRE(lines.size() == 4);
+  CHECK(leading_tokens(lines[0], 3) == std::vector<std::string>{"SEQ", "OUTCOME", "RESULT"});
+  CHECK(leading_tokens(lines[1], 3)[1] == "exited");
+  CHECK(leading_tokens(lines[1], 3)[2] == "code:3");
+  CHECK(lines[3].contains("cancelled-by:claude/reviewer/"));
+}
+
+// ---- every outcome ---------------------------------------------------------
+
+TEST_CASE("queue history: every outcome lists its columns, in JSON and in text", "[cmd][watch][queue][hq-watch-history]") {
+  auto const                arena = parity::make_arena("wh_outcomes");
+  auto const                now   = wall_now();
+  std::vector<std::int64_t> seqs;
+  std::int64_t              rejoined = 0;
+  {
+    auto conn = open_store(arena);
+    auto add  = [&](ended_spec spec, std::int64_t minutes_ago) {
+      spec.end.ended_at = now - minutes_ago * 60'000;
+      seqs.push_back(seed_ended(conn, std::move(spec)));
+    };
+    ended_spec exited;
+    exited.label     = "build";
+    exited.waited_ms = 1500;
+    exited.ran_ms    = 65'000;
+    exited.end       = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0};
+    add(exited, 50);
+
+    ended_spec signaled;
+    signaled.end = hq::end_request{.outcome = hq::history_outcome::signaled, .signal = 9};
+    add(signaled, 40);
+
+    ended_spec timeout;
+    timeout.ran_ms = 300'000;
+    timeout.end    = hq::end_request{.outcome = hq::history_outcome::timeout};
+    add(timeout, 30);
+
+    ended_spec cancelled;
+    cancelled.end = hq::end_request{.outcome      = hq::history_outcome::cancelled,
+                                    .cancelled_by = hq::canceller{.vendor = "claude", .role = "reviewer", .pid = 4242}};
+    add(cancelled, 20);
+
+    ended_spec not_started;
+    not_started.waited_ms = 300;
+    not_started.ran_ms    = 5;
+    not_started.end       = hq::end_request{.outcome = hq::history_outcome::not_started, .exit_code = 127};
+    add(not_started, 15);
+
+    ended_spec abandoned;
+    abandoned.ran_ms = std::nullopt;
+    abandoned.end    = hq::end_request{.outcome = hq::history_outcome::abandoned};
+    add(abandoned, 10);
+
+    ended_spec wait_timeout;
+    wait_timeout.ran_ms        = std::nullopt;
+    wait_timeout.waited_ms     = 5000;
+    wait_timeout.wait_limit_ms = 5000;
+    wait_timeout.end           = hq::end_request{.outcome = hq::history_outcome::wait_timeout};
+    add(wait_timeout, 5);
+
+    ended_spec anonymous;
+    anonymous.vendor = std::nullopt;
+    anonymous.role   = std::nullopt;
+    anonymous.end    = hq::end_request{.outcome      = hq::history_outcome::cancelled,
+                                       .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = 77}};
+    add(anonymous, 4);
+
+    // The abandoned waiter rejoins the queue: its history row names the new entry.
+    auto const back = hq::rejoin(conn, seqs[5], alive_request("/w/history", {"make", "test"}));
+    REQUIRE(back.has_value());
+    REQUIRE(back->status == hq::rejoin_status::rejoined);
+    rejoined = back->seq;
+  }
+
+  auto const rows = rows_of(run_history(arena, "outcomes_json"));
+  REQUIRE(rows.size() == 8);
+  for (auto const& row : rows) {
+    CHECK(keys_of(row) == k_history_fields);
+    CHECK(text_of(row, "cwd") == "/w/history");
+    CHECK_FALSE(bool_of(row, "nested"));
+    CHECK(is_null(row, "parent_seq"));
+    CHECK(is_null(row, "log_path"));
+  }
+  // Oldest end first, which here is also sequence order.
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    CHECK(int_of(rows[i], "seq") == seqs[i]);
+  }
+
+  // exited: the exit code, exact times, the limit the run had.
+  CHECK(text_of(rows[0], "outcome") == "exited");
+  CHECK(int_of(rows[0], "exit_code") == 0);
+  CHECK(is_null(rows[0], "signal"));
+  CHECK(is_null(rows[0], "cancelled_by"));
+  CHECK(is_null(rows[0], "superseded_by"));
+  CHECK(argv_of(rows[0]) == std::vector<std::string>{"make", "test"});
+  CHECK(text_of(rows[0], "label") == "build");
+  CHECK(text_of(rows[0], "vendor") == "claude");
+  CHECK(text_of(rows[0], "role") == "coder");
+  CHECK(int_of(rows[0], "ended_at") == now - 50 * 60'000);
+  CHECK(int_of(rows[0], "enqueued_at") == now - 50 * 60'000 - 1500 - 65'000);
+  CHECK(int_of(rows[0], "started_at") == now - 50 * 60'000 - 65'000);
+  CHECK(int_of(rows[0], "waited_ms") == 1500);
+  CHECK(int_of(rows[0], "ran_ms") == 65'000);
+  CHECK(int_of(rows[0], "run_limit_ms") == 300'000);
+  CHECK(is_null(rows[0], "wait_limit_ms"));
+
+  // signaled: the signal instead of a code.
+  CHECK(text_of(rows[1], "outcome") == "signaled");
+  CHECK(is_null(rows[1], "exit_code"));
+  CHECK(int_of(rows[1], "signal") == 9);
+
+  CHECK(text_of(rows[2], "outcome") == "timeout");
+  CHECK(is_null(rows[2], "exit_code"));
+  CHECK(is_null(rows[2], "signal"));
+  CHECK(int_of(rows[2], "ran_ms") == 300'000);
+
+  // cancelled: who did it.
+  CHECK(text_of(rows[3], "outcome") == "cancelled");
+  auto const& who = member(rows[3], "cancelled_by");
+  REQUIRE(who.kind == json::json_kind::object);
+  CHECK(keys_of(who) == std::vector<std::string>{"vendor", "role", "pid"});
+  CHECK(text_of(who, "vendor") == "claude");
+  CHECK(text_of(who, "role") == "reviewer");
+  CHECK(int_of(who, "pid") == 4242);
+
+  CHECK(text_of(rows[4], "outcome") == "not_started");
+  CHECK(int_of(rows[4], "exit_code") == 127);
+
+  // abandoned then rejoined: the successor, and never started.
+  CHECK(text_of(rows[5], "outcome") == "abandoned");
+  CHECK(int_of(rows[5], "superseded_by") == rejoined);
+  CHECK(is_null(rows[5], "started_at"));
+  CHECK(is_null(rows[5], "ran_ms"));
+  CHECK(is_null(rows[5], "run_limit_ms"));
+
+  CHECK(text_of(rows[6], "outcome") == "wait_timeout");
+  CHECK(int_of(rows[6], "waited_ms") == 5000);
+  CHECK(int_of(rows[6], "wait_limit_ms") == 5000);
+  CHECK(is_null(rows[6], "ran_ms"));
+
+  // a canceller whose vendor and role were never given: null members, a pid.
+  CHECK(is_null(rows[7], "vendor"));
+  CHECK(is_null(rows[7], "role"));
+  auto const& nobody = member(rows[7], "cancelled_by");
+  REQUIRE(nobody.kind == json::json_kind::object);
+  CHECK(is_null(nobody, "vendor"));
+  CHECK(is_null(nobody, "role"));
+  CHECK(int_of(nobody, "pid") == 77);
+
+  // The same rows as text: one line each after a header, columns in order.
+  auto const text = run_history(arena, "outcomes_text", {});
+  INFO("stdout:\n" << text.out);
+  REQUIRE(text.code == 0);
+  auto const lines = lines_of(text.out);
+  REQUIRE(lines.size() == 9);
+  CHECK(leading_tokens(lines[0], 6) == std::vector<std::string>{"SEQ", "OUTCOME", "RESULT", "ENDED", "WAITED", "RAN"});
+  CHECK(lines[0].contains("NOTES"));
+  CHECK(leading_tokens(lines[1], 6) ==
+        std::vector<std::string>{std::to_string(seqs[0]), "exited", "code:0", iso_utc(now - 50 * 60'000), "1s", "1m05s"});
+  CHECK(leading_tokens(lines[2], 3) == std::vector<std::string>{std::to_string(seqs[1]), "signaled", "signal:9"});
+  CHECK(leading_tokens(lines[3], 3) == std::vector<std::string>{std::to_string(seqs[2]), "timeout", "-"});
+  CHECK(lines[4].contains("cancelled-by:claude/reviewer/4242"));
+  CHECK(leading_tokens(lines[5], 3) == std::vector<std::string>{std::to_string(seqs[4]), "not_started", "code:127"});
+  CHECK(leading_tokens(lines[6], 6)[5] == "-"); // an abandoned waiter never ran
+  CHECK(lines[6].contains(std::format("superseded-by:{}", rejoined)));
+  CHECK(lines[7].contains("wait_timeout"));
+  CHECK(lines[8].contains("cancelled-by:-/-/77"));
+  CHECK(lines[1].ends_with("make test"));
+  CHECK(lines[1].contains("/w/history"));
+  CHECK(lines[1].contains("build"));
+}
+
+// ---- --since ---------------------------------------------------------------
+
+TEST_CASE("queue history: --since keeps only rows that ended within the duration", "[cmd][watch][queue][hq-watch-history]") {
+  auto const   arena       = parity::make_arena("wh_since");
+  auto const   now         = wall_now();
+  std::int64_t two_hours   = 0;
+  std::int64_t two_minutes = 0;
+  std::int64_t inside      = 0;
+  std::int64_t outside     = 0;
+  {
+    auto conn = open_store(arena);
+    auto add  = [&](std::int64_t ms_ago) {
+      ended_spec spec;
+      spec.waited_ms = 10;
+      spec.ran_ms    = 10;
+      spec.end       = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = now - ms_ago};
+      return seed_ended(conn, std::move(spec));
+    };
+    two_hours   = add(2 * 3'600'000);
+    inside      = add(58'000);
+    outside     = add(62'000);
+    two_minutes = add(2 * 60'000);
+  }
+  auto const seqs_of = [&](const std::vector<json::json_value>& rows) {
+    std::vector<std::int64_t> out;
+    for (auto const& row : rows) {
+      out.push_back(int_of(row, "seq"));
+    }
+    return out;
+  };
+
+  // The spec's own example: two hours ago and two minutes ago, `--since 1h`
+  // returns the recent ones only (the two 6x-second rows are boundary probes).
+  // Oldest end first: 2m ago, 62s ago, 58s ago.
+  CHECK(seqs_of(rows_of(run_history(arena, "since_1h_order", {"--since", "1h", "--json"}))) ==
+        std::vector<std::int64_t>{two_minutes, outside, inside});
+  CHECK(seqs_of(rows_of(run_history(arena, "since_3h", {"--since", "3h", "--json"}))) ==
+        std::vector<std::int64_t>{two_hours, two_minutes, outside, inside});
+  // A minute: the row that ended 58s ago stays, the one that ended 62s ago and everything older goes.
+  CHECK(seqs_of(rows_of(run_history(arena, "since_1m", {"--since", "1m", "--json"}))) == std::vector<std::int64_t>{inside});
+  // Milliseconds and seconds spell the same cutoff.
+  CHECK(seqs_of(rows_of(run_history(arena, "since_60s", {"--since", "60s", "--json"}))) == std::vector<std::int64_t>{inside});
+  CHECK(seqs_of(rows_of(run_history(arena, "since_60000ms", {"--since", "60000ms", "--json"}))) ==
+        std::vector<std::int64_t>{inside});
+  // Nothing ended in the last second.
+  CHECK(rows_of(run_history(arena, "since_1s", {"--since", "1s", "--json"})).empty());
+  // Text honours it too, and the flag order does not matter.
+  auto const text = run_history(arena, "since_text", {"--since", "1m"});
+  REQUIRE(text.code == 0);
+  CHECK(lines_of(text.out).size() == 2);
+  CHECK(leading_tokens(lines_of(text.out)[1], 1)[0] == std::to_string(inside));
+  auto const flipped = run_history(arena, "since_flipped", {"--json", "--since", "1m"});
+  CHECK(seqs_of(rows_of(flipped)) == std::vector<std::int64_t>{inside});
+}
+
+TEST_CASE("queue history: an invalid --since is refused at exit 2 and names the value", "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena = parity::make_arena("wh_badsince");
+  {
+    auto       conn = open_store(arena);
+    ended_spec spec;
+    spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
+    seed_ended(conn, spec);
+  }
+  for (std::string const bad : {"banana", "5", "0s", "1d", "25h", "1.5h", ""}) {
+    auto const run = run_history(arena, std::format("badsince_{}", bad.empty() ? "empty" : bad), {"--since", bad, "--json"});
+    INFO("value: '" << bad << "'\nstderr:\n" << run.err);
+    CHECK(run.code == 2);
+    CHECK(run.out.empty());
+    CHECK(run.err.contains("--since"));
+    if (!bad.empty()) {
+      CHECK(run.err.contains(std::format("'{}'", bad)));
+    }
+  }
+  // Refused whether or not a store exists.
+  auto const bare = parity::make_arena("wh_badsince_bare");
+  auto const run  = run_history(bare, "badsince_nostore", {"--since", "banana"});
+  CHECK(run.code == 2);
+  CHECK(run.out.empty());
+  CHECK(run.err.contains("'banana'"));
+  CHECK_FALSE(fs::exists(store_path(bare)));
+}
+
+TEST_CASE("queue history: the --since cutoff is exact to the millisecond and a row ending on it is kept",
+          "[cmd][watch][queue][hq-watch-history]") {
+  // The black-box cases above run against the real clock, so they can only
+  // probe the boundary to within a second. This pins it exactly: the cutoff is
+  // `now - duration`, and the store read keeps a row that ended AT the cutoff
+  // and drops the one that ended a millisecond before it.
+  constexpr std::int64_t now    = 1'800'000'000'000;
+  constexpr std::int64_t hour   = 3'600'000;
+  auto const             cutoff = planar::cmd::watch::handlers::since_cutoff_ms(now, hour);
+  CHECK(cutoff == now - hour);
+  CHECK(planar::cmd::watch::handlers::since_cutoff_ms(hour, hour) == 0);
+  CHECK(planar::cmd::watch::handlers::since_cutoff_ms(now, 1) == now - 1);
+
+  auto const                arena = parity::make_arena("wh_cutoff");
+  std::vector<std::int64_t> seqs;
+  {
+    auto conn = open_store(arena);
+    for (auto const ended_at : {cutoff - 1, cutoff, cutoff + 1}) {
+      ended_spec spec;
+      spec.waited_ms = 1;
+      spec.ran_ms    = 1;
+      spec.end       = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = ended_at};
+      seqs.push_back(seed_ended(conn, spec));
+    }
+  }
+  auto store = planar::cmd::watch::open_agent_store_at(store_path(arena));
+  REQUIRE(store.has_value());
+  auto const kept = store->history(cutoff);
+  REQUIRE(kept.has_value());
+  REQUIRE(kept->size() == 2);
+  CHECK(kept->at(0).seq == seqs[1]);
+  CHECK(kept->at(1).seq == seqs[2]);
+  CHECK(store->history()->size() == 3);
+}
+
+// ---- an older store, and a store that must not change ----------------------
+
+TEST_CASE("queue history: a store still at agent schema version 2 lists with null limits and stays at version 2",
+          "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena = parity::make_arena("wh_v2");
+  auto const chain = planar::db::agent::migrations();
+  REQUIRE(chain.size() >= 3);
+  {
+    auto raw = planar::db::connection::open(store_path(arena).string());
+    REQUIRE(raw.has_value());
+    REQUIRE(planar::db::apply_all(*raw, chain.subspan(0, 2), planar::db::k_agent_version_table).has_value());
+    REQUIRE(raw->execute("insert into queue_history (seq, outcome, exit_code, cwd, argv, label, vendor, role, enqueued_at, "
+                         "started_at, ended_at, waited_ms, ran_ms) values (7, 'exited', 0, '/w', '[\"true\"]', 'old-h', "
+                         "'claude', 'coder', 900, 950, 990, 50, 40)")
+                .has_value());
+  }
+  auto const before = bytes_of(store_path(arena));
+
+  auto const rows = rows_of(run_history(arena, "v2_json"));
+  REQUIRE(rows.size() == 1);
+  CHECK(keys_of(rows[0]) == k_history_fields);
+  CHECK(int_of(rows[0], "seq") == 7);
+  CHECK(text_of(rows[0], "label") == "old-h");
+  CHECK(int_of(rows[0], "ran_ms") == 40);
+  CHECK(is_null(rows[0], "run_limit_ms"));
+  CHECK(is_null(rows[0], "wait_limit_ms"));
+
+  auto const text = run_history(arena, "v2_text", {});
+  CHECK(text.code == 0);
+  CHECK(lines_of(text.out).size() == 2);
+  CHECK(rows_of(run_history(arena, "v2_since", {"--since", "1h", "--json"})).empty());
+
+  CHECK(bytes_of(store_path(arena)) == before);
+  auto opened = planar::db::connection::open_read_only(store_path(arena).string());
+  REQUIRE(opened.has_value());
+  CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() == 2);
+}
+
+TEST_CASE("queue history: reading changes nothing in the store", "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena = parity::make_arena("wh_readonly");
+  {
+    auto       conn = open_store(arena);
+    ended_spec spec;
+    spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
+    seed_ended(conn, spec);
+    enqueue_or_fail(conn, alive_request("/w/waiting", {"make"}));
+  }
+  auto const before_bytes = bytes_of(store_path(arena));
+  auto const before_time  = fs::last_write_time(store_path(arena));
+
+  for (auto const& flags :
+       std::vector<std::vector<std::string>>{{}, {"--json"}, {"--since", "1h"}, {"--since", "1ms", "--json"}}) {
+    auto const run = run_history(arena, "readonly", flags);
+    INFO("stderr:\n" << run.err);
+    CHECK(run.code == 0);
+  }
+  CHECK(bytes_of(store_path(arena)) == before_bytes);
+  CHECK((fs::last_write_time(store_path(arena)) == before_time));
+  // The waiting entry is still there: history reads never reap.
+  auto conn = open_store(arena);
+  CHECK(hq::list(conn).value().size() == 1);
+}
+
+// ---- queue still lists -----------------------------------------------------
+
+TEST_CASE("planar-watch queue still lists after history lands", "[cmd][watch][queue][hq-watch-history]") {
+  // `queue` is now a node with a child, and a node with children used to print
+  // help. It must stay a verb of its own: running and waiting entries list, the
+  // ended one does not, and the two views never show each other's rows.
+  auto const   arena   = parity::make_arena("wh_both");
+  std::int64_t ended   = 0;
+  std::int64_t running = 0;
+  std::int64_t waiting = 0;
+  {
+    auto       conn = open_store(arena);
+    ended_spec spec;
+    spec.label = "finished";
+    spec.end   = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
+    ended      = seed_ended(conn, spec);
+    running    = enqueue_or_fail(conn, alive_request("/w/run", {"make", "build"}));
+    start_entry(conn, running, 1);
+    waiting = enqueue_or_fail(conn, alive_request("/w/wait", {"make", "test"}));
+  }
+
+  auto const listing = run_queue(arena, "both_json");
+  auto const rows    = rows_of(listing);
+  REQUIRE(rows.size() == 2);
+  CHECK(keys_of(rows[0]) == k_fields);
+  CHECK(int_of(rows[0], "seq") == running);
+  CHECK(text_of(rows[0], "state") == "running");
+  CHECK(int_of(rows[1], "seq") == waiting);
+  CHECK(text_of(rows[1], "state") == "waiting");
+
+  auto const text = run_queue(arena, "both_text", false);
+  REQUIRE(text.code == 0);
+  auto const lines = lines_of(text.out);
+  REQUIRE(lines.size() == 3);
+  CHECK(leading_tokens(lines[0], 2) == std::vector<std::string>{"SEQ", "STATE"});
+  CHECK_FALSE(text.out.contains("Usage"));
+  CHECK_FALSE(text.out.contains("SUBCOMMANDS"));
+
+  auto const history = rows_of(run_history(arena, "both_history"));
+  REQUIRE(history.size() == 1);
+  CHECK(int_of(history[0], "seq") == ended);
+  CHECK(text_of(history[0], "label") == "finished");
+
+  // `--json` given before the child word reaches the right verb too.
+  auto const before_child =
+      parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "--json", "history"}, arena.cpp_root, "both_flag_first");
+  CHECK(rows_of(before_child).size() == 1);
+
+  // The group's help page names the child; asking for it prints help, not rows.
+  auto const help = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "--help"}, arena.cpp_root, "both_help");
+  CHECK(help.code == 0);
+  CHECK(help.out.contains("history"));
+  CHECK(help.out.contains("SUBCOMMANDS"));
+  auto const child_help =
+      parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "history", "--help"}, arena.cpp_root, "both_child_help");
+  CHECK(child_help.code == 0);
+  CHECK(child_help.out.contains("OPTIONS"));
+  CHECK(child_help.out.contains("--since"));
+  CHECK(child_help.out.contains("--json"));
+}
+
+// ---- escaping --------------------------------------------------------------
+
+TEST_CASE("queue history: control characters in submitted values are escaped, in text and in JSON",
+          "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena       = parity::make_arena("wh_escape");
+  auto const evil_label  = std::string{"lbl\n99 exited fake"};
+  auto const evil_vendor = std::string{"v\x1b[31mred"};
+  auto const evil_role   = std::string{"r\x7f"
+                                       "del"};
+  auto const evil_cwd    = std::string{"/w/a\nb"};
+  auto const evil_arg    = std::string{"line1\nline2\r\x1b[2J\xc2\x9b"
+                                       "31m"};
+  auto const evil_who    = std::string{"c\nfake-row"};
+  {
+    auto       conn = open_store(arena);
+    ended_spec spec;
+    spec.cwd    = evil_cwd;
+    spec.argv   = {"echo", evil_arg, "tab\there"};
+    spec.label  = evil_label;
+    spec.vendor = evil_vendor;
+    spec.role   = evil_role;
+    spec.end    = hq::end_request{.outcome      = hq::history_outcome::cancelled,
+                                  .cancelled_by = hq::canceller{.vendor = evil_who, .role = evil_role, .pid = 5},
+                                  .ended_at     = wall_now()};
+    seed_ended(conn, spec);
+  }
+
+  auto const text = run_history(arena, "escape_text", {});
+  INFO("stdout:\n" << text.out);
+  REQUIRE(text.code == 0);
+  CHECK(lines_of(text.out).size() == 2);
+  for (auto const c : text.out) {
+    auto const u = static_cast<unsigned char>(c);
+    CHECK_FALSE((u < 0x20 && c != '\n'));
+    CHECK(u != 0x7f);
+  }
+  CHECK(text.out.contains("\\n"));
+  CHECK(text.out.contains("\\u001b"));
+  CHECK(text.out.contains("\\u007f"));
+  CHECK(text.out.contains("\\u009b"));
+  CHECK_FALSE(text.out.contains("\xc2\x9b"));
+
+  auto const json_run = run_history(arena, "escape_json");
+  for (auto const c : json_run.out) {
+    auto const u = static_cast<unsigned char>(c);
+    CHECK_FALSE((u < 0x20 && c != '\n'));
+    CHECK(u != 0x7f);
+  }
+  CHECK_FALSE(json_run.out.contains("\xc2\x9b"));
+  auto const rows = rows_of(json_run);
+  REQUIRE(rows.size() == 1);
+  CHECK(text_of(rows[0], "label") == evil_label);
+  CHECK(text_of(rows[0], "vendor") == evil_vendor);
+  CHECK(text_of(rows[0], "role") == evil_role);
+  CHECK(text_of(rows[0], "cwd") == evil_cwd);
+  CHECK(argv_of(rows[0]) == std::vector<std::string>{"echo", evil_arg, "tab\there"});
+  CHECK(text_of(member(rows[0], "cancelled_by"), "vendor") == evil_who);
+}
+
+// ---- errors ----------------------------------------------------------------
+
+TEST_CASE("queue history: a store from a newer release is refused with exit 7 naming both versions",
+          "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena = parity::make_arena("wh_incompat");
+  {
+    auto conn = open_store(arena);
+  }
+  auto const head = planar::db::agent::agent_schema_version();
+  {
+    auto raw = planar::db::connection::open(store_path(arena).string());
+    REQUIRE(raw.has_value());
+    REQUIRE(
+        raw->execute(std::format("insert into agent_schema_migrations (version, compat, description) values ({}, {}, 'probe')",
+                                 head + 2, head + 1))
+            .has_value());
+  }
+  auto const before = bytes_of(store_path(arena));
+
+  auto const run = run_history(arena, "incompat_json");
+  CHECK(run.code == 7);
+  CHECK(run.out.empty());
+  CHECK(run.err.contains(std::to_string(head + 1)));
+  CHECK(run.err.contains(std::format("is {}", head)));
+  CHECK(run_history(arena, "incompat_text", {}).code == 7);
+  CHECK(run_history(arena, "incompat_since", {"--since", "1h"}).code == 7);
+  CHECK(bytes_of(store_path(arena)) == before);
+}
+
+TEST_CASE("queue history: a database that is not an agent store, or not a database, is refused with exit 1",
+          "[cmd][watch][queue][hq-watch-history]") {
+  SECTION("a SQLite file with other tables") {
+    auto const arena = parity::make_arena("wh_foreign");
+    {
+      auto raw = planar::db::connection::open(store_path(arena).string());
+      REQUIRE(raw.has_value());
+      REQUIRE(raw->execute("create table plans (id integer primary key)").has_value());
+    }
+    auto const run = run_history(arena, "foreign_json");
+    CHECK(run.code == 1);
+    CHECK(run.out.empty());
+    CHECK(run.err.contains("not an agent store"));
+  }
+  SECTION("a file that is not SQLite") {
+    auto const arena = parity::make_arena("wh_garbage");
+    {
+      std::ofstream out(store_path(arena), std::ios::binary);
+      out << "this is not a database, and it is long enough to have a header to refuse\n";
+    }
+    auto const run = run_history(arena, "garbage_json");
+    CHECK(run.code == 1);
+    CHECK(run.out.empty());
+    CHECK_FALSE(run.err.empty());
+  }
+}
+
+// ---- the main database is not needed ---------------------------------------
+
+TEST_CASE("queue history: works with no main database to locate", "[cmd][watch][queue][hq-watch-history]") {
+  auto const arena = parity::make_arena("wh_nomain");
+  {
+    auto       conn = open_store(arena);
+    ended_spec spec;
+    spec.cwd = "/w/only";
+    spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
+    seed_ended(conn, spec);
+  }
+  auto const env = without_main_database(arena);
+
+  auto const listing = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "history", "--json"}, arena.cpp_root,
+                                          "nomain_history", env);
+  INFO("stderr:\n" << listing.err);
+  auto const rows = rows_of(listing);
+  REQUIRE(rows.size() == 1);
+  CHECK(text_of(rows[0], "cwd") == "/w/only");
+  auto const text = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "history", "--since", "1h"}, arena.cpp_root,
+                                       "nomain_text", env);
+  CHECK(text.code == 0);
+  CHECK(lines_of(text.out).size() == 2);
 }
 
 } // namespace

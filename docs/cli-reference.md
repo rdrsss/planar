@@ -7247,6 +7247,7 @@ planar-watch sync-events [--plan <id>] [--system <slug>] [--entity <kind:id>] [-
 
 # Host build and test queue (plan 1080 — read-only view over the agent database).
 planar-watch queue [--json]
+planar-watch queue history [--since <duration>] [--json]
 
 # Conventional helpers.
 planar-watch version
@@ -7432,7 +7433,60 @@ SEQ  STATE    POS  NOTES     WAITED  RAN    VENDOR  ROLE    LABEL       DIRECTOR
 - `1` — the file at the agent database path is not an agent store (a database with other tables) or cannot be read; a parse failure.
 - `7` — the store was written by a newer release (its `compat` is above this binary's agent schema version); both versions are named.
 
-**Main database.** `planar-watch queue` is the one verb that does not need the main database's path. Every other verb still exits `1` with `neither PLANAR_DB nor HOME is set` when neither variable is; `queue` resolves its own store from `PLANAR_AGENT_DB` / `HOME`.
+**Main database.** The `queue` domain (`queue` and `queue history`) is the one that does not need the main database's path. Every other verb still exits `1` with `neither PLANAR_DB nor HOME is set` when neither variable is; the `queue` verbs resolve their own store from `PLANAR_AGENT_DB` / `HOME`.
+
+### `planar-watch queue history` — what the host queue has run (plan 1080)
+
+Read-only listing of the entries that have **ended**, from the same agent database `planar-watch queue` reads. It answers "what went through the queue, how did it end, and who used it": every row carries the submitting vendor, role, directory and command, so a project that builds and never appears here is not following the rule. `planar-watch queue` (bare) is unchanged and still lists running and waiting entries; `queue` is both a verb and the group `history` sits under.
+
+**Synopsis:**
+```
+planar-watch queue history [--since <duration>] [--json]
+```
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--since <duration>` | Only rows that ended within this long: `ended_at` at or after now minus the duration. An integer followed by `ms`, `s`, `m` or `h`, greater than zero and at most `24h` (the grammar of `planar-agent queue run --timeout`). | all rows |
+| `--json` | One JSON array. | text |
+
+**Order.** Oldest first: by end time, then sequence number. A row whose entry was re-enqueued after being reaped (`abandoned`) names the new entry.
+
+**Human output.** A header and one line per row, columns padded: `SEQ  OUTCOME  RESULT  ENDED  WAITED  RAN  NOTES  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `OUTCOME` is `exited`, `signaled`, `timeout`, `cancelled`, `wait_timeout`, `not_started` or `abandoned`. `RESULT` is `code:<n>`, `signal:<n>` or `-`. `ENDED` is UTC, `YYYY-MM-DDTHH:MM:SSZ`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m` (`RAN` is `-` for an entry that never started). `NOTES` is `-` or a comma-joined list of `cancelled-by:<vendor>/<role>/<pid>`, `superseded-by:<seq>` and `nested:<parent>`. An empty value is `-`. `COMMAND` is the argument vector with each word shell-quoted. An empty history prints nothing. Values are escaped exactly as in `planar-watch queue`.
+
+```
+SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES                            VENDOR  ROLE      LABEL  DIRECTORY  COMMAND
+41   exited     code:0    2026-09-30T14:03:22Z  1s      1m05s  -                                claude  coder     build  /work/a    make test
+42   cancelled  -         2026-09-30T14:10:01Z  4m10s   12s    cancelled-by:claude/reviewer/91  codex   tester    -      /work/b    ctest -j 8
+```
+
+**JSON output.** One array, `[]` when empty, of objects with exactly these members in this order; a member that does not apply is `null`:
+
+| Field | Meaning |
+|---|---|
+| `seq` | The sequence number |
+| `outcome` | As above |
+| `exit_code`, `signal` | How the command ended |
+| `cancelled_by` | The canceller as an object with `vendor`, `role` (each `null` when not given) and `pid`, when cancelled |
+| `superseded_by` | The successor's sequence number, when the entry was re-enqueued (the name `queue status --json` uses) |
+| `nested`, `parent_seq` | Nesting |
+| `cwd`, `argv` | As submitted; `argv` is an array |
+| `label`, `vendor`, `role` | As submitted |
+| `log_path` | The output file of a detached run |
+| `enqueued_at`, `started_at`, `ended_at` | Wall-clock milliseconds |
+| `waited_ms`, `ran_ms` | Durations, from the recorded times |
+| `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` on a store still at agent schema version 2 |
+
+**Schema effects:** Reads `queue_history` in the agent database. No writes; a missing agent database is an empty history and is not created. A store still at agent schema version 2 is read as it is and stays there.
+
+**Exit codes:**
+- `0` — success, an empty or missing history included.
+- `1` — the file at the agent database path is not an agent store or cannot be read; a parse failure (unknown flag, missing value).
+- `2` — `--since` is not a duration in the accepted grammar or range; the message names the value and nothing is printed on standard output.
+- `7` — the store was written by a newer release; both versions are named.
+
+Like `queue`, this verb does not need the main database's path: it resolves its store from `PLANAR_AGENT_DB` / `HOME` only.
 
 ---
 

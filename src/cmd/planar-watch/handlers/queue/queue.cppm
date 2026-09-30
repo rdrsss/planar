@@ -46,14 +46,19 @@
 ///
 /// ## Escaping
 ///
-/// A submitted value (argv word, label, vendor, role, directory) may hold any
-/// bytes. In text a value containing a control character, DEL, a C1 control,
-/// a space or a double quote is written as a double-quoted string with
-/// `\n`, `\u00xx` and similar escapes, and a shell-quoted argv word with a
-/// control character likewise, so no value can start a line of its own or
-/// move the cursor. In JSON the same escapes keep DEL and C1 controls from
-/// reaching a terminal raw. Bidirectional-text and other Unicode format
-/// characters are not escaped here (task 7082).
+/// Submitted values are escaped by `planar.cmd.planar_watch.handlers.queue.render`,
+/// shared with `planar-watch queue history`: a value with a control character,
+/// DEL, a C1 control, a space or a double quote is written as a double-quoted
+/// string with `\n` / `\u00xx` escapes in text, and JSON escapes the same bytes,
+/// so no value can start a line of its own or move the cursor. Bidirectional-
+/// text and other Unicode format characters are not escaped (task 7082).
+///
+/// ## Both a verb and a group
+///
+/// `queue` has a child, `queue history`, and is still a verb of its own:
+/// `planar-watch queue` lists, `planar-watch queue history` lists what ended.
+/// `planar.cmd.planar_watch.dispatch` runs this handler for the bare group
+/// instead of printing its help page.
 ///
 /// ## Exit status
 ///
