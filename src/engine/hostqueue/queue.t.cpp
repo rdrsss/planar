@@ -242,7 +242,7 @@ TEST_CASE("a request with a parent sequence number is stored running with its pa
       .refreshed_mono = 91'000,
       .parent_seq     = *parent,
   };
-  auto const child = hq::enqueue(conn, nested);
+  auto const child = hq::insert_nested_entry(conn, nested);
   REQUIRE(child.has_value());
   CHECK(*child > *parent);
 
@@ -383,7 +383,7 @@ TEST_CASE("record_child stores the group on a running entry and refuses a waitin
   auto const waiting = hq::enqueue(conn, full_request()).value();
   auto       nested  = full_request();
   nested.parent_seq  = waiting;
-  auto const running = hq::enqueue(conn, nested).value(); // Inserted running: it never waits for a slot.
+  auto const running = hq::insert_nested_entry(conn, nested).value(); // Inserted running: it never waits for a slot.
 
   SECTION("a running entry records the group and the leader's start time") {
     auto const recorded = hq::record_child(conn, running, 4'321, 777'000'111);

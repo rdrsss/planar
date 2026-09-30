@@ -26,10 +26,10 @@
 /// the transaction that inserts the entry (tech spec 647 § Finishing and
 /// history: "History rows older than the retention period are deleted at
 /// enqueue"). The poll transaction, liveness, reaping, termination and
-/// nested-run semantics are later tasks of the same milestone; a
-/// `parent_seq` on the request is stored, and such an entry is inserted in
-/// state `running` (roadmap M1: "outside the slot count and arrival order"),
-/// but nothing here interprets it.
+/// nested-run semantics are later tasks of the same milestone. The plain
+/// `enqueue` refuses a request that carries `parent_seq` (decision 1191):
+/// nested entries are created only by `planar.engine.hostqueue.nested`,
+/// through `insert_nested_entry`.
 ///
 /// Every failure is a `queue_error` carrying the SQLite result code and the
 /// driver's message; nothing throws across the module boundary.
@@ -134,16 +134,30 @@ export auto encode_argv(std::span<std::string const> argv) -> std::string;
 /// array whose every element is a string.
 export auto decode_argv(std::string_view text) -> std::expected<std::vector<std::string>, queue_error>;
 
-/// @brief Inserts one entry and returns its sequence number, without pruning
-/// history (the three-argument form prunes). The entry is in
-/// state `waiting`, or `running` when `request.parent_seq` is set (a nested
-/// run never waits for a slot). The number is higher than that of every entry
-/// ever inserted into this store, deleted or not.
+/// @brief Inserts one `waiting` entry and returns its sequence number,
+/// without pruning history (the three-argument form prunes). The number is
+/// higher than that of every entry ever inserted into this store, deleted or
+/// not.
 /// @param conn An open agent database at or above agent schema version 3
 /// (the version that added `wait_limit_ms`).
-/// @param request What to record.
-/// @return The assigned sequence number, or the SQLite failure.
+/// @param request What to record; `parent_seq` must be unset.
+/// @return The assigned sequence number; `invalid_request` when
+/// `request.parent_seq` is set (nothing is written: a nested entry needs the
+/// parent check, `started_at` and a deadline that only `enqueue_nested`
+/// provides); or the SQLite failure.
 export auto enqueue(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error>;
+
+/// @brief Inserts the `running` row of a nested entry. INTERNAL to
+/// `planar.engine.hostqueue.nested`, which calls it inside its own write
+/// transaction after the parent checks and then sets `started_at` and the
+/// deadline; it is exported only because the two modules are separate units.
+/// Tests may use it to seed a nested row. Nothing else may call it (decision
+/// 1191).
+/// @param conn An open agent database at or above agent schema version 3.
+/// @param request What to record; `parent_seq` must be set.
+/// @return The assigned sequence number; `invalid_request` when
+/// `request.parent_seq` is unset; or the SQLite failure.
+export auto insert_nested_entry(db::connection& conn, const enqueue_request& request) -> std::expected<std::int64_t, queue_error>;
 
 /// @brief A pruned history row's log file that could not be removed.
 export struct log_removal_failure {

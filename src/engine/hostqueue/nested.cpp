@@ -136,7 +136,7 @@ auto enqueue_nested(db::connection& conn, std::int64_t parent_seq, const enqueue
   auto nested           = request;
   nested.parent_seq     = parent_seq;
   nested.refreshed_mono = *now;
-  auto seq              = enqueue(conn, nested);
+  auto seq              = insert_nested_entry(conn, nested);
   if (!seq) {
     return std::unexpected(std::move(seq.error()));
   }

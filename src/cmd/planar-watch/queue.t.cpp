@@ -670,9 +670,11 @@ TEST_CASE("queue view: a nested entry is marked with its parent", "[cmd][watch][
     auto conn = open_store(arena);
     parent    = enqueue_or_fail(conn, alive_request("/w/outer", {"make", "all"}));
     start_entry(conn, parent, 1);
-    auto nested       = alive_request("/w/outer", {"make", "inner"});
-    nested.parent_seq = parent;
-    child             = enqueue_or_fail(conn, nested);
+    auto nested         = alive_request("/w/outer", {"make", "inner"});
+    nested.parent_seq   = parent;
+    auto const inserted = hq::insert_nested_entry(conn, nested);
+    REQUIRE(inserted.has_value());
+    child = *inserted;
   }
 
   auto const rows = rows_of(run_queue(arena, "nested_json"));
