@@ -111,7 +111,8 @@ TEST_CASE("planar-watch's declared verb set is exactly the oracle's", "[cmd][wat
   // OBSERVES workflow runs; the case above would still fail if `ingest`,
   // `pull` or `capture` appeared here.
   CHECK(names == std::set<std::string, std::less<>>{"actions", "claims", "completion", "feed", "list", "log", "plans", "ps",
-                                                    "queue", "run", "schema", "show", "sync-events", "tree", "version"});
+                                                    "queue", "run", "schema", "show", "sync-events", "tree", "version",
+                                                    "history"});
 }
 
 TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cmd][watch][capability]") {
@@ -134,13 +135,19 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
+  // `queue` stopped being a leaf when `queue history` was added beneath it
+  // (task hq-watch-history): the leaf count is unchanged, its membership is not.
   CHECK(leaves.size() == 14);
+  CHECK(std::ranges::find(leaves, "queue") == leaves.end());
+  CHECK(std::ranges::find(leaves, "queue history") != leaves.end());
+  // It is still a verb of its own: a group with a handler, deliberately.
+  CHECK(table.contains("queue"));
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
   for (auto const& implemented : {"feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion",
-                                  "run list", "run show", "sync-events", "queue"}) {
+                                  "run list", "run show", "sync-events", "queue", "queue history"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
@@ -270,6 +277,66 @@ TEST_CASE("planar-watch queue reads through the read-only handle: the store is u
   REQUIRE(view->connection() != nullptr);
   CHECK(view->connection()->is_read_only());
   CHECK_FALSE(view->connection()->execute("delete from queue_entries").has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST_CASE("planar-watch queue history reads through the read-only handle: the store is untouched and no main database is opened",
+          "[cmd][watch][capability][queue][hq-watch-history]") {
+  // Level 2 for `queue history` (plan 1080, task hq-watch-history), in-process
+  // and with no main database in the environment. Both the group's own verb
+  // and its child run; afterwards the store's bytes and modification time are
+  // the ones it started with and the main database handle was never opened.
+  auto const dir = std::filesystem::temp_directory_path() /
+                   std::format("planar_watch_cap_history_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::filesystem::create_directories(dir);
+  auto const store = dir / "agent.db";
+  {
+    auto seeded = planar::db::agent::open_agent_db_at(store);
+    REQUIRE(seeded.has_value());
+    REQUIRE(seeded
+                ->execute("insert into queue_history (seq, outcome, exit_code, cwd, argv, enqueued_at, ended_at, waited_ms) "
+                          "values (3, 'exited', 0, '/w', '[\"make\"]', 1000, 2000, 5)")
+                .has_value());
+  }
+  auto const read_bytes = [&] {
+    std::ifstream in(store, std::ios::binary);
+    return std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  };
+  auto const before_bytes = read_bytes();
+  auto const before_time  = std::filesystem::last_write_time(store);
+
+  auto const tree  = planar::cmd::watch::root_app();
+  auto const table = planar::cmd::watch::handlers(*tree);
+  for (auto const& verb : std::vector<std::vector<std::string>>{{"planar-watch", "queue", "history", "--json"},
+                                                                 {"planar-watch", "queue", "--json"}}) {
+    std::ostringstream          out;
+    std::ostringstream          err;
+    planar::cmd::watch::context ctx{verb,
+                                    planar::cmd::watch::map_env({{"PLANAR_AGENT_DB", store.string()}}),
+                                    dir,
+                                    std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err),
+                                    out,
+                                    err};
+    auto const                  fresh = planar::cmd::watch::root_app();
+    CHECK(planar::cmd::watch::run(ctx, *fresh, table) == 0);
+    CHECK_FALSE(ctx.db().opened());
+    if (verb.size() == 4) {
+      CHECK(out.str().contains("\"outcome\":\"exited\""));
+    } else {
+      CHECK(out.str() == "[]\n");
+    }
+  }
+
+  CHECK(read_bytes() == before_bytes);
+  CHECK((std::filesystem::last_write_time(store) == before_time));
+  auto view = planar::cmd::watch::open_agent_store_at(store);
+  REQUIRE(view.has_value());
+  CHECK(view->history().value().size() == 1);
+  REQUIRE(view->connection() != nullptr);
+  CHECK(view->connection()->is_read_only());
+  CHECK_FALSE(view->connection()->execute("delete from queue_history").has_value());
 
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);

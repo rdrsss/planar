@@ -226,7 +226,7 @@ TEST_CASE("planar-watch parity: every command declares what the oracle declares"
 
   // Non-vacuous: an empty catalog, or a document that failed to parse,
   // would otherwise look exactly like a clean assertion.
-  CHECK(mine->size() == 16);
+  CHECK(mine->size() == 17);
   CHECK(mine->contains("planar-watch ps"));
   // The four task 6065 declared that the previous tree did not have at all.
   CHECK(mine->contains("planar-watch feed"));
@@ -235,6 +235,8 @@ TEST_CASE("planar-watch parity: every command declares what the oracle declares"
   CHECK(mine->contains("planar-watch run show"));
   // Plan 1080, task hq-watch-queue: the host queue view.
   CHECK(mine->contains("planar-watch queue"));
+  // Task hq-watch-history: the ended entries.
+  CHECK(mine->contains("planar-watch queue history"));
 }
 
 TEST_CASE("planar-watch parity: the catalog is BYTE-identical to the oracle's", "[cmd][watch][parity][catalog]") {
