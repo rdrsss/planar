@@ -178,6 +178,42 @@ git -C "$git_repo" worktree add -q -b exit-code-contract-wt "$worktree_path" mai
 
 check_in 8 "planar: worktree-gate refusal" "$worktree_path" planar task add
 
+# --- `planar-agent queue run` (plan 1080, task 7013, decision 1188) ---------
+# The command's own status passes through, and the queue owns a handful of
+# codes. Each case runs the real binary in the scratch env above (its own
+# PLANAR_AGENT_DB, HOME and cwd), so no case can reach the operator's
+# ~/.planar. `qcheck` records the code under the row of the QUEUE table it
+# belongs to, so direction 2 checks that table and not the general one.
+declare -a queue_rows=()
+qcheck() { # <expected> <table-row> <label> <env args...> -- <queue run argv...>
+  local want="$1" row="$2" label="$3"; shift 3
+  local -a envargs=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do envargs+=("$1"); shift; done
+  shift
+  (cd "$workdir" && env ${envargs[@]+"${envargs[@]}"} "$bin_dir/planar-agent" queue run "$@" >/dev/null 2>&1)
+  local got=$?
+  checked=$((checked + 1))
+  queue_rows+=("$row")
+  if [ "$got" -ne "$want" ]; then
+    printf 'MISMATCH  %-46s want %-3s got %s   (queue run %s)\n' "$label" "$want" "$got" "$*"
+    failures=$((failures + 1))
+  fi
+}
+noexec_file="$tmp/not-executable"
+: > "$noexec_file"
+chmod 644 "$noexec_file"
+qcheck 1   1   "queue run: no command (parse failure)"       --
+qcheck 1   1   "queue run: unknown flag (parse failure)"     -- --no-such-flag -- true
+qcheck 2   2   "queue run: model launcher refused by guard"  -- -- claude
+qcheck 2   2   "queue run: invalid --timeout duration"       -- --timeout 0 -- true
+qcheck 124 124 "queue run: --timeout overrun"                -- --timeout 1s -- sleep 30
+qcheck 125 125 "queue run: no HOME and no PLANAR_AGENT_DB"   -u PLANAR_AGENT_DB -u HOME -- -- true
+qcheck 125 125 "queue run: store path is a directory"        "PLANAR_AGENT_DB=$tmp" -- -- true
+qcheck 126 126 "queue run: not executable"                   -- -- "$noexec_file"
+qcheck 127 127 "queue run: program not found"                -- -- exit-code-contract-no-such-program
+qcheck 143 128 "queue run: terminated by SIGTERM (128+N)"    -- -- sh -c 'kill -TERM $$'
+qcheck 7   own "queue run: pass-through status"              -- -- sh -c 'exit 7'
+
 printf 'exit-code-contract: %d behaviour cases checked\n' "$checked"
 
 # --- direction 2: every expected code must be DOCUMENTED -------------------
@@ -192,6 +228,48 @@ for want in $(printf '%s\n' "${expected_codes[@]}" | sort -u); do
     failures=$((failures + 1))
   fi
 done
+
+# --- direction 2b: the `planar-agent queue run` table ------------------------
+# Its own section, so a code that is only documented in the general table
+# above does not satisfy it. The rows a case is filed under must all exist,
+# and each row must say what the code means (a swapped meaning fails).
+queue_section="$(sed -n '/^#### Queue run exit codes/,/^#\{1,4\} [^Q]/p' "$doc")"
+if [ -z "$queue_section" ]; then
+  printf 'exit-code-contract: could not find the "Queue run exit codes" section in %s\n' "$doc" >&2
+  exit 1
+fi
+queue_meaning() { # <row> -> a grep -E pattern the row's line must match
+  case "$1" in
+    1)   printf 'parse failure' ;;
+    2)   printf 'refused|guard' ;;
+    124) printf 'run limit' ;;
+    125) printf 'queue failed' ;;
+    126) printf 'could not be executed' ;;
+    127) printf 'not found' ;;
+    128) printf 'terminated by signal' ;;
+    *)   printf '.' ;;
+  esac
+}
+for row in $(printf '%s\n' "${queue_rows[@]}" | sort -u); do
+  if [ "$row" = "own" ]; then
+    printf '%s\n' "$queue_section" | grep -qF "the command's own exit status" || {
+      printf 'UNDOCUMENTED  the queue run table does not say the command'"'"'s own exit status passes through\n'
+      failures=$((failures + 1)); }
+    continue
+  fi
+  line="$(printf '%s\n' "$queue_section" | grep -E "^\| \`$row\`" | head -n 1)"
+  if [ -z "$line" ]; then
+    printf 'UNDOCUMENTED  exit %s is returned by a checked queue run case but has no row in the queue run table of %s\n' "$row" "$doc"
+    failures=$((failures + 1))
+  elif ! printf '%s\n' "$line" | grep -qiE "$(queue_meaning "$row")"; then
+    printf 'MISDOCUMENTED  queue run row %s does not carry its meaning (%s): %s\n' "$row" "$(queue_meaning "$row")" "$line"
+    failures=$((failures + 1))
+  fi
+done
+if ! printf '%s\n' "$queue_section" | grep -qF 'outside 0..255'; then
+  printf 'UNDOCUMENTED  the queue run table does not say a status outside 0..255 exits 125\n'
+  failures=$((failures + 1))
+fi
 
 if [ "$failures" -ne 0 ]; then
   printf 'exit-code-contract: FAILED — %d problem(s).\n' "$failures" >&2
