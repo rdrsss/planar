@@ -62,6 +62,76 @@ auto all_node_names(const CLI::App& root) -> std::set<std::string, std::less<>> 
   return names;
 }
 
+
+// ---- the queue signaller boundary (task 7096) ------------------------------
+//
+// `planar-watch` links `engine_hostqueue`, whose `terminate` module can signal
+// a process group. No watch verb may reach it. The verb-set and read-only
+// handle checks above cannot see this: a handler that called
+// `hostqueue::begin_terminate` would register no write verb and touch no
+// SQLite write path. Two independent checks hold it, one at the source and one
+// at the link, and each has a positive control so it cannot pass vacuously.
+
+/// @brief The names that mean "send a signal to a process group", or reach the
+/// module that does. `kill(` covers a direct call; the rest are the exports of
+/// `planar.engine.hostqueue.terminate` and the identity primitive under them.
+const std::vector<std::string_view> k_signaller_names{
+    "hostqueue.terminate", "signal_child_group", "system_group_signaller", "group_signaller", "begin_terminate",
+    "advance_terminations", "poll_and_stop",     "cancel_waiting",         "signal_group",    "killpg",
+    "kill("};
+
+/// @brief The names in `text` that `k_signaller_names` forbids, ignoring `//`
+/// and `///` comments and block-comment continuation lines (prose about the
+/// boundary is not a call).
+auto signaller_hits(std::string_view text) -> std::vector<std::string> {
+  std::vector<std::string> hits;
+  std::size_t              line_no = 0;
+  while (!text.empty()) {
+    auto const end  = text.find('\n');
+    auto       line = text.substr(0, end);
+    text            = end == std::string_view::npos ? std::string_view{} : text.substr(end + 1);
+    ++line_no;
+    if (auto const comment = line.find("//"); comment != std::string_view::npos) {
+      line = line.substr(0, comment);
+    }
+    if (auto const first = line.find_first_not_of(" \t"); first != std::string_view::npos && line[first] == '*') {
+      continue;
+    }
+    for (auto const name : k_signaller_names) {
+      if (line.contains(name)) {
+        hits.push_back(std::format("line {}: {}", line_no, name));
+      }
+    }
+  }
+  return hits;
+}
+
+auto read_file(const std::filesystem::path& path) -> std::string {
+  std::ifstream in(path, std::ios::binary);
+  REQUIRE(in.good());
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/// @brief `src/cmd/planar-watch`, found from this file's own path.
+auto watch_source_dir() -> std::filesystem::path {
+  return std::filesystem::path{__FILE__}.parent_path();
+}
+
+/// @brief Every first-party, non-test source file under `dir`.
+auto production_sources(const std::filesystem::path& dir) -> std::vector<std::filesystem::path> {
+  std::vector<std::filesystem::path> files;
+  REQUIRE(std::filesystem::is_directory(dir));
+  for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
+    auto const ext  = entry.path().extension().string();
+    auto const name = entry.path().filename().string();
+    if (entry.is_regular_file() && (ext == ".cpp" || ext == ".cppm") && !name.ends_with(".t.cpp")) {
+      files.push_back(entry.path());
+    }
+  }
+  std::ranges::sort(files);
+  return files;
+}
+
 } // namespace
 
 TEST_CASE("planar-watch refuses every write verb from both other binaries, at any depth", "[cmd][watch][capability]") {
@@ -242,6 +312,89 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
   CHECK(dual.first == 0);
   CHECK(ran);
   CHECK_FALSE(dual.second.contains("Subcommands"));
+}
+
+TEST_CASE("no planar-watch source names the queue group signaller or the terminate module", "[cmd][watch][capability][hq-watch-no-signaller]") {
+  // The scanner is exercised before it is trusted.
+  CHECK(signaller_hits("auto r = hq::signal_child_group(e, sig, host, probe, signaller);").size() == 1);
+  CHECK(signaller_hits("import planar.engine.hostqueue.terminate;").size() == 1);
+  CHECK(signaller_hits("::killpg(pgid, SIGTERM);").size() == 1);
+  CHECK(signaller_hits("::kill(pid, SIGKILL);").size() == 1);
+  CHECK(signaller_hits("// signal_child_group is never called here\n/// begin_terminate neither\n * cancel_waiting").empty());
+  CHECK(signaller_hits("auto probe = hq::system_process_probe();").empty());
+
+  // Positive control on real code: the planar-agent handler DOES call it.
+  auto const agent_queue = watch_source_dir().parent_path() / "planar-agent" / "handlers" / "queue" / "queue.cpp";
+  CHECK_FALSE(signaller_hits(read_file(agent_queue)).empty());
+
+  auto const files = production_sources(watch_source_dir());
+  // Not vacuous: the whole binary's sources are here, the queue handlers included.
+  REQUIRE(files.size() >= 20);
+  CHECK(std::ranges::any_of(files, [](const auto& f) { return f.filename() == "history.cpp"; }));
+  for (auto const& file : files) {
+    auto const hits = signaller_hits(read_file(file));
+    INFO("planar-watch must not reach the group signaller; " << file.string() << " has: " << (hits.empty() ? "" : hits.front()));
+    CHECK(hits.empty());
+  }
+}
+
+TEST_CASE("the planar-watch binary does not link the queue terminate module", "[cmd][watch][capability][hq-watch-no-signaller]") {
+  // The link-level half. `engine_hostqueue` is a static archive, so a member
+  // object is linked only when something references it: if any handler (or
+  // anything it calls) used `terminate`, the object's symbols, whose mangled
+  // names carry these identifiers, would be in the binary. Read as bytes so no
+  // external tool (nm) has to exist on the machine that runs the suite.
+  //
+  // What CANNOT be locked this way: `planar::process::identity::signal_group`
+  // is in the binary, as dead code, because it shares an object with the
+  // liveness probes (`process_exists`, `group_has_members`) the queue view
+  // uses. Those send signal 0 only (`kill(pid, 0)`, `kill(-pgid, 0)`: existence
+  // checks that deliver nothing); `signal_group` is the only call in that
+  // module that sends anything else, and the source scan above and the case
+  // below are what stop a watch handler from reaching it.
+  constexpr std::array<std::string_view, 6> k_names{"signal_child_group",   "system_group_signaller", "begin_terminate",
+                                                    "advance_terminations", "poll_and_stop",         "cancel_waiting"};
+  auto const watch_bytes = read_file(std::filesystem::path{PLANAR_CPP_BIN});
+  auto const agent_bytes = read_file(std::filesystem::path{PLANAR_AGENT_CPP_BIN});
+  REQUIRE(watch_bytes.size() > 100'000);
+  for (auto const name : k_names) {
+    // Positive control: planar-agent DOES link the module, and this reading of
+    // a binary sees it. Were symbols stripped or renamed, the control would
+    // fail here rather than let the absence below mean nothing.
+    INFO("control: planar-agent must contain " << name << " for this check to mean anything");
+    CHECK(agent_bytes.contains(name));
+    INFO("planar-watch links the queue signaller: " << name);
+    CHECK_FALSE(watch_bytes.contains(name));
+  }
+}
+
+TEST_CASE("the liveness probe planar-watch uses sends signal 0 only", "[cmd][watch][capability][hq-watch-no-signaller]") {
+  // `system_process_probe` forwards to `process_exists` and `group_has_members`
+  // in `planar.process.identity`. Every `kill(` there but one passes the
+  // literal signal 0 (existence check); the one exception is `signal_group`.
+  auto const identity = watch_source_dir().parent_path().parent_path() / "lib" / "process" / "identity.cpp";
+  auto const text     = read_file(identity);
+  std::vector<std::string> nonzero;
+  std::size_t              zero = 0;
+  std::string_view         rest = text;
+  while (!rest.empty()) {
+    auto const end  = rest.find('\n');
+    auto       line = rest.substr(0, end);
+    rest            = end == std::string_view::npos ? std::string_view{} : rest.substr(end + 1);
+    if (auto const c = line.find("//"); c != std::string_view::npos) {
+      line = line.substr(0, c);
+    }
+    if (line.contains("::kill(")) {
+      if (line.contains(", 0)")) {
+        ++zero;
+      } else {
+        nonzero.emplace_back(line);
+      }
+    }
+  }
+  CHECK(zero == 2);
+  REQUIRE(nonzero.size() == 1);
+  CHECK(nonzero.front().contains("sig)"));
 }
 
 TEST_CASE("planar-watch's agent database handle is read-only, and a missing store is not created", "[cmd][watch][capability]") {
