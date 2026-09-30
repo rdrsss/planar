@@ -1652,7 +1652,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   runner::status final_status;
   auto           next_poll = clock.monotonic_ms().value_or(0) + settings.current().poll_interval_ms;
   while (true) {
-    auto observed = runner::poll(child);
+    auto observed = deps.poll_child ? deps.poll_child(child) : runner::poll(child);
     if (!observed) {
       ctx.err() << "error: queue: cannot observe the command's status\n";
       end(hq::end_request{.outcome = hq::history_outcome::abandoned});

@@ -27,6 +27,7 @@ import planar.db.agentdb;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.process.identity;
+import planar.process.runner;
 
 namespace {
 
@@ -174,6 +175,32 @@ private:
   ident::system_clock _system;
   std::int64_t        _base   = _system.monotonic_ms().value_or(0);
   std::int64_t        _offset = 0;
+};
+
+/// @brief A monotonic clock that reads normally until `arm(n)` is called and
+/// then fails on its n-th reading after that call (and only that one), so a
+/// case can make one specific read fail without knowing how many the run made
+/// before it. Wall time is the system's.
+class failing_clock final : public ident::clock {
+public:
+  /// @brief The n-th reading after this call fails; every other one succeeds.
+  void arm(int n) {
+    _left = n;
+  }
+
+  [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, ident::error> override {
+    if (_left > 0 && --_left == 0) {
+      return std::unexpected(ident::error::clock_failed);
+    }
+    return _system.monotonic_ms();
+  }
+  [[nodiscard]] auto wall_ms() -> std::int64_t override {
+    return _system.wall_ms();
+  }
+
+private:
+  ident::system_clock _system;
+  int                 _left = 0;
 };
 
 /// @brief Seeds the scratch store with a RUNNING entry that is live: its
@@ -1813,4 +1840,68 @@ TEST_CASE("queue run --claim: a renewal that keeps failing is reported once acro
   }
   CHECK(warnings == 1);
   CHECK(last_line(text) == "queue: entry 1 exited with code 4");
+}
+
+TEST_CASE("queue run: a command whose status cannot be observed ends the entry abandoned and the notice says so",
+          "[cmd][agent][queue][hq-notices]") {
+  // Task 7083. `runner::poll` failing is not something a real child produces on
+  // demand, so the seam stands in for it. The submitter cannot know what became
+  // of the command, so it gives the entry up as abandoned and exits 125.
+  scratch                         sc;
+  agent::handlers::queue_run_deps deps;
+  poll_bound                      bound;
+  bound.bind(deps, fast_settings());
+  auto const polls = std::make_shared<int>(0);
+  deps.poll_child  = [polls](const planar::process::runner::child&)
+      -> std::expected<planar::process::runner::status, planar::process::runner::error> {
+    ++*polls;
+    return std::unexpected(planar::process::runner::error::wait_failed);
+  };
+
+  auto const got = run_queue(sc, {"/bin/sh", "-c", "exit 0"}, deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(*polls == 1);
+  CHECK(got.err.contains("error: queue: cannot observe the command's status"));
+  CHECK(last_line(got.err) == "queue: entry 1 abandoned, cannot observe the command's status");
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  CHECK(hq::list(*opened).value().empty());
+  auto const history = hq::list_history(*opened).value();
+  REQUIRE(history.size() == 1);
+  CHECK(history.front().outcome == hq::history_outcome::abandoned);
+}
+
+TEST_CASE("queue run: a waiter that finds its entry gone and cannot read the clock ends with that notice",
+          "[cmd][agent][queue][hq-notices]") {
+  // Task 7083. Each waiting tick reads the clock in the poll, in the stopping
+  // step that follows it and for its own bookkeeping, and a fourth time when
+  // the poll reports the entry missing. The clock is armed to fail that fourth
+  // reading, after another process ended the entry, so the refusal names the
+  // clock and the last line is the outcome. A change to the number of readings
+  // per tick moves the failure onto another path, and the case fails rather
+  // than passing vacuously.
+  scratch    sc;
+  auto const clock  = std::make_shared<failing_clock>();
+  auto const holder = seed_live_parent(sc, clock.get());
+
+  agent::handlers::queue_run_deps deps;
+  deps.clock    = clock;
+  bool removed  = false;
+  script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
+    if (!removed) {
+      removed = true;
+      end_as(conn, holder + 1, hq::history_outcome::abandoned);
+      clock->arm(4);
+    }
+  });
+  auto const marker = sc.root / "ran";
+  auto const got    = run_queue(sc, touch_command(marker), deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(removed);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("error: queue: cannot read the monotonic clock"));
+  CHECK(last_line(got.err) == "queue: entry 2 ended: cannot read the clock");
+  CHECK_FALSE(std::filesystem::exists(marker));
 }
