@@ -8,11 +8,12 @@
 //
 // Every case opens its own scratch store through `open_agent_db_at` in its
 // own temp directory. Following the test spec's § Strategy, the scenarios
-// seed and read the store only through the engine (`enqueue`, `end_entry`,
-// `find_history`, `list_history`). The one exception is the case covering
-// `started_at` and an entry-recorded canceller: no engine operation writes
-// those entry columns yet (the poll and cancel tasks will), so that case sets
-// them with a raw UPDATE and says so.
+// seed and read the store only through the engine (`enqueue`, `poll`,
+// `begin_terminate`, `end_entry`, `find_history`, `list_history`). The
+// case covering `started_at` and an entry-recorded canceller takes them from
+// the engine's own writers too: the poll transaction sets `started_at`, and a
+// cancellation through `begin_terminate` records the canceller on the entry
+// (task 7047 replaced the raw UPDATEs that stood in for both).
 //
 // Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
@@ -97,6 +98,44 @@ auto history_of(planar::db::connection& conn, std::int64_t seq) -> hq::history_r
   REQUIRE(found.has_value());
   REQUIRE(found->has_value());
   return **found;
+}
+
+/// @brief A clock the test sets by hand; both readings are returned as set.
+class hand_clock final : public planar::process::identity::clock {
+public:
+  std::int64_t mono = 1'000'000; ///< The monotonic reading, ms.
+  std::int64_t wall = 0;         ///< The wall reading, ms since the epoch.
+
+  [[nodiscard]] auto monotonic_ms() -> std::expected<std::int64_t, planar::process::identity::error> override {
+    return mono;
+  }
+  [[nodiscard]] auto wall_ms() -> std::int64_t override {
+    return wall;
+  }
+};
+
+/// @brief A probe that finds no process anywhere. The entries in these cases
+/// are polled by their own submitter, which is never probed.
+auto empty_probe() -> hq::process_probe {
+  return hq::process_probe{
+      .process_exists     = [](std::int64_t) -> std::expected<bool, planar::process::identity::error> { return false; },
+      .process_start_time = [](std::int64_t)
+          -> std::expected<std::optional<planar::process::identity::start_time>, planar::process::identity::error> {
+        return std::optional<planar::process::identity::start_time>{};
+      },
+      .group_has_members = [](std::int64_t) -> std::expected<bool, planar::process::identity::error> { return false; },
+  };
+}
+
+/// @brief Gives entry `seq` its turn, through the poll transaction, with the
+/// wall clock at `at`; requires that the poll started it.
+auto start_by_poll(planar::db::connection& conn, std::int64_t seq, hand_clock& clock, std::int64_t at) -> void {
+  clock.wall  = at;
+  auto polled = hq::poll(
+      conn, hq::poll_request{.seq = seq, .host_id = "boot-7f3a", .slots = 1, .stale_after_ms = 60'000, .run_limit_ms = 60'000},
+      clock, empty_probe());
+  REQUIRE(polled.has_value());
+  REQUIRE(polled->running);
 }
 
 /// @brief Writes `text` to `path`.
@@ -565,16 +604,15 @@ TEST_CASE("a request whose fields do not fit its outcome is refused and the entr
 
 TEST_CASE("waited and ran times come from the entry's start, and a cancel recorded on the entry names the canceller",
           "[engine][hostqueue][hq-history]") {
-  // No engine operation writes started_at or cancelled_by on an entry yet
-  // (the poll and cancel tasks will), so this case sets them with a raw
-  // UPDATE; everything it asserts is read through the engine.
+  // The start is taken by the poll transaction and the canceller by a
+  // cancellation through `begin_terminate`, the engine's own writers of those
+  // columns; everything the case asserts is read through the engine.
   scratch_dir scratch;
   auto        conn = open_scratch_store(scratch);
+  hand_clock  clock;
 
   auto const started = enqueue_one(conn, request_for("started"));
-  REQUIRE(conn.execute(std::format("update queue_entries set state = 'running', started_at = {} where seq = {};",
-                                   k_enqueued_at + 4'000, started))
-              .has_value());
+  start_by_poll(conn, started, clock, k_enqueued_at + 4'000);
   end_one(conn, started, {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_enqueued_at + 10'000});
   auto const row = history_of(conn, started);
   CHECK(row.started_at == k_enqueued_at + 4'000);
@@ -583,20 +621,31 @@ TEST_CASE("waited and ran times come from the entry's start, and a cancel record
 
   // A wall clock that stepped backwards gives zero, never a negative time.
   auto const stepped = enqueue_one(conn, request_for("stepped"));
-  REQUIRE(conn.execute(std::format("update queue_entries set state = 'running', started_at = {} where seq = {};",
-                                   k_enqueued_at + 4'000, stepped))
-              .has_value());
+  start_by_poll(conn, stepped, clock, k_enqueued_at + 4'000);
   end_one(conn, stepped, {.outcome = hq::history_outcome::signaled, .signal = 15, .ended_at = k_enqueued_at - 1});
   auto const back = history_of(conn, stepped);
   CHECK(back.waited_ms == 4'000);
   CHECK(back.ran_ms == 0);
 
+  // The canceller is recorded on the running entry by the cancellation, and
+  // the entry's own end (no canceller in the request) carries it to the row.
   hq::canceller const who{.vendor = "gemini", .role = "reviewer", .pid = 99};
   auto const          cancelled = enqueue_one(conn, request_for("cancelled"));
-  REQUIRE(conn.execute(std::format("update queue_entries set cancelled_by = '{}', terminate_reason = 'cancelled' "
-                                   "where seq = {};",
-                                   hq::encode_canceller(who), cancelled))
-              .has_value());
+  start_by_poll(conn, cancelled, clock, k_enqueued_at + 1);
+  std::vector<int> signals;
+  auto const       begun = hq::begin_terminate(
+      conn,
+      hq::begin_terminate_request{
+          .seq = cancelled, .reason = hq::stop_reason::cancelled, .cancelled_by = who, .host_id = "boot-7f3a"},
+      clock, empty_probe(), [&signals](std::int64_t, int sig) -> std::expected<void, planar::process::identity::error> {
+        signals.push_back(sig);
+        return {};
+      });
+  REQUIRE(begun.has_value());
+  REQUIRE(begun->status == hq::begin_status::marked);
+  CHECK(signals.empty()); // no child group is recorded, so nothing is signalled
+  REQUIRE(begun->stored.has_value());
+  CHECK(begun->stored->cancelled_by == hq::encode_canceller(who));
   end_one(conn, cancelled, {.outcome = hq::history_outcome::cancelled, .ended_at = k_enqueued_at + 1});
   CHECK(history_of(conn, cancelled).cancelled_by == who);
 }

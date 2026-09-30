@@ -184,6 +184,35 @@
 /// `$PLANAR_ROLE` when set and not empty, else stored empty (SQL NULL). The
 /// values reach the entry, its history row, a rejoined entry and a nested
 /// entry.
+///
+/// ## Cancelling (`queue cancel <seq>`)
+///
+/// `queue_cancel` (task hq-queue-cancel; tech spec 647 § CLI surface, Stopping
+/// a command) cancels one entry, whoever submitted it and whether or not its
+/// submitter is alive. A WAITING entry is removed in one transaction
+/// (`engine::hostqueue::cancel_waiting`), with a `cancelled` history row that
+/// names the canceller; its submitter finds the row and exits 125. A RUNNING
+/// entry is stopped by the two steps under Stopping a command:
+/// `begin_terminate` records the marker and the canceller and commits, and only
+/// then sends SIGTERM to the child group. Cancel does not rely on a later poll
+/// by anyone: it then advances that entry itself (`advance_terminations`) until
+/// its child group is empty and the entry is gone, which sends the overdue
+/// SIGKILL once the entry has been terminating for the grace period. Cancelling
+/// an entry that is already terminating (a run limit, or an earlier cancel)
+/// changes no marker and sends SIGKILL at once when the grace period has
+/// passed. The whole wait is bounded by the grace period plus
+/// `k_drain_slack_ms`; a group that survives that leaves the entry marked, live
+/// because its group has members, for the next poll of any process to finish,
+/// and cancel exits 125 and says so. The canceller is the process that ran
+/// `queue cancel`: `--vendor` and `--role` as for `queue run`, and its pid. A
+/// nested entry is cancelled like any other; its parent is not touched. A
+/// detached entry has no terminal and is cancelled the same way.
+///
+/// Exit codes: 0 the entry was cancelled (or, already stopping for another
+/// reason, was stopped and ended); 1 no entry has that number; 2 the argument is
+/// not a positive integer; 6 the entry has already ended (the message names the
+/// outcome); 125 the store or the configuration is unusable, or the group could
+/// not be emptied in time. Standard output carries one line on success.
 module;
 
 export module planar.cmd.planar_agent.handlers.queue;
@@ -249,5 +278,20 @@ export auto queue_run(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// @param deps The clock, probe, signaller, settings loader and sleeper.
 /// @return The command's exit status, or 125 when the queue failed.
 export auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps) -> handler_outcome;
+
+/// @brief `planar-agent queue cancel <seq>` with the production defaults.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments: the `seq` positional, `--vendor`, `--role`.
+/// @return The exit status described in the module's cancelling section.
+export auto queue_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_outcome;
+
+/// @brief `queue_cancel` with its seams supplied. Reads `clock`, `probe`,
+/// `signaller`, `load_settings` and `sleep` from `deps`; the other members
+/// are `queue run`'s and are ignored.
+/// @param ctx The invocation context.
+/// @param args The parsed arguments.
+/// @param deps The seams.
+/// @return The exit status described in the module's cancelling section.
+export auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps) -> handler_outcome;
 
 } // namespace planar::cmd::agent::handlers

@@ -106,6 +106,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   // The host-wide build and test queue (plan 1080). Its handler returns the
   // command's exit status, which dispatch passes through unchanged.
   table.emplace("queue run", handlers::queue_run);
+  table.emplace("queue cancel", handlers::queue_cancel);
   // Read-only: what became of one entry. Returns its own exit status too.
   table.emplace("queue status", handlers::queue_status);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and

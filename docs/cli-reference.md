@@ -6869,6 +6869,7 @@ planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now
 # command; it runs in the caller's directory with the caller's environment.
 # See "Queue verbs" below.
 planar-agent queue run  [--detach] [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] [--vendor <name>] [--role <name>] [--notices] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
+planar-agent queue cancel [--vendor <name>] [--role <name>] <seq>
 planar-agent queue status <seq> [--json]
 
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
@@ -6974,7 +6975,7 @@ Without `--json` the same answer is printed as `key: value` lines, one per field
 
 A refusal writes `error: queue status: <message>` on standard error. With `--json` it also writes one object on standard output, `{"error":{"verb":"queue status","tag":"<tag>","message":"<message>"}}` (plus `"seq"` for exit 1), so a script reads the reason without parsing prose. The tags are `not_found`, `invalid_input`, `store_unreachable`, `store_unreadable` and `internal`.
 
-Not yet available in this build (later tasks of plan 1080): `--claim`, `queue cancel` and `queue rule`.
+Not yet available in this build (later tasks of plan 1080): `--claim` and `queue rule`.
 
 #### Known limits
 
@@ -7007,6 +7008,34 @@ Foreground `queue run` exits with the command's own exit status (decision 1188).
 | `128` + N | The command was **terminated by signal N** (`143` for SIGTERM), capped at 255. | The entry ends `signaled`. |
 
 Any other value is the command's own exit status, passed through unchanged (`7` is `7`); the status of a command that exits `0` is `0`. Because a command may itself exit with any of the values above, the exit code alone is ambiguous: `queue status <seq>` is the authoritative record (its `outcome` field says whether the command ran), and with `--notices` the submitter's last line on standard error names the sequence number and the outcome. A status outside 0..255 cannot be reported by a process, so the dispatcher refuses it with one `error:` line and exits `125`.
+
+#### Cancelling an entry (`queue cancel`)
+
+```
+planar-agent queue cancel [--vendor <name>] [--role <name>] <seq>
+```
+
+`queue cancel` cancels the entry with sequence number `<seq>`. Any caller that can open the store may cancel any entry, whether or not it is the entry's submitter and whether or not that submitter is alive; the canceller is recorded, not checked. A *detached* entry has no terminal to interrupt, and is cancelled the same way. A nested entry is cancelled like any other; its parent is not touched.
+
+- **A waiting entry** is removed in one transaction, and its `queue_history` row is written with outcome `cancelled`. Its submitter finds that row at its next poll, does not run the command, and exits **125** (with `--notices` its last line is `queue: entry <seq> cancelled`).
+- **A running entry** is stopped in two steps: a transaction marks it terminating with reason `cancelled` and the canceller, and only after that commits does cancel send SIGTERM to the command's process group. Cancel does not leave the rest to a later poll. It then advances that one entry itself, at short intervals, until the group is empty: once the entry has been terminating for the `[queue] grace` period and the group still has members it sends SIGKILL, and it removes the entry (writing the history row, outcome `cancelled`) only when the group is empty, so the next entry cannot start on top of a command that is still running. Cancelling an entry that is already terminating (a run limit, or an earlier cancel) changes no marker and records no second canceller; it sends SIGKILL at once if the grace period has already passed. The submitter of a running entry that is alive sees the reason and exits **125** too; if it is gone, cancel alone ends the entry.
+- **A group not yet recorded.** If the entry's submitter has not yet recorded the command's process group when the cancel marks it, nothing can be signalled at that moment; cancel keeps looking and sends the SIGTERM as soon as the group is recorded. If cancel itself is killed before that, no SIGTERM is ever sent, and only the SIGKILL of a later poll of any process, once the grace period has passed, stops the command.
+- **The wait is bounded** by the grace period plus 15 seconds. A group that still has members after that (a process that survives SIGKILL, or one whose group was never recorded) leaves the entry marked terminating, with its slot, for the next poll of any process to finish, and cancel exits **125** and says which it was.
+- **The canceller** is stored in `cancelled_by` as `{"vendor": ..., "role": ..., "pid": ...}`: `--vendor` and `--role` as for `queue run` (the flag when given and not empty, else `PLANAR_VENDOR` / `PLANAR_ROLE`, else empty; Planar does not guess them) and the process id of the cancelling process.
+
+On success cancel writes one line to standard output (`cancelled entry <seq>: removed before its turn`, or `cancelled entry <seq>: its command was stopped`, with `(SIGKILL after the grace period)` when it had to send one). Refusals write one `error: queue: cancel: ...` line to standard error. `queue cancel` has no `--json`.
+
+#### Queue cancel exit codes
+
+Each code is checked against the built binary by `make exit-code-contract` where a case can run without a live process; the rest are pinned by the black-box cases in `src/cmd/planar-agent/queue_cancel.t.cpp`.
+
+| Code | Meaning | When |
+|------|---------|------|
+| `0` | The entry was **cancelled**: a waiting entry removed, or a running entry stopped and ended. | The history row has outcome `cancelled` (or, for an entry already stopping at its run limit, the outcome that stop names). |
+| `1` | **No such entry**: no entry has that number and there is no history row for it (never issued, or pruned by retention). A missing argument is a parse failure and also exits `1`. | Nothing is written. |
+| `2` | **Refused input**: `<seq>` is not a positive integer. | Before the store is touched. |
+| `6` | The entry has **already ended**; the message names its outcome. Also returned when cancel marked a running entry but its own submitter ended it with what its command did (`exited`) before reading the marker: the cancellation did not take effect. | Cancel writes nothing (the entry's one history row is the submitter's). |
+| `125` | The **queue failed**: the store or the configuration is unusable, the entry's process group was not empty after SIGKILL and the bounded wait, or the entry belongs to another host identity, whether this call marked it or it was already terminating (it is refused at once; a poll on that host will stop it). | The entry may be left marked terminating. |
 
 ### Atomic operation transaction shapes
 
@@ -7158,7 +7187,7 @@ Claims acquired without `--run`/`--stage` behave byte-for-byte as before (no beh
 A process invoked as `planar-agent` writes only to `agent_work_claims`,
 `agent_actions`, `workflow_runs`, and `context_records`, plus `tasks.status`
 inside atomic coordinated operations with status guards, and, in the separate
-agent database, `queue_entries` and `queue_history` (through `queue run`). It
+agent database, `queue_entries` and `queue_history` (through `queue run` and `queue cancel`). It
 never writes plan, decision, question, scenario, artifact, annotation, or
 feedback-triage rows. A vendor hook configured with only `planar-agent` on its
 PATH therefore has a bounded planning-state blast radius. `queue run` also
