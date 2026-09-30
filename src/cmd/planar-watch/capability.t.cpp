@@ -109,7 +109,7 @@ TEST_CASE("planar-watch's declared verb set is exactly the oracle's", "[cmd][wat
   // OBSERVES workflow runs; the case above would still fail if `ingest`,
   // `pull` or `capture` appeared here.
   CHECK(names == std::set<std::string, std::less<>>{"actions", "claims", "completion", "feed", "list", "log", "plans", "ps",
-                                                    "run", "schema", "show", "sync-events", "tree", "version"});
+                                                    "queue", "run", "schema", "show", "sync-events", "tree", "version"});
 }
 
 TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cmd][watch][capability]") {
@@ -132,13 +132,13 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  CHECK(leaves.size() == 13);
+  CHECK(leaves.size() == 14);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
   for (auto const& implemented : {"feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion",
-                                  "run list", "run show", "sync-events"}) {
+                                  "run list", "run show", "sync-events", "queue"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }

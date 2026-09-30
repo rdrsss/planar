@@ -151,7 +151,10 @@ planar_binary(planar_watch
     json_text
     engine_planning
     engine_runtime
-    engine_hostqueue)
+    engine_hostqueue
+    engine_config
+    json_dom
+    process)
 
 # Each binary builds its own CLI::App tree directly (plan 996, task 6123),
 # so the CLI11 module target is linked per binary rather than laundered
