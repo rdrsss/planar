@@ -33,7 +33,7 @@ auto utc_text(std::int64_t ms) -> std::string {
 
 /// @brief `cancelled-by:<vendor>/<role>/<pid>`, each part escaped as a cell.
 auto canceller_text(const hq::canceller& who) -> std::string {
-  return std::format("cancelled-by:{}/{}/{}", cell(who.vendor.value_or("")), cell(who.role.value_or("")), who.pid);
+  return std::format("cancelled-by:{}/{}/{}", field_cell(who.vendor.value_or("")), field_cell(who.role.value_or("")), who.pid);
 }
 
 auto result_text(const hq::history_row& r) -> std::string {
@@ -77,8 +77,8 @@ auto render_text(const std::vector<hq::history_row>& rows) -> std::string {
       {"SEQ", "OUTCOME", "RESULT", "ENDED", "WAITED", "RAN", "NOTES", "VENDOR", "ROLE", "LABEL", "DIRECTORY", "COMMAND"});
   for (auto const& r : rows) {
     table.push_back({std::to_string(r.seq), std::string{hq::to_string(r.outcome)}, result_text(r), utc_text(r.ended_at),
-                     duration_text(r.waited_ms), duration_text(r.ran_ms), notes_of(r), cell(r.vendor.value_or("")),
-                     cell(r.role.value_or("")), cell(r.label.value_or("")), cell(r.cwd), shell_line(r.argv)});
+                     duration_text(r.waited_ms), duration_text(r.ran_ms), notes_of(r), field_cell(r.vendor.value_or("")),
+                     field_cell(r.role.value_or("")), field_cell(r.label.value_or("")), cell(r.cwd), shell_line(r.argv)});
   }
   return pad_table(table);
 }
@@ -142,7 +142,7 @@ auto queue_history(context& ctx, const cliapp::parsed_args& args) -> handler_res
   // same way whether or not a store exists.
   std::optional<std::int64_t> since_ms;
   if (auto const text = cliapp::flag_string(args, "--since")) {
-    auto const parsed = qcfg::parse_duration_flag(*text);
+    auto const parsed = qcfg::parse_history_since(*text);
     if (!parsed) {
       return std::unexpected(
           error_from_body(domain_error_kind::invalid_input, std::format("queue history: --since {}", parsed.error())));

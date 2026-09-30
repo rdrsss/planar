@@ -13,7 +13,8 @@ constexpr std::string_view k_prefix = "queue.";
 
 constexpr std::int64_t k_max_slots        = 1024;
 constexpr std::int64_t k_max_history_days = 36500;
-constexpr std::int64_t k_max_duration_ms  = 24LL * 60 * 60 * 1000; ///< One day; keeps every ms form far from overflow.
+constexpr std::int64_t k_ms_per_day       = 24LL * 60 * 60 * 1000;
+constexpr std::int64_t k_max_duration_ms  = k_ms_per_day; ///< One day; keeps every ms form far from overflow.
 
 /// @brief A duration parsed from text, before its range is judged.
 struct parsed_duration {
@@ -21,9 +22,10 @@ struct parsed_duration {
   bool         negative = false; ///< The text began with `-`.
 };
 
-/// @brief Parse `<integer><unit>` with unit `ms`, `s`, `m` or `h`.
+/// @brief Parse `<integer><unit>` with unit `ms`, `s`, `m` or `h` (and `d` when `allow_days`).
+/// @param allow_days Accept the `d` (24h) unit; only `queue history --since` does.
 /// @return The parsed value, or nullopt when the text is not of that shape.
-auto parse_duration(std::string_view text) -> std::optional<parsed_duration> {
+auto parse_duration(std::string_view text, bool allow_days = false) -> std::optional<parsed_duration> {
   parsed_duration out;
   if (text.starts_with('-')) {
     out.negative = true;
@@ -53,6 +55,8 @@ auto parse_duration(std::string_view text) -> std::optional<parsed_duration> {
     factor = 60 * 1000;
   } else if (unit == "h") {
     factor = 60 * 60 * 1000;
+  } else if (allow_days && unit == "d") {
+    factor = 24 * 60 * 60 * 1000;
   } else {
     return std::nullopt;
   }
@@ -200,6 +204,21 @@ auto parse_duration_flag(std::string_view text) -> std::expected<std::int64_t, s
   }
   if (parsed->ms > k_max_duration_ms) {
     return std::unexpected(std::format("'{}' must be at most 24h", text));
+  }
+  return parsed->ms;
+}
+
+auto parse_history_since(std::string_view text) -> std::expected<std::int64_t, std::string> {
+  auto const parsed = parse_duration(text, /*allow_days=*/true);
+  if (!parsed.has_value()) {
+    return std::unexpected(
+        std::format("'{}' is not a duration: use an integer followed by a unit (ms, s, m, h, d), such as 30m or 7d", text));
+  }
+  if (parsed->negative || parsed->ms < 1) {
+    return std::unexpected(std::format("'{}' must be greater than zero", text));
+  }
+  if (parsed->ms > k_max_history_days * k_ms_per_day) {
+    return std::unexpected(std::format("'{}' must be at most {}d (the history retention maximum)", text, k_max_history_days));
   }
   return parsed->ms;
 }

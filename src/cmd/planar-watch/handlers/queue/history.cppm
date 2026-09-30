@@ -20,9 +20,10 @@
 ///
 /// Only rows that ended within the last `<duration>`: `ended_at` at or after
 /// `now - duration` (`since_cutoff_ms`). The value is an integer followed by
-/// `ms`, `s`, `m` or `h`, parsed by the same `parse_duration_flag` as
-/// `planar-agent queue run --timeout`, so it is greater than zero and at most
-/// 24h. Anything else is refused at exit 2 (`invalid_input`) with a message
+/// `ms`, `s`, `m`, `h` or `d`, parsed by `parse_history_since`: greater than
+/// zero and at most 36500 days, the history retention maximum. It is not the
+/// `parse_duration_flag` grammar of `planar-agent queue run --timeout`, which
+/// has no `d` and stops at 24h. Anything else is refused at exit 2 (`invalid_input`) with a message
 /// that names the value; nothing is printed on standard output.
 ///
 /// ## Output

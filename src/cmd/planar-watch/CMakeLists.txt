@@ -156,6 +156,7 @@ planar_binary(planar_watch
     cliapp
     db
     json_text
+    textview
     engine_planning
     engine_runtime
     engine_hostqueue

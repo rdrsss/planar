@@ -5,6 +5,7 @@
 module planar.cmd.planar_watch.handlers.queue.render;
 
 import std;
+import planar.textview;
 
 namespace planar::cmd::watch::handlers::queue_render {
 
@@ -17,24 +18,14 @@ auto is_c1_at(std::string_view text, std::size_t at) -> bool {
          static_cast<unsigned char>(text[at + 1]) >= 0x80 && static_cast<unsigned char>(text[at + 1]) <= 0x9F;
 }
 
-/// @brief Whether `text` holds a byte that must not reach a terminal or a
-/// line-oriented reader raw: a C0 control, DEL or a C1 control.
-auto has_control(std::string_view text) -> bool {
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    auto const u = static_cast<unsigned char>(text[i]);
-    if (u < 0x20 || u == 0x7f || is_c1_at(text, i)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /// @brief One argv word as a shell would need it: bare when only safe
 /// characters, single-quoted otherwise, and double-quoted with escapes when it
-/// holds a control byte (no shell quoting can carry one on a single line).
+/// holds a control byte, a format character or invalid UTF-8 (no shell
+/// quoting can carry one on a single line, so that form is display text, not a
+/// pasteable shell word).
 auto shell_word(std::string_view word) -> std::string {
-  if (has_control(word)) {
-    return quote(word);
+  if (textview::has_hazard(word)) {
+    return textview::quote_text(word);
   }
   auto const safe = !word.empty() && std::ranges::all_of(word, [](char c) {
     return std::isalnum(static_cast<unsigned char>(c)) != 0 || std::string_view{"_@%+=:,./-"}.contains(c);
@@ -88,8 +79,13 @@ auto cell(std::string_view value) -> std::string {
   if (value.empty()) {
     return "-";
   }
-  auto const risky = has_control(value) || value == "-" || value.contains(' ') || value.contains('"');
-  return risky ? quote(value) : std::string{value};
+  auto const risky =
+      textview::has_hazard(value) || value == "-" || value.contains(' ') || value.contains('"') || value.contains('\\');
+  return risky ? textview::quote_text(value) : std::string{value};
+}
+
+auto field_cell(std::string_view value) -> std::string {
+  return cell(textview::cap_field(value));
 }
 
 auto shell_line(const std::vector<std::string>& argv) -> std::string {
@@ -129,14 +125,14 @@ auto pad_table(const std::vector<std::vector<std::string>>& table) -> std::strin
   std::vector<std::size_t> width(columns, 0);
   for (auto const& line : table) {
     for (std::size_t i = 0; i + 1 < columns; ++i) {
-      width[i] = std::max(width[i], line[i].size());
+      width[i] = std::max(width[i], textview::display_width(line[i]));
     }
   }
   std::string out;
   for (auto const& line : table) {
     for (std::size_t i = 0; i + 1 < columns; ++i) {
       out += line[i];
-      out.append(width[i] - line[i].size() + 2, ' ');
+      out.append(width[i] - textview::display_width(line[i]) + 2, ' ');
     }
     out += line.back();
     out += '\n';
