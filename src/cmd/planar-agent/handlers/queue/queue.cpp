@@ -4,6 +4,10 @@
 
 module;
 
+#include <cerrno>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <unistd.h>
 
 module planar.cmd.planar_agent.handlers.queue;
@@ -49,6 +53,153 @@ constexpr std::int64_t k_drain_slack_ms = 15'000;
 /// polled at the configured interval; the child is checked more often so
 /// the submitter exits promptly when the command does.
 constexpr std::chrono::milliseconds k_child_tick{20};
+
+/// @brief The write end of the signal relay's pipe, or -1 when no relay is
+/// installed. A signal handler cannot be given state, so this is the one piece
+/// of process-wide state the handler reads; it is set and cleared only by
+/// `signal_relay`, and a lock-free atomic is safe to read in a handler.
+std::atomic<int> g_relay_fd{-1};
+
+/// @brief The handler for the forwarded signals. Async-signal-safe: it does
+/// nothing but write the signal number, as one byte, to the relay's pipe. A
+/// full pipe drops the byte, which loses nothing: the wait loop forwards each
+/// signal it reads, and a repeat of a signal already pending carries no
+/// information.
+void relay_handler(int sig) {
+  auto const saved = errno;
+  auto const fd    = g_relay_fd.load();
+  if (fd >= 0) {
+    auto const byte = static_cast<unsigned char>(sig);
+    static_cast<void>(::write(fd, &byte, 1));
+  }
+  errno = saved;
+}
+
+/// @brief The signals a submitter forwards to its command (tech spec 647 §
+/// Signals are forwarded and the entry is always removed).
+constexpr std::array<int, 3> k_forwarded_signals{SIGINT, SIGTERM, SIGHUP};
+
+/// @brief The name of a forwarded signal.
+auto signal_name(int sig) -> std::string {
+  switch (sig) {
+  case SIGINT:
+    return "SIGINT";
+  case SIGTERM:
+    return "SIGTERM";
+  case SIGHUP:
+    return "SIGHUP";
+  default:
+    return std::format("signal {}", sig);
+  }
+}
+
+/// @brief Catches SIGINT, SIGTERM and SIGHUP for the lifetime of one
+/// submission and hands them to the wait loops through a self-pipe.
+///
+/// The handler only writes the signal number to the pipe; every decision is
+/// made in the loops, which call `drain` and `wait`. A signal that was ignored
+/// when the process started (a `nohup`ed or backgrounded submitter) stays
+/// ignored: the relay does not install a handler for it. The previous
+/// dispositions are restored when the relay is destroyed, so a caller that
+/// runs the handler in-process gets its own handlers back.
+///
+/// Invariants: at most one relay exists at a time (`g_relay_fd`); not
+/// thread-safe, like the submitter.
+class signal_relay {
+  int                             _read  = -1;
+  int                             _write = -1;
+  std::array<struct sigaction, 3> _previous{};
+  std::array<bool, 3>             _installed{};
+  std::vector<int>                _pending; ///< Signals read off the pipe and not yet drained.
+
+  signal_relay() = default;
+
+public:
+  signal_relay(const signal_relay&)            = delete;
+  signal_relay& operator=(const signal_relay&) = delete;
+
+  ~signal_relay() {
+    for (std::size_t i = 0; i < k_forwarded_signals.size(); ++i) {
+      if (_installed[i]) {
+        ::sigaction(k_forwarded_signals[i], &_previous[i], nullptr);
+      }
+    }
+    g_relay_fd.store(-1);
+    if (_read >= 0) {
+      ::close(_read);
+    }
+    if (_write >= 0) {
+      ::close(_write);
+    }
+  }
+
+  /// @brief Creates the pipe and installs the handlers.
+  /// @return The relay, or `std::nullopt` when the pipe cannot be made.
+  static auto open() -> std::unique_ptr<signal_relay> {
+    auto relay = std::unique_ptr<signal_relay>(new signal_relay());
+    int  ends[2]{-1, -1};
+    if (::pipe(ends) != 0) {
+      return nullptr;
+    }
+    relay->_read  = ends[0];
+    relay->_write = ends[1];
+    for (auto const fd : ends) {
+      auto const flags = ::fcntl(fd, F_GETFL);
+      if (::fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0 || ::fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
+        return nullptr;
+      }
+    }
+    g_relay_fd.store(relay->_write);
+    for (std::size_t i = 0; i < k_forwarded_signals.size(); ++i) {
+      struct sigaction current{};
+      if (::sigaction(k_forwarded_signals[i], nullptr, &current) == 0 && current.sa_handler == SIG_IGN) {
+        continue;
+      }
+      struct sigaction ours{};
+      ours.sa_handler = relay_handler;
+      ours.sa_flags   = SA_RESTART;
+      sigfillset(&ours.sa_mask);
+      if (::sigaction(k_forwarded_signals[i], &ours, &relay->_previous[i]) == 0) {
+        relay->_installed[i] = true;
+      }
+    }
+    return relay;
+  }
+
+  /// @brief Reads every signal received since the last call, including any
+  /// that `wait` already took off the pipe.
+  /// @return The signal numbers, in arrival order; empty when none.
+  auto drain() -> std::vector<int> {
+    pull();
+    return std::exchange(_pending, {});
+  }
+
+  /// @brief Sleeps up to `span`, returning early when a signal arrives. The
+  /// signal is moved off the pipe into the relay's own pending list, where
+  /// `drain` finds it, so a loop that waits here and never drains cannot spin
+  /// on a byte that stays readable.
+  /// @param span The longest time to wait.
+  void wait(std::chrono::milliseconds span) {
+    struct pollfd watched{.fd = _read, .events = POLLIN, .revents = 0};
+    static_cast<void>(::poll(&watched, 1, static_cast<int>(std::max<std::int64_t>(span.count(), 0))));
+    pull();
+  }
+
+private:
+  /// @brief Moves every byte now in the pipe to the pending list.
+  void pull() {
+    unsigned char buffer[64];
+    while (true) {
+      auto const n = ::read(_read, buffer, sizeof buffer);
+      if (n <= 0) {
+        break;
+      }
+      for (ssize_t i = 0; i < n; ++i) {
+        _pending.push_back(buffer[i]);
+      }
+    }
+  }
+};
 
 /// @brief Writes one diagnostic line at most once per distinct text, so a
 /// condition that persists across polls is not repeated every interval.
@@ -312,9 +463,6 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   ident::clock&       clock     = deps.clock ? *deps.clock : static_cast<ident::clock&>(system_clock);
   auto const          probe     = deps.probe ? *deps.probe : hq::system_process_probe();
   auto const          signaller = deps.signaller ? deps.signaller : hq::system_group_signaller();
-  auto const sleep = deps.sleep ? deps.sleep : std::function<void(std::chrono::milliseconds)>{[](std::chrono::milliseconds d) {
-    std::this_thread::sleep_for(d);
-  }};
 
   // Configuration first: an unusable configuration must refuse before the
   // store is touched. The path is the context's environment's, exactly as
@@ -353,6 +501,17 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   if (!now_mono) {
     return refuse(ctx, "cannot read the monotonic clock");
   }
+
+  // From here on SIGINT, SIGTERM and SIGHUP are caught: a waiting submitter
+  // removes its entry, a running one forwards the signal to its command. The
+  // handlers are put back when this function returns, on every path.
+  auto const relay = signal_relay::open();
+  if (!relay) {
+    return refuse(ctx, "cannot set up signal handling");
+  }
+  auto const sleep =
+      deps.sleep ? deps.sleep
+                 : std::function<void(std::chrono::milliseconds)>{[&relay](std::chrono::milliseconds d) { relay->wait(d); }};
 
   // The command guard and the 126/127 checks ran at the top of this function,
   // before the configuration and the store were touched.
@@ -404,10 +563,27 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // missing-entry rule (task hq-missing-entry) refines it.
   };
 
+  // A signal that arrives before the command starts removes the entry and
+  // runs nothing (tech spec 647 § Signals are forwarded and the entry is
+  // always removed). The entry ends as `cancelled`, attributed to this
+  // process, and the submitter exits 125.
+  auto const interrupted = [&](int sig) {
+    end(hq::end_request{.outcome      = hq::history_outcome::cancelled,
+                        .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = pid}});
+    ctx.err() << std::format("error: queue: entry {} was interrupted by {} before its turn; the command was not run\n", seq,
+                             signal_name(sig));
+    // The command never ran, so this is the queue's cancelled exit (decision
+    // 1188), not 128 plus the signal, which is for a command a signal ended.
+    return exit_status{exit_internal_error};
+  };
+
   // --- Waiting for the turn ---------------------------------------------
   std::optional<std::int64_t> failing_since;
   std::optional<std::int64_t> own_deadline;
   while (true) {
+    if (auto const signals = relay->drain(); !signals.empty()) {
+      return interrupted(signals.front());
+    }
     auto       polled = poll.poll_once();
     auto const now    = clock.monotonic_ms();
     if (!polled || polled->poll.status == hq::poll_status::skipped) {
@@ -452,6 +628,12 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     sleep(std::chrono::milliseconds{nap});
   }
 
+  // The turn came, and a signal arrived while it was being taken: the command
+  // has not started, so nothing is left to forward it to.
+  if (auto const signals = relay->drain(); !signals.empty()) {
+    return interrupted(signals.front());
+  }
+
   // --- Running -----------------------------------------------------------
   // SEAM (task hq-nested-run): a run that finds PLANAR_QUEUE_SLOT naming a
   // live running entry runs as a nested entry instead of waiting above.
@@ -479,8 +661,12 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     report.once(std::format("warning: queue: cannot record the command's process group: {}", recorded.error().message));
   }
 
-  // SEAM (task hq-signal-forwarding): SIGINT, SIGTERM and SIGHUP received
-  // here are forwarded to the child group.
+  // SIGINT, SIGTERM and SIGHUP received from here on are forwarded to the
+  // child group (tech spec 647 § Signals are forwarded and the entry is always
+  // removed). Forwarding is all the submitter does: it does not mark the entry
+  // terminating and does not escalate, so a command that carries on keeps its
+  // slot until it ends, or until its run limit, and the submitter then exits
+  // with what the command did (128 plus N when the forwarded signal killed it).
   //
   // The submitter enforces its own run limit (tech spec 647 § Running, step
   // 3): at the entry's recorded deadline it marks the entry terminating with
@@ -547,6 +733,13 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     if (observed->kind != runner::state::running) {
       final_status = *observed;
       break;
+    }
+    // The child was just observed running, so it is not yet reaped and its
+    // group id cannot have been reused.
+    for (auto const sig : relay->drain()) {
+      if (auto sent = runner::signal(child, sig); !sent && sent.error() != runner::error::no_such_process) {
+        report.once(std::format("warning: queue: {} to the command's process group failed", signal_name(sig)));
+      }
     }
     enforce_run_limit();
     sleep(k_child_tick);
@@ -621,6 +814,10 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
                                 seq));
         break;
       }
+      // A signal that arrives while the group drains has nothing to add: the
+      // stop is already under way and the leader is reaped. Take it off so it
+      // is not left readable.
+      static_cast<void>(relay->drain());
       sleep(k_child_tick);
     }
   }
