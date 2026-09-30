@@ -110,6 +110,7 @@ class signal_relay {
   int                             _write = -1;
   std::array<struct sigaction, 3> _previous{};
   std::array<bool, 3>             _installed{};
+  std::vector<int>                _pending; ///< Signals read off the pipe and not yet drained.
 
   signal_relay() = default;
 
@@ -165,29 +166,38 @@ public:
     return relay;
   }
 
-  /// @brief Reads every signal received since the last call.
+  /// @brief Reads every signal received since the last call, including any
+  /// that `wait` already took off the pipe.
   /// @return The signal numbers, in arrival order; empty when none.
   auto drain() -> std::vector<int> {
-    std::vector<int> got;
-    unsigned char    buffer[64];
+    pull();
+    return std::exchange(_pending, {});
+  }
+
+  /// @brief Sleeps up to `span`, returning early when a signal arrives. The
+  /// signal is moved off the pipe into the relay's own pending list, where
+  /// `drain` finds it, so a loop that waits here and never drains cannot spin
+  /// on a byte that stays readable.
+  /// @param span The longest time to wait.
+  void wait(std::chrono::milliseconds span) {
+    struct pollfd watched{.fd = _read, .events = POLLIN, .revents = 0};
+    static_cast<void>(::poll(&watched, 1, static_cast<int>(std::max<std::int64_t>(span.count(), 0))));
+    pull();
+  }
+
+private:
+  /// @brief Moves every byte now in the pipe to the pending list.
+  void pull() {
+    unsigned char buffer[64];
     while (true) {
       auto const n = ::read(_read, buffer, sizeof buffer);
       if (n <= 0) {
         break;
       }
       for (ssize_t i = 0; i < n; ++i) {
-        got.push_back(buffer[i]);
+        _pending.push_back(buffer[i]);
       }
     }
-    return got;
-  }
-
-  /// @brief Sleeps up to `span`, returning early when a signal arrives. The
-  /// signal is left in the pipe for `drain`.
-  /// @param span The longest time to wait.
-  void wait(std::chrono::milliseconds span) {
-    struct pollfd watched{.fd = _read, .events = POLLIN, .revents = 0};
-    static_cast<void>(::poll(&watched, 1, static_cast<int>(std::max<std::int64_t>(span.count(), 0))));
   }
 };
 
@@ -556,14 +566,15 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   // A signal that arrives before the command starts removes the entry and
   // runs nothing (tech spec 647 § Signals are forwarded and the entry is
   // always removed). The entry ends as `cancelled`, attributed to this
-  // process, and the submitter exits 128 plus the signal, as a process the
-  // signal killed would.
+  // process, and the submitter exits 125.
   auto const interrupted = [&](int sig) {
     end(hq::end_request{.outcome      = hq::history_outcome::cancelled,
                         .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = pid}});
     ctx.err() << std::format("error: queue: entry {} was interrupted by {} before its turn; the command was not run\n", seq,
                              signal_name(sig));
-    return exit_status{std::min(exit_status_max, 128 + sig)};
+    // The command never ran, so this is the queue's cancelled exit (decision
+    // 1188), not 128 plus the signal, which is for a command a signal ended.
+    return exit_status{exit_internal_error};
   };
 
   // --- Waiting for the turn ---------------------------------------------
@@ -803,6 +814,10 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
                                 seq));
         break;
       }
+      // A signal that arrives while the group drains has nothing to add: the
+      // stop is already under way and the leader is reaped. Take it off so it
+      // is not left readable.
+      static_cast<void>(relay->drain());
       sleep(k_child_tick);
     }
   }

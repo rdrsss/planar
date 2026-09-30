@@ -11,6 +11,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <signal.h>
+
 import std;
 import planar.cliapp.args;
 import planar.cmd.planar_agent.context;
@@ -409,4 +411,39 @@ TEST_CASE("queue run: a run limit that cannot mark a missing entry retries at th
   // poll schedule). A mark attempted at every tick reads a third, inside
   // `begin_terminate`.
   CHECK(clock->reads <= 2 * ticks + 20);
+}
+
+TEST_CASE("queue run: a signal that arrives while the turn is being taken runs nothing", "[cmd][agent][queue][hq-signals]") {
+  // The signal is raised from inside the poll that grants the turn (the
+  // settings reload at the start of that poll), after the wait loop's own
+  // check and before the command starts. The handler is the submitter's own,
+  // so `raise` reaches it synchronously.
+  scratch                         sc;
+  auto const                      marker   = sc.root / "ran";
+  int                             reloads  = 0;
+  auto                            settings = fast_settings();
+  agent::handlers::queue_run_deps deps;
+  deps.load_settings = [&] {
+    if (++reloads == 2) {
+      ::raise(SIGTERM);
+    }
+    return std::expected<planar::engine::config::queue_settings, planar::engine::config::queue_load_error>{settings};
+  };
+  auto const got = run_queue(sc, {"/usr/bin/touch", marker.string()}, deps);
+  INFO("stderr:\n" << got.err);
+  CHECK(reloads >= 2);
+  CHECK(got.code == 125);
+  CHECK(got.err.contains("not run"));
+  CHECK_FALSE(std::filesystem::exists(marker));
+
+  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  REQUIRE(opened.has_value());
+  auto const entries = hq::list(*opened);
+  REQUIRE(entries.has_value());
+  CHECK(entries->empty());
+  auto const row = hq::find_history(*opened, 1);
+  REQUIRE(row.has_value());
+  REQUIRE(row->has_value());
+  CHECK((*row)->outcome == hq::history_outcome::cancelled);
+  // The poll had already marked the entry running; the command still did not start.
 }

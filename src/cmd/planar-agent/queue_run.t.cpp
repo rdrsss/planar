@@ -1356,10 +1356,61 @@ auto trap_name(int sig) -> std::string {
 /// either exits 42 (`exit_on_signal`) or carries on. It records that it is
 /// ready in `$1` only once the trap is in place, and otherwise waits, in short
 /// naps so a trapped signal is taken promptly by any shell, for the file `$3`
-/// to appear.
+/// to appear, at most sixty seconds, so a command a failed case leaves behind
+/// ends by itself.
 auto trapping_script(int sig, bool exit_on_signal) -> std::string {
-  return std::format("trap 'echo got >> \"$2\"{}' {}; echo ready > \"$1\"; while [ ! -e \"$3\" ]; do sleep 0.05; done; exit 0",
+  return std::format("trap 'echo got >> \"$2\"{}' {}; echo ready > \"$1\"; n=0; while [ ! -e \"$3\" ] && [ $n -lt 1200 ]; do "
+                     "sleep 0.05; n=$((n+1)); done; exit 0",
                      exit_on_signal ? "; exit 42" : "", trap_name(sig));
+}
+
+/// @brief Creates `file` when it goes out of scope, so a command that waits for
+/// that file ends even when the case failed before it got there. Declare it
+/// after the `spawned` it serves, so it runs first.
+struct touch_on_exit {
+  std::filesystem::path file;
+  ~touch_on_exit() {
+    std::ofstream out(file);
+  }
+};
+
+/// @brief The CPU time the process `pid` has used, in seconds, from `ps`, or
+/// nothing when it cannot be read (the process is gone). Whole-second
+/// resolution on Linux, hundredths on macOS.
+auto cpu_seconds(std::int64_t pid) -> std::optional<double> {
+  std::string text;
+  auto* const pipe = ::popen(std::format("ps -o time= -p {} 2>/dev/null", pid).c_str(), "r");
+  if (pipe == nullptr) {
+    return std::nullopt;
+  }
+  char buffer[128];
+  while (std::fgets(buffer, sizeof buffer, pipe) != nullptr) {
+    text += buffer;
+  }
+  ::pclose(pipe);
+  std::erase_if(text, [](char c) { return c == ' ' || c == '\n'; });
+  if (text.empty()) {
+    return std::nullopt;
+  }
+  if (auto const dash = text.find('-'); dash != std::string::npos) {
+    text.erase(0, dash + 1);
+  }
+  double      seconds = 0;
+  std::size_t begin   = 0;
+  while (begin <= text.size()) {
+    auto const colon = text.find(':', begin);
+    auto const part  = text.substr(begin, colon == std::string::npos ? std::string::npos : colon - begin);
+    double     value = 0;
+    if (std::from_chars(part.data(), part.data() + part.size(), value).ec != std::errc{}) {
+      return std::nullopt;
+    }
+    seconds = seconds * 60 + value;
+    if (colon == std::string::npos) {
+      break;
+    }
+    begin = colon + 1;
+  }
+  return seconds;
 }
 
 /// @brief The pid of the submitter of `run`, checked to be the process the
@@ -1375,7 +1426,7 @@ auto submitter_pid(const spawned& run, const parity::arena& arena, std::int64_t 
 }
 
 /// @brief A waiting submitter that gets `sig` removes its entry, runs nothing,
-/// records why, exits 128 plus the signal, and leaves the queue free for the
+/// records why, exits 125, and leaves the queue free for the
 /// next entry.
 void waiter_is_signalled(int sig) {
   auto const arena = parity::make_arena(std::format("qr_sigwait_{}", signal_label(sig)));
@@ -1404,7 +1455,8 @@ void waiter_is_signalled(int sig) {
 
   auto const got = finish(b);
   INFO("stderr:\n" << got.err);
-  CHECK(got.code == 128 + sig);
+  // The command never ran: the queue's cancelled exit, not 128 plus the signal.
+  CHECK(got.code == 125);
   CHECK_FALSE(present(ran_b));
   CHECK(got.err.contains("not run"));
   {
@@ -1451,6 +1503,7 @@ void running_command_traps_forwarded(int sig) {
 
   auto run = spawn_queue(arena, "run", sh_command(trapping_script(sig, true), {ready.string(), marker.string(), stop.string()}),
                          {}, {}, true);
+  touch_on_exit stopper{stop};
   await_file(ready);
   auto const running = await_child_recorded(arena, 1);
   REQUIRE(running.child_pgid.has_value());
@@ -1558,6 +1611,7 @@ TEST_CASE("queue run: a command that carries on after the forwarded signal keeps
   spawned b;
   spawned a =
       spawn_queue(arena, "a", sh_command(trapping_script(SIGTERM, false), {ready.string(), marker.string(), stop.string()}));
+  touch_on_exit stopper{stop};
   await_file(ready);
   auto const running = await_child_recorded(arena, 1);
   REQUIRE(running.child_pgid.has_value());
@@ -1597,6 +1651,102 @@ TEST_CASE("queue run: a command that carries on after the forwarded signal keeps
   REQUIRE(one != nullptr);
   CHECK(one->outcome == hq::history_outcome::exited);
   CHECK(one->exit_code == 0);
+}
+
+TEST_CASE("queue run: a submitter started with SIGINT ignored leaves it ignored and forwards nothing",
+          "[cmd][agent][queue][hq-signals]") {
+  // A shell starts a background job with SIGINT ignored (no `default_int`
+  // here). The submitter must leave that alone, as `nohup` leaves SIGHUP: it
+  // installs no handler, so the SIGINT is ignored and nothing reaches the
+  // command. The command puts SIGINT back to the default itself and traps it,
+  // so a forwarded SIGINT would leave the marker.
+  auto const arena = parity::make_arena("qr_sigign");
+  write_config(arena, k_fast_poll);
+  auto const ready  = arena.cpp_root / "ready";
+  auto const marker = arena.cpp_root / "marker";
+  auto const stop   = arena.cpp_root / "stop";
+
+  std::vector<std::string> command{"perl",       "-e",           "$SIG{INT} = q(DEFAULT); exec @ARGV",
+                                   "sh",         "-c",           trapping_script(SIGINT, true),
+                                   "sh",         ready.string(), marker.string(),
+                                   stop.string()};
+  spawned                  run = spawn_queue(arena, "run", command);
+  touch_on_exit            stopper{stop};
+  await_file(ready);
+  await_child_recorded(arena, 1);
+  auto const victim = submitter_pid(run, arena, 1);
+  REQUIRE(::kill(victim, SIGINT) == 0);
+
+  // The submitter kept supervising for several more polls, so it took the
+  // signal (had it a handler, it would have forwarded it within one tick).
+  await_refreshes(arena, 1, 3);
+  CHECK_FALSE(run.ended());
+  CHECK_FALSE(present(marker));
+  {
+    auto const snap = require_snapshot(arena);
+    REQUIRE(entry_seq(snap, 1) != nullptr);
+    CHECK(entry_seq(snap, 1)->state == hq::entry_state::running);
+    CHECK(snap.history.empty());
+  }
+
+  {
+    std::ofstream out(stop);
+  }
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK_FALSE(present(marker));
+  CHECK(only_history(arena, 1).outcome == hq::history_outcome::exited);
+}
+
+TEST_CASE("queue run: a signal during the drain of a stopped command does not make the submitter spin",
+          "[cmd][agent][queue][hq-signals]") {
+  // The leader dies of the run limit's SIGTERM and is reaped; a member that
+  // ignores SIGTERM keeps the group, so the submitter drains until the
+  // SIGKILL after the grace period. A signal that arrives then must be taken
+  // off the relay's pipe: left readable, the wait returns at once on every
+  // pass and the drain burns a core for the whole grace period. CPU time, not
+  // wall time, is the bound, so load does not disturb it.
+  auto const arena = parity::make_arena("qr_sigspin");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"4s\"\n");
+  gate            hold(arena.cpp_root / "hold.fifo");
+  auto const      straggler = arena.cpp_root / "straggler.pid";
+  release_all     guard{.gates = {&hold}};
+  straggler_guard reap{.file = straggler};
+
+  auto const script = "( trap '' TERM; exec sleep 25 ) & echo \"$!\" > \"$1\"; read x < \"$2\"";
+  auto run = spawn_queue(arena, "run", sh_command(script, {straggler.string(), hold.path.string()}), {}, {"--timeout", "1s"});
+  await_file(straggler);
+  auto const running = await_child_recorded(arena, 1);
+  REQUIRE(running.child_pgid.has_value());
+  auto const victim = submitter_pid(run, arena, 1);
+  auto const leader = static_cast<::pid_t>(*running.child_pgid);
+
+  // Stopping has begun and the leader has been reaped: the submitter is now in
+  // the drain, waiting for the straggler.
+  REQUIRE(await([&] {
+    auto const  snap = try_snapshot(arena);
+    auto const* live = snap ? entry_seq(*snap, 1) : nullptr;
+    return live != nullptr && live->terminating_since_mono.has_value() && ::kill(leader, 0) != 0 && errno == ESRCH;
+  }));
+  REQUIRE(::kill(victim, SIGTERM) == 0);
+
+  // Let the drain run for a while (a measurement window, not a
+  // synchronisation), then read the submitter's CPU time.
+  auto const window = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (std::chrono::steady_clock::now() < window) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  REQUIRE_FALSE(run.ended());
+  auto const cpu = cpu_seconds(run.pid);
+  REQUIRE(cpu.has_value());
+  INFO("submitter CPU seconds: " << *cpu);
+  CHECK(*cpu < 1.0);
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 124);
+  CHECK(only_history(arena, 1).outcome == hq::history_outcome::timeout);
 }
 
 TEST_CASE("queue run: a failing case leaves no live submitter behind", "[cmd][agent][queue][hq-signals]") {

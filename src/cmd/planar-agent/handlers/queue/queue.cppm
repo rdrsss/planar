@@ -57,7 +57,7 @@
 /// to its return, through a self-pipe: the handler only writes the signal
 /// number, and the wait loops act on it. While waiting, a signal removes the
 /// entry (outcome `cancelled`, attributed to the submitter's pid), runs nothing
-/// and exits 128 plus the signal. While the command runs, it is forwarded to
+/// and exits 125 (decision 1188: cancelled). While the command runs, it is forwarded to
 /// the command's process group and supervision goes on; nothing escalates, so a
 /// command that survives the signal keeps its slot and the outcome and exit
 /// code are what the command did (`signaled`, 128 plus N, or `exited` with its
