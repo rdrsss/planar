@@ -171,10 +171,27 @@ TEST_CASE("a role file or skill source gives no build or test command to run dir
 
 TEST_CASE("the coder's gate instructions use the queued form", "[cmd][agent][queue][roles]") {
   auto const text = flat(read_file(repo("agents/coder.md")));
-  // The long gates are submitted detached, the short ones run in the foreground.
-  CHECK(contains(text, "planar-agent queue run --detach --vendor <vendor> --role coder -- make test"));
-  CHECK(contains(text, "planar-agent queue run --detach --vendor <vendor> --role coder -- make cpp-lint"));
-  CHECK(contains(text, "planar-agent queue run --vendor <vendor> --role coder -- make fmt-check"));
+  // Long profile commands are submitted detached, short ones run in the
+  // foreground, and neither names a make target: the files are installed for
+  // every repository and defer to its confirmed validation profile.
+  CHECK(contains(text, "planar-agent queue run --detach --vendor <vendor> --role coder -- <profile command>"));
+  CHECK(contains(text, "planar-agent queue run --vendor <vendor> --role coder -- <profile command>"));
+}
+
+TEST_CASE("no role file or skill source names a make target in a queue line", "[cmd][agent][queue][roles]") {
+  for (auto const* rel : k_sources) {
+    DYNAMIC_SECTION(rel) {
+      std::istringstream in(read_file(repo(rel)));
+      for (std::string line; std::getline(in, line);) {
+        auto const at = line.find("planar-agent queue run");
+        if (at == std::string::npos) {
+          continue;
+        }
+        INFO("queue line names a make target: " << line);
+        CHECK(line.find("make ", at) == std::string::npos);
+      }
+    }
+  }
 }
 
 TEST_CASE("the direct-instruction check discriminates", "[cmd][agent][queue][roles]") {

@@ -62,13 +62,11 @@ they are the coder's job to get right before handoff.
    - **Run break-probes FIRST, then the long gates.** Probes are the evidence
      only you can produce; gates are reproducible by anyone downstream.
    - **Submit the long gates detached** rather than blocking a whole turn on
-     one command:
-     `planar-agent queue run --detach --vendor <vendor> --role coder -- make test`
-     and
-     `planar-agent queue run --detach --vendor <vendor> --role coder -- make cpp-lint`.
+     one command. Each long command from the confirmed validation profile:
+     `planar-agent queue run --detach --vendor <vendor> --role coder -- <profile command>`.
      Poll each ticket with `planar-agent queue status <seq>` every 30 seconds.
-     A short gate may run in the foreground instead:
-     `planar-agent queue run --vendor <vendor> --role coder -- make fmt-check`.
+     A short profile command may run in the foreground instead:
+     `planar-agent queue run --vendor <vendor> --role coder -- <profile command>`.
    - **A detached gate builds when its turn comes, not when you submit it.**
      Submit a gate only once the tree is final for that gate, and do not edit
      the tree from submitting it until its ticket ends; an edit made while it

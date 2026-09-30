@@ -1301,10 +1301,10 @@ def grade_coherence(root: Path = ROOT) -> None:
     forbid(
         r"make (fmt-check|build|test|test-integration)|scriptorium check -config",
         core_rel,
-        # The host queue rule (plan 1080) names generic build and test commands
-        # as examples of what to queue, and the role files show the queue's own
-        # submit line; neither is a target-repository validation command.
-        allow=r"^Examples: `make`, `make test`|planar-agent queue run ",
+        # Only the host queue rule's generic "Examples:" line (plan 1080) is
+        # exempt: what counts as a build to queue. Installed role files defer
+        # to the target repository's validation profile and name no make target.
+        allow=r"^Examples: `make`",
     )
     forbid(
         r"recommended for:.*(mechanical|docs-polish|single-verb)",
