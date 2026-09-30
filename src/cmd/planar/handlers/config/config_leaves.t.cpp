@@ -502,6 +502,25 @@ TEST_CASE("config show renders provenance under --effective", "[cmd][config][sho
   cleanup(fx);
 }
 
+TEST_CASE("config show --effective labels queue keys set in the file [config file] and the rest [embedded default]",
+          "[cmd][config][show][effective][hq-config]") {
+  auto const fx = make_fixture("showqueue");
+  write_config(fx, "[queue]\nslots = 3\ngrace = \"20s\"\n");
+  auto const r = dispatch(fx, {"config", "show", "--effective"});
+  CHECK(r.code == 0);
+  CHECK(line_for(r.out, "queue.slots") == "queue.slots = 3  [config file]");
+  CHECK(line_for(r.out, "queue.grace") == "queue.grace = 20s  [config file]");
+  CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s  [embedded default]");
+  CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s  [embedded default]");
+  CHECK(line_for(r.out, "queue.history_days") == "queue.history_days = 30  [embedded default]");
+  // Known limitation (task 7058, inherited from `pick_int`): a key of the
+  // wrong type in the file (`slots = "3"`) still reports `[config file]` with
+  // the default's value, because pick_int records the fallback under the file's
+  // provenance. `config validate` is what refuses that value; this view is not
+  // the place a wrong type is caught.
+  cleanup(fx);
+}
+
 TEST_CASE("config show reports the environment variable that supplied a value", "[cmd][config][show][effective]") {
   auto fx = make_fixture("showenv");
   fx.vars.emplace("PLANAR_VENDOR", "gemini");

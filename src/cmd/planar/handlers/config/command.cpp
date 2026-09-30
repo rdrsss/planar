@@ -484,7 +484,10 @@ auto queue_key_at_line(std::string_view content, std::uint32_t line) -> std::str
     auto const text    = trim_any(rest.substr(0, newline == std::string_view::npos ? rest.size() : newline), " \t\r");
     if (!text.empty() && text.front() != '#') {
       if (text.front() == '[') {
-        table = std::string{trim_any(trim_any(text, "[]"), " \t")};
+        // A trailing `# comment` after the closing bracket is not part of the
+        // table name (task 7057).
+        auto const header = text.substr(0, std::min(text.size(), text.find('#')));
+        table             = std::string{trim_any(trim_any(header, " \t[]"), " \t")};
       } else if (number == line) {
         auto const eq = text.find('=');
         if (table == "queue" && eq != std::string_view::npos) {

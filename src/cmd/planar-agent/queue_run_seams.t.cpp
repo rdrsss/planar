@@ -492,7 +492,7 @@ TEST_CASE("queue run: a signal that arrives while the turn is being taken runs n
   };
   auto const got = run_queue(sc, {"/usr/bin/touch", marker.string()}, deps);
   INFO("stderr:\n" << got.err);
-  CHECK(reloads >= 2);
+  CHECK(reloads == 2);
   CHECK(got.code == 125);
   CHECK(got.err.contains("not run"));
   CHECK_FALSE(std::filesystem::exists(marker));

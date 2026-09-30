@@ -116,6 +116,10 @@ auto pick_bool(std::string_view key, const toml_map& file_map, const toml_map& d
 
 /// @brief Resolve an int-typed key: file, then default. Mirrors zig's
 /// `pickInt`.
+///
+/// A key present in the file with a non-integer type falls back to the default
+/// value but is still recorded as `config_file`; `config validate` is what
+/// refuses such a value, not this resolver (task 7058).
 auto pick_int(std::string_view key, const toml_map& file_map, const toml_map& def_map, effective_map& eff,
               std::int64_t default_val) -> std::int64_t {
   if (auto it = file_map.find(key); it != file_map.end()) {

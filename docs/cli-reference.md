@@ -5661,7 +5661,7 @@ planar config validate
 - Sensitive-data invariant: keys matching the secret-name denylist must not carry literal values.
 - Cross-reference consistency (e.g. `auth = "token-env"` requires `token_env` to name an env var).
 - The `[queue]` table: every key within its range, no unknown key, and `stale_after` not shorter than `poll_interval` (see [The `[queue]` table](#the-queue-table)).
-- Unknown keys produce a **warning**, not an error, preserving forward-compatibility.
+- Unknown keys outside `[queue]` produce a **warning**, not an error, preserving forward-compatibility; an unknown key inside `[queue]` is refused (see above).
 
 Each issue is printed with its line number and key path.
 
@@ -6936,7 +6936,23 @@ These are accepted, and stated here so they are not rediscovered.
 - Before choosing the program the guard skips leading `NAME=value` assignments and a leading `env` (by basename) with its options and the assignments after it: the flags that need no value (`-i`, `-0`, `-v`), the ones that take a value, in their separate, attached and long forms (`-u NAME`, `-C DIR`, `-P PATH`, `-a NAME`, FreeBSD's `-L USER` and `-U USER` (macOS and GNU `env` reject them, so a command using one fails inside `env` before anything runs; the guard consumes their value anyway, which is harmless), and the long `--unset`, `--chdir` and `--argv0`), clustered short options such as `-iu NAME`, and the `--` that ends the options. The string given to `env -S` (or `--split-string`) is split on white space, honouring quotes, and read as the start of the command. The skipping repeats, so `env env claude` is refused too. A command that is only `env`, with nothing after it to run, has no program and is not refused.
 - The guard is a denylist and looks no deeper: a launcher run through `sh -c`, an interpreter or a wrapper script of your own is not seen.
 
-A refusal exits **2**, writes `error: queue: refusing to queue '<program>': it is a model launcher` on standard error, and enqueues nothing. The full exit-code table for `queue run` belongs to a later task of plan 1080.
+A refusal exits **2**, writes `error: queue: refusing to queue '<program>': it is a model launcher` on standard error, and enqueues nothing. The full exit-code table for `queue run` is [Queue run exit codes](#queue-run-exit-codes).
+
+#### Queue run exit codes
+
+Foreground `queue run` exits with the command's own exit status (decision 1188). The codes below belong to the queue; each is checked against the built binary by `make exit-code-contract`.
+
+| Code | Meaning | When |
+|------|---------|------|
+| `1` | **Parse failure**: an unknown flag, a flag with no value, or no command given. | Before anything is enqueued. |
+| `2` | **Refused input**: a command the guard refuses (a model launcher), or an invalid `--timeout` / `--wait-timeout` value. | Before the configuration or the store is touched. |
+| `124` | The command was **stopped at its run limit** (`--timeout`), whatever signal ended it. | The entry ends `timeout`. |
+| `125` | The **queue failed**: store unreachable, configuration unusable, wait limit reached, cancelled before its turn, or an internal error. Also returned when a handler passes through a status outside 0..255. | The command was not run (except an internal error after it started). |
+| `126` | The command was found and **could not be executed**. | The entry ends `not_started` if it had been enqueued. |
+| `127` | The command was **not found**. | The entry ends `not_started` if it had been enqueued. |
+| `128` + N | The command was **terminated by signal N** (`143` for SIGTERM), capped at 255. | The entry ends `signaled`. |
+
+Any other value is the command's own exit status, passed through unchanged (`7` is `7`); the status of a command that exits `0` is `0`. Because a command may itself exit with any of the values above, the exit code alone is ambiguous: `queue status <seq>` is the authoritative record (its `outcome` field says whether the command ran), and with `--notices` the submitter's last line on standard error names the sequence number and the outcome. A status outside 0..255 cannot be reported by a process, so the dispatcher refuses it with one `error:` line and exits `125`.
 
 ### Atomic operation transaction shapes
 

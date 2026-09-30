@@ -74,6 +74,14 @@ TEST_CASE("queue config workflow: a float slot count is refused naming the key",
   CHECK(ran.err.contains("(queue.slots)"));
 }
 
+TEST_CASE("queue config workflow: a queue table header with a trailing comment still names the key", "[cmd][planar][hq-config]") {
+  // Task 7057: the header line is `[queue] # note`; the key-naming scan must
+  // strip the comment or it reads the table as `queue] # note` and names nothing.
+  auto const ran = validate_with("qcfg_hdrcomment", "[queue] # note\nslots = 1.5\n");
+  CHECK(ran.code == 1);
+  CHECK(ran.err.contains("(queue.slots)"));
+}
+
 TEST_CASE("queue config workflow: findings from the queue table and another table are all reported", "[cmd][planar][hq-config]") {
   auto const ran = validate_with("qcfg_multi", "[external.github-issues]\nauth = \"bogus\"\n[queue]\nslots = 0\n");
   CHECK(ran.code == 1);
