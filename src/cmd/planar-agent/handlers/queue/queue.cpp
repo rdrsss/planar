@@ -746,13 +746,22 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // claiming a turn).
   };
 
+  // A refusal after the entry exists: the `error: queue:` line, then, with
+  // `--notices`, the outcome as the last line (tech spec 647: the submitter's
+  // last line names the sequence number and the outcome).
+  auto const refuse_entry = [&](const std::string& body, const std::string& outcome) {
+    auto refused = refuse(ctx, body);
+    notice.line(seq, outcome);
+    return refused;
+  };
+
   // A signal that arrives before the command starts removes the entry and
   // runs nothing (tech spec 647 § Signals are forwarded and the entry is
   // always removed). The entry ends as `cancelled`, attributed to this
   // process, and the submitter exits 125.
   auto const interrupted = [&](int sig) {
     end(hq::end_request{.outcome      = hq::history_outcome::cancelled,
-                        .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = pid}});
+                        .cancelled_by = hq::canceller{.vendor = vendor, .role = role, .pid = pid}});
     ctx.err() << std::format("error: queue: entry {} was interrupted by {} before its turn; the command was not run\n", seq,
                              signal_name(sig));
     notice.line(seq, "cancelled before its turn");
@@ -777,23 +786,27 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
   auto const                  on_missing_while_waiting = [&]() -> std::optional<handler_outcome> {
     auto const gone = [&](std::optional<hq::history_outcome> outcome) -> handler_outcome {
       if (!outcome) {
-        return refuse(ctx,
-                      std::format("entry {} is no longer in the queue and left no history row; the command was not run", seq));
+        return refuse_entry(
+            std::format("entry {} is no longer in the queue and left no history row; the command was not run", seq),
+            "ended without a history row");
       }
       if (*outcome == hq::history_outcome::cancelled) {
-        return refuse(ctx, std::format("entry {} was cancelled; the command was not run", seq));
+        return refuse_entry(std::format("entry {} was cancelled; the command was not run", seq), "cancelled");
       }
       if (*outcome == hq::history_outcome::abandoned) {
-        return refuse(ctx, std::format("entry {} was reaped after this submitter had already rejoined the queue {} times; giving "
-                                       "up, the command was not run",
-                                       seq, rejoins));
+        return refuse_entry(
+            std::format("entry {} was reaped after this submitter had already rejoined the queue {} times; giving "
+                        "up, the command was not run",
+                        seq, rejoins),
+            "abandoned, rejoin limit reached");
       }
-      return refuse(
-          ctx, std::format("entry {} ended as {} without this submitter; the command was not run", seq, hq::to_string(*outcome)));
+      return refuse_entry(
+          std::format("entry {} ended as {} without this submitter; the command was not run", seq, hq::to_string(*outcome)),
+          std::format("ended as {} without this submitter", hq::to_string(*outcome)));
     };
     auto const now = clock.monotonic_ms();
     if (!now) {
-      return refuse(ctx, "cannot read the monotonic clock");
+      return refuse_entry("cannot read the monotonic clock", "ended: cannot read the clock");
     }
     // A store failure here is the poll-cannot-complete case of tech spec 647 §
     // Waiting: busy is retried at the poll interval for up to the staleness
@@ -802,15 +815,17 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     // write); any other failure refuses at once. Nested insert, same rule.
     auto const store_failure = [&](const hq::queue_error& error) -> std::optional<handler_outcome> {
       if (!is_busy_failure(error)) {
-        return refuse(ctx, std::format("cannot rejoin the queue after entry {} went missing: {}; the command was not run", seq,
-                                       error.message));
+        return refuse_entry(
+            std::format("cannot rejoin the queue after entry {} went missing: {}; the command was not run", seq, error.message),
+            "ended: cannot rejoin the queue");
       }
       if (!rejoin_busy_since) {
         rejoin_busy_since = *now;
       } else if (*now - *rejoin_busy_since > settings.current().stale_after_ms) {
-        return refuse(ctx, std::format("the store stayed busy for longer than the staleness window while entry {} was being put "
-                                       "back in the queue; the command was not run",
-                                       seq));
+        return refuse_entry(std::format("the store stayed busy for longer than the staleness window while entry {} was being put "
+                                        "back in the queue; the command was not run",
+                                        seq),
+                            "ended: store busy while rejoining");
       }
       report.once(
           std::format("warning: queue: cannot rejoin the queue after entry {} went missing, will retry: {}", seq, error.message));
@@ -873,7 +888,8 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
           // end it ourselves as abandoned (the entry's fate when its submitter
           // stops being live) so it is not left for a reaper, then give up.
           end(hq::end_request{.outcome = hq::history_outcome::abandoned});
-          return refuse(ctx, std::format("entry {} could not be polled for longer than the staleness window; giving up", seq));
+          return refuse_entry(std::format("entry {} could not be polled for longer than the staleness window; giving up", seq),
+                              "abandoned, could not be polled");
         }
       }
     } else {
@@ -1032,6 +1048,7 @@ auto queue_run_with(context& ctx, const cliapp::parsed_args& args, queue_run_dep
     if (!observed) {
       ctx.err() << "error: queue: cannot observe the command's status\n";
       end(hq::end_request{.outcome = hq::history_outcome::abandoned});
+      notice.line(seq, "abandoned, cannot observe the command's status");
       return exit_status{exit_internal_error};
     }
     if (observed->kind != runner::state::running) {

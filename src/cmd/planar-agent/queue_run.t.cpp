@@ -2590,3 +2590,190 @@ TEST_CASE("queue run: a rejoined entry keeps the vendor and role of the one that
   CHECK(new_row->vendor == "rejoinv");
   CHECK(new_row->role == "rejoinr");
 }
+
+// ---------------------------------------------------------------------------
+// Scenarios: with --notices the last line on standard error names the entry
+// and how it ended, on every path that leaves after the entry exists (tech
+// spec 647 § Exit codes), and a self-interrupt records its vendor and role.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("queue run: --notices ends a submitter interrupted before its turn with that outcome, and records who it was",
+          "[cmd][agent][queue][hq-notices]") {
+  auto const arena = parity::make_arena("qr_notice_interrupt");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  spawned     a;
+  spawned     b;
+  release_all guard{.gates = {&hold}};
+
+  a = spawn_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  b = spawn_queue(arena, "b", sh_command("exit 0"), identity_env("", ""), {"--notices", "--vendor", "iv", "--role", "ir"});
+  await_err_contains(b, "queue: entry 2 waiting at position 1\n");
+  REQUIRE(b.still_mine());
+  auto const b_pid = b.pid;
+  REQUIRE(::kill(static_cast<::pid_t>(b_pid), SIGTERM) == 0);
+
+  auto const got = finish(b);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(split_lines(got.err).back() == "queue: entry 2 cancelled before its turn");
+  hold.release();
+  CHECK(finish(a).code == 0);
+
+  auto const  snap = require_snapshot(arena);
+  auto const* row  = history_seq(snap, 2);
+  REQUIRE(row != nullptr);
+  CHECK(row->outcome == hq::history_outcome::cancelled);
+  CHECK(row->cancelled_by == hq::canceller{.vendor = "iv", .role = "ir", .pid = b_pid});
+}
+
+TEST_CASE("queue run: --notices ends a submitter whose wait limit passed with that outcome", "[cmd][agent][queue][hq-notices]") {
+  auto const arena = parity::make_arena("qr_notice_waitlimit");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  spawned     a;
+  release_all guard{.gates = {&hold}};
+
+  a = spawn_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  auto const got = run_queue(arena, "b", sh_command("exit 0"), {"--notices", "--wait-timeout", "300ms"});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(split_lines(got.err).back() == "queue: entry 2 removed at its wait limit");
+  hold.release();
+  CHECK(finish(a).code == 0);
+}
+
+TEST_CASE("queue run: --notices ends a command that could not be started with that outcome", "[cmd][agent][queue][hq-notices]") {
+  auto const arena   = parity::make_arena("qr_notice_notstarted");
+  auto const program = arena.cpp_root / "no-shebang";
+  {
+    std::ofstream out(program, std::ios::binary | std::ios::trunc);
+    out << "echo this is not a binary\n";
+  }
+  std::filesystem::permissions(program, std::filesystem::perms::owner_all);
+
+  auto const got = run_queue(arena, "ns", {program.string()}, {"--notices"});
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 126);
+  CHECK(split_lines(got.err).back() == "queue: entry 1 not started");
+}
+
+TEST_CASE("queue run: --notices ends a running command another process cancelled with that outcome",
+          "[cmd][agent][queue][hq-notices]") {
+  auto const arena = parity::make_arena("qr_notice_cancelled");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  release_all guard{.gates = {&hold}};
+
+  auto const run =
+      spawn_queue(arena, "marked", sh_command(blocked_script(false), {started.string(), hold.path.string()}), {}, {"--notices"});
+  await_file(started);
+  REQUIRE(await_child_recorded(arena, 1).child_pgid.has_value());
+  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  REQUIRE(opened.has_value());
+  ident::system_clock clock;
+  hq::canceller const who{.vendor = "claude", .role = "operator", .pid = static_cast<std::int64_t>(::getpid())};
+  auto const          begun =
+      hq::begin_terminate(*opened,
+                          hq::begin_terminate_request{.seq          = 1,
+                                                      .reason       = hq::stop_reason::cancelled,
+                                                      .cancelled_by = who,
+                                                      .host_id      = ident::host_identity(ident::native_identity_source())},
+                          clock, hq::system_process_probe(), hq::system_group_signaller());
+  REQUIRE(begun.has_value());
+
+  auto const got = finish(run);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(split_lines(got.err).back() == "queue: entry 1 cancelled");
+}
+
+TEST_CASE("queue run: --notices ends a waiting submitter whose entry another process cancelled with that outcome",
+          "[cmd][agent][queue][hq-notices]") {
+  auto const arena = parity::make_arena("qr_notice_waitcancel");
+  write_config(arena, k_fast_poll);
+  gate        hold(arena.cpp_root / "hold.fifo");
+  auto const  started = arena.cpp_root / "started";
+  spawned     a;
+  spawned     b;
+  release_all guard{.gates = {&hold}};
+
+  a = spawn_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  b = spawn_queue(arena, "b", sh_command("exit 0"), {}, {"--notices"});
+  await_err_contains(b, "queue: entry 2 waiting at position 1\n");
+
+  // Another process removes the waiting entry, as `queue cancel` will.
+  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  REQUIRE(opened.has_value());
+  ident::system_clock clock;
+  auto const          ended = hq::end_entry(
+      *opened, 2,
+      hq::end_request{.outcome = hq::history_outcome::cancelled,
+                      .cancelled_by =
+                          hq::canceller{.vendor = "claude", .role = "operator", .pid = static_cast<std::int64_t>(::getpid())},
+                      .ended_at = clock.wall_ms()});
+  REQUIRE(ended.has_value());
+
+  auto const got = finish(b);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 125);
+  CHECK(split_lines(got.err).back() == "queue: entry 2 cancelled");
+  hold.release();
+  CHECK(finish(a).code == 0);
+}
+
+TEST_CASE("queue run: --notices tells a rejoined submitter its position again under its new entry number",
+          "[cmd][agent][queue][hq-notices]") {
+  auto const arena = parity::make_arena("qr_notice_rejoin");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\nstale_after = \"2s\"\n");
+  gate       hold(arena.cpp_root / "hold.fifo");
+  auto const started = arena.cpp_root / "started";
+
+  spawned          holder;
+  spawned          waiter;
+  spawned          later;
+  release_all      guard{.gates = {&hold}};
+  continue_on_exit resume;
+
+  holder = spawn_queue(arena, "holder", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
+  await_file(started);
+  static_cast<void>(await_child_recorded(arena, 1));
+  waiter = spawn_queue(arena, "waiter", sh_command("exit 0"), {}, {"--notices"});
+  await_err_contains(waiter, "queue: entry 2 waiting at position 1\n");
+
+  REQUIRE(waiter.still_mine());
+  resume.run = &waiter;
+  stop_outside_a_transaction(arena, waiter);
+  later = spawn_queue(arena, "later", sh_command("exit 0"));
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    return snap && history_seq(*snap, 2) != nullptr;
+  }));
+  REQUIRE(::kill(static_cast<::pid_t>(waiter.pid), SIGCONT) == 0);
+
+  std::int64_t successor = 0;
+  REQUIRE(await([&] {
+    auto const snap = try_snapshot(arena);
+    if (!snap || history_seq(*snap, 2) == nullptr || !history_seq(*snap, 2)->successor_seq) {
+      return false;
+    }
+    successor = *history_seq(*snap, 2)->successor_seq;
+    return true;
+  }));
+  // The entry that arrived meanwhile is ahead of the rejoined one.
+  await_err_contains(waiter, std::format("queue: entry {} waiting at position 2\n", successor));
+
+  hold.release();
+  CHECK(finish(holder).code == 0);
+  auto const got = finish(waiter);
+  CHECK(finish(later).code == 0);
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(split_lines(got.err).back() == std::format("queue: entry {} exited with code 0", successor));
+}

@@ -149,7 +149,8 @@
 /// its new number), `started`, and a last line with the outcome
 /// (`exited with code <n>`, `terminated by signal <n>`, `stopped at its run
 /// limit`, `cancelled`, `cancelled before its turn`, `removed at its wait
-/// limit` or `not started`). Standard output is never written by the queue,
+/// limit` or `not started`; a path that ends without a command outcome says why, e.g. `ended as exited without this submitter`).
+/// Every exit after the entry exists writes one, after its `error: queue:` line. Standard output is never written by the queue,
 /// with or without the flag, and without it the queue writes nothing to
 /// standard error on the happy path. The `warning: queue:` diagnostics of a
 /// degraded path and the `error: queue:` lines are written either way.
