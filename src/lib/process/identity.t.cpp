@@ -509,13 +509,17 @@ TEST_CASE("group_only_zombies: a live group, an empty group and an id no group c
 }
 
 #if defined(__APPLE__)
-TEST_CASE("group_only_zombies: a group whose only member is an exited leader nobody reaped is all zombies, and macOS refuses to "
-          "signal it",
+TEST_CASE("group_only_zombies: a group whose only member is an exited leader nobody reaped is all zombies, and a signal to it is "
+          "either accepted or refused as not permitted",
           "[lib][process][identity][hq-eperm-zombie-group]") {
-  // macOS answers kill(-pgid, sig) with EPERM for such a group, signal 0
+  // macOS may answer kill(-pgid, sig) with EPERM for such a group, signal 0
   // included, so `group_has_members` says "populated" and `signal_group` says
-  // "not permitted" for a group that holds nothing that can run. This case
-  // pins that premise, and the verification that tells it from a real refusal.
+  // "not permitted" for a group that holds nothing that can run. Whether the
+  // kernel refuses depends on the caller's session and terminal: a foreground
+  // terminal run is refused, a setsid'd caller with no controlling terminal
+  // (`queue run --detach`) has the signal accepted. This case pins what holds
+  // either way: the verification that the group is all zombies, and that the
+  // signal step yields success or `not_permitted` and never another error.
   ::pid_t const forked = ::fork();
   REQUIRE(forked >= 0);
   if (forked == 0) {
@@ -539,9 +543,10 @@ TEST_CASE("group_only_zombies: a group whose only member is an exited leader nob
   }
   CHECK(zombies);
 
-  auto const refused = pid_ns::signal_group(pgid, SIGKILL);
-  REQUIRE_FALSE(refused.has_value());
-  CHECK(refused.error() == pid_ns::error::not_permitted);
+  auto const signalled = pid_ns::signal_group(pgid, SIGKILL);
+  if (!signalled.has_value()) {
+    CHECK(signalled.error() == pid_ns::error::not_permitted);
+  }
 
   int status = 0;
   while (::waitpid(forked, &status, 0) < 0 && errno == EINTR) {
