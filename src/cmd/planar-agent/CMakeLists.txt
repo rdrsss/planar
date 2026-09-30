@@ -211,7 +211,9 @@ if(TARGET planar_cmd_planar_agent_tests)
   target_compile_definitions(planar_cmd_planar_agent_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
     # queue_rule.t.cpp holds the built binary to the authored rule file.
-    "PLANAR_QUEUE_RULE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/engine/hostqueue/queue-rule.md\"")
+    "PLANAR_QUEUE_RULE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/engine/hostqueue/queue-rule.md\""
+    # queue_roles.t.cpp reads the authored role files and skill sources.
+    "PLANAR_REPO_ROOT=\"${PROJECT_SOURCE_DIR}\"")
   target_include_directories(planar_cmd_planar_agent_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
   add_dependencies(planar_cmd_planar_agent_tests planar_cmd_planar_agent)
 endif()

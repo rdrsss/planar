@@ -1476,6 +1476,35 @@ TEST_CASE("workspace regenerate writes AGENTS.md and its xxh64 manifest", "[cmd]
   CHECK(as_json.out.ends_with("}\n"));
 }
 
+TEST_CASE("a generated workspace guide carries the host queue rule", "[cmd][handlers][workspace][queue]") {
+  // Plan 1080, task hq-workspace-guide: the guide at a workspace root reaches
+  // agents that read no Planar role file. The rule is read from its one
+  // authored file, so the guide cannot carry an older copy.
+  std::ifstream rule_input(std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "src/engine/hostqueue/queue-rule.md",
+                           std::ios::binary);
+  REQUIRE(rule_input.good());
+  const std::string rule{std::istreambuf_iterator<char>(rule_input), std::istreambuf_iterator<char>()};
+  REQUIRE_FALSE(rule.empty());
+
+  auto const fx        = make_fixture("wrgqueue");
+  auto const state_dir = seed_org(fx);
+  write_routing_table(state_dir, R"({"schema_version":1,"workspace_id":1,"workspace_slug":"acme","workspace_name":"Acme",)"
+                                 R"("generated_at":"2026-08-31T00:00:00Z","generator_version":"test","projects":[],)"
+                                 R"("cross_repo":{"dependency_edges":[]}})");
+  REQUIRE(dispatch(fx, {"workspace", "regenerate"}).code == 0);
+
+  std::ifstream     agents_input(state_dir / "AGENTS.md", std::ios::binary);
+  const std::string agents{std::istreambuf_iterator<char>(agents_input), std::istreambuf_iterator<char>()};
+  CHECK(agents.contains(rule));
+  // Regenerating again keeps exactly one copy.
+  REQUIRE(dispatch(fx, {"workspace", "regenerate"}).code == 0);
+  std::ifstream     again_input(state_dir / "AGENTS.md", std::ios::binary);
+  const std::string again{std::istreambuf_iterator<char>(again_input), std::istreambuf_iterator<char>()};
+  auto const        first = again.find(rule);
+  REQUIRE(first != std::string::npos);
+  CHECK(again.find(rule, first + 1) == std::string::npos);
+}
+
 TEST_CASE("workspace routing build --json reports the hardcoded enrich fields", "[cmd][handlers][parity]") {
   auto const fx        = make_fixture("wrbjson");
   auto const state_dir = seed_org(fx);
