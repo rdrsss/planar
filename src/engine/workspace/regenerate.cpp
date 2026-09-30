@@ -32,6 +32,7 @@ import std;
 import planar.docs_manifest;
 import planar.engine.workspace.routing;
 import planar.json_text;
+import planar.queuerule;
 
 namespace planar::engine::workspace::regenerate {
 
@@ -53,15 +54,12 @@ const std::string_view k_default_template(reinterpret_cast<const char*>(k_defaul
                                           sizeof(k_default_template_bytes));
 
 // The host build and test queue rule (plan 1080, task hq-workspace-guide),
-// the same authored file `planar-agent queue rule` prints. It is embedded from
-// its one source by relative path rather than through `engine_hostqueue`:
-// D15/D18 forbid an `engine_* -> engine_*` edge, and a second copy in this
-// directory would be a second thing to keep in step. The default template
-// places it with `{{.QueueRule}}`.
-constexpr unsigned char k_queue_rule_bytes[] = {
-#embed "../hostqueue/queue-rule.md"
-};
-const std::string_view k_queue_rule(reinterpret_cast<const char*>(k_queue_rule_bytes), sizeof(k_queue_rule_bytes));
+// the same authored file `planar-agent queue rule` prints. It comes from the
+// layer-1 `planar.queuerule` module (task 7110): D15/D18 forbid an
+// `engine_* -> engine_*` edge, and a second copy in this directory would be a
+// second thing to keep in step. The default template places it with
+// `{{.QueueRule}}`.
+const std::string_view k_queue_rule = planar::queuerule::queue_rule_text();
 
 // ===========================================================================
 // Data queried for the render, beyond the routing table itself.

@@ -1480,7 +1480,7 @@ TEST_CASE("a generated workspace guide carries the host queue rule", "[cmd][hand
   // Plan 1080, task hq-workspace-guide: the guide at a workspace root reaches
   // agents that read no Planar role file. The rule is read from its one
   // authored file, so the guide cannot carry an older copy.
-  std::ifstream rule_input(std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "src/engine/hostqueue/queue-rule.md",
+  std::ifstream rule_input(std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "src/lib/queuerule/queue-rule.md",
                            std::ios::binary);
   REQUIRE(rule_input.good());
   const std::string rule{std::istreambuf_iterator<char>(rule_input), std::istreambuf_iterator<char>()};
@@ -1541,7 +1541,7 @@ auto regenerate_with_template(std::string_view tag, std::string_view body) -> st
 }
 
 auto queue_rule_source() -> std::string {
-  return slurp_file(std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "src/engine/hostqueue/queue-rule.md");
+  return slurp_file(std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "src/lib/queuerule/queue-rule.md");
 }
 
 } // namespace

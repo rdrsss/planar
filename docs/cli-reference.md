@@ -6986,7 +6986,7 @@ planar-agent queue rule
 
 `queue rule` prints the rule that tells an agent to send its builds and tests through the queue, so the operator can paste it into a project's own agent guide. It writes the text to standard output, byte for byte, and exits **0**. It takes no argument and no flag (there is no `--json`; the text is Markdown, and it begins with the `##` heading "Builds and tests go through the host queue").
 
-The text is one authored file, `src/engine/hostqueue/queue-rule.md`, embedded into `planar-agent` at build time. It holds:
+The text is one authored file, `src/lib/queuerule/queue-rule.md`, embedded into `planar-agent` at build time. It holds:
 
 - what counts as a build or test command, with examples, and what does not;
 - the detached submit and poll procedure: submit with `queue run --detach`, then read `queue status <seq>` every 30 seconds until the entry has ended;

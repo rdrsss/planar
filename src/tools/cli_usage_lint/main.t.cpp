@@ -85,7 +85,7 @@ auto contains(std::string_view text, std::string_view needle) -> bool {
   return text.find(needle) != std::string_view::npos;
 }
 
-constexpr std::string_view k_rule_file = "src/engine/hostqueue/queue-rule.md";
+constexpr std::string_view k_rule_file = "src/lib/queuerule/queue-rule.md";
 
 } // namespace
 
