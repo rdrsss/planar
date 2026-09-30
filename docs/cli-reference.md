@@ -6960,7 +6960,7 @@ The `--json` output is one object with exactly these fields, in this order. A fi
 
 **A successor is followed.** When the number asked for was reaped while its submitter was stopped and the submitter rejoined the queue (see above), its history row names the new number. `queue status` then describes the new entry (its `state`, `position` and so on, and its end once it has one), sets `superseded_by` to the new number and keeps `seq` as the number asked for. A chain of rejoins is followed to its end; a successor whose history was pruned ends the chain at the last row that exists.
 
-Without `--json` the same answer is printed as `key: value` lines, one per field that applies, in the order above (`cancelled_by` reads `vendor=<v> role=<r> pid=<n>`, `argv` is a compact JSON array, and a value with a control character is quoted as a JSON string).
+Without `--json` the same answer is printed as `key: value` lines, one per field that applies, in the order above (`cancelled_by` reads `vendor=<v> role=<r> pid=<n>`, `argv` is a compact JSON array). A value with a control character, a Unicode format character (bidirectional override, zero-width mark, line or paragraph separator), a byte that is not valid UTF-8, a backslash or a leading double quote is shown double-quoted with `\n` / `\u00xx` / `\u202e`-style escapes, so a quoted value is never mistaken for an unquoted one; a `label`, `vendor` or `role` (and the canceller's) longer than 48 display columns is cut and ends with `…`. `--json` is never cut and carries the exact bytes.
 
 **Exit codes of `queue status`** (decision 1188 fixes the queue's own codes; it does not list this verb's, so these follow this binary's table):
 
@@ -7399,9 +7399,9 @@ Read-only listing of every running and waiting entry of the host-wide queue that
 planar-watch queue [--json]
 ```
 
-**What it lists.** Entries are listed in sequence order, running and waiting alike. `POS` is the place among the *waiting* entries from 1; a running entry holds a slot and has none. Each entry is judged by the same liveness rules a queue poll applies, against the `stale_after` window of the [`[queue]` table](#the-queue-table), but the judgement is only reported: this verb never reaps, refreshes or removes an entry, and the store's bytes and modification time are unchanged by it. An entry that is not live stays listed and is marked `NOT-LIVE`; a nested entry is marked `nested:<parent seq>`; an entry being stopped is marked `stopping:<reason>`. When the `[queue]` table cannot be used, the default window applies and one `warning: queue: ...` line goes to standard error (the same degradation as `planar-agent queue status`).
+**What it lists.** Entries are listed in sequence order, running and waiting alike. `POS` is the place among the *waiting* entries from 1; a running entry holds a slot and has none. Each entry is judged by the same liveness rules a queue poll applies, against the `stale_after` window of the [`[queue]` table](#the-queue-table), but the judgement is only reported: this verb never reaps, refreshes or removes an entry, never sends a signal to any process (the liveness check is a signal-0 existence probe, which delivers nothing), and the store's bytes and modification time are unchanged by it. An entry that is not live stays listed and is marked `NOT-LIVE`; a nested entry is marked `nested:<parent seq>`; an entry being stopped is marked `stopping:<reason>`. When the `[queue]` table cannot be used, the default window applies and one `warning: queue: ...` line goes to standard error (the same degradation as `planar-agent queue status`).
 
-**Human output.** A header and one line per entry, columns padded: `SEQ  STATE  POS  NOTES  WAITED  RAN  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `NOTES` is `-` or a comma-joined list of `NOT-LIVE`, `LIVE-UNKNOWN` (the process query failed), `nested:<n>`, `stopping:<reason>`. An empty value is `-`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m`. `COMMAND` is the argument vector with each word shell-quoted. An empty queue prints nothing. A value that holds a control character, a space or a double quote is written as a double-quoted string with `\n` / `\u00xx` escapes, so a submitted label, vendor, role, directory or argument cannot start a line of its own; a command word holding a control character is escaped the same way. Bidirectional-text and other Unicode format characters are not escaped yet (task 7082).
+**Human output.** A header and one line per entry, columns padded: `SEQ  STATE  POS  NOTES  WAITED  RAN  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `NOTES` is `-` or a comma-joined list of `NOT-LIVE`, `LIVE-UNKNOWN` (the process query failed), `nested:<n>`, `stopping:<reason>`. An empty value is `-`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m`. `COMMAND` is the argument vector with each word shell-quoted. An empty queue prints nothing. A value that holds a control character, a Unicode format character (the bidirectional overrides and isolates U+202A-U+202E and U+2066-U+2069, the zero-width and directional marks U+200B-U+200F, U+2060-U+2064, U+206A-U+206F, U+061C, the byte-order mark U+FEFF, and the line and paragraph separators U+2028 and U+2029), a byte that is not valid UTF-8, a space, a double quote or a backslash is written as a double-quoted string with `\n` / `\u00xx` / `\u202e`-style escapes (`\xNN` for an invalid byte), so a submitted label, vendor, role, directory or argument cannot start a line of its own, move the cursor or reorder the text around it. A command word holding a control or format character is escaped the same way: it is then shown double-quoted with those escapes, which is display text and **not a pasteable shell word**. A `VENDOR`, `ROLE` or `LABEL` longer than 48 display columns is cut and ends with `…` (the escaped form is cut before quoting, so an escape is never split); `--json` is never cut. Columns are padded by display width, not bytes: a code point counts one column, a wide East Asian or emoji code point two and a combining or format character none. This is an approximation, not a full Unicode width table, so a terminal that measures differently may still show a small misalignment.
 
 ```
 SEQ  STATE    POS  NOTES     WAITED  RAN    VENDOR  ROLE    LABEL       DIRECTORY  COMMAND
@@ -7448,12 +7448,12 @@ planar-watch queue history [--since <duration>] [--json]
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--since <duration>` | Only rows that ended within this long: `ended_at` at or after now minus the duration. An integer followed by `ms`, `s`, `m` or `h`, greater than zero and at most `24h` (the grammar of `planar-agent queue run --timeout`). | all rows |
+| `--since <duration>` | Only rows that ended within this long: `ended_at` at or after now minus the duration. An integer followed by `ms`, `s`, `m`, `h` or `d`, greater than zero and at most `36500d`, the history retention maximum. It has its own parser: `planar-agent queue run --timeout` and `--wait-timeout` take no `d` and stop at `24h`. | all rows |
 | `--json` | One JSON array. | text |
 
-**Order.** Oldest first: by end time, then sequence number. A row whose entry was re-enqueued after being reaped (`abandoned`) names the new entry.
+**Order.** Oldest first: by end time, then sequence number.
 
-**Human output.** A header and one line per row, columns padded: `SEQ  OUTCOME  RESULT  ENDED  WAITED  RAN  NOTES  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `OUTCOME` is `exited`, `signaled`, `timeout`, `cancelled`, `wait_timeout`, `not_started` or `abandoned`. `RESULT` is `code:<n>`, `signal:<n>` or `-`. `ENDED` is UTC, `YYYY-MM-DDTHH:MM:SSZ`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m` (`RAN` is `-` for an entry that never started). `NOTES` is `-` or a comma-joined list of `cancelled-by:<vendor>/<role>/<pid>`, `superseded-by:<seq>` and `nested:<parent>`. An empty value is `-`. `COMMAND` is the argument vector with each word shell-quoted. An empty history prints nothing. Values are escaped exactly as in `planar-watch queue`.
+**Human output.** A header and one line per row, columns padded: `SEQ  OUTCOME  RESULT  ENDED  WAITED  RAN  NOTES  VENDOR  ROLE  LABEL  DIRECTORY  COMMAND`. `OUTCOME` is `exited`, `signaled`, `timeout`, `cancelled`, `wait_timeout`, `not_started` or `abandoned`. `RESULT` is `code:<n>`, `signal:<n>` or `-`. `ENDED` is UTC, `YYYY-MM-DDTHH:MM:SSZ`. `WAITED` and `RAN` are `<s>s`, `<m>m<ss>s` or `<h>h<mm>m` (`RAN` is `-` for an entry that never started). `NOTES` is `-` or a comma-joined list of `cancelled-by:<vendor>/<role>/<pid>`, `superseded-by:<seq>` and `nested:<parent>`. An empty value is `-`. `COMMAND` is the argument vector with each word shell-quoted. An empty history prints nothing. Values are escaped, cut and aligned exactly as in `planar-watch queue`, including the `VENDOR`, `ROLE` and `LABEL` of a `cancelled-by:` note.
 
 ```
 SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES                            VENDOR  ROLE      LABEL  DIRECTORY  COMMAND
@@ -7469,7 +7469,7 @@ SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES            
 | `outcome` | As above |
 | `exit_code`, `signal` | How the command ended |
 | `cancelled_by` | The canceller as an object with `vendor`, `role` (each `null` when not given) and `pid`, when cancelled |
-| `superseded_by` | The successor's sequence number, when the entry was re-enqueued (the name `queue status --json` uses) |
+| `superseded_by` | The successor's sequence number, when the entry was re-enqueued (the name `queue status --json` uses). A row whose entry was reaped and then re-enqueued (`abandoned`) names the new entry here |
 | `nested`, `parent_seq` | Nesting |
 | `cwd`, `argv` | As submitted; `argv` is an array |
 | `label`, `vendor`, `role` | As submitted |
@@ -7483,7 +7483,7 @@ SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES            
 **Exit codes:**
 - `0` — success, an empty or missing history included.
 - `1` — the file at the agent database path is not an agent store or cannot be read; a parse failure (unknown flag, missing value).
-- `2` — `--since` is not a duration in the accepted grammar or range; the message names the value and nothing is printed on standard output.
+- `2` — `--since` is not a duration in the accepted grammar or range (an integer plus `ms`, `s`, `m`, `h` or `d`; zero, a bare integer and more than `36500d` are refused); the message names the value and nothing is printed on standard output.
 - `7` — the store was written by a newer release; both versions are named.
 
 Like `queue`, this verb does not need the main database's path: it resolves its store from `PLANAR_AGENT_DB` / `HOME` only.
