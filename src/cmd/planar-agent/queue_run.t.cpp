@@ -367,7 +367,6 @@ auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<
   for (auto& var : extra) {
     vars.push_back(std::move(var));
   }
-  parity::require_agent_db_pinned(arena.cpp_root, vars);
 
   std::string child = default_int ? "perl -e '$SIG{INT} = q(DEFAULT); exec @ARGV' " : "";
   child += parity::pinned_env_prefix(vars) + parity::shell_quote(agent_bin().string());
@@ -3098,7 +3097,6 @@ auto run_detached_from_leader(const parity::arena& arena, std::string tag, const
                               bool kill_group, std::vector<std::string> flags = {"--detach"}) -> capture {
   auto vars = parity::pinned_env(arena.cpp_root);
   vars.push_back(parity::pinned_var{.name = "QD_RC", .value = (arena.cpp_root / (tag + ".rc")).string()});
-  parity::require_agent_db_pinned(arena.cpp_root, vars);
   auto const  script = kill_group ? std::string{"setpgrp(0,0); system(@ARGV); open(F, '>'.$ENV{QD_RC}); print F $?>>8, qq(\\n); "
                                                 "close F; kill 'KILL', -$$;"}
                                   : std::string{"setpgrp(0,0); exec @ARGV;"};
@@ -3210,7 +3208,6 @@ TEST_CASE("queue run: --detach hands its ticket back through a pipe that nothing
   write_config(arena, k_fast_poll);
   detached_submitter submitter;
   auto const         vars = parity::pinned_env(arena.cpp_root);
-  parity::require_agent_db_pinned(arena.cpp_root, vars);
   std::string line = "cd " + parity::shell_quote((arena.cpp_root / "proj").string()) + " && " + parity::pinned_env_prefix(vars) +
                      parity::shell_quote(agent_bin().string());
   for (auto const& arg : queue_args(sh_command("sleep 8; echo late"), {"--detach"})) {

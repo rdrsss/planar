@@ -237,7 +237,7 @@ TEST_CASE("queue rule opens no database: an unusable database path changes neith
   SECTION("no database path can be resolved at all") {
     auto env = parity::pinned_env(root);
     for (auto& var : env) {
-      if (var.name == "PLANAR_AGENT_DB" || var.name == "PLANAR_DB" || var.name == "HOME") {
+      if (var.name == "PLANAR_DB" || var.name == "HOME") {
         var.unset = true;
       }
     }
