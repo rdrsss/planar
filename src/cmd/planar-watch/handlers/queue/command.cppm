@@ -17,7 +17,7 @@ export auto add(CLI::App& root) -> void {
       "Lists every running and waiting entry of the host build and test queue, read-only.\n\n  Entries are in "
       "sequence order, running and waiting alike (POS is the place among the\n  waiting entries). An entry that "
       "fails the liveness rules is marked NOT-LIVE and is left in\n  place: this view never reaps, refreshes or "
-      "writes. Nested entries are marked nested:<parent>.\n  A missing agent database is an empty queue.\n\n  "
+      "writes. Nested entries are marked nested:<parent>.\n  A missing planar.db is an error, as for every viewer verb.\n\n  "
       "Text: one line per entry, columns SEQ STATE POS NOTES WAITED RAN VENDOR ROLE LABEL DIRECTORY\n  COMMAND, "
       "the command shell-quoted. --json: an array of objects, one per entry.\n\n  `queue history` lists the entries that "
       "have ended.");
@@ -30,7 +30,8 @@ export auto add(CLI::App& root) -> void {
       "row gives the outcome (exited, signaled, timeout, cancelled, wait_timeout,\n  not_started or abandoned), the exit "
       "code or signal, how long it waited and ran, who submitted it, and\n  who cancelled it or which entry replaced "
       "it. --since <duration> keeps only rows that ended within that\n  long (an integer and a unit ms, s, m, h or d, "
-      "at most 36500d). A missing agent database is an empty history.\n\n  Text: one line per row, columns SEQ OUTCOME "
+      "at most 36500d). A missing planar.db is an error, as for every viewer verb.\n\n  Text: one line per row, columns SEQ "
+      "OUTCOME "
       "RESULT ENDED WAITED RAN NOTES VENDOR ROLE LABEL DIRECTORY\n  COMMAND. --json: an array of objects, one per row.");
   history->add_option("--since")->description(
       "Only rows that ended within this long: an integer and a unit (ms, s, m, h, d), at most 36500d");

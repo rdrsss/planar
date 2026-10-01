@@ -35,9 +35,11 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
+import planar.db.migrate;
 import planar.process.identity;
 import planar.engine.hostqueue;
+
+#include "scratch_store.hpp"
 
 namespace {
 
@@ -71,13 +73,13 @@ struct scratch_dir {
   }
 
   [[nodiscard]] auto db_path() const -> std::filesystem::path {
-    return path_ / "agent.db";
+    return path_ / "planar.db";
   }
 };
 
-// @brief A connection to the scratch store at the head of the agent chain.
+// @brief A connection to the scratch planar.db at the head of the main chain.
 auto open_store(const scratch_dir& scratch) -> planar::db::connection {
-  auto opened = planar::db::agent::open_agent_db_at(scratch.db_path());
+  auto opened = open_main_store_at(scratch.db_path());
   REQUIRE(opened.has_value());
   return std::move(*opened);
 }

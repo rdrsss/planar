@@ -118,7 +118,7 @@ export struct status_error {
 };
 
 /// @brief Reads what is known about `seq`, as this module's description states.
-/// @param conn An open agent database; a read-only connection is enough.
+/// @param conn An open `planar.db`; a read-only connection is enough.
 /// @param seq The sequence number asked for.
 /// @param request The checker's identity and clocks, the settings supplier and the process probe.
 /// @return The status, `std::nullopt` when the store knows no such number (never

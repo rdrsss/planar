@@ -6,7 +6,6 @@ module planar.cmd.planar_watch.handlers.queue.history;
 
 import std;
 import planar.cliapp.args;
-import planar.cmd.planar_watch.agentstore;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
@@ -150,18 +149,19 @@ auto queue_history(context& ctx, const cliapp::parsed_args& args) -> handler_res
     since_ms = *parsed;
   }
 
-  auto store = open_agent_store(ctx.env());
-  if (!store) {
-    return std::unexpected(std::move(store.error()));
+  auto conn = ctx.db().ensure_db();
+  if (!conn) {
+    return std::unexpected(std::move(conn.error()));
   }
   std::optional<std::int64_t> cutoff;
   if (since_ms) {
     ident::system_clock clock;
     cutoff = since_cutoff_ms(clock.wall_ms(), *since_ms);
   }
-  auto rows = store->history(cutoff);
+  auto rows = hq::list_history(**conn, cutoff);
   if (!rows) {
-    return std::unexpected(std::move(rows.error()));
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("queue read failed: {}", rows.error().message)));
   }
   ctx.out() << (as_json ? render_json(*rows) : render_text(*rows));
   return {};
