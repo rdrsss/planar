@@ -181,6 +181,50 @@ def case_archive_collision(scratch):
     check(len(tree(scratch)) == before, "nothing is deleted or overwritten")
 
 
+def case_no_log_directory(scratch):
+    """A valid planar.db with no queue-logs/ directory at all (a host that
+    never ran a detached run): both modes exit 0, say there is nothing to
+    archive, and create nothing."""
+    db = os.path.join(scratch, "planar.db")
+    make_restored_db(db, 1000050, 1000020)
+    check(not os.path.exists(os.path.join(scratch, "queue-logs")), "fixture: no log directory")
+    before = tree(scratch)
+    before_entries = sorted(os.listdir(scratch))
+    for args in ([db], ["--apply", db]):
+        code, out, err = run(*args)
+        check(code == 0, f"no log directory: {args} exits 0 (got {code}, stderr {err!r})")
+        check("nothing to archive" in out, f"no log directory: {args} says there is nothing to archive: {out!r}")
+        check(listed_logs(out) == [], f"no log directory: {args} lists nothing: {out!r}")
+        check(not os.path.exists(os.path.join(scratch, "queue-logs")), f"no log directory: {args} creates no log directory")
+        check(tree(scratch) == before and sorted(os.listdir(scratch)) == before_entries, f"no log directory: {args} changes nothing")
+
+
+def case_path_quoting(scratch):
+    """A database path with a space, '?', '#' and '%' still opens the right
+    file: the read-only URI percent-encodes the path."""
+    odd = os.path.join(scratch, "we ird?x#y%41")
+    os.makedirs(odd)
+    db = os.path.join(odd, "planar.db")
+    make_restored_db(db, 1000070, None)
+    # A decoy the unencoded URI would resolve to ("we ird" with the query cut off).
+    make_restored_db(os.path.join(scratch, "we ird"), 1000005, None)
+    log_dir = os.path.join(odd, "queue-logs")
+    touch_logs(log_dir, ["1000070.log", "1000071.log"])
+    before_hash = digest(db)
+
+    code, out, err = run(db)
+    check(code == 0, f"quoted path: dry run exits 0 (got {code}, stderr {err!r})")
+    check("threshold: 1000070" in out, f"quoted path: the threshold comes from that database: {out!r}")
+    check(listed_logs(out) == ["1000071.log"], f"quoted path: lists only 1000071.log: {out!r}")
+
+    code, out, err = run("--apply", db)
+    check(code == 0, f"quoted path: --apply exits 0 (got {code}, stderr {err!r})")
+    archives = archives_in(log_dir)
+    check(len(archives) == 1 and os.listdir(os.path.join(log_dir, archives[0])) == ["1000071.log"], f"quoted path: archived 1000071.log: {archives}")
+    check(os.path.isfile(os.path.join(log_dir, "1000070.log")), "quoted path: 1000070.log stays")
+    check(digest(db) == before_hash, "quoted path: the database is unchanged")
+
+
 def fail_closed(scratch, label, db, setup=None):
     """Assert the helper refuses `db` with exactly one stderr line and moves
     nothing from its log directory."""
@@ -233,7 +277,14 @@ def main():
         print(__doc__, file=sys.stderr)
         return 2
     HELPER = sys.argv[1]
-    cases = [case_threshold_and_archive, case_floor_and_stem, case_archive_collision, case_fail_closed]
+    cases = [
+        case_threshold_and_archive,
+        case_floor_and_stem,
+        case_archive_collision,
+        case_fail_closed,
+        case_no_log_directory,
+        case_path_quoting,
+    ]
     for case in cases:
         with tempfile.TemporaryDirectory(prefix="qlar-") as scratch:
             print(f"== {case.__name__}")
