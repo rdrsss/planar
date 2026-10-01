@@ -172,7 +172,7 @@ export struct begin_result {
 /// @brief Step one of stopping a command, as this module's description
 /// states: marks the entry in one committed transaction, then sends SIGTERM
 /// to its child group.
-/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
+/// @param conn An open `planar.db` that passed `check_queue_schema`,
 /// not inside a transaction.
 /// @param request The entry, the reason, the canceller and the checker's
 /// host identity.
@@ -204,7 +204,7 @@ export struct cancel_waiting_result {
 /// @brief Removes a waiting entry as cancelled: one `BEGIN IMMEDIATE`
 /// transaction reads the entry and, only when it is waiting, ends it through
 /// `end_entry` with outcome `cancelled` and `who`.
-/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
+/// @param conn An open `planar.db` that passed `check_queue_schema`,
 /// not inside a transaction.
 /// @param seq The entry to cancel.
 /// @param who The canceller, recorded on the history row.
@@ -246,7 +246,7 @@ export struct advance_result {
 /// @brief Step two of stopping a command, as this module's description
 /// states. Only terminating entries on the checker's host that record a
 /// child group are examined; any other entry is left alone.
-/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
+/// @param conn An open `planar.db` that passed `check_queue_schema`,
 /// not inside a transaction.
 /// @param request The checker's host identity, the grace period and an
 /// optional single entry.
@@ -285,7 +285,7 @@ export struct poll_stop_result {
 /// module's description states: `poll`, then, with the poll committed and no
 /// transaction open, SIGTERM to each entry it marked, then
 /// `advance_terminations` over every terminating entry on this host.
-/// @param conn An open agent database at or above agent schema version 3 (its reads tolerate a v2 store, see `limit_columns_select`),
+/// @param conn An open `planar.db` that passed `check_queue_schema`,
 /// not inside a transaction.
 /// @param request The poll request and the grace period.
 /// @param clock The monotonic and wall clocks, read by the poll and by the

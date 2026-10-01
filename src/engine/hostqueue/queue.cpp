@@ -54,20 +54,16 @@ auto optional_int(const db::statement& stmt, int index) -> std::optional<std::in
 }
 
 /// @brief The column list every read shares, in the order `read_entry`
-/// consumes it, followed by `limit_columns_select`'s two limit columns.
+/// consumes it. The two limit columns come last: `check_queue_schema`'s column
+/// guard (decision 1228) has already established that every queue column exists.
 constexpr std::string_view k_entry_columns = "seq, state, host_id, pid, pid_started, child_pgid, child_started, parent_seq, "
                                              "terminating_since_mono, terminate_reason, cancelled_by, cwd, argv, label, "
                                              "vendor, role, claim_token, log_path, enqueued_at, started_at, "
-                                             "refreshed_mono, deadline_mono, wait_deadline_mono";
+                                             "refreshed_mono, deadline_mono, wait_deadline_mono, run_limit_ms, wait_limit_ms";
 
-/// @brief `select <every entry column> from queue_entries`, with the limit
-/// columns read as null on a store that predates them.
-auto select_entries(db::connection& conn) -> std::expected<std::string, queue_error> {
-  auto limits = limit_columns_select(conn, "queue_entries");
-  if (!limits) {
-    return std::unexpected(std::move(limits.error()));
-  }
-  return std::format("select {}, {} from queue_entries", k_entry_columns, *limits);
+/// @brief `select <every entry column> from queue_entries`.
+auto select_entries() -> std::string {
+  return std::format("select {} from queue_entries", k_entry_columns);
 }
 
 /// @brief Materialises the current row of a `k_entry_columns` statement.
@@ -345,37 +341,9 @@ auto discard_entry(db::connection& conn, std::int64_t seq) -> std::expected<bool
   return true;
 }
 
-auto limit_columns_select(db::connection& conn, std::string_view table) -> std::expected<std::string, queue_error> {
-  auto stmt = conn.prepare("select count(*) from pragma_table_info(?) where name in ('run_limit_ms', 'wait_limit_ms')");
-  if (!stmt) {
-    return sql_failure("prepare limit column check", stmt.error());
-  }
-  if (auto bound = stmt->bind_text(1, table); !bound) {
-    return sql_failure("bind limit column check", bound.error());
-  }
-  auto stepped = stmt->step();
-  if (!stepped) {
-    return sql_failure("check limit columns", stepped.error());
-  }
-  if (*stepped != db::step_result::row) {
-    return std::unexpected(queue_error{
-        .kind        = queue_error_kind::query_failed,
-        .sqlite_code = 0,
-        .message     = "hostqueue: check limit columns returned no row",
-    });
-  }
-  // Agent migration 00003 adds both columns in one migration, so a store has
-  // both or neither.
-  return stmt->column_int64(0) == 2 ? std::string{"run_limit_ms, wait_limit_ms"}
-                                    : std::string{"null as run_limit_ms, null as wait_limit_ms"};
-}
-
 auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<entry>, queue_error> {
-  auto select = select_entries(conn);
-  if (!select) {
-    return std::unexpected(std::move(select.error()));
-  }
-  auto stmt = conn.prepare(std::format("{} where seq = ?", *select));
+  auto const select = select_entries();
+  auto       stmt   = conn.prepare(std::format("{} where seq = ?", select));
   if (!stmt) {
     return sql_failure("prepare find", stmt.error());
   }
@@ -397,11 +365,8 @@ auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional
 }
 
 auto list(db::connection& conn) -> std::expected<std::vector<entry>, queue_error> {
-  auto select = select_entries(conn);
-  if (!select) {
-    return std::unexpected(std::move(select.error()));
-  }
-  auto stmt = conn.prepare(std::format("{} order by seq", *select));
+  auto const select = select_entries();
+  auto       stmt   = conn.prepare(std::format("{} order by seq", select));
   if (!stmt) {
     return sql_failure("prepare list", stmt.error());
   }
