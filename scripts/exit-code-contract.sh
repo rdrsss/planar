@@ -85,12 +85,10 @@ doc="$(cd "$(dirname "$doc")" && pwd)/$(basename "$doc")"
 # database: without PLANAR_DB the runtime falls back to ~/.planar/planar.db
 # and auto-applies pending migrations, moving the operator's live schema.
 # The queue's tables now live in planar.db itself (plan 1089), so PLANAR_DB is
-# the only database the queue verbs open. PLANAR_AGENT_DB stays pinned for the
-# arena tests that read this script, until plan 1089 M1 removes the pin; no
-# binary reads it.
+# the only database the queue verbs open.
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-export PLANAR_DB="$tmp/db.sqlite" PLANAR_AGENT_DB="$tmp/agent.db" HOME="$tmp/home" PLANAR_WORKBENCH_ROOT="$tmp/wb"
+export PLANAR_DB="$tmp/db.sqlite" HOME="$tmp/home" PLANAR_WORKBENCH_ROOT="$tmp/wb"
 mkdir -p "$HOME"
 # The WORKING DIRECTORY is isolated too (task 6845 / bug 6896), separately
 # from PLANAR_DB/HOME/WORKBENCH above: a plain, non-git scratch directory.
@@ -246,7 +244,7 @@ check_in 8 "planar: worktree-gate refusal" "$worktree_path" planar task add
 # --- `planar-agent queue run` (plan 1080, task 7013, decision 1188) ---------
 # The command's own status passes through, and the queue owns a handful of
 # codes. Each case runs the real binary in the scratch env above (its own
-# PLANAR_AGENT_DB, HOME and cwd), so no case can reach the operator's
+# PLANAR_DB, HOME and cwd), so no case can reach the operator's
 # ~/.planar. `qcheck` records the code under the row of the QUEUE table it
 # belongs to, so direction 2 checks that table and not the general one.
 declare -a queue_rows=()

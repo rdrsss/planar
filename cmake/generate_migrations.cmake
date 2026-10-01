@@ -8,24 +8,21 @@
 # that `#embed`s each up/down SQL pair, into OUT_FILE — always a path under
 # the build tree, never the source tree.
 #
-# One call per migration stream (plan 1080, task hq-agentdb-migrations).
-# The stream's identity in the generated unit is fully parameterized so a
-# second stream lands in its own module without sharing a symbol with the
-# first:
+# One call per migration stream. The stream's identity in the generated unit
+# is parameterized so a stream lands in its own module; the only caller today
+# is src/lib/db/CMakeLists.txt, for `migrations/` (the agent database's second
+# stream was retired with agent.db, plan 1089):
 #
-#   MODULE_NAME     the module the unit implements (`planar.db.migrations`,
-#                   `planar.db.migrations_agent`)
+#   MODULE_NAME     the module the unit implements (`planar.db.migrations`)
 #   NAMESPACE       the C++ namespace the accessor is defined in
 #                   (default `planar::db`)
 #   ACCESSOR        the accessor function name (default `migrations`)
 #   INTERFACE_UNIT  the hand-authored interface unit named in the header
 #                   comment (default `src/lib/db/migrations.cppm`)
 #
-# The defaults reproduce the main stream's unit byte for byte, so the main
-# database's embedded chain does not change when a second stream is added.
-# The version table a stream writes to is not the codegen's business — the
+# The version table a stream writes to is not the codegen's business: the
 # migration SQL writes it and `src/lib/db/migrate.cppm` takes it as a
-# parameter — so it is not an argument here.
+# parameter.
 #
 # `file(GLOB ... CONFIGURE_DEPENDS)` makes CMake re-run configure (and thus
 # regenerate OUT_FILE) whenever a migration file is added or removed —

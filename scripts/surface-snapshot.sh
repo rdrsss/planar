@@ -48,11 +48,8 @@ mode="${1:-verify}"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 # Never let a from-source binary touch the operator's database or ~/.planar.
-# The agent database (decision 1181; override PLANAR_AGENT_DB) is pinned
-# beside PLANAR_DB rather than left to the HOME fallback (task 6996).
 export HOME="$scratch"
 export PLANAR_DB="$scratch/snapshot.db"
-export PLANAR_AGENT_DB="$scratch/agent.db"
 export PLANAR_WORKBENCH_ROOT="$scratch/workbench"
 
 emit() {

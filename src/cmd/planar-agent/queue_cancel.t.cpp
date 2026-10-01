@@ -307,7 +307,6 @@ auto spawn_agent(const parity::arena& arena, std::string tag, const std::vector<
   for (auto& var : extra) {
     vars.push_back(std::move(var));
   }
-  parity::require_agent_db_pinned(arena.cpp_root, vars);
 
   std::string child = parity::pinned_env_prefix(vars) + parity::shell_quote(agent_bin().string());
   for (auto const& arg : args) {

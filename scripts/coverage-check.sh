@@ -99,13 +99,9 @@ PLANAR_BIN="${PLANAR_BIN:-$REPO_ROOT/bin/planar}"
 # silently migrate it to this checkout's schema, which breaks every installed
 # binary on the machine until someone rolls the migration back by hand.
 #
-# The agent database (decision 1181; ~/.planar/agent.db, override
-# PLANAR_AGENT_DB) migrates on first open the same way, so it is pinned into
-# the same scratch directory rather than left to the HOME fallback (task
-# 6996). The EXIT trap below removes the directory and both files with it.
+# The EXIT trap below removes the scratch directory and the database with it.
 COVERAGE_DB_DIR="$(mktemp -d)"
 export PLANAR_DB="$COVERAGE_DB_DIR/coverage-probe.db"
-export PLANAR_AGENT_DB="$COVERAGE_DB_DIR/agent.db"
 if [[ ! -x "$PLANAR_BIN" ]]; then
   echo "coverage-check: $PLANAR_BIN not executable — run 'make build' first" >&2
   exit 1
