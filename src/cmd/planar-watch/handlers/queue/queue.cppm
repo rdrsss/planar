@@ -3,10 +3,12 @@
 /// (plan 1080, task hq-watch-queue; tech spec 647 § CLI surface).
 ///
 /// Lists every running and waiting entry of the host queue, across every
-/// project, read-only. The store comes from `planar.cmd.planar_watch.agentstore`
-/// (read-only handle, compatibility check, a missing store is an empty queue);
-/// the main database is never opened, and `uses_main_database` exempts this
-/// domain from the main database's path resolution in `main.cpp`.
+/// project, read-only, from the `queue_entries` table of `planar.db` (plan
+/// 1089, task qp-watch-queue; tech spec 656 § planar-watch). It reads through
+/// the same main read-only handle every other viewer verb uses and under its
+/// rules: a missing file is the usual open error, and a schema version behind
+/// or ahead of this binary is exit 7. The queue has no path or open rule of
+/// its own.
 ///
 /// ## Order and position
 ///
@@ -62,9 +64,9 @@
 ///
 /// ## Exit status
 ///
-/// 0 on success (an empty queue included), 7 for a store from a newer
-/// release (both versions named), 1 for a file that is not an agent store or
-/// cannot be read.
+/// 0 on success (an empty queue included), 7 for a `planar.db` behind or ahead
+/// of this binary (both versions named), 1 for a missing or unreadable
+/// database.
 module;
 
 export module planar.cmd.planar_watch.handlers.queue;

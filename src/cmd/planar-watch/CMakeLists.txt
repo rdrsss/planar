@@ -100,7 +100,6 @@ planar_binary(planar_watch
     exit.cppm
     context.cppm
     database.cppm
-    agentstore.cppm
     handler.cppm
     main.cppm
     handlers/shared/cli.cppm
@@ -136,7 +135,6 @@ planar_binary(planar_watch
   SOURCES
     context.cpp
     database.cpp
-    agentstore.cpp
     handlers/shared/format.cpp
     handlers/version/version.cpp
     handlers/schema/schema.cpp

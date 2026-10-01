@@ -4,11 +4,12 @@
 /// 647 § CLI surface, § Finishing and history; product spec 646 § What the
 /// operator sees).
 ///
-/// Lists the entries that have ended, read-only, from the same agent store
-/// `planar-watch queue` reads (`planar.cmd.planar_watch.agentstore`: read-only
-/// handle, compatibility check, a missing store is an empty history). The main
-/// database is never opened; `uses_main_database` exempts the whole `queue`
-/// domain from the main database's path resolution.
+/// Lists the entries that have ended, read-only, from the `queue_history` table
+/// of `planar.db` (plan 1089, task qp-watch-queue; tech spec 656 §
+/// planar-watch), through the same main read-only handle every other viewer
+/// verb uses and under its rules: a missing file is the usual open error, and a
+/// schema version behind or ahead of this binary is exit 7. The queue has no
+/// path or open rule of its own.
 ///
 /// ## Order
 ///
@@ -37,8 +38,7 @@
 /// `nested`, `parent_seq`, `cwd`, `argv` (array), `label`, `vendor`, `role`,
 /// `log_path`, `enqueued_at`, `started_at`, `ended_at` (wall-clock ms),
 /// `waited_ms`, `ran_ms`, `run_limit_ms`, `wait_limit_ms`. A member that does
-/// not apply is null; the two limits are null on a store still at agent schema
-/// version 2.
+/// not apply is null.
 ///
 /// The text form is a header and one line per row, columns padded to the
 /// widest cell: `SEQ OUTCOME RESULT ENDED WAITED RAN NOTES VENDOR ROLE LABEL
@@ -50,9 +50,9 @@
 ///
 /// ## Exit status
 ///
-/// 0 on success (an empty or missing store included), 2 for an invalid
-/// `--since`, 7 for a store from a newer release, 1 for a file that is not an
-/// agent store or cannot be read.
+/// 0 on success (an empty history included), 2 for an invalid `--since`, 7 for
+/// a `planar.db` behind or ahead of this binary, 1 for a missing or unreadable
+/// database.
 module;
 
 export module planar.cmd.planar_watch.handlers.queue.history;

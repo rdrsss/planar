@@ -6,7 +6,7 @@
 // and its log files are pruned at enqueue", and the history half of "Happy
 // path -- a nested entry is recorded with its parent".
 //
-// Every case opens its own scratch store through `open_agent_db_at` in its
+// Every case opens its own scratch store through `open_main_store_at` in its
 // own temp directory. Following the test spec's § Strategy, the scenarios
 // seed and read the store only through the engine (`enqueue`, `poll`,
 // `begin_terminate`, `end_entry`, `find_history`, `list_history`). The
@@ -20,9 +20,11 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
+import planar.db.migrate;
 import planar.engine.hostqueue;
 import planar.process.identity;
+
+#include "scratch_store.hpp"
 
 namespace {
 
@@ -49,9 +51,9 @@ struct scratch_dir {
   }
 };
 
-/// @brief A scratch agent store at the head of the embedded agent chain.
+/// @brief A scratch planar.db at the head of the embedded main chain.
 auto open_scratch_store(const scratch_dir& scratch) -> planar::db::connection {
-  auto opened = planar::db::agent::open_agent_db_at(scratch.path_ / "agent.db");
+  auto opened = open_main_store_at(scratch.path_ / "planar.db");
   REQUIRE(opened.has_value());
   return std::move(*opened);
 }
@@ -235,8 +237,8 @@ TEST_CASE("two connections ending the same entry at once write exactly one histo
   // the same entry; each round starts both at the same latch.
   scratch_dir scratch;
   auto        setup = open_scratch_store(scratch);
-  auto        first = planar::db::agent::open_agent_db_at(scratch.path_ / "agent.db");
-  auto        other = planar::db::agent::open_agent_db_at(scratch.path_ / "agent.db");
+  auto        first = open_main_store_at(scratch.path_ / "planar.db");
+  auto        other = open_main_store_at(scratch.path_ / "planar.db");
   REQUIRE(first.has_value());
   REQUIRE(other.has_value());
 
