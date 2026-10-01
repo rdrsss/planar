@@ -113,10 +113,12 @@ void idle_agent_store(const std::filesystem::path& path) {
   auto opened = planar::db::connection::open(path.string());
   must("open the agent store", opened.has_value());
   must("create the agent tables", opened->execute(k_agent_schema).has_value());
-  must("seed the old range", opened->execute("insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
-                                             "values (57, 'exited', '/', '[]', 1, 2, 0); "
-                                             "insert into sqlite_sequence (name, seq) values ('queue_entries', 57);")
-                                 .has_value());
+  must("seed the old range",
+       opened
+           ->execute("insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
+                     "values (57, 'exited', '/', '[]', 1, 2, 0); "
+                     "insert into sqlite_sequence (name, seq) values ('queue_entries', 57);")
+           .has_value());
 }
 
 /// @brief A scratch install: a prefix holding the built binaries and a
@@ -198,7 +200,8 @@ auto run_seam(const install_fixture& fx, std::string_view fn, std::string_view t
       var.value = fx.prefix.string();
     }
   }
-  std::string const script = R"(set -eEuo pipefail; p="$PLANAR_HOME"; unset PLANAR_HOME; PLANAR_HOME="$p"; source "$1"; shift; "$@")";
+  std::string const script =
+      R"(set -eEuo pipefail; p="$PLANAR_HOME"; unset PLANAR_HOME; PLANAR_HOME="$p"; source "$1"; shift; "$@")";
   std::vector<std::string> args{"-c", script, "bash", seam_lib().string(), std::string{fn}};
   if (!arg.empty()) {
     args.emplace_back(arg);
@@ -214,8 +217,8 @@ auto run_seam(const install_fixture& fx, std::string_view fn, std::string_view t
 auto listing(const std::filesystem::path& root) -> std::string {
   std::vector<std::string> paths;
   std::error_code          ec;
-  for (auto it = std::filesystem::recursive_directory_iterator(root, ec); !ec && it != std::filesystem::recursive_directory_iterator();
-       it.increment(ec)) {
+  for (auto it = std::filesystem::recursive_directory_iterator(root, ec);
+       !ec && it != std::filesystem::recursive_directory_iterator(); it.increment(ec)) {
     auto const rel = it->path().lexically_relative(root).string();
     if (rel == "planar.db-wal" || rel == "planar.db-shm") {
       continue;
@@ -350,11 +353,14 @@ TEST_CASE("install_queue_probe_migrate", "[cmd][install][queue]") {
     struct ahead_case {
       std::string_view tag;
       void (*build)(const std::filesystem::path&);
-      std::string_view verdict;
+      std::string_view              verdict;
       std::vector<std::string_view> warning; ///< Phrases stderr must carry; empty for none.
     };
     std::array const cases{
-        ahead_case{.tag = "iq_ahead", .build = qfix::ahead_store, .verdict = "queue store probe: usable (exit 1, tag not_found)", .warning = {}},
+        ahead_case{.tag     = "iq_ahead",
+                   .build   = qfix::ahead_store,
+                   .verdict = "queue store probe: usable (exit 1, tag not_found)",
+                   .warning = {}},
         ahead_case{.tag     = "iq_incompat",
                    .build   = qfix::incompatible_ahead_store,
                    .verdict = "queue store probe: incompatible (exit 125, tag queue_schema_incompatible)",
@@ -437,11 +443,15 @@ public:
   auto operator=(const child&) -> child& = delete;
   child(child&&)                         = delete;
   auto operator=(child&&) -> child&      = delete;
-  ~child() { reap(); }
+  ~child() {
+    reap();
+  }
 
   /// @brief The child's pid (and, for a group child, its pgid).
   /// @return The pid.
-  [[nodiscard]] auto pid() const -> std::int64_t { return _pid; }
+  [[nodiscard]] auto pid() const -> std::int64_t {
+    return _pid;
+  }
 
   /// @brief Kills the child (and its group, when it leads one) and reaps it.
   void reap() {
@@ -507,16 +517,17 @@ void write_oracle_store(const std::filesystem::path& path, std::span<const oracl
   auto opened = planar::db::connection::open(path.string());
   must("open the oracle store", opened.has_value());
   must("create the agent tables", opened->execute(k_agent_schema).has_value());
-  auto stmt = opened->prepare("insert into queue_entries (seq, state, host_id, pid, pid_started, child_pgid, child_started, cwd, "
-                              "argv, enqueued_at, refreshed_mono) values (?, ?, ?, ?, ?, ?, ?, '/', '[\"sleep\",\"300\"]', 1, 1)");
+  auto stmt =
+      opened->prepare("insert into queue_entries (seq, state, host_id, pid, pid_started, child_pgid, child_started, cwd, "
+                      "argv, enqueued_at, refreshed_mono) values (?, ?, ?, ?, ?, ?, ?, '/', '[\"sleep\",\"300\"]', 1, 1)");
   must("prepare the row insert", stmt.has_value());
   for (auto const& row : rows) {
     must("reset the row insert", stmt->reset().has_value());
-    bool ok = stmt->bind_int64(1, row.seq).has_value() && stmt->bind_text(2, row.state).has_value() &&
-              stmt->bind_text(3, row.host_id).has_value() && stmt->bind_int64(4, row.pid).has_value() &&
-              stmt->bind_int64(5, row.pid_started).has_value();
-    ok = ok && (row.child_pgid ? stmt->bind_int64(6, *row.child_pgid) : stmt->bind_null(6)).has_value();
-    ok = ok && (row.child_started ? stmt->bind_int64(7, *row.child_started) : stmt->bind_null(7)).has_value();
+    bool ok            = stmt->bind_int64(1, row.seq).has_value() && stmt->bind_text(2, row.state).has_value() &&
+                         stmt->bind_text(3, row.host_id).has_value() && stmt->bind_int64(4, row.pid).has_value() &&
+                         stmt->bind_int64(5, row.pid_started).has_value();
+    ok                 = ok && (row.child_pgid ? stmt->bind_int64(6, *row.child_pgid) : stmt->bind_null(6)).has_value();
+    ok                 = ok && (row.child_started ? stmt->bind_int64(7, *row.child_started) : stmt->bind_null(7)).has_value();
     auto const stepped = stmt->step();
     must("insert an oracle row", ok && stepped.has_value());
   }
@@ -545,10 +556,10 @@ auto lists(const std::string& out, std::string_view kind, std::int64_t seq) -> b
 } // namespace
 
 TEST_CASE("queue_retire_live_oracle", "[cmd][install][queue]") {
-  namespace identity = planar::process::identity;
-  auto const arena   = parity::make_arena("qr_oracle");
-  auto const work    = arena.cpp_root;
-  auto const store   = work / "oracle" / "agent.db";
+  namespace identity    = planar::process::identity;
+  auto const      arena = parity::make_arena("qr_oracle");
+  auto const      work  = arena.cpp_root;
+  auto const      store = work / "oracle" / "agent.db";
   std::error_code ec;
   std::filesystem::create_directories(store.parent_path(), ec);
 
@@ -564,7 +575,13 @@ TEST_CASE("queue_retire_live_oracle", "[cmd][install][queue]") {
       // 1: a live waiting submitter with its TRUE start time. A reader that
       // computes a different start time (a wrong ctypes offset, a wrong /proc
       // field index) calls it dead.
-      oracle_row{.seq = 1, .state = "waiting", .host_id = host, .pid = submitter.pid(), .pid_started = engine_start_time(submitter.pid()), .child_pgid = {}, .child_started = {}},
+      oracle_row{.seq           = 1,
+                 .state         = "waiting",
+                 .host_id       = host,
+                 .pid           = submitter.pid(),
+                 .pid_started   = engine_start_time(submitter.pid()),
+                 .child_pgid    = {},
+                 .child_started = {}},
       // 2: a running entry whose submitter is gone but whose child group,
       // started in its own group, is live with the engine's start time.
       oracle_row{.seq           = 2,
@@ -577,7 +594,13 @@ TEST_CASE("queue_retire_live_oracle", "[cmd][install][queue]") {
       // 3: a live pid whose stored start time is the truth + 1: a reused pid.
       // A reader with no usable start time (a wrong struct size) cannot
       // prove it different and blocks.
-      oracle_row{.seq = 3, .state = "waiting", .host_id = host, .pid = reused.pid(), .pid_started = engine_start_time(reused.pid()) + 1, .child_pgid = {}, .child_started = {}},
+      oracle_row{.seq           = 3,
+                 .state         = "waiting",
+                 .host_id       = host,
+                 .pid           = reused.pid(),
+                 .pid_started   = engine_start_time(reused.pid()) + 1,
+                 .child_pgid    = {},
+                 .child_started = {}},
   };
   write_oracle_store(store, rows);
 
