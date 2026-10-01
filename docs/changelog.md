@@ -12,6 +12,16 @@ This page is aggregated from `kind=changelog_entry` artifacts under
 `assoc:project:planar`, newest first. Each entry corresponds to a
 shipped milestone or plan.
 
+## 2026-10-01
+
+### Plan 1089: the host queue moves into planar.db; agent.db removed
+
+Planar uses a single SQLite database again. The host queue's tables (`queue_entries`, `queue_history`, and a new `queue_schema` marker) now live in `planar.db`, created by migration 00040, and every `planar-agent queue` verb and every `planar-watch queue` view reads them there. Queue entry numbers start above 1,000,000.
+
+The `planar-agent queue` verbs refuse a `planar.db` that is behind the binary, and still run against one that is ahead when the queue's own compatibility check passes. Each refusal exits 125 with one tag: `schema_version_behind`, `queue_schema_incompatible` or `queue_schema_foreign`. Claims keep the exact-version rule. The `planar-watch` queue views follow that binary's usual rule and exit 7 on a version mismatch in either direction. Detached logs go to `queue-logs/` next to `planar.db`, or `<stem>.queue-logs/` for any other database name.
+
+On upgrade, `install.sh` asks the new `planar-agent` whether `planar.db` is usable, migrates it only when it is behind, and retires the old `~/.planar/agent.db` and its logs. A fail-closed live-queue guard runs first; `--ignore-live-queue` is the only override. Uninstall now removes `agent.db`, behind the same guard. The separate agent migration stream (`migrations-agent/`), the agent-database module, and the `PLANAR_AGENT_DB` override are gone. A set `PLANAR_AGENT_DB` is ignored, not refused. `surface_lint` now rejects new references to the retired names outside this changelog and INSTALL.md's marked upgrade note.
+
 ## 2026-05-18
 
 ### Plan 96 M4–M6: promote, regenerate, and query verbs
