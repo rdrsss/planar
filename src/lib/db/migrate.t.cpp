@@ -1336,8 +1336,14 @@ TEST_CASE("the two streams' version tables do not read each other when both are 
   auto const main_head  = planar::db::embedded_max();
   REQUIRE(agent_head != main_head);
 
-  REQUIRE(planar::db::apply_all(*conn).has_value());
+  // Main migration 00040 (plan 1089) creates the same two queue tables the
+  // agent stream does, so the two chains can no longer both run their DDL
+  // against one file. Apply the agent stream first and drop its queue
+  // tables; the main chain then creates its own, and both version tables are
+  // present and at head, which is all this case needs.
   REQUIRE(planar::db::apply_contiguous(*conn, agent, planar::db::k_agent_version_table).has_value());
+  REQUIRE(conn->execute("drop table queue_entries; drop table queue_history;"));
+  REQUIRE(planar::db::apply_all(*conn).has_value());
 
   CHECK(planar::db::current_version(*conn).value() == main_head);
   CHECK(planar::db::current_version(*conn, planar::db::k_main_version_table).value() == main_head);
