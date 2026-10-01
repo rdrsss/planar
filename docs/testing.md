@@ -301,22 +301,20 @@ live database past the schema version every installed binary supports. Every
 other agent on the machine then fails with `SchemaVersionAhead`, and the
 migration has to be rolled back by hand.
 
-- `make smoke ARGS="<verb>"` runs the debug build against throwaway
-  databases under `build/debug/.smoke/`: `planar.db` as `PLANAR_DB` and
-  `agent.db` as `PLANAR_AGENT_DB`. `make smoke-reset` deletes both.
+- `make smoke ARGS="<verb>"` runs the debug build against a throwaway
+  `planar.db` under `build/debug/.smoke/`, as `PLANAR_DB`. `make smoke-reset`
+  deletes it.
 - `make run` runs against the real database.
-- By hand: `PLANAR_DB=<scratch-path> PLANAR_AGENT_DB=<scratch-path>
-  build/debug/bin/planar <verb>`, with a scratch `HOME` as well whenever the
-  verb touches `~/.planar` for anything other than the two databases. The
-  agent database (`~/.planar/agent.db`) migrates on first open exactly as
-  `planar.db` does, so it needs its own pin; a scratch `HOME` contains it
-  only by fallback.
+- By hand: `PLANAR_DB=<scratch-path> build/debug/bin/planar <verb>`, with a
+  scratch `HOME` as well whenever the verb touches `~/.planar` for anything
+  other than the database.
 
 The gate scripts that run a built binary (`scripts/exit-code-contract.sh`,
-`scripts/surface-snapshot.sh`, `scripts/coverage-check.sh`) export
-`PLANAR_AGENT_DB` beside `PLANAR_DB` under their own scratch directory, and
-`src/cmd/planar/arena_agent_db.t.cpp` runs each of them and `make smoke`
-with a recording wrapper in place of the binary to keep it that way.
+`scripts/surface-snapshot.sh`, `scripts/coverage-check.sh`) pin
+`PLANAR_DB` under their own scratch directory and set no `PLANAR_AGENT_DB`
+(it is ignored, decision 1229), and `src/cmd/planar/arena_pins.t.cpp` runs
+each of them and `make smoke` with a recording wrapper in place of the binary
+to keep it that way.
 
 To check a migration as raw SQL:
 
