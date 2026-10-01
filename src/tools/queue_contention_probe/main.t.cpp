@@ -348,12 +348,12 @@ TEST_CASE(
     auto const direct =
         run_probe({{"HOME", home}, {k_passwd_seam, (root / "fakehome").string()}},
                   {"--source", source.string(), "--dest", (root / "fakehome" / ".planar" / "nohome.db").string(), "--run", "r1"});
-    require_refusal(direct, ".planar", source, hash, before, root / "fakehome" / ".planar");
+    require_refusal(direct, "is under", source, hash, before, root / "fakehome" / ".planar");
     // Reached through a symlink into the fake .planar.
     auto const linked =
         run_probe({{"HOME", home}, {k_passwd_seam, (root / "fakehome").string()}},
                   {"--source", source.string(), "--dest", (root / "alias" / "nohome.db").string(), "--run", "r1"});
-    require_refusal(linked, ".planar", source, hash, before, root / "fakehome" / ".planar");
+    require_refusal(linked, "is under", source, hash, before, root / "fakehome" / ".planar");
   }
 }
 
