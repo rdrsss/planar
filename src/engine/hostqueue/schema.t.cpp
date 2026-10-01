@@ -61,6 +61,13 @@ struct fingerprint_pin {
 constexpr std::array k_fingerprint_ledger{
     fingerprint_pin{1, "b0468db961468530641548d19003227f71a60e5ada49fa2b1ab7545cf0728496",
                     "queue version 1: queue_entries and queue_history in planar.db (plan 1089, migration 00040)"},
+    fingerprint_pin{1, "b21f85633b29b41361bc8ecf8f8738292e417ff7ffaeff44c517b3b226bda16e",
+                    "task qp-remove-read-tolerance (decision 1228): the entry and history reads name run_limit_ms and "
+                    "wait_limit_ms directly instead of building the select list through limit_columns_select's "
+                    "pragma_table_info probe and its null-substitution fallback. Behaviour-neutral: check_queue_schema's "
+                    "column guard already refuses any database lacking either column, so on every database the queue verbs "
+                    "read, the probe's result was the same two columns in the same position, and the statements executed at "
+                    "head are identical; nothing stored or judged changes"},
 };
 
 // ---------------------------------------------------------------------------
@@ -673,6 +680,36 @@ TEST_CASE("the first enqueue into a fresh planar.db gets seq 1000001", "[hostque
                 .host_id = "h", .pid = 1, .pid_started = 1, .cwd = "/", .argv = {"true"}, .enqueued_at = 0, .refreshed_mono = 0});
   REQUIRE(seq.has_value());
   CHECK(*seq == 1'000'001);
+}
+
+TEST_CASE("the entry and history reads work on an ahead planar.db that passes check_queue_schema",
+          "[hostqueue][schema][qp-queue-compat]") {
+  scratch_db_path scratch;
+  auto            conn = open_head(scratch);
+  REQUIRE(conn.execute("alter table queue_entries add column note text"));
+  REQUIRE(conn.execute("alter table queue_history add column note text"));
+  REQUIRE(conn.execute("insert into queue_schema (version, compat, description) values (2, 1, 'adds note columns')"));
+  REQUIRE(conn.execute(
+      std::format("insert into schema_migrations (version, description) values ({}, 'newer')", planar::db::embedded_max() + 1)));
+  REQUIRE(hq::check_queue_schema(conn).has_value());
+
+  auto const seq = hq::enqueue(conn, hq::enqueue_request{.host_id        = "h",
+                                                         .pid            = 1,
+                                                         .pid_started    = 1,
+                                                         .cwd            = "/",
+                                                         .argv           = {"true"},
+                                                         .enqueued_at    = 0,
+                                                         .refreshed_mono = 0,
+                                                         .wait_limit_ms  = 5'000});
+  REQUIRE(seq.has_value());
+  auto const found = hq::find(conn, *seq);
+  REQUIRE((found.has_value() && found->has_value()));
+  CHECK((*found)->wait_limit_ms == 5'000);
+  auto const listed = hq::list(conn);
+  REQUIRE(listed.has_value());
+  CHECK(listed->size() == 1);
+  CHECK(hq::list_history(conn).has_value());
+  CHECK(hq::find_history(conn, *seq).has_value());
 }
 
 // ===========================================================================
