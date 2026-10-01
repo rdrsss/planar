@@ -233,34 +233,15 @@ export auto set_log_path(db::connection& conn, std::int64_t seq, std::string_vie
 /// the SQLite failure.
 export auto discard_entry(db::connection& conn, std::int64_t seq) -> std::expected<bool, queue_error>;
 
-/// @brief The select-list fragment for the limit columns agent migration 00003
-/// added to `table`: `run_limit_ms, wait_limit_ms` when `table` has both, and
-/// `null as run_limit_ms, null as wait_limit_ms` when it has neither, as on a
-/// store still at agent schema version 2.
-///
-/// Every read of `queue_entries` or `queue_history` goes through this, because
-/// a read-only connection (`queue status`) never migrates: after an upgrade the
-/// store stays behind head until a submitter of the new binary opens it
-/// read-write, and an additive column must then read as unknown rather than
-/// fail the query. It costs one `pragma_table_info` query per read call, not
-/// per row. Writers never need it: they run only on a connection whose
-/// schema is at head.
-/// @param conn An open `planar.db`; a read-only connection is enough.
-/// @param table `queue_entries` or `queue_history`.
-/// @return The fragment, or the SQLite failure.
-export auto limit_columns_select(db::connection& conn, std::string_view table) -> std::expected<std::string, queue_error>;
-
 /// @brief Reads one entry by sequence number.
-/// @param conn An open agent database at agent schema version 2 or later; on a
-/// store below 3 the entry's limits read as empty.
+/// @param conn An open `planar.db` that passed `check_queue_schema`.
 /// @param seq The sequence number.
 /// @return The entry, `std::nullopt` when no entry has that number (it never
 /// existed, or it has ended and been removed), or the failure.
 export auto find(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<entry>, queue_error>;
 
 /// @brief Reads every entry, in sequence order.
-/// @param conn An open agent database at agent schema version 2 or later; on a
-/// store below 3 the limits read as empty.
+/// @param conn An open `planar.db` that passed `check_queue_schema`.
 /// @return The entries, lowest sequence number first; empty when the queue
 /// is empty.
 export auto list(db::connection& conn) -> std::expected<std::vector<entry>, queue_error>;
