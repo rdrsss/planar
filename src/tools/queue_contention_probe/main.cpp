@@ -17,7 +17,10 @@
 ///    the origin of the online backup API;
 ///  - `vet_destination` runs before anything is opened and refuses a
 ///    destination that, after symlinks are resolved, is the source, lies
-///    under `$HOME/.planar`, or equals `$PLANAR_DB`, or that already exists;
+///    under `.planar` of `$HOME` or of the password database's home (and is
+///    refused outright when neither can be found), or equals `$PLANAR_DB`, or
+///    that already exists. `--report` is vetted with the same rules before the
+///    backup starts, and is overwritten only when it is a prior report;
 ///  - `open_copy_read_write` is the single place a read-write handle is
 ///    opened, and it takes only a `vetted_copy`, a type `vet_destination`
 ///    alone produces;
@@ -44,6 +47,7 @@
 
 #include <csignal>
 #include <cstdio>
+#include <pwd.h>
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -198,6 +202,10 @@ auto parse_options(std::span<char const* const> args) -> std::expected<options, 
   if (opts.duration_s < 0) {
     opts.duration_s = opts.run == "r5" ? 600 : (opts.run == "r3" ? 80 : 60);
   }
+  if (opts.run == "r4" && opts.rebuild_table.empty()) {
+    return std::unexpected("--run r4 needs --rebuild-table (the largest planning table; the vendored SQLite has no dbstat, so "
+                           "find it on the backup copy with the system sqlite3's dbstat)");
+  }
   if (opts.run == "r5" && opts.watch_bin.empty()) {
     return std::unexpected("--run r5 needs --watch-bin (the planar-watch binary, run as `<bin> feed --follow`)");
   }
@@ -237,11 +245,64 @@ auto env_text(std::string_view name) -> std::optional<std::string> {
   return std::string(value);
 }
 
+/// @brief The directories whose `.planar` must never receive an output: the
+/// one `$HOME` names, when set and non-empty, and the password database's
+/// home for this user. `QUEUE_CONTENTION_PROBE_PASSWD_HOME`, when set, stands
+/// in for the password-database lookup (an empty value means "no entry"), so
+/// tests can exercise that path without naming a real home. Fails when
+/// neither exists: the refusal could not be evaluated.
+auto protected_homes() -> std::expected<std::vector<fs::path>, std::string> {
+  std::vector<fs::path> homes;
+  if (auto const home = env_text("HOME"); home) {
+    homes.emplace_back(*home);
+  }
+  if (auto const* seam = std::getenv("QUEUE_CONTENTION_PROBE_PASSWD_HOME"); seam != nullptr) {
+    if (*seam != '\0') {
+      homes.emplace_back(seam);
+    }
+  } else if (auto const* entry = ::getpwuid(::getuid()); entry != nullptr && entry->pw_dir != nullptr && *entry->pw_dir != '\0') {
+    homes.emplace_back(entry->pw_dir);
+  }
+  if (homes.empty()) {
+    return std::unexpected(
+        "cannot determine a home directory (HOME is unset or empty and the password database has no entry), so "
+        "the ~/.planar refusal cannot be evaluated");
+  }
+  return homes;
+}
+
+/// @brief The refusal shared by every file this tool writes (the copy and the
+/// report): `real`, already resolved through symlinks, must not be the source,
+/// lie under a protected home's `.planar`, or equal `$PLANAR_DB`.
+auto refuse_protected(std::string_view label, const fs::path& real, const fs::path& source_real) -> std::optional<std::string> {
+  if (real == source_real) {
+    return std::format("{} '{}' resolves to the source '{}'", label, real.string(), source_real.string());
+  }
+  auto homes = protected_homes();
+  if (!homes) {
+    return homes.error();
+  }
+  std::error_code ec;
+  for (auto const& home : *homes) {
+    auto const planar_home = fs::weakly_canonical(home / ".planar", ec);
+    if (!ec && is_under(real, planar_home)) {
+      return std::format("{} '{}' is under {}", label, real.string(), planar_home.string());
+    }
+  }
+  if (auto const live = env_text("PLANAR_DB"); live) {
+    auto const live_real = fs::weakly_canonical(fs::path(*live), ec);
+    if (!ec && real == live_real) {
+      return std::format("{} '{}' equals $PLANAR_DB", label, real.string());
+    }
+  }
+  return std::nullopt;
+}
+
 /// @brief Decides whether `dest` may receive a copy of `source`. Opens
 /// nothing. Refuses when the source is not an existing file, when, after
-/// resolving symlinks in both, the destination is the source, lies under
-/// `$HOME/.planar`, or equals `$PLANAR_DB`, and when the destination already
-/// exists (as a file, directory or symlink).
+/// resolving symlinks in both, the destination is the source, lies under a
+/// protected home's `.planar`, or equals `$PLANAR_DB`, and when the
+/// destination already exists (as a file, directory or symlink).
 auto vet_destination(std::string_view source, std::string_view dest) -> std::expected<vetted_copy, std::string> {
   std::error_code ec;
   auto const      source_real = fs::canonical(fs::path(source), ec);
@@ -253,20 +314,8 @@ auto vet_destination(std::string_view source, std::string_view dest) -> std::exp
   if (ec) {
     return std::unexpected(std::format("destination '{}' cannot be resolved: {}", dest, ec.message()));
   }
-  if (dest_real == source_real) {
-    return std::unexpected(std::format("destination '{}' resolves to the source '{}'", dest, source_real.string()));
-  }
-  if (auto const home = env_text("HOME"); home) {
-    auto const planar_home = fs::weakly_canonical(fs::path(*home) / ".planar", ec);
-    if (!ec && is_under(dest_real, planar_home)) {
-      return std::unexpected(std::format("destination '{}' is under {}", dest_real.string(), planar_home.string()));
-    }
-  }
-  if (auto const live = env_text("PLANAR_DB"); live) {
-    auto const live_real = fs::weakly_canonical(fs::path(*live), ec);
-    if (!ec && dest_real == live_real) {
-      return std::unexpected(std::format("destination '{}' equals $PLANAR_DB", dest_real.string()));
-    }
+  if (auto refusal = refuse_protected("destination", dest_real, source_real); refusal) {
+    return std::unexpected(*refusal);
   }
   // Last, so a destination that IS the source or the live database is named as
   // such rather than as merely existing.
@@ -274,6 +323,42 @@ auto vet_destination(std::string_view source, std::string_view dest) -> std::exp
     return std::unexpected(std::format("destination '{}' already exists; a copy is always a new file", dest));
   }
   return vetted_copy(dest_real);
+}
+
+/// @brief Decides whether `report` may be written, with the destination's
+/// rules, before anything is opened. An existing path is accepted only when it
+/// resolves to a regular file that begins with `{"run":"`, a report this tool
+/// wrote before; anything else (a database, a note, a directory) is refused
+/// rather than truncated. A path that does not exist is accepted.
+auto vet_report(std::string_view source, std::string_view report) -> std::expected<void, std::string> {
+  std::error_code ec;
+  auto const      source_real = fs::canonical(fs::path(source), ec);
+  if (ec) {
+    return std::unexpected(std::format("source '{}' is not an existing file", source));
+  }
+  fs::path const report_path(report);
+  auto const     report_real = fs::weakly_canonical(report_path, ec);
+  if (ec) {
+    return std::unexpected(std::format("report '{}' cannot be resolved: {}", report, ec.message()));
+  }
+  if (auto refusal = refuse_protected("report", report_real, source_real); refusal) {
+    return std::unexpected(*refusal);
+  }
+  if (fs::symlink_status(report_real, ec).type() == fs::file_type::not_found) {
+    return {};
+  }
+  if (!fs::is_regular_file(report_real, ec)) {
+    return std::unexpected(std::format("report '{}' exists and is not a regular file", report));
+  }
+  std::ifstream in(report_real, std::ios::binary);
+  std::string   head(8, '\0');
+  in.read(head.data(), static_cast<std::streamsize>(head.size()));
+  head.resize(static_cast<std::size_t>(in.gcount()));
+  if (head != R"({"run":")") {
+    return std::unexpected(
+        std::format("report '{}' exists and is not a report this tool wrote; refusing to overwrite it", report));
+  }
+  return {};
 }
 
 auto percent_encode(std::string_view path) -> std::string {
@@ -908,7 +993,7 @@ auto checks_json(const std::vector<check>& checks) -> std::string {
 /// @brief Runs the experiment on the vetted copy and returns the report JSON
 /// and whether every bound held.
 auto run_experiment(const options& opts, const vetted_copy& copy, const std::function<std::string()>& source_report)
-    -> std::expected<std::pair<std::string, bool>, std::string> {
+    -> std::expected<std::pair<std::string, int>, std::string> {
   shared_state sh;
   sh.copy_path = copy.path().string();
   sh.poll_ms   = opts.poll_ms;
@@ -996,14 +1081,6 @@ auto run_experiment(const options& opts, const vetted_copy& copy, const std::fun
   }
   rebuild_result rebuild;
   if (is_r4) {
-    if (opts.rebuild_table.empty()) {
-      sh.stop = true;
-      for (auto& t : threads) {
-        t.join();
-      }
-      return std::unexpected("--run r4 needs --rebuild-table (the largest planning table; the vendored SQLite has no dbstat, so "
-                             "find it on the backup copy with the system sqlite3's dbstat)");
-    }
     threads.emplace_back(run_rebuild_thread, std::ref(sh), std::string_view(opts.rebuild_table),
                          static_cast<double>(opts.rebuild_at_s), std::ref(rebuild));
   }
@@ -1273,7 +1350,8 @@ auto run_experiment(const options& opts, const vetted_copy& copy, const std::fun
                         checkpoint_json(final_checkpoint));
   report += extra;
   report += std::format(R"(,"checks":{}}})", checks_json(checks));
-  return std::pair{report, !bounded || all_pass};
+  // An error verdict (a worker failed) is never success, informational or not.
+  return std::pair{report, verdict == "error" ? k_exit_error : (!bounded || all_pass ? k_exit_ok : k_exit_breached)};
 }
 
 } // namespace
@@ -1295,6 +1373,19 @@ auto main(int argc, char** argv) -> int {
   if (!vetted) {
     std::println(stderr, "queue_contention_probe: refused: {}", vetted.error());
     return k_exit_refused;
+  }
+
+  // The report is vetted with the destination's rules before anything is opened.
+  if (!opts.report.empty()) {
+    if (auto report_ok = vet_report(opts.source, opts.report); !report_ok) {
+      std::println(stderr, "queue_contention_probe: refused: {}", report_ok.error());
+      return k_exit_refused;
+    }
+    std::error_code ec;
+    if (fs::weakly_canonical(fs::path(opts.report), ec) == vetted->path()) {
+      std::println(stderr, "queue_contention_probe: refused: report '{}' is the destination copy", opts.report);
+      return k_exit_refused;
+    }
   }
 
   // Source identity before the copy, for the report and the unchanged proof.
@@ -1333,12 +1424,17 @@ auto main(int argc, char** argv) -> int {
     cleanup();
     return k_exit_error;
   }
-  auto& [report, passed] = *result;
+  auto& [report, status] = *result;
   std::println("{}", report);
   if (!opts.report.empty()) {
     std::ofstream out(opts.report, std::ios::binary | std::ios::trunc);
     out << report << '\n';
+    if (!out) {
+      std::println(stderr, "queue_contention_probe: cannot write the report '{}'", opts.report);
+      cleanup();
+      return k_exit_error;
+    }
   }
   cleanup();
-  return passed ? k_exit_ok : k_exit_breached;
+  return status;
 }
