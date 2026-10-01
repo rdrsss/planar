@@ -554,9 +554,10 @@ TEST_CASE("planar-watch queue and queue history read planar.db through the read-
     std::ostringstream          out;
     std::ostringstream          err;
     planar::cmd::watch::context ctx{
-        verb, planar::cmd::watch::map_env({{"PLANAR_AGENT_DB", decoy.string()}, {"PLANAR_DB", fixture.db.string()}}),
-        fixture.dir, std::make_shared<planar::cmd::watch::database>(fixture.db, err), out, err};
-    auto const                  fresh = planar::cmd::watch::root_app();
+        verb,        planar::cmd::watch::map_env({{"PLANAR_AGENT_DB", decoy.string()}, {"PLANAR_DB", fixture.db.string()}}),
+        fixture.dir, std::make_shared<planar::cmd::watch::database>(fixture.db, err),
+        out,         err};
+    auto const fresh = planar::cmd::watch::root_app();
     INFO("verb: " << verb.back());
     REQUIRE(planar::cmd::watch::run(ctx, *fresh, table) == 0);
     CHECK(err.str().empty());

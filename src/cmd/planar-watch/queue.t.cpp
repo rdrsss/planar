@@ -941,8 +941,14 @@ TEST_CASE("queue view: with neither PLANAR_DB nor HOME it fails before dispatch 
   }
   auto const env = without_main_database(arena);
 
-  for (auto const& argv : std::vector<std::vector<std::string>>{
-           {"queue", "--json"}, {"queue"}, {"queue", "history"}, {"queue", "history", "--json"}, {"ps"}, {"version"}, {"schema"}, {}}) {
+  for (auto const& argv : std::vector<std::vector<std::string>>{{"queue", "--json"},
+                                                                {"queue"},
+                                                                {"queue", "history"},
+                                                                {"queue", "history", "--json"},
+                                                                {"ps"},
+                                                                {"version"},
+                                                                {"schema"},
+                                                                {}}) {
     auto const run = parity::run_pinned(watch_bin(), argv, arena.cpp_root, "nomain", env);
     INFO("verb: " << (argv.empty() ? std::string{"(bare)"} : argv.front()) << "\nstderr:\n" << run.err);
     CHECK(run.code == 1);
@@ -1068,8 +1074,8 @@ TEST_CASE("queue history: a store whose only entries are still running lists no 
 
 TEST_CASE("queue history: entries that ended as exited, timeout and cancelled are listed with outcome, times and canceller",
           "[cmd][watch][queue][hq-watch-history]") {
-  auto const arena = parity::make_arena("wh_real");
-  std::int64_t held = 0;
+  auto const   arena = parity::make_arena("wh_real");
+  std::int64_t held  = 0;
   {
     auto const now  = wall_now();
     auto       conn = open_store(arena);
@@ -1465,7 +1471,7 @@ TEST_CASE("queue history: the --since cutoff is exact to the millisecond and a r
       seqs.push_back(seed_ended(conn, spec));
     }
   }
-  auto conn = open_store(arena);
+  auto       conn = open_store(arena);
   auto const kept = hq::list_history(conn, cutoff);
   REQUIRE(kept.has_value());
   REQUIRE(kept->size() == 2);
@@ -1480,7 +1486,7 @@ TEST_CASE("queue history: the --since cutoff is exact to the millisecond and a r
 TEST_CASE("queue history: a planar.db behind this binary exits 7 and stays untouched", "[cmd][watch][queue][qp-watch-queue]") {
   auto const arena = parity::make_arena("wh_behind");
   {
-    auto conn = open_store(arena);
+    auto       conn = open_store(arena);
     ended_spec spec;
     spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
     seed_ended(conn, spec);
@@ -1705,8 +1711,7 @@ TEST_CASE("queue history: format characters, long values and display width are h
 
 // ---- errors ----------------------------------------------------------------
 
-TEST_CASE("queue history: a planar.db ahead of this binary exits 7 naming both versions",
-          "[cmd][watch][queue][qp-watch-queue]") {
+TEST_CASE("queue history: a planar.db ahead of this binary exits 7 naming both versions", "[cmd][watch][queue][qp-watch-queue]") {
   auto const arena = parity::make_arena("wh_ahead");
   {
     auto conn = open_store(arena);
