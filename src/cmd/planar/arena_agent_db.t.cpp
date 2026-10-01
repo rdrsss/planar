@@ -178,10 +178,12 @@ TEST_CASE("arena: run_pinned exports PLANAR_AGENT_DB under the arena root", "[ar
   // The main database pin is unchanged and sits beside it.
   REQUIRE(got.out.contains(std::format("PLANAR_DB={}\n", (arena.cpp_root / "planar.db").string())));
 
-  // Task 7043: `planar-agent queue run` opens the agent database, so a run
-  // through `run_pinned` now creates its store, and only under the arena.
-  // Nothing may appear under the arena's HOME either, which is where the
-  // runtime's fallback would have put it had the variable been dropped.
+  // Task 7043, as amended by plan 1089: `planar-agent queue run` now opens
+  // `planar.db` (never creating it), and the agent store is no longer created
+  // at all. A run through `run_pinned` therefore needs the arena's `planar.db`
+  // first (`planar init`), then leaves `agent.db` absent and nothing under the
+  // arena's HOME, which is where the runtime's fallback would have put it had
+  // the variable been dropped. This file goes with the pins in plan 1089 M1.
   auto const real_home = std::getenv("HOME") == nullptr ? std::filesystem::path{} : std::filesystem::path{std::getenv("HOME")};
   auto const real_agent_db = real_home / ".planar" / "agent.db";
   std::error_code ec;
@@ -190,11 +192,16 @@ TEST_CASE("arena: run_pinned exports PLANAR_AGENT_DB under the arena root", "[ar
   bool const real_store_absent_before = !real_home.empty() && !std::filesystem::exists(real_agent_db, ec);
 
   REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "agent.db"));
+  auto const initialised =
+      run_pinned(std::filesystem::path{PLANAR_CPP_BIN}, std::vector<std::string>{"init", "--skip-project", "--allow-no-repo"},
+                 arena.cpp_root, "init");
+  INFO("init stderr:\n" << initialised.err);
+  REQUIRE(initialised.code == 0);
   auto const queued = run_pinned(std::filesystem::path{PLANAR_AGENT_CPP_BIN},
                                  std::vector<std::string>{"queue", "run", "--", "/usr/bin/true"}, arena.cpp_root, "queue_true");
   INFO("queue run stderr:\n" << queued.err);
   REQUIRE(queued.code == 0);
-  REQUIRE(std::filesystem::exists(arena.cpp_root / "agent.db"));
+  REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "agent.db"));
   REQUIRE_FALSE(std::filesystem::exists(arena.cpp_root / "fakehome" / ".planar", ec));
   if (real_store_absent_before) {
     REQUIRE_FALSE(std::filesystem::exists(real_agent_db, ec));
