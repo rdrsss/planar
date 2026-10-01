@@ -1190,7 +1190,7 @@ auto table_exists(planar::db::connection& conn, std::string_view table) -> bool 
 } // namespace
 
 TEST_CASE("the embedded main chain is exactly the files under migrations/ and writes only schema_migrations",
-          "[db][migrations][hq-agentdb-migrations]") {
+          "[db][migrations]") {
   // The main chain is compared with the DIRECTORY it claims to embed, so a
   // dropped or stale generated unit fails here rather than matching itself.
   // The retired agent stream is gone (plan 1089): no migration may name
