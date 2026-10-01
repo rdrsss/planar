@@ -10,7 +10,9 @@
 # installer runs.
 #
 # Inputs, read from the caller's environment:
-#   PLANAR_HOME   the install prefix. Required.
+#   PLANAR_HOME         the install prefix. Required.
+#   IGNORE_LIVE_QUEUE   1 when --ignore-live-queue was passed. It is the ONLY
+#                       override of the live-queue guard; --force is not one.
 #
 # Every function returns non-zero after printing why, and never exits: the
 # caller decides what a refusal does (install.sh exits 1). Output goes
@@ -22,6 +24,11 @@
 
 QUEUE_RETIRE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QUEUE_RETIRE_PY="$QUEUE_RETIRE_LIB_DIR/queue_retire.py"
+
+# The new queue's sequence floor (decision 1006): migration 00040 seeds
+# sqlite_sequence at this value, so every new entry and its log is numbered
+# above it. An old store that reached it cannot be told apart by number.
+QUEUE_SEQ_FLOOR=1000000
 
 # _qr_log / _qr_warn / _qr_fail -- print through install.sh's helpers when the
 # caller defines them, else plainly. _qr_fail prints a refusal; it does not
@@ -135,4 +142,117 @@ _qr_head_version_hint() {
   local n
   n="$(printf '%s' "$QR_PROBE_STDERR" | grep -oE 'version [0-9]+' | head -1 | grep -oE '[0-9]+' || true)"
   printf '%s' "${n:-<N>}"
+}
+
+# The documented cost of overriding the guard (tech spec 656, "Override").
+_QR_OVERRIDE_COST="old submitters keep writing to the unlinked agent.db, their waiting commands still run when their turn comes in that orphaned queue, and those commands run outside the new queue's slot count until every old submitter drains"
+
+# queue_live_guard WHEN -- the live-queue guard (tech spec 656 steps 1 and 4,
+# and uninstall; decisions on questions 1006, 1007, 1009-1011).
+#
+# Runs only when $PLANAR_HOME/agent.db exists. Asks queue_retire.py `live`
+# for a per-row judgement of the old store and refuses while any row blocks
+# or the store cannot be read. WHEN names the step in the messages
+# (preflight, re-check, uninstall). There is no process signal: a live old
+# submitter holds its row for its whole run, so the store alone answers.
+#
+# IGNORE_LIVE_QUEUE=1 turns a blocking row, an unreadable store or a missing
+# python3 into a warning. Nothing else does: --force is not an override.
+queue_live_guard() {
+  local when="$1" store="$PLANAR_HOME/agent.db" out rc
+  [[ -e "$store" ]] || return 0
+  local ignore="${IGNORE_LIVE_QUEUE:-0}"
+
+  if ! command -v python3 >/dev/null 2>&1; then
+    if [[ "$ignore" -eq 1 ]]; then
+      _qr_warn "python3 is not installed, so $store was not checked for live queue entries ($when); continuing because --ignore-live-queue was passed: $_QR_OVERRIDE_COST"
+      return 0
+    fi
+    _qr_fail "python3 is required to check $store for live queue entries before it is removed ($when). Install python3 and re-run, or pass --ignore-live-queue (--force does not bypass this check)."
+    return 1
+  fi
+
+  out="$(python3 "$QUEUE_RETIRE_PY" live "$store" 2>&1)" && rc=0 || rc=$?
+  case "$rc" in
+    0)
+      local line
+      while IFS= read -r line; do
+        [[ "$line" == dead\ * ]] && _qr_log "agent.db: ignoring $line"
+      done <<< "$out"
+      return 0
+      ;;
+    3)
+      if [[ "$ignore" -eq 1 ]]; then
+        _qr_warn "the old queue in $store has live entries ($when); continuing because --ignore-live-queue was passed: $_QR_OVERRIDE_COST
+$out"
+        return 0
+      fi
+      _qr_fail "the old queue in $store has live entries ($when); refusing to retire it:
+$out
+Remedies: let those commands finish; or cancel them with the old \`planar-agent queue cancel <seq>\` if it is still installed; or re-run with --ignore-live-queue ($_QR_OVERRIDE_COST). --force does not bypass this check."
+      return 1
+      ;;
+    *)
+      if [[ "$ignore" -eq 1 ]]; then
+        _qr_warn "$store could not be checked for live queue entries ($when): $out; continuing because --ignore-live-queue was passed (retire still refuses an unreadable store)"
+        return 0
+      fi
+      _qr_fail "$store could not be checked for live queue entries ($when), so it is treated as live: $out"
+      return 1
+      ;;
+  esac
+}
+
+# queue_retire_store -- tech spec 656 step 5: retire agent.db.
+#
+# Runs only when $PLANAR_HOME/agent.db exists, and only after the live-queue
+# guard's re-check. Reads the old maximum sequence number and refuses when it
+# cannot, or when it reaches the new floor -- no flag bypasses either. Then
+# removes the old numbered logs (queue-logs/<n>.log, n an integer at or below
+# the old maximum) and agent.db with its -wal and -shm, printing each
+# removal. Logs numbered above the old maximum, such as a new queue's
+# (above 1,000,000), and every other file are kept.
+queue_retire_store() {
+  local store="$PLANAR_HOME/agent.db" out rc max
+  [[ -e "$store" ]] || return 0
+  if ! command -v python3 >/dev/null 2>&1; then
+    _qr_fail "python3 is required to read the old maximum sequence number of $store; it was NOT retired. Install python3 and re-run ./install.sh."
+    return 1
+  fi
+  out="$(python3 "$QUEUE_RETIRE_PY" oldmax "$store" 2>&1)" && rc=0 || rc=$?
+  if [[ "$rc" -ne 0 ]]; then
+    _qr_fail "cannot read the old maximum sequence number of $store; it was NOT retired: $out"
+    return 1
+  fi
+  max="$out"
+  if [[ ! "$max" =~ ^[0-9]+$ || ${#max} -gt 18 ]]; then
+    _qr_fail "the old maximum sequence number of $store is not a number ($max); it was NOT retired. Delete agent.db, agent.db-wal, agent.db-shm and the old numbered logs in queue-logs/ by hand once no old queue command is running."
+    return 1
+  fi
+  if (( 10#$max >= QUEUE_SEQ_FLOOR )); then
+    _qr_fail "the old maximum sequence number of $store is $max, which reaches the new queue's floor $QUEUE_SEQ_FLOOR, so its logs cannot be told apart from new ones by number; it was NOT retired. Move the logs you want to keep out of $PLANAR_HOME/queue-logs/, then delete agent.db, agent.db-wal, agent.db-shm and the old logs by hand."
+    return 1
+  fi
+
+  local log name
+  for log in "$PLANAR_HOME/queue-logs"/*.log; do
+    [[ -f "$log" || -L "$log" ]] || continue
+    [[ -d "$log" ]] && continue
+    name="${log##*/}"
+    name="${name%.log}"
+    [[ "$name" =~ ^[0-9]+$ && ${#name} -le 18 ]] || continue
+    if (( 10#$name <= 10#$max )); then
+      rm -f "$log"
+      _qr_log "removed old queue log $log"
+    fi
+  done
+  local f
+  for f in agent.db agent.db-wal agent.db-shm; do
+    if [[ -e "$PLANAR_HOME/$f" || -L "$PLANAR_HOME/$f" ]]; then
+      rm -f "$PLANAR_HOME/$f"
+      _qr_log "removed $PLANAR_HOME/$f"
+    fi
+  done
+  _qr_log "retired agent.db (old maximum sequence number $max; the queue now lives in planar.db)"
+  return 0
 }
