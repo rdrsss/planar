@@ -7423,7 +7423,7 @@ id    at                         direction  outcome   link_id  detail
 
 ### `planar-watch queue` — the host build and test queue (plan 1080)
 
-Read-only listing of every running and waiting entry of the host-wide queue that `planar-agent queue run` feeds, across every project. It reads the **agent database** (`PLANAR_AGENT_DB`, else `~/.planar/agent.db`), not the main database, so it works when the main database cannot be located.
+Read-only listing of every running and waiting entry of the host-wide queue that `planar-agent queue run` feeds, across every project. It reads the `queue_entries` table of the **main database** (`planar.db`) through the same read-only handle as every other `planar-watch` verb and under its rules: a missing database is the usual open error, and a schema version behind or ahead of this binary exits `7`.
 
 **Synopsis:**
 ```
@@ -7455,20 +7455,20 @@ SEQ  STATE    POS  NOTES     WAITED  RAN    VENDOR  ROLE    LABEL       DIRECTOR
 | `log_path` | The output file of a detached run |
 | `enqueued_at`, `started_at` | Wall-clock milliseconds |
 | `waited_ms`, `ran_ms` | Durations at the moment of the listing |
-| `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` on a store still at agent schema version 2 |
+| `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` when no limit applies |
 
-**Schema effects:** Reads `queue_entries` in the agent database. No writes; a missing agent database is an empty queue and is not created.
+**Schema effects:** Reads `queue_entries` in `planar.db`. No writes; the database is never created or migrated.
 
 **Exit codes:**
-- `0` — success, an empty or missing queue included.
-- `1` — the file at the agent database path is not an agent store (a database with other tables) or cannot be read; a parse failure.
-- `7` — the store was written by a newer release (its `compat` is above this binary's agent schema version); both versions are named.
+- `0` — success, an empty queue included.
+- `1` — `planar.db` is missing or cannot be read (`error: OpenFailed`); neither `PLANAR_DB` nor `HOME` is set; a parse failure.
+- `7` — `planar.db` is behind or ahead of this binary's schema; both versions are named. The same rule as every other `planar-watch` verb.
 
-**Main database.** The `queue` domain (`queue` and `queue history`) is the one that does not need the main database's path. Every other verb still exits `1` with `neither PLANAR_DB nor HOME is set` when neither variable is; the `queue` verbs resolve their own store from `PLANAR_AGENT_DB` / `HOME`.
+**Main database.** There is no exemption: `queue` and `queue history` need the main database's path like every other verb, and exit `1` with `neither PLANAR_DB nor HOME is set` when neither variable is.
 
 ### `planar-watch queue history` — what the host queue has run (plan 1080)
 
-Read-only listing of the entries that have **ended**, from the same agent database `planar-watch queue` reads. It answers "what went through the queue, how did it end, and who used it": every row carries the submitting vendor, role, directory and command, so a project that builds and never appears here is not following the rule. `planar-watch queue` (bare) is unchanged and still lists running and waiting entries; `queue` is both a verb and the group `history` sits under.
+Read-only listing of the entries that have **ended**, from the `queue_history` table of the same `planar.db` `planar-watch queue` reads. It answers "what went through the queue, how did it end, and who used it": every row carries the submitting vendor, role, directory and command, so a project that builds and never appears here is not following the rule. `planar-watch queue` (bare) is unchanged and still lists running and waiting entries; `queue` is both a verb and the group `history` sits under.
 
 **Synopsis:**
 ```
@@ -7507,17 +7507,17 @@ SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES            
 | `log_path` | The output file of a detached run |
 | `enqueued_at`, `started_at`, `ended_at` | Wall-clock milliseconds |
 | `waited_ms`, `ran_ms` | Durations, from the recorded times |
-| `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` on a store still at agent schema version 2 |
+| `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` when no limit applies |
 
-**Schema effects:** Reads `queue_history` in the agent database. No writes; a missing agent database is an empty history and is not created. A store still at agent schema version 2 is read as it is and stays there.
+**Schema effects:** Reads `queue_history` in `planar.db`. No writes; the database is never created or migrated.
 
 **Exit codes:**
-- `0` — success, an empty or missing history included.
-- `1` — the file at the agent database path is not an agent store or cannot be read; a parse failure (unknown flag, missing value).
+- `0` — success, an empty history included.
+- `1` — `planar.db` is missing or cannot be read; neither `PLANAR_DB` nor `HOME` is set; a parse failure (unknown flag, missing value).
 - `2` — `--since` is not a duration in the accepted grammar or range (an integer plus `ms`, `s`, `m`, `h` or `d`; zero, a bare integer and more than `36500d` are refused); the message names the value and nothing is printed on standard output.
-- `7` — the store was written by a newer release; both versions are named.
+- `7` — `planar.db` is behind or ahead of this binary's schema; both versions are named.
 
-Like `queue`, this verb does not need the main database's path: it resolves its store from `PLANAR_AGENT_DB` / `HOME` only.
+Like `queue`, this verb follows every other `planar-watch` verb's main-database rules: it needs `PLANAR_DB` or `HOME` to locate `planar.db`, and exits `7` on a version mismatch in either direction.
 
 ---
 
