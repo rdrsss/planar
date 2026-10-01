@@ -7,14 +7,19 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Run an isolated installer copy whose pinned C++ compiler path is unavailable.
 # The dependency preflight must refuse before it can invoke CMake.
-mkdir -p "$TMP/repo/scripts"
+mkdir -p "$TMP/repo/scripts" "$TMP/home"
 cp "$ROOT/install.sh" "$TMP/repo/install.sh"
 cp "$ROOT/scripts/install-manifest.sh" "$TMP/repo/scripts/"
+cp -R "$ROOT/scripts/install-lib" "$TMP/repo/scripts/"
 
 perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang\+\+#/definitely/missing/planar-clang++#g' \
   "$TMP/repo/install.sh"
 
-if "$TMP/repo/install.sh" --dry-run --no-vendor >"$TMP/stdout" 2>"$TMP/stderr"; then
+# A scratch HOME and prefix: even a dry run inspects the prefix (plan 1089's
+# queue steps look for planar.db there), and this test must never look at the
+# operator's ~/.planar.
+if HOME="$TMP/home" PLANAR_HOME="$TMP/home/.planar" CODEX_HOME="$TMP/home/.codex" \
+  "$TMP/repo/install.sh" --dry-run --no-vendor >"$TMP/stdout" 2>"$TMP/stderr"; then
   echo "expected missing pinned C++ compiler to abort install.sh" >&2
   exit 1
 fi

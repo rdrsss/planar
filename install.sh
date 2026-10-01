@@ -111,6 +111,10 @@ INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPO_ROOT/scripts/install-manifest.sh"
+# The queue upgrade steps (plan 1089): probe and migrate the prefix planar.db.
+# Sourced so the installer-manifest test and a post-build ctest case drive the
+# exact functions this script runs.
+source "$REPO_ROOT/scripts/install-lib/queue-retire.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -502,7 +506,7 @@ BUILD_DEPS=(
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
-  "python3|python|Centurion's configure generates its Botan amalgamation with configure.py"
+  "python3|python|Centurion's configure; install.sh's queue store probe classifier (scripts/install-lib/queue_retire.py)"
   "shasum||digest centuriond and verify a Centurion release asset"
   "mktemp||stage centuriond release downloads"
   "tar||unpack a Centurion release asset"
@@ -618,6 +622,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   title "Dry run — planned actions"
   log "build 5 Planar binaries and scriptorium → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
+  if [[ -e "$PLANAR_HOME/planar.db" ]]; then
+    log "probe $PLANAR_HOME/planar.db with the new planar-agent; migrate it with planar init only when behind"
+  fi
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
   log "place templates/ (missing-only; --force overwrites)"
@@ -737,6 +744,17 @@ if [[ -f "$CLEANUP_LIST" ]]; then
     fi
   done < "$CLEANUP_LIST"
 fi
+
+# ---------- queue store ----------
+
+# The queue lives in planar.db (plan 1089). Ask the planar-agent just
+# installed whether the prefix's planar.db is usable, read-only and from /,
+# and migrate it with `planar init` only when it is behind (decision 1008).
+# An ahead planar.db is never refused: an incompatible or foreign queue schema
+# only warns. Any other answer stops the install here, with the new binaries
+# installed and nothing retired. See scripts/install-lib/queue-retire.sh.
+title "Checking the queue store"
+queue_probe_migrate || exit 1
 
 # ---------- place artifacts ----------
 
