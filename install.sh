@@ -21,10 +21,9 @@
 #     share/centurion/                # centuriond migrations + build identity
 #     install-manifest.json           # managed vendor projections
 #     planar.db                       # created on first `planar init` (0600;
-#                                     # the install root is 0700)
-#     agent.db                        # agent-state database (override with
-#                                     # PLANAR_AGENT_DB); created 0600 on first use
-#     queue-logs/                     # detached queue-run output, beside agent.db
+#                                     # the install root is 0700); also holds the
+#                                     # host queue (plan 1089)
+#     queue-logs/                     # detached queue-run output, beside planar.db
 #     migrations/00001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at configure
 #                                     # time via CMake codegen)
@@ -73,6 +72,7 @@
 #                                     #   (dev mode — edits to repo propagate)
 #   ./install.sh --prefix /opt/planar # override ~/.planar
 #   ./install.sh --force              # overwrite existing symlinks
+#   ./install.sh --ignore-live-queue  # retire agent.db despite live old queue entries
 #   ./install.sh --uninstall          # tear down everything install.sh created
 #   ./install.sh --preset debug       # CMake preset (default release)
 #   ./install.sh --with-solver        # link the Mt-KaHyPar solver (needs tbb)
@@ -95,6 +95,8 @@ VENDORS="claude,codex,copilot,gemini"
 MODE="copy"                   # copy | link
 FORCE=0
 UNINSTALL=0
+IGNORE_LIVE_QUEUE=0           # set with --ignore-live-queue; the ONLY override of
+                              # the agent.db live-queue guard (--force is not one)
 NO_PRUNE=0                    # set with --no-prune to skip stale-vendor-file removal
 BUILD_PRESET="release"        # CMake preset
 # The installer builds in its OWN directory, never the developer's
@@ -111,6 +113,10 @@ INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$REPO_ROOT/scripts/install-manifest.sh"
+# The queue upgrade steps (plan 1089): probe and migrate the prefix planar.db,
+# guard and retire the old agent.db. Sourced so the installer-manifest test
+# and the post-build ctest cases drive the exact functions this script runs.
+source "$REPO_ROOT/scripts/install-lib/queue-retire.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -127,7 +133,13 @@ Options:
   --vendors LIST     Comma-separated vendors to wire: claude,codex,copilot,gemini (default: all)
   --no-vendor        Install Planar core only; skip vendor surfaces
   --link             Symlink from this repo instead of copying (dev mode)
-  --force            Overwrite existing symlinks / adopt a non-Planar prefix
+  --force            Overwrite existing symlinks / adopt a non-Planar prefix.
+                     It does NOT bypass the agent.db live-queue guard.
+  --ignore-live-queue
+                     Retire (or uninstall) the old agent.db even while its
+                     queue has live entries, or python3 cannot check it. The
+                     old submitters keep an orphaned queue running outside
+                     the new queue's slot count until they drain.
   --no-prune         Skip removal of stale vendor files
   --preset NAME      CMake build preset: debug|release (default: release)
   --build-dir DIR    Where to configure and build (default:
@@ -155,6 +167,7 @@ while [[ $# -gt 0 ]]; do
     --no-vendor)  VENDORS=""; shift ;;
     --link)       MODE="link"; shift ;;
     --force)      FORCE=1; shift ;;
+    --ignore-live-queue) IGNORE_LIVE_QUEUE=1; shift ;;
     --uninstall)  UNINSTALL=1; shift ;;
     --no-prune)   NO_PRUNE=1; shift ;;
     --preset)     BUILD_PRESET="$2"; shift 2 ;;
@@ -207,14 +220,16 @@ ok()    { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn()  { WARN_COUNT=$((WARN_COUNT + 1)); printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 err()   { printf '\n%sinstall.sh: %s%s\n' "$C_RED" "$*" "$C_RESET" >&2; exit 1; }
 
-# harden_planar_home — make the install root private (decision 1210).
-# planar.db and agent.db both store task claim tokens, which authorise
-# heartbeats and terminal verbs on a claim, so the install root is 0700 and
-# the databases (with their -wal/-shm sidecars) are 0600. Creates the root
-# when absent, tightens an existing install in place, and touches nothing
-# else: queue-logs/ is already created 0700 with 0600 logs by `queue run`, and
-# PLANAR_DB / PLANAR_AGENT_DB overrides outside the root are the operator's.
-# A symlinked database is left alone rather than chmodding its target.
+# harden_planar_home — make the install root private (plan 1089, tech spec
+# 656 "File modes", which replaces the withdrawn decision 1210). planar.db
+# stores task claim tokens, which authorise heartbeats and terminal verbs on a
+# claim, so the install root is 0700 and the database (with its -wal/-shm
+# sidecars) is 0600. Creates the root when absent, tightens an existing
+# install in place, and touches nothing else: queue-logs/ is already created
+# 0700 with 0600 logs by `queue run`, and a PLANAR_DB override outside the
+# root is the operator's. A symlinked database is left alone rather than
+# chmodding its target. The retired agent.db is not tightened: install
+# removes it (queue_retire_store).
 harden_planar_home() {
   mkdir -p "$PLANAR_HOME"
   # A chmod that fails is a warning, never an abort: a live -wal/-shm can be
@@ -223,7 +238,7 @@ harden_planar_home() {
   # either would end the install.
   chmod 700 "$PLANAR_HOME" 2>/dev/null || warn "could not restrict $PLANAR_HOME to mode 700"
   local db
-  for db in planar.db planar.db-wal planar.db-shm agent.db agent.db-wal agent.db-shm; do
+  for db in planar.db planar.db-wal planar.db-shm; do
     if [[ -f "$PLANAR_HOME/$db" && ! -L "$PLANAR_HOME/$db" ]]; then
       if chmod 600 "$PLANAR_HOME/$db" 2>/dev/null; then
         vlog "$db: mode 600"
@@ -342,6 +357,13 @@ symlink_to() {
 if [[ "$UNINSTALL" -eq 1 ]]; then
   title "Uninstalling Planar"
 
+  # The live-queue guard runs before anything is removed, --force or not:
+  # uninstall removes agent.db (it is no longer preserved), so it must not
+  # pull the store out from under a live old queue. This branch runs before
+  # the dependency preflight, so the guard checks for python3 itself, and
+  # only when agent.db exists. --ignore-live-queue is the only override.
+  queue_live_guard uninstall || exit 1
+
   for vendor_root in "$HOME/.claude/commands" "$HOME/.codex/skills" "$HOME/.copilot/skills" "$HOME/.gemini/antigravity-cli/skills"; do
     [[ -d "$vendor_root" ]] || continue
     while IFS= read -r -d '' link; do
@@ -433,8 +455,8 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     # all — `PLANAR_HOME=$HOME ./install.sh --uninstall --force` deletes the
     # operator's home directory outright, and even without --force the
     # find-and-delete two lines down removes every top-level entry of
-    # $PLANAR_HOME except the preserved data entries (planar.db, agent.db,
-    # their SQLite sidecars, queue-logs/).
+    # $PLANAR_HOME except the preserved data entries (planar.db, its SQLite
+    # sidecars, queue-logs/).
     #
     # Two checks, in order:
     #   1. $PLANAR_HOME normalized (plain `realpath`, not `-m` — GNU's `-m`
@@ -450,33 +472,33 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     #      never a valid Planar prefix, so this refuses even under --force:
     #      there is no legitimate reason to override it.
     #   2. Absent that, the SAME ownership signals the install-side guard
-    #      uses (stamp / bin/planar / planar.db / agent.db) must be present,
-    #      unless --force overrides — mirroring the install-side guard
-    #      exactly rather than inventing a second policy.
+    #      uses (stamp / bin/planar / planar.db) must be present, unless
+    #      --force overrides — mirroring the install-side guard exactly
+    #      rather than inventing a second policy. The retired agent.db is no
+    #      longer a signal (plan 1089): a prefix holding only it is refused.
     _planar_home_real="$(realpath "$PLANAR_HOME" 2>/dev/null || echo "$PLANAR_HOME")"
     _home_real="$(realpath "$HOME" 2>/dev/null || echo "$HOME")"
     if [[ "$_planar_home_real" == "$_home_real" ]]; then
       err "refusing to uninstall: PLANAR_HOME ($PLANAR_HOME) resolves to \$HOME ($HOME) — this would delete your home directory. Set --prefix to the actual Planar install root."
     fi
-    if [[ ! -e "$PLANAR_HOME/.planar-install" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && ! -e "$PLANAR_HOME/agent.db" && "$FORCE" -ne 1 ]]; then
-      err "$PLANAR_HOME does not look like a Planar install (no bin/planar, no planar.db, no agent.db, no .planar-install stamp). Refusing to remove it. Pass the correct --prefix, or re-run with --force to remove it anyway."
+    if [[ ! -e "$PLANAR_HOME/.planar-install" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
+      err "$PLANAR_HOME does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Refusing to remove it. Pass the correct --prefix, or re-run with --force to remove it anyway."
     fi
 
     log "removing install root: $PLANAR_HOME"
-    log "(planar.db, agent.db, their -wal/-shm sidecars and queue-logs/ are preserved if you have data — re-run with --force or rm manually)"
+    log "(planar.db, its -wal/-shm sidecars and queue-logs/ are preserved if you have data — re-run with --force or rm manually; the retired agent.db is removed)"
     if [[ "$FORCE" -eq 1 ]]; then
       rm -rf "$PLANAR_HOME"
     else
-      # Preserve the databases and the agent database's detached-run output;
-      # remove everything else. The SQLite sidecars (-wal / -shm) of both
-      # databases hold committed data not yet checkpointed into the main file
-      # (both run in WAL mode, so an unclean exit leaves them behind), so they
-      # stay with their database. Both planar.db and agent.db default to this directory;
-      # PLANAR_DB / PLANAR_AGENT_DB overrides live wherever the operator put
-      # them and are never touched here.
+      # Preserve the database and the queue's detached-run output; remove
+      # everything else, the retired agent.db and its sidecars included (plan
+      # 1089; the live-queue guard above already ran). planar.db's SQLite
+      # sidecars (-wal / -shm) hold committed data not yet checkpointed into
+      # the main file (it runs in WAL mode, so an unclean exit leaves them
+      # behind), so they stay with it. A PLANAR_DB override lives wherever
+      # the operator put it and is never touched here.
       find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 \
         ! -name 'planar.db' ! -name 'planar.db-wal' ! -name 'planar.db-shm' \
-        ! -name 'agent.db' ! -name 'agent.db-wal' ! -name 'agent.db-shm' \
         ! -name 'queue-logs' \
         -exec rm -rf {} +
     fi
@@ -490,6 +512,13 @@ fi
 
 title "Planar — install from $REPO_ROOT"
 
+# Live-queue preflight (plan 1089, tech spec 656 step 1). When the prefix
+# still holds the retired agent.db, refuse before anything is built while its
+# old queue has a live entry, or when the store cannot be read. It runs again
+# immediately before agent.db is removed (step 4). --ignore-live-queue is the
+# only override; --force is not one.
+queue_live_guard preflight || exit 1
+
 # Dependency manifest — keep in sync with README.md § Prerequisites and the
 # CLAUDE.md "external tool dependencies" rule. Format: "cmd|brewpkg|what for"
 # (empty brewpkg = base system tool, no Homebrew hint).
@@ -502,7 +531,7 @@ BUILD_DEPS=(
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
-  "python3|python|Centurion's configure generates its Botan amalgamation with configure.py"
+  "python3|python|Centurion's configure; install.sh's agent.db retirement reader (scripts/install-lib/queue_retire.py); the counter-reset log helper (scripts/queue-logs-after-reset.py)"
   "shasum||digest centuriond and verify a Centurion release asset"
   "mktemp||stage centuriond release downloads"
   "tar||unpack a Centurion release asset"
@@ -602,10 +631,10 @@ fi
 PLANAR_STAMP="$PLANAR_HOME/.planar-install"
 if [[ -d "$PLANAR_HOME" && -n "$(ls -A "$PLANAR_HOME" 2>/dev/null)" ]]; then
   # Ownership signals: the stamp, an existing binary, or a preserved planar.db
-  # or agent.db (left behind by a non-force uninstall). Any one of them means
-  # "our tree".
-  if [[ ! -e "$PLANAR_STAMP" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && ! -e "$PLANAR_HOME/agent.db" && "$FORCE" -ne 1 ]]; then
-    err "$PLANAR_HOME exists and does not look like a Planar install (no bin/planar, no planar.db, no agent.db, no .planar-install stamp). Pass a clean --prefix, remove it, or re-run with --force to adopt it."
+  # (left behind by a non-force uninstall). Any one of them means "our tree".
+  # The retired agent.db is not one (plan 1089).
+  if [[ ! -e "$PLANAR_STAMP" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
+    err "$PLANAR_HOME exists and does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Pass a clean --prefix, remove it, or re-run with --force to adopt it."
   fi
 fi
 
@@ -618,6 +647,12 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   title "Dry run — planned actions"
   log "build 5 Planar binaries and scriptorium → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
+  if [[ -e "$PLANAR_HOME/planar.db" ]]; then
+    log "probe $PLANAR_HOME/planar.db with the new planar-agent; migrate it with planar init only when behind"
+  fi
+  if [[ -e "$PLANAR_HOME/agent.db" ]]; then
+    log "re-check $PLANAR_HOME/agent.db for live queue entries, then retire it and its old numbered queue logs"
+  fi
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
   log "place templates/ (missing-only; --force overwrites)"
@@ -737,6 +772,22 @@ if [[ -f "$CLEANUP_LIST" ]]; then
     fi
   done < "$CLEANUP_LIST"
 fi
+
+# ---------- queue store ----------
+
+# The queue lives in planar.db (plan 1089). Ask the planar-agent just
+# installed whether the prefix's planar.db is usable, read-only and from /,
+# and migrate it with `planar init` only when it is behind (decision 1008).
+# An ahead planar.db is never refused: an incompatible or foreign queue schema
+# only warns. Any other answer stops the install here, with the new binaries
+# installed and nothing retired. Then re-check the old agent.db's queue
+# immediately before removing anything (an entry may have appeared during the
+# build), and retire it with its old numbered logs. See
+# scripts/install-lib/queue-retire.sh.
+title "Checking the queue store"
+queue_probe_migrate || exit 1
+queue_live_guard re-check || exit 1
+queue_retire_store || exit 1
 
 # ---------- place artifacts ----------
 

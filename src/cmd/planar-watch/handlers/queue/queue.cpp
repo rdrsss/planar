@@ -7,7 +7,6 @@ module planar.cmd.planar_watch.handlers.queue;
 import std;
 import planar.cliapp.args;
 import planar.cmd.internal.config_path;
-import planar.cmd.planar_watch.agentstore;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
@@ -180,13 +179,17 @@ auto render_text(const std::vector<row>& rows) -> std::string {
 auto queue(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const as_json = cliapp::flag_bool(args, "--json");
 
-  auto store = open_agent_store(ctx.env());
-  if (!store) {
-    return std::unexpected(std::move(store.error()));
+  // The main read-only handle, under the viewer's own rules: a missing file
+  // is the usual open error and a version mismatch in either direction is
+  // exit 7. Nothing here creates, migrates or writes.
+  auto conn = ctx.db().ensure_db();
+  if (!conn) {
+    return std::unexpected(std::move(conn.error()));
   }
-  auto entries = store->entries();
+  auto entries = hq::list(**conn);
   if (!entries) {
-    return std::unexpected(std::move(entries.error()));
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, std::format("queue read failed: {}", entries.error().message)));
   }
   auto rows = build_rows(ctx, std::move(*entries));
   if (!rows) {

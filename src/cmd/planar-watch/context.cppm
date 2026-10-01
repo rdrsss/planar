@@ -24,19 +24,6 @@ export auto map_env(std::map<std::string, std::string, std::less<>> vars) -> env
 /// @param env Environment lookup.
 /// @return Database path or a command error.
 export auto resolve_db_path(const env_lookup& env) -> std::expected<std::filesystem::path, domain_error>;
-/// @brief Whether an invocation needs the main database's path resolved
-/// before dispatch.
-///
-/// Every verb does, except the `queue` domain (plan 1080, task hq-watch-queue).
-/// Its store is the agent database (`agentstore.cppm`), located from
-/// `PLANAR_AGENT_DB` / `HOME` on its own, and the queue view must keep working
-/// when the main database cannot be located (no `PLANAR_DB`, no `HOME`). The
-/// check is on the first argument after the program name, the verb position:
-/// anything else, an empty vector and a leading flag included, keeps the
-/// resolution and its exit code.
-/// @param args The full argument vector, program name first.
-/// @return `false` only when the first argument is `queue`.
-export auto uses_main_database(std::span<const std::string> args) -> bool;
 /// @brief Resolve this binary's operator working directory.
 /// @param env Environment lookup.
 /// @return Working directory path.

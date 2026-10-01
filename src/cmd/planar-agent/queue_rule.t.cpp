@@ -6,8 +6,9 @@
 // The rule text is one authored file, `src/lib/queuerule/queue-rule.md`,
 // embedded into `planar-agent` at configure time. These cases read that file
 // from the repository and hold the built binary to it: what `queue rule`
-// prints is the file byte for byte, it is printed without opening either
-// database, the text carries every element the task names, and every command
+// prints is the file byte for byte, it is printed without opening
+// `planar.db` (which holds the queue's tables, so a path that cannot be used
+// changes neither its output nor the disk), the text carries every element the task names, and every command
 // it shows exists in the binary's own command tree with the flags it uses.
 //
 // Nothing here compares the text to a copy of itself. The content cases name
@@ -186,18 +187,16 @@ TEST_CASE("queue rule has no --json and takes no argument", "[cmd][agent][queue]
   CHECK(extra.out.empty());
 }
 
-TEST_CASE("queue rule opens no database: unusable database paths change neither its output nor the disk",
+TEST_CASE("queue rule opens no database: an unusable database path changes neither its output nor the disk",
           "[cmd][agent][queue][rule]") {
   auto const arena  = parity::make_arena("queue-rule-nodb");
   auto const source = rule_source();
   auto const root   = arena.cpp_root;
 
-  SECTION("both database paths name places that do not exist") {
+  SECTION("the database path names a place that does not exist") {
     auto env = parity::pinned_env(root);
     for (auto& var : env) {
-      if (var.name == "PLANAR_AGENT_DB") {
-        var.value = (root / "absent" / "deeper" / "agent.db").string();
-      } else if (var.name == "PLANAR_DB") {
+      if (var.name == "PLANAR_DB") {
         var.value = (root / "absent" / "deeper" / "planar.db").string();
       }
     }
@@ -205,11 +204,12 @@ TEST_CASE("queue rule opens no database: unusable database paths change neither 
     INFO("stderr:\n" << got.err);
     CHECK(got.code == 0);
     CHECK(got.out == source);
-    // Opening either store would have created its parent directory.
+    // Opening the store would have refused it, and creating it would have made
+    // its parent directory.
     CHECK_FALSE(std::filesystem::exists(root / "absent"));
   }
 
-  SECTION("both database paths sit in a directory that cannot be written") {
+  SECTION("the database path sits in a directory that cannot be written") {
     auto const locked = root / "locked";
     std::filesystem::create_directories(locked);
     std::filesystem::permissions(locked, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
@@ -223,9 +223,7 @@ TEST_CASE("queue rule opens no database: unusable database paths change neither 
 
     auto env = parity::pinned_env(root);
     for (auto& var : env) {
-      if (var.name == "PLANAR_AGENT_DB") {
-        var.value = (locked / "agent.db").string();
-      } else if (var.name == "PLANAR_DB") {
+      if (var.name == "PLANAR_DB") {
         var.value = (locked / "planar.db").string();
       }
     }
@@ -233,7 +231,6 @@ TEST_CASE("queue rule opens no database: unusable database paths change neither 
     INFO("stderr:\n" << got.err);
     CHECK(got.code == 0);
     CHECK(got.out == source);
-    CHECK_FALSE(std::filesystem::exists(locked / "agent.db"));
     CHECK_FALSE(std::filesystem::exists(locked / "planar.db"));
   }
 
@@ -248,7 +245,6 @@ TEST_CASE("queue rule opens no database: unusable database paths change neither 
     INFO("stderr:\n" << got.err);
     CHECK(got.code == 0);
     CHECK(got.out == source);
-    CHECK_FALSE(std::filesystem::exists(root / "agent.db"));
     CHECK_FALSE(std::filesystem::exists(root / "planar.db"));
   }
 }

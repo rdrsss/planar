@@ -125,7 +125,7 @@ TEST_CASE("apply_all migrates a fresh database to head", "[db][migrate]") {
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1)); // count == max version: no gaps
-  REQUIRE(stmt->column_int64(1) == 39);
+  REQUIRE(stmt->column_int64(1) == 40);
 }
 
 TEST_CASE("the embedded migration chain's versions are strictly monotonic", "[db][migrations]") {
@@ -328,7 +328,7 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 39);
+  REQUIRE(stmt->column_int64(1) == 40);
 }
 
 TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-for-row", "[db][migrate][parity]") {
@@ -394,8 +394,9 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
       {37, "drop the four dormant slug columns added by 00011"},
       {38, "execution supervision: claim supervisor/attempt, run engine, nullable run plan, supervision action kinds"},
       {39, "workflow_runs: nullable pid, lease expires_at, CHECK one of pid/expires_at is set (decision D11)"},
+      {40, "host queue: queue_entries, queue_history, queue_schema marker, sequence floor 1000000"},
   };
-  REQUIRE(k_expected.size() == 39);
+  REQUIRE(k_expected.size() == 40);
 
   scratch_db_path cpp_scratch;
   auto            cpp_conn = planar::db::connection::open(cpp_scratch.path_.string());
@@ -418,7 +419,7 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
     REQUIRE(cpp_stmt->column_text(1) == k_expected[rows].second);
     ++rows;
   }
-  REQUIRE(rows == 39);
+  REQUIRE(rows == 40);
 }
 
 TEST_CASE("migration 34 preserves legacy file annotations and guards entity annotation rollback",
@@ -428,7 +429,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 39);
+  REQUIRE(chain.size() == 40);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 33)));
   REQUIRE(conn->execute(
       "insert into annotations (scope_kind, anchor_path, anchor_text, title, body, status, vendor, created_at, updated_at) "
@@ -458,6 +459,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(legacy_tag->step().value() == planar::db::step_result::done);
 
   // Peel from head so the chain stays contiguous for the re-apply below.
+  REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
@@ -495,6 +497,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
   REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
                         "values ('global', 'entity', null, 'plan', 1, 'durable note', 1);"));
+  REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
@@ -510,7 +513,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   auto version = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(version.has_value());
   REQUIRE(version->step().value() == planar::db::step_result::row);
-  // Migrations 39, 38, 37, 36 and 35 have rolled back, while migration 34 correctly refuses to
+  // Migrations 40, 39, 38, 37, 36 and 35 have rolled back, while migration 34 correctly refuses to
   // discard entity-anchored annotations. Its migration marker must remain.
   CHECK(version->column_int64(0) == 34);
   REQUIRE(version->step().value() == planar::db::step_result::done);
@@ -527,7 +530,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 39);
+  REQUIRE(chain.size() == 40);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 35)));
   REQUIRE(
       conn->execute("insert into cli_invocations "
@@ -554,7 +557,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   auto marker = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(marker.has_value());
   REQUIRE(marker->step().value() == planar::db::step_result::row);
-  CHECK(marker->column_int64(0) == 39);
+  CHECK(marker->column_int64(0) == 40);
 }
 
 namespace {
@@ -583,7 +586,7 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 39);
+  REQUIRE(chain.size() == 40);
   REQUIRE(chain[37].version_ == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
 
@@ -675,10 +678,10 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   CHECK(scalar(*conn, "select group_concat(run_id) from (select run_id from agent_work_claims order by id)") == "1,2");
   CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
 
-  // And forward again — through migration 39 too, confirming the tail of
-  // the chain still applies cleanly on top of 38's re-applied shape.
+  // And forward again — through migrations 39 and 40 too, confirming the
+  // tail of the chain still applies cleanly on top of 38's re-applied shape.
   REQUIRE(planar::db::apply_all(*conn));
-  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "40");
 }
 
 TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, without a table rebuild", "[db][migrate][6846]") {
@@ -687,7 +690,7 @@ TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, w
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 39);
+  REQUIRE(chain.size() == 40);
   REQUIRE(chain[38].version_ == 39);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
 
@@ -696,7 +699,7 @@ TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, w
   REQUIRE(conn->execute("insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) "
                         "values (1, 'w', 'r1', 4242, '/r')"));
 
-  REQUIRE(planar::db::apply_all(*conn));
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 39)));
   CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
 
   // The pre-existing row survives untouched: still pid 4242, still `running`,
@@ -734,7 +737,7 @@ TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, w
                   .has_value());
 
   // And forward again.
-  REQUIRE(planar::db::apply_all(*conn));
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 39)));
   CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
 }
 
@@ -753,7 +756,7 @@ TEST_CASE("migration 38's up guard FIRES when the stored workflow_runs CREATE TA
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 39);
+  REQUIRE(chain.size() == 40);
   REQUIRE(chain[37].version_ == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
 
@@ -791,7 +794,7 @@ TEST_CASE("migration 39's up guard FIRES when the stored workflow_runs CREATE TA
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 39);
+  REQUIRE(chain.size() == 40);
   REQUIRE(chain[38].version_ == 39);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
 
@@ -820,7 +823,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 39);
+  REQUIRE(chain.size() == 40);
 
   // Walk the chain forward one migration at a time. At each version,
   // capture the schema, roll that single migration back, re-apply it, and
@@ -853,7 +856,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 39);
+  REQUIRE(stmt->column_int64(1) == 40);
 }
 
 TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their indexes", "[db][migrate][6808]") {
@@ -893,8 +896,9 @@ TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their
   CHECK(has_index("ux_annotations_slug"));
 
   const auto chain = planar::db::migrations();
-  // Peel 00039 and 00038 first so 00037's down runs against the schema it was written for.
+  // Peel 00040, 00039 and 00038 first so 00037's down runs against the schema it was written for.
   REQUIRE(chain[36].version_ == 37);
+  REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
@@ -914,7 +918,7 @@ TEST_CASE("the down chain from head deletes schema_migrations rows in strict des
   REQUIRE(planar::db::apply_all(*conn));
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 39);
+  REQUIRE(chain.size() == 40);
 
   // Roll back one migration at a time, from the tip down to the
   // foundation, asserting the mirror-order contract at every step: before
@@ -1032,7 +1036,7 @@ TEST_CASE("apply_contiguous ACCEPTS the embedded chain, so the refusal above is 
 
 TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[db][migrate][guard]") {
   auto const head = planar::db::embedded_max();
-  REQUIRE(head == 39);
+  REQUIRE(head == 40);
 
   SECTION("a fresh, never-initialized database is BEHIND at version 0") {
     scratch_db_path scratch;
@@ -1332,8 +1336,14 @@ TEST_CASE("the two streams' version tables do not read each other when both are 
   auto const main_head  = planar::db::embedded_max();
   REQUIRE(agent_head != main_head);
 
-  REQUIRE(planar::db::apply_all(*conn).has_value());
+  // Main migration 00040 (plan 1089) creates the same two queue tables the
+  // agent stream does, so the two chains can no longer both run their DDL
+  // against one file. Apply the agent stream first and drop its queue
+  // tables; the main chain then creates its own, and both version tables are
+  // present and at head, which is all this case needs.
   REQUIRE(planar::db::apply_contiguous(*conn, agent, planar::db::k_agent_version_table).has_value());
+  REQUIRE(conn->execute("drop table queue_entries; drop table queue_history;"));
+  REQUIRE(planar::db::apply_all(*conn).has_value());
 
   CHECK(planar::db::current_version(*conn).value() == main_head);
   CHECK(planar::db::current_version(*conn, planar::db::k_main_version_table).value() == main_head);
@@ -1449,4 +1459,287 @@ TEST_CASE("agent migration 00003 adds nullable run_limit_ms and wait_limit_ms to
     CHECK(limit_columns(table).empty());
   }
   CHECK(planar::db::current_version(*conn, planar::db::k_agent_version_table).value() == 2);
+}
+
+// ---------------------------------------------------------------------------
+// Plan 1089, task qp-migration: migration 00040 folds the host queue's two
+// tables into planar.db, with the queue_schema marker and the sequence floor
+// (tech spec 656 § Schema Changes, decisions 1219, 1220 and 1222).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief One `name:type:notnull:default:pk` row per column of `table`, in
+/// column order, so two tables compare equal only when every column, its
+/// position and its declared shape agree.
+/// @param conn The connection.
+/// @param table The table to describe.
+/// @return The rows joined with `,`; empty when the table does not exist.
+auto table_shape(planar::db::connection& conn, std::string_view table) -> std::string {
+  auto stmt = conn.prepare(std::format("select ifnull(group_concat(name || ':' || type || ':' || \"notnull\" || ':' || "
+                                       "ifnull(dflt_value, 'none') || ':' || pk, ','), '') "
+                                       "from (select * from pragma_table_info('{}') order by cid)",
+                                       table));
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  return stmt->column_text(0);
+}
+
+/// @brief Inserts one minimal `queue_entries` row and returns its `seq`.
+/// @param conn The connection.
+/// @return The sequence number the store assigned.
+auto insert_queue_entry(planar::db::connection& conn) -> std::int64_t {
+  REQUIRE(conn.execute("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, enqueued_at, refreshed_mono) "
+                       "values ('waiting', 'h', 1, 1, '/', '[]', 0, 0)"));
+  return std::stoll(scalar(conn, "select max(seq) from queue_entries"));
+}
+
+/// @brief The text of a markdown section: from the line `heading` to the
+/// next heading of the same or a higher level, or to the end of the file.
+/// @param doc The whole markdown text.
+/// @param heading The heading line, `#` prefix included.
+/// @return The section, heading included; empty when the heading is absent.
+auto markdown_section(std::string_view doc, std::string_view heading) -> std::string {
+  auto const at = doc.find(std::format("\n{}\n", heading));
+  if (at == std::string_view::npos) {
+    return {};
+  }
+  auto const level = heading.find_first_not_of('#');
+  auto const body  = doc.substr(at + 1);
+  auto       end   = std::string_view::npos;
+  for (std::size_t pos = body.find("\n#"); pos != std::string_view::npos; pos = body.find("\n#", pos + 1)) {
+    auto const hashes = body.substr(pos + 1).find_first_not_of('#');
+    if (hashes <= level) {
+      end = pos;
+      break;
+    }
+  }
+  return std::string(body.substr(0, end));
+}
+
+/// @brief Reads a whole file from the source tree.
+/// @param path The file.
+/// @return Its bytes; the case fails when it cannot be read.
+auto read_source_file(std::filesystem::path const& path) -> std::string {
+  std::ifstream in(path, std::ios::binary);
+  INFO(path.string());
+  REQUIRE(in.good());
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+} // namespace
+
+TEST_CASE("migration 40 creates queue_entries and queue_history in the agent v3 shape, the queue_schema marker and the "
+          "sequence floor",
+          "[db][migrate][queue][qp-migration]") {
+  // Test-spec scenario "Happy path -- the queue migration creates the tables,
+  // marker and sequence floor" (plan 1089, task qp-migration).
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn));
+
+  // Every column of agent migrations 00002 and 00003, column for column and
+  // in the same order: the agent store at head is the reference shape.
+  scratch_db_path agent_scratch;
+  auto            agent = planar::db::connection::open(agent_scratch.path_.string());
+  REQUIRE(agent.has_value());
+  REQUIRE(planar::db::apply_contiguous(*agent, planar::db::agent::migrations(), planar::db::k_agent_version_table));
+  for (auto const table : {"queue_entries", "queue_history"}) {
+    INFO(table);
+    auto const shape = table_shape(*conn, table);
+    CHECK_FALSE(shape.empty());
+    CHECK(shape == table_shape(*agent, table));
+  }
+  CHECK(table_shape(*conn, "queue_entries").starts_with("seq:INTEGER:0:none:1,state:TEXT:1:none:0,"));
+  CHECK(table_shape(*conn, "queue_entries").ends_with(",run_limit_ms:INTEGER:0:none:0,wait_limit_ms:INTEGER:0:none:0"));
+  CHECK(table_shape(*conn, "queue_history").ends_with(",run_limit_ms:INTEGER:0:none:0,wait_limit_ms:INTEGER:0:none:0"));
+  CHECK(table_shape(*conn, "queue_schema") == "version:INTEGER:0:none:1,compat:INTEGER:1:none:0,description:TEXT:1:none:0");
+
+  // The three indexes, each on the column its name says.
+  CHECK(scalar(*conn, "select group_concat(name || '=' || (select group_concat(name) from pragma_index_info(l.name)), ',') "
+                      "from (select * from pragma_index_list('queue_entries') where origin = 'c' order by name) l") ==
+        "idx_queue_entries_parent_seq=parent_seq,idx_queue_entries_state=state");
+  CHECK(scalar(*conn, "select group_concat(name || '=' || (select group_concat(name) from pragma_index_info(l.name)), ',') "
+                      "from (select * from pragma_index_list('queue_history') where origin = 'c' order by name) l") ==
+        "idx_queue_history_ended_at=ended_at");
+
+  // No foreign keys, triggers or views tie the queue to anything.
+  for (auto const table : {"queue_entries", "queue_history", "queue_schema"}) {
+    INFO(table);
+    CHECK(scalar(*conn, std::format("select count(*) from pragma_foreign_key_list('{}')", table)) == "0");
+  }
+  CHECK(scalar(*conn,
+               "select count(*) from sqlite_master where type in ('trigger', 'view') and sql like '%queue\\_%' escape '\\'") ==
+        "0");
+
+  // The marker holds exactly (1, 1).
+  CHECK(scalar(*conn, "select group_concat(version || ',' || compat, ';') from queue_schema") == "1,1");
+
+  // The sequence floor: the counter sits at 1000000 and the first entry is 1000001.
+  CHECK(scalar(*conn, "select group_concat(seq) from sqlite_sequence where name = 'queue_entries'") == "1000000");
+  CHECK(insert_queue_entry(*conn) == 1'000'001);
+  CHECK(insert_queue_entry(*conn) == 1'000'002);
+
+  // The CHECKs refuse what they should and admit the states the engine writes.
+  CHECK_FALSE(
+      conn->execute("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, enqueued_at, refreshed_mono) "
+                    "values ('done', 'h', 1, 1, '/', '[]', 0, 0)")
+          .has_value());
+  CHECK_FALSE(conn->execute("update queue_entries set terminate_reason = 'killed'").has_value());
+  CHECK(conn->execute("update queue_entries set state = 'running', terminate_reason = 'cancelled'").has_value());
+  CHECK(conn->execute("insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
+                      "values (1, 'abandoned', '/', '[]', 0, 0, 0)")
+            .has_value());
+  CHECK_FALSE(conn->execute("insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
+                            "values (2, 'vanished', '/', '[]', 0, 0, 0)")
+                  .has_value());
+}
+
+TEST_CASE("migration 40's down refuses by name while queue_entries has a row, and otherwise drops the three tables and the "
+          "sequence row",
+          "[db][migrate][queue][qp-migration]") {
+  // Test-spec scenario "Error -- the down migration refuses while entries
+  // exist" (plan 1089, task qp-migration).
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  REQUIRE(planar::db::apply_all(*conn));
+
+  auto const chain = planar::db::migrations();
+  REQUIRE(chain.size() == 40);
+  REQUIRE(chain[39].version_ == 40);
+  REQUIRE(chain[39].name_ == "host_queue");
+
+  REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'p', 'p', 'active')"));
+  REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'q', 'q', 'draft')"));
+  insert_queue_entry(*conn);
+  REQUIRE(conn->execute("insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
+                        "values (7, 'exited', '/', '[]', 0, 0, 0)"));
+
+  auto const schema_before = canonical_schema_dump(*conn);
+
+  auto const refused = conn->execute(chain[39].down_sql_);
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error().message_.contains("m00040_down_refused_live_queue_entries"));
+  // Every table is unchanged.
+  CHECK(canonical_schema_dump(*conn) == schema_before);
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "40");
+  CHECK(scalar(*conn, "select count(*) from queue_entries") == "1");
+  CHECK(scalar(*conn, "select count(*) from queue_history") == "1");
+  CHECK(scalar(*conn, "select count(*) from queue_schema") == "1");
+  CHECK(scalar(*conn, "select seq from sqlite_sequence where name = 'queue_entries'") == "1000001");
+  CHECK(scalar(*conn, "select count(*) from plans") == "2");
+
+  // Drained: the down drops the three tables (history included) and the
+  // sequence row, keeps every planning row, and records version 39.
+  REQUIRE(conn->execute("delete from queue_entries"));
+  REQUIRE(conn->execute(chain[39].down_sql_));
+  CHECK_FALSE(table_exists(*conn, "queue_entries"));
+  CHECK_FALSE(table_exists(*conn, "queue_history"));
+  CHECK_FALSE(table_exists(*conn, "queue_schema"));
+  CHECK(scalar(*conn, "select count(*) from sqlite_sequence where name = 'queue_entries'") == "0");
+  CHECK(scalar(*conn, "select count(*) from plans") == "2");
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "39");
+
+  // Re-applied, the counter starts again at the floor (the counter-reset
+  // case migrations/README.md § Host-queue rollback recovery covers).
+  REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select seq from sqlite_sequence where name = 'queue_entries'") == "1000000");
+  CHECK(insert_queue_entry(*conn) == 1'000'001);
+}
+
+TEST_CASE("the host-queue rollback recipe and the schema contract are documented", "[db][migrate][queue][qp-migration][docs]") {
+  // The scenario's documentation half: migrations/README.md names the
+  // refusal and the drain-first procedure, and docs/architecture.md's
+  // schema contract names the three tables.
+  std::filesystem::path const migrations_dir = PLANAR_MIGRATIONS_DIR;
+
+  auto const readme = read_source_file(migrations_dir / "README.md");
+  auto const recipe = markdown_section(readme, "### Host-queue rollback recovery");
+  REQUIRE_FALSE(recipe.empty());
+  CHECK(recipe.contains("m00040_down_refused_live_queue_entries"));
+  CHECK(recipe.contains("planar-agent queue cancel"));
+  CHECK(recipe.contains("drain"));
+  CHECK(recipe.contains("queue_history"));
+  CHECK(recipe.contains("scripts/queue-logs-after-reset.py"));
+
+  auto const architecture = read_source_file(migrations_dir.parent_path() / "docs" / "architecture.md");
+  auto const tables       = markdown_section(architecture, "### Application tables");
+  REQUIRE_FALSE(tables.empty());
+  auto const row = tables.find("| 0040 host queue |");
+  REQUIRE(row != std::string::npos);
+  auto const line = std::string_view(tables).substr(row, tables.find('\n', row) - row);
+  CHECK(line.contains("`queue_entries`"));
+  CHECK(line.contains("`queue_history`"));
+  CHECK(line.contains("`queue_schema`"));
+  CHECK(line.contains("1000000"));
+}
+
+// ---------------------------------------------------------------------------
+// Plan 1089, task qp-queue-compat: every migration that names a queue table
+// inserts a queue_schema row (tech spec 656 § Enforcement, "Marker
+// presence"). The constant-equals-chain and fingerprint pins need the
+// hostqueue engine and live in src/engine/hostqueue/schema.t.cpp.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief `NNNNN_name` of every migration in `chain` whose up SQL names
+/// `queue_entries`, `queue_history` or `queue_schema` but inserts no
+/// `queue_schema` row. Comments are ignored, so only what the SQL DOES counts.
+/// @param chain A migration chain.
+/// @return The offending migrations, in chain order; empty when every one complies.
+auto migrations_without_queue_marker(std::span<planar::db::migration_record const> chain) -> std::vector<std::string> {
+  std::regex const         names_queue_table(R"(\b(queue_entries|queue_history|queue_schema)\b)", std::regex::icase);
+  std::regex const         inserts_marker(R"(\binsert\s+(or\s+\w+\s+)?into\s+queue_schema\b)", std::regex::icase);
+  std::vector<std::string> out;
+  for (auto const& record : chain) {
+    auto const sql = sql_without_comments(record.up_sql_);
+    if (std::regex_search(sql, names_queue_table) && !std::regex_search(sql, inserts_marker)) {
+      out.push_back(std::format("{:05}_{}", record.version_, record.name_));
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("every main migration that names a queue table inserts a queue_schema row",
+          "[db][migrations][queue][qp-queue-compat]") {
+  auto const chain = planar::db::migrations();
+  CHECK(migrations_without_queue_marker(chain).empty());
+
+  // Non-vacuity: the scan does see the migration that creates the tables.
+  std::regex const names_queue_table(R"(\bqueue_entries\b)");
+  CHECK(std::ranges::any_of(
+      chain, [&](auto const& r) { return std::regex_search(sql_without_comments(r.up_sql_), names_queue_table); }));
+}
+
+TEST_CASE("a synthetic migration that alters queue_history without a queue_schema row fails the marker scan, named",
+          "[db][migrations][queue][qp-queue-compat]") {
+  // Test-spec scenario "Edge -- a migration touching the queue tables
+  // without a marker row fails the chain test".
+  auto const        embedded = planar::db::migrations();
+  auto const        next     = embedded.back().version_ + 1;
+  std::string const up       = std::format("alter table queue_history add column x integer;\n"
+                                           "insert into schema_migrations (version, description) values ({}, 'x');\n",
+                                           next);
+  std::vector<planar::db::migration_record> chain(embedded.begin(), embedded.end());
+  chain.push_back(planar::db::migration_record{.version_ = next, .name_ = "queue_history_x", .up_sql_ = up, .down_sql_ = ""});
+
+  auto const offending = migrations_without_queue_marker(chain);
+  REQUIRE(offending.size() == 1);
+  CHECK(offending.front() == std::format("{:05}_queue_history_x", next));
+
+  // A comment that merely mentions a queue table does not count, and the
+  // same change WITH its marker row passes.
+  std::string const commented = std::format("-- touches nothing in queue_entries\n"
+                                            "insert into schema_migrations (version, description) values ({}, 'x');\n",
+                                            next);
+  chain.back().up_sql_        = commented;
+  CHECK(migrations_without_queue_marker(chain).empty());
+  std::string const marked = up + "insert into queue_schema (version, compat, description) values (2, 1, 'x');\n";
+  chain.back().up_sql_     = marked;
+  CHECK(migrations_without_queue_marker(chain).empty());
 }

@@ -1,6 +1,7 @@
 # planar_engine_hostqueue — engine/hostqueue bucket (plan 1080, task
-# hq-enqueue): the host-wide build and test queue's engine over the agent
-# database (decision 1181).
+# hq-enqueue): the host-wide build and test queue's engine. Its tables live in
+# planar.db (plan 1089, migration 00040); it was over the retired agent
+# database before that (decision 1181).
 #
 # Layer-2 `engine_*` module (cmake/architecture.cmake): may DEPEND on
 # layer-1 modules only, never sideways onto another `engine_*` bucket
@@ -11,9 +12,9 @@
 # too, so the engine is testable with a scratch store and controlled
 # identities.
 #
-# `db` supplies the connection wrapper and, through the same target, the
-# agent database's open path (`planar.db.agentdb`) the tests use to create a
-# scratch store at head. `json_text` is the one shared RFC 8259 string
+# `db` supplies the connection wrapper and the embedded main migration chain
+# the tests migrate a scratch planar.db with (`scratch_store.hpp`, the one place
+# a test store's chain is chosen). `json_text` is the one shared RFC 8259 string
 # escape used to write the `argv` and `cancelled_by` columns; `json_dom`
 # parses them back.
 #
@@ -48,6 +49,11 @@
 # (`src/lib/queuerule/`, task 7110), which embeds it; `rule.cpp` forwards to
 # that module's `queue_rule_text()` so the API here is unchanged.
 #
+# `schema.cppm` (plan 1089, task qp-queue-compat) is the queue tables' own
+# compatibility check inside planar.db: the `queue_schema` marker, the
+# hand-maintained column lists and the protocol constants. It imports only
+# `db`.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
@@ -62,6 +68,7 @@ planar_module(engine_hostqueue
     status.cppm
     guard.cppm
     rule.cppm
+    schema.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
@@ -73,20 +80,30 @@ planar_module(engine_hostqueue
     status.cpp
     guard.cpp
     rule.cpp
+    schema.cpp
   DEPENDS
     db
     json_dom
     json_text
     process
-    queuerule)
+    queuerule
+  TEST_DEPENDS
+    sha256)
 
 if(TARGET planar_engine_hostqueue_tests)
-  # The test binary opens real on-disk scratch stores through
-  # planar.db.agentdb and probes the schema with raw SQL, exactly as
-  # engine/closure's suite does.
+  # The test binary opens real on-disk scratch planar.db files migrated from
+  # the main chain (scratch_store.hpp) and probes the schema with raw SQL,
+  # exactly as engine/closure's suite does.
   target_link_libraries(planar_engine_hostqueue_tests PRIVATE SQLite::SQLite3)
   # rule_methodology.t.cpp reads the authored agents/methodology.md from the
   # source tree to compare its queue section with the embedded rule text.
+  # schema.t.cpp fingerprints the SQL literals of this directory's own
+  # `*.cpp` sources (tech spec 656 § Enforcement), so it reads them from the
+  # source tree. separability.t.cpp scans every first-party source under
+  # `src/` for SQL literals that name a queue table (tech spec 656 §
+  # Separability), so it is told where the tree is.
   target_compile_definitions(planar_engine_hostqueue_tests PRIVATE
-    "PLANAR_METHODOLOGY_PATH=\"${PROJECT_SOURCE_DIR}/agents/methodology.md\"")
+    "PLANAR_METHODOLOGY_PATH=\"${PROJECT_SOURCE_DIR}/agents/methodology.md\""
+    "PLANAR_HOSTQUEUE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\""
+    "PLANAR_SOURCE_ROOT=\"${PROJECT_SOURCE_DIR}/src\"")
 endif()

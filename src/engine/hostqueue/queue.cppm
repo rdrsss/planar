@@ -1,7 +1,7 @@
 /// @file queue.cppm
 /// @brief `planar.engine.hostqueue.queue` — the host-wide build and test
 /// queue's store: enqueue, and the read side (`find`, `list`) over the
-/// `queue_entries` table in the agent database (plan 1080, decision 1181,
+/// `queue_entries` table in `planar.db` (plan 1080, decision 1181; plan 1089,
 /// task hq-enqueue).
 ///
 /// The queue has no server (decision 1183): the process that submits a
@@ -12,8 +12,8 @@
 /// one, including entries that have since been deleted, so arrival order
 /// (decision 1178) is the sequence order.
 ///
-/// This module takes an already-opened agent database connection (see
-/// `planar.db.agentdb`) and plain values for everything the caller knows:
+/// This module takes an already-opened `planar.db` connection (the queue
+/// tables are created by main migration 00040) and plain values for everything the caller knows:
 /// host identity, process id and start time, the clocks. It reads neither
 /// the process nor the environment, and it imports only `src/lib/` modules
 /// (tech spec 647 § Components: an engine target never depends on another
@@ -227,7 +227,7 @@ export auto set_log_path(db::connection& conn, std::int64_t seq, std::string_vie
 /// hand its ticket over, removes the entry it inserted with this (tech spec
 /// 647 § Submitting, With `--detach`, step 4). An entry that has run is ended
 /// with `end_entry`, which writes the one history row.
-/// @param conn An open agent database.
+/// @param conn An open `planar.db`.
 /// @param seq The entry to remove.
 /// @return `true` when an entry was removed; `false` when there was none; or
 /// the SQLite failure.
@@ -243,9 +243,9 @@ export auto discard_entry(db::connection& conn, std::int64_t seq) -> std::expect
 /// store stays behind head until a submitter of the new binary opens it
 /// read-write, and an additive column must then read as unknown rather than
 /// fail the query. It costs one `pragma_table_info` query per read call, not
-/// per row. Writers never need it: they run only on a connection that
-/// `open_agent_db` has brought to head.
-/// @param conn An open agent database; a read-only connection is enough.
+/// per row. Writers never need it: they run only on a connection whose
+/// schema is at head.
+/// @param conn An open `planar.db`; a read-only connection is enough.
 /// @param table `queue_entries` or `queue_history`.
 /// @return The fragment, or the SQLite failure.
 export auto limit_columns_select(db::connection& conn, std::string_view table) -> std::expected<std::string, queue_error>;

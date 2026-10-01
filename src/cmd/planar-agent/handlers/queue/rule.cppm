@@ -9,11 +9,12 @@
 ///
 /// ## No database
 ///
-/// The handler opens no database: neither `planar.db` (`uses_main_database`
-/// exempts the whole `queue` domain) nor the agent database. It reads no
-/// environment variable and no configuration file, so it works where nothing
-/// else does: a locked-out main database, a sandbox that cannot reach the
-/// agent store, or a missing `HOME`. It takes no argument and no flag.
+/// The handler opens no database: not `planar.db`, which holds the queue's
+/// tables (`uses_main_database` exempts the whole `queue` domain, and the
+/// handlers that need the store open it themselves). It reads no environment
+/// variable and no configuration file, so it works where nothing else does: a
+/// locked-out or behind `planar.db`, a sandbox that cannot reach it, or a
+/// missing `HOME` and `PLANAR_DB`. It takes no argument and no flag.
 module;
 
 export module planar.cmd.planar_agent.handlers.queue.rule;

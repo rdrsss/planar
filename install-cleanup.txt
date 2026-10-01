@@ -19,6 +19,11 @@
 # planar-execute as a shipped fifth binary — the deterministic spawn-free
 # workflow engine — so the cleanup line was removed (a re-install must keep,
 # not delete, it).)
+# The retired agent.db (plan 1089) is NOT listed here: it is data, and
+# removing it needs the live-queue guard and the old-range checks, so the
+# installer's retire step (scripts/install-lib/queue-retire.sh,
+# queue_retire_store) removes agent.db, its -wal/-shm and the old numbered
+# queue logs instead.
 # Retired documentation binary (moved to the standalone tabularium project).
 bin/tabularium
 # Retired Python-wheel Mt-KaHyPar bridge (decision 1006, task 6460): the

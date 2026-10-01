@@ -3,7 +3,7 @@
 // turn, Running).
 //
 // Every case here runs the BUILT binary through `run_pinned`, in an arena
-// with its own `PLANAR_AGENT_DB`, `PLANAR_DB`, `HOME` and
+// with its own `PLANAR_DB` (holding the queue's tables), `HOME` and
 // `PLANAR_CONFIG_PATH`, so nothing can reach the operator's `~/.planar`. The
 // store is read back through the engine's own typed reads after every step:
 // an exit code alone would pass for a verb that ran the command and never
@@ -36,17 +36,27 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
+import planar.db.migrate;
+import planar.db.migrations;
 import planar.process.identity;
 import planar.engine.hostqueue;
 
 #include "parity_harness.hpp"
+#include "queue_test_store.hpp"
 
 namespace {
 
 namespace hq     = planar::engine::hostqueue;
 namespace ident  = planar::process::identity;
 namespace parity = planar::cmd::parity;
+
+/// @brief A fresh arena whose `planar.db` already exists at the head of the
+/// embedded chain: the queue verbs open the main database and never create it.
+auto seeded_arena(std::string_view tag) -> parity::arena {
+  auto arena = parity::make_arena(tag);
+  planar::cmd::qfix::head_store(arena.cpp_root / "planar.db");
+  return arena;
+}
 
 using parity::capture;
 using parity::pinned_var;
@@ -109,11 +119,11 @@ struct snapshot {
 /// @brief Reads the arena's store, or nothing when it does not exist or
 /// cannot be read at this instant (a submitter may be creating it).
 auto try_snapshot(const parity::arena& arena) -> std::optional<snapshot> {
-  auto const path = arena.cpp_root / "agent.db";
+  auto const path = arena.cpp_root / "planar.db";
   if (!std::filesystem::exists(path)) {
     return std::nullopt;
   }
-  auto opened = planar::db::agent::open_agent_db_at(path);
+  auto opened = planar::cmd::qfix::open_store(path);
   if (!opened) {
     return std::nullopt;
   }
@@ -144,17 +154,20 @@ template <class Predicate> auto await(Predicate&& predicate, std::chrono::millis
 }
 
 auto entry_seq(const snapshot& snap, std::int64_t seq) -> const hq::entry* {
+  seq              = planar::cmd::qfix::seq_of(seq);
   auto const found = std::ranges::find_if(snap.entries, [&](const hq::entry& e) { return e.seq == seq; });
   return found == snap.entries.end() ? nullptr : &*found;
 }
 
 auto history_seq(const snapshot& snap, std::int64_t seq) -> const hq::history_row* {
+  seq              = planar::cmd::qfix::seq_of(seq);
   auto const found = std::ranges::find_if(snap.history, [&](const hq::history_row& r) { return r.seq == seq; });
   return found == snap.history.end() ? nullptr : &*found;
 }
 
 /// @brief Waits for entry `seq` to be in `state`, and returns it.
 auto await_entry(const parity::arena& arena, std::int64_t seq, hq::entry_state state) -> hq::entry {
+  seq = planar::cmd::qfix::seq_of(seq);
   std::optional<hq::entry> seen;
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
@@ -177,6 +190,7 @@ auto await_entry(const parity::arena& arena, std::int64_t seq, hq::entry_state s
 /// signal that it started before `child_pgid` is committed; a case that needs
 /// the group waits on this, not on `await_entry`.
 auto await_child_recorded(const parity::arena& arena, std::int64_t seq) -> hq::entry {
+  seq = planar::cmd::qfix::seq_of(seq);
   std::optional<hq::entry> seen;
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
@@ -195,6 +209,7 @@ auto await_child_recorded(const parity::arena& arena, std::int64_t seq) -> hq::e
 
 /// @brief Waits for entry `seq` to be refreshed at least `polls` more times.
 void await_refreshes(const parity::arena& arena, std::int64_t seq, int polls) {
+  seq               = planar::cmd::qfix::seq_of(seq);
   auto const  start = require_snapshot(arena);
   auto const* now   = entry_seq(start, seq);
   REQUIRE(now != nullptr);
@@ -431,7 +446,7 @@ void await_file(const std::filesystem::path& path) {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: a queued command returns its own output and status", "[cmd][agent][queue]") {
-  auto const arena  = parity::make_arena("qr_status");
+  auto const arena  = seeded_arena("qr_status");
   auto const script = std::string{"echo out; echo err >&2; exit 7"};
 
   auto const direct = parity::run_pinned("/bin/sh", std::vector<std::string>{"-c", script}, arena.cpp_root, "direct");
@@ -452,7 +467,7 @@ TEST_CASE("queue run: a queued command returns its own output and status", "[cmd
   CHECK(snap.entries.empty());
   REQUIRE(snap.history.size() == 1);
   auto const& row = snap.history.front();
-  CHECK(row.seq == 1);
+  CHECK(row.seq == planar::cmd::qfix::seq_of(1));
   CHECK(row.outcome == hq::history_outcome::exited);
   CHECK(row.exit_code == 7);
   CHECK_FALSE(row.signal.has_value());
@@ -466,7 +481,7 @@ TEST_CASE("queue run: a queued command returns its own output and status", "[cmd
 
 TEST_CASE("queue run: a command killed by a signal exits 128 plus the signal and is recorded as signaled",
           "[cmd][agent][queue]") {
-  auto const arena  = parity::make_arena("qr_signal");
+  auto const arena  = seeded_arena("qr_signal");
   auto const queued = run_queue(arena, "killed", sh_command("kill -TERM $$"));
   INFO("stderr:\n" << queued.err);
   CHECK(queued.code == 128 + SIGTERM);
@@ -485,7 +500,7 @@ TEST_CASE("queue run: a command killed by a signal exits 128 plus the signal and
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: the command runs in the caller's directory with the caller's environment", "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_env");
+  auto const arena = seeded_arena("qr_env");
   auto       env   = parity::pinned_env(arena.cpp_root);
   env.push_back(pinned_var{.name = "QUEUE_PROBE_VAR", .value = "caller value"});
 
@@ -494,7 +509,7 @@ TEST_CASE("queue run: the command runs in the caller's directory with the caller
   INFO("stderr:\n" << got.err);
   REQUIRE(got.code == 0);
 
-  auto const expected = std::format("{}\ncaller value\n1\n", std::filesystem::canonical(proj(arena)).string());
+  auto const expected = std::format("{}\ncaller value\n1000001\n", std::filesystem::canonical(proj(arena)).string());
   CHECK(got.out == expected);
   CHECK(got.err.empty());
 }
@@ -504,7 +519,7 @@ TEST_CASE("queue run: the command runs in the caller's directory with the caller
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: a second submitter waits for the first and starts only after it ends", "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_wait");
+  auto const arena = seeded_arena("qr_wait");
   write_config(arena, k_fast_poll);
   gate       first_gate(arena.cpp_root / "first.fifo");
   auto const started_a = arena.cpp_root / "started_a";
@@ -579,7 +594,7 @@ TEST_CASE("queue run: a second submitter waits for the first and starts only aft
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: [queue] slots = 2 lets two commands run at once and a third waits", "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_slots");
+  auto const arena = seeded_arena("qr_slots");
   write_config(arena, "[queue]\nslots = 2\npoll_interval = \"100ms\"\n");
   gate       gate_a(arena.cpp_root / "a.fifo");
   gate       gate_b(arena.cpp_root / "b.fifo");
@@ -626,7 +641,7 @@ TEST_CASE("queue run: [queue] slots = 2 lets two commands run at once and a thir
 }
 
 TEST_CASE("queue run: a slot count changed while a submitter waits is read at its next poll", "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_reload");
+  auto const arena = seeded_arena("qr_reload");
   write_config(arena, "[queue]\nslots = 1\npoll_interval = \"100ms\"\n");
   gate       gate_a(arena.cpp_root / "a.fifo");
   auto const started_a = arena.cpp_root / "started_a";
@@ -658,7 +673,7 @@ TEST_CASE("queue run: a slot count changed while a submitter waits is read at it
 
 TEST_CASE("queue run: an unreadable configuration mid-wait is reported once and the previous settings stay",
           "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_badconf");
+  auto const arena = seeded_arena("qr_badconf");
   write_config(arena, k_fast_poll);
   gate       gate_a(arena.cpp_root / "a.fifo");
   auto const started_a = arena.cpp_root / "started_a";
@@ -698,7 +713,7 @@ TEST_CASE("queue run: an unreadable configuration mid-wait is reported once and 
 }
 
 TEST_CASE("queue run: an invalid configuration before the enqueue refuses at 125 and runs nothing", "[cmd][agent][queue]") {
-  auto const arena  = parity::make_arena("qr_badstart");
+  auto const arena  = seeded_arena("qr_badstart");
   auto const marker = arena.cpp_root / "marker";
   write_config(arena, "[queue]\nslots = 0\n");
 
@@ -721,7 +736,7 @@ TEST_CASE("queue run: an invalid configuration before the enqueue refuses at 125
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: a killed submitter does not free the slot while its command runs", "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_orphan");
+  auto const arena = seeded_arena("qr_orphan");
   write_config(arena, k_fast_poll);
   gate       gate_a(arena.cpp_root / "a.fifo");
   auto const started_a = arena.cpp_root / "started_a";
@@ -777,7 +792,7 @@ TEST_CASE("queue run: a killed submitter does not free the slot while its comman
 
 TEST_CASE("queue run: a helper left in the command's group does not hold the slot while the submitter lives",
           "[cmd][agent][queue]") {
-  auto const  arena = parity::make_arena("qr_helper");
+  auto const  arena = seeded_arena("qr_helper");
   gate        helper_gate(arena.cpp_root / "helper.fifo");
   auto const  pid_file = arena.cpp_root / "helper.pid";
   release_all guard{.gates = {&helper_gate}};
@@ -811,7 +826,7 @@ TEST_CASE("queue run: a helper left in the command's group does not hold the slo
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: no command is a parse failure and creates no entry", "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_nocmd");
+  auto const arena = seeded_arena("qr_nocmd");
 
   SECTION("nothing after the verb") {
     auto const got = parity::run_pinned(agent_bin(), std::vector<std::string>{"queue", "run"}, arena.cpp_root, "bare");
@@ -826,7 +841,7 @@ TEST_CASE("queue run: no command is a parse failure and creates no entry", "[cmd
     CHECK_FALSE(got.err.empty());
   }
   // A parse failure never opens the store.
-  CHECK_FALSE(present(arena.cpp_root / "agent.db"));
+  CHECK(planar::cmd::qfix::untouched(arena.cpp_root / "planar.db"));
 }
 
 // ---------------------------------------------------------------------------
@@ -862,6 +877,7 @@ auto blocked_script(bool ignore_term) -> std::string {
 /// @brief The rows of the store after a run that ended: no entry is left and
 /// exactly the given history row exists.
 auto only_history(const parity::arena& arena, std::int64_t seq) -> hq::history_row {
+  seq             = planar::cmd::qfix::seq_of(seq);
   auto const snap = require_snapshot(arena);
   CHECK(snap.entries.empty());
   REQUIRE(snap.history.size() == 1);
@@ -874,7 +890,7 @@ auto only_history(const parity::arena& arena, std::int64_t seq) -> hq::history_r
 
 TEST_CASE("queue run: --timeout stops a command that honours SIGTERM, exits 124 and records timeout",
           "[cmd][agent][queue][hq-timeouts]") {
-  auto const arena = parity::make_arena("qr_timeout_term");
+  auto const arena = seeded_arena("qr_timeout_term");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -902,7 +918,7 @@ TEST_CASE("queue run: --timeout stops a command that honours SIGTERM, exits 124 
 
 TEST_CASE("queue run: --timeout kills a command that ignores SIGTERM only after the grace period",
           "[cmd][agent][queue][hq-timeouts]") {
-  auto const arena = parity::make_arena("qr_timeout_kill");
+  auto const arena = seeded_arena("qr_timeout_kill");
   // A long poll interval, so only the submitter's own per-tick advance of its
   // stop can send the SIGKILL in time: the next regular poll is twenty
   // seconds away.
@@ -951,7 +967,7 @@ struct straggler_guard {
 
 TEST_CASE("queue run: a stopped command keeps its slot until every member of its group is gone",
           "[cmd][agent][queue][hq-timeouts]") {
-  auto const arena = parity::make_arena("qr_timeout_group");
+  auto const arena = seeded_arena("qr_timeout_group");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"1s\"\n");
   gate            hold(arena.cpp_root / "hold.fifo");
   auto const      straggler = arena.cpp_root / "straggler.pid";
@@ -984,7 +1000,7 @@ TEST_CASE("queue run: a stopped command keeps its slot until every member of its
 
 TEST_CASE("queue run: --timeout is recorded as the entry's deadline and the default is thirty minutes",
           "[cmd][agent][queue][hq-timeouts]") {
-  auto const arena = parity::make_arena("qr_deadline");
+  auto const arena = seeded_arena("qr_deadline");
   write_config(arena, "[queue]\nslots = 2\npoll_interval = \"100ms\"\n");
   gate        limited_gate(arena.cpp_root / "limited.fifo");
   gate        default_gate(arena.cpp_root / "default.fifo");
@@ -1026,7 +1042,7 @@ TEST_CASE("queue run: --timeout is recorded as the entry's deadline and the defa
 
 TEST_CASE("queue run: --wait-timeout removes a waiting entry at its limit, exits 125 and never runs the command",
           "[cmd][agent][queue][hq-timeouts]") {
-  auto const arena = parity::make_arena("qr_wait_timeout");
+  auto const arena = seeded_arena("qr_wait_timeout");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -1058,7 +1074,7 @@ TEST_CASE("queue run: --wait-timeout removes a waiting entry at its limit, exits
   {
     auto const snap = require_snapshot(arena);
     REQUIRE(snap.entries.size() == 1);
-    CHECK(snap.entries.front().seq == 1);
+    CHECK(snap.entries.front().seq == planar::cmd::qfix::seq_of(1));
     CHECK(snap.entries.front().state == hq::entry_state::running);
     REQUIRE(snap.history.size() == 1);
     auto const* row = history_seq(snap, 2);
@@ -1073,7 +1089,7 @@ TEST_CASE("queue run: --wait-timeout removes a waiting entry at its limit, exits
 }
 
 TEST_CASE("queue run: a wait limit never cuts short a run that has started", "[cmd][agent][queue][hq-timeouts]") {
-  auto const arena = parity::make_arena("qr_wait_started");
+  auto const arena = seeded_arena("qr_wait_started");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -1097,7 +1113,7 @@ TEST_CASE("queue run: a wait limit never cuts short a run that has started", "[c
 
 TEST_CASE("queue run: an invalid --timeout or --wait-timeout is refused at 2 and runs nothing",
           "[cmd][agent][queue][hq-timeouts]") {
-  auto const arena  = parity::make_arena("qr_bad_duration");
+  auto const arena  = seeded_arena("qr_bad_duration");
   auto const marker = arena.cpp_root / "marker";
   struct bad_case {
     std::string flag;
@@ -1153,7 +1169,7 @@ TEST_CASE("queue run: a command whose own entry carries a stop reason ends with 
   };
   for (auto const& one : cases) {
     INFO("reason " << hq::to_string(one.reason));
-    auto const arena = parity::make_arena(std::string{one.tag});
+    auto const arena = seeded_arena(std::string{one.tag});
     write_config(arena, k_fast_poll);
     gate        hold(arena.cpp_root / "hold.fifo");
     auto const  started = arena.cpp_root / "started";
@@ -1166,13 +1182,13 @@ TEST_CASE("queue run: a command whose own entry carries a stop reason ends with 
 
     // The marker and the SIGTERM come from this process, through the same
     // engine step `queue cancel` will use.
-    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
     REQUIRE(opened.has_value());
     ident::system_clock clock;
     hq::canceller const who{.vendor = "claude", .role = "operator", .pid = static_cast<std::int64_t>(::getpid())};
     auto const          begun = hq::begin_terminate(
         *opened,
-        hq::begin_terminate_request{.seq          = 1,
+        hq::begin_terminate_request{.seq          = planar::cmd::qfix::seq_of(1),
                                     .reason       = one.reason,
                                     .cancelled_by = one.reason == hq::stop_reason::cancelled ? std::optional{who} : std::nullopt,
                                     .host_id      = ident::host_identity(ident::native_identity_source())},
@@ -1196,36 +1212,18 @@ TEST_CASE("queue run: a command whose own entry carries a stop reason ends with 
 // Scenario: Edge: the queue works when the main database is unusable
 // ---------------------------------------------------------------------------
 
-TEST_CASE("queue run: works while the main database's schema is ahead of the binary", "[cmd][agent][queue]") {
-  auto const arena   = parity::make_arena("qr_maindb");
+TEST_CASE("queue run: works while planar.db is ahead of the binary and its queue marker admits this binary",
+          "[cmd][agent][queue]") {
+  auto const arena   = seeded_arena("qr_maindb");
   auto const main_db = arena.cpp_root / "planar.db";
-  {
-    auto opened = planar::db::connection::open(main_db.string());
-    REQUIRE(opened.has_value());
-    REQUIRE(
-        opened->execute("create table schema_migrations (version integer primary key, description text not null);").has_value());
-    REQUIRE(
-        opened->execute("insert into schema_migrations (version, description) values (99999, 'from the future');").has_value());
-  }
-  auto const before = read_all(main_db);
-  REQUIRE_FALSE(before.empty());
+  planar::cmd::qfix::ahead_store(main_db);
+  auto const before = planar::cmd::qfix::applied_versions(main_db);
 
   auto const got = run_queue(arena, "maindb", sh_command("exit 0"));
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 0);
   CHECK(got.err.empty());
-  CHECK(read_all(main_db) == before);
-  CHECK(require_snapshot(arena).history.size() == 1);
-}
-
-TEST_CASE("queue run: never creates the main database", "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_nomaindb");
-  REQUIRE_FALSE(present(arena.cpp_root / "planar.db"));
-  auto const got = run_queue(arena, "nomain", sh_command("exit 0"));
-  INFO("stderr:\n" << got.err);
-  CHECK(got.code == 0);
-  CHECK(got.err.empty());
-  CHECK_FALSE(present(arena.cpp_root / "planar.db"));
+  CHECK(planar::cmd::qfix::applied_versions(main_db) == before); // Never migrated.
   CHECK(require_snapshot(arena).history.size() == 1);
 }
 
@@ -1234,7 +1232,7 @@ TEST_CASE("queue run: never creates the main database", "[cmd][agent][queue]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: old history rows and their log files are pruned when a command is enqueued", "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_prune");
+  auto const arena = seeded_arena("qr_prune");
   write_config(arena, "[queue]\nhistory_days = 1\n");
 
   REQUIRE(run_queue(arena, "old", sh_command("exit 0")).code == 0);
@@ -1244,15 +1242,15 @@ TEST_CASE("queue run: old history rows and their log files are pruned when a com
   {
     std::ofstream(old_log) << "old\n";
     std::ofstream(recent_log) << "recent\n";
-    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
     REQUIRE(opened.has_value());
     // Row 1 ended three days ago; row 2 just now. Both name a log file.
     REQUIRE(opened
-                ->execute(std::format("update queue_history set ended_at = ended_at - {}, log_path = '{}' where seq = 1;",
+                ->execute(std::format("update queue_history set ended_at = ended_at - {}, log_path = '{}' where seq = 1000001;",
                                       3 * hq::k_ms_per_day, old_log.string()))
                 .has_value());
-    REQUIRE(
-        opened->execute(std::format("update queue_history set log_path = '{}' where seq = 2;", recent_log.string())).has_value());
+    REQUIRE(opened->execute(std::format("update queue_history set log_path = '{}' where seq = 1000002;", recent_log.string()))
+                .has_value());
   }
 
   REQUIRE(run_queue(arena, "third", sh_command("exit 0")).code == 0);
@@ -1274,7 +1272,7 @@ namespace {
 /// whose child group is empty, and a trigger that makes its history insert
 /// fail, so ending it fails every time it is tried.
 auto seed_unendable_entry(const parity::arena& arena) -> std::int64_t {
-  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
   REQUIRE(opened.has_value());
   auto& conn = *opened;
 
@@ -1312,7 +1310,7 @@ auto seed_unendable_entry(const parity::arena& arena) -> std::int64_t {
 
 TEST_CASE("queue run: a terminating entry that cannot be ended is reported on stderr and the command still runs",
           "[cmd][agent][queue]") {
-  auto const arena = parity::make_arena("qr_advance");
+  auto const arena = seeded_arena("qr_advance");
   // A second slot, so the seeded entry (which keeps its slot while it is
   // terminating) does not hold this submitter back; a long staleness window
   // so the seeded entry stays live.
@@ -1423,6 +1421,7 @@ auto cpu_seconds(std::int64_t pid) -> std::optional<double> {
 /// @brief The pid of the submitter of `run`, checked to be the process the
 /// store recorded for entry `seq` and not this test.
 auto submitter_pid(const spawned& run, const parity::arena& arena, std::int64_t seq) -> ::pid_t {
+  seq              = planar::cmd::qfix::seq_of(seq);
   auto const  snap = require_snapshot(arena);
   auto const* live = entry_seq(snap, seq);
   REQUIRE(live != nullptr);
@@ -1436,7 +1435,7 @@ auto submitter_pid(const spawned& run, const parity::arena& arena, std::int64_t 
 /// records why (naming the sending process as the canceller), exits 125, and
 /// leaves the queue free for the next entry.
 void waiter_is_signalled(int sig) {
-  auto const arena = parity::make_arena(std::format("qr_sigwait_{}", signal_label(sig)));
+  auto const arena = seeded_arena(std::format("qr_sigwait_{}", signal_label(sig)));
   write_config(arena, k_fast_poll);
   gate       hold(arena.cpp_root / "hold.fifo");
   auto const started_a = arena.cpp_root / "started_a";
@@ -1505,7 +1504,7 @@ void waiter_is_signalled(int sig) {
 /// @brief A running submitter that gets `sig` forwards it to the command, which
 /// traps it and exits 42; the submitter exits 42 and records `exited`.
 void running_command_traps_forwarded(int sig) {
-  auto const arena = parity::make_arena(std::format("qr_sigfwd_{}", signal_label(sig)));
+  auto const arena = seeded_arena(std::format("qr_sigfwd_{}", signal_label(sig)));
   write_config(arena, k_fast_poll);
   auto const ready  = arena.cpp_root / "ready";
   auto const marker = arena.cpp_root / "marker";
@@ -1561,7 +1560,7 @@ TEST_CASE("queue run: SIGHUP to a running submitter reaches the command, which t
 
 TEST_CASE("queue run: SIGTERM to a running submitter empties the group, removes the entry and starts the next",
           "[cmd][agent][queue][hq-signals]") {
-  auto const arena = parity::make_arena("qr_sigfwd_next");
+  auto const arena = seeded_arena("qr_sigfwd_next");
   write_config(arena, k_fast_poll);
   gate       hold(arena.cpp_root / "hold.fifo");
   auto const started_a = arena.cpp_root / "started_a";
@@ -1611,7 +1610,7 @@ TEST_CASE("queue run: SIGTERM to a running submitter empties the group, removes 
 
 TEST_CASE("queue run: a command that carries on after the forwarded signal keeps its slot and its own exit status",
           "[cmd][agent][queue][hq-signals]") {
-  auto const arena = parity::make_arena("qr_sigfwd_ignored");
+  auto const arena = seeded_arena("qr_sigfwd_ignored");
   write_config(arena, k_fast_poll);
   auto const ready  = arena.cpp_root / "ready";
   auto const marker = arena.cpp_root / "marker";
@@ -1670,7 +1669,7 @@ TEST_CASE("queue run: a submitter started with SIGINT ignored leaves it ignored 
   // installs no handler, so the SIGINT is ignored and nothing reaches the
   // command. The command puts SIGINT back to the default itself and traps it,
   // so a forwarded SIGINT would leave the marker.
-  auto const arena = parity::make_arena("qr_sigign");
+  auto const arena = seeded_arena("qr_sigign");
   write_config(arena, k_fast_poll);
   auto const ready  = arena.cpp_root / "ready";
   auto const marker = arena.cpp_root / "marker";
@@ -1717,7 +1716,7 @@ TEST_CASE("queue run: a signal during the drain of a stopped command does not ma
   // off the relay's pipe: left readable, the wait returns at once on every
   // pass and the drain burns a core for the whole grace period. CPU time, not
   // wall time, is the bound, so load does not disturb it.
-  auto const arena = parity::make_arena("qr_sigspin");
+  auto const arena = seeded_arena("qr_sigspin");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"4s\"\n");
   gate            hold(arena.cpp_root / "hold.fifo");
   auto const      straggler = arena.cpp_root / "straggler.pid";
@@ -1763,7 +1762,7 @@ TEST_CASE("queue run: a failing case leaves no live submitter behind", "[cmd][ag
   // 7064: the harness itself. A `spawned` that goes out of scope while its
   // submitter still runs stops it, so an assertion that fails part-way cannot
   // leave a process behind.
-  auto const arena = parity::make_arena("qr_reap");
+  auto const arena = seeded_arena("qr_reap");
   write_config(arena, k_fast_poll);
   gate         hold(arena.cpp_root / "hold.fifo");
   auto const   started = arena.cpp_root / "started";
@@ -1834,7 +1833,7 @@ auto make_nested_files(const parity::arena& arena) -> nested_files {
 
 TEST_CASE("queue run: a queued command's own queue run starts at once and is recorded as nested",
           "[cmd][agent][queue][hq-nested-run]") {
-  auto const arena = parity::make_arena("qr_nested");
+  auto const arena = seeded_arena("qr_nested");
   write_config(arena, k_fast_poll); // one slot
   auto const  files = make_nested_files(arena);
   gate        inner_gate(files.inner_gate);
@@ -1861,7 +1860,7 @@ TEST_CASE("queue run: a queued command's own queue run starts at once and is rec
     CHECK_FALSE(parent->parent_seq.has_value());
     CHECK(inner->state == hq::entry_state::running);
     REQUIRE(inner->parent_seq.has_value());
-    CHECK(*inner->parent_seq == 1);
+    CHECK(*inner->parent_seq == planar::cmd::qfix::seq_of(1));
     CHECK(inner->started_at.has_value());
     CHECK(inner->deadline_mono.has_value());
     REQUIRE_FALSE(inner->argv.empty());
@@ -1869,8 +1868,8 @@ TEST_CASE("queue run: a queued command's own queue run starts at once and is rec
     CHECK(snap.history.empty());
   }
   // The marker each command sees is its own entry's sequence number.
-  CHECK(read_all(files.outer_started) == "1\n");
-  CHECK(read_all(files.inner_started) == "2\n");
+  CHECK(read_all(files.outer_started) == "1000001\n");
+  CHECK(read_all(files.inner_started) == "1000002\n");
   static_cast<void>(nested);
 
   // The slot count is unaffected: an ordinary submitter still waits behind
@@ -1898,7 +1897,7 @@ TEST_CASE("queue run: a queued command's own queue run starts at once and is rec
     REQUIRE(row != nullptr);
     CHECK(row->nested);
     REQUIRE(row->parent_seq.has_value());
-    CHECK(*row->parent_seq == 1);
+    CHECK(*row->parent_seq == planar::cmd::qfix::seq_of(1));
     CHECK(row->outcome == hq::history_outcome::exited);
     REQUIRE(row->exit_code.has_value());
     CHECK(*row->exit_code == 7);
@@ -1925,7 +1924,7 @@ TEST_CASE("queue run: a queued command's own queue run starts at once and is rec
   CHECK_FALSE(one->parent_seq.has_value());
   CHECK(one->exit_code == 7);
   CHECK(two->nested);
-  CHECK(two->parent_seq == 1);
+  CHECK(two->parent_seq == planar::cmd::qfix::seq_of(1));
   CHECK_FALSE(three->nested);
   CHECK_FALSE(three->parent_seq.has_value());
   CHECK(three->exit_code == 0);
@@ -1935,7 +1934,7 @@ TEST_CASE("queue run: a queued command's own queue run starts at once and is rec
 }
 
 TEST_CASE("queue run: a nested entry does not take a slot from an ordinary submitter", "[cmd][agent][queue][hq-nested-run]") {
-  auto const arena = parity::make_arena("qr_nested_slots");
+  auto const arena = seeded_arena("qr_nested_slots");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\nslots = 2\n");
   auto const  files = make_nested_files(arena);
   gate        inner_gate(files.inner_gate);
@@ -1975,12 +1974,12 @@ TEST_CASE("queue run: a nested entry does not take a slot from an ordinary submi
   auto const* inner = history_seq(snap, 2);
   REQUIRE(inner != nullptr);
   CHECK(inner->nested);
-  CHECK(inner->parent_seq == 1);
+  CHECK(inner->parent_seq == planar::cmd::qfix::seq_of(1));
 }
 
 TEST_CASE("queue run: a nested run inside a nested run completes and each row names its parent",
           "[cmd][agent][queue][hq-nested-run]") {
-  auto const arena = parity::make_arena("qr_nested_deep");
+  auto const arena = seeded_arena("qr_nested_deep");
   write_config(arena, k_fast_poll);
   // outer -> inner -> innermost, each through `queue run`; the innermost
   // exits 5 and both levels pass it through.
@@ -2003,9 +2002,9 @@ TEST_CASE("queue run: a nested run inside a nested run completes and each row na
   REQUIRE(three != nullptr);
   CHECK_FALSE(one->nested);
   CHECK(two->nested);
-  CHECK(two->parent_seq == 1);
+  CHECK(two->parent_seq == planar::cmd::qfix::seq_of(1));
   CHECK(three->nested);
-  CHECK(three->parent_seq == 2);
+  CHECK(three->parent_seq == planar::cmd::qfix::seq_of(2));
   for (auto const* row : {one, two, three}) {
     CHECK(row->outcome == hq::history_outcome::exited);
     CHECK(row->exit_code == 5);
@@ -2014,7 +2013,7 @@ TEST_CASE("queue run: a nested run inside a nested run completes and each row na
 
 TEST_CASE("queue run: a marker that names no live running entry queues normally and is not nested",
           "[cmd][agent][queue][hq-nested-run]") {
-  auto const arena = parity::make_arena("qr_forged_marker");
+  auto const arena = seeded_arena("qr_forged_marker");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  held = arena.cpp_root / "held";
@@ -2032,7 +2031,7 @@ TEST_CASE("queue run: a marker that names no live running entry queues normally 
   std::vector<spawned>     runs;
   std::int64_t             seq = 1;
   for (std::size_t i = 0; i <= markers.size(); ++i) {
-    auto const value = i < markers.size() ? markers[i] : std::string{"2"};
+    auto const value = i < markers.size() ? markers[i] : std::to_string(planar::cmd::qfix::seq_of(2));
     INFO("marker '" << value << "'");
     ++seq;
     auto const started = arena.cpp_root / std::format("ran_{}", seq);
@@ -2048,7 +2047,7 @@ TEST_CASE("queue run: a marker that names no live running entry queues normally 
     CHECK(snap.history.empty());
     for (auto const& e : snap.entries) {
       CHECK_FALSE(e.parent_seq.has_value());
-      CHECK(e.state == (e.seq == 1 ? hq::entry_state::running : hq::entry_state::waiting));
+      CHECK(e.state == (e.seq == planar::cmd::qfix::seq_of(1) ? hq::entry_state::running : hq::entry_state::waiting));
     }
   }
 
@@ -2070,7 +2069,7 @@ TEST_CASE("queue run: a marker that names no live running entry queues normally 
 }
 
 TEST_CASE("queue run: a marker that outlives its parent queues normally", "[cmd][agent][queue][hq-nested-run]") {
-  auto const arena = parity::make_arena("qr_stale_marker");
+  auto const arena = seeded_arena("qr_stale_marker");
   write_config(arena, k_fast_poll);
   auto const first = run_queue(arena, "first", {"true"});
   REQUIRE(first.code == 0);
@@ -2095,13 +2094,13 @@ TEST_CASE("queue run: a marker that outlives its parent queues normally", "[cmd]
 TEST_CASE("queue run: a marker naming a fresh running entry on another host queues normally",
           "[cmd][agent][queue][hq-nested-run][hq-nested-host]") {
   // Decision 1209: a marker nests only under an entry on this host identity.
-  auto const arena = parity::make_arena("qr_cross_host_marker");
+  auto const arena = seeded_arena("qr_cross_host_marker");
   write_config(arena, "[queue]\nslots = 2\npoll_interval = \"100ms\"\nstale_after = \"1h\"\n");
   REQUIRE(run_queue(arena, "prime", sh_command("exit 0")).code == 0);
 
   std::int64_t foreign = 0;
   {
-    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
     REQUIRE(opened.has_value());
     ident::system_clock clock;
     auto const          now = clock.monotonic_ms();
@@ -2154,7 +2153,7 @@ struct nested_under_holder {
   release_all   guard;
 
   explicit nested_under_holder(std::string_view tag)
-      : arena(parity::make_arena(tag)), hold((write_config(arena, k_fast_poll), arena.cpp_root / "hold.fifo")),
+      : arena(seeded_arena(tag)), hold((write_config(arena, k_fast_poll), arena.cpp_root / "hold.fifo")),
         guard{.gates = {&hold}} {
     auto const held = arena.cpp_root / "held";
     holder          = spawn_queue(arena, "holder", sh_command(blocked_script(false), {held.string(), hold.path.string()}));
@@ -2177,12 +2176,12 @@ TEST_CASE("queue run: a nested entry that reaches its own --timeout is stopped, 
   release_all         nested_guard{.gates = {&nested_hold}};
 
   auto const run = spawn_queue(fx.arena, "nested", sh_command(blocked_script(false), {started.string(), gate_fd.string()}),
-                               {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "1"}}, {"--timeout", "1s"});
+                               {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "1000001"}}, {"--timeout", "1s"});
   await_file(started);
   auto const running = await_child_recorded(fx.arena, 2);
   REQUIRE(running.child_pgid.has_value());
   REQUIRE(running.parent_seq.has_value());
-  CHECK(*running.parent_seq == 1);
+  CHECK(*running.parent_seq == planar::cmd::qfix::seq_of(1));
 
   auto const got = finish(run);
   INFO("stderr:\n" << got.err);
@@ -2199,7 +2198,7 @@ TEST_CASE("queue run: a nested entry that reaches its own --timeout is stopped, 
   auto const* row = history_seq(snap, 2);
   REQUIRE(row != nullptr);
   CHECK(row->nested);
-  CHECK(row->parent_seq == 1);
+  CHECK(row->parent_seq == planar::cmd::qfix::seq_of(1));
   CHECK(row->outcome == hq::history_outcome::timeout);
   CHECK_FALSE(row->exit_code.has_value());
   REQUIRE(row->ran_ms.has_value());
@@ -2222,7 +2221,7 @@ void nested_command_traps_forwarded(int sig) {
 
   auto run =
       spawn_queue(fx.arena, "nested", sh_command(trapping_script(sig, true), {ready.string(), marker.string(), stop.string()}),
-                  {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "1"}}, {}, true);
+                  {pinned_var{.name = "PLANAR_QUEUE_SLOT", .value = "1000001"}}, {}, true);
   touch_on_exit stopper{stop};
   await_file(ready);
   auto const running = await_child_recorded(fx.arena, 2);
@@ -2276,7 +2275,8 @@ namespace {
 /// @brief Ends entry `seq` through the engine from this test process, the way
 /// another process (a reaper, or `queue cancel`) would.
 void end_from_outside(const parity::arena& arena, std::int64_t seq, hq::history_outcome outcome) {
-  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  seq         = planar::cmd::qfix::seq_of(seq);
+  auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
   REQUIRE(opened.has_value());
   ident::system_clock clock;
   hq::end_request     request{.outcome = outcome, .ended_at = clock.wall_ms()};
@@ -2308,7 +2308,7 @@ struct continue_on_exit {
 void stop_outside_a_transaction(const parity::arena& arena, const spawned& run) {
   for (int attempt = 0; attempt < 200; ++attempt) {
     REQUIRE(::kill(static_cast<::pid_t>(run.pid), SIGSTOP) == 0);
-    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
     REQUIRE(opened.has_value());
     static_cast<void>(opened->execute("pragma busy_timeout = 100;"));
     auto const locked = opened->execute("begin immediate;");
@@ -2326,7 +2326,7 @@ void stop_outside_a_transaction(const parity::arena& arena, const spawned& run) 
 
 TEST_CASE("queue run: a cancelled waiter exits 125 without running and does not rejoin",
           "[cmd][agent][queue][hq-missing-entry]") {
-  auto const arena = parity::make_arena("qr_missing_cancelled");
+  auto const arena = seeded_arena("qr_missing_cancelled");
   write_config(arena, k_fast_poll);
   gate       hold(arena.cpp_root / "hold.fifo");
   auto const started = arena.cpp_root / "started";
@@ -2352,9 +2352,9 @@ TEST_CASE("queue run: a cancelled waiter exits 125 without running and does not 
     // Nothing with a higher number appeared while the holder still runs.
     auto const snap = require_snapshot(arena);
     REQUIRE(snap.entries.size() == 1);
-    CHECK(snap.entries.front().seq == 1);
+    CHECK(snap.entries.front().seq == planar::cmd::qfix::seq_of(1));
     REQUIRE(snap.history.size() == 1);
-    CHECK(snap.history.front().seq == 2);
+    CHECK(snap.history.front().seq == planar::cmd::qfix::seq_of(2));
     CHECK(snap.history.front().outcome == hq::history_outcome::cancelled);
     CHECK_FALSE(snap.history.front().successor_seq.has_value());
   }
@@ -2365,7 +2365,7 @@ TEST_CASE("queue run: a cancelled waiter exits 125 without running and does not 
 
 TEST_CASE("queue run: a waiter stopped until it is reaped rejoins behind the entries that arrived meanwhile",
           "[cmd][agent][queue][hq-missing-entry]") {
-  auto const arena = parity::make_arena("qr_missing_rejoin");
+  auto const arena = seeded_arena("qr_missing_rejoin");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\nstale_after = \"2s\"\n");
   gate       hold(arena.cpp_root / "hold.fifo");
   auto const started = arena.cpp_root / "started";
@@ -2510,7 +2510,7 @@ auto identity_env(std::string vendor, std::string role) -> std::vector<pinned_va
 
 TEST_CASE("queue run: --notices tells a waiting submitter its position, then its start and its outcome",
           "[cmd][agent][queue][hq-notices]") {
-  auto const arena = parity::make_arena("qr_notices");
+  auto const arena = seeded_arena("qr_notices");
   write_config(arena, k_fast_poll);
   gate        hold_a(arena.cpp_root / "hold_a.fifo");
   gate        hold_b(arena.cpp_root / "hold_b.fifo");
@@ -2525,14 +2525,14 @@ TEST_CASE("queue run: --notices tells a waiting submitter its position, then its
   a = spawn_queue(arena, "a", sh_command(blocked, {started_a.string(), hold_a.path.string()}));
   await_file(started_a);
   b = spawn_queue(arena, "b", sh_command(blocked, {started_b.string(), hold_b.path.string()}), {}, {"--notices"});
-  await_err_contains(b, "queue: entry 2 waiting at position 1\n");
+  await_err_contains(b, "queue: entry 1000002 waiting at position 1\n");
   c = spawn_queue(arena, "c", sh_command("echo out; echo err >&2; exit 3"), {}, {"--notices"});
-  await_err_contains(c, "queue: entry 3 waiting at position 2\n");
+  await_err_contains(c, "queue: entry 1000003 waiting at position 2\n");
 
   // The first entry ends: B starts and C moves up, and says so while it waits.
   hold_a.release();
   await_file(started_b);
-  await_err_contains(c, "queue: entry 3 waiting at position 1\n");
+  await_err_contains(c, "queue: entry 1000003 waiting at position 1\n");
   hold_b.release();
 
   auto const got_a = finish(a);
@@ -2541,40 +2541,42 @@ TEST_CASE("queue run: --notices tells a waiting submitter its position, then its
   CHECK(got_a.code == 0);
   CHECK(got_a.err.empty());
   CHECK(got_b.code == 0);
-  CHECK(got_b.err == "queue: entry 2 waiting at position 1\nqueue: entry 2 started\nqueue: entry 2 exited with code 0\n");
+  CHECK(got_b.err ==
+        "queue: entry 1000002 waiting at position 1\nqueue: entry 1000002 started\nqueue: entry 1000002 exited with code 0\n");
 
   INFO("c stderr:\n" << got_c.err);
   CHECK(got_c.code == 3);
-  CHECK(notice_lines(got_c.err) == std::vector<std::string>{"queue: entry 3 waiting at position 2",
-                                                            "queue: entry 3 waiting at position 1", "queue: entry 3 started",
-                                                            "queue: entry 3 exited with code 3"});
+  CHECK(notice_lines(got_c.err) ==
+        std::vector<std::string>{"queue: entry 1000003 waiting at position 2", "queue: entry 1000003 waiting at position 1",
+                                 "queue: entry 1000003 started", "queue: entry 1000003 exited with code 3"});
   // The command's own line is untouched, and the outcome is the last line.
   CHECK(other_lines(got_c.err) == std::vector<std::string>{"err"});
-  CHECK(split_lines(got_c.err).back() == "queue: entry 3 exited with code 3");
+  CHECK(split_lines(got_c.err).back() == "queue: entry 1000003 exited with code 3");
   CHECK(got_c.out == "out\n");
 }
 
 TEST_CASE("queue run: --notices names a command a signal ended and a command stopped at its run limit",
           "[cmd][agent][queue][hq-notices]") {
-  auto const arena = parity::make_arena("qr_notices_ends");
+  auto const arena = seeded_arena("qr_notices_ends");
   write_config(arena, k_fast_poll);
   auto const killed = run_queue(arena, "killed", sh_command("kill -TERM $$"), {"--notices"});
   CHECK(killed.code == 128 + SIGTERM);
-  CHECK(notice_lines(killed.err) == std::vector<std::string>{"queue: entry 1 started", "queue: entry 1 terminated by signal 15"});
+  CHECK(notice_lines(killed.err) ==
+        std::vector<std::string>{"queue: entry 1000001 started", "queue: entry 1000001 terminated by signal 15"});
   CHECK(killed.out.empty());
 
   auto const limited = run_queue(arena, "limited", sh_command("sleep 30"), {"--notices", "--timeout", "300ms"});
   CHECK(limited.code == 124);
   auto const notices = notice_lines(limited.err);
   REQUIRE(notices.size() == 2);
-  CHECK(notices.front() == "queue: entry 2 started");
-  CHECK(notices.back() == "queue: entry 2 stopped at its run limit");
+  CHECK(notices.front() == "queue: entry 1000002 started");
+  CHECK(notices.back() == "queue: entry 1000002 stopped at its run limit");
   CHECK(split_lines(limited.err).back() == notices.back());
 }
 
 TEST_CASE("queue run: standard output is the command's output byte for byte, with and without --notices",
           "[cmd][agent][queue][hq-notices]") {
-  auto const arena  = parity::make_arena("qr_notices_out");
+  auto const arena  = seeded_arena("qr_notices_out");
   auto const script = std::string{"printf 'one\\ntwo'; echo e >&2; printf 'three\\n'"};
 
   auto const direct = parity::run_pinned("/bin/sh", std::vector<std::string>{"-c", script}, arena.cpp_root, "direct");
@@ -2594,13 +2596,14 @@ TEST_CASE("queue run: standard output is the command's output byte for byte, wit
   CHECK(direct.err == "e\n");
   // With it, the command's own lines are unchanged and the notices are added.
   CHECK(other_lines(noticing.err) == split_lines(direct.err));
-  CHECK(notice_lines(noticing.err) == std::vector<std::string>{"queue: entry 2 started", "queue: entry 2 exited with code 0"});
-  CHECK(split_lines(noticing.err).back() == "queue: entry 2 exited with code 0");
+  CHECK(notice_lines(noticing.err) ==
+        std::vector<std::string>{"queue: entry 1000002 started", "queue: entry 1000002 exited with code 0"});
+  CHECK(split_lines(noticing.err).back() == "queue: entry 1000002 exited with code 0");
 }
 
 TEST_CASE("queue run: without --notices a waiting submitter writes nothing to standard error",
           "[cmd][agent][queue][hq-notices]") {
-  auto const arena = parity::make_arena("qr_notices_off");
+  auto const arena = seeded_arena("qr_notices_off");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -2624,7 +2627,7 @@ TEST_CASE("queue run: without --notices a waiting submitter writes nothing to st
 
 TEST_CASE("queue run: the vendor and role come from the flags, then the environment, and are stored empty otherwise",
           "[cmd][agent][queue][hq-vendor-role]") {
-  auto const arena = parity::make_arena("qr_identity");
+  auto const arena = seeded_arena("qr_identity");
 
   // 1: flags only. 2: environment only. 3: both, and the flags win. 4: neither.
   // 5: empty flags with nothing in the environment. 6: empty flags fall back
@@ -2661,7 +2664,7 @@ TEST_CASE("queue run: the vendor and role come from the flags, then the environm
 }
 
 TEST_CASE("queue run: a live entry carries the vendor and role it was submitted with", "[cmd][agent][queue][hq-vendor-role]") {
-  auto const arena = parity::make_arena("qr_identity_live");
+  auto const arena = seeded_arena("qr_identity_live");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -2688,7 +2691,7 @@ TEST_CASE("queue run: a live entry carries the vendor and role it was submitted 
 
 TEST_CASE("queue run: a nested run records its own vendor and role, from its flags or the inherited environment",
           "[cmd][agent][queue][hq-vendor-role]") {
-  auto const arena  = parity::make_arena("qr_identity_nested");
+  auto const arena  = seeded_arena("qr_identity_nested");
   auto const script = std::string{"\"$1\" queue run --vendor nestedv --role nestedr -- true; "
                                   "\"$1\" queue run -- true"};
   auto const got    = run_with_env(arena, "outer", sh_command(script, {agent_bin().string()}),
@@ -2717,7 +2720,7 @@ TEST_CASE("queue run: a nested run records its own vendor and role, from its fla
 
 TEST_CASE("queue run: a rejoined entry keeps the vendor and role of the one that was reaped",
           "[cmd][agent][queue][hq-vendor-role]") {
-  auto const arena = parity::make_arena("qr_identity_rejoin");
+  auto const arena = seeded_arena("qr_identity_rejoin");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\nstale_after = \"2s\"\n");
   gate       hold(arena.cpp_root / "hold.fifo");
   auto const started = arena.cpp_root / "started";
@@ -2782,7 +2785,7 @@ TEST_CASE("queue run: a rejoined entry keeps the vendor and role of the one that
 
 TEST_CASE("queue run: --notices ends a submitter interrupted before its turn with that outcome, and records who it was",
           "[cmd][agent][queue][hq-notices]") {
-  auto const arena = parity::make_arena("qr_notice_interrupt");
+  auto const arena = seeded_arena("qr_notice_interrupt");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -2793,7 +2796,7 @@ TEST_CASE("queue run: --notices ends a submitter interrupted before its turn wit
   a = spawn_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
   await_file(started);
   b = spawn_queue(arena, "b", sh_command("exit 0"), identity_env("", ""), {"--notices", "--vendor", "iv", "--role", "ir"});
-  await_err_contains(b, "queue: entry 2 waiting at position 1\n");
+  await_err_contains(b, "queue: entry 1000002 waiting at position 1\n");
   REQUIRE(b.still_mine());
   auto const b_pid = b.pid;
   REQUIRE(::kill(static_cast<::pid_t>(b_pid), SIGTERM) == 0);
@@ -2801,7 +2804,7 @@ TEST_CASE("queue run: --notices ends a submitter interrupted before its turn wit
   auto const got = finish(b);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(split_lines(got.err).back() == "queue: entry 2 cancelled before its turn");
+  CHECK(split_lines(got.err).back() == "queue: entry 1000002 cancelled before its turn");
   hold.release();
   CHECK(finish(a).code == 0);
 
@@ -2816,7 +2819,7 @@ TEST_CASE("queue run: --notices ends a submitter interrupted before its turn wit
 }
 
 TEST_CASE("queue run: --notices ends a submitter whose wait limit passed with that outcome", "[cmd][agent][queue][hq-notices]") {
-  auto const arena = parity::make_arena("qr_notice_waitlimit");
+  auto const arena = seeded_arena("qr_notice_waitlimit");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -2828,13 +2831,13 @@ TEST_CASE("queue run: --notices ends a submitter whose wait limit passed with th
   auto const got = run_queue(arena, "b", sh_command("exit 0"), {"--notices", "--wait-timeout", "300ms"});
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(split_lines(got.err).back() == "queue: entry 2 removed at its wait limit");
+  CHECK(split_lines(got.err).back() == "queue: entry 1000002 removed at its wait limit");
   hold.release();
   CHECK(finish(a).code == 0);
 }
 
 TEST_CASE("queue run: --notices ends a command that could not be started with that outcome", "[cmd][agent][queue][hq-notices]") {
-  auto const arena   = parity::make_arena("qr_notice_notstarted");
+  auto const arena   = seeded_arena("qr_notice_notstarted");
   auto const program = arena.cpp_root / "no-shebang";
   {
     std::ofstream out(program, std::ios::binary | std::ios::trunc);
@@ -2845,12 +2848,12 @@ TEST_CASE("queue run: --notices ends a command that could not be started with th
   auto const got = run_queue(arena, "ns", {program.string()}, {"--notices"});
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 126);
-  CHECK(split_lines(got.err).back() == "queue: entry 1 not started");
+  CHECK(split_lines(got.err).back() == "queue: entry 1000001 not started");
 }
 
 TEST_CASE("queue run: --notices ends a running command another process cancelled with that outcome",
           "[cmd][agent][queue][hq-notices]") {
-  auto const arena = parity::make_arena("qr_notice_cancelled");
+  auto const arena = seeded_arena("qr_notice_cancelled");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -2860,13 +2863,13 @@ TEST_CASE("queue run: --notices ends a running command another process cancelled
       spawn_queue(arena, "marked", sh_command(blocked_script(false), {started.string(), hold.path.string()}), {}, {"--notices"});
   await_file(started);
   REQUIRE(await_child_recorded(arena, 1).child_pgid.has_value());
-  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
   REQUIRE(opened.has_value());
   ident::system_clock clock;
   hq::canceller const who{.vendor = "claude", .role = "operator", .pid = static_cast<std::int64_t>(::getpid())};
   auto const          begun =
       hq::begin_terminate(*opened,
-                          hq::begin_terminate_request{.seq          = 1,
+                          hq::begin_terminate_request{.seq          = planar::cmd::qfix::seq_of(1),
                                                       .reason       = hq::stop_reason::cancelled,
                                                       .cancelled_by = who,
                                                       .host_id      = ident::host_identity(ident::native_identity_source())},
@@ -2876,12 +2879,12 @@ TEST_CASE("queue run: --notices ends a running command another process cancelled
   auto const got = finish(run);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(split_lines(got.err).back() == "queue: entry 1 cancelled");
+  CHECK(split_lines(got.err).back() == "queue: entry 1000001 cancelled");
 }
 
 TEST_CASE("queue run: --notices ends a waiting submitter whose entry another process cancelled with that outcome",
           "[cmd][agent][queue][hq-notices]") {
-  auto const arena = parity::make_arena("qr_notice_waitcancel");
+  auto const arena = seeded_arena("qr_notice_waitcancel");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -2892,14 +2895,14 @@ TEST_CASE("queue run: --notices ends a waiting submitter whose entry another pro
   a = spawn_queue(arena, "a", sh_command("echo x > \"$1\"; read x < \"$2\"", {started.string(), hold.path.string()}));
   await_file(started);
   b = spawn_queue(arena, "b", sh_command("exit 0"), {}, {"--notices"});
-  await_err_contains(b, "queue: entry 2 waiting at position 1\n");
+  await_err_contains(b, "queue: entry 1000002 waiting at position 1\n");
 
   // Another process removes the waiting entry, as `queue cancel` will.
-  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
   REQUIRE(opened.has_value());
   ident::system_clock clock;
   auto const          ended = hq::end_entry(
-      *opened, 2,
+      *opened, planar::cmd::qfix::seq_of(2),
       hq::end_request{.outcome = hq::history_outcome::cancelled,
                       .cancelled_by =
                           hq::canceller{.vendor = "claude", .role = "operator", .pid = static_cast<std::int64_t>(::getpid())},
@@ -2909,14 +2912,14 @@ TEST_CASE("queue run: --notices ends a waiting submitter whose entry another pro
   auto const got = finish(b);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(split_lines(got.err).back() == "queue: entry 2 cancelled");
+  CHECK(split_lines(got.err).back() == "queue: entry 1000002 cancelled");
   hold.release();
   CHECK(finish(a).code == 0);
 }
 
 TEST_CASE("queue run: --notices tells a rejoined submitter its position again under its new entry number",
           "[cmd][agent][queue][hq-notices]") {
-  auto const arena = parity::make_arena("qr_notice_rejoin");
+  auto const arena = seeded_arena("qr_notice_rejoin");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\nstale_after = \"2s\"\n");
   gate       hold(arena.cpp_root / "hold.fifo");
   auto const started = arena.cpp_root / "started";
@@ -2937,7 +2940,7 @@ TEST_CASE("queue run: --notices tells a rejoined submitter its position again un
   ahead = spawn_queue(arena, "ahead", sh_command("exit 0"));
   static_cast<void>(await_entry(arena, 2, hq::entry_state::waiting));
   waiter = spawn_queue(arena, "waiter", sh_command("exit 0"), {}, {"--notices"});
-  await_err_contains(waiter, "queue: entry 3 waiting at position 2\n");
+  await_err_contains(waiter, "queue: entry 1000003 waiting at position 2\n");
 
   REQUIRE(waiter.still_mine());
   resume.run = &waiter;
@@ -2945,10 +2948,10 @@ TEST_CASE("queue run: --notices tells a rejoined submitter its position again un
   {
     // The entry ahead leaves while the waiter is stopped, and is replaced by
     // a later arrival.
-    auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
     REQUIRE(opened.has_value());
     ident::system_clock clock;
-    REQUIRE(hq::end_entry(*opened, 2,
+    REQUIRE(hq::end_entry(*opened, planar::cmd::qfix::seq_of(2),
                           hq::end_request{.outcome      = hq::history_outcome::cancelled,
                                           .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = 1},
                                           .ended_at     = clock.wall_ms()})
@@ -3083,6 +3086,7 @@ auto file_mode(const std::filesystem::path& path) -> unsigned {
 }
 
 auto log_of(const parity::arena& arena, std::int64_t seq) -> std::filesystem::path {
+  seq = planar::cmd::qfix::seq_of(seq);
   return arena.cpp_root / "queue-logs" / std::format("{}.log", seq);
 }
 
@@ -3137,7 +3141,7 @@ auto split_out_lines(std::string_view text) -> std::vector<std::string> {
 
 TEST_CASE("queue run: --detach returns a ticket at once and the command's output lands in the log",
           "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_happy");
+  auto const arena = seeded_arena("qd_happy");
   write_config(arena, k_fast_poll);
   gate               hold(arena.cpp_root / "hold.fifo");
   gate               release(arena.cpp_root / "release.fifo");
@@ -3202,7 +3206,7 @@ TEST_CASE("queue run: --detach hands its ticket back through a pipe that nothing
   // descriptor it inherited) would keep a reader waiting for end-of-file
   // until the command ended. The command here runs for a long time, so a
   // reader that returns while the entry still exists proves nothing holds it.
-  auto const arena = parity::make_arena("qd_pipe");
+  auto const arena = seeded_arena("qd_pipe");
   write_config(arena, k_fast_poll);
   detached_submitter submitter;
   auto const         vars = parity::pinned_env(arena.cpp_root);
@@ -3230,7 +3234,7 @@ TEST_CASE("queue run: --detach hands its ticket back through a pipe that nothing
 }
 
 TEST_CASE("queue run: a detached submitter survives its caller's process group being killed", "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_group");
+  auto const arena = seeded_arena("qd_group");
   write_config(arena, k_fast_poll);
   gate               release(arena.cpp_root / "release.fifo");
   release_all        guard{.gates = {&release}};
@@ -3262,7 +3266,7 @@ TEST_CASE("queue run: a detached submitter survives its caller's process group b
 
 TEST_CASE("queue run: --detach from a process-group leader returns a ticket and a poll by another entry does not reap it",
           "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_leader");
+  auto const arena = seeded_arena("qd_leader");
   write_config(arena, k_fast_poll);
   gate               hold(arena.cpp_root / "hold.fifo");
   release_all        guard{.gates = {&hold}};
@@ -3307,7 +3311,7 @@ TEST_CASE("queue run: --detach from a process-group leader returns a ticket and 
 }
 
 TEST_CASE("queue run: a refused detached command detaches nothing and prints no ticket", "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_refused");
+  auto const arena = seeded_arena("qd_refused");
   {
     std::ofstream plain(proj(arena) / "notexec");
     plain << "#!/bin/sh\n";
@@ -3336,21 +3340,21 @@ TEST_CASE("queue run: a refused detached command detaches nothing and prints no 
     CHECK_FALSE(got.err.empty());
     // Refused in the invoked process: the store was never opened and no log
     // directory was made, so nothing was forked to do either.
-    CHECK_FALSE(present(arena.cpp_root / "agent.db"));
+    CHECK(planar::cmd::qfix::untouched(arena.cpp_root / "planar.db"));
     CHECK_FALSE(present(arena.cpp_root / "queue-logs"));
   }
 }
 
 TEST_CASE("queue run: --detach with an unreachable store exits 125 and issues no ticket", "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_store");
+  auto const arena = seeded_arena("qd_store");
   {
     std::ofstream blocker(arena.cpp_root / "blocker");
     blocker << "not a directory\n";
   }
   auto vars = parity::pinned_env(arena.cpp_root);
   for (auto& var : vars) {
-    if (var.name == "PLANAR_AGENT_DB") {
-      var.value = (arena.cpp_root / "blocker" / "agent.db").string();
+    if (var.name == "PLANAR_DB") {
+      var.value = (arena.cpp_root / "blocker" / "planar.db").string();
     }
   }
   auto const args = queue_args({"true"}, {"--detach"});
@@ -3364,7 +3368,7 @@ TEST_CASE("queue run: --detach with an unreachable store exits 125 and issues no
 
 TEST_CASE("queue run: a detached run that cannot create its log file is refused and leaves no entry",
           "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_nolog");
+  auto const arena = seeded_arena("qd_nolog");
   // A plain file where the log directory belongs: the directory cannot be made.
   {
     std::ofstream blocker(arena.cpp_root / "queue-logs");
@@ -3388,7 +3392,7 @@ TEST_CASE("queue run: a detached run that cannot create its log file is refused 
 
 TEST_CASE("queue run: --detach writes notices and the wait-limit refusal to the log, not to the invoked process",
           "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_notices");
+  auto const arena = seeded_arena("qd_notices");
   write_config(arena, k_fast_poll);
   gate               hold(arena.cpp_root / "hold.fifo");
   release_all        guard{.gates = {&hold}};
@@ -3454,13 +3458,13 @@ auto children_of(std::int64_t parent) -> std::vector<std::int64_t> {
 
 TEST_CASE("queue run: a detached submitter whose caller died before the ticket removes its entry and its log",
           "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_gone");
+  auto const arena = seeded_arena("qd_gone");
   write_config(arena, k_fast_poll);
   // Create and migrate the store with an ordinary run, so the lock below
   // stalls the child at its insert and not at the migration.
   REQUIRE(run_queue(arena, "seed", sh_command("exit 0")).code == 0);
 
-  auto opened = planar::db::agent::open_agent_db_at(arena.cpp_root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(arena.cpp_root / "planar.db");
   REQUIRE(opened.has_value());
   auto lock = opened->begin_transaction(planar::db::lock_mode::immediate);
   REQUIRE(lock.has_value());
@@ -3504,11 +3508,11 @@ TEST_CASE("queue run: a detached submitter whose caller died before the ticket r
 }
 
 TEST_CASE("queue run: a detached run never writes into a log that already exists", "[cmd][agent][queue][hq-detach]") {
-  auto const arena = parity::make_arena("qd_excl");
+  auto const arena = seeded_arena("qd_excl");
   // A log left by an earlier store: sequence numbers restarted, so the next
-  // run is entry 1 and its log path is already taken.
+  // run is entry 1000001 and its log path is already taken.
   std::filesystem::create_directories(arena.cpp_root / "queue-logs");
-  auto const old = arena.cpp_root / "queue-logs" / "1.log";
+  auto const old = arena.cpp_root / "queue-logs" / "1000001.log";
   {
     std::ofstream out(old, std::ios::binary);
     out << "old run\n";
@@ -3601,7 +3605,7 @@ TEST_CASE("queue run: --detach leaves the submitter holding none of its caller's
   constexpr int k_low  = 37;
   constexpr int k_high = 9000;
   require_descriptor_limit(k_high + 64);
-  auto const arena = parity::make_arena("qd_fds");
+  auto const arena = seeded_arena("qd_fds");
   write_config(arena, k_fast_poll);
   gate               release(arena.cpp_root / "release.fifo");
   release_all        guard{.gates = {&release}};
@@ -3631,7 +3635,7 @@ TEST_CASE("queue run: --detach leaves the submitter holding none of its caller's
 
 TEST_CASE("queue run: --detach refuses an existing queue-logs directory that group or others can write to",
           "[cmd][agent][queue][hq-detach][hq-detach-logdir]") {
-  auto const arena = parity::make_arena("qd_loose");
+  auto const arena = seeded_arena("qd_loose");
   auto const dir   = arena.cpp_root / "queue-logs";
   std::filesystem::create_directories(dir);
   auto const ran = arena.cpp_root / "ran";
@@ -3661,7 +3665,7 @@ TEST_CASE("queue run: --detach refuses an existing queue-logs directory that gro
 
 TEST_CASE("queue run: --detach accepts an existing queue-logs directory that only its owner can write to",
           "[cmd][agent][queue][hq-detach][hq-detach-logdir]") {
-  auto const arena = parity::make_arena("qd_tight");
+  auto const arena = seeded_arena("qd_tight");
   auto const dir   = arena.cpp_root / "queue-logs";
   std::filesystem::create_directories(dir);
   for (auto const mode : {mode_t{0700}, mode_t{0755}}) {
@@ -3686,7 +3690,7 @@ TEST_CASE("queue run: --detach refuses an existing queue-logs directory owned by
   // and which is not writable by group or others, so only the OWNER rule can
   // refuse it: without that rule the run would go on to fail at opening the
   // log with a different message.
-  auto const arena = parity::make_arena("qd_foreign");
+  auto const arena = seeded_arena("qd_foreign");
   auto const dir   = arena.cpp_root / "queue-logs";
   if (::geteuid() == 0) {
     std::filesystem::create_directories(dir);

@@ -351,13 +351,35 @@ auto connection::open_existing(std::string_view path, int busy_timeout_ms) -> st
   return conn;
 }
 
+namespace {
+
+/// Percent-encodes `path` for the path component of a SQLite `file:` URI.
+/// Everything outside RFC 3986 unreserved characters and `/` is escaped, so
+/// `?`, `#` and `%` cannot end the path early or be decoded as an escape.
+auto percent_encode_uri_path(std::string_view path) -> std::string {
+  std::string out;
+  out.reserve(path.size());
+  for (const char c : path) {
+    const auto u = static_cast<unsigned char>(c);
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
+        c == '~' || c == '/') {
+      out += c;
+    } else {
+      out += std::format("%{:02X}", static_cast<unsigned>(u));
+    }
+  }
+  return out;
+}
+
+} // namespace
+
 auto connection::open_read_only(std::string_view path) -> std::expected<connection, db_error> {
   // Both the `mode=ro` URI parameter and SQLITE_OPEN_READONLY are used
   // together (docs/architecture.md-equivalent rationale ported from
   // zig/src/db/sqlite.zig's openReadOnly doc comment): the flag is
   // authoritative, the URI form is redundant defense-in-depth for
   // planar-watch.
-  const std::string uri    = std::format("file:{}?mode=ro", path);
+  const std::string uri    = std::format("file:{}?mode=ro", percent_encode_uri_path(path));
   sqlite3*          handle = nullptr;
   const int         rc     = sqlite3_open_v2(uri.c_str(), &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr);
   if (rc != SQLITE_OK) {

@@ -122,7 +122,8 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | `--vendors LIST` | Comma-separated subset (e.g. `claude,codex` or just `claude`). Default `claude,codex,copilot,gemini`. |
 | `--no-vendor` | Skip vendor symlinks entirely; install Planar core only. |
 | `--link` | Symlink artifacts from the source repo into `~/.planar/` instead of copying. **Dev mode** — edits to the repo propagate immediately. |
-| `--force` | Overwrite existing symlinks at the destinations. |
+| `--force` | Overwrite existing symlinks at the destinations. It does **not** bypass the `agent.db` live-queue guard. |
+| `--ignore-live-queue` | Retire (or uninstall) the old `agent.db` even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
 | `--no-prune` | Skip removal of stale vendor files. |
 | `--preset NAME` | CMake build preset: `debug`\|`release` (default `release`). |
 | `--build-dir DIR` | Where to configure and build (default `build/install-<preset>`). |
@@ -130,7 +131,7 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | `--dry-run`, `-n` | Show the planned actions without changing anything. |
 | `--verbose`, `-v` | Per-file detail (default prints a summary). |
 | `--version` | Print the installer version and exit. |
-| `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db`, `~/.planar/agent.db` (with its `-wal`/`-shm` sidecars) and `~/.planar/queue-logs/` unless `--force` is also given. |
+| `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db` (with its `-wal`/`-shm` sidecars) and `~/.planar/queue-logs/` unless `--force` is also given. Removes the retired `agent.db`, behind the same live-queue guard as an install. |
 
 ### Copy mode vs link mode
 
@@ -155,7 +156,65 @@ The default database lives at `~/.planar/planar.db`. Override it with the `PLANA
 
 Agent state lives in a second database, `~/.planar/agent.db`, with its own migration stream. `planar-agent` creates it on first use; no `init` step is needed. Override its path with `PLANAR_AGENT_DB`. Detached queue runs write their output files under `queue-logs/` in the directory that holds `agent.db`.
 
-Both databases hold task claim tokens, which authorise heartbeats and terminal verbs on a claim, so they are private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` and `agent.db` (with their `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `planar-agent` creates `agent.db` `0600` and ensures `~/.planar` is `0700` on first open; a directory you choose through `PLANAR_AGENT_DB` is never chmodded. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
+Both databases hold task claim tokens, which authorise heartbeats and terminal verbs on a claim, so they are private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` (with its `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `planar-agent` creates `agent.db` `0600` and ensures `~/.planar` is `0700` on first open; a directory you choose through `PLANAR_AGENT_DB` is never chmodded. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
+
+### Upgrade note: unlinking `agent.db` under a live queue submitter
+
+Removing `agent.db` (and its `-wal` and `-shm` sidecars) while an older
+`planar-agent queue run` is still waiting or running does not stop that
+process. It was measured on the vendored SQLite 3.53.3 (macOS, APFS), first
+with a bare connection and then with two real `planar-agent queue run`
+submitters at 595510e6 in a scratch home:
+
+- The old process keeps reading and writing the unlinked WAL database through
+  its open file descriptors. No statement fails, and no new file appears at
+  the old path from that process.
+- A waiting old submitter does not exit 125. Its polls succeed against the
+  orphaned file, and it runs its command when the entry ahead of it ends.
+- A queue run started after the unlink opens a fresh database at the path and
+  runs at once, outside the old queue's slot count. Both queues are then
+  active until every old submitter drains.
+
+So retire `agent.db` only when no old submitter is live, or accept that the
+old queue and the new one run side by side until it drains.
+
+### Upgrade note: what install.sh does with the old queue (plan 1089)
+
+The queue now lives in `planar.db`. On an install over a prefix that still
+holds the old `agent.db`, `install.sh` (through
+`scripts/install-lib/queue-retire.sh`):
+
+1. **Checks the old queue before building anything.**
+   `python3 scripts/install-lib/queue_retire.py live` reads `agent.db`
+   read-only and judges every entry the way the queue's own liveness does.
+   An entry blocks when its submitter, or a running entry's command group, is
+   provably alive on this boot, or when it cannot be proven dead (another pid
+   namespace, an unreadable identity or start time, an out-of-range id). An
+   entry written on an earlier boot of this machine, or on another machine,
+   is dead. A store it cannot read blocks too. It refuses with the blocking
+   entries and the remedies: let them finish, cancel them with the old
+   `planar-agent queue cancel <seq>` if it is still installed, or re-run with
+   `--ignore-live-queue`.
+2. **Builds and installs the binaries.**
+3. **Probes `planar.db`** with the new `planar-agent queue status 1 --json`,
+   read-only and from `/`, and migrates it with
+   `planar init --skip-project --allow-no-repo` only when it is behind. An
+   ahead `planar.db` is never refused: if its queue tables are newer than
+   this build, or differ under the same migration number, it warns and
+   continues. Any other probe result stops the install before anything is
+   retired. It never creates `planar.db`.
+4. **Checks the old queue again**, immediately before removing anything.
+5. **Retires `agent.db`**: it reads the old store's highest sequence number,
+   refuses when it cannot or when that number reaches 1,000,000 (the new
+   queue's floor), and otherwise removes `agent.db`, `agent.db-wal`,
+   `agent.db-shm` and the old logs `queue-logs/<n>.log` numbered at or below
+   it. Logs of the new queue (numbered above 1,000,000) and every other file
+   are kept.
+
+`--force` does not bypass steps 1 and 4; `--ignore-live-queue` turns their
+refusal into a warning and nothing else. A store relocated with
+`PLANAR_AGENT_DB` is never touched; delete it by hand once no old queue
+command is running.
 
 ## Build from source
 
@@ -213,13 +272,15 @@ make uninstall-full
 
 This removes:
 - All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
-- Everything in `~/.planar/` *except* your data: `planar.db` and `agent.db` (each with its SQLite sidecars, `-wal` and `-shm`), and the `queue-logs/` directory of detached queue-run output.
+- Everything in `~/.planar/` *except* your data: `planar.db` (with its SQLite sidecars, `-wal` and `-shm`) and the `queue-logs/` directory of detached queue-run output. The retired `agent.db` and its sidecars are removed.
 
-A prefix that holds only a preserved `planar.db` or `agent.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
+When `~/.planar/agent.db` exists, the uninstall first runs the same live-queue guard as an install (see the upgrade note above), with or without `--force`; `--ignore-live-queue` is the only override. It needs `python3` for that and refuses without it; with no `agent.db`, `python3` is not needed.
 
-Only the default file names directly under `~/.planar/` are preserved. A database relocated with `PLANAR_DB` or `PLANAR_AGENT_DB` to a path outside `~/.planar/` is never touched by the uninstall; one relocated to another file name *inside* `~/.planar/` is not preserved, and a non-force uninstall deletes it.
+A prefix that holds only a preserved `planar.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`. One that holds only an `agent.db` does not.
 
-To remove the databases and the queue logs too:
+Only the default file names directly under `~/.planar/` are preserved. A database relocated with `PLANAR_DB` to a path outside `~/.planar/` is never touched by the uninstall; one relocated to another file name *inside* `~/.planar/` is not preserved, and a non-force uninstall deletes it.
+
+To remove the database and the queue logs too:
 
 ```bash
 ./install.sh --uninstall --force
@@ -230,8 +291,7 @@ To remove the databases and the queue logs too:
 To remove only the data and keep the install:
 
 ```bash
-rm -f ~/.planar/planar.db
-rm -f ~/.planar/agent.db ~/.planar/agent.db-wal ~/.planar/agent.db-shm
+rm -f ~/.planar/planar.db ~/.planar/planar.db-wal ~/.planar/planar.db-shm
 rm -rf ~/.planar/queue-logs
 ```
 

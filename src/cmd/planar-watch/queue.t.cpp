@@ -2,15 +2,25 @@
 // hq-watch-queue; tech spec 647 § CLI surface and § Liveness; test spec 649
 // scenarios citing task:hq-watch-queue).
 //
+// Plan 1089 (task qp-watch-queue; tech spec 656 § planar-watch; test spec 658):
+// the queue tables live in the arena's `planar.db`, which the views read
+// through planar-watch's ordinary read-only main handle and its exit-7 rules.
+//
 // Every case runs the BUILT `planar-watch` through `run_pinned`, in an arena
-// whose `PLANAR_AGENT_DB` is its own scratch store, so nothing can reach the
+// whose `PLANAR_DB` is its own scratch database, so nothing can reach the
 // operator's `~/.planar`. `--json` output is parsed with the DOM parser and
 // asserted field by field; a substring check would pass for a field renamed or
-// moved. The workflow case drives a REAL detached submitter of the built
-// `planar-agent` (`queue run --detach`); the state cases seed the store
-// through the engine (`enqueue`, `poll`, `begin_terminate`) the way the
-// engine's own suites do, because a dead, stale or nested entry cannot be
-// produced by a well-behaved submitter.
+// moved. Two cases drive a REAL `planar-agent queue run` of the built binary
+// (plan 1089, task qp-watch-realsubmit, restoring what wave 2 reseeded): "one
+// running and two waiting entries" starts a real detached holder and waiter,
+// and the history case really runs, times out and cancels commands. They are
+// the only cases in which one binary WRITES the arena's `planar.db` and
+// another READS the same file, so what planar-watch lists is what
+// planar-agent wrote. The other cases seed the database through the engine
+// (`enqueue`, `poll`, `end_entry`, `begin_terminate`) the way the engine's own
+// suites do, because a dead, stale or nested entry cannot be produced by a
+// well-behaved submitter. The seeding connection is a scratch `planar.db`
+// migrated from the embedded MAIN chain, never the retired agent chain.
 //
 // Synchronisation is by FIFOs and files, not sleeps. Every detached submitter
 // a case starts is recorded by pid and start time and stopped on the way out
@@ -26,11 +36,8 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
 import planar.db.migrate;
-import planar.db.migrations_agent;
 import planar.json_dom;
-import planar.cmd.planar_watch.agentstore;
 import planar.cmd.planar_watch.handlers.queue.history;
 import planar.process.identity;
 import planar.engine.hostqueue;
@@ -74,13 +81,19 @@ template <class Predicate> auto await(Predicate&& predicate, std::chrono::millis
   return predicate();
 }
 
+/// @brief The arena's `planar.db`: the file `PLANAR_DB` names, and the only
+/// database the views open.
 auto store_path(const parity::arena& arena) -> fs::path {
-  return arena.cpp_root / "agent.db";
+  return arena.cpp_root / "planar.db";
 }
 
+/// @brief A read-write connection to the arena's `planar.db`, created and
+/// migrated to the head of the embedded MAIN chain, which carries the queue
+/// tables (migration 00040).
 auto open_store(const parity::arena& arena) -> planar::db::connection {
-  auto opened = planar::db::agent::open_agent_db_at(store_path(arena));
+  auto opened = planar::db::connection::open(store_path(arena).string());
   REQUIRE(opened.has_value());
+  REQUIRE(planar::db::apply_all(*opened).has_value());
   return std::move(*opened);
 }
 
@@ -313,7 +326,7 @@ auto submit_detached(const parity::arena& arena, std::string_view tag, const std
 
 void await_state(const parity::arena& arena, std::int64_t seq, hq::entry_state state) {
   REQUIRE(await([&] {
-    auto opened = planar::db::agent::open_agent_db_at(store_path(arena));
+    auto opened = planar::db::connection::open_read_only(store_path(arena).string());
     if (!opened) {
       return false;
     }
@@ -397,28 +410,32 @@ void start_entry(planar::db::connection& conn, std::int64_t seq, std::int64_t sl
 // Empty: a missing store is an empty queue.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("queue view: a missing store lists nothing, exits 0 and creates no file", "[cmd][watch][queue][hq-watch-queue]") {
+TEST_CASE("queue view: a missing planar.db fails like every other viewer verb and creates no file",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  // No exemption any more: the queue views follow the viewer's missing-database
+  // rule, so a missing planar.db is the same error `ps` gives, not an empty
+  // queue.
   auto const arena = parity::make_arena("wq_missing");
   REQUIRE_FALSE(fs::exists(store_path(arena)));
 
+  auto const baseline = parity::run_pinned(watch_bin(), std::vector<std::string>{"ps"}, arena.cpp_root, "missing_ps");
+  REQUIRE(baseline.code != 0);
+
   auto const json_run = run_queue(arena, "missing_json");
-  INFO("stderr:\n" << json_run.err);
-  CHECK(json_run.code == 0);
-  auto const doc = parse_document(json_run.out);
-  REQUIRE(doc.kind == json::json_kind::array);
-  CHECK(doc.array.empty());
+  CHECK(json_run.code == baseline.code);
+  CHECK(json_run.err == baseline.err);
+  CHECK(json_run.out.empty());
 
   auto const text_run = run_queue(arena, "missing_text", false);
-  INFO("stderr:\n" << text_run.err);
-  CHECK(text_run.code == 0);
+  CHECK(text_run.code == baseline.code);
+  CHECK(text_run.err == baseline.err);
   CHECK(text_run.out.empty());
-  CHECK(text_run.err.empty());
 
   CHECK_FALSE(fs::exists(store_path(arena)));
   CHECK_FALSE(fs::exists(store_path(arena).string() + "-wal"));
 }
 
-TEST_CASE("queue view: a store with no entries lists nothing", "[cmd][watch][queue][hq-watch-queue]") {
+TEST_CASE("queue view: a planar.db with no entries lists nothing", "[cmd][watch][queue][qp-watch-queue]") {
   auto const arena = parity::make_arena("wq_noentries");
   {
     auto conn = open_store(arena);
@@ -438,12 +455,18 @@ TEST_CASE("queue view: one running and two waiting entries list in order with th
           "[cmd][watch][queue][hq-watch-queue]") {
   auto const arena = parity::make_arena("wq_workflow");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\n");
+  {
+    // planar-agent never creates planar.db: the arena's database exists and
+    // is at the head schema before the first real submitter opens it.
+    auto conn = open_store(arena);
+  }
   gate            hold(arena.cpp_root / "hold.fifo");
   submitter_guard guard;
 
   // A real detached holder, then a real detached waiter, then a waiter another
   // directory submitted (seeded through the engine: a run is pinned to one
-  // working directory).
+  // working directory). planar-agent WRITES the first two rows to planar.db;
+  // planar-watch below reads the same file.
   auto const holder =
       submit_detached(arena, "holder", sh_command("read x < \"$1\"", {hold.path.string()}), {"--label", "holder"}, guard);
   await_state(arena, holder, hq::entry_state::running);
@@ -938,39 +961,69 @@ TEST_CASE("queue view: a bare backslash is quoted", "[cmd][watch][queue][hq-view
 }
 
 // ---------------------------------------------------------------------------
-// Errors: an incompatible store, and a file that is not an agent store.
+// Errors: planar.db ahead of or behind the binary exits 7, as every verb does.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("queue view: a store from a newer release is refused with exit 7 naming both versions",
-          "[cmd][watch][queue][hq-watch-queue]") {
-  auto const arena = parity::make_arena("wq_incompat");
+/// @brief Raises `schema_migrations` past this binary's embedded head by one.
+void make_ahead(const parity::arena& arena) {
+  auto raw = planar::db::connection::open(store_path(arena).string());
+  REQUIRE(raw.has_value());
+  REQUIRE(raw->execute(std::format("insert into schema_migrations (version, description) values ({}, 'probe')",
+                                   planar::db::embedded_max() + 1))
+              .has_value());
+}
+
+/// @brief Deletes only the highest `schema_migrations` row: the database is
+/// one migration behind this binary, with every table still in place.
+void make_behind(const parity::arena& arena) {
+  auto raw = planar::db::connection::open(store_path(arena).string());
+  REQUIRE(raw.has_value());
+  REQUIRE(raw->execute("delete from schema_migrations where version = (select max(version) from schema_migrations)").has_value());
+}
+
+TEST_CASE("queue view: a planar.db ahead of this binary exits 7 naming both versions and is left untouched",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  auto const arena = parity::make_arena("wq_ahead");
   {
     auto conn = open_store(arena);
+    enqueue_or_fail(conn, alive_request("/w/only", {"make"}));
   }
-  auto const head = planar::db::agent::agent_schema_version();
-  {
-    auto raw = planar::db::connection::open(store_path(arena).string());
-    REQUIRE(raw.has_value());
-    REQUIRE(
-        raw->execute(std::format("insert into agent_schema_migrations (version, compat, description) values ({}, {}, 'probe')",
-                                 head + 2, head + 1))
-            .has_value());
-  }
+  make_ahead(arena);
   auto const before = bytes_of(store_path(arena));
 
-  auto const run = run_queue(arena, "incompat_json");
+  auto const run = run_queue(arena, "ahead_json");
   CHECK(run.code == 7);
   CHECK(run.out.empty());
-  CHECK(run.err.contains(std::to_string(head + 1)));
-  CHECK(run.err.contains(std::format("is {}", head)));
-  auto const text = run_queue(arena, "incompat_text", false);
-  CHECK(text.code == 7);
+  CHECK(run.err.contains(std::to_string(planar::db::embedded_max() + 1)));
+  CHECK(run.err.contains(std::format("({})", planar::db::embedded_max())));
+  CHECK(run_queue(arena, "ahead_text", false).code == 7);
   CHECK(bytes_of(store_path(arena)) == before);
 }
 
-TEST_CASE("queue view: a database that is not an agent store, or not a database, is refused with exit 1",
-          "[cmd][watch][queue][hq-watch-queue]") {
-  SECTION("a SQLite file with other tables") {
+TEST_CASE("queue view: a planar.db behind this binary exits 7, the same as every other viewer verb",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  auto const arena = parity::make_arena("wq_behind");
+  {
+    auto conn = open_store(arena);
+  }
+  make_behind(arena);
+  auto const before = bytes_of(store_path(arena));
+
+  auto const baseline = parity::run_pinned(watch_bin(), std::vector<std::string>{"ps"}, arena.cpp_root, "behind_ps");
+  REQUIRE(baseline.code == 7);
+
+  auto const run = run_queue(arena, "behind_json");
+  CHECK(run.code == 7);
+  CHECK(run.out.empty());
+  CHECK(run.err == baseline.err);
+  CHECK(run.err.contains("older than this binary"));
+  CHECK(run_queue(arena, "behind_text", false).code == 7);
+  CHECK(bytes_of(store_path(arena)) == before);
+}
+
+TEST_CASE("queue view: a file that is not a database is refused, and a SQLite file with no migrations exits 7",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  SECTION("a SQLite file with other tables only") {
     auto const arena = parity::make_arena("wq_foreign");
     {
       auto raw = planar::db::connection::open(store_path(arena).string());
@@ -978,9 +1031,8 @@ TEST_CASE("queue view: a database that is not an agent store, or not a database,
       REQUIRE(raw->execute("create table plans (id integer primary key)").has_value());
     }
     auto const run = run_queue(arena, "foreign_json");
-    CHECK(run.code == 1);
+    CHECK(run.code == 7);
     CHECK(run.out.empty());
-    CHECK(run.err.contains("not an agent store"));
   }
   SECTION("a file that is not SQLite") {
     auto const arena = parity::make_arena("wq_garbage");
@@ -988,15 +1040,17 @@ TEST_CASE("queue view: a database that is not an agent store, or not a database,
       std::ofstream out(store_path(arena), std::ios::binary);
       out << "this is not a database, and it is long enough to have a header to refuse\n";
     }
+    auto const baseline = parity::run_pinned(watch_bin(), std::vector<std::string>{"ps"}, arena.cpp_root, "garbage_ps");
+    REQUIRE(baseline.code != 0);
     auto const run = run_queue(arena, "garbage_json");
-    CHECK(run.code == 1);
+    CHECK(run.code == baseline.code);
     CHECK(run.out.empty());
     CHECK_FALSE(run.err.empty());
   }
 }
 
 // ---------------------------------------------------------------------------
-// The main database is not needed.
+// The main database is needed: the old exemption is gone.
 // ---------------------------------------------------------------------------
 
 /// @brief The pinned map with the main database's two locators removed.
@@ -1010,8 +1064,8 @@ auto without_main_database(const parity::arena& arena) -> std::vector<parity::pi
   return env;
 }
 
-TEST_CASE("queue view: works with no main database to locate, while every other verb still needs one",
-          "[cmd][watch][queue][hq-watch-queue]") {
+TEST_CASE("queue view: with neither PLANAR_DB nor HOME it fails before dispatch like every other verb",
+          "[cmd][watch][queue][qp-watch-exemption]") {
   auto const arena = parity::make_arena("wq_nomain");
   {
     auto conn = open_store(arena);
@@ -1019,29 +1073,20 @@ TEST_CASE("queue view: works with no main database to locate, while every other 
   }
   auto const env = without_main_database(arena);
 
-  auto const listing =
-      parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "--json"}, arena.cpp_root, "nomain_queue", env);
-  INFO("stderr:\n" << listing.err);
-  auto const rows = rows_of(listing);
-  REQUIRE(rows.size() == 1);
-  CHECK(text_of(rows[0], "cwd") == "/w/only");
-  auto const text = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue"}, arena.cpp_root, "nomain_text", env);
-  CHECK(text.code == 0);
-  REQUIRE(lines_of(text.out).size() == 2);
-
-  // The exemption is the `queue` domain's alone: every other verb keeps the
-  // exit and the message it had.
-  for (auto const& verb : {"ps", "claims", "version", "schema"}) {
-    auto const run =
-        parity::run_pinned(watch_bin(), std::vector<std::string>{verb}, arena.cpp_root, std::format("nomain_{}", verb), env);
-    INFO("verb: " << verb << "\nstderr:\n" << run.err);
+  for (auto const& argv : std::vector<std::vector<std::string>>{{"queue", "--json"},
+                                                                {"queue"},
+                                                                {"queue", "history"},
+                                                                {"queue", "history", "--json"},
+                                                                {"ps"},
+                                                                {"version"},
+                                                                {"schema"},
+                                                                {}}) {
+    auto const run = parity::run_pinned(watch_bin(), argv, arena.cpp_root, "nomain", env);
+    INFO("verb: " << (argv.empty() ? std::string{"(bare)"} : argv.front()) << "\nstderr:\n" << run.err);
     CHECK(run.code == 1);
     CHECK(run.out.empty());
     CHECK(run.err == "error: neither PLANAR_DB nor HOME is set; cannot locate the Planar database\n");
   }
-  auto const bare = parity::run_pinned(watch_bin(), std::vector<std::string>{}, arena.cpp_root, "nomain_bare", env);
-  CHECK(bare.code == 1);
-  CHECK(bare.err == "error: neither PLANAR_DB nor HOME is set; cannot locate the Planar database\n");
 }
 
 // ===========================================================================
@@ -1125,24 +1170,20 @@ auto iso_utc(std::int64_t ms) -> std::string {
 
 // ---- empty -----------------------------------------------------------------
 
-TEST_CASE("queue history: a missing store lists nothing, exits 0 and creates no file", "[cmd][watch][queue][hq-watch-history]") {
+TEST_CASE("queue history: a missing planar.db fails like every other viewer verb and creates no file",
+          "[cmd][watch][queue][qp-watch-queue]") {
   auto const arena = parity::make_arena("wh_missing");
   REQUIRE_FALSE(fs::exists(store_path(arena)));
 
-  auto const json_run = run_history(arena, "missing_json");
-  INFO("stderr:\n" << json_run.err);
-  CHECK(json_run.code == 0);
-  CHECK(json_run.out == "[]\n");
-  CHECK(json_run.err.empty());
+  auto const baseline = parity::run_pinned(watch_bin(), std::vector<std::string>{"ps"}, arena.cpp_root, "hmissing_ps");
+  REQUIRE(baseline.code != 0);
 
-  auto const text_run = run_history(arena, "missing_text", {});
-  CHECK(text_run.code == 0);
-  CHECK(text_run.out.empty());
-  CHECK(text_run.err.empty());
-
-  auto const since_run = run_history(arena, "missing_since", {"--since", "1h", "--json"});
-  CHECK(since_run.code == 0);
-  CHECK(since_run.out == "[]\n");
+  for (auto const& flags : std::vector<std::vector<std::string>>{{"--json"}, {}, {"--since", "1h", "--json"}}) {
+    auto const run = run_history(arena, "missing", flags);
+    CHECK(run.code == baseline.code);
+    CHECK(run.err == baseline.err);
+    CHECK(run.out.empty());
+  }
   CHECK_FALSE(fs::exists(store_path(arena)));
 }
 
@@ -1163,11 +1204,15 @@ TEST_CASE("queue history: a store whose only entries are still running lists no 
 
 // ---- real runs -------------------------------------------------------------
 
-TEST_CASE(
-    "queue history: commands that really ended as exited, timeout and cancelled are listed with outcome, times and canceller",
-    "[cmd][watch][queue][hq-watch-history]") {
+TEST_CASE("queue history: entries that ended as exited, timeout and cancelled are listed with outcome, times and canceller",
+          "[cmd][watch][queue][hq-watch-history]") {
   auto const arena = parity::make_arena("wh_real");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"200ms\"\n");
+  {
+    // planar-agent never creates planar.db: it exists at the head schema
+    // before the first real submitter opens it.
+    auto conn = open_store(arena);
+  }
   gate            hold(arena.cpp_root / "hold.fifo");
   submitter_guard guard;
 
@@ -1197,7 +1242,7 @@ TEST_CASE(
   INFO("stderr:\n" << cancelled.err);
   REQUIRE(cancelled.code == 0);
   REQUIRE(await([&] {
-    auto opened = planar::db::agent::open_agent_db_at(store_path(arena));
+    auto opened = planar::db::connection::open_read_only(store_path(arena).string());
     if (!opened) {
       return false;
     }
@@ -1569,53 +1614,36 @@ TEST_CASE("queue history: the --since cutoff is exact to the millisecond and a r
       seqs.push_back(seed_ended(conn, spec));
     }
   }
-  auto store = planar::cmd::watch::open_agent_store_at(store_path(arena));
-  REQUIRE(store.has_value());
-  auto const kept = store->history(cutoff);
+  auto       conn = open_store(arena);
+  auto const kept = hq::list_history(conn, cutoff);
   REQUIRE(kept.has_value());
   REQUIRE(kept->size() == 2);
   REQUIRE(seqs.size() == 3);
   CHECK(kept->at(0).seq == seqs[1]);
   CHECK(kept->at(1).seq == seqs[2]);
-  CHECK(store->history()->size() == 3);
+  CHECK(hq::list_history(conn)->size() == 3);
 }
 
 // ---- an older store, and a store that must not change ----------------------
 
-TEST_CASE("queue history: a store still at agent schema version 2 lists with null limits and stays at version 2",
-          "[cmd][watch][queue][hq-watch-history]") {
-  auto const arena = parity::make_arena("wh_v2");
-  auto const chain = planar::db::agent::migrations();
-  REQUIRE(chain.size() >= 3);
+TEST_CASE("queue history: a planar.db behind this binary exits 7 and stays untouched", "[cmd][watch][queue][qp-watch-queue]") {
+  auto const arena = parity::make_arena("wh_behind");
   {
-    auto raw = planar::db::connection::open(store_path(arena).string());
-    REQUIRE(raw.has_value());
-    REQUIRE(planar::db::apply_all(*raw, chain.subspan(0, 2), planar::db::k_agent_version_table).has_value());
-    REQUIRE(raw->execute("insert into queue_history (seq, outcome, exit_code, cwd, argv, label, vendor, role, enqueued_at, "
-                         "started_at, ended_at, waited_ms, ran_ms) values (7, 'exited', 0, '/w', '[\"true\"]', 'old-h', "
-                         "'claude', 'coder', 900, 950, 990, 50, 40)")
-                .has_value());
+    auto       conn = open_store(arena);
+    ended_spec spec;
+    spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
+    seed_ended(conn, spec);
   }
+  make_behind(arena);
   auto const before = bytes_of(store_path(arena));
 
-  auto const rows = rows_of(run_history(arena, "v2_json"));
-  REQUIRE(rows.size() == 1);
-  CHECK(keys_of(rows[0]) == k_history_fields);
-  CHECK(int_of(rows[0], "seq") == 7);
-  CHECK(text_of(rows[0], "label") == "old-h");
-  CHECK(int_of(rows[0], "ran_ms") == 40);
-  CHECK(is_null(rows[0], "run_limit_ms"));
-  CHECK(is_null(rows[0], "wait_limit_ms"));
-
-  auto const text = run_history(arena, "v2_text", {});
-  CHECK(text.code == 0);
-  REQUIRE(lines_of(text.out).size() == 2);
-  CHECK(rows_of(run_history(arena, "v2_since", {"--since", "1h", "--json"})).empty());
-
+  for (auto const& flags : std::vector<std::vector<std::string>>{{"--json"}, {}, {"--since", "1h"}}) {
+    auto const run = run_history(arena, "behind", flags);
+    CHECK(run.code == 7);
+    CHECK(run.out.empty());
+    CHECK(run.err.contains("older than this binary"));
+  }
   CHECK(bytes_of(store_path(arena)) == before);
-  auto opened = planar::db::connection::open_read_only(store_path(arena).string());
-  REQUIRE(opened.has_value());
-  CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() == 2);
 }
 
 TEST_CASE("queue history: reading changes nothing in the store", "[cmd][watch][queue][hq-watch-history]") {
@@ -1826,83 +1854,22 @@ TEST_CASE("queue history: format characters, long values and display width are h
 
 // ---- errors ----------------------------------------------------------------
 
-TEST_CASE("queue history: a store from a newer release is refused with exit 7 naming both versions",
-          "[cmd][watch][queue][hq-watch-history]") {
-  auto const arena = parity::make_arena("wh_incompat");
+TEST_CASE("queue history: a planar.db ahead of this binary exits 7 naming both versions", "[cmd][watch][queue][qp-watch-queue]") {
+  auto const arena = parity::make_arena("wh_ahead");
   {
     auto conn = open_store(arena);
   }
-  auto const head = planar::db::agent::agent_schema_version();
-  {
-    auto raw = planar::db::connection::open(store_path(arena).string());
-    REQUIRE(raw.has_value());
-    REQUIRE(
-        raw->execute(std::format("insert into agent_schema_migrations (version, compat, description) values ({}, {}, 'probe')",
-                                 head + 2, head + 1))
-            .has_value());
-  }
+  make_ahead(arena);
   auto const before = bytes_of(store_path(arena));
 
-  auto const run = run_history(arena, "incompat_json");
+  auto const run = run_history(arena, "ahead_json");
   CHECK(run.code == 7);
   CHECK(run.out.empty());
-  CHECK(run.err.contains(std::to_string(head + 1)));
-  CHECK(run.err.contains(std::format("is {}", head)));
-  CHECK(run_history(arena, "incompat_text", {}).code == 7);
-  CHECK(run_history(arena, "incompat_since", {"--since", "1h"}).code == 7);
+  CHECK(run.err.contains(std::to_string(planar::db::embedded_max() + 1)));
+  CHECK(run.err.contains(std::format("({})", planar::db::embedded_max())));
+  CHECK(run_history(arena, "ahead_text", {}).code == 7);
+  CHECK(run_history(arena, "ahead_since", {"--since", "1h"}).code == 7);
   CHECK(bytes_of(store_path(arena)) == before);
-}
-
-TEST_CASE("queue history: a database that is not an agent store, or not a database, is refused with exit 1",
-          "[cmd][watch][queue][hq-watch-history]") {
-  SECTION("a SQLite file with other tables") {
-    auto const arena = parity::make_arena("wh_foreign");
-    {
-      auto raw = planar::db::connection::open(store_path(arena).string());
-      REQUIRE(raw.has_value());
-      REQUIRE(raw->execute("create table plans (id integer primary key)").has_value());
-    }
-    auto const run = run_history(arena, "foreign_json");
-    CHECK(run.code == 1);
-    CHECK(run.out.empty());
-    CHECK(run.err.contains("not an agent store"));
-  }
-  SECTION("a file that is not SQLite") {
-    auto const arena = parity::make_arena("wh_garbage");
-    {
-      std::ofstream out(store_path(arena), std::ios::binary);
-      out << "this is not a database, and it is long enough to have a header to refuse\n";
-    }
-    auto const run = run_history(arena, "garbage_json");
-    CHECK(run.code == 1);
-    CHECK(run.out.empty());
-    CHECK_FALSE(run.err.empty());
-  }
-}
-
-// ---- the main database is not needed ---------------------------------------
-
-TEST_CASE("queue history: works with no main database to locate", "[cmd][watch][queue][hq-watch-history]") {
-  auto const arena = parity::make_arena("wh_nomain");
-  {
-    auto       conn = open_store(arena);
-    ended_spec spec;
-    spec.cwd = "/w/only";
-    spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
-    seed_ended(conn, spec);
-  }
-  auto const env = without_main_database(arena);
-
-  auto const listing = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "history", "--json"}, arena.cpp_root,
-                                          "nomain_history", env);
-  INFO("stderr:\n" << listing.err);
-  auto const rows = rows_of(listing);
-  REQUIRE(rows.size() == 1);
-  CHECK(text_of(rows[0], "cwd") == "/w/only");
-  auto const text = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "history", "--since", "1h"}, arena.cpp_root,
-                                       "nomain_text", env);
-  CHECK(text.code == 0);
-  REQUIRE(lines_of(text.out).size() == 2);
 }
 
 } // namespace

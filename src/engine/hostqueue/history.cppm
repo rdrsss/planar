@@ -168,7 +168,7 @@ export enum class successor_result : std::uint8_t {
 /// @brief Records `successor_seq` on the history row of `seq`, replacing any
 /// earlier successor. Used when a reaped waiter re-enqueues (tech spec 647 §
 /// Waiting and claiming a turn, outcome `abandoned`).
-/// @param conn An open agent database.
+/// @param conn An open `planar.db`.
 /// @param seq The ended entry.
 /// @param successor_seq The entry that replaced it.
 /// @return Whether a row was updated, or the SQLite failure.
@@ -246,7 +246,7 @@ export struct expired_history {
 /// touched: pass the returned paths to `remove_log_files` after the
 /// enclosing transaction commits, so a rollback never leaves a kept row
 /// without its log.
-/// @param conn An open agent database.
+/// @param conn An open `planar.db`.
 /// @param retention_days How many days rows are kept; zero keeps nothing
 /// older than `now`. Must not be negative.
 /// @param now The current wall clock, ms since the epoch.

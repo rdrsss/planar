@@ -22,7 +22,7 @@ export auto add(CLI::App& root) -> void {
   run->add_flag("--detach")
       ->description(
           "Return a ticket at once and let a detached submitter wait, run the command and record its history: print the "
-          "sequence number and the path of the output file <agent-db-directory>/queue-logs/<seq>.log, one per line, and "
+          "sequence number and the path of the output file <planar-db-directory>/queue-logs/<seq>.log, one per line, and "
           "exit 0; exit 125 when no ticket could be issued");
   run->add_option("--timeout")
       ->description(

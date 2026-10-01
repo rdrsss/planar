@@ -23,14 +23,13 @@ working in that area. `AGENTS.md` is a symlink to this file.
 
 ## Binaries and their write surfaces
 
-Each binary has a disjoint write surface over the shared database, with one
-separate store beside it (below). The boundary is each binary's verb set,
+Each binary has a disjoint write surface over the shared database. The boundary is each binary's verb set,
 not a runtime ACL.
 
 | Binary | Role | Writes |
 |--------|------|--------|
 | `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. |
-| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, the `routing_dispatch_*` tables, and `tasks.status` as part of a coordinated operation. Also the separate agent database (`~/.planar/agent.db`, `PLANAR_AGENT_DB`): `queue_entries` and `queue_history`, through `queue run`. |
+| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, the `routing_dispatch_*` tables, and `tasks.status` as part of a coordinated operation. Also the host-queue tables `queue_entries`, `queue_history` and `queue_schema`, through `queue run`. |
 | `planar-watch` | Read-only viewer | Nothing. Opens SQLite with `mode=ro`. |
 | `planar-ext` | Jira and GitHub Issues adapters | `external_links`, `external_systems`, `sync_events` only, enforced by a `sqlite3_set_authorizer` allowlist. Read-only on planning tables. |
 | `planar-execute` | Workflow entry point and client | Nothing. Holds no SQLite handle; reaches state by shelling `planar` and `planar-agent`. |
@@ -38,18 +37,41 @@ not a runtime ACL.
 - `planar-agent`, `planar-watch` and `planar-ext` each have a
   `capability.t.cpp` that locks the boundary. `planar`'s surface is pinned by
   `src/cmd/planar/parity.t.cpp` and the `schema` catalog.
-- **`planar-agent` executes commands and owns a second store (plan 1080,
-  accepted by the operator on 2026-09-28).** `planar-agent queue run --
-  <command>` is the host-wide build and test queue: it waits in a queue shared
-  by every project on the host, runs the command it was given in the caller's
-  directory with the caller's environment, and exits with the command's
-  status. Its state lives in the agent database, `~/.planar/agent.db`
-  (override `PLANAR_AGENT_DB`), a separate SQLite file with its own migration
-  stream (`migrations-agent/`) and version table. Only `planar-agent` writes
-  `queue_entries` and `queue_history`. `planar-agent` opens that file without
-  opening `planar.db`, so `queue run` works while the main schema is locked.
-  The queue is a coordination aid and not a security boundary; `queue` is a
-  domain of `planar-agent` and never of `planar`.
+- **`planar-agent` executes commands and owns the host queue (plan 1080,
+  accepted by the operator on 2026-09-28; folded into `planar.db` by plan
+  1089).** `planar-agent queue run -- <command>` is the host-wide build and
+  test queue: it waits in a queue shared by every project on the host, runs
+  the command it was given in the caller's directory with the caller's
+  environment, and exits with the command's status. Its state lives in
+  `planar.db` (migration `00040_host_queue`), in its own tables
+  `queue_entries`, `queue_history` and `queue_schema`, behind its own
+  module, so the queue SQL stays separable from the planning SQL. Only
+  `planar-agent` writes those tables. The installer migrates `planar.db` and
+  retires the old `~/.planar/agent.db`.
+  - **Schema tolerance.** `queue` verbs refuse a `planar.db` that is BEHIND
+    the binary at exit 125. They run against one that is AHEAD when the
+    queue's own `queue_schema` check passes (tables and marker present, the
+    marker's `compat` not above this build's, every column the binary reads
+    present). If the check fails the verb refuses at 125 with
+    `queue_schema_incompatible` (ahead) or `queue_schema_foreign` (same
+    version number, different migration). Neither is the exit-7
+    `schema_version_ahead` that every other verb gives. So `queue run` keeps
+    working while the main schema is ahead of this install.
+  - **Claims keep the exact-version rule.** Claims and heartbeats, including
+    the renewal `queue run --claim` performs, still require `planar.db` to
+    be at exactly the binary's version. Against an ahead database
+    `queue run --claim` prints a warning that it cannot renew the claim, the
+    command still runs, and the lease can lapse while it waits or runs. In a
+    migration cycle use the freshly built head binary
+    (`./bin/planar-agent`) for `queue run --claim`, as the rest of the claim
+    ritual already does, or leave out `--claim` and heartbeat separately
+    with the head binary.
+  - `planar-watch` reads the queue views from `planar.db` read-only.
+  - The queue is a coordination aid and not a security boundary; `queue` is
+    a domain of `planar-agent` and never of `planar`.
+  - The agent-database module, `migrations-agent/` and the
+    `PLANAR_AGENT_DB` test pins still exist in the tree until plan 1089's
+    next milestone removes them; no queue verb opens that file.
 - There is no `planar agent <verb>` namespace. Agent observability is on
   `planar-watch`; agent-table writes are on `planar-agent`.
 - The `ext` and `sync` verb domains are on `planar-ext`, not `planar`.
