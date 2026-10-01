@@ -72,13 +72,19 @@ struct outcome {
   int         code = -1;
 };
 
+/// Marks a variable to be removed from the probe's environment, not set.
+const std::string k_unset = "\x01unset";
+
+/// The test seam standing in for the password database's home directory.
+constexpr auto k_passwd_seam = "QUEUE_CONTENTION_PROBE_PASSWD_HOME";
+
 /// Runs the probe with an environment prefix, capturing stdout and stderr.
 auto run_probe(const std::map<std::string, std::string>& env, const std::vector<std::string>& args) -> outcome {
   auto const  out_path = fs::temp_directory_path() /
                          std::format("planar_qcp_capture_{}.txt", std::chrono::steady_clock::now().time_since_epoch().count());
   std::string command  = "env";
   for (auto const& [k, v] : env) {
-    command += std::format(" '{}={}'", k, v);
+    command += v == k_unset ? std::format(" -u '{}'", k) : std::format(" '{}={}'", k, v);
   }
   command += std::format(" '{}'", PLANAR_QCP_BIN);
   for (auto const& arg : args) {
@@ -274,8 +280,9 @@ TEST_CASE("queue_contention_probe R4 run rebuilds a table inside one write trans
 
   auto const missing = run_probe({{"HOME", (root / "home").string()}},
                                  {"--source", source.string(), "--dest", copy.string(), "--run", "r4", "--duration-s", "3"});
-  CHECK(missing.code == 1);
+  CHECK(missing.code == 2); // a usage error, found before any backup is taken
   CHECK(missing.output.contains("--rebuild-table"));
+  CHECK_FALSE(fs::exists(root / "out"));
 
   auto const result = run_probe({{"HOME", (root / "home").string()}},
                                 {"--source", source.string(), "--dest", copy.string(), "--run", "r4", "--duration-s", "5",
@@ -321,4 +328,146 @@ TEST_CASE("queue_contention_probe R5 run starts the reader on the copy, stops it
   }
   CHECK(fs::weakly_canonical(reader_db) == fs::weakly_canonical(copy));
   CHECK(fs::weakly_canonical(reader_db) != fs::weakly_canonical(source));
+}
+
+// ---- home resolution, --report vetting and exit statuses (review iteration 1) ----
+
+TEST_CASE(
+    "queue_contention_probe refuses a destination under .planar when HOME is unset or empty, using the password-database home",
+    "[queue_contention_probe][safety]") {
+  auto const root   = make_scratch("nohome");
+  auto const source = make_source(root / "src");
+  auto const hash   = planar::sha256::hex(read_file(source));
+  // The fake home stands in for the password database's home through the seam.
+  fs::create_directories(root / "fakehome" / ".planar");
+  fs::create_directory_symlink(root / "fakehome" / ".planar", root / "alias");
+  auto const before = listing(root / "fakehome" / ".planar");
+
+  for (auto const& home : {k_unset, std::string{}}) {
+    INFO("HOME is " << (home == k_unset ? "unset" : "empty"));
+    auto const direct =
+        run_probe({{"HOME", home}, {k_passwd_seam, (root / "fakehome").string()}},
+                  {"--source", source.string(), "--dest", (root / "fakehome" / ".planar" / "nohome.db").string(), "--run", "r1"});
+    require_refusal(direct, ".planar", source, hash, before, root / "fakehome" / ".planar");
+    // Reached through a symlink into the fake .planar.
+    auto const linked =
+        run_probe({{"HOME", home}, {k_passwd_seam, (root / "fakehome").string()}},
+                  {"--source", source.string(), "--dest", (root / "alias" / "nohome.db").string(), "--run", "r1"});
+    require_refusal(linked, ".planar", source, hash, before, root / "fakehome" / ".planar");
+  }
+}
+
+TEST_CASE("queue_contention_probe refuses to run when no home directory can be determined", "[queue_contention_probe][safety]") {
+  auto const root   = make_scratch("nohomeatall");
+  auto const source = make_source(root / "src");
+  auto const hash   = planar::sha256::hex(read_file(source));
+  auto const before = listing(root);
+
+  // HOME is unset and the password-database lookup yields nothing (the seam
+  // set to empty): the .planar refusal cannot be evaluated, so the run is refused.
+  auto const result = run_probe({{"HOME", k_unset}, {k_passwd_seam, ""}},
+                                {"--source", source.string(), "--dest", (root / "out" / "c.db").string(), "--run", "r1"});
+  require_refusal(result, "home directory", source, hash, before, root);
+  CHECK_FALSE(fs::exists(root / "out"));
+}
+
+TEST_CASE("queue_contention_probe vets --report before the backup and never truncates what it refuses",
+          "[queue_contention_probe][safety]") {
+  auto const root   = make_scratch("report");
+  auto const source = make_source(root / "src");
+  auto const hash   = planar::sha256::hex(read_file(source));
+  auto const home   = root / "home";
+  fs::create_directories(home / ".planar");
+  fs::create_directories(root / "elsewhere");
+  auto const fake_live = home / ".planar" / "planar.db";
+  auto const other_db  = root / "elsewhere" / "other.db";
+  {
+    std::ofstream(fake_live) << "precious live";
+    std::ofstream(other_db) << "precious other";
+    std::ofstream(root / "elsewhere" / "notes.txt") << "precious notes";
+  }
+  auto const                               dest = root / "out" / "copy.db";
+  std::map<std::string, std::string> const env{
+      {"HOME", home.string()}, {"PLANAR_DB", other_db.string()}, {k_passwd_seam, home.string()}};
+  auto const attempt = [&](const fs::path& report) {
+    return run_probe(env, {"--source", source.string(), "--dest", dest.string(), "--run", "r1", "--duration-s", "2", "--report",
+                           report.string()});
+  };
+  auto const untouched = [&](const outcome& result, std::string_view reason) {
+    INFO(result.output);
+    CHECK(result.code == 2);
+    CHECK(result.output.contains("refused"));
+    CHECK(result.output.contains(reason));
+    CHECK_FALSE(fs::exists(root / "out")); // vetted before the backup began
+    CHECK(planar::sha256::hex(read_file(source)) == hash);
+  };
+
+  SECTION("under the home's .planar") {
+    untouched(attempt(fake_live), ".planar");
+    CHECK(read_file(fake_live) == "precious live");
+    untouched(attempt(home / ".planar" / "new-report.json"), ".planar");
+    CHECK_FALSE(fs::exists(home / ".planar" / "new-report.json"));
+  }
+  SECTION("resolving to the source") {
+    untouched(attempt(source), "source");
+    CHECK(planar::sha256::hex(read_file(source)) == hash);
+  }
+  SECTION("equal to $PLANAR_DB") {
+    untouched(attempt(other_db), "PLANAR_DB");
+    CHECK(read_file(other_db) == "precious other");
+  }
+  SECTION("an existing file that is not a prior report") {
+    untouched(attempt(root / "elsewhere" / "notes.txt"), "not a report");
+    CHECK(read_file(root / "elsewhere" / "notes.txt") == "precious notes");
+  }
+  SECTION("the destination copy itself") {
+    untouched(attempt(dest), "destination copy");
+  }
+  SECTION("an existing path that is not a regular file") {
+    untouched(attempt(root / "elsewhere"), "regular file");
+  }
+}
+
+TEST_CASE("queue_contention_probe overwrites only a prior report named by --report", "[queue_contention_probe][run]") {
+  auto const root   = make_scratch("rereport");
+  auto const source = make_source(root / "src");
+  auto const report = root / "report.json";
+  {
+    std::ofstream(report) << R"({"run":"r1","verdict":"within_bounds"})" << "\n";
+  }
+  auto const result = run_probe({{"HOME", (root / "home").string()}, {k_passwd_seam, (root / "home").string()}},
+                                {"--source", source.string(), "--dest", (root / "out" / "c.db").string(), "--run", "r1",
+                                 "--duration-s", "2", "--submitters", "2", "--poll-ms", "200", "--report", report.string()});
+  INFO(result.output);
+  REQUIRE(result.code == 0);
+  CHECK(read_file(report).contains(R"("copy":{"path")"));
+}
+
+TEST_CASE("queue_contention_probe exits non-zero when its workers fail, even for an informational run",
+          "[queue_contention_probe][run]") {
+  auto const root   = make_scratch("fatal");
+  auto const source = make_source(root / "src", true);
+  {
+    // A trigger that refuses every insert makes each submitter's enqueue fail
+    // with a non-busy error: a fatal worker.
+    auto conn = planar::db::connection::open(source.string());
+    REQUIRE(conn.has_value());
+    REQUIRE(
+        conn->execute("create trigger refuse_enqueue before insert on queue_entries begin select raise(abort, 'refused'); end")
+            .has_value());
+  }
+  auto const env =
+      std::map<std::string, std::string>{{"HOME", (root / "home").string()}, {k_passwd_seam, (root / "home").string()}};
+
+  auto const informational = run_probe(env, {"--source", source.string(), "--dest", (root / "o2.db").string(), "--run", "r2",
+                                             "--duration-s", "2", "--submitters", "2", "--poll-ms", "200"});
+  INFO(informational.output);
+  CHECK(informational.output.contains(R"("verdict":"error")"));
+  CHECK(informational.code == 1);
+
+  auto const bounded = run_probe(env, {"--source", source.string(), "--dest", (root / "o1.db").string(), "--run", "r1",
+                                       "--duration-s", "2", "--submitters", "2", "--poll-ms", "200"});
+  INFO(bounded.output);
+  CHECK(bounded.output.contains(R"("verdict":"breached")"));
+  CHECK(bounded.code == 3);
 }
