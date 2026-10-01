@@ -207,7 +207,7 @@ def case_fail_closed(scratch):
     conn.close()
     fail_closed(scratch, "no sqlite_sequence table", no_seq)
     code, _out, err = run(no_seq)
-    check("sqlite_sequence" in err, f"the no-sqlite_sequence refusal names the table: {err!r}")
+    check("has no sqlite_sequence table" in err, f"the refusal says the sqlite_sequence table is missing: {err!r}")
 
     text = os.path.join(scratch, "text.db")
     with open(text, "w", encoding="utf-8") as handle:
