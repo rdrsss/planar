@@ -826,6 +826,7 @@ qr_trap_call() {
       on_err() { printf "\n==> install failed during: queue steps (line %s, exit %s)\n" "$2" "$1" >&2; exit "$1"; }
       trap '"'"'on_err $? $LINENO'"'"' ERR
       source "$QR_LIB"
+      if [[ -n "${QR_OVERRIDE_PY:-}" ]]; then QUEUE_RETIRE_PY="$QR_OVERRIDE_PY"; fi
       "$@" || exit $?
     ' qr-trap-call "$@") >"$QR_CASE/out" 2>"$QR_CASE/err"
 }
@@ -857,6 +858,31 @@ qr_trap_call IGNORE_LIVE_QUEUE=1 queue_live_guard re-check || fail "the override
 qr_no_install_failed "the guard override"
 qr_trap_call IGNORE_LIVE_QUEUE=1 queue_retire_store || fail "retire failed under the ERR trap: $(cat "$QR_CASE/err")"
 qr_no_install_failed "retire"
+
+# Refusals report through the seam's own message, never through on_err: a
+# failed migration, and retire of a store whose old range cannot be read.
+qr_setup trap_migrate_fails
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply 1 125 "$(qr_json_error schema_version_behind)"
+printf '1\n' > "$QR_S/planar.code"
+printf 'boom' > "$QR_S/planar.err"
+if qr_trap_call queue_probe_migrate; then fail "a failed migration did not abort under the ERR trap"; fi
+grep -Fq 'planar.db migration failed: boom' "$QR_CASE/err" || fail "the migration failure under the ERR trap lost its message: $(cat "$QR_CASE/err")"
+qr_no_install_failed "a failed migration"
+# A classifier that crashes is a failed probe, reported by the seam.
+qr_setup trap_classifier_crash
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply 1 1 "$(qr_json_error not_found)"
+printf 'raise SystemExit(5)\n' > "$QR_CASE/crash.py"
+if qr_trap_call QR_OVERRIDE_PY="$QR_CASE/crash.py" queue_probe_migrate; then fail "a crashed probe classifier did not abort"; fi
+grep -Fq 'queue store probe: failed' "$QR_CASE/out" || fail "a crashed classifier was not a failed probe: $(cat "$QR_CASE/out")"
+qr_no_install_failed "a crashed probe classifier"
+QR_S=""
+qr_retire_setup trap_oldmax_fails
+qr_store "insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) values (3, 'exited', '/', '[]', 1, 2, 0);"
+if qr_trap_call queue_retire_store; then fail "retire accepted a store with no sequence row under the ERR trap"; fi
+grep -Fq 'NOT retired' "$QR_CASE/err" || fail "the retire refusal under the ERR trap lost its message: $(cat "$QR_CASE/err")"
+qr_no_install_failed "a refused retire"
 
 # The reader's catch-all: an unforeseen exception while judging rows must
 # exit non-zero (2), never 0, so the guard refuses. A wrapper runs the real
