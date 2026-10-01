@@ -888,3 +888,17 @@ if(TARGET planar_cmd_planar_tests)
     "${CMAKE_CURRENT_SOURCE_DIR}/..")
   target_link_libraries(planar_cmd_planar_tests PRIVATE glaze::glaze)
 endif()
+
+# The counter-reset log helper (plan 1089, task qp-migration; tech spec 656
+# § Counter resets). `scripts/queue-logs-after-reset.py` is what
+# migrations/README.md § Host-queue rollback recovery tells an operator to
+# run after a rollback, restore or re-init rewinds `queue_entries`'
+# AUTOINCREMENT counter. A plain `add_test`, not a Catch2 case: the helper is
+# a Python script, and its runner builds every fixture in a scratch
+# directory with Python's own `sqlite3` module. Python is already a build
+# dependency (Centurion's configure; README.md § Prerequisites).
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME queue_logs_after_reset_helper
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/queue-logs-after-reset.test.py"
+    "${PROJECT_SOURCE_DIR}/scripts/queue-logs-after-reset.py")
+set_tests_properties(queue_logs_after_reset_helper PROPERTIES LABELS "queue;scripts")

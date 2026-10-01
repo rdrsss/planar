@@ -133,6 +133,56 @@ added: the older schema cannot represent either, and restoring a constraint by
 text edit (below) would not re-check existing rows. Export and dispose of those
 rows before retrying; the refusal changes nothing, so a retry is safe.
 
+### Host-queue rollback recovery
+
+Migration 00040 (plan 1089) puts the host-wide build and test queue's
+tables, `queue_entries` and `queue_history`, and their compatibility marker
+`queue_schema` into `planar.db`, and seeds `queue_entries`' AUTOINCREMENT
+counter at 1000000. Its down refuses, with
+`CHECK constraint failed: m00040_down_refused_live_queue_entries`, while
+`queue_entries` has any row: each row is a command that is waiting or running
+now, and dropping the table under its submitter would orphan it. The
+refusal changes nothing, so a retry is safe. Roll back in this order:
+
+1. **Drain the queue.** Let the waiting and running commands finish, or
+   cancel each one with `planar-agent queue cancel <seq>` (with the binary
+   that matches the database). `planar-watch queue` lists what is left.
+2. **Stop old submitters.** Make sure no `planar-agent queue run` from the
+   build you are leaving is still polling: a submitter started after the
+   drain would insert a new row.
+3. **Run the down.** With `queue_entries` empty, it drops `queue_schema`,
+   `queue_history` and `queue_entries`, which also removes the
+   `sqlite_sequence` row, and deletes version 40 from `schema_migrations`.
+   **`queue_history` is dropped with it**: the record of every ended run is
+   lost. Export it first if you need it.
+4. **Archive the logs a reset counter would collide with.** Re-applying the
+   migration (or restoring a backup, or re-initializing) starts the counter
+   again from the restored `sqlite_sequence` value, or from 1000000 when that
+   row is absent. Detached logs are created with `O_EXCL`, so the first
+   detached run whose number names an existing `<seq>.log` refuses at exit
+   125 rather than overwrite what may be the last record of a run. Run
+
+   ```bash
+   python3 scripts/queue-logs-after-reset.py <planar.db>          # list
+   python3 scripts/queue-logs-after-reset.py --apply <planar.db>  # archive
+   ```
+
+   against the database the counter now lives in. It opens the database
+   read-only, takes the threshold from it, and lists the logs in that
+   database's log directory (`queue-logs/` beside `planar.db`,
+   `<stem>.queue-logs/` for any other file name) numbered above it. With
+   `--apply` it moves them into `<log-dir>/reset-archive-<UTC timestamp>/`
+   (mode 0700) and prints that path. It never deletes a log, and retention
+   never prunes an archive: delete one by hand once you no longer need it.
+   It fails closed, changing nothing, on a file it cannot read, a file that
+   is not a database, or one with no `sqlite_sequence` table.
+
+Two databases in one directory whose names differ only in their extension
+(`x.db` and `x.sqlite`) share `x.queue-logs/`. A log collision between them
+is not a counter reset: rename one of the databases instead of running the
+helper, which could archive logs the other database's runs are still
+writing.
+
 ### Relaxing a constraint on a foreign-key parent table
 
 The usual table rebuild is unsafe for a table other tables REFERENCE. The
