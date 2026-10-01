@@ -2,19 +2,19 @@
 // hq-watch-queue; tech spec 647 § CLI surface and § Liveness; test spec 649
 // scenarios citing task:hq-watch-queue).
 //
+// Plan 1089 (task qp-watch-queue; tech spec 656 § planar-watch; test spec 658):
+// the queue tables live in the arena's `planar.db`, which the views read
+// through planar-watch's ordinary read-only main handle and its exit-7 rules.
+//
 // Every case runs the BUILT `planar-watch` through `run_pinned`, in an arena
-// whose `PLANAR_AGENT_DB` is its own scratch store, so nothing can reach the
+// whose `PLANAR_DB` is its own scratch database, so nothing can reach the
 // operator's `~/.planar`. `--json` output is parsed with the DOM parser and
 // asserted field by field; a substring check would pass for a field renamed or
-// moved. The workflow case drives a REAL detached submitter of the built
-// `planar-agent` (`queue run --detach`); the state cases seed the store
-// through the engine (`enqueue`, `poll`, `begin_terminate`) the way the
-// engine's own suites do, because a dead, stale or nested entry cannot be
-// produced by a well-behaved submitter.
-//
-// Synchronisation is by FIFOs and files, not sleeps. Every detached submitter
-// a case starts is recorded by pid and start time and stopped on the way out
-// of the case, failing or not.
+// moved. Every case seeds the database through the engine (`enqueue`, `poll`,
+// `end_entry`, `begin_terminate`) the way the engine's own suites do, because
+// a dead, stale or nested entry cannot be produced by a well-behaved
+// submitter. The seeding connection is a scratch `planar.db` migrated from the
+// embedded MAIN chain, never the retired agent chain.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -26,11 +26,8 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
 import planar.db.migrate;
-import planar.db.migrations_agent;
 import planar.json_dom;
-import planar.cmd.planar_watch.agentstore;
 import planar.cmd.planar_watch.handlers.queue.history;
 import planar.process.identity;
 import planar.engine.hostqueue;
@@ -59,28 +56,19 @@ auto watch_bin() -> fs::path {
   return fs::path{PLANAR_CPP_BIN};
 }
 
-auto agent_bin() -> fs::path {
-  return fs::path{PLANAR_AGENT_CPP_BIN};
-}
-
-template <class Predicate> auto await(Predicate&& predicate, std::chrono::milliseconds budget = k_budget) -> bool {
-  auto const deadline = std::chrono::steady_clock::now() + budget;
-  while (std::chrono::steady_clock::now() <= deadline) {
-    if (predicate()) {
-      return true;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  return predicate();
-}
-
+/// @brief The arena's `planar.db`: the file `PLANAR_DB` names, and the only
+/// database the views open.
 auto store_path(const parity::arena& arena) -> fs::path {
-  return arena.cpp_root / "agent.db";
+  return arena.cpp_root / "planar.db";
 }
 
+/// @brief A read-write connection to the arena's `planar.db`, created and
+/// migrated to the head of the embedded MAIN chain, which carries the queue
+/// tables (migration 00040).
 auto open_store(const parity::arena& arena) -> planar::db::connection {
-  auto opened = planar::db::agent::open_agent_db_at(store_path(arena));
+  auto opened = planar::db::connection::open(store_path(arena).string());
   REQUIRE(opened.has_value());
+  REQUIRE(planar::db::apply_all(*opened).has_value());
   return std::move(*opened);
 }
 
@@ -198,73 +186,6 @@ auto token_of(std::string_view line, std::size_t index) -> std::string {
   return tokens[index];
 }
 
-/// @brief A FIFO the test holds open read-write; a command reading it blocks
-/// until `release()`.
-struct gate {
-  fs::path path;
-  int      fd       = -1;
-  bool     released = false;
-
-  explicit gate(fs::path where) : path(std::move(where)) {
-    REQUIRE(::mkfifo(path.c_str(), 0600) == 0);
-    fd = ::open(path.c_str(), O_RDWR);
-    REQUIRE(fd >= 0);
-  }
-  gate(const gate&)            = delete;
-  gate& operator=(const gate&) = delete;
-  ~gate() {
-    release();
-    if (fd >= 0) {
-      ::close(fd);
-    }
-  }
-  void release() {
-    if (!released && fd >= 0) {
-      released = true;
-      static_cast<void>(::write(fd, "x\n", 2));
-    }
-  }
-};
-
-/// @brief Stops the detached submitters a case recorded when it leaves scope:
-/// SIGTERM to a recorded pid whose start time still matches, SIGKILL only if
-/// it outlives a bounded wait. Never signals by name, and never pid 0, 1 or a
-/// group.
-struct submitter_guard {
-  struct target {
-    std::int64_t pid     = 0;
-    std::int64_t started = 0;
-  };
-  std::vector<target> targets;
-
-  submitter_guard()                                  = default;
-  submitter_guard(const submitter_guard&)            = delete;
-  submitter_guard& operator=(const submitter_guard&) = delete;
-
-  void record(std::int64_t pid, std::int64_t started) {
-    targets.push_back({pid, started});
-  }
-  static auto still_mine(const target& t) -> bool {
-    if (t.pid <= 1) {
-      return false;
-    }
-    auto const now = ident::process_start_time(t.pid);
-    return now && now->has_value() && static_cast<std::int64_t>(**now) == t.started;
-  }
-  ~submitter_guard() {
-    for (auto const& t : targets) {
-      if (!still_mine(t)) {
-        continue;
-      }
-      ::kill(static_cast<::pid_t>(t.pid), SIGTERM);
-      if (!await([&] { return !still_mine(t); }, std::chrono::seconds(10)) && still_mine(t)) {
-        ::kill(static_cast<::pid_t>(t.pid), SIGKILL);
-        await([&] { return !still_mine(t); }, std::chrono::seconds(10));
-      }
-    }
-  }
-};
-
 auto sh_command(std::string script, std::vector<std::string> args = {}) -> std::vector<std::string> {
   std::vector<std::string> command{"sh", "-c", std::move(script), "sh"};
   for (auto& arg : args) {
@@ -281,45 +202,6 @@ void write_config(const parity::arena& arena, std::string_view text) {
     out << text;
   }
   fs::rename(temp, path);
-}
-
-/// @brief `planar-agent queue run --detach <flags> -- <command>`: the sequence
-/// number of the ticket it prints.
-auto submit_detached(const parity::arena& arena, std::string_view tag, const std::vector<std::string>& command,
-                     std::vector<std::string> flags, submitter_guard& guard) -> std::int64_t {
-  std::vector<std::string> args{"queue", "run", "--detach"};
-  for (auto& flag : flags) {
-    args.push_back(std::move(flag));
-  }
-  args.emplace_back("--");
-  for (auto const& word : command) {
-    args.push_back(word);
-  }
-  auto const run = parity::run_pinned(agent_bin(), args, arena.cpp_root, tag);
-  INFO("stderr:\n" << run.err);
-  REQUIRE(run.code == 0);
-  auto const first = run.out.find('\n');
-  REQUIRE(first != std::string::npos);
-  std::int64_t seq = 0;
-  REQUIRE(std::from_chars(run.out.data(), run.out.data() + first, seq).ec == std::errc{});
-
-  auto conn  = open_store(arena);
-  auto found = hq::find(conn, seq);
-  REQUIRE(found.has_value());
-  REQUIRE(found->has_value());
-  guard.record((*found)->pid, (*found)->pid_started);
-  return seq;
-}
-
-void await_state(const parity::arena& arena, std::int64_t seq, hq::entry_state state) {
-  REQUIRE(await([&] {
-    auto opened = planar::db::agent::open_agent_db_at(store_path(arena));
-    if (!opened) {
-      return false;
-    }
-    auto found = hq::find(*opened, seq);
-    return found && found->has_value() && (*found)->state == state;
-  }));
 }
 
 // ---- engine seeding -------------------------------------------------------
@@ -397,28 +279,32 @@ void start_entry(planar::db::connection& conn, std::int64_t seq, std::int64_t sl
 // Empty: a missing store is an empty queue.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("queue view: a missing store lists nothing, exits 0 and creates no file", "[cmd][watch][queue][hq-watch-queue]") {
+TEST_CASE("queue view: a missing planar.db fails like every other viewer verb and creates no file",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  // No exemption any more: the queue views follow the viewer's missing-database
+  // rule, so a missing planar.db is the same error `ps` gives, not an empty
+  // queue.
   auto const arena = parity::make_arena("wq_missing");
   REQUIRE_FALSE(fs::exists(store_path(arena)));
 
+  auto const baseline = parity::run_pinned(watch_bin(), std::vector<std::string>{"ps"}, arena.cpp_root, "missing_ps");
+  REQUIRE(baseline.code != 0);
+
   auto const json_run = run_queue(arena, "missing_json");
-  INFO("stderr:\n" << json_run.err);
-  CHECK(json_run.code == 0);
-  auto const doc = parse_document(json_run.out);
-  REQUIRE(doc.kind == json::json_kind::array);
-  CHECK(doc.array.empty());
+  CHECK(json_run.code == baseline.code);
+  CHECK(json_run.err == baseline.err);
+  CHECK(json_run.out.empty());
 
   auto const text_run = run_queue(arena, "missing_text", false);
-  INFO("stderr:\n" << text_run.err);
-  CHECK(text_run.code == 0);
+  CHECK(text_run.code == baseline.code);
+  CHECK(text_run.err == baseline.err);
   CHECK(text_run.out.empty());
-  CHECK(text_run.err.empty());
 
   CHECK_FALSE(fs::exists(store_path(arena)));
   CHECK_FALSE(fs::exists(store_path(arena).string() + "-wal"));
 }
 
-TEST_CASE("queue view: a store with no entries lists nothing", "[cmd][watch][queue][hq-watch-queue]") {
+TEST_CASE("queue view: a planar.db with no entries lists nothing", "[cmd][watch][queue][qp-watch-queue]") {
   auto const arena = parity::make_arena("wq_noentries");
   {
     auto conn = open_store(arena);
@@ -437,22 +323,29 @@ TEST_CASE("queue view: a store with no entries lists nothing", "[cmd][watch][que
 TEST_CASE("queue view: one running and two waiting entries list in order with their columns",
           "[cmd][watch][queue][hq-watch-queue]") {
   auto const arena = parity::make_arena("wq_workflow");
-  write_config(arena, "[queue]\npoll_interval = \"100ms\"\n");
-  gate            hold(arena.cpp_root / "hold.fifo");
-  submitter_guard guard;
+  auto const hold  = arena.cpp_root / "hold.fifo";
 
-  // A real detached holder, then a real detached waiter, then a waiter another
-  // directory submitted (seeded through the engine: a run is pinned to one
-  // working directory).
-  auto const holder =
-      submit_detached(arena, "holder", sh_command("read x < \"$1\"", {hold.path.string()}), {"--label", "holder"}, guard);
-  await_state(arena, holder, hq::entry_state::running);
-  auto const   waiter = submit_detached(arena, "waiter", sh_command("exit 0"),
-                                        {"--label", "waiter", "--vendor", "codex", "--role", "tester"}, guard);
+  // A running holder, a waiter with a vendor, role and label, and a waiter
+  // another directory submitted. All three are seeded through the engine: a
+  // dead-or-alive submitter is this test process, and a run is pinned to one
+  // working directory.
+  std::int64_t holder = 0;
+  std::int64_t waiter = 0;
   std::int64_t other  = 0;
   {
-    auto conn = open_store(arena);
-    other     = enqueue_or_fail(conn, alive_request("/work/other", {"make", "test"}));
+    auto conn         = open_store(arena);
+    auto holder_req   = alive_request((arena.cpp_root / "proj").string(), sh_command("read x < \"$1\"", {hold.string()}));
+    holder_req.label  = "holder";
+    holder_req.vendor = std::nullopt;
+    holder_req.role   = std::nullopt;
+    holder            = enqueue_or_fail(conn, holder_req);
+    start_entry(conn, holder, 1);
+    auto waiter_req   = alive_request((arena.cpp_root / "proj").string(), sh_command("exit 0"));
+    waiter_req.label  = "waiter";
+    waiter_req.vendor = "codex";
+    waiter_req.role   = "tester";
+    waiter            = enqueue_or_fail(conn, waiter_req);
+    other             = enqueue_or_fail(conn, alive_request("/work/other", {"make", "test"}));
   }
 
   auto const rows = rows_of(run_queue(arena, "workflow_json"));
@@ -471,8 +364,8 @@ TEST_CASE("queue view: one running and two waiting entries list in order with th
   CHECK(int_of(rows[0], "ran_ms") >= 0);
   CHECK(int_of(rows[0], "waited_ms") >= 0);
   CHECK(int_of(rows[0], "run_limit_ms") > 0);
-  CHECK_FALSE(is_null(rows[0], "log_path"));
-  CHECK(argv_of(rows[0]) == sh_command("read x < \"$1\"", {hold.path.string()}));
+  CHECK(is_null(rows[0], "log_path"));
+  CHECK(argv_of(rows[0]) == sh_command("read x < \"$1\"", {hold.string()}));
   CHECK(text_of(rows[0], "cwd") == (arena.cpp_root / "proj").string());
 
   CHECK(int_of(rows[1], "seq") == waiter);
@@ -530,8 +423,6 @@ TEST_CASE("queue view: one running and two waiting entries list in order with th
   CHECK(lines[3].ends_with("make test"));
   // The argument vector is shell-quoted: the script word is single-quoted.
   CHECK(lines[1].contains("sh -c 'read x < \"$1\"' sh "));
-
-  hold.release();
 }
 
 TEST_CASE("queue view: entries list in sequence order, running or waiting, with positions among the waiting",
@@ -938,39 +829,69 @@ TEST_CASE("queue view: a bare backslash is quoted", "[cmd][watch][queue][hq-view
 }
 
 // ---------------------------------------------------------------------------
-// Errors: an incompatible store, and a file that is not an agent store.
+// Errors: planar.db ahead of or behind the binary exits 7, as every verb does.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("queue view: a store from a newer release is refused with exit 7 naming both versions",
-          "[cmd][watch][queue][hq-watch-queue]") {
-  auto const arena = parity::make_arena("wq_incompat");
+/// @brief Raises `schema_migrations` past this binary's embedded head by one.
+void make_ahead(const parity::arena& arena) {
+  auto raw = planar::db::connection::open(store_path(arena).string());
+  REQUIRE(raw.has_value());
+  REQUIRE(raw->execute(std::format("insert into schema_migrations (version, description) values ({}, 'probe')",
+                                   planar::db::embedded_max() + 1))
+              .has_value());
+}
+
+/// @brief Deletes only the highest `schema_migrations` row: the database is
+/// one migration behind this binary, with every table still in place.
+void make_behind(const parity::arena& arena) {
+  auto raw = planar::db::connection::open(store_path(arena).string());
+  REQUIRE(raw.has_value());
+  REQUIRE(raw->execute("delete from schema_migrations where version = (select max(version) from schema_migrations)").has_value());
+}
+
+TEST_CASE("queue view: a planar.db ahead of this binary exits 7 naming both versions and is left untouched",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  auto const arena = parity::make_arena("wq_ahead");
   {
     auto conn = open_store(arena);
+    enqueue_or_fail(conn, alive_request("/w/only", {"make"}));
   }
-  auto const head = planar::db::agent::agent_schema_version();
-  {
-    auto raw = planar::db::connection::open(store_path(arena).string());
-    REQUIRE(raw.has_value());
-    REQUIRE(
-        raw->execute(std::format("insert into agent_schema_migrations (version, compat, description) values ({}, {}, 'probe')",
-                                 head + 2, head + 1))
-            .has_value());
-  }
+  make_ahead(arena);
   auto const before = bytes_of(store_path(arena));
 
-  auto const run = run_queue(arena, "incompat_json");
+  auto const run = run_queue(arena, "ahead_json");
   CHECK(run.code == 7);
   CHECK(run.out.empty());
-  CHECK(run.err.contains(std::to_string(head + 1)));
-  CHECK(run.err.contains(std::format("is {}", head)));
-  auto const text = run_queue(arena, "incompat_text", false);
-  CHECK(text.code == 7);
+  CHECK(run.err.contains(std::to_string(planar::db::embedded_max() + 1)));
+  CHECK(run.err.contains(std::format("({})", planar::db::embedded_max())));
+  CHECK(run_queue(arena, "ahead_text", false).code == 7);
   CHECK(bytes_of(store_path(arena)) == before);
 }
 
-TEST_CASE("queue view: a database that is not an agent store, or not a database, is refused with exit 1",
-          "[cmd][watch][queue][hq-watch-queue]") {
-  SECTION("a SQLite file with other tables") {
+TEST_CASE("queue view: a planar.db behind this binary exits 7, the same as every other viewer verb",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  auto const arena = parity::make_arena("wq_behind");
+  {
+    auto conn = open_store(arena);
+  }
+  make_behind(arena);
+  auto const before = bytes_of(store_path(arena));
+
+  auto const baseline = parity::run_pinned(watch_bin(), std::vector<std::string>{"ps"}, arena.cpp_root, "behind_ps");
+  REQUIRE(baseline.code == 7);
+
+  auto const run = run_queue(arena, "behind_json");
+  CHECK(run.code == 7);
+  CHECK(run.out.empty());
+  CHECK(run.err == baseline.err);
+  CHECK(run.err.contains("older than this binary"));
+  CHECK(run_queue(arena, "behind_text", false).code == 7);
+  CHECK(bytes_of(store_path(arena)) == before);
+}
+
+TEST_CASE("queue view: a file that is not a database is refused, and a SQLite file with no migrations exits 7",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  SECTION("a SQLite file with other tables only") {
     auto const arena = parity::make_arena("wq_foreign");
     {
       auto raw = planar::db::connection::open(store_path(arena).string());
@@ -978,9 +899,8 @@ TEST_CASE("queue view: a database that is not an agent store, or not a database,
       REQUIRE(raw->execute("create table plans (id integer primary key)").has_value());
     }
     auto const run = run_queue(arena, "foreign_json");
-    CHECK(run.code == 1);
+    CHECK(run.code == 7);
     CHECK(run.out.empty());
-    CHECK(run.err.contains("not an agent store"));
   }
   SECTION("a file that is not SQLite") {
     auto const arena = parity::make_arena("wq_garbage");
@@ -988,15 +908,17 @@ TEST_CASE("queue view: a database that is not an agent store, or not a database,
       std::ofstream out(store_path(arena), std::ios::binary);
       out << "this is not a database, and it is long enough to have a header to refuse\n";
     }
+    auto const baseline = parity::run_pinned(watch_bin(), std::vector<std::string>{"ps"}, arena.cpp_root, "garbage_ps");
+    REQUIRE(baseline.code != 0);
     auto const run = run_queue(arena, "garbage_json");
-    CHECK(run.code == 1);
+    CHECK(run.code == baseline.code);
     CHECK(run.out.empty());
     CHECK_FALSE(run.err.empty());
   }
 }
 
 // ---------------------------------------------------------------------------
-// The main database is not needed.
+// The main database is needed: the old exemption is gone.
 // ---------------------------------------------------------------------------
 
 /// @brief The pinned map with the main database's two locators removed.
@@ -1010,8 +932,8 @@ auto without_main_database(const parity::arena& arena) -> std::vector<parity::pi
   return env;
 }
 
-TEST_CASE("queue view: works with no main database to locate, while every other verb still needs one",
-          "[cmd][watch][queue][hq-watch-queue]") {
+TEST_CASE("queue view: with neither PLANAR_DB nor HOME it fails before dispatch like every other verb",
+          "[cmd][watch][queue][qp-watch-exemption]") {
   auto const arena = parity::make_arena("wq_nomain");
   {
     auto conn = open_store(arena);
@@ -1019,29 +941,14 @@ TEST_CASE("queue view: works with no main database to locate, while every other 
   }
   auto const env = without_main_database(arena);
 
-  auto const listing =
-      parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "--json"}, arena.cpp_root, "nomain_queue", env);
-  INFO("stderr:\n" << listing.err);
-  auto const rows = rows_of(listing);
-  REQUIRE(rows.size() == 1);
-  CHECK(text_of(rows[0], "cwd") == "/w/only");
-  auto const text = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue"}, arena.cpp_root, "nomain_text", env);
-  CHECK(text.code == 0);
-  REQUIRE(lines_of(text.out).size() == 2);
-
-  // The exemption is the `queue` domain's alone: every other verb keeps the
-  // exit and the message it had.
-  for (auto const& verb : {"ps", "claims", "version", "schema"}) {
-    auto const run =
-        parity::run_pinned(watch_bin(), std::vector<std::string>{verb}, arena.cpp_root, std::format("nomain_{}", verb), env);
-    INFO("verb: " << verb << "\nstderr:\n" << run.err);
+  for (auto const& argv : std::vector<std::vector<std::string>>{
+           {"queue", "--json"}, {"queue"}, {"queue", "history"}, {"queue", "history", "--json"}, {"ps"}, {"version"}, {"schema"}, {}}) {
+    auto const run = parity::run_pinned(watch_bin(), argv, arena.cpp_root, "nomain", env);
+    INFO("verb: " << (argv.empty() ? std::string{"(bare)"} : argv.front()) << "\nstderr:\n" << run.err);
     CHECK(run.code == 1);
     CHECK(run.out.empty());
     CHECK(run.err == "error: neither PLANAR_DB nor HOME is set; cannot locate the Planar database\n");
   }
-  auto const bare = parity::run_pinned(watch_bin(), std::vector<std::string>{}, arena.cpp_root, "nomain_bare", env);
-  CHECK(bare.code == 1);
-  CHECK(bare.err == "error: neither PLANAR_DB nor HOME is set; cannot locate the Planar database\n");
 }
 
 // ===========================================================================
@@ -1125,24 +1032,20 @@ auto iso_utc(std::int64_t ms) -> std::string {
 
 // ---- empty -----------------------------------------------------------------
 
-TEST_CASE("queue history: a missing store lists nothing, exits 0 and creates no file", "[cmd][watch][queue][hq-watch-history]") {
+TEST_CASE("queue history: a missing planar.db fails like every other viewer verb and creates no file",
+          "[cmd][watch][queue][qp-watch-queue]") {
   auto const arena = parity::make_arena("wh_missing");
   REQUIRE_FALSE(fs::exists(store_path(arena)));
 
-  auto const json_run = run_history(arena, "missing_json");
-  INFO("stderr:\n" << json_run.err);
-  CHECK(json_run.code == 0);
-  CHECK(json_run.out == "[]\n");
-  CHECK(json_run.err.empty());
+  auto const baseline = parity::run_pinned(watch_bin(), std::vector<std::string>{"ps"}, arena.cpp_root, "hmissing_ps");
+  REQUIRE(baseline.code != 0);
 
-  auto const text_run = run_history(arena, "missing_text", {});
-  CHECK(text_run.code == 0);
-  CHECK(text_run.out.empty());
-  CHECK(text_run.err.empty());
-
-  auto const since_run = run_history(arena, "missing_since", {"--since", "1h", "--json"});
-  CHECK(since_run.code == 0);
-  CHECK(since_run.out == "[]\n");
+  for (auto const& flags : std::vector<std::vector<std::string>>{{"--json"}, {}, {"--since", "1h", "--json"}}) {
+    auto const run = run_history(arena, "missing", flags);
+    CHECK(run.code == baseline.code);
+    CHECK(run.err == baseline.err);
+    CHECK(run.out.empty());
+  }
   CHECK_FALSE(fs::exists(store_path(arena)));
 }
 
@@ -1163,47 +1066,40 @@ TEST_CASE("queue history: a store whose only entries are still running lists no 
 
 // ---- real runs -------------------------------------------------------------
 
-TEST_CASE(
-    "queue history: commands that really ended as exited, timeout and cancelled are listed with outcome, times and canceller",
-    "[cmd][watch][queue][hq-watch-history]") {
+TEST_CASE("queue history: entries that ended as exited, timeout and cancelled are listed with outcome, times and canceller",
+          "[cmd][watch][queue][hq-watch-history]") {
   auto const arena = parity::make_arena("wh_real");
-  write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"200ms\"\n");
-  gate            hold(arena.cpp_root / "hold.fifo");
-  submitter_guard guard;
+  std::int64_t held = 0;
+  {
+    auto const now  = wall_now();
+    auto       conn = open_store(arena);
 
-  // 1. A foreground command that exits 3.
-  auto const exited = parity::run_pinned(agent_bin(),
-                                         std::vector<std::string>{"queue", "run", "--label", "exits-three", "--vendor", "claude",
-                                                                  "--role", "coder", "--", "sh", "-c", "exit 3"},
-                                         arena.cpp_root, "real_exit");
-  INFO("stderr:\n" << exited.err);
-  REQUIRE(exited.code == 3);
+    // 1. A command that exited 3.
+    ended_spec exited;
+    exited.label  = "exits-three";
+    exited.ran_ms = 100;
+    exited.end    = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 3, .ended_at = now - 3000};
+    seed_ended(conn, exited);
 
-  // 2. A command stopped at its run limit.
-  auto const timed = parity::run_pinned(
-      agent_bin(),
-      std::vector<std::string>{"queue", "run", "--timeout", "300ms", "--label", "too-slow", "--", "sh", "-c", "sleep 30"},
-      arena.cpp_root, "real_timeout");
-  INFO("stderr:\n" << timed.err);
-  REQUIRE(timed.code == 124);
+    // 2. A command stopped at its run limit.
+    ended_spec timed;
+    timed.label  = "too-slow";
+    timed.vendor = std::nullopt;
+    timed.role   = std::nullopt;
+    timed.ran_ms = 300;
+    timed.end    = hq::end_request{.outcome = hq::history_outcome::timeout, .ended_at = now - 2000};
+    seed_ended(conn, timed);
 
-  // 3. A detached holder that another agent cancels.
-  auto const held = submit_detached(arena, "real_hold", sh_command("read x < \"$1\"", {hold.path.string()}),
-                                    {"--label", "cancel-me", "--vendor", "codex", "--role", "tester"}, guard);
-  await_state(arena, held, hq::entry_state::running);
-  auto const cancelled = parity::run_pinned(
-      agent_bin(), std::vector<std::string>{"queue", "cancel", std::to_string(held), "--vendor", "claude", "--role", "reviewer"},
-      arena.cpp_root, "real_cancel");
-  INFO("stderr:\n" << cancelled.err);
-  REQUIRE(cancelled.code == 0);
-  REQUIRE(await([&] {
-    auto opened = planar::db::agent::open_agent_db_at(store_path(arena));
-    if (!opened) {
-      return false;
-    }
-    auto found = hq::find_history(*opened, held);
-    return found && found->has_value();
-  }));
+    // 3. A holder that another agent cancelled.
+    ended_spec cancelled;
+    cancelled.label  = "cancel-me";
+    cancelled.vendor = "codex";
+    cancelled.role   = "tester";
+    cancelled.end    = hq::end_request{.outcome      = hq::history_outcome::cancelled,
+                                       .cancelled_by = hq::canceller{.vendor = "claude", .role = "reviewer", .pid = 4242},
+                                       .ended_at     = now - 1000};
+    held             = seed_ended(conn, cancelled);
+  }
 
   auto const rows = rows_of(run_history(arena, "real_json"));
   REQUIRE(rows.size() == 3);
@@ -1220,12 +1116,12 @@ TEST_CASE(
   CHECK(text_of(rows[0], "label") == "exits-three");
   CHECK(text_of(rows[0], "vendor") == "claude");
   CHECK(text_of(rows[0], "role") == "coder");
-  CHECK(int_of(rows[0], "ran_ms") >= 0);
+  CHECK(int_of(rows[0], "ran_ms") == 100);
 
   CHECK(text_of(rows[1], "outcome") == "timeout");
   CHECK(text_of(rows[1], "label") == "too-slow");
-  CHECK(int_of(rows[1], "ran_ms") >= 250);
-  CHECK(int_of(rows[1], "run_limit_ms") == 300);
+  CHECK(int_of(rows[1], "ran_ms") == 300);
+  CHECK(int_of(rows[1], "run_limit_ms") == 300'000);
 
   CHECK(int_of(rows[2], "seq") == held);
   CHECK(text_of(rows[2], "outcome") == "cancelled");
@@ -1236,7 +1132,7 @@ TEST_CASE(
   CHECK(keys_of(who) == std::vector<std::string>{"vendor", "role", "pid"});
   CHECK(text_of(who, "vendor") == "claude");
   CHECK(text_of(who, "role") == "reviewer");
-  CHECK(int_of(who, "pid") > 1);
+  CHECK(int_of(who, "pid") == 4242);
 
   auto const text = run_history(arena, "real_text", {});
   REQUIRE(text.code == 0);
@@ -1569,53 +1465,36 @@ TEST_CASE("queue history: the --since cutoff is exact to the millisecond and a r
       seqs.push_back(seed_ended(conn, spec));
     }
   }
-  auto store = planar::cmd::watch::open_agent_store_at(store_path(arena));
-  REQUIRE(store.has_value());
-  auto const kept = store->history(cutoff);
+  auto conn = open_store(arena);
+  auto const kept = hq::list_history(conn, cutoff);
   REQUIRE(kept.has_value());
   REQUIRE(kept->size() == 2);
   REQUIRE(seqs.size() == 3);
   CHECK(kept->at(0).seq == seqs[1]);
   CHECK(kept->at(1).seq == seqs[2]);
-  CHECK(store->history()->size() == 3);
+  CHECK(hq::list_history(conn)->size() == 3);
 }
 
 // ---- an older store, and a store that must not change ----------------------
 
-TEST_CASE("queue history: a store still at agent schema version 2 lists with null limits and stays at version 2",
-          "[cmd][watch][queue][hq-watch-history]") {
-  auto const arena = parity::make_arena("wh_v2");
-  auto const chain = planar::db::agent::migrations();
-  REQUIRE(chain.size() >= 3);
+TEST_CASE("queue history: a planar.db behind this binary exits 7 and stays untouched", "[cmd][watch][queue][qp-watch-queue]") {
+  auto const arena = parity::make_arena("wh_behind");
   {
-    auto raw = planar::db::connection::open(store_path(arena).string());
-    REQUIRE(raw.has_value());
-    REQUIRE(planar::db::apply_all(*raw, chain.subspan(0, 2), planar::db::k_agent_version_table).has_value());
-    REQUIRE(raw->execute("insert into queue_history (seq, outcome, exit_code, cwd, argv, label, vendor, role, enqueued_at, "
-                         "started_at, ended_at, waited_ms, ran_ms) values (7, 'exited', 0, '/w', '[\"true\"]', 'old-h', "
-                         "'claude', 'coder', 900, 950, 990, 50, 40)")
-                .has_value());
+    auto conn = open_store(arena);
+    ended_spec spec;
+    spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
+    seed_ended(conn, spec);
   }
+  make_behind(arena);
   auto const before = bytes_of(store_path(arena));
 
-  auto const rows = rows_of(run_history(arena, "v2_json"));
-  REQUIRE(rows.size() == 1);
-  CHECK(keys_of(rows[0]) == k_history_fields);
-  CHECK(int_of(rows[0], "seq") == 7);
-  CHECK(text_of(rows[0], "label") == "old-h");
-  CHECK(int_of(rows[0], "ran_ms") == 40);
-  CHECK(is_null(rows[0], "run_limit_ms"));
-  CHECK(is_null(rows[0], "wait_limit_ms"));
-
-  auto const text = run_history(arena, "v2_text", {});
-  CHECK(text.code == 0);
-  REQUIRE(lines_of(text.out).size() == 2);
-  CHECK(rows_of(run_history(arena, "v2_since", {"--since", "1h", "--json"})).empty());
-
+  for (auto const& flags : std::vector<std::vector<std::string>>{{"--json"}, {}, {"--since", "1h"}}) {
+    auto const run = run_history(arena, "behind", flags);
+    CHECK(run.code == 7);
+    CHECK(run.out.empty());
+    CHECK(run.err.contains("older than this binary"));
+  }
   CHECK(bytes_of(store_path(arena)) == before);
-  auto opened = planar::db::connection::open_read_only(store_path(arena).string());
-  REQUIRE(opened.has_value());
-  CHECK(planar::db::current_version(*opened, planar::db::k_agent_version_table).value() == 2);
 }
 
 TEST_CASE("queue history: reading changes nothing in the store", "[cmd][watch][queue][hq-watch-history]") {
@@ -1826,83 +1705,23 @@ TEST_CASE("queue history: format characters, long values and display width are h
 
 // ---- errors ----------------------------------------------------------------
 
-TEST_CASE("queue history: a store from a newer release is refused with exit 7 naming both versions",
-          "[cmd][watch][queue][hq-watch-history]") {
-  auto const arena = parity::make_arena("wh_incompat");
+TEST_CASE("queue history: a planar.db ahead of this binary exits 7 naming both versions",
+          "[cmd][watch][queue][qp-watch-queue]") {
+  auto const arena = parity::make_arena("wh_ahead");
   {
     auto conn = open_store(arena);
   }
-  auto const head = planar::db::agent::agent_schema_version();
-  {
-    auto raw = planar::db::connection::open(store_path(arena).string());
-    REQUIRE(raw.has_value());
-    REQUIRE(
-        raw->execute(std::format("insert into agent_schema_migrations (version, compat, description) values ({}, {}, 'probe')",
-                                 head + 2, head + 1))
-            .has_value());
-  }
+  make_ahead(arena);
   auto const before = bytes_of(store_path(arena));
 
-  auto const run = run_history(arena, "incompat_json");
+  auto const run = run_history(arena, "ahead_json");
   CHECK(run.code == 7);
   CHECK(run.out.empty());
-  CHECK(run.err.contains(std::to_string(head + 1)));
-  CHECK(run.err.contains(std::format("is {}", head)));
-  CHECK(run_history(arena, "incompat_text", {}).code == 7);
-  CHECK(run_history(arena, "incompat_since", {"--since", "1h"}).code == 7);
+  CHECK(run.err.contains(std::to_string(planar::db::embedded_max() + 1)));
+  CHECK(run.err.contains(std::format("({})", planar::db::embedded_max())));
+  CHECK(run_history(arena, "ahead_text", {}).code == 7);
+  CHECK(run_history(arena, "ahead_since", {"--since", "1h"}).code == 7);
   CHECK(bytes_of(store_path(arena)) == before);
-}
-
-TEST_CASE("queue history: a database that is not an agent store, or not a database, is refused with exit 1",
-          "[cmd][watch][queue][hq-watch-history]") {
-  SECTION("a SQLite file with other tables") {
-    auto const arena = parity::make_arena("wh_foreign");
-    {
-      auto raw = planar::db::connection::open(store_path(arena).string());
-      REQUIRE(raw.has_value());
-      REQUIRE(raw->execute("create table plans (id integer primary key)").has_value());
-    }
-    auto const run = run_history(arena, "foreign_json");
-    CHECK(run.code == 1);
-    CHECK(run.out.empty());
-    CHECK(run.err.contains("not an agent store"));
-  }
-  SECTION("a file that is not SQLite") {
-    auto const arena = parity::make_arena("wh_garbage");
-    {
-      std::ofstream out(store_path(arena), std::ios::binary);
-      out << "this is not a database, and it is long enough to have a header to refuse\n";
-    }
-    auto const run = run_history(arena, "garbage_json");
-    CHECK(run.code == 1);
-    CHECK(run.out.empty());
-    CHECK_FALSE(run.err.empty());
-  }
-}
-
-// ---- the main database is not needed ---------------------------------------
-
-TEST_CASE("queue history: works with no main database to locate", "[cmd][watch][queue][hq-watch-history]") {
-  auto const arena = parity::make_arena("wh_nomain");
-  {
-    auto       conn = open_store(arena);
-    ended_spec spec;
-    spec.cwd = "/w/only";
-    spec.end = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = wall_now()};
-    seed_ended(conn, spec);
-  }
-  auto const env = without_main_database(arena);
-
-  auto const listing = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "history", "--json"}, arena.cpp_root,
-                                          "nomain_history", env);
-  INFO("stderr:\n" << listing.err);
-  auto const rows = rows_of(listing);
-  REQUIRE(rows.size() == 1);
-  CHECK(text_of(rows[0], "cwd") == "/w/only");
-  auto const text = parity::run_pinned(watch_bin(), std::vector<std::string>{"queue", "history", "--since", "1h"}, arena.cpp_root,
-                                       "nomain_text", env);
-  CHECK(text.code == 0);
-  REQUIRE(lines_of(text.out).size() == 2);
 }
 
 } // namespace
