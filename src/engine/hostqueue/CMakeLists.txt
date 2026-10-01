@@ -48,6 +48,11 @@
 # (`src/lib/queuerule/`, task 7110), which embeds it; `rule.cpp` forwards to
 # that module's `queue_rule_text()` so the API here is unchanged.
 #
+# `schema.cppm` (plan 1089, task qp-queue-compat) is the queue tables' own
+# compatibility check inside planar.db: the `queue_schema` marker, the
+# hand-maintained column lists and the protocol constants. It imports only
+# `db`.
+#
 # `hostqueue.cppm` is the umbrella re-export, matching
 # `src/engine/closure/closure.cppm`.
 
@@ -62,6 +67,7 @@ planar_module(engine_hostqueue
     status.cppm
     guard.cppm
     rule.cppm
+    schema.cppm
     hostqueue.cppm
   SOURCES
     queue.cpp
@@ -73,12 +79,15 @@ planar_module(engine_hostqueue
     status.cpp
     guard.cpp
     rule.cpp
+    schema.cpp
   DEPENDS
     db
     json_dom
     json_text
     process
-    queuerule)
+    queuerule
+  TEST_DEPENDS
+    sha256)
 
 if(TARGET planar_engine_hostqueue_tests)
   # The test binary opens real on-disk scratch stores through
@@ -87,6 +96,10 @@ if(TARGET planar_engine_hostqueue_tests)
   target_link_libraries(planar_engine_hostqueue_tests PRIVATE SQLite::SQLite3)
   # rule_methodology.t.cpp reads the authored agents/methodology.md from the
   # source tree to compare its queue section with the embedded rule text.
+  # schema.t.cpp fingerprints the SQL literals of this directory's own
+  # `*.cpp` sources (tech spec 656 § Enforcement), so it reads them from the
+  # source tree.
   target_compile_definitions(planar_engine_hostqueue_tests PRIVATE
-    "PLANAR_METHODOLOGY_PATH=\"${PROJECT_SOURCE_DIR}/agents/methodology.md\"")
+    "PLANAR_METHODOLOGY_PATH=\"${PROJECT_SOURCE_DIR}/agents/methodology.md\""
+    "PLANAR_HOSTQUEUE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 endif()

@@ -1675,3 +1675,71 @@ TEST_CASE("the host-queue rollback recipe and the schema contract are documented
   CHECK(line.contains("`queue_schema`"));
   CHECK(line.contains("1000000"));
 }
+
+// ---------------------------------------------------------------------------
+// Plan 1089, task qp-queue-compat: every migration that names a queue table
+// inserts a queue_schema row (tech spec 656 § Enforcement, "Marker
+// presence"). The constant-equals-chain and fingerprint pins need the
+// hostqueue engine and live in src/engine/hostqueue/schema.t.cpp.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief `NNNNN_name` of every migration in `chain` whose up SQL names
+/// `queue_entries`, `queue_history` or `queue_schema` but inserts no
+/// `queue_schema` row. Comments are ignored, so only what the SQL DOES counts.
+/// @param chain A migration chain.
+/// @return The offending migrations, in chain order; empty when every one complies.
+auto migrations_without_queue_marker(std::span<planar::db::migration_record const> chain) -> std::vector<std::string> {
+  std::regex const         names_queue_table(R"(\b(queue_entries|queue_history|queue_schema)\b)", std::regex::icase);
+  std::regex const         inserts_marker(R"(\binsert\s+(or\s+\w+\s+)?into\s+queue_schema\b)", std::regex::icase);
+  std::vector<std::string> out;
+  for (auto const& record : chain) {
+    auto const sql = sql_without_comments(record.up_sql_);
+    if (std::regex_search(sql, names_queue_table) && !std::regex_search(sql, inserts_marker)) {
+      out.push_back(std::format("{:05}_{}", record.version_, record.name_));
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("every main migration that names a queue table inserts a queue_schema row",
+          "[db][migrations][queue][qp-queue-compat]") {
+  auto const chain = planar::db::migrations();
+  CHECK(migrations_without_queue_marker(chain).empty());
+
+  // Non-vacuity: the scan does see the migration that creates the tables.
+  std::regex const names_queue_table(R"(\bqueue_entries\b)");
+  CHECK(std::ranges::any_of(
+      chain, [&](auto const& r) { return std::regex_search(sql_without_comments(r.up_sql_), names_queue_table); }));
+}
+
+TEST_CASE("a synthetic migration that alters queue_history without a queue_schema row fails the marker scan, named",
+          "[db][migrations][queue][qp-queue-compat]") {
+  // Test-spec scenario "Edge -- a migration touching the queue tables
+  // without a marker row fails the chain test".
+  auto const        embedded = planar::db::migrations();
+  auto const        next     = embedded.back().version_ + 1;
+  std::string const up       = std::format("alter table queue_history add column x integer;\n"
+                                           "insert into schema_migrations (version, description) values ({}, 'x');\n",
+                                           next);
+  std::vector<planar::db::migration_record> chain(embedded.begin(), embedded.end());
+  chain.push_back(planar::db::migration_record{.version_ = next, .name_ = "queue_history_x", .up_sql_ = up, .down_sql_ = ""});
+
+  auto const offending = migrations_without_queue_marker(chain);
+  REQUIRE(offending.size() == 1);
+  CHECK(offending.front() == std::format("{:05}_queue_history_x", next));
+
+  // A comment that merely mentions a queue table does not count, and the
+  // same change WITH its marker row passes.
+  std::string const commented = std::format("-- touches nothing in queue_entries\n"
+                                            "insert into schema_migrations (version, description) values ({}, 'x');\n",
+                                            next);
+  chain.back().up_sql_        = commented;
+  CHECK(migrations_without_queue_marker(chain).empty());
+  std::string const marked = up + "insert into queue_schema (version, compat, description) values (2, 1, 'x');\n";
+  chain.back().up_sql_     = marked;
+  CHECK(migrations_without_queue_marker(chain).empty());
+}

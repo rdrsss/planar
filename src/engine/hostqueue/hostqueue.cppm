@@ -18,3 +18,4 @@ export import planar.engine.hostqueue.nested;
 export import planar.engine.hostqueue.status;
 export import planar.engine.hostqueue.guard;
 export import planar.engine.hostqueue.rule;
+export import planar.engine.hostqueue.schema;
