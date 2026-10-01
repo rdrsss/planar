@@ -157,6 +157,26 @@ Agent state lives in a second database, `~/.planar/agent.db`, with its own migra
 
 Both databases hold task claim tokens, which authorise heartbeats and terminal verbs on a claim, so they are private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` and `agent.db` (with their `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `planar-agent` creates `agent.db` `0600` and ensures `~/.planar` is `0700` on first open; a directory you choose through `PLANAR_AGENT_DB` is never chmodded. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
 
+### Upgrade note: unlinking `agent.db` under a live queue submitter
+
+Removing `agent.db` (and its `-wal` and `-shm` sidecars) while an older
+`planar-agent queue run` is still waiting or running does not stop that
+process. It was measured on the vendored SQLite 3.53.3 (macOS, APFS), first
+with a bare connection and then with two real `planar-agent queue run`
+submitters at 595510e6 in a scratch home:
+
+- The old process keeps reading and writing the unlinked WAL database through
+  its open file descriptors. No statement fails, and no new file appears at
+  the old path from that process.
+- A waiting old submitter does not exit 125. Its polls succeed against the
+  orphaned file, and it runs its command when the entry ahead of it ends.
+- A queue run started after the unlink opens a fresh database at the path and
+  runs at once, outside the old queue's slot count. Both queues are then
+  active until every old submitter drains.
+
+So retire `agent.db` only when no old submitter is live, or accept that the
+old queue and the new one run side by side until it drains.
+
 ## Build from source
 
 If you want to develop on Planar or contribute back:
