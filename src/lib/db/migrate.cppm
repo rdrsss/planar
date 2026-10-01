@@ -10,16 +10,10 @@
 /// honored entirely by the migration SQL itself — the runner never injects
 /// those statements.
 ///
-/// The runner serves two independent migration streams (plan 1080,
-/// decision 1181): the main database's `migrations/` chain, versioned in
-/// `schema_migrations`, and the agent database's `migrations-agent/`
-/// chain, versioned in `agent_schema_migrations`. Every entry point that
-/// reads a version table takes the table's name as a parameter; the
-/// overloads without one are the main-stream defaults and are unchanged
-/// in behaviour. The agent chain itself is `planar::db::agent::migrations()`
-/// from `planar.db.migrations_agent`; this module does not import it, so
-/// a caller applies the agent stream by passing that chain and
-/// `k_agent_version_table` explicitly.
+/// Every entry point that reads a version table takes the table's name as a
+/// parameter; the overloads without one default to `k_main_version_table`.
+/// `planar.db.migrate` serves the one `migrations/` chain; the agent
+/// database's second stream was retired with agent.db (plan 1089).
 
 module;
 
@@ -35,12 +29,6 @@ namespace planar::db {
 /// `migrations/*.up.sql` (migrations/README.md).
 export constexpr std::string_view k_main_version_table = "schema_migrations";
 
-/// @brief The agent database's schema-version table, written by every
-/// `migrations-agent/*.up.sql` (migrations-agent/README.md). Distinct from
-/// `k_main_version_table` so the two streams never read each other's
-/// bookkeeping, even if both tables were ever present in one file.
-export constexpr std::string_view k_agent_version_table = "agent_schema_migrations";
-
 /// @brief Reads `version_table`'s highest applied version. A fresh
 /// database (the table does not exist yet) reports `0` rather than
 /// surfacing the underlying "no such table" failure — mirrors
@@ -48,8 +36,7 @@ export constexpr std::string_view k_agent_version_table = "agent_schema_migratio
 /// `applyAll` knows to start from the beginning of the chain.
 /// @param conn The connection to query.
 /// @param version_table The stream's version table. A compile-time
-/// identifier chosen by the caller (`k_main_version_table` or
-/// `k_agent_version_table`), never operator input: it is spliced into the
+/// identifier chosen by the caller (`k_main_version_table`), never operator input: it is spliced into the
 /// query text, not bound.
 /// @return The highest applied version (`0` on a fresh database), or the
 /// SQLite failure as a `db_error` for any other kind of failure.
@@ -258,8 +245,6 @@ export auto apply_all(connection& conn, std::span<migration_record const> chain)
 /// @param conn An open database connection.
 /// @param chain The migration chain to enforce and apply.
 /// @param version_table The stream's version table (see `current_version`).
-/// This is the entry point for the agent stream: pass
-/// `planar::db::agent::migrations()` and `k_agent_version_table`.
 /// @return Success, or the contiguity failure before any migration runs.
 export auto apply_contiguous(connection& conn, std::span<migration_record const> chain, std::string_view version_table)
     -> std::expected<void, db_error>;
