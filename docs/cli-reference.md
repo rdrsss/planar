@@ -7034,7 +7034,7 @@ Foreground `queue run` exits with the command's own exit status (decision 1188).
 | `1` | **Parse failure**: an unknown flag, a flag with no value, or no command given. | Before anything is enqueued. |
 | `2` | **Refused input**: a command the guard refuses (a model launcher), or an invalid `--timeout` / `--wait-timeout` value. | Before the configuration or the store is touched. |
 | `124` | The command was **stopped at its run limit** (`--timeout`), whatever signal ended it. | The entry ends `timeout`. |
-| `125` | The **queue failed**: store unreachable, configuration unusable, wait limit reached, cancelled before its turn, or an internal error. Also returned when a handler passes through a status outside 0..255. | The command was not run (except an internal error after it started). |
+| `125` | The **queue failed**: `planar.db` unreachable (neither `PLANAR_DB` nor `HOME` set, a missing file, a directory, not a database), behind this binary (`schema_version_behind`: run `planar init`), or ahead or equal with queue tables this binary cannot use (`queue_schema_incompatible`, `queue_schema_foreign`); configuration unusable, wait limit reached, cancelled before its turn, or an internal error. Also returned when a handler passes through a status outside 0..255. | The command was not run (except an internal error after it started). |
 | `126` | The command was found and **could not be executed**. | The entry ends `not_started` if it had been enqueued. |
 | `127` | The command was **not found**. | The entry ends `not_started` if it had been enqueued. |
 | `128` + N | The command was **terminated by signal N** (`143` for SIGTERM), capped at 255. | The entry ends `signaled`. |
@@ -7067,7 +7067,7 @@ Each code is checked against the built binary by `make exit-code-contract` where
 | `1` | **No such entry**: no entry has that number and there is no history row for it (never issued, or pruned by retention). A missing argument is a parse failure and also exits `1`. | Nothing is written. |
 | `2` | **Refused input**: `<seq>` is not a positive integer. | Before the store is touched. |
 | `6` | The entry has **already ended**; the message names its outcome. Also returned when cancel marked a running entry but its own submitter ended it with what its command did (`exited`) before reading the marker: the cancellation did not take effect. | Cancel writes nothing (the entry's one history row is the submitter's). |
-| `125` | The **queue failed**: the store or the configuration is unusable, the entry's process group was not empty after SIGKILL and the bounded wait, or the entry belongs to another host identity, whether this call marked it or it was already terminating (it is refused at once; a poll on that host will stop it). | The entry may be left marked terminating. |
+| `125` | The **queue failed**: `planar.db` is unusable (unreachable, `schema_version_behind`, `queue_schema_incompatible` or `queue_schema_foreign`, as for `queue run`) or the configuration is unusable, the entry's process group was not empty after SIGKILL and the bounded wait, or the entry belongs to another host identity, whether this call marked it or it was already terminating (it is refused at once; a poll on that host will stop it). | The entry may be left marked terminating. |
 
 ### Atomic operation transaction shapes
 
