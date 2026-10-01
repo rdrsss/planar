@@ -57,7 +57,7 @@ struct fingerprint_pin {
 };
 
 constexpr std::array k_fingerprint_ledger{
-    fingerprint_pin{1, "0000000000000000000000000000000000000000000000000000000000000000",
+    fingerprint_pin{1, "b0468db961468530641548d19003227f71a60e5ada49fa2b1ab7545cf0728496",
                     "queue version 1: queue_entries and queue_history in planar.db (plan 1089, migration 00040)"},
 };
 
