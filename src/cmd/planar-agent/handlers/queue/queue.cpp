@@ -287,11 +287,13 @@ constexpr std::int64_t k_min_renew_interval_ms = 100;
 /// @brief Renews the submitter's claim on a schedule (`queue run --claim`;
 /// tech spec 647 § Whether the submitter should renew the agent's claim).
 ///
-/// Claims live in the MAIN database, which `queue run` otherwise never opens,
-/// so everything here is lazy and fallible: the connection is opened on the
-/// first attempt (never when `--claim` is absent, because no renewer is then
-/// built), through the binary's own main-database policy (never migrating,
-/// refusing a schema on either side of the binary's), and an unusable main
+/// Claims live in `planar.db`, the same file the queue's tables are in, but a
+/// claim keeps `planar-agent`'s exact-version rule while the queue tolerates an
+/// ahead database, so everything here is lazy and fallible and has its own
+/// connection: it is opened on the first attempt (never when `--claim` is
+/// absent, because no renewer is then built), through the binary's own
+/// main-database policy (never migrating, refusing a schema on either side of
+/// the binary's), and an unusable
 /// database is retried on the next attempt rather than remembered. A renewal is
 /// `supervised_heartbeat` with no TTL and no status, the very transaction
 /// `planar-agent heartbeat --claim` runs, so the lease keeps the length it has,
@@ -788,11 +790,14 @@ void report_failure(detach_link& link, std::string_view fallback) {
   } else if (!text.ends_with('\n')) {
     text += '\n';
   }
-  static_cast<void>(write_all(link.write_fd, "err\n" + text));
   // The invoked process prints this text, and the child shares its standard
   // error: handing the captured copy back to the stream (`end_capture`) as well
-  // would show every refusal twice.
-  link.capture.str({});
+  // would show every refusal twice. So it is dropped only once the pipe took it;
+  // when the write fails the invoked process saw nothing, and `end_capture`
+  // still says it.
+  if (write_all(link.write_fd, "err\n" + text)) {
+    link.capture.str({});
+  }
   ::close(link.write_fd);
   link.write_fd = -1;
   link.reported = true;

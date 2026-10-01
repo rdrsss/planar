@@ -656,6 +656,59 @@ TEST_CASE("queue run, status and cancel: a compatible ahead planar.db is used as
   CHECK(qfix::applied_versions(db) == versions);
 }
 
+TEST_CASE("queue status: reads planar.db when the file, its sidecars and its directory are all read-only",
+          "[cmd][agent][queue][queue-store]") {
+  // The store is opened read-only at the SQLite layer, so a database nobody can
+  // write still answers (test spec 658, "queue status opens planar.db
+  // read-only"). A connection kept open here holds the `-wal` and `-shm` in
+  // place, so the case covers the sidecars being present and read-only too.
+  auto const arena = parity::make_arena("qs_status_ro");
+  make_probe(arena);
+  // In a directory of its own: the harness writes its captures into the arena
+  // root, which must stay writable.
+  auto const db = arena.cpp_root / "ro" / "planar.db";
+  qfix::head_store(db);
+  auto const ran = run_probe(arena, "ro_seed", env_for(arena, db));
+  REQUIRE(ran.code == 7);
+  auto const rows = history_rows(db);
+  REQUIRE(rows.size() == 1);
+  auto const seq = rows.front().seq;
+
+  auto holder = qfix::open_store(db);
+  REQUIRE(holder.has_value());
+  REQUIRE(holder->execute("select count(*) from queue_history").has_value()); // Brings the sidecars into being.
+
+  auto const       wal = std::filesystem::path{db.string() + "-wal"};
+  auto const       shm = std::filesystem::path{db.string() + "-shm"};
+  auto const       dir = db.parent_path();
+  mode_guard const restore_db{db};
+  mode_guard const restore_dir{dir};
+  mode_guard const restore_wal{wal};
+  mode_guard const restore_shm{shm};
+  if (!permissions_bind()) {
+    note_permissions_do_not_bind();
+    return;
+  }
+  REQUIRE(present(wal));
+  REQUIRE(present(shm));
+  auto const read_only =
+      std::filesystem::perms::owner_read | std::filesystem::perms::group_read | std::filesystem::perms::others_read;
+  std::filesystem::permissions(db, read_only);
+  std::filesystem::permissions(wal, read_only);
+  std::filesystem::permissions(shm, read_only);
+  std::filesystem::permissions(dir, read_only | std::filesystem::perms::owner_exec | std::filesystem::perms::group_exec |
+                                        std::filesystem::perms::others_exec);
+  auto const before = qfix::file_bytes(db);
+
+  auto const got = run_verb(arena, "ro_status", {"queue", "status", std::to_string(seq), "--json"}, env_for(arena, db));
+  INFO("stdout:\n" << got.out << "stderr:\n" << got.err);
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.out.find(std::format("\"seq\":{}", seq)) != std::string::npos);
+  CHECK(got.out.find("\"outcome\":\"exited\"") != std::string::npos);
+  CHECK(qfix::file_bytes(db) == before);
+}
+
 // ---------------------------------------------------------------------------
 // Scenarios: where a detached run's log lives
 // ---------------------------------------------------------------------------

@@ -618,6 +618,56 @@ TEST_CASE("queue run --claim: against an ahead planar.db the command runs, the r
   CHECK(require_snapshot(arena).history.size() == 1);
 }
 
+TEST_CASE("queue run --claim: a write lock taken while the command runs costs a renewal about a second, once, and the command's "
+          "exit code is its own",
+          "[cmd][agent][queue][hq-claim]") {
+  // The renewal's connection waits at most `k_renew_busy_ms` (one second) per
+  // statement, where an ordinary connection waits five: a renewal is made on
+  // the submitter's own loop, and a longer wait would stall the supervision of
+  // the command for as long as the lock lasts. A renewal that cannot take the
+  // lock within the bound is the one warning; with a longer wait it would simply
+  // succeed once the lock was released, and there would be none.
+  //
+  // The timing is arranged so that the renewal is the first thing to meet the
+  // lock. The lock is taken MID-RUN (before that the submitter's own enqueue
+  // would wait on it), and the poll interval is ten seconds so that no poll is
+  // due in the window (a poll waits on a held lock for the connection's whole
+  // five second window and would keep the loop busy before the renewal's turn).
+  // The lease is 12 seconds, so the renewal made as the submitter started is
+  // followed by one about six seconds later; the lock is taken just before it.
+  auto const arena = seeded_arena("qc_midlock");
+  write_config(arena, "[queue]\npoll_interval = \"10s\"\n");
+  seed_main(arena);
+  auto const token   = mint_claim(arena, "12s");
+  auto const started = arena.cpp_root / "midlock.started";
+
+  auto const began = std::chrono::steady_clock::now();
+  auto       run =
+      spawn_queue(arena, "midlock", sh_command("echo x > \"$1\"; sleep 8; exit 3", {started.string()}), {"--claim", token});
+  await_file(started);
+  std::this_thread::sleep_for(std::chrono::milliseconds(5300));
+  {
+    auto locker = planar::db::connection::open(main_db(arena).string());
+    REQUIRE(locker.has_value());
+    REQUIRE(locker->execute("begin immediate;").has_value());
+    // Past the renewal's turn plus the bound; the command's own end waits for
+    // the release.
+    std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+    REQUIRE(locker->execute("rollback;").has_value());
+  }
+  auto const got     = finish(run);
+  auto const elapsed = std::chrono::steady_clock::now() - began;
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 3);
+  CHECK(warning_count(got.err) == 1);
+  CHECK(got.err.find("cannot renew the claim") != std::string::npos);
+  CHECK(got.err.find("the command is not affected") != std::string::npos);
+  CHECK(got.err.find("ClaimNotActive") == std::string::npos); // The lock, not a lapsed claim.
+  // The command ends about eight seconds in, and its end waits for the release.
+  CHECK(elapsed < std::chrono::milliseconds(12000));
+  CHECK(history_seq(require_snapshot(arena), 1)->outcome == hq::history_outcome::exited);
+}
+
 TEST_CASE("queue run --claim: SIGTERM while waiting still removes the entry and exits 125", "[cmd][agent][queue][hq-claim]") {
   auto const arena = seeded_arena("qc_sig");
   write_config(arena, k_fast_poll);
