@@ -205,6 +205,7 @@ class IdentityRules(unittest.TestCase):
             ("ABCDEF00-0000-0000-0000-000000000000", "block"),  # a macOS identity
             ("unknown", "block"),
             ("", "block"),
+            (":pid:[4026531836]", "block"),  # an empty boot component: never written by the engine
             (h, "process"),
         ]
         for row_host, want in cases:
@@ -217,6 +218,9 @@ class IdentityRules(unittest.TestCase):
         self.assertEqual(qr.judge_identity(h, self.LINUX_H)[0], "block")
         self.assertEqual(qr.judge_identity(h, h)[0], "process")
         self.assertEqual(qr.judge_identity(h, "unknown")[0], "block")
+
+    def test_an_empty_boot_component_on_this_host_blocks(self):
+        self.assertEqual(qr.judge_identity(":pid:[4026531836]", self.LINUX_H)[0], "block")
 
     def test_unknown_host_blocks_everything(self):
         self.assertEqual(qr.judge_identity(None, self.LINUX_H)[0], "block")
@@ -375,6 +379,21 @@ class Liveness(Base):
         without = run_cli("live", path, env={"PATH": self.dir})
         self.assertEqual(with_path.returncode, qr.EXIT_BLOCKED, with_path.stderr)
         self.assertEqual((without.returncode, without.stdout), (with_path.returncode, with_path.stdout))
+
+
+class FailClosed(Base):
+    def test_an_unforeseen_exception_while_judging_exits_two(self):
+        path = self.store({"seq": 1, "host_id": "unknown", "pid": 1, "pid_started": 1})
+        with mock.patch.object(qr, "judge_row", side_effect=RuntimeError("judge exploded")):
+            code, out, err = run_main("live", path)
+        self.assertEqual(code, qr.EXIT_FAILED, out + err)
+        self.assertIn("unexpected failure: judge exploded", err)
+        self.assertEqual(len(err.strip().splitlines()), 1, err)
+
+    def test_an_unforeseen_exception_reading_the_host_exits_two(self):
+        path = self.store()
+        with mock.patch.object(qr, "host_identity", side_effect=OSError(5, "EIO")):
+            self.assertEqual(run_main("live", path)[0], qr.EXIT_FAILED)
 
 
 class StartTimes(Base):

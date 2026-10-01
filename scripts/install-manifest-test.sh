@@ -811,6 +811,78 @@ sed -n '/^## Prerequisites/,/^### /p' "$ROOT/README.md" > "$TMP/prereqs.md"
 grep -Fq 'agent.db` retirement reader' "$TMP/prereqs.md" || fail "README Prerequisites does not name the retirement reader"
 ! grep -Eq '`(ps|sysctl)`' "$TMP/prereqs.md" || fail "README Prerequisites names ps or sysctl"
 
+# install.sh runs under `set -eEuo pipefail` with an ERR trap (on_err), and
+# -E carries that trap into command substitutions. The seam's substitutions
+# that are EXPECTED to exit non-zero (the probe's `queue status 1`, which is
+# exit 1 not_found on almost every upgrade; init; the store reader's exit 3)
+# must not fire it: on_err prints "install failed" even though the install
+# continues. These cases source the seam under a trap shaped like install.sh's.
+qr_trap_call() {
+  local -a vars=()
+  while [[ "$1" == *=* ]]; do vars+=("$1"); shift; done
+  (cd "$QR_CASE" && env ${vars[@]+"${vars[@]}"} PLANAR_HOME="$QR_P" STUB_DIR="${QR_S:-}" QR_LIB="$QR_LIB" \
+    bash -c '
+      set -eEuo pipefail
+      on_err() { printf "\n==> install failed during: queue steps (line %s, exit %s)\n" "$2" "$1" >&2; exit "$1"; }
+      trap '"'"'on_err $? $LINENO'"'"' ERR
+      source "$QR_LIB"
+      "$@" || exit $?
+    ' qr-trap-call "$@") >"$QR_CASE/out" 2>"$QR_CASE/err"
+}
+qr_no_install_failed() {
+  ! grep -Fq 'install failed' "$QR_CASE/err" || fail "$1 printed 'install failed': $(cat "$QR_CASE/err")"
+}
+# Usable: the probe answers exit 1 not_found.
+qr_setup trap_usable
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply 1 1 "$(qr_json_error not_found)"
+qr_trap_call queue_probe_migrate || fail "a usable probe failed under the ERR trap: $(cat "$QR_CASE/err")"
+qr_no_install_failed "a usable (not_found) probe"
+# Behind, migrated, then usable.
+qr_setup trap_behind
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply 1 125 "$(qr_json_error schema_version_behind)"
+qr_reply 2 1 "$(qr_json_error not_found)"
+qr_trap_call queue_probe_migrate || fail "behind -> migrate -> usable failed under the ERR trap: $(cat "$QR_CASE/err")"
+qr_no_install_failed "behind -> migrate -> usable"
+# The guard blocking (the reader exits 3): a refusal, but not a crash.
+QR_S=""
+qr_retire_setup trap_block
+qr_store "$(qr_live_row_sql 21 "$QR_LIVE_PID")"
+if qr_trap_call queue_live_guard preflight; then fail "the guard passed a live entry under the ERR trap"; fi
+grep -Fq 'seq=21 ' "$QR_CASE/err" || fail "the guard under the ERR trap did not refuse for the live entry: $(cat "$QR_CASE/err")"
+qr_no_install_failed "a blocking guard"
+# The override, then retire.
+qr_trap_call IGNORE_LIVE_QUEUE=1 queue_live_guard re-check || fail "the override failed under the ERR trap: $(cat "$QR_CASE/err")"
+qr_no_install_failed "the guard override"
+qr_trap_call IGNORE_LIVE_QUEUE=1 queue_retire_store || fail "retire failed under the ERR trap: $(cat "$QR_CASE/err")"
+qr_no_install_failed "retire"
+
+# The reader's catch-all: an unforeseen exception while judging rows must
+# exit non-zero (2), never 0, so the guard refuses. A wrapper runs the real
+# queue_retire.py with its row judge replaced by one that raises.
+qr_retire_setup crash
+qr_store "insert into queue_entries (seq, state, host_id, pid, pid_started, cwd, argv, enqueued_at, refreshed_mono) values (31, 'waiting', 'unknown', 1, 1, '/', '[]', 1, 1);"
+cat > "$QR_CASE/crashing_reader.py" <<'PYCRASH'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("queue_retire", os.environ["QR_REAL_READER"])
+qr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(qr)
+def boom(*_args, **_kwargs):
+    raise RuntimeError("judge exploded")
+qr.judge_row = boom
+sys.exit(qr.main(sys.argv))
+PYCRASH
+(cd "$QR_CASE" && PLANAR_HOME="$QR_P" QR_LIB="$QR_LIB" QR_REAL_READER="$ROOT/scripts/install-lib/queue_retire.py" \
+  CRASHER="$QR_CASE/crashing_reader.py" bash -c '
+    set -eEuo pipefail
+    source "$QR_LIB"
+    QUEUE_RETIRE_PY="$CRASHER"
+    queue_live_guard preflight
+  ') >"$QR_CASE/out" 2>"$QR_CASE/err" && fail "the guard passed when the store reader crashed: $(cat "$QR_CASE/out")"
+grep -Fq 'unexpected failure: judge exploded' "$QR_CASE/err" || fail "the crash refusal does not carry the reader's failure: $(cat "$QR_CASE/err")"
+[[ -e "$QR_P/agent.db" ]] || fail "a crashed reader let agent.db go"
+
 qr_kill_sleepers
-printf 'install-manifest tests: 12 passed\n'
+printf 'install-manifest tests: 13 passed\n'
 
