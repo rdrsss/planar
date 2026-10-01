@@ -336,6 +336,9 @@ TEST_CASE("planar-agent resolves the database path PLANAR_DB-first, never PLANAR
 }
 
 TEST_CASE("planar-agent resolves the main database path for every verb except the queue domain", "[cmd][agent][context]") {
+  // The exemption is unchanged by the queue moving into planar.db: the queue
+  // handlers resolve the path and open the store themselves (queue_store), so
+  // an unresolvable path is their own 125, not this pre-dispatch 1.
   using planar::cmd::agent::uses_main_database;
   auto const argv = [](std::vector<std::string> words) { return words; };
   CHECK_FALSE(uses_main_database(argv({"planar-agent", "queue", "run", "--", "make"})));

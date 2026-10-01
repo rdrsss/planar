@@ -23,11 +23,14 @@ import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
 import planar.cmd.planar_agent.handlers.queue;
 import planar.db;
-import planar.db.agentdb;
+import planar.db.migrate;
+import planar.db.migrations;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.process.identity;
 import planar.process.runner;
+
+#include "queue_test_store.hpp"
 
 namespace {
 
@@ -35,8 +38,8 @@ namespace hq    = planar::engine::hostqueue;
 namespace ident = planar::process::identity;
 namespace agent = planar::cmd::agent;
 
-/// @brief A scratch root with a working directory and an agent database
-/// path, removed on destruction.
+/// @brief A scratch root with a working directory and a `planar.db` at head,
+/// removed on destruction.
 struct scratch {
   std::filesystem::path root;
 
@@ -45,6 +48,8 @@ struct scratch {
              std::format("planar_queue_seams_{}", std::chrono::steady_clock::now().time_since_epoch().count())) {
     std::filesystem::create_directories(root / "proj");
     std::filesystem::create_directories(root / "fakehome");
+    // The queue verbs open `planar.db` and never create it.
+    planar::cmd::qfix::head_store(root / "planar.db");
   }
   scratch(const scratch&)            = delete;
   scratch& operator=(const scratch&) = delete;
@@ -89,20 +94,19 @@ struct fixture {
   std::ostringstream err;
   agent::context     ctx;
 
-  explicit fixture(const scratch& sc, std::string agent_db, std::map<std::string, std::string, std::less<>> extra = {})
-      : ctx({"planar-agent", "queue", "run"}, agent::map_env(base_env(sc, std::move(agent_db), std::move(extra))),
+  explicit fixture(const scratch& sc, std::string db_path, std::map<std::string, std::string, std::less<>> extra = {})
+      : ctx({"planar-agent", "queue", "run"}, agent::map_env(base_env(sc, std::move(db_path), std::move(extra))),
             sc.root / "proj", std::make_shared<agent::database>(sc.root / "planar.db", err), out, err) {
   }
 
 private:
   /// @brief The scratch environment, plus `extra` (a case's `PLANAR_QUEUE_SLOT`).
-  static auto base_env(const scratch& sc, std::string agent_db, std::map<std::string, std::string, std::less<>> extra)
+  static auto base_env(const scratch& sc, std::string db_path, std::map<std::string, std::string, std::less<>> extra)
       -> std::map<std::string, std::string, std::less<>> {
-    std::map<std::string, std::string, std::less<>> vars{{"PLANAR_AGENT_DB", std::move(agent_db)},
-                                                         {"HOME", (sc.root / "fakehome").string()},
+    std::map<std::string, std::string, std::less<>> vars{{"HOME", (sc.root / "fakehome").string()},
                                                          {"PWD", (sc.root / "proj").string()},
                                                          {"PLANAR_CONFIG_PATH", (sc.root / "config.toml").string()},
-                                                         {"PLANAR_DB", (sc.root / "planar.db").string()}};
+                                                         {"PLANAR_DB", std::move(db_path)}};
     for (auto& [name, value] : extra) {
       vars.insert_or_assign(name, std::move(value));
     }
@@ -113,7 +117,7 @@ private:
 /// @brief Runs the handler for `command` with its seams replaced by `deps`.
 auto run_queue(const scratch& sc, const std::vector<std::string>& command, agent::handlers::queue_run_deps deps,
                std::map<std::string, std::string, std::less<>> extra_env = {}) -> invocation {
-  fixture     fx{sc, (sc.root / "agent.db").string(), std::move(extra_env)};
+  fixture     fx{sc, (sc.root / "planar.db").string(), std::move(extra_env)};
   auto const  outcome = agent::handlers::queue_run_with(fx.ctx, queue_args(command), std::move(deps));
   auto const* status  = std::get_if<agent::exit_status>(&outcome);
   REQUIRE(status != nullptr);
@@ -210,7 +214,7 @@ private:
 /// the same timeline; the system clock otherwise.
 /// @return The entry's sequence number.
 auto seed_live_parent(const scratch& sc, ident::clock* steered = nullptr) -> std::int64_t {
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   ident::system_clock system;
   ident::clock&       clock   = steered != nullptr ? *steered : static_cast<ident::clock&>(system);
@@ -250,7 +254,7 @@ TEST_CASE("queue run: a SIGTERM that fails on an overdue orphan is reported on s
     // Create and migrate the store, then seed a running entry that is past its
     // deadline, whose submitter is gone and whose group (as the probe below
     // reports) has members.
-    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
     REQUIRE(opened.has_value());
     ident::system_clock clock;
     auto const          now = clock.monotonic_ms();
@@ -265,10 +269,10 @@ TEST_CASE("queue run: a SIGTERM that fails on an overdue orphan is reported on s
                                               .refreshed_mono = *now,
                                           });
     REQUIRE(seq.has_value());
-    REQUIRE(*seq == 1);
+    REQUIRE(*seq == planar::cmd::qfix::seq_of(1));
     REQUIRE(opened
                 ->execute(std::format("update queue_entries set state = 'running', started_at = {}, child_pgid = 4242424, "
-                                      "child_started = 7, deadline_mono = 1 where seq = 1;",
+                                      "child_started = 7, deadline_mono = 1 where seq = 1000001;",
                                       clock.wall_ms()))
                 .has_value());
   }
@@ -305,7 +309,7 @@ TEST_CASE("queue run: a SIGTERM that fails on an overdue orphan is reported on s
   // entry number, the signal, and why.
   CHECK(sigterms == 1);
   CHECK(got.err.contains("SIGTERM"));
-  CHECK(got.err.contains("entry 1"));
+  CHECK(got.err.contains("entry 1000001"));
   CHECK(got.err.contains("not permitted"));
   // Said once, not once per poll, though the command may span several.
   auto count = std::size_t{0};
@@ -328,16 +332,16 @@ TEST_CASE("queue run: a configuration loader that fails before the enqueue refus
   CHECK(got.code == 125);
   CHECK(got.out.empty());
   CHECK(got.err == "error: queue: config is unreadable\n");
-  CHECK_FALSE(std::filesystem::exists(sc.root / "agent.db"));
+  CHECK(planar::cmd::qfix::untouched(sc.root / "planar.db"));
 }
 
-TEST_CASE("queue run: an unopenable agent database refuses at 125 and does not run the command", "[cmd][agent][queue]") {
+TEST_CASE("queue run: an unopenable planar.db refuses at 125 and does not run the command", "[cmd][agent][queue]") {
   scratch sc;
   // A regular file where the store's parent directory would have to be.
   {
     std::ofstream(sc.root / "blocker") << "not a directory";
   }
-  fixture fx{sc, (sc.root / "blocker" / "agent.db").string()};
+  fixture fx{sc, (sc.root / "blocker" / "planar.db").string()};
   // An absolute path: this environment has no PATH, and a program that
   // cannot be resolved is refused (127) before the store is ever opened, which
   // would make this case pass for the wrong reason.
@@ -356,7 +360,7 @@ TEST_CASE("queue run: giving up after a poll cannot complete ends the entry as a
   {
     // A store whose refresh always fails but whose delete and history insert
     // work: the poll's update of entry 1 is refused by a trigger.
-    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
     REQUIRE(opened.has_value());
     REQUIRE(opened
                 ->execute("create trigger refuse_refresh before update on queue_entries "
@@ -372,11 +376,11 @@ TEST_CASE("queue run: giving up after a poll cannot complete ends the entry as a
   auto const got = run_queue(sc, {"/usr/bin/true"}, deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(last_line(got.err) == "queue: entry 1 abandoned, could not be polled");
+  CHECK(last_line(got.err) == "queue: entry 1000001 abandoned, could not be polled");
   CHECK(got.err.contains("giving up"));
   CHECK(*bound.polls < poll_bound::limit);
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   // The entry was not left behind for a reaper: it ended, once, as abandoned.
   CHECK(hq::list(*opened).value().empty());
@@ -416,9 +420,9 @@ TEST_CASE("queue run: an entry another process already ended is still mapped to 
       if (acted) {
         return;
       }
-      auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+      auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
       REQUIRE(opened.has_value());
-      auto const stored = hq::find(*opened, 1);
+      auto const stored = hq::find(*opened, planar::cmd::qfix::seq_of(1));
       if (!stored || !stored->has_value() || !(*stored)->child_pgid) {
         return;
       }
@@ -430,7 +434,7 @@ TEST_CASE("queue run: an entry another process already ended is still mapped to 
       auto const          begun =
           hq::begin_terminate(*opened,
                               hq::begin_terminate_request{
-                                  .seq          = 1,
+                                  .seq          = planar::cmd::qfix::seq_of(1),
                                   .reason       = one.reason,
                                   .cancelled_by = one.reason == hq::stop_reason::cancelled ? std::optional{who} : std::nullopt,
                                   .host_id      = host},
@@ -439,8 +443,9 @@ TEST_CASE("queue run: an entry another process already ended is still mapped to 
       REQUIRE(begun->status == hq::begin_status::marked);
       auto empty              = real;
       empty.group_has_members = [](std::int64_t) -> std::expected<bool, ident::error> { return false; };
-      auto const ended = hq::advance_terminations(*opened, hq::advance_request{.host_id = host, .grace_ms = 10'000, .seq = 1},
-                                                  clock, empty, hq::system_group_signaller());
+      auto const ended        = hq::advance_terminations(
+          *opened, hq::advance_request{.host_id = host, .grace_ms = 10'000, .seq = planar::cmd::qfix::seq_of(1)}, clock, empty,
+          hq::system_group_signaller());
       REQUIRE(ended.has_value());
       REQUIRE(ended->ended.size() == 1);
     };
@@ -450,7 +455,7 @@ TEST_CASE("queue run: an entry another process already ended is still mapped to 
     CHECK(acted);
     CHECK(got.code == one.code);
 
-    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
     REQUIRE(opened.has_value());
     CHECK(hq::list(*opened).value().empty());
     auto const history = hq::list_history(*opened).value();
@@ -518,10 +523,10 @@ TEST_CASE("queue run: a run limit that cannot mark its entry retries at the poll
       throw std::runtime_error("queue run ticked past the case's bound");
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
     REQUIRE(opened.has_value());
     if (!acted) {
-      auto const stored = hq::find(*opened, 1);
+      auto const stored = hq::find(*opened, planar::cmd::qfix::seq_of(1));
       if (!stored || !stored->has_value() || !(*stored)->child_pgid) {
         return;
       }
@@ -530,7 +535,7 @@ TEST_CASE("queue run: a run limit that cannot mark its entry retries at the poll
       acted       = true;
       first_tick  = ticks;
       first_reads = clock->reads;
-      REQUIRE(opened->execute("update queue_entries set state = 'waiting' where seq = 1;").has_value());
+      REQUIRE(opened->execute("update queue_entries set state = 'waiting' where seq = 1000001;").has_value());
       return;
     }
     if (ended) {
@@ -544,12 +549,12 @@ TEST_CASE("queue run: a run limit that cannot mark its entry retries at the poll
       window_marks = (clock->reads - first_reads) - 2 * (ticks - first_tick);
       // Let the next mark succeed, so the command is stopped and the case ends.
       ended = true;
-      REQUIRE(opened->execute("update queue_entries set state = 'running' where seq = 1;").has_value());
+      REQUIRE(opened->execute("update queue_entries set state = 'running' where seq = 1000001;").has_value());
       clock->advance(poll_ms);
     }
   };
 
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   auto    args            = queue_args({"/bin/sleep", "30"});
   args.flags["--timeout"] = {"300ms"};
   auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -591,12 +596,12 @@ TEST_CASE("queue run: a signal that arrives while the turn is being taken runs n
   CHECK(got.err.contains("not run"));
   CHECK_FALSE(std::filesystem::exists(marker));
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const entries = hq::list(*opened);
   REQUIRE(entries.has_value());
   CHECK(entries->empty());
-  auto const row = hq::find_history(*opened, 1);
+  auto const row = hq::find_history(*opened, planar::cmd::qfix::seq_of(1));
   REQUIRE(row.has_value());
   REQUIRE(row->has_value());
   CHECK((*row)->outcome == hq::history_outcome::cancelled);
@@ -639,7 +644,7 @@ TEST_CASE("queue run: a nested insert that finds the store busy is retried and t
   CHECK(*calls == 3);
   CHECK(std::filesystem::exists(ran));
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   // Only the seeded parent is left; the command ran as its nested entry.
   auto const entries = hq::list(*opened).value();
@@ -682,7 +687,7 @@ TEST_CASE("queue run: a nested insert that keeps finding the store busy refuses 
 
   // It neither queued normally nor left anything behind: the store holds the
   // seeded parent and no history.
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const entries = hq::list(*opened).value();
   REQUIRE(entries.size() == 1);
@@ -711,7 +716,7 @@ TEST_CASE("queue run: a nested insert that fails for any other reason refuses at
   CHECK(got.code == 125);
   CHECK(got.err.contains("insert refused"));
   CHECK(*calls == 1);
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   CHECK(hq::list(*opened).value().size() == 1);
   CHECK(hq::list_history(*opened).value().empty());
@@ -749,7 +754,7 @@ void script(agent::handlers::queue_run_deps& deps, const scratch& sc, planar::en
       throw std::runtime_error("queue run ticked past the case's bound");
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    auto opened = planar::db::agent::open_agent_db_at(root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(root / "planar.db");
     REQUIRE(opened.has_value());
     act(*opened);
   };
@@ -758,6 +763,7 @@ void script(agent::handlers::queue_run_deps& deps, const scratch& sc, planar::en
 /// @brief Ends `seq` the way `outcome` says another process would, and
 /// requires that this call was the one that removed it.
 void end_as(planar::db::connection& conn, std::int64_t seq, hq::history_outcome outcome) {
+  seq = planar::cmd::qfix::seq_of(seq);
   ident::system_clock clock;
   hq::end_request     request{.outcome = outcome, .ended_at = clock.wall_ms()};
   if (outcome == hq::history_outcome::exited) {
@@ -793,6 +799,7 @@ auto arrive(planar::db::connection& conn) -> std::int64_t {
 }
 
 auto history_of(planar::db::connection& conn, std::int64_t seq) -> std::optional<hq::history_row> {
+  seq            = planar::cmd::qfix::seq_of(seq);
   auto const row = hq::find_history(conn, seq);
   REQUIRE(row.has_value());
   return *row;
@@ -846,7 +853,7 @@ TEST_CASE("queue run: a nested attempt that falls back to the normal enqueue rea
     }
   });
 
-  fixture fx{sc, (sc.root / "agent.db").string(), {{"PLANAR_QUEUE_SLOT", "987654"}}};
+  fixture fx{sc, (sc.root / "planar.db").string(), {{"PLANAR_QUEUE_SLOT", "987654"}}};
   auto    args                 = queue_args(touch_command(marker));
   args.flags["--wait-timeout"] = {"1h"};
   auto const  outcome          = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -875,7 +882,7 @@ TEST_CASE("queue run: a waiting submitter reaped as abandoned rejoins behind lat
   agent::handlers::queue_run_deps deps;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
     if (stage == 0) {
-      auto const mine = hq::find(conn, 2).value();
+      auto const mine = hq::find(conn, planar::cmd::qfix::seq_of(2)).value();
       if (!mine || mine->state != hq::entry_state::waiting) {
         return;
       }
@@ -884,7 +891,7 @@ TEST_CASE("queue run: a waiting submitter reaped as abandoned rejoins behind lat
       arrival = arrive(conn);                          // and someone arrives meanwhile
       stage   = 1;
     } else if (stage == 1) {
-      auto const rejoined = hq::find(conn, 4).value();
+      auto const rejoined = hq::find(conn, planar::cmd::qfix::seq_of(4)).value();
       if (!rejoined) {
         return;
       }
@@ -895,7 +902,7 @@ TEST_CASE("queue run: a waiting submitter reaped as abandoned rejoins behind lat
       if (++watch == 1) {
         end_as(conn, holder, hq::history_outcome::exited);
       }
-      auto const rejoined = hq::find(conn, 4).value();
+      auto const rejoined = hq::find(conn, planar::cmd::qfix::seq_of(4)).value();
       stayed_behind       = stayed_behind && rejoined && rejoined->state == hq::entry_state::waiting;
       if (watch >= 8) {
         end_as(conn, arrival, hq::history_outcome::exited);
@@ -904,7 +911,7 @@ TEST_CASE("queue run: a waiting submitter reaped as abandoned rejoins behind lat
     }
   });
 
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   auto    args                 = queue_args(touch_command(marker));
   args.flags["--wait-timeout"] = {"1h"};
   auto const  outcome          = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -916,19 +923,19 @@ TEST_CASE("queue run: a waiting submitter reaped as abandoned rejoins behind lat
   CHECK(stayed_behind);
   CHECK(deadline_carried);
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   CHECK(hq::list(*opened).value().empty());
-  auto const old_row = history_of(*opened, 2);
+  auto const old_row = history_of(*opened, planar::cmd::qfix::seq_of(2));
   REQUIRE(old_row.has_value());
   CHECK(old_row->outcome == hq::history_outcome::abandoned);
-  CHECK(old_row->successor_seq == 4);
-  auto const new_row = history_of(*opened, 4);
+  CHECK(old_row->successor_seq == planar::cmd::qfix::seq_of(4));
+  auto const new_row = history_of(*opened, planar::cmd::qfix::seq_of(4));
   REQUIRE(new_row.has_value());
   CHECK(new_row->outcome == hq::history_outcome::exited);
   CHECK(new_row->exit_code == 0);
   CHECK_FALSE(new_row->successor_seq.has_value());
-  auto const ahead = history_of(*opened, 3);
+  auto const ahead = history_of(*opened, planar::cmd::qfix::seq_of(3));
   REQUIRE(ahead.has_value());
   REQUIRE(new_row->started_at.has_value());
   CHECK(*new_row->started_at >= ahead->ended_at); // arrival order: it ran after the arrival ended
@@ -944,7 +951,7 @@ TEST_CASE("queue run: a waiting submitter whose entry was cancelled exits 125, r
   agent::handlers::queue_run_deps deps;
   bool                            done = false;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
-    if (!done && hq::find(conn, 2).value()) {
+    if (!done && hq::find(conn, planar::cmd::qfix::seq_of(2)).value()) {
       end_as(conn, 2, hq::history_outcome::cancelled);
       done = true;
     }
@@ -952,17 +959,17 @@ TEST_CASE("queue run: a waiting submitter whose entry was cancelled exits 125, r
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(last_line(got.err) == "queue: entry 2 cancelled");
+  CHECK(last_line(got.err) == "queue: entry 1000002 cancelled");
   CHECK(got.err.contains("cancelled"));
   CHECK(got.err.contains("the command was not run"));
   CHECK_FALSE(std::filesystem::exists(marker));
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const entries = hq::list(*opened).value();
   REQUIRE(entries.size() == 1); // only the holder: nothing with a higher number appeared
   CHECK(entries.front().seq == holder);
-  auto const row = history_of(*opened, 2);
+  auto const row = history_of(*opened, planar::cmd::qfix::seq_of(2));
   REQUIRE(row.has_value());
   CHECK(row->outcome == hq::history_outcome::cancelled);
   CHECK_FALSE(row->successor_seq.has_value());
@@ -981,7 +988,7 @@ TEST_CASE("queue run: a waiting submitter whose entry ended any other way exits 
     agent::handlers::queue_run_deps deps;
     bool                            done = false;
     script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
-      if (!done && hq::find(conn, 2).value()) {
+      if (!done && hq::find(conn, planar::cmd::qfix::seq_of(2)).value()) {
         end_as(conn, 2, outcome);
         done = true;
       }
@@ -989,11 +996,11 @@ TEST_CASE("queue run: a waiting submitter whose entry ended any other way exits 
     auto const got = run_queue(sc, touch_command(marker), deps);
     INFO("stderr:\n" << got.err);
     CHECK(got.code == 125);
-    CHECK(last_line(got.err) == std::format("queue: entry 2 ended as {} without this submitter", hq::to_string(outcome)));
+    CHECK(last_line(got.err) == std::format("queue: entry 1000002 ended as {} without this submitter", hq::to_string(outcome)));
     CHECK(got.err.contains("the command was not run"));
     CHECK_FALSE(std::filesystem::exists(marker));
 
-    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
     REQUIRE(opened.has_value());
     auto const entries = hq::list(*opened).value();
     REQUIRE(entries.size() == 1);
@@ -1011,20 +1018,20 @@ TEST_CASE("queue run: a waiting submitter whose entry is missing and left no his
   agent::handlers::queue_run_deps deps;
   bool                            done = false;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
-    if (!done && hq::find(conn, 2).value()) {
-      REQUIRE(conn.execute("delete from queue_entries where seq = 2;").has_value()); // no history row written
+    if (!done && hq::find(conn, planar::cmd::qfix::seq_of(2)).value()) {
+      REQUIRE(conn.execute("delete from queue_entries where seq = 1000002;").has_value()); // no history row written
       done = true;
     }
   });
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(last_line(got.err) == "queue: entry 2 ended without a history row");
+  CHECK(last_line(got.err) == "queue: entry 1000002 ended without a history row");
   CHECK(got.err.contains("no history"));
   CHECK(got.err.contains("the command was not run"));
   CHECK_FALSE(std::filesystem::exists(marker));
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const entries = hq::list(*opened).value();
   REQUIRE(entries.size() == 1);
@@ -1056,14 +1063,14 @@ TEST_CASE("queue run: a submitter reaped again and again stops rejoining after t
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(last_line(got.err) == "queue: entry 5 abandoned, rejoin limit reached");
+  CHECK(last_line(got.err) == "queue: entry 1000005 abandoned, rejoin limit reached");
   CHECK(got.err.contains("the command was not run"));
   CHECK_FALSE(std::filesystem::exists(marker));
   // The original entry and each of the three rejoins was reaped once; nothing
   // was inserted after the last.
   CHECK(reaped == k_rejoins + 1);
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const entries = hq::list(*opened).value();
   REQUIRE(entries.size() == 1);
@@ -1071,13 +1078,13 @@ TEST_CASE("queue run: a submitter reaped again and again stops rejoining after t
   auto const history = hq::list_history(*opened).value();
   REQUIRE(history.size() == static_cast<std::size_t>(k_rejoins + 1));
   // The successors chain 2 -> 3 -> 4 -> 5, and the last names none.
-  for (std::int64_t seq = 2; seq <= 4; ++seq) {
+  for (std::int64_t seq = planar::cmd::qfix::seq_of(2); seq <= planar::cmd::qfix::seq_of(4); ++seq) {
     auto const row = history_of(*opened, seq);
     REQUIRE(row.has_value());
     CHECK(row->outcome == hq::history_outcome::abandoned);
     CHECK(row->successor_seq == seq + 1);
   }
-  auto const last = history_of(*opened, 5);
+  auto const last = history_of(*opened, planar::cmd::qfix::seq_of(5));
   REQUIRE(last.has_value());
   CHECK(last->outcome == hq::history_outcome::abandoned);
   CHECK_FALSE(last->successor_seq.has_value());
@@ -1091,7 +1098,7 @@ TEST_CASE("queue run: a running submitter whose entry was reaped keeps supervisi
   agent::handlers::queue_run_deps deps;
   bool                            done = false;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
-    auto const mine = hq::find(conn, 1).value();
+    auto const mine = hq::find(conn, planar::cmd::qfix::seq_of(1)).value();
     if (!done && mine && mine->child_pgid) {
       end_as(conn, 1, hq::history_outcome::abandoned); // reaped while its command runs
       done = true;
@@ -1110,12 +1117,12 @@ TEST_CASE("queue run: a running submitter whose entry was reaped keeps supervisi
   }
   CHECK(count == 1);
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   CHECK(hq::list(*opened).value().empty()); // no new entry
   auto const history = hq::list_history(*opened).value();
   REQUIRE(history.size() == 1);
-  CHECK(history.front().seq == 1);
+  CHECK(history.front().seq == planar::cmd::qfix::seq_of(1));
   CHECK(history.front().outcome == hq::history_outcome::abandoned);
   CHECK_FALSE(history.front().successor_seq.has_value());
 }
@@ -1136,13 +1143,14 @@ TEST_CASE("queue run: a running submitter whose entry is missing still stops its
   bool                            done = false;
   deps.clock                           = clock;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
-    if (!done && hq::find(conn, 1).value() && hq::find(conn, 1).value()->child_pgid) {
+    if (!done && hq::find(conn, planar::cmd::qfix::seq_of(1)).value() &&
+        hq::find(conn, planar::cmd::qfix::seq_of(1)).value()->child_pgid) {
       end_as(conn, 1, hq::history_outcome::abandoned);
       done = true;
       clock->advance(1'000);
     }
   });
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   auto    args            = queue_args({"/bin/sh", "-c", std::format("sleep 0.5; echo ran >> '{}'", marker.string())});
   args.flags["--timeout"] = {"100ms"};
   auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -1153,10 +1161,10 @@ TEST_CASE("queue run: a running submitter whose entry is missing still stops its
   CHECK(status->code == 124);
   CHECK(marker_lines(marker) == 0); // the command was stopped, not left to finish
   CHECK(fx.err.str().contains("run limit"));
-  CHECK(last_line(fx.err.str()) == "queue: entry 1 stopped at its run limit");
+  CHECK(last_line(fx.err.str()) == "queue: entry 1000001 stopped at its run limit");
 
   // The other process that removed the entry wrote its row; the submitter wrote none.
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const history = hq::list_history(*opened).value();
   REQUIRE(history.size() == 1);
@@ -1173,7 +1181,7 @@ TEST_CASE("queue run: a give-up exit leaves an abandoned row with the fields of 
   // submitted and the time it waited.
   scratch sc;
   {
-    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
     REQUIRE(opened.has_value());
     REQUIRE(opened
                 ->execute("create trigger refuse_refresh before update on queue_entries "
@@ -1184,18 +1192,18 @@ TEST_CASE("queue run: a give-up exit leaves an abandoned row with the fields of 
   poll_bound                      bound;
   bound.bind(deps, planar::engine::config::queue_settings{
                        .slots = 1, .poll_interval_ms = 5, .stale_after_ms = 50, .grace_ms = 10'000, .history_days = 30});
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   auto    args          = queue_args({"/usr/bin/true"});
   args.flags["--label"] = {"give-up probe"};
   auto const  outcome   = agent::handlers::queue_run_with(fx.ctx, args, deps);
   auto const* status    = std::get_if<agent::exit_status>(&outcome);
   REQUIRE(status != nullptr);
   CHECK(status->code == 125);
-  CHECK(last_line(fx.err.str()) == "queue: entry 1 abandoned, could not be polled");
+  CHECK(last_line(fx.err.str()) == "queue: entry 1000001 abandoned, could not be polled");
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
-  auto const row = history_of(*opened, 1);
+  auto const row = history_of(*opened, planar::cmd::qfix::seq_of(1));
   REQUIRE(row.has_value());
   CHECK(row->outcome == hq::history_outcome::abandoned);
   CHECK_FALSE(row->exit_code.has_value());
@@ -1223,7 +1231,7 @@ namespace {
 /// @brief Ends entry 2 as abandoned once it exists, as a reaper would.
 auto reap_second(bool& done) -> std::function<void(planar::db::connection&)> {
   return [&done](planar::db::connection& conn) {
-    if (!done && hq::find(conn, 2).value()) {
+    if (!done && hq::find(conn, planar::cmd::qfix::seq_of(2)).value()) {
       end_as(conn, 2, hq::history_outcome::abandoned);
       done = true;
     }
@@ -1263,20 +1271,20 @@ TEST_CASE("queue run: a rejoin that keeps finding the store busy exits 125 withi
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(last_line(got.err) == "queue: entry 2 ended: store busy while rejoining");
+  CHECK(last_line(got.err) == "queue: entry 1000002 ended: store busy while rejoining");
   CHECK(got.err.contains("busy"));
   CHECK(got.err.contains("the command was not run"));
   CHECK(*calls > 1); // retried rather than given up on at the first busy
   CHECK_FALSE(std::filesystem::exists(marker));
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   // The short window let the seeded holder go stale too; what matters is that
   // nothing was inserted after entry 2.
   for (auto const& e : hq::list(*opened).value()) {
     CHECK(e.seq <= holder);
   }
-  auto const row = history_of(*opened, 2);
+  auto const row = history_of(*opened, planar::cmd::qfix::seq_of(2));
   REQUIRE(row.has_value());
   CHECK(row->outcome == hq::history_outcome::abandoned);
   CHECK_FALSE(row->successor_seq.has_value());
@@ -1291,7 +1299,7 @@ TEST_CASE("queue run: a rejoin that fails for any other reason exits 125 at once
   agent::handlers::queue_run_deps deps;
   bool                            done = false;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
-    if (!done && hq::find(conn, 2).value()) {
+    if (!done && hq::find(conn, planar::cmd::qfix::seq_of(2)).value()) {
       end_as(conn, 2, hq::history_outcome::abandoned);
       // From here every insert into the queue is refused, with a constraint
       // error rather than a busy one.
@@ -1305,18 +1313,18 @@ TEST_CASE("queue run: a rejoin that fails for any other reason exits 125 at once
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(last_line(got.err) == "queue: entry 2 ended: cannot rejoin the queue");
+  CHECK(last_line(got.err) == "queue: entry 1000002 ended: cannot rejoin the queue");
   CHECK(got.err.contains("insert refused"));
   CHECK(got.err.contains("the command was not run"));
   CHECK_FALSE(got.err.contains("busy"));
   CHECK_FALSE(std::filesystem::exists(marker));
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const entries = hq::list(*opened).value();
   REQUIRE(entries.size() == 1);
   CHECK(entries.front().seq == holder);
-  CHECK_FALSE(history_of(*opened, 2)->successor_seq.has_value());
+  CHECK_FALSE(history_of(*opened, planar::cmd::qfix::seq_of(2))->successor_seq.has_value());
 }
 
 TEST_CASE("queue run: a rejoin that finds the store busy and then succeeds rejoins normally",
@@ -1331,7 +1339,7 @@ TEST_CASE("queue run: a rejoin that finds the store busy and then succeeds rejoi
   auto const                      reap     = reap_second(reaped);
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
     reap(conn);
-    if (reaped && !released && hq::find(conn, 3).value()) {
+    if (reaped && !released && hq::find(conn, planar::cmd::qfix::seq_of(3)).value()) {
       released = true;
       end_as(conn, holder, hq::history_outcome::exited);
     }
@@ -1350,11 +1358,11 @@ TEST_CASE("queue run: a rejoin that finds the store busy and then succeeds rejoi
   CHECK(*calls == 3);
   CHECK(marker_lines(marker) == 1);
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   CHECK(hq::list(*opened).value().empty());
-  CHECK(history_of(*opened, 2)->successor_seq == 3);
-  CHECK(history_of(*opened, 3)->outcome == hq::history_outcome::exited);
+  CHECK(history_of(*opened, planar::cmd::qfix::seq_of(2))->successor_seq == planar::cmd::qfix::seq_of(3));
+  CHECK(history_of(*opened, planar::cmd::qfix::seq_of(3))->outcome == hq::history_outcome::exited);
 }
 
 TEST_CASE("queue run: a start failure that is neither 126 nor 127 ends the entry abandoned and the notice says so",
@@ -1370,7 +1378,7 @@ TEST_CASE("queue run: a start failure that is neither 126 nor 127 ends the entry
   agent::handlers::queue_run_deps deps;
   bool                            done = false;
   script(deps, sc, one_slot_settings(), [&](planar::db::connection& conn) {
-    if (!done && hq::find(conn, 2).value()) {
+    if (!done && hq::find(conn, planar::cmd::qfix::seq_of(2)).value()) {
       end_as(conn, holder, hq::history_outcome::exited);
       std::filesystem::remove_all(sc.root / "proj");
       done = true;
@@ -1379,12 +1387,12 @@ TEST_CASE("queue run: a start failure that is neither 126 nor 127 ends the entry
   auto const got = run_queue(sc, touch_command(marker), deps);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(last_line(got.err) == "queue: entry 2 abandoned, could not be started");
+  CHECK(last_line(got.err) == "queue: entry 1000002 abandoned, could not be started");
   CHECK_FALSE(std::filesystem::exists(marker));
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
-  auto const row = history_of(*opened, 2);
+  auto const row = history_of(*opened, planar::cmd::qfix::seq_of(2));
   REQUIRE(row.has_value());
   CHECK(row->outcome == hq::history_outcome::abandoned);
   CHECK_FALSE(row->exit_code.has_value());
@@ -1420,11 +1428,14 @@ TEST_CASE("queue run: --detach forks before it opens the store, and the child is
           "[cmd][agent][queue][hq-detach]") {
   scratch    sc;
   auto const marks = sc.root / "marks";
-  auto const store = sc.root / "agent.db";
+  auto const store = sc.root / "planar.db";
+  // "Open" is read from SQLite's footprint: planar.db exists from the start, but
+  // a connection to a WAL-mode database leaves a `-wal` beside it.
+  auto const wal = std::filesystem::path{store.string() + "-wal"};
 
   agent::handlers::queue_run_deps deps;
   deps.detach_hook = [&](std::string_view stage) {
-    auto const state = std::format("{} store={} leader={}", stage, std::filesystem::exists(store), ::getsid(0) == ::getpid());
+    auto const state = std::format("{} store={} leader={}", stage, std::filesystem::exists(wal), ::getsid(0) == ::getpid());
     mark(marks, state);
     if (stage == "after_setsid") {
       ::_exit(3); // The child ends here, before it opens anything.
@@ -1445,8 +1456,8 @@ TEST_CASE("queue run: --detach forks before it opens the store, and the child is
     lines.push_back(line);
   }
   REQUIRE(lines.size() == 2);
-  // In the invoked process the store does not exist yet, and neither does the
-  // child's session; in the child the store still does not exist, and it now
+  // In the invoked process the store is not open yet, and neither is the
+  // child's session; in the child the store is still not open, and it now
   // leads a session of its own.
   CHECK(lines[0] == "before_fork store=false leader=false");
   CHECK(lines[1] == "after_setsid store=false leader=true");
@@ -1464,7 +1475,7 @@ TEST_CASE("queue run: --detach whose child dies before it reports exits 125 with
       ::_exit(9);
     }
   };
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   ::alarm(60);
   auto const outcome = agent::handlers::queue_run_with(fx.ctx, detach_args(), std::move(deps));
   ::alarm(0);
@@ -1484,7 +1495,7 @@ TEST_CASE("queue run: --detach aborts before it forks when the process has a sec
   // unwinds the dying child's frames, which would delete a scratch directory,
   // so the child takes the default action for SIGABRT instead.
   scratch sc;
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   int     ends[2]{-1, -1};
   REQUIRE(::pipe(ends) == 0);
   ::alarm(60);
@@ -1591,7 +1602,7 @@ TEST_CASE("queue run: a child group that could not be recorded is recorded by a 
     return hq::record_child(conn, seq, pgid, started);
   };
   script(deps, sc, fast_settings(), [&](planar::db::connection& conn) {
-    auto const stored = hq::find(conn, 1).value();
+    auto const stored = hq::find(conn, planar::cmd::qfix::seq_of(1)).value();
     if (stored && stored->child_pgid) {
       recorded = true;
     }
@@ -1617,7 +1628,7 @@ TEST_CASE("queue run: a command whose group was never recorded is stopped at its
   deps.record_child = [](planar::db::connection&, std::int64_t, std::int64_t,
                          std::int64_t) -> std::expected<bool, hq::queue_error> { return std::unexpected(record_failure()); };
   script(deps, sc, fast_settings(), [](planar::db::connection&) {}, 3000);
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   auto    args            = queue_args({"/bin/sleep", "30"});
   args.flags["--timeout"] = {"100ms"};
   auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -1625,10 +1636,10 @@ TEST_CASE("queue run: a command whose group was never recorded is stopped at its
   REQUIRE(status != nullptr);
   INFO("stderr:\n" << fx.err.str());
   CHECK(status->code == 124);
-  CHECK(last_line(fx.err.str()) == "queue: entry 1 stopped at its run limit");
+  CHECK(last_line(fx.err.str()) == "queue: entry 1000001 stopped at its run limit");
   CHECK(log.count(SIGTERM) == 1);
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   CHECK(hq::list(*opened).value().empty()); // ended by the submitter, not left for a poll to reap as abandoned
   auto const history = hq::list_history(*opened).value();
@@ -1657,7 +1668,7 @@ TEST_CASE("queue run: a command with no recorded group that ignores SIGTERM is k
       clock->advance(151); // past the grace period: SIGKILL goes next tick
     }
   });
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   auto    args            = queue_args(term_ignoring_command(ready));
   args.flags["--timeout"] = {"100ms"};
   auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -1668,7 +1679,7 @@ TEST_CASE("queue run: a command with no recorded group that ignores SIGTERM is k
   CHECK(status->code == 124);
   CHECK(log.count(SIGTERM) == 1);
   CHECK(log.count(SIGKILL) >= 1);
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const history = hq::list_history(*opened).value();
   REQUIRE(history.size() == 1);
@@ -1710,7 +1721,7 @@ TEST_CASE("queue run: a submitter never signals a group whose leader is no longe
       if (done || !std::filesystem::exists(ready)) {
         return; // the command has not started yet
       }
-      auto const stored = hq::find(conn, 1).value();
+      auto const stored = hq::find(conn, planar::cmd::qfix::seq_of(1)).value();
       if (!stored) {
         return;
       }
@@ -1723,7 +1734,7 @@ TEST_CASE("queue run: a submitter never signals a group whose leader is no longe
       done = true;
       clock->advance(1'000);
     });
-    fixture fx{sc, (sc.root / "agent.db").string()};
+    fixture fx{sc, (sc.root / "planar.db").string()};
     auto    args            = queue_args({"/bin/sh", "-c", std::format("echo ready > '{}'; sleep 0.3", ready.string())});
     args.flags["--timeout"] = {"100ms"};
     auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -1748,7 +1759,8 @@ TEST_CASE("queue run: a command whose entry vanished and that ignores SIGTERM is
   deps.signaller = log.signaller();
   int stage      = 0;
   script(deps, sc, short_grace_settings(), [&](planar::db::connection& conn) {
-    if (stage == 0 && std::filesystem::exists(ready) && hq::find(conn, 1).value() && hq::find(conn, 1).value()->child_pgid) {
+    if (stage == 0 && std::filesystem::exists(ready) && hq::find(conn, planar::cmd::qfix::seq_of(1)).value() &&
+        hq::find(conn, planar::cmd::qfix::seq_of(1)).value()->child_pgid) {
       end_as(conn, 1, hq::history_outcome::abandoned);
       stage = 1;
       clock->advance(1'000);
@@ -1757,7 +1769,7 @@ TEST_CASE("queue run: a command whose entry vanished and that ignores SIGTERM is
       clock->advance(151);
     }
   });
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   auto    args            = queue_args(term_ignoring_command(ready));
   args.flags["--timeout"] = {"100ms"};
   auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -1789,7 +1801,7 @@ TEST_CASE("queue run: a forwarded signal that the kernel refuses for a group of 
     deps.probe               = probe;
     bool raised              = false;
     script(deps, sc, fast_settings(), [&](planar::db::connection& conn) {
-      auto const stored = hq::find(conn, 1).value();
+      auto const stored = hq::find(conn, planar::cmd::qfix::seq_of(1)).value();
       if (!raised && stored && stored->child_pgid) {
         raised = true;
         ::raise(SIGTERM);
@@ -1805,26 +1817,20 @@ TEST_CASE("queue run: a forwarded signal that the kernel refuses for a group of 
 
 TEST_CASE("queue run --claim: a renewal that keeps failing is reported once across many attempts, and the command runs",
           "[cmd][agent][queue][hq-claim]") {
-  // The main database's schema is ahead of the binary, so every attempt fails
+  // planar.db is ahead of the binary (its queue marker still admits the queue,
+  // but a claim keeps the exact-version rule), so every renewal attempt fails
   // the same way. Time is steered: each tick moves the monotonic clock a
   // second, so the command's second of real life covers hundreds of seconds of
   // retries (one every five), and a submitter that wrote a warning per attempt
   // would write dozens.
   scratch sc;
-  {
-    auto opened = planar::db::connection::open((sc.root / "planar.db").string());
-    REQUIRE(opened.has_value());
-    REQUIRE(
-        opened->execute("create table schema_migrations (version integer primary key, description text not null);").has_value());
-    REQUIRE(
-        opened->execute("insert into schema_migrations (version, description) values (99999, 'from the future');").has_value());
-  }
+  planar::cmd::qfix::ahead_store(sc.root / "planar.db");
   auto const clock = std::make_shared<steered_clock>();
 
   agent::handlers::queue_run_deps deps;
   deps.clock = clock;
   script(deps, sc, one_slot_settings(), [clock](planar::db::connection&) { clock->advance(1'000); }, 5'000);
-  fixture fx{sc, (sc.root / "agent.db").string()};
+  fixture fx{sc, (sc.root / "planar.db").string()};
   auto    args          = queue_args({"/bin/sh", "-c", "sleep 1; exit 4"});
   args.flags["--claim"] = {"0123456789abcdef0123456789abcdef"};
   auto const  outcome   = agent::handlers::queue_run_with(fx.ctx, args, deps);
@@ -1838,7 +1844,7 @@ TEST_CASE("queue run --claim: a renewal that keeps failing is reported once acro
     ++warnings;
   }
   CHECK(warnings == 1);
-  CHECK(last_line(text) == "queue: entry 1 exited with code 4");
+  CHECK(last_line(text) == "queue: entry 1000001 exited with code 4");
 }
 
 TEST_CASE("queue run: a command whose status cannot be observed ends the entry abandoned and the notice says so",
@@ -1862,9 +1868,9 @@ TEST_CASE("queue run: a command whose status cannot be observed ends the entry a
   CHECK(got.code == 125);
   CHECK(*polls == 1);
   CHECK(got.err.contains("error: queue: cannot observe the command's status"));
-  CHECK(last_line(got.err) == "queue: entry 1 abandoned, cannot observe the command's status");
+  CHECK(last_line(got.err) == "queue: entry 1000001 abandoned, cannot observe the command's status");
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   CHECK(hq::list(*opened).value().empty());
   auto const history = hq::list_history(*opened).value();
@@ -1901,7 +1907,7 @@ TEST_CASE("queue run: a waiter that finds its entry gone and cannot read the clo
   CHECK(removed);
   CHECK(got.code == 125);
   CHECK(got.err.contains("error: queue: cannot read the monotonic clock"));
-  CHECK(last_line(got.err) == "queue: entry 2 ended: cannot read the clock");
+  CHECK(last_line(got.err) == "queue: entry 1000002 ended: cannot read the clock");
   CHECK_FALSE(std::filesystem::exists(marker));
 }
 
@@ -1937,7 +1943,7 @@ TEST_CASE("queue run: the submitter's own stop at its run limit does not report 
       }
       bool advanced = false;
       script(deps, sc, fast_settings(), [&](planar::db::connection& conn) {
-        auto const stored = hq::find(conn, 1).value();
+        auto const stored = hq::find(conn, planar::cmd::qfix::seq_of(1)).value();
         if (advanced || !stored || stored->state != hq::entry_state::running) {
           return;
         }
@@ -1950,7 +1956,7 @@ TEST_CASE("queue run: the submitter's own stop at its run limit does not report 
         advanced = true;
         clock->advance(1'000);
       });
-      fixture fx{sc, (sc.root / "agent.db").string()};
+      fixture fx{sc, (sc.root / "planar.db").string()};
       auto    args            = queue_args({"/bin/sleep", "0.3"});
       args.flags["--timeout"] = {"100ms"};
       auto const  outcome     = agent::handlers::queue_run_with(fx.ctx, args, deps);

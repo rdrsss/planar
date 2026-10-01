@@ -18,6 +18,22 @@
 
 namespace planar::cmd::qfix {
 
+/// @brief The sequence counter's floor: the queue migration seeds
+/// `sqlite_sequence` at this value, so the first entry of a fresh `planar.db`
+/// is `k_seq_floor + 1`.
+inline constexpr std::int64_t k_seq_floor = 1'000'000;
+
+/// @brief The real sequence number of the `n`th entry of a fresh database: a
+/// value at or below the floor is an ORDINAL (1 is the first entry) and is
+/// moved above it; a value above it is already a real number (one read from a
+/// ticket or a row) and passes through. The test helpers apply this to their
+/// `seq` parameters so a case can say "the second entry" without spelling the
+/// floor.
+/// @param n An ordinal or a real sequence number.
+inline constexpr auto seq_of(std::int64_t n) -> std::int64_t {
+  return n <= k_seq_floor ? k_seq_floor + n : n;
+}
+
 /// @brief Fails the calling case when a fixture step did not work.
 /// @param step What was being built, for the message.
 /// @param ok Whether the step succeeded.
@@ -155,6 +171,17 @@ inline auto queue_row_count(const std::filesystem::path& path) -> std::int64_t {
   auto stepped = stmt->step();
   must("step count", stepped.has_value() && *stepped == planar::db::step_result::row);
   return stmt->column_int64(0);
+}
+
+
+/// @brief Whether the database at `path` was never opened by a connection in
+/// this case. A connection to a WAL-mode database leaves a `-wal` and `-shm`
+/// beside it, and the seeding connection removed them when it closed, so their
+/// absence is the footprint of "never opened". It reads no row: a read-only
+/// connection would itself leave the sidecars behind.
+/// @param path The database file.
+inline auto untouched(const std::filesystem::path& path) -> bool {
+  return !std::filesystem::exists(path.string() + "-wal") && !std::filesystem::exists(path.string() + "-shm");
 }
 
 } // namespace planar::cmd::qfix
