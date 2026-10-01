@@ -167,18 +167,26 @@
 /// The lease length is read from the claim at the first renewal and again after
 /// every renewal, so a lease re-set with `heartbeat --ttl` sets the next cadence.
 ///
-/// Claims live in the MAIN database, the one thing `queue run` otherwise never
-/// touches, so the renewal is the only path that opens it: only when `--claim`
-/// is given, only when a renewal is due, never creating it (an absent file is a
-/// failure), never migrating it, and refusing a schema on either side of the
-/// binary's. The queue's own guarantees hold when it cannot: a renewal that
+/// Claims live in the same `planar.db` the queue's tables do, but a claim keeps
+/// `planar-agent`'s exact-version rule while the queue tolerates an AHEAD
+/// database (tech spec 656 § Claim renewal on an ahead database). So the
+/// renewal opens its own bounded connection through `database_policy`: only
+/// when `--claim` is given, only when a renewal is due, never creating the file
+/// (an absent file is a failure), never migrating it, and refusing a schema on
+/// either side of the binary's. Against an ahead `planar.db` every renewal
+/// therefore fails: the submitter prints one warning and the command still
+/// runs, and if the wait plus the run outlasts the claim's lease the claim
+/// lapses, so the agent's next heartbeat or terminal verb fails with
+/// `ClaimNotActive`. During a migration cycle an agent runs `queue run --claim`
+/// with the head binary, or leaves `--claim` out and heartbeats separately.
+/// The queue's own guarantees hold when a renewal cannot: a renewal that
 /// fails (an unresolvable path, an absent or schema-locked or busy main
 /// database, an unknown, ended or lapsed claim, an engine-supervised claim) is
 /// reported as a `warning: queue: cannot renew the claim: <why>; the command is
 /// not affected` line on standard error, or in the output file of a detached
 /// run, written with or without `--notices` and once per distinct reason. It is
 /// retried after the shorter of the cadence and five seconds, and it never
-/// changes the command's status. A lock on the main database is waited for at
+/// changes the command's status. A lock on the database is waited for at
 /// most one second per statement, from the connection's first statement on (it
 /// opens an existing file only, and does not touch its journal mode), and an
 /// attempt that times out stops there, so a locked main database costs the
@@ -209,7 +217,7 @@
 /// creates a pipe and forks BEFORE the configuration is read or the store is
 /// opened, so no store handle or thread exists at the fork. The child starts
 /// a session, closes every inherited descriptor but the pipe, reads
-/// `/dev/null`, inserts its entry, creates `<agent-db-directory>/queue-logs/
+/// `/dev/null`, inserts its entry, creates `<planar-db-directory>/queue-logs/
 /// <seq>.log` (`0600`), points standard output and error at it and only then
 /// writes the ticket to the pipe: `ok`, the sequence number and the path, or
 /// `err` and the error text. Until the log exists the child's standard error

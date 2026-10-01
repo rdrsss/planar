@@ -118,6 +118,7 @@ planar_binary(planar_agent
     exit.cppm
     context.cppm
     database.cppm
+    queue_store.cppm
     handler.cppm
     args.cppm
     locality.cppm
@@ -162,6 +163,7 @@ planar_binary(planar_agent
   SOURCES
     context.cpp
     database.cpp
+    queue_store.cpp
     locality.cpp
     policy.cpp
     handlers/version/version.cpp

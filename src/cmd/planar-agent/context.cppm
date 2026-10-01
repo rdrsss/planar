@@ -28,11 +28,12 @@ export auto resolve_db_path(const env_lookup& env) -> std::expected<std::filesys
 /// before dispatch.
 ///
 /// Every verb does, except the `queue` domain (plan 1080, task
-/// hq-store-unreachable-maindb). The queue's own store is the agent database
-/// (`planar.db.agentdb`), which it locates from `PLANAR_AGENT_DB` / `HOME`
-/// itself, and it must keep working when the main database is unusable, so a
-/// main database path that cannot be resolved (no `PLANAR_DB`, no `HOME`) must
-/// not stop it. The check is on the first argument after the program name:
+/// hq-store-unreachable-maindb; plan 1089, decision 1221). The queue's store is
+/// `planar.db` itself, but each queue handler resolves the path and opens it
+/// (`planar.cmd.planar_agent.queue_store`), so that every refusal is the
+/// queue's own: one `error: queue:` line at exit 125, never the pre-dispatch
+/// exit-1 refusal. A main database path that cannot be resolved (no
+/// `PLANAR_DB`, no `HOME`) must therefore not stop it here. The check is on the first argument after the program name:
 /// this binary declares no root-level options, so the domain is always there.
 /// Anything that is not that word, an empty vector included, keeps the
 /// resolution and its exit code.
