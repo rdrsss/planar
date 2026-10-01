@@ -94,16 +94,42 @@ grep -q '"name": "pl-nodigest"' "$NODIGEST_MANIFEST"
 grep -q '"source_digest": ""' "$NODIGEST_MANIFEST"
 grep -q '"projection_digest": ""' "$NODIGEST_MANIFEST"
 
-# Uninstall preserves the operator's data (task hq-install-preserve, plan
-# 1080). The agent database `agent.db` (decision "Agent state gets its own
-# database"), its SQLite sidecars `agent.db-wal` / `agent.db-shm`, and the
-# detached-run output directory `queue-logs/` survive a non-force uninstall
-# exactly as `planar.db` does, while every managed artifact is removed. The
-# uninstall branch returns before the build-dependency preflight, so this
-# drives the real `install.sh --uninstall` against a scratch home.
+# Uninstall preserves the operator's data: `planar.db`, its SQLite sidecars
+# and the detached-run output directory `queue-logs/` survive a non-force
+# uninstall while every managed artifact is removed. The retired agent store
+# `agent.db` and its sidecars are no longer preserved (plan 1089, superseding
+# decision 1202): they are removed behind the live-queue guard. The uninstall
+# branch returns before the build-dependency preflight, so this drives the
+# real `install.sh --uninstall` against a scratch home.
 # /bin/bash 3.2 does not honor `set -e` for a failing bare `[[ … ]]`, so
 # every assertion below goes through fail() to be non-vacuous.
 fail() { printf 'install-manifest-test: %s\n' "$*" >&2; exit 1; }
+# make_agent_store PATH [SQL] -- a real, idle agent store (the agent
+# migrations' queue tables, no rows) at PATH, plus optional extra SQL. The
+# live-queue guard reads it, so a text placeholder would (rightly) be refused.
+make_agent_store() {
+  python3 - "$1" "${2:-}" <<'PYFIX'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.executescript("""
+create table queue_entries (seq integer primary key autoincrement, state text not null, host_id text not null,
+  pid integer not null, pid_started integer not null, child_pgid integer, child_started integer, parent_seq integer,
+  terminating_since_mono integer, terminate_reason text, cancelled_by text, cwd text not null, argv text not null,
+  label text, vendor text, role text, claim_token text, log_path text, enqueued_at integer not null,
+  started_at integer, refreshed_mono integer not null, deadline_mono integer, wait_deadline_mono integer,
+  run_limit_ms integer, wait_limit_ms integer);
+create table queue_history (seq integer primary key, outcome text not null, exit_code integer, signal integer,
+  successor_seq integer, cancelled_by text, nested integer not null default 0, parent_seq integer,
+  cwd text not null, argv text not null, label text, vendor text, role text, log_path text,
+  enqueued_at integer not null, started_at integer, ended_at integer not null, waited_ms integer not null,
+  ran_ms integer, run_limit_ms integer, wait_limit_ms integer);
+""")
+if sys.argv[2]:
+    conn.executescript(sys.argv[2])
+conn.commit()
+conn.close()
+PYFIX
+}
 assert_present() { [[ -e "$1" ]] || fail "expected $1 to survive the uninstall"; }
 assert_absent()  { [[ ! -e "$1" ]] || fail "expected $1 to be removed by the uninstall"; }
 run_uninstall() {
@@ -117,10 +143,10 @@ seed_prefix() {
   printf 'main db\n' > "$prefix/planar.db"
   printf 'main wal\n' > "$prefix/planar.db-wal"
   printf 'main shm\n' > "$prefix/planar.db-shm"
-  printf 'agent db\n' > "$prefix/agent.db"
+  make_agent_store "$prefix/agent.db"
   printf 'wal\n' > "$prefix/agent.db-wal"
   printf 'shm\n' > "$prefix/agent.db-shm"
-  printf 'detached output\n' > "$prefix/queue-logs/1.log"
+  printf 'detached output\n' > "$prefix/queue-logs/1000001.log"
 }
 
 UNINSTALL_HOME="$TMP/uninstall_home"
@@ -133,33 +159,35 @@ printf '{"version": 1}\n' > "$UNINSTALL_PREFIX/install-manifest.json"
 printf 'skill\n' > "$UNINSTALL_PREFIX/skills/src/pl-owned.md"
 run_uninstall "$UNINSTALL_HOME" >"$TMP/uninstall-stdout" 2>"$TMP/uninstall-stderr" \
   || fail "uninstall of a full prefix failed: $(cat "$TMP/uninstall-stderr")"
-assert_present "$UNINSTALL_PREFIX/planar.db"
-assert_present "$UNINSTALL_PREFIX/planar.db-wal"
-assert_present "$UNINSTALL_PREFIX/planar.db-shm"
-assert_present "$UNINSTALL_PREFIX/agent.db"
-assert_present "$UNINSTALL_PREFIX/agent.db-wal"
-assert_present "$UNINSTALL_PREFIX/agent.db-shm"
-assert_present "$UNINSTALL_PREFIX/queue-logs/1.log"
+# Exactly planar.db, its sidecars and queue-logs/ are left; the idle agent.db
+# and its sidecars are removed with everything else.
+[[ "$(ls -A "$UNINSTALL_PREFIX" | tr '\n' ' ')" == "planar.db planar.db-shm planar.db-wal queue-logs " ]] \
+  || fail "uninstall left more or less than planar.db, its sidecars and queue-logs/: $(ls -A "$UNINSTALL_PREFIX" | tr '\n' ' ')"
+assert_present "$UNINSTALL_PREFIX/queue-logs/1000001.log"
+assert_absent "$UNINSTALL_PREFIX/agent.db"
+assert_absent "$UNINSTALL_PREFIX/agent.db-wal"
+assert_absent "$UNINSTALL_PREFIX/agent.db-shm"
 assert_absent "$UNINSTALL_PREFIX/bin"
 assert_absent "$UNINSTALL_PREFIX/skills"
 assert_absent "$UNINSTALL_PREFIX/install-manifest.json"
-grep -Fq 'agent.db' "$TMP/uninstall-stdout" || fail "uninstall output does not mention agent.db"
 
-# A prefix whose only ownership signal is agent.db (planar.db and the binaries
-# already gone) is still a Planar install: the uninstall-side ownership guard
-# accepts it without --force, removes the stray entry, and keeps the data.
+# A prefix whose only would-be ownership signal is agent.db is NOT a Planar
+# install any more (plan 1089): the uninstall-side ownership guard refuses it
+# without --force and removes nothing.
 AGENT_ONLY_HOME="$TMP/agent_only_home"
 AGENT_ONLY_PREFIX="$AGENT_ONLY_HOME/.planar"
 mkdir -p "$AGENT_ONLY_PREFIX/queue-logs" "$AGENT_ONLY_PREFIX/stale"
-printf 'agent db\n' > "$AGENT_ONLY_PREFIX/agent.db"
+make_agent_store "$AGENT_ONLY_PREFIX/agent.db"
 printf 'detached output\n' > "$AGENT_ONLY_PREFIX/queue-logs/2.log"
-run_uninstall "$AGENT_ONLY_HOME" >"$TMP/agent-only-stdout" 2>"$TMP/agent-only-stderr" \
-  || fail "uninstall refused a prefix holding only agent.db: $(cat "$TMP/agent-only-stderr")"
+if run_uninstall "$AGENT_ONLY_HOME" >"$TMP/agent-only-stdout" 2>"$TMP/agent-only-stderr"; then
+  fail "uninstall accepted a prefix holding only agent.db as a Planar install"
+fi
+grep -Fq 'does not look like a Planar install' "$TMP/agent-only-stderr" \
+  || fail "a prefix holding only agent.db was refused for an unexpected reason: $(cat "$TMP/agent-only-stderr")"
 assert_present "$AGENT_ONLY_PREFIX/agent.db"
-assert_present "$AGENT_ONLY_PREFIX/queue-logs/2.log"
-assert_absent "$AGENT_ONLY_PREFIX/stale"
+assert_present "$AGENT_ONLY_PREFIX/stale"
 
-# --force removes the agent database and its logs along with planar.db.
+# --force removes the whole prefix, planar.db and its logs included.
 FORCE_HOME="$TMP/force_home"
 FORCE_PREFIX="$FORCE_HOME/.planar"
 seed_prefix "$FORCE_PREFIX"
@@ -183,10 +211,17 @@ run_install_guard() {
     source "$GUARD"
   '
 }
+GUARD_DB_PREFIX="$TMP/guard_db/.planar"
+mkdir -p "$GUARD_DB_PREFIX"
+printf 'main db\n' > "$GUARD_DB_PREFIX/planar.db"
+run_install_guard "$GUARD_DB_PREFIX"
+# agent.db alone is no longer an ownership signal (plan 1089).
 GUARD_AGENT_PREFIX="$TMP/guard_agent/.planar"
 mkdir -p "$GUARD_AGENT_PREFIX"
 printf 'agent db\n' > "$GUARD_AGENT_PREFIX/agent.db"
-run_install_guard "$GUARD_AGENT_PREFIX"
+if run_install_guard "$GUARD_AGENT_PREFIX" 2>/dev/null; then
+  fail "the install-side ownership guard accepted a prefix holding only agent.db"
+fi
 GUARD_FOREIGN_PREFIX="$TMP/guard_foreign/.planar"
 mkdir -p "$GUARD_FOREIGN_PREFIX"
 printf 'not ours\n' > "$GUARD_FOREIGN_PREFIX/notes.txt"
@@ -197,10 +232,12 @@ fi
 grep -Fq 'does not look like a Planar install' "$TMP/guard-foreign-stderr" \
   || fail "install-side ownership guard refused for an unexpected reason"
 
-# Decision 1210 (task 7102): the installer makes the install root 0700 and
-# tightens an existing planar.db / agent.db (and their sidecars) to 0600,
-# since both hold task claim tokens. The function is exercised through the
-# exact block extracted from install.sh, like the ownership guard above.
+# File modes (task 7102; tech spec 656 "File modes", replacing decision
+# 1210): the installer makes the install root 0700 and tightens an existing
+# planar.db (and its sidecars) to 0600, since it holds task claim tokens. The
+# retired agent.db is not tightened: install removes it. The function is
+# exercised through the exact block extracted from install.sh, like the
+# ownership guard above.
 mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
 assert_mode() { [[ "$(mode_of "$1")" == "$2" ]] || fail "expected mode $2 on $1, got $(mode_of "$1")"; }
 sed -n '/^harden_planar_home() {/,/^}/p' "$ROOT/install.sh" > "$TMP/harden.sh"
@@ -228,8 +265,11 @@ chmod 600 "$MODES_PREFIX/queue-logs/1.log"
 chmod 700 "$MODES_PREFIX/queue-logs"
 run_harden "$MODES_PREFIX" || fail "harden_planar_home failed on an existing install"
 assert_mode "$MODES_PREFIX" 700
-for f in planar.db planar.db-wal planar.db-shm agent.db agent.db-wal agent.db-shm; do
+for f in planar.db planar.db-wal planar.db-shm; do
   assert_mode "$MODES_PREFIX/$f" 600
+done
+for f in agent.db agent.db-wal agent.db-shm; do
+  assert_mode "$MODES_PREFIX/$f" 644
 done
 assert_mode "$MODES_PREFIX/notes.txt" 644
 assert_mode "$MODES_PREFIX/queue-logs" 700
@@ -251,11 +291,11 @@ mkdir -p "$LINK_PREFIX"
 printf 'data\n' > "$LINK_TARGET"
 chmod 644 "$LINK_TARGET"
 ln -s "$LINK_TARGET" "$LINK_PREFIX/planar.db"
-printf 'data\n' > "$LINK_PREFIX/agent.db"
-chmod 644 "$LINK_PREFIX/agent.db"
+printf 'data\n' > "$LINK_PREFIX/planar.db-wal"
+chmod 644 "$LINK_PREFIX/planar.db-wal"
 run_harden "$LINK_PREFIX" || fail "harden_planar_home failed beside a symlinked database"
 assert_mode "$LINK_TARGET" 644
-assert_mode "$LINK_PREFIX/agent.db" 600
+assert_mode "$LINK_PREFIX/planar.db-wal" 600
 
 # A chmod that fails only warns, and the function still returns 0: under
 # `set -e` and the ERR trap an abort would end the install. A stub chmod
@@ -264,7 +304,7 @@ assert_mode "$LINK_PREFIX/agent.db" 600
 FAIL_PREFIX="$TMP/fail_modes/.planar"
 mkdir -p "$FAIL_PREFIX"
 printf 'data\n' > "$FAIL_PREFIX/planar.db"
-printf 'data\n' > "$FAIL_PREFIX/agent.db-wal"
+printf 'data\n' > "$FAIL_PREFIX/planar.db-wal"
 mkdir -p "$TMP/failbin"
 printf '#!/bin/sh\nexit 1\n' > "$TMP/failbin/chmod"
 chmod +x "$TMP/failbin/chmod"
@@ -274,8 +314,8 @@ grep -Fq "could not restrict $FAIL_PREFIX to mode 700" "$TMP/fail-modes-stderr" 
   || fail "no warning for the install root when chmod failed"
 grep -Fq "could not restrict $FAIL_PREFIX/planar.db to mode 600" "$TMP/fail-modes-stderr" \
   || fail "no warning for planar.db when chmod failed"
-grep -Fq "could not restrict $FAIL_PREFIX/agent.db-wal to mode 600" "$TMP/fail-modes-stderr" \
-  || fail "no warning for agent.db-wal when chmod failed"
+grep -Fq "could not restrict $FAIL_PREFIX/planar.db-wal to mode 600" "$TMP/fail-modes-stderr" \
+  || fail "no warning for planar.db-wal when chmod failed"
 
 # The installer runs it twice, before the build and after the stamp, and both
 # calls must come after the dry-run exit so a dry run changes nothing.
@@ -289,12 +329,14 @@ for _call_line in $_calls; do
     || fail "install.sh calls harden_planar_home at line $_call_line, before the dry-run exit (line $_dry_line)"
 done
 
-# An uninstall keeps the tightened modes on the files it preserves.
+# An uninstall keeps the tightened modes on the files it preserves. (The
+# text placeholders standing in for agent.db above are not a store the
+# live-queue guard can read, so they go first.)
 MODES_HOME="$TMP/modes_home"
+rm -f "$MODES_PREFIX/agent.db" "$MODES_PREFIX/agent.db-wal" "$MODES_PREFIX/agent.db-shm"
 run_uninstall "$MODES_HOME" >"$TMP/modes-uninstall-stdout" 2>"$TMP/modes-uninstall-stderr" \
   || fail "uninstall of a hardened prefix failed: $(cat "$TMP/modes-uninstall-stderr")"
-assert_present "$MODES_PREFIX/agent.db"
-assert_mode "$MODES_PREFIX/agent.db" 600
+assert_present "$MODES_PREFIX/planar.db"
 assert_mode "$MODES_PREFIX/planar.db" 600
 assert_mode "$MODES_PREFIX" 700
 
@@ -462,4 +504,313 @@ _probe_line="$(grep -n '^queue_probe_migrate || exit 1$' "$ROOT/install.sh" | cu
 [[ "$_probe_line" -gt "$_install_line" ]] \
   || fail "install.sh probes planar.db (line $_probe_line) before it installs the binaries (line $_install_line)"
 
-printf 'install-manifest tests: 11 passed\n'
+# ---------------------------------------------------------------------------
+# The live-queue guard and agent.db retirement (plan 1089, task
+# qp-install-retire; tech spec 656 steps 1, 4 and 5, "Override", "Uninstall";
+# test spec 658). The guard and the retire step are queue_live_guard and
+# queue_retire_store in the same sourced file, run here with the real python3
+# and queue_retire.py. Rows that must count as live name a sleeping child of
+# this test, with host_id and pid_started read by queue_retire.py's OWN
+# readers; the post-build ctest case `queue_retire_live_oracle` is what
+# checks those readers against the engine.
+QR_SLEEPERS=()
+qr_kill_sleepers() {
+  local pid
+  for pid in ${QR_SLEEPERS[@]+"${QR_SLEEPERS[@]}"}; do
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+}
+trap 'qr_kill_sleepers; rm -rf "$TMP"' EXIT
+# qr_sleeper -- start a sleeping child of this test; its pid lands in QR_PID.
+qr_sleeper() {
+  sleep 300 &
+  QR_PID=$!
+  QR_SLEEPERS+=("$QR_PID")
+}
+# qr_identity PID -- "host_id<TAB>pid_started" as queue_retire.py reads them.
+qr_identity() {
+  python3 - "$ROOT/scripts/install-lib/queue_retire.py" "$1" <<'PYID'
+import importlib.util, sys, time
+spec = importlib.util.spec_from_file_location("queue_retire", sys.argv[1])
+qr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(qr)
+pid = int(sys.argv[2])
+for _ in range(200):
+    started = qr.start_time(pid)
+    if started is not None:
+        break
+    time.sleep(0.01)
+print("{}\t{}".format(qr.host_identity(), started))
+PYID
+}
+# qr_live_row_sql SEQ PID -- an insert of a waiting row owned by live PID.
+qr_live_row_sql() {
+  local ident host started
+  ident="$(qr_identity "$2")"
+  host="${ident%%	*}"; started="${ident#*	}"
+  [[ -n "$host" && "$host" != None && "$started" =~ ^[0-9]+$ ]] || fail "cannot read this host's identity or pid $2's start time: $ident"
+  printf "insert into queue_entries (seq, state, host_id, pid, pid_started, cwd, argv, enqueued_at, refreshed_mono) values (%s, 'waiting', '%s', %s, %s, '/', '[\"sleep\",\"300\"]', 1, 1);" \
+    "$1" "$host" "$2" "$started"
+}
+# qr_retire_setup NAME -- a prefix with planar.db and queue-logs/ holding old
+# and new logs; the caller builds agent.db (qr_store).
+qr_retire_setup() {
+  QR_CASE="$TMP/qrr_$1"
+  QR_P="$QR_CASE/prefix"
+  mkdir -p "$QR_P/queue-logs"
+  printf 'main db\n' > "$QR_P/planar.db"
+  local n
+  for n in 7 12 57 58 1000003; do printf 'log %s\n' "$n" > "$QR_P/queue-logs/$n.log"; done
+  printf 'notes\n' > "$QR_P/queue-logs/notes.txt"
+}
+# qr_store [SQL] -- agent.db for the case, then its -wal and -shm. (The
+# sidecars come second: a read-write SQLite connection to a rollback-journal
+# database removes a stray -wal.)
+qr_store() {
+  make_agent_store "$QR_P/agent.db" "${1:-}"
+  printf 'old wal\n' > "$QR_P/agent.db-wal"
+  printf 'old shm\n' > "$QR_P/agent.db-shm"
+}
+# qr_call [VAR=VALUE ...] FN [ARG] -- call a seam function for $QR_P, output to
+# $QR_CASE/{out,err}.
+qr_call() {
+  local -a vars=()
+  while [[ "$1" == *=* ]]; do vars+=("$1"); shift; done
+  (cd "$QR_CASE" && env ${vars[@]+"${vars[@]}"} PLANAR_HOME="$QR_P" QR_LIB="$QR_LIB" \
+    bash -c 'set -eEuo pipefail; source "$QR_LIB"; "$@"' qr-call "$@") >"$QR_CASE/out" 2>"$QR_CASE/err"
+}
+# qr_snapshot -- every file's name and bytes under the prefix, except the
+# CONTENT of agent.db-shm: that is SQLite's shared-memory index, which any
+# reader of a store with a -wal beside it (this read-only one included) may
+# update by protocol. Its presence still counts.
+qr_snapshot() {
+  (cd "$QR_P" && find . -type f ! -name agent.db-shm -print0 | sort -z | xargs -0 cat | cksum; find . | sort)
+}
+
+# Happy path: an idle store (old max 57) is retired. agent.db and its
+# sidecars, and the old logs numbered at or below 57 are removed, each named;
+# logs above it (58, and a new queue's 1000003) and other files stay.
+qr_retire_setup idle
+qr_store "insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) values (57, 'exited', '/', '[]', 1, 2, 0); insert into sqlite_sequence (name, seq) values ('queue_entries', 57);"
+qr_call queue_live_guard re-check || fail "the guard refused an idle agent.db: $(cat "$QR_CASE/err")"
+qr_call queue_retire_store || fail "retire refused an idle agent.db: $(cat "$QR_CASE/err")"
+for f in agent.db agent.db-wal agent.db-shm queue-logs/7.log queue-logs/12.log queue-logs/57.log; do
+  [[ ! -e "$QR_P/$f" ]] || fail "retire left $f"
+  grep -Fq "$QR_P/$f" "$QR_CASE/out" || fail "retire did not name the removal of $f: $(cat "$QR_CASE/out")"
+done
+for f in planar.db queue-logs/58.log queue-logs/1000003.log queue-logs/notes.txt; do
+  [[ -e "$QR_P/$f" ]] || fail "retire removed $f"
+done
+run_harden "$QR_P" || fail "harden_planar_home failed after retire"
+assert_mode "$QR_P" 700
+assert_mode "$QR_P/planar.db" 600
+
+# The floor: an old store whose range reaches 1,000,000 cannot be told apart
+# from the new queue's by number, so retire refuses, naming both numbers,
+# and removes nothing -- --ignore-live-queue does not change that.
+for qr_floor in 1000000 1234567; do
+  qr_retire_setup "floor_$qr_floor"
+  qr_store "insert into sqlite_sequence (name, seq) values ('queue_entries', $qr_floor);"
+  qr_before="$(qr_snapshot)"
+  for qr_ignore in 0 1; do
+    if qr_call IGNORE_LIVE_QUEUE=$qr_ignore queue_retire_store; then
+      fail "retire accepted an old range reaching the floor ($qr_floor, ignore=$qr_ignore)"
+    fi
+    grep -Fq "is $qr_floor" "$QR_CASE/err" || fail "the floor refusal does not name the old maximum $qr_floor"
+    grep -Fq "floor 1000000" "$QR_CASE/err" || fail "the floor refusal does not name the floor"
+    [[ "$(qr_snapshot)" == "$qr_before" ]] || fail "a refused retire changed the prefix"
+  done
+done
+
+# A live old entry blocks, naming the seq, the pid and the remedies;
+# --ignore-live-queue turns that into a warning naming the cost, and then
+# retires. (--force is not an override; see the install.sh cases below.)
+qr_sleeper
+QR_LIVE_PID="$QR_PID"
+qr_retire_setup live
+qr_store "$(qr_live_row_sql 3 "$QR_LIVE_PID")"
+qr_before="$(qr_snapshot)"
+if qr_call queue_live_guard preflight; then fail "the guard passed a live old entry"; fi
+for phrase in "seq=3 " "pid=$QR_LIVE_PID " "planar-agent queue cancel <seq>" "--ignore-live-queue" "--force does not bypass"; do
+  grep -Fq -- "$phrase" "$QR_CASE/err" || fail "the live-entry refusal does not name '$phrase': $(cat "$QR_CASE/err")"
+done
+[[ "$(qr_snapshot)" == "$qr_before" ]] || fail "a refused guard changed the prefix"
+qr_call IGNORE_LIVE_QUEUE=1 queue_live_guard re-check || fail "--ignore-live-queue did not override a live entry"
+grep -Fq 'orphaned queue' "$QR_CASE/err" || fail "the override did not print its cost"
+qr_call IGNORE_LIVE_QUEUE=1 queue_retire_store || fail "retire refused after the override: $(cat "$QR_CASE/err")"
+[[ ! -e "$QR_P/agent.db" ]] || fail "agent.db survived an overridden retire"
+
+# The installer's own preflight: the same live entry refuses before anything
+# is built, --force refuses the same way, and --ignore-live-queue proceeds
+# with the warning. Always a dry run against a scratch HOME and prefix, so
+# nothing is ever built or installed, whatever the guard does.
+qr_retire_setup install_live
+qr_store "$(qr_live_row_sql 4 "$QR_LIVE_PID")"
+qr_install() {
+  HOME="$QR_CASE/home" PLANAR_HOME="$QR_P" CODEX_HOME="$QR_CASE/home/.codex" \
+    "$ROOT/install.sh" --dry-run --no-vendor --build-dir "$QR_CASE/build" "$@" >"$QR_CASE/out" 2>"$QR_CASE/err"
+}
+mkdir -p "$QR_CASE/home"
+for qr_flags in "" "--force"; do
+  if qr_install $qr_flags; then fail "install.sh $qr_flags passed a live old entry"; fi
+  grep -Fq 'seq=4 ' "$QR_CASE/err" || fail "install.sh $qr_flags did not refuse for the live entry: $(cat "$QR_CASE/err")"
+  ! grep -Fq 'missing required' "$QR_CASE/err" || fail "install.sh $qr_flags ran the dependency preflight before the live-queue preflight"
+  ! grep -Fq 'Dry run' "$QR_CASE/out" || fail "install.sh $qr_flags got past the live-queue preflight"
+done
+qr_install --ignore-live-queue || true
+grep -Fq 'orphaned queue' "$QR_CASE/err" || fail "install.sh --ignore-live-queue did not warn with the cost: $(cat "$QR_CASE/err")"
+! grep -Fq 'refusing to retire' "$QR_CASE/err" || fail "install.sh --ignore-live-queue still refused"
+[[ -e "$QR_P/agent.db" ]] || fail "a dry run removed agent.db"
+
+# Only provably dead rows (a reaped submitter on this host; a row from an
+# earlier boot of this machine or another machine) do not block: the guard
+# passes without the override, lists them as ignored, and retire proceeds.
+qr_retire_setup dead
+true & qr_dead_pid=$!; wait "$qr_dead_pid" || true
+qr_ident="$(qr_identity "$QR_LIVE_PID")"
+qr_host="${qr_ident%%	*}"
+qr_rest=""; [[ "$qr_host" == *:* ]] && qr_rest=":${qr_host#*:}"
+qr_store "insert into queue_entries (seq, state, host_id, pid, pid_started, cwd, argv, enqueued_at, refreshed_mono) values (5, 'waiting', '$qr_host', $qr_dead_pid, 1, '/', '[]', 1, 1), (6, 'waiting', '00000000-0000-0000-0000-000000000000$qr_rest', $QR_LIVE_PID, 1, '/', '[]', 1, 1);"
+qr_call queue_live_guard re-check || fail "the guard refused only dead rows: $(cat "$QR_CASE/err")"
+grep -Fq 'ignoring dead seq=5 ' "$QR_CASE/out" || fail "the guard did not list the reaped row as ignored: $(cat "$QR_CASE/out")"
+grep -Fq 'ignoring dead seq=6 ' "$QR_CASE/out" || fail "the guard did not list the earlier-boot row as ignored"
+qr_call queue_retire_store || fail "retire refused after only dead rows: $(cat "$QR_CASE/err")"
+
+# The re-check: the preflight passes on an empty store, an entry appears
+# (as it could during the build), and the re-check refuses before removal.
+qr_retire_setup recheck
+qr_store
+qr_call queue_live_guard preflight || fail "the preflight refused an empty store"
+python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.executescript(sys.argv[2]); c.close()' \
+  "$QR_P/agent.db" "$(qr_live_row_sql 9 "$QR_LIVE_PID")"
+if qr_call queue_live_guard re-check; then fail "the re-check missed an entry that appeared after the preflight"; fi
+grep -Fq 'seq=9 ' "$QR_CASE/err" || fail "the re-check did not name the new entry"
+[[ -e "$QR_P/agent.db" ]] || fail "a refused re-check removed agent.db"
+
+# A store that cannot be read is live: the guard refuses, naming the manual
+# remedy. --ignore-live-queue makes the guard warn, but retire still refuses
+# an unreadable store, and nothing is touched.
+qr_bad_store=0
+for qr_kind in text no_table no_sequence mode000; do
+  if [[ "$qr_kind" == mode000 && "$(id -u)" == 0 ]]; then continue; fi
+  qr_bad_store=$((qr_bad_store + 1))
+  qr_retire_setup "unreadable_$qr_kind"
+  case "$qr_kind" in
+    text) printf 'not a database\n' > "$QR_P/agent.db" ;;
+    no_table) python3 -c 'import sqlite3, sys; c = sqlite3.connect(sys.argv[1]); c.execute("create table other (x)"); c.close()' "$QR_P/agent.db" ;;
+    no_sequence) qr_store "insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) values (3, 'exited', '/', '[]', 1, 2, 0);" ;;
+    mode000) qr_store; chmod 000 "$QR_P/agent.db" ;;
+  esac
+  qr_before="$(cd "$QR_P" && ls -lR | grep -v -e 'agent.db-shm' -e '^total ' | cksum)"
+  if [[ "$qr_kind" != no_sequence ]]; then
+    if qr_call queue_live_guard preflight; then fail "the guard passed an unreadable store ($qr_kind)"; fi
+    grep -Fq 'by hand' "$QR_CASE/err" || fail "the unreadable-store refusal ($qr_kind) does not name the manual remedy: $(cat "$QR_CASE/err")"
+    qr_call IGNORE_LIVE_QUEUE=1 queue_live_guard re-check || fail "--ignore-live-queue did not turn an unreadable store ($qr_kind) into a warning"
+  fi
+  if qr_call IGNORE_LIVE_QUEUE=1 queue_retire_store; then fail "retire accepted an unreadable store ($qr_kind)"; fi
+  grep -Fq 'NOT retired' "$QR_CASE/err" || fail "the retire refusal ($qr_kind) does not say agent.db was kept"
+  [[ "$(cd "$QR_P" && ls -lR | grep -v -e 'agent.db-shm' -e '^total ' | cksum)" == "$qr_before" ]] || fail "a refused retire ($qr_kind) changed the prefix"
+  chmod 600 "$QR_P/agent.db" 2>/dev/null || true
+done
+[[ "$qr_bad_store" -ge 3 ]] || fail "too few unreadable-store cases ran"
+
+# No agent.db: neither the guard nor retire runs, and python3 is not invoked.
+qr_retire_setup none
+rm -f "$QR_P/agent.db-wal" "$QR_P/agent.db-shm"
+mkdir -p "$QR_CASE/spybin"
+printf '#!/bin/sh\necho called >> "%s/python3.calls"\nexit 99\n' "$QR_CASE" > "$QR_CASE/spybin/python3"
+chmod +x "$QR_CASE/spybin/python3"
+qr_before="$(qr_snapshot)"
+qr_call PATH="$QR_CASE/spybin:$PATH" queue_live_guard preflight || fail "the guard failed with no agent.db"
+qr_call PATH="$QR_CASE/spybin:$PATH" queue_retire_store || fail "retire failed with no agent.db"
+[[ ! -e "$QR_CASE/python3.calls" ]] || fail "python3 was invoked with no agent.db"
+[[ "$(qr_snapshot)" == "$qr_before" ]] || fail "the queue steps changed a prefix with no agent.db"
+
+# The call site: the queue-store block of install.sh runs the probe, the
+# re-check and retire, in that order, and a refused re-check stops it before
+# retire. The block is extracted and run with stub functions.
+sed -n '/^# ---------- queue store ----------$/,/^# ---------- place artifacts ----------$/p' "$ROOT/install.sh" > "$TMP/queue-block.sh"
+grep -Fq 'queue_retire_store' "$TMP/queue-block.sh" || fail "the queue store block was not found in install.sh"
+run_queue_block() {
+  QUEUE_BLOCK="$TMP/queue-block.sh" RECHECK_RC="$1" bash -c '
+    set -eEuo pipefail
+    title() { :; }
+    queue_probe_migrate() { echo probe; }
+    queue_live_guard() { echo "guard $1"; return "$RECHECK_RC"; }
+    queue_retire_store() { echo retire; }
+    source "$QUEUE_BLOCK"
+  '
+}
+[[ "$(run_queue_block 0 | tr '\n' ' ')" == "probe guard re-check retire " ]] \
+  || fail "install.sh's queue store block does not run probe, re-check, retire in order: $(run_queue_block 0 | tr '\n' ' ')"
+if qr_block_out="$(run_queue_block 1)"; then fail "a refused re-check did not stop install.sh"; fi
+[[ "$qr_block_out" != *retire* ]] || fail "install.sh retired agent.db after a refused re-check"
+# The preflight comes before the dependency preflight and the build.
+_pre_line="$(grep -n '^queue_live_guard preflight || exit 1$' "$ROOT/install.sh" | cut -d: -f1)"
+_deps_line="$(grep -n '^check_deps "build"' "$ROOT/install.sh" | cut -d: -f1)"
+[[ -n "$_pre_line" && -n "$_deps_line" && "$_pre_line" -lt "$_deps_line" ]] \
+  || fail "install.sh's live-queue preflight must run before check_deps (lines '$_pre_line' / '$_deps_line')"
+
+# Uninstall: with a live agent.db entry, --uninstall and --uninstall --force
+# both refuse before removing anything; --ignore-live-queue proceeds.
+for qr_flags in "" "--force"; do
+  QR_UHOME="$TMP/qr_uninstall_live${qr_flags}"
+  seed_prefix "$QR_UHOME/.planar"
+  mkdir -p "$QR_UHOME/.planar/bin"
+  printf '#!/bin/sh\n' > "$QR_UHOME/.planar/bin/planar"; chmod +x "$QR_UHOME/.planar/bin/planar"
+  rm -f "$QR_UHOME/.planar/agent.db"
+  make_agent_store "$QR_UHOME/.planar/agent.db" "$(qr_live_row_sql 11 "$QR_LIVE_PID")"
+  if run_uninstall "$QR_UHOME" $qr_flags >"$TMP/qr-u-out" 2>"$TMP/qr-u-err"; then
+    fail "uninstall $qr_flags passed a live old entry"
+  fi
+  grep -Fq 'seq=11 ' "$TMP/qr-u-err" || fail "uninstall $qr_flags refused for an unexpected reason: $(cat "$TMP/qr-u-err")"
+  assert_present "$QR_UHOME/.planar/bin/planar"
+  assert_present "$QR_UHOME/.planar/agent.db"
+  run_uninstall "$QR_UHOME" $qr_flags --ignore-live-queue >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
+    || fail "uninstall $qr_flags --ignore-live-queue refused: $(cat "$TMP/qr-u-err")"
+  assert_absent "$QR_UHOME/.planar/agent.db"
+done
+
+# Uninstall without python3: with agent.db present it refuses before removing
+# anything, naming python3 and the remedies; --ignore-live-queue proceeds
+# with a warning; with no agent.db, python3 is not needed. PATH is a farm of
+# the tools the uninstall branch uses, without python3.
+QR_NOPY="$TMP/nopy-bin"
+mkdir -p "$QR_NOPY"
+for tool in bash env dirname find readlink rm rmdir cat realpath ls mkdir grep tr; do
+  ln -s "$(command -v "$tool")" "$QR_NOPY/$tool"
+done
+run_uninstall_nopy() { PATH="$QR_NOPY" run_uninstall "$@"; }
+QR_UHOME="$TMP/qr_uninstall_nopy"
+seed_prefix "$QR_UHOME/.planar"
+if run_uninstall_nopy "$QR_UHOME" >"$TMP/qr-u-out" 2>"$TMP/qr-u-err"; then
+  fail "uninstall with agent.db and no python3 did not refuse"
+fi
+grep -Fq 'python3 is required' "$TMP/qr-u-err" || fail "the no-python3 refusal does not name python3: $(cat "$TMP/qr-u-err")"
+grep -Fq -- '--ignore-live-queue' "$TMP/qr-u-err" || fail "the no-python3 refusal does not name --ignore-live-queue"
+assert_present "$QR_UHOME/.planar/agent.db"
+assert_present "$QR_UHOME/.planar/queue-logs/1000001.log"
+run_uninstall_nopy "$QR_UHOME" --ignore-live-queue >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
+  || fail "uninstall --ignore-live-queue without python3 refused: $(cat "$TMP/qr-u-err")"
+grep -Fq 'python3 is not installed' "$TMP/qr-u-err" || fail "uninstall --ignore-live-queue without python3 did not warn"
+assert_absent "$QR_UHOME/.planar/agent.db"
+QR_UHOME="$TMP/qr_uninstall_nopy_noagent"
+seed_prefix "$QR_UHOME/.planar"
+rm -f "$QR_UHOME/.planar/agent.db" "$QR_UHOME/.planar/agent.db-wal" "$QR_UHOME/.planar/agent.db-shm"
+run_uninstall_nopy "$QR_UHOME" >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
+  || fail "uninstall with no agent.db needed python3: $(cat "$TMP/qr-u-err")"
+assert_present "$QR_UHOME/.planar/planar.db"
+
+# Dependencies: python3's reason names the retirement reader; neither ps nor
+# sysctl is a manifest entry or a README prerequisite (question 1011).
+grep -Fq '"python3|python|Centurion'"'"'s configure; install.sh'"'"'s agent.db retirement reader' "$ROOT/install.sh" \
+  || fail "python3's BUILD_DEPS reason does not name the agent.db retirement reader"
+! grep -Eq '^  "(ps|sysctl)\|' "$ROOT/install.sh" || fail "ps or sysctl is in BUILD_DEPS/RUN_DEPS"
+sed -n '/^## Prerequisites/,/^### /p' "$ROOT/README.md" > "$TMP/prereqs.md"
+grep -Fq 'agent.db` retirement reader' "$TMP/prereqs.md" || fail "README Prerequisites does not name the retirement reader"
+! grep -Eq '`(ps|sysctl)`' "$TMP/prereqs.md" || fail "README Prerequisites names ps or sysctl"
+
+qr_kill_sleepers
+printf 'install-manifest tests: 12 passed\n'
+

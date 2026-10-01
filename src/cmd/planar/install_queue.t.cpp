@@ -14,6 +14,15 @@
 // that an ahead database really is left alone. ctest runs only after the
 // build, so the binaries here are always current.
 //
+// `queue_retire_live_oracle` (task qp-install-retire) is the only check that
+// `scripts/install-lib/queue_retire.py`, the installer's fail-closed reader of
+// the retired `agent.db`, agrees with the ENGINE on identity format, start-time
+// units and parsing: it writes rows with the real `planar.process.identity`
+// and asks the reader for its verdicts. The reader's own suite
+// (`queue_retire_reader`) builds its rows with the reader's readers, which is
+// self-consistent by design and cannot catch a wrong struct offset or `/proc`
+// field index.
+//
 // The installer's prefix is a scratch directory under the arena, and the
 // scratch `HOME` holds a canary `.planar/planar.db`. The seam is run through
 // `run_pinned` with `PLANAR_DB` REMOVED from the environment, so the only way
@@ -21,10 +30,18 @@
 // that forgot to pass it would reach the canary, and the canary is checked.
 #include <catch2/catch_test_macros.hpp>
 
+#include <csignal>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+extern char** environ;
+
 import std;
 import planar.db;
 import planar.db.migrate;
 import planar.db.migrations;
+import planar.process.identity;
 
 #include "parity_harness.hpp"
 #include "planar-agent/queue_test_store.hpp"
@@ -54,6 +71,54 @@ auto seam_lib() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "scripts" / "install-lib" / "queue-retire.sh";
 }
 
+/// @brief Fails the case, before any binary runs, when a fixture step failed.
+/// @param what The step.
+/// @param ok Whether it worked.
+void must(std::string_view what, bool ok) {
+  if (!ok) {
+    throw std::runtime_error(std::format("install fixture: {} failed", what));
+  }
+}
+
+/// @brief The installer's store reader in this checkout.
+/// @return The path.
+auto reader_py() -> std::filesystem::path {
+  return std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "scripts" / "install-lib" / "queue_retire.py";
+}
+
+/// @brief The queue tables of the retired agent store (agent migrations
+/// 00002 and 00003), which `queue_retire.py` reads.
+constexpr std::string_view k_agent_schema = R"(
+create table agent_schema_migrations (version integer primary key, compat integer not null, description text not null);
+create table queue_entries (
+  seq integer primary key autoincrement,
+  state text not null check(state in ('waiting', 'running')),
+  host_id text not null, pid integer not null, pid_started integer not null,
+  child_pgid integer, child_started integer, parent_seq integer, terminating_since_mono integer,
+  terminate_reason text check(terminate_reason in ('timeout', 'cancelled')), cancelled_by text,
+  cwd text not null, argv text not null, label text, vendor text, role text, claim_token text, log_path text,
+  enqueued_at integer not null, started_at integer, refreshed_mono integer not null, deadline_mono integer,
+  wait_deadline_mono integer, run_limit_ms integer, wait_limit_ms integer);
+create table queue_history (
+  seq integer primary key, outcome text not null, exit_code integer, signal integer, successor_seq integer,
+  cancelled_by text, nested integer not null default 0, parent_seq integer, cwd text not null, argv text not null,
+  label text, vendor text, role text, log_path text, enqueued_at integer not null, started_at integer,
+  ended_at integer not null, waited_ms integer not null, ran_ms integer, run_limit_ms integer, wait_limit_ms integer);
+)";
+
+/// @brief Creates an idle retired agent store at `path`: the queue tables,
+/// no entries, an old maximum sequence number of 57.
+/// @param path The store.
+void idle_agent_store(const std::filesystem::path& path) {
+  auto opened = planar::db::connection::open(path.string());
+  must("open the agent store", opened.has_value());
+  must("create the agent tables", opened->execute(k_agent_schema).has_value());
+  must("seed the old range", opened->execute("insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
+                                             "values (57, 'exited', '/', '[]', 1, 2, 0); "
+                                             "insert into sqlite_sequence (name, seq) values ('queue_entries', 57);")
+                                 .has_value());
+}
+
 /// @brief A scratch install: a prefix holding the built binaries and a
 /// config with the `cli_log` hook pinned off, and a scratch `HOME` holding a
 /// canary `.planar/planar.db`.
@@ -65,15 +130,6 @@ struct install_fixture {
   std::filesystem::path config; ///< `prefix/config.toml`.
   std::filesystem::path canary; ///< `HOME/.planar/planar.db`, which nothing may touch.
 };
-
-/// @brief Fails the case, before any binary runs, when a fixture step failed.
-/// @param what The step.
-/// @param ok Whether it worked.
-void must(std::string_view what, bool ok) {
-  if (!ok) {
-    throw std::runtime_error(std::format("install fixture: {} failed", what));
-  }
-}
 
 /// @brief Builds the scratch install.
 /// @param tag The arena tag.
@@ -130,8 +186,9 @@ void truncated_store(const std::filesystem::path& path) {
 /// @param fx The fixture.
 /// @param fn The function to call.
 /// @param tag A capture discriminator.
+/// @param arg The function's argument, when it takes one.
 /// @return What the call printed and its status.
-auto run_seam(const install_fixture& fx, std::string_view fn, std::string_view tag) -> capture {
+auto run_seam(const install_fixture& fx, std::string_view fn, std::string_view tag, std::string_view arg = {}) -> capture {
   auto env = parity::pinned_env(fx.work);
   for (auto& var : env) {
     if (var.name == "PLANAR_DB") {
@@ -141,8 +198,11 @@ auto run_seam(const install_fixture& fx, std::string_view fn, std::string_view t
       var.value = fx.prefix.string();
     }
   }
-  std::string const script = R"(set -eEuo pipefail; p="$PLANAR_HOME"; unset PLANAR_HOME; PLANAR_HOME="$p"; source "$1"; "$2")";
-  std::vector<std::string> const args{"-c", script, "bash", seam_lib().string(), std::string{fn}};
+  std::string const script = R"(set -eEuo pipefail; p="$PLANAR_HOME"; unset PLANAR_HOME; PLANAR_HOME="$p"; source "$1"; shift; "$@")";
+  std::vector<std::string> args{"-c", script, "bash", seam_lib().string(), std::string{fn}};
+  if (!arg.empty()) {
+    args.emplace_back(arg);
+  }
   return parity::run_pinned("bash", args, fx.work, tag, env);
 }
 
@@ -320,6 +380,17 @@ TEST_CASE("install_queue_probe_migrate", "[cmd][install][queue]") {
       if (one.warning.empty()) {
         CHECK(got.err.empty());
       }
+
+      // ...and an idle agent.db beside it is still retired.
+      idle_agent_store(fx.prefix / "agent.db");
+      auto const recheck = run_seam(fx, "queue_live_guard", "recheck", "re-check");
+      INFO("re-check stderr:\n" << recheck.err);
+      CHECK(recheck.code == 0);
+      auto const retired = run_seam(fx, "queue_retire_store", "retire");
+      INFO("retire stderr:\n" << retired.err);
+      CHECK(retired.code == 0);
+      CHECK_FALSE(std::filesystem::exists(fx.prefix / "agent.db"));
+      CHECK(std::filesystem::exists(fx.db));
     }
   }
 
@@ -336,4 +407,247 @@ TEST_CASE("install_queue_probe_migrate", "[cmd][install][queue]") {
     CHECK(got.out.find("migrating") == std::string::npos);
     CHECK(qfix::applied_versions(fx.db) == versions_before);
   }
+}
+
+namespace {
+
+/// @brief A child this case started, killed and reaped when the case ends
+/// however it ends. Only ever signals its own pid, or the group it made.
+class child {
+public:
+  /// @brief Starts `/bin/sleep 300`, in a process group of its own when
+  /// `own_group` is set.
+  /// @param own_group Whether the child leads a new process group.
+  explicit child(bool own_group) {
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    if (own_group) {
+      posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETPGROUP);
+      posix_spawnattr_setpgroup(&attr, 0);
+    }
+    std::array<char*, 3> argv{const_cast<char*>("sleep"), const_cast<char*>("300"), nullptr};
+    ::pid_t              pid = 0;
+    int const            rc  = ::posix_spawn(&pid, "/bin/sleep", nullptr, &attr, argv.data(), environ);
+    posix_spawnattr_destroy(&attr);
+    must("spawn a sleeping child", rc == 0 && pid > 1);
+    _pid   = pid;
+    _group = own_group;
+  }
+  child(const child&)                    = delete;
+  auto operator=(const child&) -> child& = delete;
+  child(child&&)                         = delete;
+  auto operator=(child&&) -> child&      = delete;
+  ~child() { reap(); }
+
+  /// @brief The child's pid (and, for a group child, its pgid).
+  /// @return The pid.
+  [[nodiscard]] auto pid() const -> std::int64_t { return _pid; }
+
+  /// @brief Kills the child (and its group, when it leads one) and reaps it.
+  void reap() {
+    if (_pid <= 1) {
+      return;
+    }
+    if (_group) {
+      ::kill(-_pid, SIGKILL);
+    } else {
+      ::kill(_pid, SIGKILL);
+    }
+    int status = 0;
+    ::waitpid(_pid, &status, 0);
+    _pid = 0;
+  }
+
+private:
+  ::pid_t _pid   = 0;
+  bool    _group = false;
+};
+
+/// @brief The pid of a child that has already exited and been reaped.
+/// @return The pid.
+auto reaped_pid() -> std::int64_t {
+  std::array<char*, 2> argv{const_cast<char*>("true"), nullptr};
+  ::pid_t              pid = 0;
+  must("spawn true", ::posix_spawn(&pid, "/usr/bin/true", nullptr, nullptr, argv.data(), environ) == 0);
+  int status = 0;
+  ::waitpid(pid, &status, 0);
+  return pid;
+}
+
+/// @brief The engine's start time for `pid`, read through the real
+/// `planar.process.identity`.
+/// @param pid A live child of this case.
+/// @return The start time.
+auto engine_start_time(std::int64_t pid) -> std::int64_t {
+  for (int attempt = 0; attempt < 200; ++attempt) {
+    auto const got = planar::process::identity::process_start_time(pid);
+    if (got && got->has_value()) {
+      return static_cast<std::int64_t>(**got);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  throw std::runtime_error(std::format("no engine start time for child {}", pid));
+}
+
+/// @brief One `queue_entries` row, as the engine would write it.
+struct oracle_row {
+  std::int64_t                seq;           ///< The sequence number.
+  std::string_view            state;         ///< `waiting` or `running`.
+  std::string                 host_id;       ///< The submitter's host identity.
+  std::int64_t                pid;           ///< The submitter's pid.
+  std::int64_t                pid_started;   ///< The submitter's start time.
+  std::optional<std::int64_t> child_pgid;    ///< The child group, for a running row.
+  std::optional<std::int64_t> child_started; ///< The group leader's start time.
+};
+
+/// @brief Writes `rows` into a fresh retired-store file at `path`.
+/// @param path The store.
+/// @param rows The rows.
+void write_oracle_store(const std::filesystem::path& path, std::span<const oracle_row> rows) {
+  auto opened = planar::db::connection::open(path.string());
+  must("open the oracle store", opened.has_value());
+  must("create the agent tables", opened->execute(k_agent_schema).has_value());
+  auto stmt = opened->prepare("insert into queue_entries (seq, state, host_id, pid, pid_started, child_pgid, child_started, cwd, "
+                              "argv, enqueued_at, refreshed_mono) values (?, ?, ?, ?, ?, ?, ?, '/', '[\"sleep\",\"300\"]', 1, 1)");
+  must("prepare the row insert", stmt.has_value());
+  for (auto const& row : rows) {
+    must("reset the row insert", stmt->reset().has_value());
+    bool ok = stmt->bind_int64(1, row.seq).has_value() && stmt->bind_text(2, row.state).has_value() &&
+              stmt->bind_text(3, row.host_id).has_value() && stmt->bind_int64(4, row.pid).has_value() &&
+              stmt->bind_int64(5, row.pid_started).has_value();
+    ok = ok && (row.child_pgid ? stmt->bind_int64(6, *row.child_pgid) : stmt->bind_null(6)).has_value();
+    ok = ok && (row.child_started ? stmt->bind_int64(7, *row.child_started) : stmt->bind_null(7)).has_value();
+    auto const stepped = stmt->step();
+    must("insert an oracle row", ok && stepped.has_value());
+  }
+}
+
+/// @brief Runs `queue_retire.py live` on `store`.
+/// @param work The arena root.
+/// @param store The store.
+/// @param tag A capture discriminator.
+/// @return Its output and exit status.
+auto reader_live(const std::filesystem::path& work, const std::filesystem::path& store, std::string_view tag) -> capture {
+  std::vector<std::string> const args{reader_py().string(), "live", store.string()};
+  return parity::run_pinned(PLANAR_PYTHON3, args, work, tag);
+}
+
+/// @brief Whether `out` lists row `seq` with verdict `kind` (`blocking` or `dead`).
+/// @param out The reader's output.
+/// @param kind The verdict word.
+/// @param seq The row.
+/// @return Whether the line is there.
+auto lists(const std::string& out, std::string_view kind, std::int64_t seq) -> bool {
+  return out.find(std::format("\n{} seq={} ", kind, seq)) != std::string::npos ||
+         out.starts_with(std::format("{} seq={} ", kind, seq));
+}
+
+} // namespace
+
+TEST_CASE("queue_retire_live_oracle", "[cmd][install][queue]") {
+  namespace identity = planar::process::identity;
+  auto const arena   = parity::make_arena("qr_oracle");
+  auto const work    = arena.cpp_root;
+  auto const store   = work / "oracle" / "agent.db";
+  std::error_code ec;
+  std::filesystem::create_directories(store.parent_path(), ec);
+
+  auto const host = identity::host_identity(identity::native_identity_source());
+  REQUIRE(host != identity::k_unknown_host_identity);
+
+  child      submitter{false};
+  child      group{true};
+  child      reused{false};
+  auto const dead = reaped_pid();
+
+  std::array const rows{
+      // 1: a live waiting submitter with its TRUE start time. A reader that
+      // computes a different start time (a wrong ctypes offset, a wrong /proc
+      // field index) calls it dead.
+      oracle_row{.seq = 1, .state = "waiting", .host_id = host, .pid = submitter.pid(), .pid_started = engine_start_time(submitter.pid()), .child_pgid = {}, .child_started = {}},
+      // 2: a running entry whose submitter is gone but whose child group,
+      // started in its own group, is live with the engine's start time.
+      oracle_row{.seq           = 2,
+                 .state         = "running",
+                 .host_id       = host,
+                 .pid           = dead,
+                 .pid_started   = 1,
+                 .child_pgid    = group.pid(),
+                 .child_started = engine_start_time(group.pid())},
+      // 3: a live pid whose stored start time is the truth + 1: a reused pid.
+      // A reader with no usable start time (a wrong struct size) cannot
+      // prove it different and blocks.
+      oracle_row{.seq = 3, .state = "waiting", .host_id = host, .pid = reused.pid(), .pid_started = engine_start_time(reused.pid()) + 1, .child_pgid = {}, .child_started = {}},
+  };
+  write_oracle_store(store, rows);
+
+  auto const first = reader_live(work, store, "first");
+  INFO("first:\n" << first.out << first.err);
+  CHECK(first.code == 3);
+  CHECK(lists(first.out, "blocking", 1));
+  CHECK(lists(first.out, "blocking", 2));
+  CHECK(lists(first.out, "dead", 3));
+
+  submitter.reap();
+  auto const second = reader_live(work, store, "second");
+  INFO("after the submitter is reaped:\n" << second.out << second.err);
+  CHECK(second.code == 3);
+  CHECK(lists(second.out, "dead", 1));
+  CHECK(lists(second.out, "blocking", 2));
+  CHECK(lists(second.out, "dead", 3));
+
+  group.reap();
+  auto const third = reader_live(work, store, "third");
+  INFO("after the group is reaped:\n" << third.out << third.err);
+  CHECK(third.code == 0);
+  CHECK(lists(third.out, "dead", 1));
+  CHECK(lists(third.out, "dead", 2));
+  CHECK(lists(third.out, "dead", 3));
+}
+
+TEST_CASE("queue_retire_ignores_the_new_queue", "[cmd][install][queue]") {
+  // A live new-binary run in planar.db never blocks retiring agent.db, and
+  // its log (numbered above the floor) survives the retire.
+  auto fx = make_install("qr_newqueue");
+  qfix::head_store(fx.db);
+  idle_agent_store(fx.prefix / "agent.db");
+
+  auto env = parity::pinned_env(fx.work);
+  for (auto& var : env) {
+    if (var.name == "PLANAR_DB") {
+      var.value = fx.db.string();
+    }
+  }
+  std::vector<std::string> const detach{"queue", "run", "--detach", "--", "sleep", "2"};
+  auto const                     ticket = parity::run_pinned(agent_bin(), detach, fx.work, "detach", env);
+  INFO("detach:\n" << ticket.out << ticket.err);
+  REQUIRE(ticket.code == 0);
+  auto const seq = ticket.out.substr(0, ticket.out.find('\n'));
+  REQUIRE(std::stoll(seq) > qfix::k_seq_floor);
+  auto const log = fx.prefix / "queue-logs" / std::format("{}.log", seq);
+
+  auto const recheck = run_seam(fx, "queue_live_guard", "recheck", "re-check");
+  INFO("re-check:\n" << recheck.out << recheck.err);
+  CHECK(recheck.code == 0);
+  auto const retired = run_seam(fx, "queue_retire_store", "retire");
+  INFO("retire:\n" << retired.out << retired.err);
+  CHECK(retired.code == 0);
+  CHECK_FALSE(std::filesystem::exists(fx.prefix / "agent.db"));
+
+  // The new run completes normally and keeps its log.
+  std::string state;
+  for (int attempt = 0; attempt < 400; ++attempt) {
+    std::vector<std::string> const status{"queue", "status", seq, "--json"};
+    auto const                     got = parity::run_pinned(agent_bin(), status, fx.work, "status", env);
+    if (got.out.find(R"("state":"ended")") != std::string::npos) {
+      state = got.out;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  INFO("final status: " << state);
+  REQUIRE_FALSE(state.empty());
+  CHECK(state.find(R"("outcome":"exited")") != std::string::npos);
+  CHECK(state.find(R"("exit_code":0)") != std::string::npos);
+  CHECK(std::filesystem::exists(log));
 }
