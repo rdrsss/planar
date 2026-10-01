@@ -30,11 +30,13 @@
 /// that).
 ///
 /// Usage:
-///   queue_contention_probe --source <db> --dest <new-copy.db> --run r1|r2|r3|r4|r5
+/// @code
+///   queue_contention_probe --source DB --dest NEW_COPY_DB --run r1|r2|r3|r4|r5
 ///       [--duration-s N] [--submitters N] [--poll-ms N] [--slots N]
-///       [--planning-interval-ms N] [--warmup-s N] [--holds a,b] [--gap-s N]
+///       [--planning-interval-ms N] [--warmup-s N] [--holds A,B] [--gap-s N]
 ///       [--rebuild-table T] [--rebuild-at-s N] [--watch-bin PATH]
 ///       [--checkpoint-wait-s N] [--report FILE] [--keep]
+/// @endcode
 ///
 /// Exit codes: 0 = run completed and every bound held (or the run is
 /// informational), 1 = internal or environment error, 2 = usage error or a
@@ -1276,6 +1278,10 @@ auto run_experiment(const options& opts, const vetted_copy& copy, const std::fun
 
 } // namespace
 
+/// @brief Parses the options, vets the destination, takes the backup copy and runs one experiment.
+/// @param argc The argument count.
+/// @param argv The arguments.
+/// @return 0 when every bound held, 1 on an error, 2 on a usage error or a refusal, 3 on a breach.
 auto main(int argc, char** argv) -> int {
   auto parsed = parse_options(std::span<char const* const>(argv + 1, static_cast<std::size_t>(argc - 1)));
   if (!parsed) {
