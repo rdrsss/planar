@@ -856,7 +856,8 @@ itself never opens SQLite and has no write path of its own.
 `surface-artifact-set-drift`, `surface-capability-drift`,
 `surface-command-drift`, `surface-contract-missing` and
 `surface-path-missing`; the host-queue rule adds `surface-queue-command` and
-`surface-queue-marker-invalid` (below); malformed or unused suppressions use
+`surface-queue-marker-invalid` (below); the retired-reference rule adds
+`surface-retired-reference` and `surface-retired-ref-marker-invalid`; malformed or unused suppressions use
 `surface-suppression-invalid` and `surface-suppression-unused`. These cover absent repository-relative links,
 pinned retired implementation references, contradictory four-artifact
 contracts, read-only roles containing write commands, invalid semantic command
@@ -901,6 +902,23 @@ verbatim section. They have their own markers:
   `<!-- queue-lint-ignore-end -->` are exempt, for text pinned byte for byte
   elsewhere, where a per-line marker would change the bytes (the queue rule in
   `agents/methodology.md`). The marker lines sit outside the pinned text.
+
+`surface-retired-reference` (plan 1089) keeps the removed separate agent
+database from coming back: its file name, its path variable, its migration
+directory and its read-tolerance helper (the `k_scoped_retired_patterns` table in
+`src/tools/surface_lint/main.cpp`) may not appear in `docs/`, `agents/`,
+`skills/src/`, `copilot/` or the root guides (`README.md`, `CLAUDE.md`,
+`AGENTS.md`, `INSTALL.md`). This is the one check that also reads `README.md`,
+`INSTALL.md` and `copilot/`, and it reads fenced code blocks as well. Two things
+are exempt: `docs/changelog.md`, which records the removal, and the lines of
+`INSTALL.md` between two `retired-ref` marker lines (the upgrade note, whose
+exact marker text is the `k_retired_region_marker` constant). Everything outside
+that scope (`install.sh`, `scripts/`, `src/`, `migrations/README.md`) is never
+read for it, since the installer legitimately names the store it retires.
+`surface-retired-ref-marker-invalid` is reported for a region that is never
+closed and for a marker in any file but `INSTALL.md`, so a stray marker cannot
+silence a hit. Neither code is suppressible with the comment above: the scope and
+the marked region are the whole exemption mechanism.
 
 The semantic validator is read-only and does not invoke an LLM or open SQLite.
 The normal authored-surface quality gate is `make cli-usage-check`: it runs the

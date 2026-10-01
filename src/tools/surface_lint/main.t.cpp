@@ -408,6 +408,49 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 5 finding(s) across 1 files\n");
   }
 
+  SECTION("retired_refs: scoped hits fire, in a fence too; the changelog, the marked INSTALL.md region and "
+          "unscanned out-of-scope files stay silent") {
+    // One tree carries every shape the retired-reference lint distinguishes
+    // (plan 1089, tech spec 656 § Retired-reference lint). SCOPED hits: an
+    // inline `agent.db` and a `PLANAR_AGENT_DB` in docs/scoped.md, an
+    // `agent.db` inside a fenced block there, a `limit_columns_select` in the
+    // root README.md, and a `migrations-agent` in INSTALL.md AFTER its marked
+    // region. EXEMPT hits: docs/changelog.md, and INSTALL.md between its two
+    // markers (the unmarked INSTALL.md line 3 fires beside it, so the exemption
+    // is the region and not the file). OUT-OF-SCOPE hits: migrations/README.md
+    // and scripts/notes.md name the terms freely. files_scanned == 4 proves
+    // those two were never read, and a stale mention in them cannot be what
+    // keeps the output exact.
+    auto const [out, status] = capture(bin.string(), {(fixtures / "retired_refs").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out == "INSTALL.md:3: surface-retired-reference: retired reference outside an exempt region: agent.db\n"
+                 "INSTALL.md:11: surface-retired-reference: retired reference outside an exempt region: migrations-agent\n"
+                 "README.md:3: surface-retired-reference: retired reference outside an exempt region: limit_columns_select\n"
+                 "docs/scoped.md:3: surface-retired-reference: retired reference outside an exempt region: agent.db\n"
+                 "docs/scoped.md:5: surface-retired-reference: retired reference outside an exempt region: "
+                 "PLANAR_AGENT_DB\n"
+                 "docs/scoped.md:8: surface-retired-reference: retired reference outside an exempt region: agent.db\n"
+                 "surface-lint: 6 finding(s) across 4 files\n");
+  }
+
+  SECTION("retired_marker_invalid: an unclosed region and a marker outside INSTALL.md are findings, and the "
+          "stray marker silences nothing") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "retired_marker_invalid").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out == "INSTALL.md:3: surface-retired-ref-marker-invalid: the retired-ref region opened here is never "
+                 "closed\n"
+                 "docs/stray.md:3: surface-retired-ref-marker-invalid: a retired-ref marker is honoured only in "
+                 "INSTALL.md\n"
+                 "docs/stray.md:4: surface-retired-reference: retired reference outside an exempt region: agent.db\n"
+                 "docs/stray.md:5: surface-retired-ref-marker-invalid: a retired-ref marker is honoured only in "
+                 "INSTALL.md\n"
+                 "surface-lint: 4 finding(s) across 2 files\n");
+  }
+
   SECTION("--command-inventory-json: the pinned 260-entry command_classes table") {
     auto const [out, status] = capture(bin.string(), {"--command-inventory-json"});
     INFO(out);
