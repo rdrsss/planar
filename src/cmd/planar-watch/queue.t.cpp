@@ -10,11 +10,21 @@
 // whose `PLANAR_DB` is its own scratch database, so nothing can reach the
 // operator's `~/.planar`. `--json` output is parsed with the DOM parser and
 // asserted field by field; a substring check would pass for a field renamed or
-// moved. Every case seeds the database through the engine (`enqueue`, `poll`,
-// `end_entry`, `begin_terminate`) the way the engine's own suites do, because
-// a dead, stale or nested entry cannot be produced by a well-behaved
-// submitter. The seeding connection is a scratch `planar.db` migrated from the
-// embedded MAIN chain, never the retired agent chain.
+// moved. Two cases drive a REAL `planar-agent queue run` of the built binary
+// (plan 1089, task qp-watch-realsubmit, restoring what wave 2 reseeded): "one
+// running and two waiting entries" starts a real detached holder and waiter,
+// and the history case really runs, times out and cancels commands. They are
+// the only cases in which one binary WRITES the arena's `planar.db` and
+// another READS the same file, so what planar-watch lists is what
+// planar-agent wrote. The other cases seed the database through the engine
+// (`enqueue`, `poll`, `end_entry`, `begin_terminate`) the way the engine's own
+// suites do, because a dead, stale or nested entry cannot be produced by a
+// well-behaved submitter. The seeding connection is a scratch `planar.db`
+// migrated from the embedded MAIN chain, never the retired agent chain.
+//
+// Synchronisation is by FIFOs and files, not sleeps. Every detached submitter
+// a case starts is recorded by pid and start time and stopped on the way out
+// of the case, failing or not.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -54,6 +64,21 @@ const std::vector<std::string> k_fields{"seq",       "state",      "live",      
 
 auto watch_bin() -> fs::path {
   return fs::path{PLANAR_CPP_BIN};
+}
+
+auto agent_bin() -> fs::path {
+  return fs::path{PLANAR_AGENT_CPP_BIN};
+}
+
+template <class Predicate> auto await(Predicate&& predicate, std::chrono::milliseconds budget = k_budget) -> bool {
+  auto const deadline = std::chrono::steady_clock::now() + budget;
+  while (std::chrono::steady_clock::now() <= deadline) {
+    if (predicate()) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return predicate();
 }
 
 /// @brief The arena's `planar.db`: the file `PLANAR_DB` names, and the only
@@ -186,6 +211,73 @@ auto token_of(std::string_view line, std::size_t index) -> std::string {
   return tokens[index];
 }
 
+/// @brief A FIFO the test holds open read-write; a command reading it blocks
+/// until `release()`.
+struct gate {
+  fs::path path;
+  int      fd       = -1;
+  bool     released = false;
+
+  explicit gate(fs::path where) : path(std::move(where)) {
+    REQUIRE(::mkfifo(path.c_str(), 0600) == 0);
+    fd = ::open(path.c_str(), O_RDWR);
+    REQUIRE(fd >= 0);
+  }
+  gate(const gate&)            = delete;
+  gate& operator=(const gate&) = delete;
+  ~gate() {
+    release();
+    if (fd >= 0) {
+      ::close(fd);
+    }
+  }
+  void release() {
+    if (!released && fd >= 0) {
+      released = true;
+      static_cast<void>(::write(fd, "x\n", 2));
+    }
+  }
+};
+
+/// @brief Stops the detached submitters a case recorded when it leaves scope:
+/// SIGTERM to a recorded pid whose start time still matches, SIGKILL only if
+/// it outlives a bounded wait. Never signals by name, and never pid 0, 1 or a
+/// group.
+struct submitter_guard {
+  struct target {
+    std::int64_t pid     = 0;
+    std::int64_t started = 0;
+  };
+  std::vector<target> targets;
+
+  submitter_guard()                                  = default;
+  submitter_guard(const submitter_guard&)            = delete;
+  submitter_guard& operator=(const submitter_guard&) = delete;
+
+  void record(std::int64_t pid, std::int64_t started) {
+    targets.push_back({pid, started});
+  }
+  static auto still_mine(const target& t) -> bool {
+    if (t.pid <= 1) {
+      return false;
+    }
+    auto const now = ident::process_start_time(t.pid);
+    return now && now->has_value() && static_cast<std::int64_t>(**now) == t.started;
+  }
+  ~submitter_guard() {
+    for (auto const& t : targets) {
+      if (!still_mine(t)) {
+        continue;
+      }
+      ::kill(static_cast<::pid_t>(t.pid), SIGTERM);
+      if (!await([&] { return !still_mine(t); }, std::chrono::seconds(10)) && still_mine(t)) {
+        ::kill(static_cast<::pid_t>(t.pid), SIGKILL);
+        await([&] { return !still_mine(t); }, std::chrono::seconds(10));
+      }
+    }
+  }
+};
+
 auto sh_command(std::string script, std::vector<std::string> args = {}) -> std::vector<std::string> {
   std::vector<std::string> command{"sh", "-c", std::move(script), "sh"};
   for (auto& arg : args) {
@@ -202,6 +294,45 @@ void write_config(const parity::arena& arena, std::string_view text) {
     out << text;
   }
   fs::rename(temp, path);
+}
+
+/// @brief `planar-agent queue run --detach <flags> -- <command>`: the sequence
+/// number of the ticket it prints.
+auto submit_detached(const parity::arena& arena, std::string_view tag, const std::vector<std::string>& command,
+                     std::vector<std::string> flags, submitter_guard& guard) -> std::int64_t {
+  std::vector<std::string> args{"queue", "run", "--detach"};
+  for (auto& flag : flags) {
+    args.push_back(std::move(flag));
+  }
+  args.emplace_back("--");
+  for (auto const& word : command) {
+    args.push_back(word);
+  }
+  auto const run = parity::run_pinned(agent_bin(), args, arena.cpp_root, tag);
+  INFO("stderr:\n" << run.err);
+  REQUIRE(run.code == 0);
+  auto const first = run.out.find('\n');
+  REQUIRE(first != std::string::npos);
+  std::int64_t seq = 0;
+  REQUIRE(std::from_chars(run.out.data(), run.out.data() + first, seq).ec == std::errc{});
+
+  auto conn  = open_store(arena);
+  auto found = hq::find(conn, seq);
+  REQUIRE(found.has_value());
+  REQUIRE(found->has_value());
+  guard.record((*found)->pid, (*found)->pid_started);
+  return seq;
+}
+
+void await_state(const parity::arena& arena, std::int64_t seq, hq::entry_state state) {
+  REQUIRE(await([&] {
+    auto opened = planar::db::connection::open_read_only(store_path(arena).string());
+    if (!opened) {
+      return false;
+    }
+    auto found = hq::find(*opened, seq);
+    return found && found->has_value() && (*found)->state == state;
+  }));
 }
 
 // ---- engine seeding -------------------------------------------------------
@@ -323,29 +454,28 @@ TEST_CASE("queue view: a planar.db with no entries lists nothing", "[cmd][watch]
 TEST_CASE("queue view: one running and two waiting entries list in order with their columns",
           "[cmd][watch][queue][hq-watch-queue]") {
   auto const arena = parity::make_arena("wq_workflow");
-  auto const hold  = arena.cpp_root / "hold.fifo";
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\n");
+  {
+    // planar-agent never creates planar.db: the arena's database exists and
+    // is at the head schema before the first real submitter opens it.
+    auto conn = open_store(arena);
+  }
+  gate            hold(arena.cpp_root / "hold.fifo");
+  submitter_guard guard;
 
-  // A running holder, a waiter with a vendor, role and label, and a waiter
-  // another directory submitted. All three are seeded through the engine: a
-  // dead-or-alive submitter is this test process, and a run is pinned to one
-  // working directory.
-  std::int64_t holder = 0;
-  std::int64_t waiter = 0;
+  // A real detached holder, then a real detached waiter, then a waiter another
+  // directory submitted (seeded through the engine: a run is pinned to one
+  // working directory). planar-agent WRITES the first two rows to planar.db;
+  // planar-watch below reads the same file.
+  auto const holder =
+      submit_detached(arena, "holder", sh_command("read x < \"$1\"", {hold.path.string()}), {"--label", "holder"}, guard);
+  await_state(arena, holder, hq::entry_state::running);
+  auto const   waiter = submit_detached(arena, "waiter", sh_command("exit 0"),
+                                        {"--label", "waiter", "--vendor", "codex", "--role", "tester"}, guard);
   std::int64_t other  = 0;
   {
-    auto conn         = open_store(arena);
-    auto holder_req   = alive_request((arena.cpp_root / "proj").string(), sh_command("read x < \"$1\"", {hold.string()}));
-    holder_req.label  = "holder";
-    holder_req.vendor = std::nullopt;
-    holder_req.role   = std::nullopt;
-    holder            = enqueue_or_fail(conn, holder_req);
-    start_entry(conn, holder, 1);
-    auto waiter_req   = alive_request((arena.cpp_root / "proj").string(), sh_command("exit 0"));
-    waiter_req.label  = "waiter";
-    waiter_req.vendor = "codex";
-    waiter_req.role   = "tester";
-    waiter            = enqueue_or_fail(conn, waiter_req);
-    other             = enqueue_or_fail(conn, alive_request("/work/other", {"make", "test"}));
+    auto conn = open_store(arena);
+    other     = enqueue_or_fail(conn, alive_request("/work/other", {"make", "test"}));
   }
 
   auto const rows = rows_of(run_queue(arena, "workflow_json"));
@@ -364,8 +494,8 @@ TEST_CASE("queue view: one running and two waiting entries list in order with th
   CHECK(int_of(rows[0], "ran_ms") >= 0);
   CHECK(int_of(rows[0], "waited_ms") >= 0);
   CHECK(int_of(rows[0], "run_limit_ms") > 0);
-  CHECK(is_null(rows[0], "log_path"));
-  CHECK(argv_of(rows[0]) == sh_command("read x < \"$1\"", {hold.string()}));
+  CHECK_FALSE(is_null(rows[0], "log_path"));
+  CHECK(argv_of(rows[0]) == sh_command("read x < \"$1\"", {hold.path.string()}));
   CHECK(text_of(rows[0], "cwd") == (arena.cpp_root / "proj").string());
 
   CHECK(int_of(rows[1], "seq") == waiter);
@@ -423,6 +553,8 @@ TEST_CASE("queue view: one running and two waiting entries list in order with th
   CHECK(lines[3].ends_with("make test"));
   // The argument vector is shell-quoted: the script word is single-quoted.
   CHECK(lines[1].contains("sh -c 'read x < \"$1\"' sh "));
+
+  hold.release();
 }
 
 TEST_CASE("queue view: entries list in sequence order, running or waiting, with positions among the waiting",
@@ -1074,38 +1206,49 @@ TEST_CASE("queue history: a store whose only entries are still running lists no 
 
 TEST_CASE("queue history: entries that ended as exited, timeout and cancelled are listed with outcome, times and canceller",
           "[cmd][watch][queue][hq-watch-history]") {
-  auto const   arena = parity::make_arena("wh_real");
-  std::int64_t held  = 0;
+  auto const arena = parity::make_arena("wh_real");
+  write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"200ms\"\n");
   {
-    auto const now  = wall_now();
-    auto       conn = open_store(arena);
-
-    // 1. A command that exited 3.
-    ended_spec exited;
-    exited.label  = "exits-three";
-    exited.ran_ms = 100;
-    exited.end    = hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 3, .ended_at = now - 3000};
-    seed_ended(conn, exited);
-
-    // 2. A command stopped at its run limit.
-    ended_spec timed;
-    timed.label  = "too-slow";
-    timed.vendor = std::nullopt;
-    timed.role   = std::nullopt;
-    timed.ran_ms = 300;
-    timed.end    = hq::end_request{.outcome = hq::history_outcome::timeout, .ended_at = now - 2000};
-    seed_ended(conn, timed);
-
-    // 3. A holder that another agent cancelled.
-    ended_spec cancelled;
-    cancelled.label  = "cancel-me";
-    cancelled.vendor = "codex";
-    cancelled.role   = "tester";
-    cancelled.end    = hq::end_request{.outcome      = hq::history_outcome::cancelled,
-                                       .cancelled_by = hq::canceller{.vendor = "claude", .role = "reviewer", .pid = 4242},
-                                       .ended_at     = now - 1000};
-    held             = seed_ended(conn, cancelled);
+    // planar-agent never creates planar.db: it exists at the head schema
+    // before the first real submitter opens it.
+    auto conn = open_store(arena);
   }
+  gate            hold(arena.cpp_root / "hold.fifo");
+  submitter_guard guard;
+
+  // 1. A foreground command that exits 3.
+  auto const exited = parity::run_pinned(agent_bin(),
+                                         std::vector<std::string>{"queue", "run", "--label", "exits-three", "--vendor", "claude",
+                                                                  "--role", "coder", "--", "sh", "-c", "exit 3"},
+                                         arena.cpp_root, "real_exit");
+  INFO("stderr:\n" << exited.err);
+  REQUIRE(exited.code == 3);
+
+  // 2. A command stopped at its run limit.
+  auto const timed = parity::run_pinned(
+      agent_bin(),
+      std::vector<std::string>{"queue", "run", "--timeout", "300ms", "--label", "too-slow", "--", "sh", "-c", "sleep 30"},
+      arena.cpp_root, "real_timeout");
+  INFO("stderr:\n" << timed.err);
+  REQUIRE(timed.code == 124);
+
+  // 3. A detached holder that another agent cancels.
+  auto const held = submit_detached(arena, "real_hold", sh_command("read x < \"$1\"", {hold.path.string()}),
+                                    {"--label", "cancel-me", "--vendor", "codex", "--role", "tester"}, guard);
+  await_state(arena, held, hq::entry_state::running);
+  auto const cancelled = parity::run_pinned(
+      agent_bin(), std::vector<std::string>{"queue", "cancel", std::to_string(held), "--vendor", "claude", "--role", "reviewer"},
+      arena.cpp_root, "real_cancel");
+  INFO("stderr:\n" << cancelled.err);
+  REQUIRE(cancelled.code == 0);
+  REQUIRE(await([&] {
+    auto opened = planar::db::connection::open_read_only(store_path(arena).string());
+    if (!opened) {
+      return false;
+    }
+    auto found = hq::find_history(*opened, held);
+    return found && found->has_value();
+  }));
 
   auto const rows = rows_of(run_history(arena, "real_json"));
   REQUIRE(rows.size() == 3);
@@ -1122,12 +1265,12 @@ TEST_CASE("queue history: entries that ended as exited, timeout and cancelled ar
   CHECK(text_of(rows[0], "label") == "exits-three");
   CHECK(text_of(rows[0], "vendor") == "claude");
   CHECK(text_of(rows[0], "role") == "coder");
-  CHECK(int_of(rows[0], "ran_ms") == 100);
+  CHECK(int_of(rows[0], "ran_ms") >= 0);
 
   CHECK(text_of(rows[1], "outcome") == "timeout");
   CHECK(text_of(rows[1], "label") == "too-slow");
-  CHECK(int_of(rows[1], "ran_ms") == 300);
-  CHECK(int_of(rows[1], "run_limit_ms") == 300'000);
+  CHECK(int_of(rows[1], "ran_ms") >= 250);
+  CHECK(int_of(rows[1], "run_limit_ms") == 300);
 
   CHECK(int_of(rows[2], "seq") == held);
   CHECK(text_of(rows[2], "outcome") == "cancelled");
@@ -1138,7 +1281,7 @@ TEST_CASE("queue history: entries that ended as exited, timeout and cancelled ar
   CHECK(keys_of(who) == std::vector<std::string>{"vendor", "role", "pid"});
   CHECK(text_of(who, "vendor") == "claude");
   CHECK(text_of(who, "role") == "reviewer");
-  CHECK(int_of(who, "pid") == 4242);
+  CHECK(int_of(who, "pid") > 1);
 
   auto const text = run_history(arena, "real_text", {});
   REQUIRE(text.code == 0);
