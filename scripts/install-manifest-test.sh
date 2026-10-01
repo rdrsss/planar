@@ -449,4 +449,17 @@ for qr_bad in \
   qr_untouched
 done
 
+# The call site: install.sh sources the seam, and runs the probe after it
+# installs the binaries (the probe IS the newly installed planar-agent), with
+# a refusal ending the install.
+grep -Fqx 'source "$REPO_ROOT/scripts/install-lib/queue-retire.sh"' "$ROOT/install.sh" \
+  || fail "install.sh does not source scripts/install-lib/queue-retire.sh"
+_install_line="$(grep -n 'cmake --install "$BUILD_DIR" --prefix "$PLANAR_HOME"' "$ROOT/install.sh" | head -1 | cut -d: -f1)"
+_probe_line="$(grep -n '^queue_probe_migrate || exit 1$' "$ROOT/install.sh" | cut -d: -f1)"
+[[ -n "$_install_line" ]] || fail "the cmake --install step was not found in install.sh"
+[[ "$(printf '%s\n' "$_probe_line" | grep -c .)" == 1 ]] \
+  || fail "install.sh must call 'queue_probe_migrate || exit 1' exactly once"
+[[ "$_probe_line" -gt "$_install_line" ]] \
+  || fail "install.sh probes planar.db (line $_probe_line) before it installs the binaries (line $_install_line)"
+
 printf 'install-manifest tests: 11 passed\n'
