@@ -299,6 +299,13 @@ auto backup_source_to_copy(std::string_view source, const vetted_copy& copy) -> 
     sqlite3_close_v2(src);
     return std::unexpected(std::format("cannot open the source read-only: {}", message));
   }
+  // Both layers must hold: a handle that SQLite reports as anything but
+  // read-only is refused, because a read-write flag on a file the process may
+  // not write silently degrades to read-only, and one it may write would not.
+  if (sqlite3_db_readonly(src, "main") != 1) {
+    sqlite3_close_v2(src);
+    return std::unexpected("the source handle is not read-only; refusing to use it");
+  }
   sqlite3_busy_timeout(src, k_busy_ms);
   // The destination handle: the one raw read-write open in this tool, and it
   // is on the vetted copy.

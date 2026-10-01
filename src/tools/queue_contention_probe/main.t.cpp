@@ -9,10 +9,11 @@
 //    lies under `$HOME/.planar`, equals `$PLANAR_DB`) plus an existing
 //    destination, each proven to exit 2 with the source byte-for-byte
 //    unchanged and nothing created;
-//  - a real short run of each of R1, R3, R4 and R5 against a scratch source
-//    whose file is READ-ONLY (mode 0444): any read-write open of the source
-//    would fail the run, so a pass is evidence that the source is touched
-//    only through the read-only backup handle, and its hash is unchanged.
+//  - a real short run of each of R1, R3, R4 and R5 against a scratch source,
+//    with the source's hash unchanged afterwards. R1 uses a WRITABLE source
+//    (the others a mode-0444 one): a read-write flag on a file the process may
+//    not write silently degrades to read-only, so only a writable source can
+//    show that the probe's handle on it is read-only by construction.
 // Short runs use the probe's own duration and hold flags; the full-length
 // defaults are the spec's.
 //
@@ -44,8 +45,9 @@ auto read_file(const fs::path& path) -> std::string {
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
-/// A source at the head schema, closed, in a directory of its own, mode 0444.
-auto make_source(const fs::path& dir) -> fs::path {
+/// A source at the head schema, closed, in a directory of its own; mode 0444
+/// unless `writable`.
+auto make_source(const fs::path& dir, bool writable = false) -> fs::path {
   fs::create_directories(dir);
   auto const path = dir / "source.db";
   {
@@ -59,7 +61,9 @@ auto make_source(const fs::path& dir) -> fs::path {
   std::error_code ec;
   fs::remove(fs::path(path.string() + "-wal"), ec);
   fs::remove(fs::path(path.string() + "-shm"), ec);
-  fs::permissions(path, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read, fs::perm_options::replace);
+  if (!writable) {
+    fs::permissions(path, fs::perms::owner_read | fs::perms::group_read | fs::perms::others_read, fs::perm_options::replace);
+  }
   return path;
 }
 
@@ -213,10 +217,10 @@ TEST_CASE("queue_contention_probe rejects a bad invocation as a usage error", "[
   CHECK_FALSE(fs::exists(root / "o.db"));
 }
 
-TEST_CASE("queue_contention_probe R1 run on a read-only source reports a bounded baseline and leaves the source unchanged",
+TEST_CASE("queue_contention_probe R1 run on a writable source reports a bounded baseline and leaves the source unchanged",
           "[queue_contention_probe][run]") {
   auto const root   = make_scratch("r1");
-  auto const source = make_source(root / "src"); // mode 0444: a read-write open of it would fail the run
+  auto const source = make_source(root / "src", true); // writable: only the probe's own checks keep it read-only
   auto const hash   = planar::sha256::hex(read_file(source));
   auto const copy   = root / "out" / "copy.db";
 
