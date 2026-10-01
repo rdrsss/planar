@@ -62,7 +62,8 @@ run one beside the other.
 The queue is for builds and tests that would otherwise run side by side. It
 does not replace the gates: a queued `make test` is the same `make test`.
 The test suite's own black-box cases never touch the real queue, because
-`run_pinned` gives each one its own `PLANAR_AGENT_DB`.
+`run_pinned` gives each one its own `PLANAR_DB`, and the queue lives in that
+file.
 
 `clang-tidy` is advisory. The recipe runs it without `--warnings-as-errors`
 and `.clang-tidy` declares no `WarningsAsErrors` key, so its warnings never
@@ -213,7 +214,7 @@ than linked, because a `cmd_*` target may not depend on another `cmd_*`
 target.
 
 - `make_arena("<tag>")` builds a scratch environment under a temp root with
-  its own `PLANAR_DB`, `PLANAR_AGENT_DB`, `HOME` and `PLANAR_WORKBENCH_ROOT`.
+  its own `PLANAR_DB`, `HOME` and `PLANAR_WORKBENCH_ROOT`.
 - `run_pinned(bin, argv, root, tag)` runs a binary inside that environment
   and captures stdout, stderr and the exit code.
 - `launch_pinned_detached` and `await_sentinel` cover the few cases that need
@@ -221,13 +222,13 @@ target.
 
 Both halves of the arena matter. `PLANAR_HOME` alone does not redirect the
 database: without a scratch `PLANAR_DB` the runtime falls back to
-`~/.planar/planar.db` and applies pending migrations to it. The agent
-database (`~/.planar/agent.db`, override `PLANAR_AGENT_DB`) migrates on
-first open the same way, so `pinned_env(root)` pins it to `<root>/agent.db`
-directly rather than through the `HOME` fallback, and both entry points run
-`require_agent_db_pinned` before the binary starts: a map whose agent
-database resolves outside the arena fails the case with the path in the
-message. Never run a from-source binary outside `run_pinned`.
+`~/.planar/planar.db` and applies pending migrations to it. The
+host queue lives in the same `planar.db` (and its detached-run logs in
+`queue-logs/` beside it), so pinning `PLANAR_DB` pins the queue too: there is
+no second database to redirect. `run_pinned` also removes an inherited
+`PLANAR_QUEUE_SLOT`, so a suite run under `queue run` does not make every
+arena submitter look like a nested run. Never run a from-source binary outside
+`run_pinned`.
 
 Two case styles coexist:
 
@@ -311,10 +312,9 @@ migration has to be rolled back by hand.
 
 The gate scripts that run a built binary (`scripts/exit-code-contract.sh`,
 `scripts/surface-snapshot.sh`, `scripts/coverage-check.sh`) pin
-`PLANAR_DB` under their own scratch directory and set no `PLANAR_AGENT_DB`
-(it is ignored, decision 1229), and `src/cmd/planar/arena_pins.t.cpp` runs
-each of them and `make smoke` with a recording wrapper in place of the binary
-to keep it that way.
+`PLANAR_DB` under their own scratch directory, and `src/cmd/planar/arena_pins.t.cpp`
+runs each of them and `make smoke` with a recording wrapper in place of the
+binary to keep it that way.
 
 To check a migration as raw SQL:
 
