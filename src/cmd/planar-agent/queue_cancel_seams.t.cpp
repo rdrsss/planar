@@ -4,7 +4,7 @@
 // The black-box cases in queue_cancel.t.cpp show what an operator sees, but
 // they cannot say WHEN a signal was sent relative to the marker's commit, or
 // prove a bound on a group that never empties. Here the real tree and the
-// real handler run in this process against a scratch agent database, with a
+// real handler run in this process against a scratch planar.db, with a
 // clock, a process probe and a signaller the test controls. Nothing here
 // signals a real process: every group id is a made-up number that reaches no
 // process, and the recording signaller delivers nothing.
@@ -21,10 +21,13 @@ import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
 import planar.cmd.planar_agent.handlers.queue;
 import planar.db;
-import planar.db.agentdb;
+import planar.db.migrate;
+import planar.db.migrations;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.process.identity;
+
+#include "queue_test_store.hpp"
 
 namespace {
 
@@ -43,6 +46,8 @@ struct scratch {
              std::format("planar_queue_cancel_seams_{}", std::chrono::steady_clock::now().time_since_epoch().count())) {
     std::filesystem::create_directories(root / "proj");
     std::filesystem::create_directories(root / "fakehome");
+    // The queue verbs open `planar.db` and never create it.
+    planar::cmd::qfix::head_store(root / "planar.db");
   }
   scratch(const scratch&)            = delete;
   scratch& operator=(const scratch&) = delete;
@@ -65,8 +70,7 @@ struct fixture {
 private:
   static auto env(const scratch& sc, std::map<std::string, std::string, std::less<>> extra)
       -> std::map<std::string, std::string, std::less<>> {
-    std::map<std::string, std::string, std::less<>> vars{{"PLANAR_AGENT_DB", (sc.root / "agent.db").string()},
-                                                         {"HOME", (sc.root / "fakehome").string()},
+    std::map<std::string, std::string, std::less<>> vars{{"HOME", (sc.root / "fakehome").string()},
                                                          {"PWD", (sc.root / "proj").string()},
                                                          {"PLANAR_CONFIG_PATH", (sc.root / "config.toml").string()},
                                                          {"PLANAR_DB", (sc.root / "planar.db").string()}};
@@ -125,7 +129,7 @@ struct world {
   [[nodiscard]] auto signaller() -> hq::group_signaller {
     return [this](std::int64_t pgid, int sig) -> std::expected<void, ident::error> {
       sent record{.pgid = pgid, .sig = sig, .mono = clock->mono};
-      if (auto observer = planar::db::agent::open_agent_db_at(store); observer) {
+      if (auto observer = planar::cmd::qfix::open_store(store); observer) {
         static_cast<void>(observer->execute("pragma busy_timeout = 0;"));
         auto const begun = observer->execute("begin immediate;");
         record.lock_free = begun.has_value();
@@ -174,8 +178,8 @@ struct world {
 /// identity, to seed an entry that belongs to another host.
 auto seed_running(const scratch& sc, world& w, bool record_group = true, std::optional<std::string> host = std::nullopt)
     -> std::int64_t {
-  w.store     = sc.root / "agent.db";
-  auto opened = planar::db::agent::open_agent_db_at(w.store);
+  w.store     = sc.root / "planar.db";
+  auto opened = planar::cmd::qfix::open_store(w.store);
   REQUIRE(opened.has_value());
   auto const entry_host = host ? *host : ident::host_identity(ident::native_identity_source());
   auto const pid        = static_cast<std::int64_t>(::getpid());
@@ -206,7 +210,8 @@ auto seed_running(const scratch& sc, world& w, bool record_group = true, std::op
 /// so a case sees only what the cancel under test sends.
 auto pre_mark(const scratch& sc, world& w, std::int64_t seq, hq::stop_reason reason, std::optional<hq::canceller> who,
               const std::string& host_id) -> void {
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  seq         = planar::cmd::qfix::seq_of(seq);
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const begun = hq::begin_terminate(
       *opened, hq::begin_terminate_request{.seq = seq, .reason = reason, .cancelled_by = who, .host_id = host_id}, *w.clock,
@@ -217,6 +222,7 @@ auto pre_mark(const scratch& sc, world& w, std::int64_t seq, hq::stop_reason rea
 }
 
 auto cancel_args(std::int64_t seq) -> planar::cliapp::parsed_args {
+  seq = planar::cmd::qfix::seq_of(seq);
   planar::cliapp::parsed_args args;
   args.path                    = {"queue", "cancel"};
   args.positional_lists["seq"] = {std::to_string(seq)};
@@ -231,6 +237,7 @@ struct invocation {
 };
 
 auto run_cancel(const scratch& sc, std::int64_t seq, agent::handlers::queue_run_deps deps) -> invocation {
+  seq = planar::cmd::qfix::seq_of(seq);
   fixture     fx{sc};
   auto const  outcome = agent::handlers::queue_cancel_with(fx.ctx, cancel_args(seq), std::move(deps));
   auto const* status  = std::get_if<agent::exit_status>(&outcome);
@@ -239,7 +246,8 @@ auto run_cancel(const scratch& sc, std::int64_t seq, agent::handlers::queue_run_
 }
 
 auto entry_now(const scratch& sc, std::int64_t seq) -> std::optional<hq::entry> {
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  seq         = planar::cmd::qfix::seq_of(seq);
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto found = hq::find(*opened, seq);
   REQUIRE(found.has_value());
@@ -247,7 +255,8 @@ auto entry_now(const scratch& sc, std::int64_t seq) -> std::optional<hq::entry> 
 }
 
 auto history_now(const scratch& sc, std::int64_t seq) -> std::optional<hq::history_row> {
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  seq         = planar::cmd::qfix::seq_of(seq);
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto found = hq::find_history(*opened, seq);
   REQUIRE(found.has_value());
@@ -347,7 +356,7 @@ TEST_CASE("queue cancel: a command whose group is recorded after the cancel is s
   // marked the entry; nothing else will send this SIGTERM.
   w.on_sleep = [&] {
     if (w.sleeps == 2) {
-      auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+      auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
       REQUIRE(opened.has_value());
       REQUIRE(hq::record_child(*opened, seq, k_group, k_started).has_value());
       w.live.insert(k_group);
@@ -535,7 +544,7 @@ TEST_CASE("queue cancel: cancelling a nested entry stops its own group and leave
   world      w;
   auto const parent = seed_running(sc, w);
 
-  auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+  auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
   REQUIRE(opened.has_value());
   auto const host = ident::host_identity(ident::native_identity_source());
   auto const nested =
@@ -588,7 +597,7 @@ TEST_CASE("queue cancel: an entry its own submitter ends as exited after the mar
   // observed of its command, having read the entry before the mark.
   w.on_sleep = [&] {
     if (w.sleeps == 1) {
-      auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+      auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
       REQUIRE(opened.has_value());
       auto const ended =
           hq::end_entry(*opened, seq, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = 1});
@@ -650,7 +659,7 @@ public:
 auto run_and_lose_the_end(hq::history_outcome outcome) -> invocation {
   scratch sc;
   {
-    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
     REQUIRE(opened.has_value()); // Create the store before the submitter races anything.
   }
   auto clock = std::make_shared<hooked_clock>();
@@ -661,11 +670,11 @@ auto run_and_lose_the_end(hq::history_outcome outcome) -> invocation {
     if (fired) {
       return;
     }
-    auto opened = planar::db::agent::open_agent_db_at(sc.root / "agent.db");
+    auto opened = planar::cmd::qfix::open_store(sc.root / "planar.db");
     if (!opened) {
       return;
     }
-    auto const entry = hq::find(*opened, 1);
+    auto const entry = hq::find(*opened, planar::cmd::qfix::seq_of(1));
     if (!entry || !entry->has_value() || (*entry)->state != hq::entry_state::running || !(*entry)->child_pgid) {
       return;
     }
@@ -674,7 +683,7 @@ auto run_and_lose_the_end(hq::history_outcome outcome) -> invocation {
     if (outcome == hq::history_outcome::cancelled) {
       request.cancelled_by = hq::canceller{.vendor = "other", .role = "canceller", .pid = 4242};
     }
-    REQUIRE(hq::end_entry(*opened, 1, request).has_value());
+    REQUIRE(hq::end_entry(*opened, planar::cmd::qfix::seq_of(1), request).has_value());
   };
 
   agent::handlers::queue_run_deps deps;
@@ -694,8 +703,7 @@ auto run_and_lose_the_end(hq::history_outcome outcome) -> invocation {
   std::ostringstream out;
   std::ostringstream err;
   agent::context     ctx({"planar-agent", "queue", "run"},
-                         agent::map_env({{"PLANAR_AGENT_DB", (sc.root / "agent.db").string()},
-                                         {"HOME", (sc.root / "fakehome").string()},
+                         agent::map_env({{"HOME", (sc.root / "fakehome").string()},
                                          {"PWD", (sc.root / "proj").string()},
                                          {"PATH", "/usr/bin:/bin"},
                                          {"PLANAR_CONFIG_PATH", (sc.root / "config.toml").string()},
@@ -715,7 +723,7 @@ TEST_CASE("queue run: a command that exited while a cancel ended its entry repor
   auto const got = run_and_lose_the_end(hq::history_outcome::cancelled);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
-  CHECK(got.err.find("queue: entry 1 cancelled\n") != std::string::npos);
+  CHECK(got.err.find("queue: entry 1000001 cancelled\n") != std::string::npos);
   CHECK(got.err.find("exited with code 0") == std::string::npos);
 }
 
@@ -724,7 +732,7 @@ TEST_CASE("queue run: a command that exited while its entry was ended at its run
   auto const got = run_and_lose_the_end(hq::history_outcome::timeout);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 124);
-  CHECK(got.err.find("queue: entry 1 stopped at its run limit\n") != std::string::npos);
+  CHECK(got.err.find("queue: entry 1000001 stopped at its run limit\n") != std::string::npos);
 }
 
 TEST_CASE("queue run: a command that exited while its entry was reaped keeps the documented exit and notice",
@@ -732,5 +740,5 @@ TEST_CASE("queue run: a command that exited while its entry was reaped keeps the
   auto const got = run_and_lose_the_end(hq::history_outcome::abandoned);
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 0);
-  CHECK(got.err.find("queue: entry 1 exited with code 0\n") != std::string::npos);
+  CHECK(got.err.find("queue: entry 1000001 exited with code 0\n") != std::string::npos);
 }

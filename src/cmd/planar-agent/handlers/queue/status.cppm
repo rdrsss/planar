@@ -13,11 +13,12 @@
 /// ## Read-only
 ///
 /// The store is opened read-only at the SQLite layer
-/// (`planar.db.agentdb::open_agent_db_read_only`), so nothing here can write: no
+/// (`queue_store`'s `store_access::read_only`), so nothing here can write: no
 /// reap, no refresh, no migration, and no store is created when none exists.
 /// Liveness is judged by the same rules a poll applies and reported, never acted
-/// on. The main database is never opened (`uses_main_database` exempts the whole
-/// `queue` domain).
+/// on. The path is resolved here, not before dispatch (`uses_main_database`
+/// exempts the whole `queue` domain), and the version handshake and the queue's
+/// own compatibility check run first (tech spec 656 § Store and open path).
 ///
 /// ## Output
 ///
@@ -41,7 +42,13 @@
 /// | 0 | The entry was found; the answer is on standard output |
 /// | 1 | No entry and no history row has that sequence number (never issued, or its history was pruned), or no sequence number
 /// was given (a parse failure) | | 2 | The argument is not a positive integer | | 125 | The queue failed: the store does not
-/// exist or cannot be read, or an internal error |
+/// exist or cannot be read, `planar.db` is behind this binary, its queue tables are
+/// not usable by this binary, or an internal error |
+///
+/// The `tag` of a 125 is one of `store_unreachable`, `store_unreadable`, `internal`,
+/// `schema_version_behind`, `queue_schema_incompatible` (ahead, queue check fails) and
+/// `queue_schema_foreign` (equal version, queue check fails); none is the exit-7
+/// `schema_version_ahead`.
 ///
 /// An unusable `[queue]` configuration is not a failure (task
 /// hq-status-degrade-config): the answer is printed and the exit is 0, with

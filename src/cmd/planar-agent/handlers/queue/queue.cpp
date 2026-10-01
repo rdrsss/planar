@@ -23,8 +23,8 @@ import planar.cmd.internal.config_path;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
+import planar.cmd.planar_agent.queue_store;
 import planar.db;
-import planar.db.agentdb;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.engine.runtime.agentactivity;
@@ -287,11 +287,13 @@ constexpr std::int64_t k_min_renew_interval_ms = 100;
 /// @brief Renews the submitter's claim on a schedule (`queue run --claim`;
 /// tech spec 647 § Whether the submitter should renew the agent's claim).
 ///
-/// Claims live in the MAIN database, which `queue run` otherwise never opens,
-/// so everything here is lazy and fallible: the connection is opened on the
-/// first attempt (never when `--claim` is absent, because no renewer is then
-/// built), through the binary's own main-database policy (never migrating,
-/// refusing a schema on either side of the binary's), and an unusable main
+/// Claims live in `planar.db`, the same file the queue's tables are in, but a
+/// claim keeps `planar-agent`'s exact-version rule while the queue tolerates an
+/// ahead database, so everything here is lazy and fallible and has its own
+/// connection: it is opened on the first attempt (never when `--claim` is
+/// absent, because no renewer is then built), through the binary's own
+/// main-database policy (never migrating, refusing a schema on either side of
+/// the binary's), and an unusable
 /// database is retried on the next attempt rather than remembered. A renewal is
 /// `supervised_heartbeat` with no TTL and no status, the very transaction
 /// `planar-agent heartbeat --claim` runs, so the lease keeps the length it has,
@@ -716,7 +718,7 @@ struct detach_link {
   std::stringbuf                        capture;            ///< What was written to `err` before the log existed.
   int                                   write_fd = -1;      ///< The pipe to the invoked process.
   bool                                  reported = false;   ///< Whether the ticket or a failure has been sent.
-  std::filesystem::path                 log_dir;            ///< `<agent-db-directory>/queue-logs`.
+  std::filesystem::path                 log_dir;            ///< `queue_log_directory` of the database file.
   std::function<void(std::string_view)> hook;               ///< The test seam; may be empty.
 
   /// @brief Points the error stream at the private buffer.
@@ -788,7 +790,14 @@ void report_failure(detach_link& link, std::string_view fallback) {
   } else if (!text.ends_with('\n')) {
     text += '\n';
   }
-  static_cast<void>(write_all(link.write_fd, "err\n" + text));
+  // The invoked process prints this text, and the child shares its standard
+  // error: handing the captured copy back to the stream (`end_capture`) as well
+  // would show every refusal twice. So it is dropped only once the pipe took it;
+  // when the write fails the invoked process saw nothing, and `end_capture`
+  // still says it.
+  if (write_all(link.write_fd, "err\n" + text)) {
+    link.capture.str({});
+  }
   ::close(link.write_fd);
   link.write_fd = -1;
   link.reported = true;
@@ -899,10 +908,17 @@ auto publish_ticket(detach_link& link, db::connection& conn, std::int64_t seq) -
   }
   auto const fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_APPEND | O_CLOEXEC, 0600);
   if (fd < 0) {
-    // O_EXCL: a log that already exists belongs to an earlier run (the store was
-    // recreated and sequence numbers restarted), so it is neither appended to
-    // nor removed here; `undo` is told it did not create the file.
-    return undo(std::format("cannot create the log file {}: {}", path.string(), errno_text(errno)), false);
+    // O_EXCL: a log that already exists belongs to an earlier run (the
+    // sequence counter went back: a rollback, a restore or a re-init), so it is
+    // neither appended to nor removed here; `undo` is told it did not create
+    // the file. Its remedy is the counter-reset recipe, which archives it.
+    auto const why = errno_text(errno);
+    return undo(errno == EEXIST ? std::format("cannot create the log file {}: {}; it belongs to an earlier run, from before the "
+                                              "queue's counter went back, and was left in place; see \"Host-queue rollback "
+                                              "recovery\" in migrations/README.md to archive it",
+                                              path.string(), why)
+                                : std::format("cannot create the log file {}: {}", path.string(), why),
+                false);
   }
   auto const recorded = hq::set_log_path(conn, seq, path.string());
   if (!recorded || !*recorded) {
@@ -965,11 +981,11 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
       }
       link.begin_capture(ctx.err());
       link.at("after_setsid");
-      auto const dir = db::agent::resolve_agent_db_path(ctx.env());
-      if (!dir) {
-        ctx.err() << std::format("error: queue: {}\n", dir.error().message);
+      auto const db_path = resolve_db_path(ctx.env());
+      if (!db_path) {
+        ctx.err() << std::format("error: queue: {}\n", db_path.error().text);
       } else {
-        link.log_dir = dir->parent_path() / "queue-logs";
+        link.log_dir = queue_log_directory(*db_path);
         auto outcome = submit(ctx, args, std::move(deps), std::move(argv), run_limit_ms, wait_limit_ms, &link);
         if (auto const* status = std::get_if<exit_status>(&outcome)) {
           code = status->code;
@@ -1117,11 +1133,11 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
   }
 
   // The store. An unreachable store refuses the command (decision 1185).
-  auto opened = db::agent::open_agent_db(ctx.env());
+  auto opened = open_queue_store(ctx.env(), store_access::read_write);
   if (!opened) {
     return refuse(ctx, opened.error().message);
   }
-  db::connection& conn = *opened;
+  db::connection& conn = opened->conn;
 
   // The submitter's identity, read once at enqueue.
   auto const host    = ident::host_identity(ident::native_identity_source());
@@ -1928,11 +1944,11 @@ auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_
   if (auto first = settings.initial(); !first) {
     return refuse(ctx, describe(first.error()));
   }
-  auto opened = db::agent::open_agent_db(ctx.env());
+  auto opened = open_queue_store(ctx.env(), store_access::read_write);
   if (!opened) {
     return refuse(ctx, opened.error().message);
   }
-  db::connection& conn = *opened;
+  db::connection& conn = opened->conn;
 
   auto const          host = ident::host_identity(ident::native_identity_source());
   hq::canceller const who{.vendor = vendor, .role = role, .pid = static_cast<std::int64_t>(::getpid())};

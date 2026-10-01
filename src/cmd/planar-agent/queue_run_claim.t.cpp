@@ -9,7 +9,7 @@
 // command. Claims live in the MAIN database, which `queue run` otherwise never
 // opens, so the arena here has BOTH a scratch `PLANAR_DB` (seeded through the
 // engine migrations, holding a real task and a claim the built `claim` verb
-// minted) and a scratch `PLANAR_AGENT_DB`. Every invocation runs the built
+// minted) (which also holds the queue's tables). Every invocation runs the built
 // binary through the harness's pinned environment, so nothing can reach the
 // operator's `~/.planar`.
 //
@@ -28,18 +28,27 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
 import planar.db.migrate;
+import planar.db.migrations;
 import planar.process.identity;
 import planar.engine.hostqueue;
 
 #include "parity_harness.hpp"
+#include "queue_test_store.hpp"
 
 namespace {
 
 namespace hq     = planar::engine::hostqueue;
 namespace ident  = planar::process::identity;
 namespace parity = planar::cmd::parity;
+
+/// @brief A fresh arena whose `planar.db` already exists at the head of the
+/// embedded chain: the queue verbs open the main database and never create it.
+auto seeded_arena(std::string_view tag) -> parity::arena {
+  auto arena = parity::make_arena(tag);
+  planar::cmd::qfix::head_store(arena.cpp_root / "planar.db");
+  return arena;
+}
 
 using parity::capture;
 using parity::pinned_var;
@@ -114,7 +123,7 @@ void await_file(const std::filesystem::path& path) {
   REQUIRE(await([&] { return present(path); }));
 }
 
-// --- the agent database, read back through the engine --------------------
+// --- the queue's tables, read back through the engine --------------------
 
 struct snapshot {
   std::vector<hq::entry>       entries;
@@ -122,11 +131,11 @@ struct snapshot {
 };
 
 auto try_snapshot(const parity::arena& arena) -> std::optional<snapshot> {
-  auto const path = arena.cpp_root / "agent.db";
+  auto const path = arena.cpp_root / "planar.db";
   if (!present(path)) {
     return std::nullopt;
   }
-  auto opened = planar::db::agent::open_agent_db_at(path);
+  auto opened = planar::cmd::qfix::open_store(path);
   if (!opened) {
     return std::nullopt;
   }
@@ -145,16 +154,19 @@ auto require_snapshot(const parity::arena& arena) -> snapshot {
 }
 
 auto entry_seq(const snapshot& snap, std::int64_t seq) -> const hq::entry* {
+  seq              = planar::cmd::qfix::seq_of(seq);
   auto const found = std::ranges::find_if(snap.entries, [&](const hq::entry& e) { return e.seq == seq; });
   return found == snap.entries.end() ? nullptr : &*found;
 }
 
 auto history_seq(const snapshot& snap, std::int64_t seq) -> const hq::history_row* {
+  seq              = planar::cmd::qfix::seq_of(seq);
   auto const found = std::ranges::find_if(snap.history, [&](const hq::history_row& r) { return r.seq == seq; });
   return found == snap.history.end() ? nullptr : &*found;
 }
 
 auto await_entry(const parity::arena& arena, std::int64_t seq, hq::entry_state state) -> hq::entry {
+  seq = planar::cmd::qfix::seq_of(seq);
   std::optional<hq::entry> seen;
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
@@ -172,6 +184,7 @@ auto await_entry(const parity::arena& arena, std::int64_t seq, hq::entry_state s
 }
 
 auto await_history(const parity::arena& arena, std::int64_t seq) -> hq::history_row {
+  seq = planar::cmd::qfix::seq_of(seq);
   std::optional<hq::history_row> seen;
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
@@ -432,7 +445,7 @@ auto blocked(const std::filesystem::path& started, const gate& hold) -> std::vec
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run --claim: a waiting entry renews the claim", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_wait");
+  auto const arena = seeded_arena("qc_wait");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const  token = mint_claim(arena);
@@ -470,7 +483,7 @@ TEST_CASE("queue run --claim: a waiting entry renews the claim", "[cmd][agent][q
 
 TEST_CASE("queue run --claim: a running command renews the claim, and the claim is active when it ends",
           "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_run");
+  auto const arena = seeded_arena("qc_run");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const  token = mint_claim(arena);
@@ -502,7 +515,7 @@ TEST_CASE("queue run --claim: a running command renews the claim, and the claim 
 }
 
 TEST_CASE("queue run --claim: renewal stops when the command ends", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_stop");
+  auto const arena = seeded_arena("qc_stop");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const token = mint_claim(arena);
@@ -518,7 +531,7 @@ TEST_CASE("queue run --claim: renewal stops when the command ends", "[cmd][agent
 
 TEST_CASE("queue run --claim: renewal stops when the command has ended, even while its group drains",
           "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_drain");
+  auto const arena = seeded_arena("qc_drain");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\ngrace = \"6s\"\n");
   seed_main(arena);
   auto const  token = mint_claim(arena);
@@ -550,7 +563,7 @@ TEST_CASE("queue run --claim: renewal stops when the command has ended, even whi
 }
 
 TEST_CASE("queue run: without --claim the main database is never touched", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_none");
+  auto const arena = seeded_arena("qc_none");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const token  = mint_claim(arena);
@@ -569,7 +582,7 @@ TEST_CASE("queue run: without --claim the main database is never touched", "[cmd
 
 TEST_CASE("queue run --claim: an unknown claim token is reported and the command still exits 0",
           "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_bad");
+  auto const arena = seeded_arena("qc_bad");
   seed_main(arena);
 
   auto const got = run_queue(arena, "bad", sh_command("exit 0"), {"--claim", "not-a-token", "--notices"});
@@ -578,65 +591,85 @@ TEST_CASE("queue run --claim: an unknown claim token is reported and the command
   CHECK(got.out.empty());
   CHECK(warning_count(got.err) == 1);
   CHECK(got.err.find("cannot renew the claim") != std::string::npos);
-  CHECK(last_line(got.err) == "queue: entry 1 exited with code 0");
+  CHECK(last_line(got.err) == "queue: entry 1000001 exited with code 0");
 }
 
-TEST_CASE("queue run --claim: a main database that does not exist is reported, not created", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_nodb");
-  REQUIRE_FALSE(present(main_db(arena)));
-
-  auto const got = run_queue(arena, "nodb", sh_command("exit 7"), {"--claim", "0123456789abcdef0123456789abcdef"});
-  INFO("stderr:\n" << got.err);
-  CHECK(got.code == 7);
-  CHECK(warning_count(got.err) == 1);
-  CHECK_FALSE(present(main_db(arena)));
-}
-
-TEST_CASE("queue run --claim: a main database whose schema is ahead is reported and the command runs to its own status",
-          "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_ahead");
-  {
-    auto opened = planar::db::connection::open(main_db(arena).string());
-    REQUIRE(opened.has_value());
-    REQUIRE(
-        opened->execute("create table schema_migrations (version integer primary key, description text not null);").has_value());
-    REQUIRE(
-        opened->execute("insert into schema_migrations (version, description) values (99999, 'from the future');").has_value());
-  }
-  auto const before = read_all(main_db(arena));
-
-  auto const got = run_queue(arena, "ahead", sh_command("exit 7"), {"--claim", "0123456789abcdef0123456789abcdef", "--notices"});
-  INFO("stderr:\n" << got.err);
-  CHECK(got.code == 7);
-  CHECK(warning_count(got.err) == 1);
-  CHECK(last_line(got.err) == "queue: entry 1 exited with code 7");
-  CHECK(read_all(main_db(arena)) == before);
-  CHECK(require_snapshot(arena).history.size() == 1);
-}
-
-TEST_CASE("queue run --claim: a busy main database is reported and the command runs to its own status",
-          "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_busy");
+TEST_CASE("queue run --claim: against an ahead planar.db the command runs, the renewal warns once, and the lease is untouched",
+          "[cmd][agent][queue][hq-claim][queue-schema]") {
+  // The queue tolerates an ahead database, but a claim keeps planar-agent's
+  // exact-version rule (tech spec 656 § Claim renewal on an ahead database).
+  auto const arena = seeded_arena("qc_ahead");
   write_config(arena, k_fast_poll);
   seed_main(arena);
-  auto const token = mint_claim(arena);
-
-  // The test holds the main database's write lock for the whole run.
-  auto locker = planar::db::connection::open(main_db(arena).string());
-  REQUIRE(locker.has_value());
-  REQUIRE(locker->execute("begin immediate;").has_value());
+  auto const token  = mint_claim(arena);
   auto const before = expiry(arena, token);
+  planar::cmd::qfix::ahead_store(main_db(arena));
+  auto const versions = planar::cmd::qfix::applied_versions(main_db(arena));
 
-  auto const got = run_queue(arena, "busy", sh_command("exit 3"), {"--claim", token});
+  auto const got = run_queue(arena, "ahead", sh_command("sleep 2; exit 3"), {"--claim", token, "--notices"});
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 3);
   CHECK(warning_count(got.err) == 1);
-  REQUIRE(locker->execute("rollback;").has_value());
+  CHECK(got.err.find("cannot renew the claim") != std::string::npos);
+  CHECK(got.err.find("the command is not affected") != std::string::npos);
+  CHECK(last_line(got.err) == "queue: entry 1000001 exited with code 3");
   CHECK(expiry(arena, token) == before);
+  CHECK(planar::cmd::qfix::applied_versions(main_db(arena)) == versions);
+  CHECK(require_snapshot(arena).history.size() == 1);
+}
+
+TEST_CASE("queue run --claim: a write lock taken while the command runs costs a renewal about a second, once, and the command's "
+          "exit code is its own",
+          "[cmd][agent][queue][hq-claim]") {
+  // The renewal's connection waits at most `k_renew_busy_ms` (one second) per
+  // statement, where an ordinary connection waits five: a renewal is made on
+  // the submitter's own loop, and a longer wait would stall the supervision of
+  // the command for as long as the lock lasts. A renewal that cannot take the
+  // lock within the bound is the one warning; with a longer wait it would simply
+  // succeed once the lock was released, and there would be none.
+  //
+  // The timing is arranged so that the renewal is the first thing to meet the
+  // lock. The lock is taken MID-RUN (before that the submitter's own enqueue
+  // would wait on it), and the poll interval is ten seconds so that no poll is
+  // due in the window (a poll waits on a held lock for the connection's whole
+  // five second window and would keep the loop busy before the renewal's turn).
+  // The lease is 12 seconds, so the renewal made as the submitter started is
+  // followed by one about six seconds later; the lock is taken just before it.
+  auto const arena = seeded_arena("qc_midlock");
+  write_config(arena, "[queue]\npoll_interval = \"10s\"\n");
+  seed_main(arena);
+  auto const token   = mint_claim(arena, "12s");
+  auto const started = arena.cpp_root / "midlock.started";
+
+  auto const began = std::chrono::steady_clock::now();
+  auto       run =
+      spawn_queue(arena, "midlock", sh_command("echo x > \"$1\"; sleep 8; exit 3", {started.string()}), {"--claim", token});
+  await_file(started);
+  std::this_thread::sleep_for(std::chrono::milliseconds(5300));
+  {
+    auto locker = planar::db::connection::open(main_db(arena).string());
+    REQUIRE(locker.has_value());
+    REQUIRE(locker->execute("begin immediate;").has_value());
+    // Past the renewal's turn plus the bound; the command's own end waits for
+    // the release.
+    std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+    REQUIRE(locker->execute("rollback;").has_value());
+  }
+  auto const got     = finish(run);
+  auto const elapsed = std::chrono::steady_clock::now() - began;
+  INFO("stderr:\n" << got.err);
+  CHECK(got.code == 3);
+  CHECK(warning_count(got.err) == 1);
+  CHECK(got.err.find("cannot renew the claim") != std::string::npos);
+  CHECK(got.err.find("the command is not affected") != std::string::npos);
+  CHECK(got.err.find("ClaimNotActive") == std::string::npos); // The lock, not a lapsed claim.
+  // The command ends about eight seconds in, and its end waits for the release.
+  CHECK(elapsed < std::chrono::milliseconds(12000));
+  CHECK(history_seq(require_snapshot(arena), 1)->outcome == hq::history_outcome::exited);
 }
 
 TEST_CASE("queue run --claim: SIGTERM while waiting still removes the entry and exits 125", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_sig");
+  auto const arena = seeded_arena("qc_sig");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const  token = mint_claim(arena);
@@ -664,7 +697,7 @@ TEST_CASE("queue run --claim: SIGTERM while waiting still removes the entry and 
 }
 
 TEST_CASE("queue run --claim: the run limit still stops the command at 124", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_limit");
+  auto const arena = seeded_arena("qc_limit");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const token = mint_claim(arena);
@@ -735,7 +768,7 @@ auto ticket_path(const std::string& out) -> std::filesystem::path {
 } // namespace
 
 TEST_CASE("queue run --claim --detach: the detached submitter renews the claim", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_detach");
+  auto const arena = seeded_arena("qc_detach");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const         token = mint_claim(arena);
@@ -764,7 +797,7 @@ TEST_CASE("queue run --claim --detach: the detached submitter renews the claim",
 }
 
 TEST_CASE("queue run --claim --detach: a failed renewal is reported in the output file", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_detbad");
+  auto const arena = seeded_arena("qc_detbad");
   write_config(arena, k_fast_poll);
   seed_main(arena);
 
@@ -785,34 +818,8 @@ TEST_CASE("queue run --claim --detach: a failed renewal is reported in the outpu
 // the main database in states the renewal must survive
 // ---------------------------------------------------------------------------
 
-TEST_CASE("queue run --claim: a lock that blocks readers costs about a second, once, and the command runs",
-          "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_lock");
-  write_config(arena, k_fast_poll);
-  seed_main(arena);
-  auto const token = mint_claim(arena);
-
-  // A rollback-journal database under an exclusive lock refuses even readers, so
-  // the very first statement of the first connect (the schema read) has to wait.
-  // Under the ordinary connection's five second window, and its journal-mode
-  // pragma, the first attempt would hold the submitter for more than that.
-  auto locker = planar::db::connection::open(main_db(arena).string());
-  REQUIRE(locker.has_value());
-  REQUIRE(locker->execute("pragma journal_mode = delete;").has_value());
-  REQUIRE(locker->execute("begin exclusive;").has_value());
-
-  auto const began   = std::chrono::steady_clock::now();
-  auto const got     = run_queue(arena, "locked", sh_command("sleep 0.5; exit 3"), {"--claim", token});
-  auto const elapsed = std::chrono::steady_clock::now() - began;
-  INFO("stderr:\n" << got.err);
-  CHECK(got.code == 3);
-  CHECK(warning_count(got.err) == 1);
-  CHECK(elapsed < std::chrono::milliseconds(3500));
-  REQUIRE(locker->execute("rollback;").has_value());
-}
-
 TEST_CASE("queue run --claim: a lease lengthened by heartbeat --ttl lengthens the cadence", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_follow");
+  auto const arena = seeded_arena("qc_follow");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const  token = mint_claim(arena);
@@ -841,29 +848,9 @@ TEST_CASE("queue run --claim: a lease lengthened by heartbeat --ttl lengthens th
   CHECK(finish(claimed).code == 0);
 }
 
-TEST_CASE("queue run --claim: a main database whose schema is behind is reported and never migrated",
-          "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_behind");
-  {
-    auto opened = planar::db::connection::open(main_db(arena).string());
-    REQUIRE(opened.has_value());
-    REQUIRE(
-        opened->execute("create table schema_migrations (version integer primary key, description text not null);").has_value());
-    REQUIRE(opened->execute("insert into schema_migrations (version, description) values (1, 'foundation');").has_value());
-  }
-  auto const before = read_all(main_db(arena));
-
-  auto const got = run_queue(arena, "behind", sh_command("exit 6"), {"--claim", "0123456789abcdef0123456789abcdef"});
-  INFO("stderr:\n" << got.err);
-  CHECK(got.code == 6);
-  CHECK(warning_count(got.err) == 1);
-  CHECK(got.err.find("SchemaVersionBehind") != std::string::npos);
-  CHECK(read_all(main_db(arena)) == before);
-}
-
 TEST_CASE("queue run --claim: an engine-supervised claim is refused once, with a warning, and the command runs",
           "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_engine");
+  auto const arena = seeded_arena("qc_engine");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const                     token = mint_claim(arena);
@@ -882,7 +869,7 @@ TEST_CASE("queue run --claim: an engine-supervised claim is refused once, with a
 }
 
 TEST_CASE("queue run --claim: a nested run renews the claim", "[cmd][agent][queue][hq-claim]") {
-  auto const arena = parity::make_arena("qc_nested");
+  auto const arena = seeded_arena("qc_nested");
   write_config(arena, k_fast_poll);
   seed_main(arena);
   auto const  token = mint_claim(arena);
@@ -899,7 +886,7 @@ TEST_CASE("queue run --claim: a nested run renews the claim", "[cmd][agent][queu
   auto const  snap = require_snapshot(arena);
   auto const* nest = entry_seq(snap, 2);
   REQUIRE(nest != nullptr);
-  CHECK(nest->parent_seq == std::optional<std::int64_t>{1});
+  CHECK(nest->parent_seq == std::optional<std::int64_t>{planar::cmd::qfix::seq_of(1)});
   CHECK(nest->state == hq::entry_state::running);
 
   auto const base   = expiry(arena, token);

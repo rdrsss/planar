@@ -10,8 +10,8 @@ import planar.cmd.internal.config_path;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
+import planar.cmd.planar_agent.queue_store;
 import planar.db;
-import planar.db.agentdb;
 import planar.engine.config.queue;
 import planar.engine.hostqueue;
 import planar.json_text;
@@ -260,11 +260,11 @@ auto queue_status_with(context& ctx, const cliapp::parsed_args& args, queue_stat
   auto const          probe = deps.probe ? *deps.probe : hq::system_process_probe();
 
   // Read-only: no store is created, none is migrated, nothing is written.
-  auto opened = db::agent::open_agent_db_read_only(ctx.env());
+  auto opened = open_queue_store(ctx.env(), store_access::read_only);
   if (!opened) {
-    return refuse(ctx, as_json, k_exit_queue_failed, "store_unreachable", opened.error().message);
+    return refuse(ctx, as_json, k_exit_queue_failed, opened.error().tag, opened.error().message);
   }
-  db::connection& conn = *opened;
+  db::connection& conn = opened->conn;
 
   auto const now_mono = clock.monotonic_ms();
   if (!now_mono) {

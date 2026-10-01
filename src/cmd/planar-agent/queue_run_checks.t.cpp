@@ -5,7 +5,7 @@
 //
 // Every case runs the BUILT binary through `run_pinned` (or `spawn_queue`
 // for the one case that needs a submitter waiting), in an arena with its own
-// `PLANAR_AGENT_DB`, `HOME` and `PLANAR_CONFIG_PATH`, so nothing can reach the
+// `PLANAR_DB`, `HOME` and `PLANAR_CONFIG_PATH`, so nothing can reach the
 // operator's `~/.planar`. The store is read back through the engine's own
 // typed reads: an exit code alone would pass for a refusal that enqueued the
 // command first and ended it after.
@@ -28,15 +28,25 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
+import planar.db.migrate;
+import planar.db.migrations;
 import planar.engine.hostqueue;
 
 #include "parity_harness.hpp"
+#include "queue_test_store.hpp"
 
 namespace {
 
 namespace hq     = planar::engine::hostqueue;
 namespace parity = planar::cmd::parity;
+
+/// @brief A fresh arena whose `planar.db` already exists at the head of the
+/// embedded chain: the queue verbs open the main database and never create it.
+auto seeded_arena(std::string_view tag) -> parity::arena {
+  auto arena = parity::make_arena(tag);
+  planar::cmd::qfix::head_store(arena.cpp_root / "planar.db");
+  return arena;
+}
 
 using parity::capture;
 using parity::pinned_var;
@@ -115,11 +125,11 @@ struct snapshot {
 /// @brief Reads the arena's store, or nothing when it does not exist or
 /// cannot be read at this instant.
 auto try_snapshot(const parity::arena& arena) -> std::optional<snapshot> {
-  auto const path = arena.cpp_root / "agent.db";
+  auto const path = arena.cpp_root / "planar.db";
   if (!present(path)) {
     return std::nullopt;
   }
-  auto opened = planar::db::agent::open_agent_db_at(path);
+  auto opened = planar::cmd::qfix::open_store(path);
   if (!opened) {
     return std::nullopt;
   }
@@ -137,15 +147,16 @@ auto require_snapshot(const parity::arena& arena) -> snapshot {
   return *now;
 }
 
-/// @brief Requires that the store was never touched: the file is ABSENT, not
-/// merely empty. The guard and the 126/127 checks run before the store is
-/// opened (tech spec 647 § Submitting), and `open_agent_db` creates the file,
-/// so a refusal that opened the store first and enqueued nothing would leave
-/// an empty file behind; an empty snapshot alone would pass for that. Every
-/// caller runs in an arena no earlier case has touched.
+/// @brief Requires that the store was never touched: nothing was enqueued and
+/// the database was never even opened. The guard and the 126/127 checks run
+/// before the store is opened (tech spec 647 § Submitting). The arena's
+/// `planar.db` exists (the queue verbs never create it), so "never opened" is
+/// read from SQLite's own footprint: a database in WAL mode that any
+/// connection touches grows a `-wal` and `-shm`, and the seeding connection
+/// removed them when it closed. Every caller runs in an arena no earlier case
+/// has touched.
 void require_nothing_enqueued(const parity::arena& arena) {
-  CHECK_FALSE(present(arena.cpp_root / "agent.db"));
-  CHECK_FALSE(present(arena.cpp_root / "agent.db-wal"));
+  CHECK(planar::cmd::qfix::untouched(arena.cpp_root / "planar.db"));
 }
 
 /// @brief Polls `predicate` until it holds or the budget ends.
@@ -162,6 +173,7 @@ template <class Predicate> auto await(Predicate&& predicate, std::chrono::millis
 
 /// @brief Waits for entry `seq` to be in `state`.
 void await_entry(const parity::arena& arena, std::int64_t seq, hq::entry_state state) {
+  seq = planar::cmd::qfix::seq_of(seq);
   INFO("waiting for entry " << seq);
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
@@ -257,7 +269,7 @@ auto finish(const spawned& run) -> capture {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: a model launcher is refused before anything is enqueued", "[cmd][agent][queue][queue-guard]") {
-  auto const arena = parity::make_arena("qc_guard");
+  auto const arena = seeded_arena("qc_guard");
 
   for (auto const name : k_launchers) {
     // A real, runnable program of that name is on PATH: only the guard can
@@ -294,7 +306,7 @@ TEST_CASE("queue run: a model launcher is refused before anything is enqueued", 
 }
 
 TEST_CASE("queue run: env options that take a value do not hide the launcher", "[cmd][agent][queue][queue-guard]") {
-  auto const arena = parity::make_arena("qc_guard_env");
+  auto const arena = seeded_arena("qc_guard_env");
   make_program(arena, "claude");
 
   std::vector<std::pair<std::string, std::vector<std::string>>> forms{
@@ -326,7 +338,7 @@ TEST_CASE("queue run: env options that take a value do not hide the launcher", "
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue run: a program whose name only contains a listed word is queued and runs", "[cmd][agent][queue][queue-guard]") {
-  auto const arena = parity::make_arena("qc_guard_allowed");
+  auto const arena = seeded_arena("qc_guard_allowed");
 
   for (std::string_view name : {"codex-lint-report", "claude_fixture"}) {
     make_program(arena, name);
@@ -367,7 +379,7 @@ TEST_CASE("queue run: a program whose name only contains a listed word is queued
 
 TEST_CASE("queue run: a missing command exits 127 and leaves no entry and no history row",
           "[cmd][agent][queue][queue-notstarted]") {
-  auto const arena = parity::make_arena("qc_missing");
+  auto const arena = seeded_arena("qc_missing");
 
   SECTION("a bare name found nowhere on PATH") {
     auto const got = run_queue(arena, "bare", {"no-such-program-xyz"});
@@ -387,7 +399,7 @@ TEST_CASE("queue run: a missing command exits 127 and leaves no entry and no his
 
 TEST_CASE("queue run: a command that cannot be executed exits 126 and leaves no entry and no history row",
           "[cmd][agent][queue][queue-notstarted]") {
-  auto const arena = parity::make_arena("qc_notexec");
+  auto const arena = seeded_arena("qc_notexec");
   std::filesystem::create_directories(fakebin(arena));
   auto const plain = fakebin(arena) / "plainfile";
   {
@@ -420,7 +432,7 @@ TEST_CASE("queue run: a file with the execute bit and no interpreter line ends a
           "[cmd][agent][queue][queue-notstarted]") {
   // It passes the check made before the enqueue (it is executable) and fails
   // at exec, so it is enqueued, gets its turn, and ends `not_started`.
-  auto const arena = parity::make_arena("qc_noshebang");
+  auto const arena = seeded_arena("qc_noshebang");
   std::filesystem::create_directories(fakebin(arena));
   auto const program = fakebin(arena) / "script-without-shebang";
   {
@@ -450,7 +462,7 @@ TEST_CASE("queue run: a file with the execute bit and no interpreter line ends a
 
 TEST_CASE("queue run: a program that vanishes while queued ends as not started and the next entry starts",
           "[cmd][agent][queue][queue-notstarted]") {
-  auto const arena = parity::make_arena("qc_vanish");
+  auto const arena = seeded_arena("qc_vanish");
   write_config(arena, "[queue]\npoll_interval = \"100ms\"\n");
   gate       release(arena.cpp_root / "release.fifo");
   auto const started = arena.cpp_root / "started_first";
@@ -487,11 +499,13 @@ TEST_CASE("queue run: a program that vanishes while queued ends as not started a
   auto const not_started =
       std::ranges::count_if(snap.history, [](const hq::history_row& r) { return r.outcome == hq::history_outcome::not_started; });
   CHECK(not_started == 1);
-  auto const row = std::ranges::find_if(snap.history, [](const hq::history_row& r) { return r.seq == 2; });
+  auto const row =
+      std::ranges::find_if(snap.history, [](const hq::history_row& r) { return r.seq == planar::cmd::qfix::seq_of(2); });
   REQUIRE(row != snap.history.end());
   CHECK(row->outcome == hq::history_outcome::not_started);
   CHECK(row->exit_code == 127);
-  auto const next = std::ranges::find_if(snap.history, [](const hq::history_row& r) { return r.seq == 3; });
+  auto const next =
+      std::ranges::find_if(snap.history, [](const hq::history_row& r) { return r.seq == planar::cmd::qfix::seq_of(3); });
   REQUIRE(next != snap.history.end());
   CHECK(next->outcome == hq::history_outcome::exited);
 }

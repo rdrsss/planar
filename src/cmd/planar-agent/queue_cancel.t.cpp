@@ -4,7 +4,7 @@
 // finishes what it starts; test spec 649 scenarios citing
 // task:hq-queue-cancel).
 //
-// Every case runs the BUILT binary in an arena with its own PLANAR_AGENT_DB,
+// Every case runs the BUILT binary in an arena with its own PLANAR_DB,
 // PLANAR_DB, HOME and PLANAR_CONFIG_PATH. The store is read back through the
 // engine's typed reads after every step. Synchronisation is by files and
 // FIFOs, never by sleeps: a command that has to stay alive blocks reading a
@@ -25,17 +25,27 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
+import planar.db.migrate;
+import planar.db.migrations;
 import planar.process.identity;
 import planar.engine.hostqueue;
 
 #include "parity_harness.hpp"
+#include "queue_test_store.hpp"
 
 namespace {
 
 namespace hq     = planar::engine::hostqueue;
 namespace ident  = planar::process::identity;
 namespace parity = planar::cmd::parity;
+
+/// @brief A fresh arena whose `planar.db` already exists at the head of the
+/// embedded chain: the queue verbs open the main database and never create it.
+auto seeded_arena(std::string_view tag) -> parity::arena {
+  auto arena = parity::make_arena(tag);
+  planar::cmd::qfix::head_store(arena.cpp_root / "planar.db");
+  return arena;
+}
 
 using parity::capture;
 using parity::pinned_var;
@@ -68,6 +78,11 @@ auto queue_run_args(const std::vector<std::string>& command, std::vector<std::st
 }
 
 auto cancel_args(std::string seq, std::vector<std::string> flags = {}) -> std::vector<std::string> {
+  // A small number is an ordinal (see `seq_of`).
+  if (std::int64_t number = 0;
+      !seq.empty() && std::from_chars(seq.data(), seq.data() + seq.size(), number).ptr == seq.data() + seq.size() && number > 0) {
+    seq = std::to_string(planar::cmd::qfix::seq_of(number));
+  }
   std::vector<std::string> args{"queue", "cancel"};
   for (auto& flag : flags) {
     args.push_back(std::move(flag));
@@ -97,11 +112,11 @@ struct snapshot {
 };
 
 auto try_snapshot(const parity::arena& arena) -> std::optional<snapshot> {
-  auto const path = arena.cpp_root / "agent.db";
+  auto const path = arena.cpp_root / "planar.db";
   if (!std::filesystem::exists(path)) {
     return std::nullopt;
   }
-  auto opened = planar::db::agent::open_agent_db_at(path);
+  auto opened = planar::cmd::qfix::open_store(path);
   if (!opened) {
     return std::nullopt;
   }
@@ -131,17 +146,20 @@ template <class Predicate> auto await(Predicate&& predicate, std::chrono::millis
 }
 
 auto entry_seq(const snapshot& snap, std::int64_t seq) -> const hq::entry* {
+  seq              = planar::cmd::qfix::seq_of(seq);
   auto const found = std::ranges::find_if(snap.entries, [&](const hq::entry& e) { return e.seq == seq; });
   return found == snap.entries.end() ? nullptr : &*found;
 }
 
 auto history_seq(const snapshot& snap, std::int64_t seq) -> const hq::history_row* {
+  seq              = planar::cmd::qfix::seq_of(seq);
   auto const found = std::ranges::find_if(snap.history, [&](const hq::history_row& r) { return r.seq == seq; });
   return found == snap.history.end() ? nullptr : &*found;
 }
 
 /// @brief The one history row of `seq`; fails when there is none or more than one.
 auto sole_history(const parity::arena& arena, std::int64_t seq) -> hq::history_row {
+  seq             = planar::cmd::qfix::seq_of(seq);
   auto const snap = require_snapshot(arena);
   auto const rows = std::ranges::count_if(snap.history, [&](const hq::history_row& r) { return r.seq == seq; });
   REQUIRE(rows == 1);
@@ -149,6 +167,7 @@ auto sole_history(const parity::arena& arena, std::int64_t seq) -> hq::history_r
 }
 
 auto await_entry(const parity::arena& arena, std::int64_t seq, hq::entry_state state) -> hq::entry {
+  seq = planar::cmd::qfix::seq_of(seq);
   std::optional<hq::entry> seen;
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
@@ -167,6 +186,7 @@ auto await_entry(const parity::arena& arena, std::int64_t seq, hq::entry_state s
 
 /// @brief Waits for entry `seq` to be running with its child group recorded.
 auto await_child_recorded(const parity::arena& arena, std::int64_t seq) -> hq::entry {
+  seq = planar::cmd::qfix::seq_of(seq);
   std::optional<hq::entry> seen;
   REQUIRE(await([&] {
     auto const snap = try_snapshot(arena);
@@ -406,6 +426,7 @@ auto detached_blocked_script(bool ignore_term) -> std::string {
 
 /// @brief `queue status <seq> --json`, which must succeed.
 auto status_json(const parity::arena& arena, std::string_view tag, std::int64_t seq) -> std::string {
+  seq            = planar::cmd::qfix::seq_of(seq);
   auto const got = parity::run_pinned(agent_bin(), std::vector<std::string>{"queue", "status", std::to_string(seq), "--json"},
                                       arena.cpp_root, tag);
   INFO("status stderr:\n" << got.err);
@@ -435,7 +456,7 @@ auto submitter_alive(const hq::entry& e) -> bool {
 // ---------------------------------------------------------------------------
 TEST_CASE("queue cancel: a waiting entry is removed, attributed to its canceller, and its submitter exits 125",
           "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_waiting");
+  auto const arena = seeded_arena("qc_waiting");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started_a = arena.cpp_root / "started_a";
@@ -456,7 +477,7 @@ TEST_CASE("queue cancel: a waiting entry is removed, attributed to its canceller
   auto const cancelled = finish(canceller);
   INFO("cancel stderr:\n" << cancelled.err);
   CHECK(cancelled.code == 0);
-  CHECK(cancelled.out.find("2") != std::string::npos);
+  CHECK(cancelled.out.find("1000002") != std::string::npos);
 
   // The waiting entry is gone, the holder is untouched, and the one history
   // row names who cancelled it.
@@ -479,7 +500,7 @@ TEST_CASE("queue cancel: a waiting entry is removed, attributed to its canceller
   INFO("submitter stderr:\n" << submitted.err);
   CHECK(submitted.code == 125);
   CHECK_FALSE(present(started_b));
-  CHECK(split_lines(submitted.err).back() == "queue: entry 2 cancelled");
+  CHECK(split_lines(submitted.err).back() == "queue: entry 1000002 cancelled");
 
   hold.release();
   CHECK(finish(a).code == 0);
@@ -491,7 +512,7 @@ TEST_CASE("queue cancel: a waiting entry is removed, attributed to its canceller
 TEST_CASE(
     "queue cancel: a running command that honours SIGTERM ends cancelled, its submitter exits 125 and the next entry starts",
     "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_running");
+  auto const arena = seeded_arena("qc_running");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started_a = arena.cpp_root / "started_a";
@@ -528,7 +549,7 @@ TEST_CASE(
   auto const submitted = finish(a);
   INFO("submitter stderr:\n" << submitted.err);
   CHECK(submitted.code == 125);
-  CHECK(split_lines(submitted.err).back() == "queue: entry 1 cancelled");
+  CHECK(split_lines(submitted.err).back() == "queue: entry 1000001 cancelled");
 
   // The freed slot goes to the next entry.
   auto const next = finish(b);
@@ -544,7 +565,7 @@ TEST_CASE(
 // ---------------------------------------------------------------------------
 TEST_CASE("queue cancel: sends SIGKILL itself after the grace period to a command that ignores SIGTERM",
           "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_stubborn");
+  auto const arena = seeded_arena("qc_stubborn");
   write_config(arena, k_nobody_polls);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -580,7 +601,7 @@ TEST_CASE("queue cancel: sends SIGKILL itself after the grace period to a comman
 // ---------------------------------------------------------------------------
 TEST_CASE("queue cancel: stops the command of an entry whose submitter is gone and removes the entry",
           "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_orphan");
+  auto const arena = seeded_arena("qc_orphan");
   write_config(arena, k_nobody_polls);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -618,7 +639,7 @@ TEST_CASE("queue cancel: stops the command of an entry whose submitter is gone a
 // ---------------------------------------------------------------------------
 TEST_CASE("queue cancel: stops a detached run and its detached submitter ends the entry as cancelled",
           "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_detached");
+  auto const arena = seeded_arena("qc_detached");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -652,7 +673,7 @@ TEST_CASE("queue cancel: stops a detached run and its detached submitter ends th
 // ---------------------------------------------------------------------------
 TEST_CASE("queue cancel: an unknown entry exits 1, an ended one exits 6, and neither changes anything",
           "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_unknown");
+  auto const arena = seeded_arena("qc_unknown");
   write_config(arena, k_fast_poll);
 
   // Never issued: nothing exists yet, not even entry 1.
@@ -685,7 +706,7 @@ TEST_CASE("queue cancel: an unknown entry exits 1, an ended one exits 6, and nei
 
 TEST_CASE("queue cancel: a sequence number that is not a positive integer is refused at 2, and none at all at 1",
           "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_badseq");
+  auto const arena = seeded_arena("qc_badseq");
   write_config(arena, k_fast_poll);
   for (auto const* bad : {"abc", "0", "1x", ""}) {
     INFO("seq '" << bad << "'");
@@ -701,10 +722,13 @@ TEST_CASE("queue cancel: a sequence number that is not a positive integer is ref
 // Scenario: Error: an unreachable store
 // ---------------------------------------------------------------------------
 TEST_CASE("queue cancel: an unreachable store exits 125", "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_nostore");
+  auto const arena = seeded_arena("qc_nostore");
   write_config(arena, k_fast_poll);
-  // The agent database's path is a directory, so it can be neither opened nor created.
-  std::filesystem::create_directories(arena.cpp_root / "agent.db");
+  // The database's path is a directory, so it can be neither opened nor created.
+  for (auto const* suffix : {"", "-wal", "-shm"}) {
+    std::filesystem::remove(arena.cpp_root / (std::string{"planar.db"} + suffix));
+  }
+  std::filesystem::create_directories(arena.cpp_root / "planar.db");
   auto const got = run_cancel(arena, "nostore", "1");
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 125);
@@ -716,7 +740,7 @@ TEST_CASE("queue cancel: an unreachable store exits 125", "[cmd][agent][queue][h
 // ---------------------------------------------------------------------------
 TEST_CASE("queue cancel: the vendor and role come from the flags, then the environment, and are stored empty otherwise",
           "[cmd][agent][queue][hq-queue-cancel][hq-vendor-role]") {
-  auto const arena = parity::make_arena("qc_identity");
+  auto const arena = seeded_arena("qc_identity");
   write_config(arena, k_fast_poll);
   gate        hold(arena.cpp_root / "hold.fifo");
   auto const  started = arena.cpp_root / "started";
@@ -768,7 +792,7 @@ TEST_CASE("queue cancel: the vendor and role come from the flags, then the envir
 // ---------------------------------------------------------------------------
 TEST_CASE("queue cancel: racing the command's own exit leaves exactly one history row, cancelled or exited",
           "[cmd][agent][queue][hq-queue-cancel]") {
-  auto const arena = parity::make_arena("qc_race");
+  auto const arena = seeded_arena("qc_race");
   write_config(arena, k_fast_poll);
   constexpr int k_rounds         = 24;
   int           cancelled_rounds = 0;
@@ -776,7 +800,7 @@ TEST_CASE("queue cancel: racing the command's own exit leaves exactly one histor
 
   for (int round = 0; round < k_rounds; ++round) {
     INFO("round " << round);
-    auto const  seq = static_cast<std::int64_t>(round + 1);
+    auto const  seq = planar::cmd::qfix::seq_of(round + 1);
     gate        hold(arena.cpp_root / std::format("hold{}.fifo", round));
     auto const  started = arena.cpp_root / std::format("started{}", round);
     release_all guard{.gates = {&hold}};

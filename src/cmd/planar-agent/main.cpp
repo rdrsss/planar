@@ -11,9 +11,8 @@
 /// path rather than the happy one: `resolve_db_path` failing here is
 /// reported through `planar.cmd.planar_agent.exit`, so it carries THIS
 /// binary's exit-code policy. The `queue` domain alone is exempt from that
-/// failure (`uses_main_database`): it never opens the main database. Wiring it to the operator binary's module
-/// would compile and would be wrong on two error kinds (see that module's
-/// header).
+/// failure (`uses_main_database`): its handlers resolve and open `planar.db` themselves. Wiring it to the operator binary's
+/// module would compile and would be wrong on two error kinds (see that module's header).
 ///
 /// NOT reproduced from the Zig entry point, each named rather than quietly
 /// dropped:
@@ -47,10 +46,10 @@ auto main(int argc, char** argv) -> int {
   auto const env = planar::cmd::agent::process_env();
 
   // The main database's path is resolved before dispatch, and a failure is
-  // fatal, for every verb but the `queue` domain. `queue run` needs no main
-  // database at all (its store is the agent database, located separately), so
-  // it must not be stopped by one it will never open; the holder is then
-  // built with an empty path, and it is lazy, so nothing opens it.
+  // fatal, for every verb but the `queue` domain. The queue handlers resolve the
+  // path and open the store themselves, so a missing one refuses there at 125
+  // with the queue's own line; the holder is then built with an empty path,
+  // and it is lazy, so nothing opens it.
   std::filesystem::path main_db;
   if (auto db_path = planar::cmd::agent::resolve_db_path(env); db_path) {
     main_db = *std::move(db_path);
