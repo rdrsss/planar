@@ -768,3 +768,98 @@ TEST_CASE("connection::open_read_only sets busy_timeout=5000 without attempting 
 
   CHECK(pragma_text(*conn, "PRAGMA busy_timeout") == "5000");
 }
+
+// --- read-only URI percent-encoding (plan 1089, task qp-ro-uri-encoding) ----
+//
+// `open_read_only` hands SQLite a `file:` URI. A `?` or `#` in the database
+// path used to end the URI path early (so the real file was never opened and
+// `mode=ro` was swallowed into a bogus query), and `%` was decoded as an
+// escape. Each fixture below puts a DECOY database at the name the truncated
+// or decoded URI would have resolved to, with a different value, so opening
+// the wrong file is observable as a wrong answer rather than only an error.
+
+namespace {
+
+/// A per-test scratch directory removed recursively on scope exit.
+struct scratch_dir {
+  std::filesystem::path path_;
+
+  scratch_dir()
+      : path_(std::filesystem::temp_directory_path() / std::format("planar_db_uri_{}_{}",
+                                                                   std::chrono::steady_clock::now().time_since_epoch().count(),
+                                                                   reinterpret_cast<std::uintptr_t>(this))) {
+    std::filesystem::create_directories(path_);
+  }
+
+  scratch_dir(const scratch_dir&)            = delete;
+  scratch_dir& operator=(const scratch_dir&) = delete;
+
+  ~scratch_dir() {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+};
+
+void seed_marker(const std::filesystem::path& file, std::int64_t marker) {
+  auto seed = planar::db::connection::open(file.string());
+  REQUIRE(seed.has_value());
+  REQUIRE(seed->execute(std::format("create table t (n integer); insert into t (n) values ({});", marker)));
+}
+
+auto read_marker(planar::db::connection& conn) -> std::int64_t {
+  auto stmt = conn.prepare("select n from t;");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().value() == planar::db::step_result::row);
+  return stmt->column_int64(0);
+}
+
+} // namespace
+
+TEST_CASE("open_read_only opens the intended file for a path with a URI metacharacter", "[db][connection][qp-ro-uri-encoding]") {
+  struct fixture {
+    std::string real_name;
+    std::string decoy_name; // empty: no decoy needed
+  };
+  const fixture fixtures[] = {
+      {"we?ird#na%me.db", "we"},  // '?' truncates the URI path at "we"
+      {"hash#tail.db", "hash"},   // '#' truncates the URI path at "hash"
+      {"pct%41x.db", "pctAx.db"}, // '%41' would decode to 'A'
+      {"pct%zz.db", ""},          // invalid escape must stay literal
+      {"with space.db", ""},      //
+      {"it's.db", ""},            //
+      {"q?mode=rw.db", "q"},      // a query-looking tail must not select a mode
+  };
+  for (const auto& fx : fixtures) {
+    CAPTURE(fx.real_name);
+    scratch_dir dir;
+    seed_marker(dir.path_ / fx.real_name, 111);
+    if (!fx.decoy_name.empty()) {
+      seed_marker(dir.path_ / fx.decoy_name, 222);
+    }
+
+    auto conn = planar::db::connection::open_read_only((dir.path_ / fx.real_name).string());
+    REQUIRE(conn.has_value());
+    CHECK(read_marker(*conn) == 111);
+
+    // The handle really is read-only: a write through it fails.
+    auto write = conn->execute("insert into t (n) values (3);");
+    REQUIRE_FALSE(write.has_value());
+    CHECK(write.error().code_ == k_sqlite_readonly);
+
+    // The decoy was neither modified nor replaced.
+    if (!fx.decoy_name.empty()) {
+      auto decoy = planar::db::connection::open_read_only((dir.path_ / fx.decoy_name).string());
+      REQUIRE(decoy.has_value());
+      CHECK(read_marker(*decoy) == 222);
+    }
+  }
+}
+
+TEST_CASE("open_read_only does not create a file for a missing path with a URI metacharacter",
+          "[db][connection][qp-ro-uri-encoding]") {
+  scratch_dir dir;
+  seed_marker(dir.path_ / "we", 222);
+  auto conn = planar::db::connection::open_read_only((dir.path_ / "we?ird.db").string());
+  REQUIRE_FALSE(conn.has_value());
+  CHECK_FALSE(std::filesystem::exists(dir.path_ / "we?ird.db"));
+}
