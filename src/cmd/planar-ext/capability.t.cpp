@@ -214,6 +214,13 @@ TEST_CASE("ensure_db()'s write allowlist refuses every statement that writes a h
   // exactly three tables and `queue_*` is not among them, so each write is
   // refused by the SQLite layer through the very connection a handler gets,
   // while reads stay open like every other table's.
+  // A refusal counts only when SQLite says the authorizer refused it: a typo
+  // in a column name also fails to prepare, and must not pass for a refusal.
+  auto const refused_by_authorizer = [](planar::db::connection& c, std::string_view sql) {
+    auto const prepared = c.prepare(sql);
+    return !prepared.has_value() && prepared.error().message_.contains("not authorized");
+  };
+
   fixture fx;
 
   auto const opened = fx.ctx.db().ensure_db();
@@ -227,22 +234,20 @@ TEST_CASE("ensure_db()'s write allowlist refuses every statement that writes a h
     CHECK(conn.prepare(std::format("select count(*) from {};", table)).has_value());
   }
 
-  CHECK_FALSE(conn.prepare("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, enqueued_at, "
-                           "refreshed_mono) values ('waiting', 'h', 1, 1, '/', '[]', 0, 0);")
-                  .has_value());
-  CHECK_FALSE(conn.prepare("update queue_entries set state = 'running';").has_value());
-  CHECK_FALSE(conn.prepare("delete from queue_entries where seq = 1;").has_value());
-  CHECK_FALSE(conn.prepare("insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
-                           "values (1, 'exited', '/', '[]', 0, 0, 0);")
-                  .has_value());
-  CHECK_FALSE(conn.prepare("delete from queue_history;").has_value());
-  CHECK_FALSE(conn.prepare("update queue_schema set compat = 1;").has_value());
-  CHECK_FALSE(conn.prepare("insert into queue_schema (version, compat, description) values (9, 9, 'x');").has_value());
+  CHECK(refused_by_authorizer(conn, "insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, enqueued_at, "
+                                    "refreshed_mono) values ('waiting', 'h', 1, 1, '/', '[]', 0, 0);"));
+  CHECK(refused_by_authorizer(conn, "update queue_entries set state = 'running';"));
+  CHECK(refused_by_authorizer(conn, "delete from queue_entries where seq = 1;"));
+  CHECK(refused_by_authorizer(conn, "insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
+                                    "values (1, 'exited', '/', '[]', 0, 0, 0);"));
+  CHECK(refused_by_authorizer(conn, "delete from queue_history;"));
+  CHECK(refused_by_authorizer(conn, "update queue_schema set compat = 1;"));
+  CHECK(refused_by_authorizer(conn, "insert into queue_schema (version, compat, description) values (9, 9, 'x');"));
 
   // A write through a runtime-composed table name is refused the same way.
   for (std::string const table : {std::string{"queue_entries"}, std::string{"queue_history"}, std::string{"queue_schema"}}) {
     INFO("interpolated table: " << table);
-    CHECK_FALSE(conn.prepare(std::format("delete from {};", table)).has_value());
+    CHECK(refused_by_authorizer(conn, std::format("delete from {};", table)));
   }
 
   // The tables are untouched.

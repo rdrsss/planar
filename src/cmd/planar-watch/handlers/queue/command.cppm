@@ -30,7 +30,8 @@ export auto add(CLI::App& root) -> void {
       "row gives the outcome (exited, signaled, timeout, cancelled, wait_timeout,\n  not_started or abandoned), the exit "
       "code or signal, how long it waited and ran, who submitted it, and\n  who cancelled it or which entry replaced "
       "it. --since <duration> keeps only rows that ended within that\n  long (an integer and a unit ms, s, m, h or d, "
-      "at most 36500d). A missing planar.db is an error, as for every viewer verb.\n\n  Text: one line per row, columns SEQ OUTCOME "
+      "at most 36500d). A missing planar.db is an error, as for every viewer verb.\n\n  Text: one line per row, columns SEQ "
+      "OUTCOME "
       "RESULT ENDED WAITED RAN NOTES VENDOR ROLE LABEL DIRECTORY\n  COMMAND. --json: an array of objects, one per row.");
   history->add_option("--since")->description(
       "Only rows that ended within this long: an integer and a unit (ms, s, m, h, d), at most 36500d");

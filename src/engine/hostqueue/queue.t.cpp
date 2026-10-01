@@ -359,6 +359,116 @@ TEST_CASE("main migration 00040 rolls back and re-applies without losing schema"
   CHECK(hq::find(conn, *seq).value().has_value());
 }
 
+TEST_CASE("plain enqueue refuses a request carrying parent_seq and inserts nothing", "[engine][hostqueue][hq-enqueue]") {
+  // Decision 1191: a nested entry is only ever created by `enqueue_nested`,
+  // which checks the parent and sets started_at and the deadline. The plain
+  // entry point must not be a back door to a running entry that never times out.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const parent = hq::enqueue(conn, full_request()).value();
+  auto       nested = full_request();
+  nested.parent_seq = parent;
+
+  auto const before = scalar(conn, "select count(*) from queue_entries");
+
+  SECTION("the two-argument form") {
+    auto const refused = hq::enqueue(conn, nested);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().kind == hq::queue_error_kind::invalid_request);
+  }
+  SECTION("the retention form") {
+    auto const refused = hq::enqueue(conn, nested, 30);
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().kind == hq::queue_error_kind::invalid_request);
+  }
+  CHECK(scalar(conn, "select count(*) from queue_entries") == before);
+}
+
+TEST_CASE("record_child stores the group on a running entry and refuses a waiting or missing one",
+          "[engine][hostqueue][hq-enqueue]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const waiting = hq::enqueue(conn, full_request()).value();
+  auto       nested  = full_request();
+  nested.parent_seq  = waiting;
+  auto const running = hq::insert_nested_entry(conn, nested).value(); // Inserted running: it never waits for a slot.
+
+  SECTION("a running entry records the group and the leader's start time") {
+    auto const recorded = hq::record_child(conn, running, 4'321, 777'000'111);
+    REQUIRE(recorded.has_value());
+    CHECK(*recorded);
+    auto const found = hq::find(conn, running).value();
+    REQUIRE(found.has_value());
+    CHECK(found->child_pgid == 4'321);
+    CHECK(found->child_started == 777'000'111);
+    // Nothing else moved.
+    CHECK(found->state == hq::entry_state::running);
+    CHECK(found->pid == full_request().pid);
+  }
+  SECTION("a waiting entry is left alone") {
+    auto const recorded = hq::record_child(conn, waiting, 4'321, 777'000'111);
+    REQUIRE(recorded.has_value());
+    CHECK_FALSE(*recorded);
+    auto const found = hq::find(conn, waiting).value();
+    REQUIRE(found.has_value());
+    CHECK_FALSE(found->child_pgid.has_value());
+    CHECK_FALSE(found->child_started.has_value());
+  }
+  SECTION("an entry that does not exist writes nothing") {
+    auto const recorded = hq::record_child(conn, 9'999, 4'321, 777'000'111);
+    REQUIRE(recorded.has_value());
+    CHECK_FALSE(*recorded);
+  }
+}
+
+TEST_CASE("a stored state that is neither waiting nor running is refused, not read as waiting",
+          "[engine][hostqueue][hq-enqueue][hq-entry-state]") {
+  // The CHECK constraint keeps such a row out of a store this binary wrote;
+  // a later agent migration that adds a state would put one in front of an
+  // older binary, which must refuse it rather than misread it as waiting.
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const seq = hq::enqueue(conn, full_request()).value();
+  auto const ok  = hq::enqueue(conn, full_request()).value();
+  REQUIRE(conn.execute("pragma ignore_check_constraints = on").has_value());
+  REQUIRE(conn.execute(std::format("update queue_entries set state = 'paused' where seq = {}", seq)).has_value());
+  REQUIRE(conn.execute("pragma ignore_check_constraints = off").has_value());
+  REQUIRE(scalar(conn, std::format("select state from queue_entries where seq = {}", seq)) == "paused");
+
+  SECTION("find refuses the row and names the state") {
+    auto const found = hq::find(conn, seq);
+    REQUIRE_FALSE(found.has_value());
+    CHECK(found.error().kind == hq::queue_error_kind::unknown_state);
+    CHECK(found.error().message.find("paused") != std::string::npos);
+    CHECK(found.error().message.find("state") != std::string::npos);
+  }
+  SECTION("list refuses rather than returning the row as waiting") {
+    auto const all = hq::list(conn);
+    REQUIRE_FALSE(all.has_value());
+    CHECK(all.error().message.find("paused") != std::string::npos);
+  }
+  SECTION("the neighbouring valid row still reads") {
+    auto const found = hq::find(conn, ok);
+    REQUIRE(found.has_value());
+    REQUIRE(found->has_value());
+    CHECK((*found)->state == hq::entry_state::waiting);
+  }
+}
+
+TEST_CASE("a malformed stored argv is refused without repeating the whole column in the message",
+          "[engine][hostqueue][hq-enqueue][hq-entry-state]") {
+  auto const big     = std::string(5'000, 'x');
+  auto const decoded = hq::decode_argv(big);
+  REQUIRE_FALSE(decoded.has_value());
+  CHECK(decoded.error().kind == hq::queue_error_kind::malformed_argv);
+  CHECK(decoded.error().message.find(big) == std::string::npos);
+  CHECK(decoded.error().message.size() < 300);
+  CHECK(decoded.error().message.find("argv") != std::string::npos);
+}
+
 TEST_CASE("a planar.db ahead of the binary with the queue marker unchanged accepts an enqueue and an end",
           "[engine][hostqueue][hq-enqueue][qp-separability]") {
   // A newer binary added a migration and left the queue marker's compat

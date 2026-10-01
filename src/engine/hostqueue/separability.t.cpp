@@ -71,7 +71,7 @@ auto words_of(const std::string& literal) -> std::vector<std::string> {
 }
 
 auto excerpt(const std::string& literal) -> std::string {
-  auto const flat = literal.substr(0, 90);
+  auto const flat = literal.substr(0, 240);
   return flat.size() < literal.size() ? flat + "..." : flat;
 }
 
@@ -122,45 +122,127 @@ auto source_root() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_SOURCE_ROOT};
 }
 
-auto is_scanned_extension(const std::filesystem::path& path) -> bool {
+auto is_test_file(const std::filesystem::path& path) -> bool {
+  return path.filename().string().ends_with(".t.cpp");
+}
+
+auto is_source_file(const std::filesystem::path& path) -> bool {
   auto const name = path.filename().string();
-  return (name.ends_with(".cpp") || name.ends_with(".cppm") || name.ends_with(".hpp")) && !name.ends_with(".t.cpp");
+  return name.ends_with(".cpp") || name.ends_with(".cppm") || name.ends_with(".hpp");
+}
+
+// The file names (last path component) a source quotes in `#include "..."`.
+auto quoted_includes(std::string_view text) -> std::set<std::string, std::less<>> {
+  static const std::regex            include_line(R"re(^[ \t]*#[ \t]*include[ \t]+"([^"]+)")re", std::regex::multiline);
+  std::string const                  owned(text);
+  std::set<std::string, std::less<>> out;
+  for (auto it = std::sregex_iterator(owned.begin(), owned.end(), include_line); it != std::sregex_iterator(); ++it) {
+    out.insert(std::filesystem::path{(*it)[1].str()}.filename().string());
+  }
+  return out;
+}
+
+// Every first-party source under `root` that is production code, by rule and
+// not by name. A header is test-only, and so exempt from the separability
+// rules, exactly when it has at least one includer and every includer is a
+// `*.t.cpp` or itself a test-only header (a fixpoint, so a helper header
+// included only by a test header qualifies). A header nobody includes is
+// production, so is one any non-test file includes, and so is every `.cpp`
+// and `.cppm` that is not a `*.t.cpp`. A new test-support header therefore
+// needs no entry anywhere.
+auto production_sources(const std::filesystem::path& root) -> std::vector<std::filesystem::path> {
+  std::vector<std::filesystem::path>                                  files;
+  std::map<std::filesystem::path, std::set<std::string, std::less<>>> includes;
+  for (auto const& entry : std::filesystem::recursive_directory_iterator(root)) {
+    if (entry.is_regular_file() && is_source_file(entry.path())) {
+      files.push_back(entry.path());
+      includes[entry.path()] = quoted_includes(read_text(entry.path()));
+    }
+  }
+  std::ranges::sort(files);
+
+  std::set<std::filesystem::path> test_only;
+  for (bool grew = true; grew;) {
+    grew = false;
+    for (auto const& header : files) {
+      if (header.extension() != ".hpp" || test_only.contains(header)) {
+        continue;
+      }
+      auto const name      = header.filename().string();
+      bool       any       = false;
+      bool       all_tests = true;
+      for (auto const& file : files) {
+        if (file == header || !includes[file].contains(name)) {
+          continue;
+        }
+        any       = true;
+        all_tests = all_tests && (is_test_file(file) || test_only.contains(file));
+      }
+      if (any && all_tests) {
+        test_only.insert(header);
+        grew = true;
+      }
+    }
+  }
+
+  std::vector<std::filesystem::path> out;
+  for (auto const& file : files) {
+    if (!is_test_file(file) && !test_only.contains(file)) {
+      out.push_back(file);
+    }
+  }
+  return out;
+}
+
+auto in_hostqueue(const std::filesystem::path& path) -> bool {
+  return path.parent_path().lexically_normal() == (source_root() / "engine" / "hostqueue").lexically_normal();
 }
 
 // Production sources of the hostqueue directory.
 auto hostqueue_sources() -> std::vector<std::filesystem::path> {
   std::vector<std::filesystem::path> out;
-  for (auto const& entry : std::filesystem::directory_iterator(source_root() / "engine" / "hostqueue")) {
-    // Test-support headers (scratch_store.hpp, sql_scan.hpp) are not production.
-    if (is_scanned_extension(entry.path()) && entry.path().extension() != ".hpp") {
-      out.push_back(entry.path());
+  for (auto const& file : production_sources(source_root())) {
+    if (in_hostqueue(file)) {
+      out.push_back(file);
     }
   }
-  std::ranges::sort(out);
   return out;
 }
 
-// Every first-party production source under src/ outside the hostqueue
-// directory. Test files (`*.t.cpp`) and the in-tree test harness headers are
-// not production code and may name queue tables to seed and inspect them.
+// Every production source under src/ outside the hostqueue directory.
 auto other_sources() -> std::vector<std::filesystem::path> {
-  auto const                         hostqueue = (source_root() / "engine" / "hostqueue").lexically_normal();
   std::vector<std::filesystem::path> out;
-  for (auto const& entry : std::filesystem::recursive_directory_iterator(source_root())) {
-    if (!entry.is_regular_file() || !is_scanned_extension(entry.path())) {
-      continue;
+  for (auto const& file : production_sources(source_root())) {
+    if (!in_hostqueue(file)) {
+      out.push_back(file);
     }
-    auto const dir = entry.path().parent_path().lexically_normal();
-    if (dir == hostqueue) {
-      continue;
-    }
-    auto const name = entry.path().filename().string();
-    if (name == "parity_harness.hpp" || name == "catalog_parity.hpp") {
-      continue;
-    }
-    out.push_back(entry.path());
   }
-  std::ranges::sort(out);
+  return out;
+}
+
+constexpr std::string_view k_remedy_outside =
+    "remedy: call the planar.engine.hostqueue API instead; queue SQL belongs in src/engine/hostqueue (tech spec 656 § "
+    "Separability)";
+constexpr std::string_view k_remedy_inside =
+    "remedy: move the planning query out of hostqueue; hostqueue SQL may name only the queue tables, sqlite_sequence and "
+    "SQLite introspection (tech spec 656 § Separability)";
+
+// One message for every violation `scan` finds in `files`: file (relative to
+// the source root), the table named and the whole SQL literal, then the
+// remedy. Empty when there is nothing to report. Built before the CHECK so
+// the offending SQL is still in hand when the check fails.
+template <class Scan>
+auto violation_report(const std::vector<std::filesystem::path>& files, const std::filesystem::path& root, Scan&& scan,
+                      std::string_view remedy) -> std::string {
+  std::string out;
+  for (auto const& file : files) {
+    for (auto const& violation : scan(read_text(file))) {
+      out += std::format("  {}: {}\n", std::filesystem::relative(file, root).string(), violation);
+    }
+  }
+  if (!out.empty()) {
+    out = "separability violation(s):\n" + out + "  " + std::string{remedy} + "\n";
+  }
   return out;
 }
 
@@ -277,6 +359,83 @@ TEST_CASE("the separability scanners find a planted violation and ignore identif
 }
 
 // ---------------------------------------------------------------------------
+// Which files are production code: by rule, not by name.
+// ---------------------------------------------------------------------------
+
+void write_file(const std::filesystem::path& path, std::string_view text) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path, std::ios::binary);
+  out << text;
+}
+
+TEST_CASE("a header is exempt from the separability rules only when every includer is a test, and a production header "
+          "that names a queue table is caught",
+          "[hostqueue][separability][qp-separability]") {
+  auto const root = std::filesystem::temp_directory_path() /
+                    std::format("planar_hq_sep_tree_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::filesystem::create_directories(root);
+  // A production module that includes a header whose SQL names a queue table.
+  write_file(root / "prod" / "handler.cpp", "#include \"prod_helper.hpp\"\n#include \"mixed.hpp\"\nint handler();\n");
+  write_file(root / "prod" / "prod_helper.hpp", "inline const char* k = \"select * from queue_history where seq = 1\";\n");
+  // A header both a test and a production file include is production.
+  write_file(root / "prod" / "mixed.hpp", "inline const char* m = \"delete from queue_entries\";\n");
+  // A header nothing includes is production.
+  write_file(root / "prod" / "orphan.hpp", "inline const char* o = \"update queue_schema set compat = 2\";\n");
+  // A test-only header, and a helper only that header includes (the fixpoint).
+  write_file(root / "tests" / "x.t.cpp", "#include \"test_store.hpp\"\n#include \"../prod/mixed.hpp\"\n");
+  write_file(root / "tests" / "test_store.hpp",
+             "#include \"chain.hpp\"\ninline const char* t = \"insert into queue_entries (state) values ('waiting')\";\n");
+  write_file(root / "tests" / "chain.hpp", "inline const char* c = \"select count(*) from queue_history\";\n");
+
+  auto const            production = production_sources(root);
+  std::set<std::string> names;
+  for (auto const& file : production) {
+    names.insert(file.filename().string());
+  }
+  CHECK(names == std::set<std::string>{"handler.cpp", "prod_helper.hpp", "mixed.hpp", "orphan.hpp"});
+
+  // The control the all-headers-exempt shortcut cannot survive: the production
+  // headers' queue SQL is reported, with file, table, literal and remedy, and
+  // the test-only headers' is not.
+  auto const report = violation_report(production, root, queue_name_violations, k_remedy_outside);
+  INFO(report);
+  CHECK(report.contains("prod/prod_helper.hpp: names queue table 'queue_history': select * from queue_history where seq = 1"));
+  CHECK(report.contains("prod/mixed.hpp: names queue table 'queue_entries': delete from queue_entries"));
+  CHECK(report.contains("prod/orphan.hpp: names queue table 'queue_schema': update queue_schema set compat = 2"));
+  CHECK_FALSE(report.contains("test_store.hpp"));
+  CHECK_FALSE(report.contains("chain.hpp"));
+  CHECK(report.contains("call the planar.engine.hostqueue API instead"));
+  CHECK(report.contains("tech spec 656"));
+
+  // The inside-hostqueue remedy names the other direction.
+  auto const planning = std::set<std::string, std::less<>>{"tasks"};
+  write_file(root / "hq" / "bad.cpp", "auto q = \"select seq from queue_entries join tasks on 1\";\n");
+  auto const inside = violation_report(
+      std::vector<std::filesystem::path>{root / "hq" / "bad.cpp"}, root,
+      [&](std::string_view text) { return hostqueue_violations(text, planning); }, k_remedy_inside);
+  CHECK(inside.contains("hq/bad.cpp: names planning table 'tasks': select seq from queue_entries join tasks on 1"));
+  CHECK(inside.contains("move the planning query out of hostqueue"));
+
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+}
+
+TEST_CASE("the real tree classifies the in-tree test harness headers as test-only and a production header as production",
+          "[hostqueue][separability][qp-separability]") {
+  auto const            production = production_sources(source_root());
+  std::set<std::string> names;
+  for (auto const& file : production) {
+    names.insert(file.filename().string());
+  }
+  CHECK_FALSE(names.contains("parity_harness.hpp"));
+  CHECK_FALSE(names.contains("catalog_parity.hpp"));
+  CHECK_FALSE(names.contains("scratch_store.hpp"));
+  CHECK_FALSE(names.contains("sql_scan.hpp"));
+  // Not vacuous: headers are not all dropped.
+  CHECK(std::ranges::any_of(production, [](const auto& f) { return f.extension() == ".hpp"; }));
+}
+
+// ---------------------------------------------------------------------------
 // The real sources.
 // ---------------------------------------------------------------------------
 
@@ -302,13 +461,11 @@ TEST_CASE("every SQL literal under src/engine/hostqueue names only queue tables,
         saw_pragma = saw_pragma || lower(literal).contains("pragma_table_info");
       }
     }
-    auto const violations = hostqueue_violations(text, planning);
-    INFO("file: " << file.string());
-    for (auto const& violation : violations) {
-      INFO(violation);
-    }
-    CHECK(violations.empty());
   }
+  auto const report = violation_report(
+      files, source_root(), [&](std::string_view text) { return hostqueue_violations(text, planning); }, k_remedy_inside);
+  INFO(report);
+  CHECK(report.empty());
   CHECK(sql_literals >= 30);
   CHECK(saw_master);
   CHECK(saw_pragma);
@@ -327,13 +484,10 @@ TEST_CASE("no SQL literal outside hostqueue, the migrations and the tests names 
         text.contains("auto queue_history(context& ctx")) {
       saw_watch_history = true;
     }
-    auto const violations = queue_name_violations(text);
-    INFO("file: " << file.string());
-    for (auto const& violation : violations) {
-      INFO(violation);
-    }
-    CHECK(violations.empty());
   }
+  auto const report = violation_report(files, source_root(), queue_name_violations, k_remedy_outside);
+  INFO(report);
+  CHECK(report.empty());
   CHECK(saw_watch_history);
 
   // Control: the same scan, pointed at the hostqueue directory it exempts,
