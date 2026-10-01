@@ -815,20 +815,19 @@ auto read_marker(planar::db::connection& conn) -> std::int64_t {
 
 } // namespace
 
-TEST_CASE("open_read_only opens the intended file for a path with a URI metacharacter",
-          "[db][connection][qp-ro-uri-encoding]") {
+TEST_CASE("open_read_only opens the intended file for a path with a URI metacharacter", "[db][connection][qp-ro-uri-encoding]") {
   struct fixture {
     std::string real_name;
     std::string decoy_name; // empty: no decoy needed
   };
   const fixture fixtures[] = {
-      {"we?ird#na%me.db", "we"},   // '?' truncates the URI path at "we"
-      {"hash#tail.db", "hash"},    // '#' truncates the URI path at "hash"
-      {"pct%41x.db", "pctAx.db"},  // '%41' would decode to 'A'
-      {"pct%zz.db", ""},           // invalid escape must stay literal
-      {"with space.db", ""},       //
-      {"it's.db", ""},             //
-      {"q?mode=rw.db", "q"},       // a query-looking tail must not select a mode
+      {"we?ird#na%me.db", "we"},  // '?' truncates the URI path at "we"
+      {"hash#tail.db", "hash"},   // '#' truncates the URI path at "hash"
+      {"pct%41x.db", "pctAx.db"}, // '%41' would decode to 'A'
+      {"pct%zz.db", ""},          // invalid escape must stay literal
+      {"with space.db", ""},      //
+      {"it's.db", ""},            //
+      {"q?mode=rw.db", "q"},      // a query-looking tail must not select a mode
   };
   for (const auto& fx : fixtures) {
     CAPTURE(fx.real_name);
