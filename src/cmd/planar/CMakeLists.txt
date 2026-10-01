@@ -902,3 +902,18 @@ add_test(NAME queue_logs_after_reset_helper
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/queue-logs-after-reset.test.py"
     "${PROJECT_SOURCE_DIR}/scripts/queue-logs-after-reset.py")
 set_tests_properties(queue_logs_after_reset_helper PROPERTIES LABELS "queue;scripts")
+
+# The installer's agent.db retirement reader (plan 1089, task
+# qp-install-retire; tech spec 656 "Store reader commands").
+# `scripts/install-lib/queue_retire.py` is what install.sh runs to judge the
+# retired store's queue entries before removing it; its suite starts and
+# reaps its own sleeping children. Registered here, not only in
+# install-manifest-test.sh, so the Linux gate runs its /proc cases too.
+add_test(NAME queue_retire_reader
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/install-lib/queue_retire.test.py"
+    "${PROJECT_SOURCE_DIR}/scripts/install-lib/queue_retire.py")
+set_tests_properties(queue_retire_reader PROPERTIES LABELS "queue;scripts")
+# `install_queue.t.cpp`'s `queue_retire_live_oracle` runs the same reader.
+if(TARGET planar_cmd_planar_tests)
+  target_compile_definitions(planar_cmd_planar_tests PRIVATE "PLANAR_PYTHON3=\"${Python3_EXECUTABLE}\"")
+endif()
