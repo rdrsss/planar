@@ -235,6 +235,10 @@ def judge_identity(host, row_host):
         return "process", "same host"
     host_boot, host_rest = split_identity(host)
     row_boot, row_rest = split_identity(row_host)
+    if not host_boot or not row_boot:
+        # The engine never writes an empty boot component; nothing about such
+        # an identity can be proven.
+        return "block", "an identity with an empty boot component"
     if host_boot != row_boot and host_rest == row_rest:
         return "dead", "an earlier boot of this machine, or another machine"
     return "block", "another pid namespace (a container on this kernel, or a foreign identity)"

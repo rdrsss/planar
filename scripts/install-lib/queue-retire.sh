@@ -21,6 +21,15 @@
 #
 # The store reader is scripts/install-lib/queue_retire.py, run with python3.
 # Paths reach it only through argv.
+#
+# install.sh runs under `set -eEuo pipefail` with an ERR trap (on_err), and
+# -E carries that trap into command substitutions. Every substitution here
+# whose command is EXPECTED to exit non-zero -- the probe (exit 1 not_found on
+# almost every upgrade), init, and the store reader (exit 3 for a blocking
+# row) -- therefore starts with `trap - ERR`. That clears the trap inside the
+# substitution's own subshell only: the caller's trap is never touched, so
+# there is nothing to restore, and the status still reaches `&& rc=0 ||
+# rc=$?`. Without it on_err prints "install failed" while the install goes on.
 
 QUEUE_RETIRE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 QUEUE_RETIRE_PY="$QUEUE_RETIRE_LIB_DIR/queue_retire.py"
@@ -57,10 +66,10 @@ _qr_migrate_cmd_text() {
 _qr_probe() {
   local db="$PLANAR_HOME/planar.db" out rc errf line
   errf="$(mktemp)"
-  out="$(cd / && PLANAR_DB="$db" "$PLANAR_HOME/bin/planar-agent" queue status 1 --json 2>"$errf")" && rc=0 || rc=$?
+  out="$(trap - ERR; cd / && PLANAR_DB="$db" "$PLANAR_HOME/bin/planar-agent" queue status 1 --json 2>"$errf")" && rc=0 || rc=$?
   QR_PROBE_STDERR="$(cat "$errf" 2>/dev/null || true)"
   rm -f "$errf"
-  line="$(printf '%s' "$out" | python3 "$QUEUE_RETIRE_PY" probe-verdict "$rc" 2>&1)" \
+  line="$(trap - ERR; printf '%s' "$out" | python3 "$QUEUE_RETIRE_PY" probe-verdict "$rc" 2>&1)" \
     || line="failed	the probe classifier failed: $line"
   QR_VERDICT="${line%%	*}"
   QR_DETAIL="${line#*	}"
@@ -102,7 +111,7 @@ queue_probe_migrate() {
       _qr_log "planar.db is behind this build; migrating it:"
       _qr_log "  $cmd"
       errf="$(mktemp)"
-      init_out="$(cd / && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$PLANAR_HOME/config.toml" \
+      init_out="$(trap - ERR; cd / && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$PLANAR_HOME/config.toml" \
         "$PLANAR_HOME/bin/planar" init --skip-project --allow-no-repo 2>"$errf")" && rc=0 || rc=$?
       init_err="$(cat "$errf" 2>/dev/null || true)"
       rm -f "$errf"
@@ -172,7 +181,7 @@ queue_live_guard() {
     return 1
   fi
 
-  out="$(python3 "$QUEUE_RETIRE_PY" live "$store" 2>&1)" && rc=0 || rc=$?
+  out="$(trap - ERR; python3 "$QUEUE_RETIRE_PY" live "$store" 2>&1)" && rc=0 || rc=$?
   case "$rc" in
     0)
       local line
@@ -219,7 +228,7 @@ queue_retire_store() {
     _qr_fail "python3 is required to read the old maximum sequence number of $store; it was NOT retired. Install python3 and re-run ./install.sh."
     return 1
   fi
-  out="$(python3 "$QUEUE_RETIRE_PY" oldmax "$store" 2>&1)" && rc=0 || rc=$?
+  out="$(trap - ERR; python3 "$QUEUE_RETIRE_PY" oldmax "$store" 2>&1)" && rc=0 || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     _qr_fail "cannot read the old maximum sequence number of $store; it was NOT retired: $out"
     return 1
