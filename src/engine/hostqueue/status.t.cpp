@@ -11,9 +11,11 @@
 
 import std;
 import planar.db;
-import planar.db.agentdb;
+import planar.db.migrate;
 import planar.process.identity;
 import planar.engine.hostqueue;
+
+#include "scratch_store.hpp"
 
 namespace {
 
@@ -41,7 +43,7 @@ struct scratch_dir {
 };
 
 auto open_scratch_store(const scratch_dir& scratch) -> planar::db::connection {
-  auto opened = planar::db::agent::open_agent_db_at(scratch.path_ / "agent.db");
+  auto opened = open_main_store_at(scratch.path_ / "planar.db");
   REQUIRE(opened.has_value());
   return std::move(*opened);
 }
@@ -216,7 +218,7 @@ TEST_CASE("query_status: a read-only connection answers, and refuses every write
     auto conn = open_scratch_store(scratch);
     seq       = enqueue_ok(conn, request_for("waiting"));
   }
-  auto ro = planar::db::agent::open_agent_db_read_only_at(scratch.path_ / "agent.db");
+  auto ro = open_main_store_read_only_at(scratch.path_ / "planar.db");
   REQUIRE(ro.has_value());
   CHECK(ro->is_read_only());
 

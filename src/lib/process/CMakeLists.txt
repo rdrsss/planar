@@ -39,7 +39,7 @@
 # so it is a separate module name — but it depends on nothing either
 # (`proc_pidinfo` / `sysctl` on macOS, `/proc` reads on Linux, `kill`,
 # `clock_gettime`), so it shares the target the same way `src/lib/db/`
-# holds `db`, `migrate` and `agentdb`.
+# holds `db`, `migrate` and `migrations`.
 
 #
 # `planar.process.runner` (plan 1080, task 7006) is a third interface unit

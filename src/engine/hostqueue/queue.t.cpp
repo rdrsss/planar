@@ -2,10 +2,12 @@
 // @brief Unit tests for `planar.engine.hostqueue.queue` (plan 1080, task
 // hq-enqueue). Covers the test-spec scenarios "Happy path -- enqueue records
 // the submitter" and "Edge -- arguments with spaces and quotes survive", and
-// the schema half of the task: agent migration 00002 creates `queue_entries`
-// and `queue_history` with their CHECK constraints and rolls back cleanly.
+// the schema half of the task: main migration 00040 (plan 1089) creates
+// `queue_entries` and `queue_history` with their CHECK constraints and the
+// sequence floor, and rolls back cleanly.
 //
-// Every case opens its own scratch store through `open_agent_db_at`, so
+// Every case opens its own scratch planar.db through `open_main_store_at`
+// (scratch_store.hpp), built from the embedded MAIN chain, so
 // nothing here reads the process environment or the real ~/.planar. Host
 // identity, pid, start time and both clocks are plain values the test
 // chooses (test-spec § Strategy: "controlled process identities and
@@ -17,9 +19,10 @@
 import std;
 import planar.db;
 import planar.db.migrate;
-import planar.db.migrations_agent;
-import planar.db.agentdb;
+import planar.db.migrations;
 import planar.engine.hostqueue;
+
+#include "scratch_store.hpp"
 
 namespace {
 
@@ -46,9 +49,9 @@ struct scratch_dir {
   }
 };
 
-/// @brief A scratch agent store at the head of the embedded agent chain.
+/// @brief A scratch planar.db at the head of the embedded main chain.
 auto open_scratch_store(const scratch_dir& scratch) -> planar::db::connection {
-  auto opened = planar::db::agent::open_agent_db_at(scratch.path_ / "agent.db");
+  auto opened = open_main_store_at(scratch.path_ / "planar.db");
   REQUIRE(opened.has_value());
   return std::move(*opened);
 }
@@ -270,15 +273,17 @@ TEST_CASE("a request with a parent sequence number is stored running with its pa
   CHECK_FALSE((*parent_entry)->parent_seq.has_value());
 }
 
-TEST_CASE("agent migration 00002 creates the two queue tables with their CHECK constraints",
-          "[engine][hostqueue][migrations][hq-enqueue]") {
+TEST_CASE("main migration 00040 creates the queue tables with their CHECK constraints and the sequence floor",
+          "[engine][hostqueue][migrations][hq-enqueue][qp-separability]") {
   scratch_dir scratch;
   auto        conn = open_scratch_store(scratch);
 
-  REQUIRE(planar::db::current_version(conn, planar::db::k_agent_version_table).value() >= 2);
+  REQUIRE(planar::db::current_version(conn).value() >= 40);
   CHECK(has_table(conn, "queue_entries"));
   CHECK(has_table(conn, "queue_history"));
-  CHECK(scalar(conn, "select compat from agent_schema_migrations where version = 2") == "1");
+  CHECK(has_table(conn, "queue_schema"));
+  CHECK_FALSE(has_table(conn, "agent_schema_migrations"));
+  CHECK(scalar(conn, "select compat from queue_schema where version = 1") == "1");
   CHECK(scalar(conn, "select count(*) from sqlite_master where type = 'index' and tbl_name = 'queue_entries' "
                      "and name = 'idx_queue_entries_state'") == "1");
   CHECK(scalar(conn, "select count(*) from sqlite_master where type = 'index' and tbl_name = 'queue_history' "
@@ -315,33 +320,38 @@ TEST_CASE("agent migration 00002 creates the two queue tables with their CHECK c
   CHECK((bad_outcome.error().code_ & 0xff) == 19);
   CHECK(scalar(conn, "select count(*) from queue_history") == "7");
   CHECK(scalar(conn, "select count(*) from queue_history where nested = 0") == "7");
+
+  // The AUTOINCREMENT counter starts at the floor: the first entry the engine
+  // enqueues continues from 1,000,001, above every retired agent.db number.
+  scratch_dir floor_scratch;
+  auto        floor_conn = open_scratch_store(floor_scratch);
+  CHECK(hq::enqueue(floor_conn, full_request()).value() == 1'000'001);
 }
 
-TEST_CASE("agent migration 00002 rolls back and re-applies without losing schema",
-          "[engine][hostqueue][migrations][hq-enqueue]") {
+TEST_CASE("main migration 00040 rolls back and re-applies without losing schema",
+          "[engine][hostqueue][migrations][hq-enqueue][qp-separability]") {
   scratch_dir scratch;
   auto        conn = open_scratch_store(scratch);
 
-  auto const chain = planar::db::agent::migrations();
-  REQUIRE(chain.size() >= 2);
-  auto const& second = chain[1];
-  REQUIRE(second.version_ == 2);
+  auto const chain = planar::db::migrations();
+  auto const found = std::ranges::find_if(chain, [](const planar::db::migration_record& m) { return m.version_ == 40; });
+  REQUIRE(found != chain.end());
 
   auto const before = schema_dump(conn);
-  // A down runs against a store at its own version, so the migrations above
-  // 00002 (00003 added the limit columns) are rolled back first, newest first.
-  for (auto i = chain.size(); i > 2; --i) {
+  // A down runs against a database at its own version, so every migration
+  // above 00040 is rolled back first, newest first, then 00040 itself.
+  for (auto i = chain.size(); i > 0 && chain[i - 1].version_ >= 40; --i) {
     REQUIRE(conn.execute(chain[i - 1].down_sql_).has_value());
   }
-  REQUIRE(conn.execute(second.down_sql_).has_value());
   CHECK_FALSE(has_table(conn, "queue_entries"));
   CHECK_FALSE(has_table(conn, "queue_history"));
-  CHECK(has_table(conn, "agent_schema_migrations"));
-  CHECK(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == 1);
+  CHECK_FALSE(has_table(conn, "queue_schema"));
+  CHECK(has_table(conn, "schema_migrations"));
+  CHECK(planar::db::current_version(conn).value() == 39);
 
-  REQUIRE(planar::db::apply_contiguous(conn, chain, planar::db::k_agent_version_table).has_value());
+  REQUIRE(planar::db::apply_contiguous(conn, chain).has_value());
   CHECK(schema_dump(conn) == before);
-  CHECK(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == planar::db::embedded_max(chain));
+  CHECK(planar::db::current_version(conn).value() == planar::db::embedded_max(chain));
 
   // Usable again through the engine after the roundtrip.
   auto const seq = hq::enqueue(conn, full_request());
@@ -349,140 +359,31 @@ TEST_CASE("agent migration 00002 rolls back and re-applies without losing schema
   CHECK(hq::find(conn, *seq).value().has_value());
 }
 
-TEST_CASE("plain enqueue refuses a request carrying parent_seq and inserts nothing", "[engine][hostqueue][hq-enqueue]") {
-  // Decision 1191: a nested entry is only ever created by `enqueue_nested`,
-  // which checks the parent and sets started_at and the deadline. The plain
-  // entry point must not be a back door to a running entry that never times out.
+TEST_CASE("a planar.db ahead of the binary with the queue marker unchanged accepts an enqueue and an end",
+          "[engine][hostqueue][hq-enqueue][qp-separability]") {
+  // A newer binary added a migration and left the queue marker's compat
+  // alone, so this binary may enqueue and remove an entry in the shared file.
+  // The queue compatibility check itself is schema.t.cpp's; this proves the
+  // engine's reads and writes do not depend on `schema_migrations` at all.
   scratch_dir scratch;
-  auto        conn = open_scratch_store(scratch);
-
-  auto const parent = hq::enqueue(conn, full_request()).value();
-  auto       nested = full_request();
-  nested.parent_seq = parent;
-
-  auto const before = scalar(conn, "select count(*) from queue_entries");
-
-  SECTION("the two-argument form") {
-    auto const refused = hq::enqueue(conn, nested);
-    REQUIRE_FALSE(refused.has_value());
-    CHECK(refused.error().kind == hq::queue_error_kind::invalid_request);
-  }
-  SECTION("the retention form") {
-    auto const refused = hq::enqueue(conn, nested, 30);
-    REQUIRE_FALSE(refused.has_value());
-    CHECK(refused.error().kind == hq::queue_error_kind::invalid_request);
-  }
-  CHECK(scalar(conn, "select count(*) from queue_entries") == before);
-}
-
-TEST_CASE("record_child stores the group on a running entry and refuses a waiting or missing one",
-          "[engine][hostqueue][hq-enqueue]") {
-  scratch_dir scratch;
-  auto        conn = open_scratch_store(scratch);
-
-  auto const waiting = hq::enqueue(conn, full_request()).value();
-  auto       nested  = full_request();
-  nested.parent_seq  = waiting;
-  auto const running = hq::insert_nested_entry(conn, nested).value(); // Inserted running: it never waits for a slot.
-
-  SECTION("a running entry records the group and the leader's start time") {
-    auto const recorded = hq::record_child(conn, running, 4'321, 777'000'111);
-    REQUIRE(recorded.has_value());
-    CHECK(*recorded);
-    auto const found = hq::find(conn, running).value();
-    REQUIRE(found.has_value());
-    CHECK(found->child_pgid == 4'321);
-    CHECK(found->child_started == 777'000'111);
-    // Nothing else moved.
-    CHECK(found->state == hq::entry_state::running);
-    CHECK(found->pid == full_request().pid);
-  }
-  SECTION("a waiting entry is left alone") {
-    auto const recorded = hq::record_child(conn, waiting, 4'321, 777'000'111);
-    REQUIRE(recorded.has_value());
-    CHECK_FALSE(*recorded);
-    auto const found = hq::find(conn, waiting).value();
-    REQUIRE(found.has_value());
-    CHECK_FALSE(found->child_pgid.has_value());
-    CHECK_FALSE(found->child_started.has_value());
-  }
-  SECTION("an entry that does not exist writes nothing") {
-    auto const recorded = hq::record_child(conn, 9'999, 4'321, 777'000'111);
-    REQUIRE(recorded.has_value());
-    CHECK_FALSE(*recorded);
-  }
-}
-
-TEST_CASE("a stored state that is neither waiting nor running is refused, not read as waiting",
-          "[engine][hostqueue][hq-enqueue][hq-entry-state]") {
-  // The CHECK constraint keeps such a row out of a store this binary wrote;
-  // a later agent migration that adds a state would put one in front of an
-  // older binary, which must refuse it rather than misread it as waiting.
-  scratch_dir scratch;
-  auto        conn = open_scratch_store(scratch);
-
-  auto const seq = hq::enqueue(conn, full_request()).value();
-  auto const ok  = hq::enqueue(conn, full_request()).value();
-  REQUIRE(conn.execute("pragma ignore_check_constraints = on").has_value());
-  REQUIRE(conn.execute(std::format("update queue_entries set state = 'paused' where seq = {}", seq)).has_value());
-  REQUIRE(conn.execute("pragma ignore_check_constraints = off").has_value());
-  REQUIRE(scalar(conn, std::format("select state from queue_entries where seq = {}", seq)) == "paused");
-
-  SECTION("find refuses the row and names the state") {
-    auto const found = hq::find(conn, seq);
-    REQUIRE_FALSE(found.has_value());
-    CHECK(found.error().kind == hq::queue_error_kind::unknown_state);
-    CHECK(found.error().message.find("paused") != std::string::npos);
-    CHECK(found.error().message.find("state") != std::string::npos);
-  }
-  SECTION("list refuses rather than returning the row as waiting") {
-    auto const all = hq::list(conn);
-    REQUIRE_FALSE(all.has_value());
-    CHECK(all.error().message.find("paused") != std::string::npos);
-  }
-  SECTION("the neighbouring valid row still reads") {
-    auto const found = hq::find(conn, ok);
-    REQUIRE(found.has_value());
-    REQUIRE(found->has_value());
-    CHECK((*found)->state == hq::entry_state::waiting);
-  }
-}
-
-TEST_CASE("a malformed stored argv is refused without repeating the whole column in the message",
-          "[engine][hostqueue][hq-enqueue][hq-entry-state]") {
-  auto const big     = std::string(5'000, 'x');
-  auto const decoded = hq::decode_argv(big);
-  REQUIRE_FALSE(decoded.has_value());
-  CHECK(decoded.error().kind == hq::queue_error_kind::malformed_argv);
-  CHECK(decoded.error().message.find(big) == std::string::npos);
-  CHECK(decoded.error().message.size() < 300);
-  CHECK(decoded.error().message.find("argv") != std::string::npos);
-}
-
-TEST_CASE("a store ahead of the binary with its compat unchanged accepts an enqueue and an end",
-          "[engine][hostqueue][hq-enqueue][hq-agentdb-compat]") {
-  // Test-spec "Edge -- a newer store that is still compatible is accepted",
-  // queue half: a newer binary added a migration and kept compat, so this
-  // binary opens the store and may enqueue and remove an entry in it. The
-  // db-layer suite (agentdb.t.cpp) proves the open and a raw write; the queue
-  // tables did not exist when it was written.
-  scratch_dir scratch;
-  auto const  store       = scratch.path_ / "agent.db";
-  auto const  binary_head = planar::db::agent::agent_schema_version();
+  auto const  store       = scratch.path_ / "planar.db";
+  auto const  binary_head = planar::db::embedded_max();
   {
-    auto seeded = planar::db::agent::open_agent_db_at(store);
+    auto seeded = open_main_store_at(store);
     REQUIRE(seeded.has_value());
     REQUIRE(seeded
-                ->execute(std::format("insert into agent_schema_migrations (version, compat, description) "
-                                      "values ({}, {}, 'seeded ahead by the test')",
-                                      binary_head + 1, binary_head))
+                ->execute(std::format("insert into schema_migrations (version, description) "
+                                      "values ({}, 'seeded ahead by the test');"
+                                      "insert into queue_schema (version, compat, description) "
+                                      "values (2, 1, 'seeded ahead by the test')",
+                                      binary_head + 1))
                 .has_value());
   }
 
-  auto opened = planar::db::agent::open_agent_db_at(store);
+  auto opened = planar::db::connection::open(store.string());
   REQUIRE(opened.has_value());
   auto& conn = *opened;
-  REQUIRE(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == binary_head + 1);
+  REQUIRE(planar::db::current_version(conn).value() == binary_head + 1);
 
   auto const seq = hq::enqueue(conn, full_request());
   REQUIRE(seq.has_value());
@@ -499,8 +400,8 @@ TEST_CASE("a store ahead of the binary with its compat unchanged accepts an enqu
   REQUIRE(row.has_value());
   REQUIRE(row->has_value());
   CHECK((*row)->outcome == hq::history_outcome::exited);
-  // The newer store's own version row is untouched.
-  CHECK(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == binary_head + 1);
+  // The newer database's own version row is untouched.
+  CHECK(planar::db::current_version(conn).value() == binary_head + 1);
 }
 
 TEST_CASE("set_log_path names the output file of an entry and refuses a missing one", "[engine][hostqueue][hq-detach]") {
@@ -575,63 +476,4 @@ TEST_CASE("enqueue records the wait limit it is given, and none when there is no
   REQUIRE(all->size() == 2);
   CHECK(all->front().wait_limit_ms == 600'000);
   CHECK_FALSE(all->back().wait_limit_ms.has_value());
-}
-
-TEST_CASE("the entry and history reads answer on a store still at agent schema version 2, with the limits empty",
-          "[engine][hostqueue][hq-queue-limit-columns]") {
-  // Review F1 on task hq-queue-limit-columns: a read-only connection never
-  // migrates, so after an upgrade `queue status` reads a store an older
-  // binary left at version 2, which has no limit columns. The reads must read
-  // them as empty rather than fail. The store is built and seeded with raw SQL
-  // (the chain up to 00002, rows written the way that binary wrote them),
-  // because no code at head writes a version-2 store.
-  scratch_dir scratch;
-  auto const  store = scratch.path_ / "agent.db";
-  auto const  chain = planar::db::agent::migrations();
-  REQUIRE(chain.size() >= 3);
-  {
-    auto raw = planar::db::connection::open(store.string());
-    REQUIRE(raw.has_value());
-    REQUIRE(planar::db::apply_all(*raw, chain.subspan(0, 2), planar::db::k_agent_version_table).has_value());
-    REQUIRE(raw->execute("insert into queue_entries (state, host_id, pid, pid_started, cwd, argv, label, enqueued_at, "
-                         "refreshed_mono, wait_deadline_mono) values ('waiting', 'h', 11, 111, '/w', '[\"make\"]', 'old-w', "
-                         "1000, 5000, 9000);"
-                         "insert into queue_history (seq, outcome, exit_code, cwd, argv, label, enqueued_at, started_at, "
-                         "ended_at, waited_ms, ran_ms) values (7, 'exited', 0, '/w', '[\"true\"]', 'old-h', 900, 950, 990, "
-                         "50, 40);")
-                .has_value());
-  }
-
-  auto opened = planar::db::agent::open_agent_db_read_only_at(store);
-  REQUIRE(opened.has_value());
-  auto& conn = *opened;
-
-  auto const found = hq::find(conn, 1);
-  REQUIRE(found.has_value());
-  REQUIRE(found->has_value());
-  CHECK((*found)->label == "old-w");
-  CHECK((*found)->wait_deadline_mono == 9000);
-  CHECK_FALSE((*found)->run_limit_ms.has_value());
-  CHECK_FALSE((*found)->wait_limit_ms.has_value());
-
-  auto const all = hq::list(conn);
-  REQUIRE(all.has_value());
-  REQUIRE(all->size() == 1);
-  CHECK_FALSE(all->front().wait_limit_ms.has_value());
-
-  auto const row = hq::find_history(conn, 7);
-  REQUIRE(row.has_value());
-  REQUIRE(row->has_value());
-  CHECK((*row)->label == "old-h");
-  CHECK((*row)->ran_ms == 40);
-  CHECK_FALSE((*row)->run_limit_ms.has_value());
-  CHECK_FALSE((*row)->wait_limit_ms.has_value());
-
-  auto const rows = hq::list_history(conn);
-  REQUIRE(rows.has_value());
-  REQUIRE(rows->size() == 1);
-  CHECK_FALSE(rows->front().run_limit_ms.has_value());
-
-  // Reading changed nothing: the store is still at version 2.
-  CHECK(planar::db::current_version(conn, planar::db::k_agent_version_table).value() == 2);
 }
