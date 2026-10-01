@@ -69,9 +69,9 @@ not a runtime ACL.
   - `planar-watch` reads the queue views from `planar.db` read-only.
   - The queue is a coordination aid and not a security boundary; `queue` is
     a domain of `planar-agent` and never of `planar`.
-  - The agent-database module, `migrations-agent/` and the
-    `PLANAR_AGENT_DB` test pins still exist in the tree until plan 1089's
-    next milestone removes them; no queue verb opens that file.
+  - The agent-database module, the `migrations-agent/` stream and the
+    `PLANAR_AGENT_DB` test pins are gone. A set `PLANAR_AGENT_DB` is ignored,
+    never refused; only the installer still knows `agent.db`, to retire it.
 - There is no `planar agent <verb>` namespace. Agent observability is on
   `planar-watch`; agent-table writes are on `planar-agent`.
 - The `ext` and `sync` verb domains are on `planar-ext`, not `planar`.

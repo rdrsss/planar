@@ -5,11 +5,10 @@ Authored in plain SQL, applied with
 [`sqlx-cli`](https://github.com/launchbadge/sqlx/tree/main/sqlx-cli) at
 operational time and embedded into the binary at build time.
 
-The agent database (`~/.planar/agent.db`) has its own stream under
-[`migrations-agent/`](../migrations-agent/README.md): same format, same
-codegen and runner, a different file, version table and generated module.
-Nothing here names an agent database table, and nothing there names one of
-these.
+This is the only migration stream. The host queue's tables live here too
+(migration 00040); the old agent database and its separate stream were
+retired in plan 1089, and the installer removes a leftover
+`~/.planar/agent.db`.
 
 ## File format
 

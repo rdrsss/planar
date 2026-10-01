@@ -212,18 +212,16 @@ export auto rejoin(db::connection& conn, std::int64_t old_seq, const enqueue_req
     -> std::expected<rejoin_result, queue_error>;
 
 /// @brief Reads one history row by sequence number.
-/// @param conn An open agent database at agent schema version 2 or later; a
-/// read-only connection is enough, and on a store below 3 the limits read as
-/// empty (`limit_columns_select`).
+/// @param conn An open `planar.db` that passed `check_queue_schema`; a
+/// read-only connection is enough.
 /// @param seq The ended entry's sequence number.
 /// @return The row, `std::nullopt` when there is none (never ended, or
 /// pruned), or the failure.
 export auto find_history(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<history_row>, queue_error>;
 
 /// @brief Reads history rows ordered by `ended_at`, then by sequence number.
-/// @param conn An open agent database at agent schema version 2 or later; a
-/// read-only connection is enough, and on a store below 3 the limits read as
-/// empty (`limit_columns_select`).
+/// @param conn An open `planar.db` that passed `check_queue_schema`; a
+/// read-only connection is enough.
 /// @param ended_since When set, only rows whose `ended_at` is at or after
 /// this wall-clock ms value.
 /// @return The rows, oldest first; empty when there are none.

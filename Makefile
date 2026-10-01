@@ -117,10 +117,6 @@ uninstall-full: ## Remove the legacy full install (preserves planar.db, its -wal
 # supported version and breaks every other agent on the machine. Always smoke
 # against this instead.
 SMOKE_DB ?= $(CPP_BUILD_DIR)/.smoke/planar.db
-# The agent database (decision 1181; ~/.planar/agent.db, override
-# PLANAR_AGENT_DB) migrates on first open the same way, so `smoke` pins it
-# beside the throwaway PLANAR_DB and `smoke-reset` deletes it too (task 6996).
-SMOKE_AGENT_DB ?= $(CPP_BUILD_DIR)/.smoke/agent.db
 
 .PHONY: run
 run: ## Run the CLI from the debug build AGAINST THE REAL DB (use `make smoke` for a throwaway one)
@@ -130,13 +126,12 @@ run: ## Run the CLI from the debug build AGAINST THE REAL DB (use `make smoke` f
 .PHONY: smoke
 smoke: ## Run the CLI from the debug build against a throwaway DB: make smoke ARGS="task list"
 	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar
-	@mkdir -p $(dir $(SMOKE_DB)) $(dir $(SMOKE_AGENT_DB))
-	PLANAR_DB=$(SMOKE_DB) PLANAR_AGENT_DB=$(SMOKE_AGENT_DB) $(CPP_BIN_ABS)/$(BINARY) $(ARGS)
+	@mkdir -p $(dir $(SMOKE_DB))
+	PLANAR_DB=$(SMOKE_DB) $(CPP_BIN_ABS)/$(BINARY) $(ARGS)
 
 .PHONY: smoke-reset
-smoke-reset: ## Delete the throwaway smoke databases (planar.db and agent.db)
+smoke-reset: ## Delete the throwaway smoke database
 	rm -rf $(dir $(SMOKE_DB))
-	rm -f $(SMOKE_AGENT_DB) $(SMOKE_AGENT_DB)-wal $(SMOKE_AGENT_DB)-shm
 
 .PHONY: test-install-manifest
 test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures

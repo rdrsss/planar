@@ -230,7 +230,6 @@ struct spawned {
 /// the first ended.
 auto spawn_queue(const parity::arena& arena, std::string tag, const std::vector<std::string>& command) -> spawned {
   auto const vars = env_with_fakebin(arena);
-  parity::require_agent_db_pinned(arena.cpp_root, vars);
 
   std::string child = parity::pinned_env_prefix(vars) + parity::shell_quote(agent_bin().string());
   for (auto const& arg : queue_args(command)) {
