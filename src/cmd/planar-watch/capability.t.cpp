@@ -488,9 +488,12 @@ TEST_CASE("the liveness probe planar-watch uses sends signal 0 only", "[cmd][wat
 /// @brief A scratch directory holding a `planar.db` at the head of the main
 /// chain with one dead waiting entry and one history row.
 struct seeded_main_database {
+  /// @brief The scratch directory, removed on destruction.
   std::filesystem::path dir;
+  /// @brief The `planar.db` inside it.
   std::filesystem::path db;
 
+  /// @brief Creates the directory and seeds the database.
   seeded_main_database() {
     dir = std::filesystem::temp_directory_path() /
           std::format("planar_watch_cap_queue_{}", std::chrono::steady_clock::now().time_since_epoch().count());
@@ -509,13 +512,19 @@ struct seeded_main_database {
                           "values (3, 'exited', 0, '/w', '[\"make\"]', 1000, 2000, 5)")
                 .has_value());
   }
-  seeded_main_database(const seeded_main_database&)            = delete;
+  /// @brief Not copyable: the fixture owns its directory.
+  seeded_main_database(const seeded_main_database&) = delete;
+  /// @brief Not copy-assignable: the fixture owns its directory.
+  /// @return Never returns; deleted.
   seeded_main_database& operator=(const seeded_main_database&) = delete;
+  /// @brief Removes the scratch directory.
   ~seeded_main_database() {
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
   }
 
+  /// @brief The database file's bytes.
+  /// @return The file content.
   [[nodiscard]] auto bytes() const -> std::string {
     std::ifstream in(db, std::ios::binary);
     return std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
@@ -523,6 +532,7 @@ struct seeded_main_database {
   /// @brief The names of everything in the scratch directory except SQLite's
   /// own `-wal` / `-shm` sidecars, which any read-only open of a WAL database
   /// may leave beside it, exactly as for every other viewer verb.
+  /// @return The file names found.
   [[nodiscard]] auto listing() const -> std::set<std::string> {
     std::set<std::string> names;
     for (auto const& entry : std::filesystem::directory_iterator(dir)) {
