@@ -309,8 +309,11 @@ export auto supervised_heartbeat(db::connection& conn, std::string_view claim_to
 
 /// @brief What a terminal verb did.
 export struct terminal_result {
-  claim        released;    ///< The claim in its new terminal state.
-  std::int64_t task_id = 0; ///< The task it held.
+  claim released; ///< The claim in its new terminal state.
+  /// The task it held; UNSET for a plan / plan_step claim (only `release` ends
+  /// one), which holds no task. Never fall back to the claim's entity id: it is
+  /// a plan or step id there, and a task row may share the number (task 7118).
+  std::optional<std::int64_t> task_id;
   /// An engine verb repeated under the attempt that already terminated the
   /// claim: nothing was written, and `released` is the claim as it stands.
   bool replayed = false;

@@ -19,6 +19,7 @@ import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.declare;
+import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.handoff.create;
 import planar.cmd.planar.handlers.handoff.validate;
 import planar.cmd.planar.handlers.handoff.consume;
@@ -222,15 +223,18 @@ auto handoff(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   }
 
   // Step 1 — the snapshot.
-  auto const note     = flag_string(args, "--note");
-  auto       snapshot = snap::create(**conn, snap::create_args{
-                                                 .session_id        = session.id,
-                                                 .task_id           = task_id,
-                                                 .vendor            = tuple.vendor,
-                                                 .vendor_session_id = as_view(tuple.vendor_session_id),
-                                                 .body              = as_view(note),
-                                                 .next_action       = as_view(next_action),
-                                             });
+  auto const note = resolve_at_value(flag_string(args, "--note"), "--note");
+  if (!note) {
+    return std::unexpected(note.error());
+  }
+  auto snapshot = snap::create(**conn, snap::create_args{
+                                           .session_id        = session.id,
+                                           .task_id           = task_id,
+                                           .vendor            = tuple.vendor,
+                                           .vendor_session_id = as_view(tuple.vendor_session_id),
+                                           .body              = as_view(*note),
+                                           .next_action       = as_view(next_action),
+                                       });
   if (!snapshot) {
     return std::unexpected(error_from_body(kind_t::generic_failure, "snapshot create: QueryFailed"));
   }

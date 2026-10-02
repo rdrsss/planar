@@ -849,6 +849,9 @@ TEST_CASE("release succeeds on a plan claim, unlike complete (task 6890)", "[age
   REQUIRE(released.has_value());
   REQUIRE(released->released.status == aa::claim_status::released);
   REQUIRE_FALSE(released->replayed);
+  // A plan claim holds no task: `fx.plan_id` is a PLAN id and a task row may
+  // share the number, so the result must not name one (task 7118).
+  REQUIRE_FALSE(released->task_id.has_value());
   REQUIRE(scalar_text(conn, std::format("select status from agent_work_claims where id = {}", held->id)) == "released");
   // The plan's own status is untouched -- there is no task-status
   // transition to perform for a plan claim, and this verb must not
@@ -883,6 +886,7 @@ TEST_CASE("release also succeeds on a plan_step claim (task 6890)", "[agentatomi
 
   auto const released = atomic::release_work(conn, held->claim_token, std::nullopt, policy.bind());
   REQUIRE(released.has_value());
+  REQUIRE_FALSE(released->task_id.has_value()); // task 7118
   REQUIRE(scalar_text(conn, std::format("select status from agent_work_claims where id = {}", held->id)) == "released");
 }
 

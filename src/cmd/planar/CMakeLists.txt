@@ -656,6 +656,7 @@ planar_binary(planar
     editor.cppm
     editflow.cppm
     handlers/shared/drafting.cppm
+    handlers/shared/atvalue.cppm
     handlers/links/command.cppm
     handlers/links/trail.cppm
     handlers/links/remove.cppm
@@ -756,6 +757,7 @@ planar_binary(planar
     editor.cpp
     editflow.cpp
     handlers/shared/drafting.cpp
+    handlers/shared/atvalue.cpp
     handlers/links/command.cpp
     handlers/handoff/command.cpp
     handlers/resume/command.cpp

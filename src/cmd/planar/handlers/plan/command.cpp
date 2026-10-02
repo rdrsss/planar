@@ -20,6 +20,7 @@ import planar.cmd.planar.handlers.links;
 import planar.engine.entitylink;
 import planar.cmd.planar.scope;
 import planar.cmd.planar.declare;
+import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.plan.step_add;
 import planar.cmd.planar.handlers.plan.step_list;
 import planar.cmd.planar.handlers.plan.step_done;
@@ -300,10 +301,16 @@ auto plan_create(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "plan create: title is required"));
   }
 
+  // `--summary @file` is read before the insert (task 7117).
+  auto summary = resolve_at_value(cliapp::flag_string(args, "--summary"), "--summary");
+  if (!summary) {
+    return std::unexpected(summary.error());
+  }
+
   auto created = pl::create_plan(**conn, pl::plan_create_args{
                                              .title          = std::move(*title),
                                              .slug           = cliapp::flag_string(args, "--slug"),
-                                             .summary        = cliapp::flag_string(args, "--summary"),
+                                             .summary        = std::move(*summary),
                                              .status         = *status,
                                              .parent_plan_id = cliapp::flag_int(args, "--parent"),
                                              .scope          = resolved->scope,
@@ -438,10 +445,16 @@ auto plan_update(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(id.error());
   }
 
+  // `--summary @file` is read before anything is patched (task 7117).
+  auto summary = resolve_at_value(cliapp::flag_string(args, "--summary"), "--summary");
+  if (!summary) {
+    return std::unexpected(summary.error());
+  }
+
   pl::plan_update_args patch{};
   patch.title   = cliapp::flag_string(args, "--title");
   patch.slug    = cliapp::flag_string(args, "--slug");
-  patch.summary = cliapp::flag_string(args, "--summary");
+  patch.summary = std::move(*summary);
   patch.scope   = cliapp::flag_string(args, "--scope");
 
   // `--parent 0` is the CLEAR sentinel, not plan id 0. Threading the raw

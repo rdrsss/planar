@@ -18,6 +18,7 @@ import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.scope;
 import planar.cmd.planar.declare;
+import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.decision.add;
 import planar.cmd.planar.handlers.decision.show;
 import planar.cmd.planar.handlers.decision.list;
@@ -251,8 +252,8 @@ auto decision_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   // engine write `scope_kind='global'`. Confirmed by running `decision add`
   // in a registered-but-unassociated project.
 
-  auto const body = cliapp::flag_string(args, "--body");
-  if (!body.has_value()) {
+  auto const raw_body = cliapp::flag_string(args, "--body");
+  if (!raw_body.has_value()) {
     if (cliapp::flag_bool(args, "--editor")) {
       // The oracle's `--editor` branch opens `$EDITOR` and uses its buffer
       // as the body — but ONLY when stdout is a TTY; on a pipe it falls
@@ -267,6 +268,18 @@ auto decision_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     // `decision add` with no arguments at all reports the body.
     return std::unexpected(
         error_from_body(domain_error_kind::invalid_input, "--body is required (or run interactively to use the editor flow)"));
+  }
+
+  // `--body` and `--rationale` may be `@file` (task 7117); both are read
+  // BEFORE the session below is created, so an unreadable file writes
+  // nothing at all.
+  auto const body = resolve_at_value(raw_body, "--body");
+  if (!body) {
+    return std::unexpected(body.error());
+  }
+  auto rationale = resolve_at_value(cliapp::flag_string(args, "--rationale"), "--rationale");
+  if (!rationale) {
+    return std::unexpected(rationale.error());
   }
 
   // The session is resolved BEFORE the create and its creation is a
@@ -290,8 +303,8 @@ auto decision_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 
   auto created = pl::create_decision(**conn, pl::decision_create_args{
                                                  .title      = title_text,
-                                                 .body       = *body,
-                                                 .rationale  = cliapp::flag_string(args, "--rationale"),
+                                                 .body       = **body,
+                                                 .rationale  = std::move(*rationale),
                                                  .session_id = session_id,
                                                  .plan_id    = cliapp::flag_int(args, "--plan"),
                                                  .scope      = resolved->scope,

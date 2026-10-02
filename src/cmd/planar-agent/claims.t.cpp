@@ -1175,3 +1175,69 @@ TEST_CASE("abort refuses an engine claim unless overridden, and logs the overrid
   CHECK(scalar_text(scratch, "select summary from agent_actions where action_kind = 'supervisor_override'") ==
         "abort by operator overriding the engine supervisor (attempt A1)");
 }
+
+// ===========================================================================
+// release of a plan / plan_step claim names no task (task 7118)
+// ===========================================================================
+
+TEST_CASE("release of a plan claim carries no task even when a task shares the plan's id", "[cmd][agent][terminal][7118]") {
+  // `seed` makes plan 1 AND task 1 (title `t0`, an unrelated row that merely
+  // shares the plan's id). Releasing the PLAN claim used to look task 1 up by
+  // the claim's entity id and print it as if the claim had held it.
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const claimed = run_verb(scratch, {"claim", "--entity", "plan:1", "--no-locality-probe"});
+  REQUIRE(claimed.code == 0);
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where id = 1");
+
+  auto const json = run_verb(scratch, {"release", "--claim", token, "--no-locality-probe", "--json"});
+  REQUIRE(json.code == 0);
+  INFO(json.out);
+  CHECK(json.out.find("\"task\":{") == std::string::npos);
+  CHECK(json.out.find("\"t0\"") == std::string::npos);
+  CHECK(json.out.find("\"task\":null") != std::string::npos);
+  CHECK(json.out.find("\"status\":\"released\"") != std::string::npos);
+
+  // The unrelated task is untouched.
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
+}
+
+TEST_CASE("text release of a plan claim names the entity, not an unrelated task", "[cmd][agent][terminal][7118]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "plan:1", "--no-locality-probe"}).code == 0);
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where id = 1");
+
+  auto const text = run_verb(scratch, {"release", "--claim", token, "--no-locality-probe"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out == "ok entity:plan:1 claim_status:released\n");
+}
+
+TEST_CASE("release of a task claim keeps the task envelope", "[cmd][agent][terminal][7118]") {
+  scratch_dir scratch;
+  auto const  token = pulled(scratch, 1);
+  auto const  json  = run_verb(scratch, {"release", "--claim", token, "--no-locality-probe", "--json"});
+  REQUIRE(json.code == 0);
+  INFO(json.out);
+  CHECK(json.out.find("\"task\":{") != std::string::npos);
+  CHECK(json.out.find("\"title\":\"t0\"") != std::string::npos);
+}
+
+TEST_CASE("complete, fail and block still refuse a plan claim with ClaimNotOnTask", "[cmd][agent][terminal][7118]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "plan:1", "--no-locality-probe"}).code == 0);
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where id = 1");
+
+  for (auto const& verb : std::vector<std::vector<std::string>>{
+           {"complete", "--claim", token, "--no-locality-probe"},
+           {"fail", "--claim", token, "--reason", "r", "--no-locality-probe"},
+           {"block", "--claim", token, "--blocker", "2", "--no-locality-probe"},
+       }) {
+    INFO(verb.front());
+    auto const refused = run_verb(scratch, verb);
+    CHECK(refused.code == 1);
+    CHECK(refused.err == std::format("error: {}: ClaimNotOnTask\n", verb.front()));
+  }
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
+}
