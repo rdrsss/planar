@@ -15,6 +15,7 @@ import planar.cmd.planar.handler;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.scope;
 import planar.cmd.planar.declare;
+import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.scenario.add;
 import planar.cmd.planar.handlers.scenario.edit;
 import planar.cmd.planar.handlers.scenario.view;
@@ -216,9 +217,16 @@ auto scenario_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "scenario add: title is required"));
   }
 
+  // `--body @file` is read before the create, so an unreadable file writes
+  // nothing (task 7117).
+  auto body = resolve_at_value(cliapp::flag_string(args, "--body"), "--body");
+  if (!body) {
+    return std::unexpected(body.error());
+  }
+
   auto created = pl::create_scenario(**conn, pl::scenario_create_args{
                                                  .title               = *title,
-                                                 .body                = cliapp::flag_string(args, "--body"),
+                                                 .body                = std::move(*body),
                                                  .related_artifact_id = cliapp::flag_int(args, "--related"),
                                                  .plan_id             = cliapp::flag_int(args, "--plan"),
                                                  .scope               = resolved->scope,

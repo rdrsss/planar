@@ -16,6 +16,7 @@ import planar.cmd.planar.handlers.links;
 import planar.engine.entitylink;
 import planar.cmd.planar.scope;
 import planar.cmd.planar.declare;
+import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.question.add;
 import planar.cmd.planar.handlers.question.edit;
 import planar.cmd.planar.handlers.question.view;
@@ -228,6 +229,13 @@ auto question_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   // `resolved->scope` staying unset inside an unassociated project is the
   // CORRECT outcome and lets the engine write `scope_kind='global'`.
 
+  // `--body @file` is read BEFORE the session below is created, so an
+  // unreadable file writes nothing at all -- no row, no session (task 7117).
+  auto body = resolve_at_value(cliapp::flag_string(args, "--body"), "--body");
+  if (!body) {
+    return std::unexpected(body.error());
+  }
+
   // The session is resolved BEFORE the create and its creation is a
   // COMMITTED SIDE EFFECT even when the create then fails: `question add
   // --scope nope` exits 1 having written a `sessions` row and a
@@ -248,7 +256,7 @@ auto question_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
 
   auto created = pl::create_question(**conn, pl::question_create_args{
                                                  .title   = title_text,
-                                                 .body    = cliapp::flag_string(args, "--body"),
+                                                 .body    = std::move(*body),
                                                  .scope   = resolved->scope,
                                                  .plan_id = cliapp::flag_int(args, "--plan"),
                                              });

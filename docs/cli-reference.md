@@ -23,6 +23,10 @@ Reference for every `planar` subcommand. Authoritative current surface for the i
 - `<slug>` — a human-readable identifier for associations and external systems; must match `[a-z0-9:._-]+`.
 - `<system-slug>:<external-id>` — a namespaced external reference; example: `acme-jira:PROJ-1234`, `side-gh:owner/repo#42`.
 
+### The `@<file>` free-text grammar
+
+A free-text value documented below as "May be `@<file>`" is read from a file when its **first byte** is `@`: the file's bytes replace the value, raw. An `@` anywhere else in the value is literal text. An unreadable file is refused at exit `2` with `error: read <flag>: FileNotFound` (it does not name the path) before anything is written, so no row, session, or patch results. The verbs with the grammar: `plan create`/`plan update --summary`, `task add`/`task update --body`, `question add --body`, `scenario add --body`, `decision add --body`/`--rationale`, `artifact add`/`artifact update --body`, `annotate add`/`annotate update --body`, `handoff --note`, `capture note <body>`, `capture command --outcome`, `capture end --summary`, `capture snapshot --note`/`<body>`. `question answer --answer` is deliberately literal (see that verb); every other flag takes literal text.
+
 ### Scope Shorthand
 
 `--scope` accepts these forms wherever it appears:
@@ -2537,7 +2541,7 @@ planar annotate add --text <note> [--anchor-path <path>] [--line-start <n>] [--l
 
 **Description:** Create a new annotation. `--anchor-path` (+ optional `--line-start`/`--line-end`) locates the note in the tree; `--commit-sha` and `--text-hash` record what the anchored content looked like at capture time so `annotate verify` can detect drift. `--plan` / `--task` associate the note with a planning entity; `--tags` is a comma-separated list.
 
-**Options:** `--text` is the note body (the load-bearing field). `--anchor-path`, `--line-start`, `--line-end`, `--commit-sha`, `--text-hash` form the anchor. `--title`, `--slug`, `--body`, `--vendor`, `--plan`, `--task`, `--tags`, `--scope` are optional metadata.
+**Options:** `--text` is the note body (the load-bearing field). `--anchor-path`, `--line-start`, `--line-end`, `--commit-sha`, `--text-hash` form the anchor. `--title`, `--slug`, `--body`, `--vendor`, `--plan`, `--task`, `--tags`, `--scope` are optional metadata. `--body` may be `@<file>` (see [The `@<file>` free-text grammar](#the-file-free-text-grammar)); `annotate update --body` too.
 
 **Schema effects:** Inserts into `annotations(...)` (and `annotation_tags` for each tag).
 
@@ -6879,6 +6883,8 @@ planar-agent schema
 ```
 
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
+
+**Terminal-verb envelope for a plan or plan_step claim (task 7118):** `release` is the only terminal verb that accepts a plan or plan_step claim (`complete`, `fail` and `block` refuse it with `ClaimNotOnTask`). Such a claim holds no task, so the response names none: `--json` emits `{"ok":true,"claim_token":"...","claim":{...},"task":null}` and the human line is `ok entity:<kind>:<id> claim_status:released`. A task claim's envelope (`"task":{...}`, `ok task:<id> status:<s> claim_status:<s>`) is unchanged. Before this fix the response looked up the task whose id equalled the plan's id and reported that unrelated row.
 
 **`planar-agent heartbeat --ttl` semantics (task 6093):** Omitting `--ttl` **renews the lease length the claim currently holds** — a heartbeat on a claim taken with `--ttl 8h` sets the new expiry to eight hours from now. It never shortens the lease it was sent to preserve. Passing `--ttl` sets the lease absolutely from now, in either direction, so a deliberate re-TTL (longer or shorter) is still available; a subsequent bare heartbeat then renews *that* new length. The renewed length is derived from the stored `(last_heartbeat_at, lease_expires_at)` pair, which already encodes the current TTL — there is no stored-TTL column and no migration involved.
 

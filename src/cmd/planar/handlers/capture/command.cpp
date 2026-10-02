@@ -15,6 +15,7 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.declare;
+import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.capture.session;
 import planar.cmd.planar.handlers.capture.commits;
 import planar.cmd.planar.handlers.capture.end;
@@ -222,8 +223,11 @@ auto capture_end(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     session_id = (*found)->id;
   }
 
-  auto const summary = flag_string(args, "--summary");
-  auto       closed  = cap::close_session(**conn, session_id, as_view(summary));
+  auto const summary = resolve_at_value(flag_string(args, "--summary"), "--summary");
+  if (!summary) {
+    return std::unexpected(summary.error());
+  }
+  auto closed = cap::close_session(**conn, session_id, as_view(*summary));
   if (!closed) {
     switch (closed.error()) {
     case cap::capture_error::not_found:
@@ -248,11 +252,17 @@ auto capture_note(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   if (!conn) {
     return std::unexpected(conn.error());
   }
+  // `<body>` may be `@file`; read before the session is resolved, which can
+  // CREATE one, so an unreadable file writes nothing (task 7117).
+  auto const resolved_body = resolve_at_value(positional_string(args, "body"), "<body>");
+  if (!resolved_body) {
+    return std::unexpected(resolved_body.error());
+  }
   auto const session_id = resolve_or_create_session(ctx, **conn, args);
   if (!session_id) {
     return std::unexpected(session_id.error());
   }
-  auto const body = positional_string(args, "body").value_or("");
+  auto const body = resolved_body->value_or("");
   return append_and_report(ctx, args, "note", *session_id, cap::append_note(**conn, *session_id, body));
 }
 
@@ -261,13 +271,18 @@ auto capture_command(context& ctx, const cliapp::parsed_args& args) -> handler_r
   if (!conn) {
     return std::unexpected(conn.error());
   }
+  // `--outcome @file` is read before the session is resolved, which can
+  // CREATE one (task 7117).
+  auto const outcome = resolve_at_value(flag_string(args, "--outcome"), "--outcome");
+  if (!outcome) {
+    return std::unexpected(outcome.error());
+  }
   auto const session_id = resolve_or_create_session(ctx, **conn, args);
   if (!session_id) {
     return std::unexpected(session_id.error());
   }
   auto const command = positional_string(args, "command").value_or("");
-  auto const outcome = flag_string(args, "--outcome");
-  auto const body    = cap::compose_command_body(command, as_view(outcome));
+  auto const body    = cap::compose_command_body(command, as_view(*outcome));
   return append_and_report(ctx, args, "command", *session_id, cap::append_command(**conn, *session_id, body));
 }
 
@@ -291,6 +306,18 @@ auto capture_snapshot(context& ctx, const cliapp::parsed_args& args) -> handler_
   if (!conn) {
     return std::unexpected(conn.error());
   }
+  // The snapshot body (`--note`, else the `<body>` positional) may be
+  // `@file`; read before the session is resolved, which can CREATE one
+  // (task 7117).
+  auto       raw_body   = flag_string(args, "--note");
+  auto const body_label = raw_body.has_value() ? std::string_view{"--note"} : std::string_view{"<body>"};
+  if (!raw_body) {
+    raw_body = positional_string(args, "body");
+  }
+  auto resolved_body = resolve_at_value(std::move(raw_body), body_label);
+  if (!resolved_body) {
+    return std::unexpected(resolved_body.error());
+  }
   auto const session_id = resolve_or_create_session(ctx, **conn, args);
   if (!session_id) {
     return std::unexpected(session_id.error());
@@ -309,10 +336,7 @@ auto capture_snapshot(context& ctx, const cliapp::parsed_args& args) -> handler_
 
   // `--note` takes precedence over the `<body>` positional. Both absent
   // stores SQL NULL, which the engine's `create_args` already expresses.
-  auto body = flag_string(args, "--note");
-  if (!body) {
-    body = positional_string(args, "body");
-  }
+  auto body = std::move(*resolved_body);
 
   // Bound to a named local FIRST: `as_view` returns a view INTO the
   // optional it is handed, so passing the `flag_string` temporary
