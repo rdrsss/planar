@@ -379,7 +379,10 @@ auto connection::open_read_only(std::string_view path) -> std::expected<connecti
   // zig/src/db/sqlite.zig's openReadOnly doc comment): the flag is
   // authoritative, the URI form is redundant defense-in-depth for
   // planar-watch.
-  const std::string uri    = std::format("file:{}?mode=ro", percent_encode_uri_path(path));
+  // An absolute path gets an explicit empty authority (`file:///abs`): with
+  // the bare `file:` form a path starting `//` would read as `file://host/...`
+  // and SQLite would treat its first component as a URI authority (task 7139).
+  const std::string uri    = std::format("file:{}{}?mode=ro", path.starts_with('/') ? "//" : "", percent_encode_uri_path(path));
   sqlite3*          handle = nullptr;
   const int         rc     = sqlite3_open_v2(uri.c_str(), &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI, nullptr);
   if (rc != SQLITE_OK) {

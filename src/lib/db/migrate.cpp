@@ -11,8 +11,8 @@ import planar.db.migrations;
 
 namespace planar::db {
 
-auto current_version(connection& conn, std::string_view version_table) -> std::expected<std::uint32_t, db_error> {
-  auto stmt = conn.prepare(std::format("select coalesce(max(version), 0) from {}", version_table));
+auto current_version(connection& conn) -> std::expected<std::uint32_t, db_error> {
+  auto stmt = conn.prepare(std::format("select coalesce(max(version), 0) from {}", k_main_version_table));
   if (!stmt) {
     // The version table does not exist yet on a fresh database — treat
     // that as "nothing applied yet" rather than surfacing the prepare
@@ -29,10 +29,6 @@ auto current_version(connection& conn, std::string_view version_table) -> std::e
     return std::uint32_t{0};
   }
   return static_cast<std::uint32_t>(stmt->column_int64(0));
-}
-
-auto current_version(connection& conn) -> std::expected<std::uint32_t, db_error> {
-  return current_version(conn, k_main_version_table);
 }
 
 namespace {
@@ -73,7 +69,7 @@ auto require_contiguous(std::span<migration_record const> chain) -> std::expecte
   return {};
 }
 
-auto assert_schema_compatible(connection& conn, std::span<migration_record const> chain, std::string_view version_table)
+auto assert_schema_compatible(connection& conn, std::span<migration_record const> chain)
     -> std::expected<schema_state, db_error> {
   schema_state state{.live_ = 0, .embedded_max_ = embedded_max(chain), .verdict_ = schema_compatibility::current};
 
@@ -82,8 +78,8 @@ auto assert_schema_compatible(connection& conn, std::span<migration_record const
   // with a hole in it. `version` is `integer primary key` (migration
   // 00001 of either stream), so versions are unique — which is what makes
   // `count == max && min == 1` equivalent to "exactly 1..max".
-  auto stmt =
-      conn.prepare(std::format("select coalesce(max(version), 0), count(*), coalesce(min(version), 0) from {}", version_table));
+  auto stmt = conn.prepare(
+      std::format("select coalesce(max(version), 0), count(*), coalesce(min(version), 0) from {}", k_main_version_table));
   if (!stmt) {
     // No version table: a fresh database. Version 0, and the
     // verdict falls out of the comparison below (`behind` whenever the
@@ -142,18 +138,12 @@ auto assert_schema_compatible(connection& conn, std::span<migration_record const
   return state;
 }
 
-auto assert_schema_compatible(connection& conn, std::span<migration_record const> chain)
-    -> std::expected<schema_state, db_error> {
-  return assert_schema_compatible(conn, chain, k_main_version_table);
-}
-
 auto assert_schema_compatible(connection& conn) -> std::expected<schema_state, db_error> {
   return assert_schema_compatible(conn, migrations());
 }
 
-auto apply_all(connection& conn, std::span<migration_record const> chain, std::string_view version_table)
-    -> std::expected<void, db_error> {
-  auto current = current_version(conn, version_table);
+auto apply_all(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {
+  auto current = current_version(conn);
   if (!current) {
     return std::unexpected(current.error());
   }
@@ -198,10 +188,6 @@ auto apply_all(connection& conn, std::span<migration_record const> chain, std::s
   return {};
 }
 
-auto apply_all(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {
-  return apply_all(conn, chain, k_main_version_table);
-}
-
 auto apply_all(connection& conn) -> std::expected<void, db_error> {
   // Contiguity is checked HERE and not in the span overload on purpose.
   // The invariant belongs to the EMBEDDED chain — the thing
@@ -214,16 +200,11 @@ auto apply_all(connection& conn) -> std::expected<void, db_error> {
   return apply_contiguous(conn, migrations());
 }
 
-auto apply_contiguous(connection& conn, std::span<migration_record const> chain, std::string_view version_table)
-    -> std::expected<void, db_error> {
+auto apply_contiguous(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {
   if (auto const contiguous = require_contiguous(chain); !contiguous) {
     return std::unexpected(contiguous.error());
   }
-  return apply_all(conn, chain, version_table);
-}
-
-auto apply_contiguous(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {
-  return apply_contiguous(conn, chain, k_main_version_table);
+  return apply_all(conn, chain);
 }
 
 auto rollback_all(connection& conn, std::span<migration_record const> chain) -> std::expected<void, db_error> {
