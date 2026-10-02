@@ -14,6 +14,12 @@
 /// the first set of codes; the queue codes have their own `queue-lint-ignore`
 /// line and region markers (see the checkQueueCommands comment below).
 ///
+/// Plan 1089 adds `surface-retired-reference`: the names of the removed agent
+/// database may not appear in `docs/`, `agents/`, `skills/src/`, `copilot/` or
+/// the root guides, except in `docs/changelog.md` and in the marked upgrade
+/// note of `INSTALL.md`. `surface-retired-ref-marker-invalid` flags an unclosed
+/// or misplaced marker (see the checkRetiredReferences comment below).
+///
 /// The ported checks mirror their zig namesakes, including the pinned
 /// `command_classes` inventory and the hand-rolled JSON string escaper, which
 /// is its OWN table, distinct from `planar::json_text`'s (that one special-
@@ -50,6 +56,8 @@ constexpr std::string_view suppression_invalid = "surface-suppression-invalid";
 constexpr std::string_view suppression_unused  = "surface-suppression-unused";
 constexpr std::string_view queue_command       = "surface-queue-command";
 constexpr std::string_view queue_marker        = "surface-queue-marker-invalid";
+constexpr std::string_view retired             = "surface-retired-reference";
+constexpr std::string_view retired_marker      = "surface-retired-ref-marker-invalid";
 } // namespace code
 
 constexpr std::array<std::string_view, 7> k_suppressible_codes{code::link,    code::legacy,   code::artifacts, code::capability,
@@ -307,6 +315,95 @@ auto check_legacy(std::string const& file, std::size_t line_no, std::string_view
       return;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// checkRetiredReferences (plan 1089, task qp-retired-ref-lint; tech spec 656
+// § Retired-reference lint).
+//
+// The host queue moved into `planar.db` and the separate agent database was
+// removed, so the names that belonged to it must not come back in authored
+// surfaces. Unlike `k_retired_patterns` above, which fires on every scanned
+// file, these patterns carry a PATH SCOPE and an EXEMPTION LIST:
+//
+//   - SCOPE: `docs/`, `agents/`, `skills/src/`, `copilot/`, and the root
+//     files `README.md`, `CLAUDE.md`, `AGENTS.md`, `INSTALL.md`. A path outside
+//     the scope (`install.sh`, `scripts/`, `src/`, `migrations/README.md`) is
+//     never read for these patterns: the installer legitimately names the
+//     store it retires.
+//   - EXEMPT FILE: `docs/changelog.md` records the removal and may name it.
+//   - EXEMPT REGION: in `INSTALL.md` only, the lines between two marker lines
+//     (each exactly `<!-- retired-ref: agent.db upgrade note -->`) are the
+//     upgrade note. The marker is honoured in no other file, so a stray copy
+//     cannot silence a hit elsewhere; an unclosed region, or a marker in a
+//     file that does not honour it, is itself a finding.
+//
+// Unlike `check_legacy`, a fenced code block is read too: a path in an
+// installed-layout tree or a shell example is still a stale reference. The
+// findings are NOT suppressible with `surface-lint-ignore`: the scope and the
+// marked region are the whole exemption mechanism, so there is no per-line
+// escape hatch to leave behind.
+// ---------------------------------------------------------------------------
+
+/// One retired name and where it may still appear.
+struct scoped_retired_pattern_t {
+  std::string_view text; ///< The retired name, matched as a substring.
+};
+
+constexpr std::array<scoped_retired_pattern_t, 4> k_scoped_retired_patterns{
+    {{"agent.db"}, {"PLANAR_AGENT_DB"}, {"migrations-agent"}, {"limit_columns_select"}}};
+
+constexpr std::array<std::string_view, 4> k_retired_scope_dirs{"docs/", "agents/", "skills/src/", "copilot/"};
+constexpr std::array<std::string_view, 4> k_retired_scope_files{"README.md", "CLAUDE.md", "AGENTS.md", "INSTALL.md"};
+constexpr std::array<std::string_view, 1> k_retired_exempt_files{"docs/changelog.md"};
+constexpr std::string_view                k_retired_region_marker = "<!-- retired-ref: agent.db upgrade note -->";
+constexpr std::string_view                k_retired_region_file   = "INSTALL.md";
+
+auto in_retired_scope(std::string_view rel_file) -> bool {
+  if (std::ranges::find(k_retired_exempt_files, rel_file) != k_retired_exempt_files.end())
+    return false;
+  if (std::ranges::find(k_retired_scope_files, rel_file) != k_retired_scope_files.end())
+    return true;
+  return std::ranges::any_of(k_retired_scope_dirs, [&](std::string_view dir) { return rel_file.starts_with(dir); });
+}
+
+auto check_retired_references(std::string const& rel_file, std::vector<std::string_view> const& lines,
+                              std::vector<finding_t>& findings) -> void {
+  if (!in_retired_scope(rel_file))
+    return;
+  bool const                 honours_region = rel_file == k_retired_region_file;
+  std::optional<std::size_t> region_line;
+  for (std::size_t idx = 0; idx < lines.size(); ++idx) {
+    std::size_t const      line_no = idx + 1;
+    std::string_view const line    = lines[idx];
+    if (trim(line, " \t\r") == k_retired_region_marker) {
+      if (!honours_region) {
+        findings.push_back({.code    = code::retired_marker,
+                            .file    = rel_file,
+                            .line    = line_no,
+                            .message = std::format("a retired-ref marker is honoured only in {}", k_retired_region_file)});
+      } else if (region_line.has_value()) {
+        region_line.reset();
+      } else {
+        region_line = line_no;
+      }
+      continue;
+    }
+    if (region_line.has_value())
+      continue;
+    for (auto const& pattern : k_scoped_retired_patterns) {
+      if (line.find(pattern.text) != std::string_view::npos)
+        findings.push_back({.code    = code::retired,
+                            .file    = rel_file,
+                            .line    = line_no,
+                            .message = std::format("retired reference outside an exempt region: {}", pattern.text)});
+    }
+  }
+  if (region_line.has_value())
+    findings.push_back({.code    = code::retired_marker,
+                        .file    = rel_file,
+                        .line    = *region_line,
+                        .message = "the retired-ref region opened here is never closed"});
 }
 
 // ---------------------------------------------------------------------------
@@ -1431,6 +1528,7 @@ auto scan_file_impl(fs::path const& root, std::string const& rel_file, fs::path 
     check_command(rel_file, line_no, line, result.findings, suppressions);
     check_deferred_command(rel_file, line_no, line, fence.has_value(), result.findings, suppressions);
   }
+  check_retired_references(rel_file, lines, result.findings);
   if (rel_file.starts_with("agents/") || rel_file.starts_with("skills/src/"))
     check_queue_commands(rel_file, lines, result.findings);
   if (rel_file.starts_with("skills/src/") && !frontmatter_literal_true(content, "internal_only"))
@@ -1458,6 +1556,31 @@ auto collect_markdown(fs::path const& dir, std::vector<fs::path>& paths) -> void
   }
 }
 
+/// Reads the files the retired-reference scope names that the general scan does
+/// not (`README.md`, `INSTALL.md`, a regular-file `AGENTS.md`, `copilot/`) and
+/// runs ONLY `check_retired_references` over them: the other checks were
+/// written for `agents/`, `skills/src/` and `docs/` and are not asked of a
+/// root guide. `AGENTS.md` is skipped when it is a symlink, because the
+/// general scan already read its target as `CLAUDE.md`.
+auto scan_retired_only_files(fs::path const& root, result_t& result) -> void {
+  std::vector<fs::path> paths;
+  for (auto name : {"README.md", "INSTALL.md", "AGENTS.md"}) {
+    std::error_code ec;
+    auto const      path = root / name;
+    if (fs::is_regular_file(path, ec) && !fs::is_symlink(path, ec))
+      paths.push_back(path);
+  }
+  collect_markdown(root / "copilot", paths);
+  std::ranges::sort(paths);
+  for (auto const& path : paths) {
+    std::string const rel_path = relative_path(path.string(), root.string());
+    std::ifstream     in(path, std::ios::binary);
+    std::string       content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    check_retired_references(rel_path, split_lines(content), result.findings);
+    ++result.files_scanned;
+  }
+}
+
 auto scan_repository(fs::path const& root) -> result_t {
   result_t              result;
   std::vector<fs::path> paths;
@@ -1482,6 +1605,7 @@ auto scan_repository(fs::path const& root) -> result_t {
     scan_file_impl(root, rel_path, path, content, result);
     ++result.files_scanned;
   }
+  scan_retired_only_files(root, result);
   return result;
 }
 

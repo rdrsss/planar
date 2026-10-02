@@ -122,8 +122,8 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | `--vendors LIST` | Comma-separated subset (e.g. `claude,codex` or just `claude`). Default `claude,codex,copilot,gemini`. |
 | `--no-vendor` | Skip vendor symlinks entirely; install Planar core only. |
 | `--link` | Symlink artifacts from the source repo into `~/.planar/` instead of copying. **Dev mode** — edits to the repo propagate immediately. |
-| `--force` | Overwrite existing symlinks at the destinations. It does **not** bypass the `agent.db` live-queue guard. |
-| `--ignore-live-queue` | Retire (or uninstall) the old `agent.db` even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
+| `--force` | Overwrite existing symlinks at the destinations. It does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
+| `--ignore-live-queue` | Retire (or uninstall) the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
 | `--no-prune` | Skip removal of stale vendor files. |
 | `--preset NAME` | CMake build preset: `debug`\|`release` (default `release`). |
 | `--build-dir DIR` | Where to configure and build (default `build/install-<preset>`). |
@@ -131,7 +131,7 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | `--dry-run`, `-n` | Show the planned actions without changing anything. |
 | `--verbose`, `-v` | Per-file detail (default prints a summary). |
 | `--version` | Print the installer version and exit. |
-| `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db` (with its `-wal`/`-shm` sidecars) and `~/.planar/queue-logs/` unless `--force` is also given. Removes the retired `agent.db`, behind the same live-queue guard as an install. |
+| `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db` (with its `-wal`/`-shm` sidecars) and `~/.planar/queue-logs/` unless `--force` is also given. Removes the retired old queue database, behind the same live-queue guard as an install. |
 
 ### Copy mode vs link mode
 
@@ -154,10 +154,11 @@ planar init --name "my-project"
 
 The default database lives at `~/.planar/planar.db`. Override it with the `PLANAR_DB` environment variable; there is no global `--db` flag.
 
-Agent state lives in a second database, `~/.planar/agent.db`, with its own migration stream. `planar-agent` creates it on first use; no `init` step is needed. Override its path with `PLANAR_AGENT_DB`. Detached queue runs write their output files under `queue-logs/` in the directory that holds `agent.db`.
+The host build and test queue lives in the same database: `queue_entries`, `queue_history` and `queue_schema` are tables of `planar.db`, so there is no second database to create or move. The `planar-agent queue` verbs open `planar.db` as an existing file and never create or migrate it, so run `planar init` first. Detached queue runs write their output files under `queue-logs/` beside the database file.
 
-Both databases hold task claim tokens, which authorise heartbeats and terminal verbs on a claim, so they are private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` (with its `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `planar-agent` creates `agent.db` `0600` and ensures `~/.planar` is `0700` on first open; a directory you choose through `PLANAR_AGENT_DB` is never chmodded. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
+`planar.db` holds task claim tokens, which authorise heartbeats and terminal verbs on a claim, and the queue stores a submitter's token while its entry is live, so the database is private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` (with its `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `queue-logs/` is created `0700` with `0600` logs. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
 
+<!-- retired-ref: agent.db upgrade note -->
 ### Upgrade note: unlinking `agent.db` under a live queue submitter
 
 Removing `agent.db` (and its `-wal` and `-shm` sidecars) while an older
@@ -171,9 +172,12 @@ submitters at 595510e6 in a scratch home:
   the old path from that process.
 - A waiting old submitter does not exit 125. Its polls succeed against the
   orphaned file, and it runs its command when the entry ahead of it ends.
-- A queue run started after the unlink opens a fresh database at the path and
-  runs at once, outside the old queue's slot count. Both queues are then
-  active until every old submitter drains.
+- A `queue run` from the upgraded binaries uses `planar.db` and never opens
+  the old path, so it does not join the old queue and does not see its
+  entries. It takes a turn in the new queue at once, outside the old queue's
+  slot count, and both queues are active until every old submitter drains. (A
+  binary from before the upgrade, started after the unlink, opens a fresh
+  database at the old path in the same way.)
 
 So retire `agent.db` only when no old submitter is live, or accept that the
 old queue and the new one run side by side until it drains.
@@ -212,9 +216,21 @@ holds the old `agent.db`, `install.sh` (through
    are kept.
 
 `--force` does not bypass steps 1 and 4; `--ignore-live-queue` turns their
-refusal into a warning and nothing else. A store relocated with
-`PLANAR_AGENT_DB` is never touched; delete it by hand once no old queue
+refusal into a warning and nothing else. What it costs: the old queue is
+orphaned. Its submitters keep running their commands outside the new queue's
+slot count, and nothing reads the old database afterwards.
+
+`--uninstall` runs the same live-queue guard first whenever `agent.db`
+exists, with or without `--force`; `--ignore-live-queue` is the only override.
+It needs `python3` for that and refuses without it; with no `agent.db`,
+`python3` is not needed. A prefix that holds only an `agent.db` does not count
+as a Planar install.
+
+`PLANAR_AGENT_DB` was the variable that relocated the old database. It is no
+longer read: a value left exported is ignored, never refused, and a store it
+named is never touched by the installer. Delete it by hand once no old queue
 command is running.
+<!-- retired-ref: agent.db upgrade note -->
 
 ## Build from source
 
@@ -272,11 +288,9 @@ make uninstall-full
 
 This removes:
 - All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
-- Everything in `~/.planar/` *except* your data: `planar.db` (with its SQLite sidecars, `-wal` and `-shm`) and the `queue-logs/` directory of detached queue-run output. The retired `agent.db` and its sidecars are removed.
+- Everything in `~/.planar/` *except* your data: `planar.db` (with its SQLite sidecars, `-wal` and `-shm`) and the `queue-logs/` directory of detached queue-run output. A retired old queue database left from before the upgrade is removed too; the upgrade note above covers the guard that protects a live old queue.
 
-When `~/.planar/agent.db` exists, the uninstall first runs the same live-queue guard as an install (see the upgrade note above), with or without `--force`; `--ignore-live-queue` is the only override. It needs `python3` for that and refuses without it; with no `agent.db`, `python3` is not needed.
-
-A prefix that holds only a preserved `planar.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`. One that holds only an `agent.db` does not.
+A prefix that holds only a preserved `planar.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
 
 Only the default file names directly under `~/.planar/` are preserved. A database relocated with `PLANAR_DB` to a path outside `~/.planar/` is never touched by the uninstall; one relocated to another file name *inside* `~/.planar/` is not preserved, and a non-force uninstall deletes it.
 
@@ -393,8 +407,6 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 ├── share/centurion/                    # centuriond migrations + build-identity.json
 ├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`; mode 0600)
-├── agent.db                            # agent-state database (created 0600 on first use;
-│                                       # `agent.db-wal` / `agent.db-shm` may sit beside it)
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
 ├── migrations/
 │   ├── 00001_foundation.up.sql         # canonical migration sources, sqlx-cli format
@@ -460,8 +472,7 @@ Planar respects these env vars when set:
 | `PLANAR_VENDOR_SESSION_ID` | Vendor's session id, recorded alongside the vendor name. Falls back to NULL if unset. |
 | `PLANAR_WORKBENCH_ROOT` | Override the workbench drafting filesystem root (default `~/.planar/workbench/`). Useful for pointing multiple Planar instances at the same workbench directory. |
 | `PLANAR_CONFIG_PATH` | Override the config file location (default `~/.planar/config.toml`). |
-| `PLANAR_DB` | Override the database path (default `~/.planar/planar.db`). |
-| `PLANAR_AGENT_DB` | Override the agent-state database path (default `~/.planar/agent.db`). Detached queue-run output goes to `queue-logs/` next to this file. |
+| `PLANAR_DB` | Override the database path (default `~/.planar/planar.db`). The host queue lives in this database, and detached queue-run output goes to `queue-logs/` next to this file. |
 | `PLANAR_BIN` | Used by `scripts/coverage-check.sh` (`make coverage`) to point at a pre-built `planar` binary (default `./bin/planar`). |
 | `JIRA_USER`, `JIRA_TOKEN`, etc. | Whatever you point `planar-ext ext register … --auth-env VAR_NAME` at. Comma-separated `USER,TOKEN` form uses HTTP Basic auth. |
 

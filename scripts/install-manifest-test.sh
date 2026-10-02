@@ -808,7 +808,7 @@ grep -Fq '"python3|python|Centurion'"'"'s configure; install.sh'"'"'s agent.db r
   || fail "python3's BUILD_DEPS reason does not name the agent.db retirement reader"
 ! grep -Eq '^  "(ps|sysctl)\|' "$ROOT/install.sh" || fail "ps or sysctl is in BUILD_DEPS/RUN_DEPS"
 sed -n '/^## Prerequisites/,/^### /p' "$ROOT/README.md" > "$TMP/prereqs.md"
-grep -Fq 'agent.db` retirement reader' "$TMP/prereqs.md" || fail "README Prerequisites does not name the retirement reader"
+grep -Fq 'old-queue-database retirement reader' "$TMP/prereqs.md" || fail "README Prerequisites does not name the retirement reader"
 ! grep -Eq '`(ps|sysctl)`' "$TMP/prereqs.md" || fail "README Prerequisites names ps or sysctl"
 
 # install.sh runs under `set -eEuo pipefail` with an ERR trap (on_err), and

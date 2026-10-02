@@ -47,7 +47,7 @@ not a runtime ACL.
   `queue_entries`, `queue_history` and `queue_schema`, behind its own
   module, so the queue SQL stays separable from the planning SQL. Only
   `planar-agent` writes those tables. The installer migrates `planar.db` and
-  retires the old `~/.planar/agent.db`.
+  retires the old separate queue database (see INSTALL.md's upgrade note).
   - **Schema tolerance.** `queue` verbs refuse a `planar.db` that is BEHIND
     the binary at exit 125. They run against one that is AHEAD when the
     queue's own `queue_schema` check passes (tables and marker present, the
@@ -69,9 +69,10 @@ not a runtime ACL.
   - `planar-watch` reads the queue views from `planar.db` read-only.
   - The queue is a coordination aid and not a security boundary; `queue` is
     a domain of `planar-agent` and never of `planar`.
-  - The agent-database module, the `migrations-agent/` stream and the
-    `PLANAR_AGENT_DB` test pins are gone. A set `PLANAR_AGENT_DB` is ignored,
-    never refused; only the installer still knows `agent.db`, to retire it.
+  - The old separate queue database, its migration stream, its path override
+    and the test pins for that override are gone. A leftover export of the
+    override is ignored, never refused; only the installer still knows the old
+    database, to retire it (INSTALL.md's upgrade note names it).
 - There is no `planar agent <verb>` namespace. Agent observability is on
   `planar-watch`; agent-table writes are on `planar-agent`.
 - The `ext` and `sync` verb domains are on `planar-ext`, not `planar`.
