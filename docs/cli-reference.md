@@ -25,7 +25,7 @@ Reference for every `planar` subcommand. Authoritative current surface for the i
 
 ### The `@<file>` free-text grammar
 
-A free-text value documented below as "May be `@<file>`" is read from a file when its **first byte** is `@`: the file's bytes replace the value, raw. An `@` anywhere else in the value is literal text. An unreadable file is refused at exit `2` with `error: read <flag>: FileNotFound` (it does not name the path) before anything is written, so no row, session, or patch results. The verbs with the grammar: `plan create`/`plan update --summary`, `task add`/`task update --body`, `question add --body`, `scenario add --body`, `decision add --body`/`--rationale`, `artifact add`/`artifact update --body`, `annotate add`/`annotate update --body`, `handoff --note`, `capture note <body>`, `capture command --outcome`, `capture end --summary`, `capture snapshot --note`/`<body>`. `question answer --answer` is deliberately literal (see that verb); every other flag takes literal text.
+A free-text value documented below as "May be `@<file>`" is read from a file when its **first byte** is `@`: the file's bytes replace the value, raw. An `@` anywhere else in the value is literal text. An unreadable file is refused at exit `2` with `error: read <flag>: FileNotFound` (it does not name the path) before anything is written, so no row, session, or patch results. The verbs with the grammar: `plan create`/`plan update --summary`, `task add`/`task update --body`, `question add --body`, `scenario add --body`, `decision add --body`/`--rationale`, `artifact add`/`artifact update --body`, `handoff --note`, `capture note <body>`, `capture command --outcome`, `capture end --summary`, `capture snapshot --note`/`<body>`. `question answer --answer` and `annotate add`/`annotate update --body` are deliberately literal; every other flag takes literal text.
 
 ### Scope Shorthand
 
@@ -2541,7 +2541,7 @@ planar annotate add --text <note> [--anchor-path <path>] [--line-start <n>] [--l
 
 **Description:** Create a new annotation. `--anchor-path` (+ optional `--line-start`/`--line-end`) locates the note in the tree; `--commit-sha` and `--text-hash` record what the anchored content looked like at capture time so `annotate verify` can detect drift. `--plan` / `--task` associate the note with a planning entity; `--tags` is a comma-separated list.
 
-**Options:** `--text` is the note body (the load-bearing field). `--anchor-path`, `--line-start`, `--line-end`, `--commit-sha`, `--text-hash` form the anchor. `--title`, `--slug`, `--body`, `--vendor`, `--plan`, `--task`, `--tags`, `--scope` are optional metadata. `--body` may be `@<file>` (see [The `@<file>` free-text grammar](#the-file-free-text-grammar)); `annotate update --body` too.
+**Options:** `--text` is the note body (the load-bearing field). `--anchor-path`, `--line-start`, `--line-end`, `--commit-sha`, `--text-hash` form the anchor. `--title`, `--slug`, `--body`, `--vendor`, `--plan`, `--task`, `--tags`, `--scope` are optional metadata.
 
 **Schema effects:** Inserts into `annotations(...)` (and `annotation_tags` for each tag).
 
@@ -4486,9 +4486,9 @@ planar capture snapshot [<body>] [--note <text>] [--next-action <text>] [--sessi
 |------|-------------|
 | `--session <session-id>` | Session id to snapshot against; otherwise the vendor tuple's active session (created when absent). |
 | `--task <task-id>` | Task id for the snapshot; otherwise the session's own bound task. |
-| `--note <text>` | Snapshot body. Takes precedence over the `<body>` positional. |
+| `--note <text>` | Snapshot body. May be `@<file>`. Takes precedence over the `<body>` positional. |
 
-The positional is the snapshot **body**, not a task id; name the task with `--task`.
+The positional is the snapshot **body** (it may be `@<file>`), not a task id; name the task with `--task`.
 
 **Description:** Produce a context snapshot for the current or named task mid-session, without creating a full handoff record. Useful for checkpointing state at meaningful points during long sessions.
 

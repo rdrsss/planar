@@ -239,28 +239,16 @@ TEST_CASE("plan update --summary reads @file", "[cmd][plan][summary][7117]") {
   check_literal_at(c);
 }
 
-TEST_CASE("annotate add --body reads @file", "[cmd][annotate][body][7117]") {
-  at_case const c{"anadd",
-                  {},
-                  [](std::string v) -> std::vector<std::string> {
-                    return {"annotate", "add", "--anchor-path", "src/a.cpp", "--scope", "global", "--body", v};
-                  },
-                  "--body",
-                  "select count(*) from annotations",
-                  "select body from annotations where id = 1"};
-  check_at_flag(c);
-  check_literal_at(c);
-}
-
-TEST_CASE("annotate update --body reads @file", "[cmd][annotate][body][7117]") {
-  at_case const c{"anupd",
-                  {{"annotate", "add", "--anchor-path", "src/a.cpp", "--scope", "global", "--body", "original"}},
-                  [](std::string v) -> std::vector<std::string> { return {"annotate", "update", "1", "--body", v}; },
-                  "--body",
-                  "select body from annotations where id = 1",
-                  "select body from annotations where id = 1"};
-  check_at_flag(c);
-  check_literal_at(c);
+TEST_CASE("annotate add/update --body stay literal (no documented @file expansion)", "[cmd][annotate][body][7117]") {
+  // docs/cli-reference.md never promised `@file` for annotate, and a note like
+  // "@alice please check this" must not be refused or read from disk.
+  auto const fx = make_fixture("annlit");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"annotate", "add", "--anchor-path", "src/a.cpp", "--scope", "global", "--body", "@nope-7117.md"}).code ==
+          0);
+  CHECK(scalar(fx, "select body from annotations where id = 1") == "@nope-7117.md");
+  REQUIRE(dispatch(fx, {"annotate", "update", "1", "--body", "@nope2-7117.md"}).code == 0);
+  CHECK(scalar(fx, "select body from annotations where id = 1") == "@nope2-7117.md");
 }
 
 TEST_CASE("capture note <body> reads @file", "[cmd][capture][body][7117]") {

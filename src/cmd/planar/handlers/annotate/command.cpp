@@ -16,7 +16,6 @@ import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
 import planar.cmd.planar.scope;
 import planar.cmd.planar.declare;
-import planar.cmd.planar.handlers.atvalue;
 import planar.cmd.planar.handlers.annotate.add;
 import planar.cmd.planar.handlers.annotate.show;
 import planar.cmd.planar.handlers.annotate.list;
@@ -407,13 +406,9 @@ auto annotate_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     return std::unexpected(conn.error());
   }
 
-  auto const title = flag_string(args, "--title");
-  auto const slug  = flag_string(args, "--slug");
-  // `--body @file` is read before the create (task 7117).
-  auto const body = resolve_at_value(flag_string(args, "--body"), "--body");
-  if (!body) {
-    return std::unexpected(body.error());
-  }
+  auto const title      = flag_string(args, "--title");
+  auto const slug       = flag_string(args, "--slug");
+  auto const body       = flag_string(args, "--body");
   auto const vendor     = flag_string(args, "--vendor");
   auto const commit_sha = flag_string(args, "--commit-sha");
   auto const text_hash  = flag_string(args, "--text-hash");
@@ -432,7 +427,7 @@ auto annotate_add(context& ctx, const cliapp::parsed_args& args) -> handler_resu
           },
       .title   = as_view(title),
       .slug    = as_view(slug),
-      .body    = body->has_value() ? std::string_view{**body} : std::string_view{""},
+      .body    = body.has_value() ? std::string_view{*body} : std::string_view{""},
       .vendor  = vendor.has_value() ? std::string_view{*vendor} : std::string_view{""},
       .plan_id = flag_int(args, "--plan"),
       .task_id = flag_int(args, "--task"),
@@ -603,17 +598,13 @@ auto annotate_update(context& ctx, const cliapp::parsed_args& args) -> handler_r
 
   auto const title = flag_string(args, "--title");
   auto const slug  = flag_string(args, "--slug");
-  // `--body @file` is read before the patch (task 7117).
-  auto const body = resolve_at_value(flag_string(args, "--body"), "--body");
-  if (!body) {
-    return std::unexpected(body.error());
-  }
+  auto const body  = flag_string(args, "--body");
   auto const scope = flag_string(args, "--scope");
 
   ann::update_args patch{
       .title   = as_view(title),
       .slug    = as_view(slug),
-      .body    = as_view(*body),
+      .body    = as_view(body),
       .status_ = *status_,
       .plan_id = flag_int(args, "--plan"),
       .task_id = flag_int(args, "--task"),
