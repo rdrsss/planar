@@ -339,7 +339,9 @@ public:
   /// the `file:<path>?mode=ro` URI form and `SQLITE_OPEN_READONLY` are
   /// used together, so the driver refuses any write SQL
   /// (`SQLITE_READONLY`) regardless of which mechanism a future SQLite
-  /// release might relax. Fails if `path` does not already exist.
+  /// release might relax. Fails if `path` does not already exist. An absolute
+  /// `path` is spelled `file://<path>` (empty URI authority), so a path that
+  /// begins `//` is never read as a `host`.
   /// @param path Filesystem path to an existing database file.
   /// @return The open read-only connection, or the SQLite failure as a
   /// `db_error`.
