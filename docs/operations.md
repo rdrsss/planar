@@ -292,13 +292,24 @@ diagram in [`lifecycles.md` §3.6](lifecycles.md#36-host-queue-entry), the verbs
 and exit codes are in [`cli-reference.md` §Queue verbs](cli-reference.md#queue-verbs),
 and the rule agents follow is printed by `planar-agent queue rule`.
 
-**Where it lives.** The queue's state is the agent database, `~/.planar/agent.db`
-(`PLANAR_AGENT_DB` moves it; `PLANAR_DB` does not). It is a separate file from
-`planar.db`, so the queue keeps working when the main schema is locked, and
-the planning verbs never open it. Output of a detached run
-(`queue run --detach`) is written to `queue-logs/<seq>.log` in the directory
-that holds `agent.db`, one file per entry, and is deleted with the history row
-that names it.
+**Where it lives.** The queue's state is three tables in `planar.db`
+(`queue_entries`, `queue_history` and `queue_schema`), in the file `PLANAR_DB`
+names, else `~/.planar/planar.db`. There is no second database. Queue verbs
+never create or migrate `planar.db`: run `planar init` first. A queue verb
+refuses a `planar.db` that is behind its binary (exit 125, remedy `planar
+init`) and keeps working against one that is ahead as long as the queue's own
+compatibility marker admits the binary, so agents keep queueing builds and tests
+while a newer build migrates the shared file. Claims keep the exact-version
+rule, so `queue run --claim` renewals fail against an ahead database; during a
+migration cycle submit with the binary that migrated the file. The details are
+in [`architecture.md` §The host queue's tables](architecture.md#the-host-queues-tables)
+and [`cli-reference.md` §Queue verbs](cli-reference.md#queue-verbs). Output of a
+detached run (`queue run --detach`) is written to `<seq>.log` in `queue-logs/`
+beside the database (`<stem>.queue-logs/` for a database file not named
+`planar.db`), one file per entry, and is deleted with the history row that
+names it. Sequence numbers start above 1,000,000. Rolling the queue back or
+restoring a backup rewinds that counter; see the recipe in
+[`migrations/README.md` §Host-queue rollback recovery](../migrations/README.md).
 
 **Settings.** The `[queue]` table of `~/.planar/config.toml` sets `slots` (how
 many commands run at once, default 1), `poll_interval`, `stale_after`, `grace`
@@ -332,32 +343,24 @@ queue their builds, how long they wait, how often a command times out and how
 often entries end `abandoned`. An entry with no vendor or role was submitted by
 an agent or script that did not say who it is.
 
-**Preservation and file modes.** `install.sh --uninstall` keeps `agent.db` and
-`queue-logs/` as it keeps `planar.db`; remove them by hand when you want them
-gone. A live entry stores the submitter's task claim token in the clear
-(`queue_entries.claim_token`, written when `queue run` is given `--claim`; the
-history row does not keep it), and a claim token authorises heartbeats and
-terminal verbs on that claim. `planar.db` holds claim tokens too. So the files
-are owner-only (decision 1210):
+**Preservation and file modes.** `install.sh --uninstall` keeps `planar.db`
+(with its `-wal` and `-shm`) and `queue-logs/`; remove them by hand, or pass
+`--force`, when you want them gone. A live entry stores the submitter's task
+claim token in the clear (`queue_entries.claim_token`, written when `queue run`
+is given `--claim`; the history row does not keep it), and a claim token
+authorises heartbeats and terminal verbs on that claim. `planar.db` holds claim
+tokens too. So the files are owner-only:
 
-- `agent.db` is created `0600`, and so are its `-wal` and `-shm` (SQLite gives
-  them the main file's mode), whatever the umask.
-- `~/.planar` (`PLANAR_HOME`) is `0700`. `install.sh` makes it so, and
-  tightens an existing install in place: `planar.db` and `agent.db`, with their
-  sidecars, become `0600`. `planar-agent` also ensures `~/.planar` `0700` the
-  first time it opens `agent.db` at the default location, if you own it.
-- `queue-logs/` is created `0700` and its logs `0600`, as before.
-- A directory you name through `PLANAR_AGENT_DB` is yours: Planar creates the
-  directories that are missing `0700`, but never changes the mode of one that
-  exists, and `install.sh` only touches the databases directly under the
-  install root. If you point `PLANAR_AGENT_DB` into a shared directory, the
-  store file is still `0600`, but restrict the directory yourself.
-- An `agent.db` that already existed keeps its mode when a binary opens it; run
-  `./install.sh` again, or `chmod 600 ~/.planar/agent.db*`, to tighten it.
-  `install.sh --uninstall` keeps the databases and their modes.
+- `~/.planar` (`PLANAR_HOME`) is `0700`. `install.sh` makes it so, and tightens
+  an existing install in place: `planar.db` and its sidecars become `0600`.
+- `queue-logs/` is created `0700` and its logs `0600`. A log directory that
+  already exists must be owned by you and not writable by group or others, or a
+  detached run refuses.
+- A `PLANAR_DB` outside the install root is yours: `install.sh` only touches
+  the database directly under the install root.
 - An install root shared by several users (a `--prefix` such as `/opt/planar`
   that more than one account runs from) is unsupported under the `0700` rule:
-  only the owner can open the databases. Run one install per user.
+  only the owner can open the database. Run one install per user.
 - If `install.sh` cannot change a mode (a file you can write but do not own),
   it prints a warning and carries on; fix the mode by hand.
 

@@ -435,7 +435,7 @@ machine; a preview only *carries* the claim token as one bound value.
 
 ### 3.6 Host queue entry
 
-One row of `queue_entries` in the agent database, from `queue run` to its
+One row of `queue_entries` in `planar.db`, from `queue run` to its
 `queue_history` row. The store's `state` column holds only `waiting` and
 `running`; `terminating` is a `running` entry carrying the stop markers
 (`terminating_since_mono`, `terminate_reason`), and each outcome is the
@@ -965,7 +965,7 @@ bug, unless noted.
 | closeout gate | `src/engine/planning/closeout.cppm` | |
 | agent claim, action | `src/engine/runtime/agentactivity.cpp`, `agentatomic.cpp` | `00015_agent_activity.up.sql`, `00029_agent_failure_categories.up.sql` |
 | workflow run, context record | `src/engine/runtime/workflowruns.cppm` | `00022_workflow_context_plane.up.sql` |
-| host queue entry | `src/engine/hostqueue/{poll,terminate,history,queue}.cpp`, `src/cmd/planar-agent/handlers/queue/queue.cpp` | `migrations-agent/00002_queue_tables.up.sql`, `00003_queue_limits.up.sql` |
+| host queue entry | `src/engine/hostqueue/{poll,terminate,history,queue}.cpp`, `src/cmd/planar-agent/handlers/queue/queue.cpp` | `00040_host_queue.up.sql` |
 | routing dispatch | `src/engine/routing/routing.cppm` | `00030_adaptive_routing_evidence.up.sql`, `00031_dispatch_confirmation_tokens.up.sql` |
 | resume readiness | `src/engine/runtime/resumecheck.cppm` | |
 | health | `src/engine/health/health.cpp` | |

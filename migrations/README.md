@@ -7,8 +7,8 @@ operational time and embedded into the binary at build time.
 
 This is the only migration stream. The host queue's tables live here too
 (migration 00040); the old agent database and its separate stream were
-retired in plan 1089, and the installer removes a leftover
-`~/.planar/agent.db`.
+retired in plan 1089, and the installer retires a leftover
+`~/.planar/agent.db` (see [INSTALL.md](../INSTALL.md)).
 
 ## File format
 
