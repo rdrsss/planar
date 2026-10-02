@@ -215,6 +215,19 @@ auto slot_from_env_dump(const std::string& dump) -> std::optional<std::string> {
   return std::nullopt;
 }
 
+/// @brief The value `name` has in an `env` dump, when the line is there.
+auto var_from_env_dump(const std::string& dump, std::string_view name) -> std::optional<std::string> {
+  auto const         prefix = std::format("{}=", name);
+  std::istringstream in(dump);
+  std::string        line;
+  while (std::getline(in, line)) {
+    if (line.starts_with(prefix)) {
+      return line.substr(prefix.size());
+    }
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
 TEST_CASE("arena: run_pinned and launch_pinned_detached strip an inherited PLANAR_QUEUE_SLOT", "[arena][queue]") {
@@ -222,12 +235,16 @@ TEST_CASE("arena: run_pinned and launch_pinned_detached strip an inherited PLANA
   // marker, and every arena submitter would then look nested.
   scoped_env const inherited{"PLANAR_QUEUE_SLOT", "424242"};
   REQUIRE(std::getenv("PLANAR_QUEUE_SLOT") != nullptr); // the plant took effect
+  // A PLANAR_DB inherited from this process must not be able to stand in for
+  // the arena's own: plant a foreign one so only an arena-pinned value passes.
+  scoped_env const foreign_db{"PLANAR_DB", "/nonexistent/foreign/planar.db"};
 
-  auto const arena = make_arena("slot_run");
+  auto const arena    = make_arena("slot_run");
+  auto const arena_db = (arena.cpp_root / "planar.db").string();
   auto const got   = run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump");
   INFO("env dump:\n" << got.out);
   REQUIRE(got.code == 0);
-  REQUIRE(got.out.contains("PLANAR_DB=")); // the dump is a real one
+  REQUIRE(var_from_env_dump(got.out, "PLANAR_DB") == std::optional<std::string>{arena_db}); // a real dump, arena-pinned
   CHECK_FALSE(slot_from_env_dump(got.out).has_value());
 
   launch_pinned_detached("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump_detached");
@@ -235,13 +252,13 @@ TEST_CASE("arena: run_pinned and launch_pinned_detached strip an inherited PLANA
   std::string dump;
   for (int i = 0; i < 200; ++i) {
     dump = read_all(arena.cpp_root / "envdump_detached.out");
-    if (dump.contains("PLANAR_DB=") && dump.ends_with('\n')) {
+    if (var_from_env_dump(dump, "PLANAR_DB").has_value() && dump.ends_with('\n')) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   INFO("detached env dump:\n" << dump);
-  REQUIRE(dump.contains("PLANAR_DB="));
+  REQUIRE(var_from_env_dump(dump, "PLANAR_DB") == std::optional<std::string>{arena_db});
   CHECK_FALSE(slot_from_env_dump(dump).has_value());
 }
 
