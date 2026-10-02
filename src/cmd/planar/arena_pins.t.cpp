@@ -241,7 +241,7 @@ TEST_CASE("arena: run_pinned and launch_pinned_detached strip an inherited PLANA
 
   auto const arena    = make_arena("slot_run");
   auto const arena_db = (arena.cpp_root / "planar.db").string();
-  auto const got   = run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump");
+  auto const got      = run_pinned("/usr/bin/env", std::span<const std::string>{}, arena.cpp_root, "envdump");
   INFO("env dump:\n" << got.out);
   REQUIRE(got.code == 0);
   REQUIRE(var_from_env_dump(got.out, "PLANAR_DB") == std::optional<std::string>{arena_db}); // a real dump, arena-pinned

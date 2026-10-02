@@ -78,8 +78,8 @@ auto assert_schema_compatible(connection& conn, std::span<migration_record const
   // with a hole in it. `version` is `integer primary key` (migration
   // 00001 of either stream), so versions are unique — which is what makes
   // `count == max && min == 1` equivalent to "exactly 1..max".
-  auto stmt =
-      conn.prepare(std::format("select coalesce(max(version), 0), count(*), coalesce(min(version), 0) from {}", k_main_version_table));
+  auto stmt = conn.prepare(
+      std::format("select coalesce(max(version), 0), count(*), coalesce(min(version), 0) from {}", k_main_version_table));
   if (!stmt) {
     // No version table: a fresh database. Version 0, and the
     // verdict falls out of the comparison below (`behind` whenever the
