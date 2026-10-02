@@ -195,6 +195,18 @@ TEST_CASE("the text one-liners match the oracle captures", "[agentrender]") {
   REQUIRE(render::no_work_json() == "{\"ok\":true,\"no_work\":true}\n");
 }
 
+TEST_CASE("the taskless terminal envelope names the claim and carries a null task", "[agentrender][7118]") {
+  auto claim = sample_claim();
+  claim.kind = aa::entity_kind::plan;
+  atomic::terminal_result const ended{.released = claim, .task_id = std::nullopt};
+
+  REQUIRE(render::terminal_text(ended) == "ok entity:plan:2 claim_status:active\n");
+  auto const json = render::terminal_json(ended);
+  REQUIRE(json.starts_with(R"({"ok":true,"claim_token":"14dc6e775153923eece9afe572bd8e5f","claim":{)"));
+  REQUIRE(json.ends_with(R"(,"task":null})"
+                         "\n"));
+}
+
 TEST_CASE("the pull and terminal envelopes wrap the shared objects", "[agentrender]") {
   auto const          claim = sample_claim();
   auto const          task  = sample_task();

@@ -292,6 +292,20 @@ auto terminal_json(const agentatomic::terminal_result& result, const aa::task_ro
   return out;
 }
 
+auto terminal_json(const agentatomic::terminal_result& result) -> std::string {
+  std::string out = "{\"ok\":true,\"claim_token\":";
+  append_json_string(out, result.released.claim_token);
+  out.append(",\"claim\":");
+  append_claim(out, result.released);
+  out.append(",\"task\":null}\n");
+  return out;
+}
+
+auto terminal_text(const agentatomic::terminal_result& result) -> std::string {
+  return std::format("ok entity:{}:{} claim_status:{}\n", aa::to_text(result.released.kind), result.released.entity_id,
+                     aa::to_text(result.released.status));
+}
+
 auto terminal_text(const agentatomic::terminal_result& result, const aa::task_row& task) -> std::string {
   return std::format("ok task:{} status:{} claim_status:{}\n", task.id, task.status, aa::to_text(result.released.status));
 }

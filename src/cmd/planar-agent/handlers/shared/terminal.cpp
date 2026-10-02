@@ -50,7 +50,14 @@ auto emit(context& ctx, const atomic::terminal_result& result, bool json) -> han
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const task = aa::get_task(**conn, result.task_id);
+  if (!result.task_id.has_value()) {
+    // A plan / plan_step claim (only `release` ends one) holds no task.
+    // Looking one up by the claim's entity id would print whatever unrelated
+    // task shares that number (task 7118).
+    ctx.out() << (json ? render::terminal_json(result) : render::terminal_text(result));
+    return {};
+  }
+  auto const task = aa::get_task(**conn, *result.task_id);
   if (!task) {
     return std::unexpected(verb_error("task show", task.error()));
   }

@@ -193,6 +193,18 @@ export auto heartbeat_text(const aa::claim& value) -> std::string;
 /// @return The COMPLETE payload, newline included.
 export auto terminal_json(const agentatomic::terminal_result& result, const aa::task_row& task) -> std::string;
 
+/// @brief The terminal envelope for a plan / plan_step claim, which holds no
+/// task: `{"ok":true,"claim_token":...,"claim":{...},"task":null}` (task 7118).
+/// @param result The terminal outcome.
+/// @return The COMPLETE payload, newline included.
+export auto terminal_json(const agentatomic::terminal_result& result) -> std::string;
+
+/// @brief `ok entity:<kind>:<id> claim_status:<status>` for a plan / plan_step
+/// claim (task 7118).
+/// @param result The terminal outcome.
+/// @return The COMPLETE payload, newline included.
+export auto terminal_text(const agentatomic::terminal_result& result) -> std::string;
+
 /// @brief `ok task:<id> status:<status> claim_status:<status>`.
 /// @param result The terminal outcome.
 /// @param task The task in its new state.

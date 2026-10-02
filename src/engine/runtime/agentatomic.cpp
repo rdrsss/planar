@@ -229,6 +229,18 @@ struct terminal_args {
   std::optional<aa::failure_category> category; ///< Written onto the claim.
 };
 
+/// @brief The task a claim holds: its entity id for a task claim, unset for
+/// a plan / plan_step claim, whose entity id is a plan or step id and must
+/// never be read as a task id (task 7118).
+/// @param held The claim.
+/// @return The task id, or unset.
+auto held_task_id(const aa::claim& held) -> std::optional<std::int64_t> {
+  if (held.kind != aa::entity_kind::task) {
+    return std::nullopt;
+  }
+  return held.entity_id;
+}
+
 /// @brief The one transaction `complete` / `fail` / `release` all run.
 ///
 /// Statement order is load-bearing and matches the Zig original exactly:
@@ -258,7 +270,7 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
   }
   if (decision->replay) {
     // Already terminated under this attempt: success, nothing written.
-    auto const task_id = held->entity_id;
+    auto const task_id = held_task_id(*held);
     return terminal_result{.released = std::move(*held), .task_id = task_id, .replayed = true};
   }
 
@@ -348,7 +360,7 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
   if (!committed) {
     return std::unexpected(committed.error());
   }
-  return terminal_result{.released = std::move(*released), .task_id = held->entity_id};
+  return terminal_result{.released = std::move(*released), .task_id = held_task_id(*held)};
 }
 
 } // namespace
@@ -594,7 +606,7 @@ auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t
     return std::unexpected(decision.error());
   }
   if (decision->replay) {
-    auto const task_id = held->entity_id;
+    auto const task_id = held_task_id(*held);
     return terminal_result{.released = std::move(*held), .task_id = task_id, .replayed = true};
   }
 
@@ -668,7 +680,7 @@ auto block_work(db::connection& conn, std::string_view claim_token, std::int64_t
   if (!committed) {
     return std::unexpected(committed.error());
   }
-  return terminal_result{.released = std::move(*released), .task_id = held->entity_id};
+  return terminal_result{.released = std::move(*released), .task_id = held_task_id(*held)};
 }
 
 // =========================================================================
