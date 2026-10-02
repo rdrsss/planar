@@ -33,7 +33,6 @@ export constexpr std::string_view k_main_version_table = "schema_migrations";
 /// surfacing the underlying "no such table" failure — mirrors
 /// `zig/src/db/migrate.zig`'s `intQuery(...) catch` fallback, which is how
 /// `applyAll` knows to start from the beginning of the chain.
-/// @param conn The connection to query.
 /// The table name (`k_main_version_table`) is a compile-time constant spliced
 /// into the query text, never operator input.
 /// @param conn The connection to query.
