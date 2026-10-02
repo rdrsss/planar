@@ -863,3 +863,23 @@ TEST_CASE("open_read_only does not create a file for a missing path with a URI m
   REQUIRE_FALSE(conn.has_value());
   CHECK_FALSE(std::filesystem::exists(dir.path_ / "we?ird.db"));
 }
+
+// Task 7139: a path that starts with `//` used to become `file://host/...`,
+// which SQLite reads as a URI authority. POSIX resolves `//x` to `/x`, so the
+// handle must open the same file the single-slash spelling does.
+TEST_CASE("open_read_only opens an absolute path that starts with a double slash", "[db][connection][qp-ro-uri-encoding]") {
+  scratch_dir dir;
+  const auto  real = dir.path_ / "dbl.db";
+  seed_marker(real, 111);
+  REQUIRE(real.string().starts_with('/'));
+
+  const std::string doubled = "/" + real.string(); // "//<first-component>/..."
+  CAPTURE(doubled);
+  auto conn = planar::db::connection::open_read_only(doubled);
+  REQUIRE(conn.has_value());
+  CHECK(read_marker(*conn) == 111);
+
+  auto write = conn->execute("insert into t (n) values (3);");
+  REQUIRE_FALSE(write.has_value());
+  CHECK(write.error().code_ == k_sqlite_readonly);
+}
