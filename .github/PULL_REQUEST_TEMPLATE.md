@@ -5,6 +5,6 @@
 ## Checklist
 
 - [ ] Every commit is signed off (`git commit -s`), per
-      [CONTRIBUTING.md](CONTRIBUTING.md).
+      [CONTRIBUTING.md](../CONTRIBUTING.md).
 - [ ] Tests added or updated, and the relevant `make` targets pass locally.
 - [ ] Docs updated if behavior, flags, or output changed.
