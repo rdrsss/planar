@@ -136,7 +136,7 @@ test-install-deps: ## Run focused installer compiler-preflight fixture
 .PHONY: test
 test: test-install-manifest test-install-deps ## Run unit tests
 	$(configure_debug)
-	cmake --build build/debug $(ARGS)
+	cmake --build build/debug --target all planar_tests $(ARGS)
 	ctest --test-dir build/debug --output-on-failure -j $(TEST_JOBS) $(ARGS)
 
 # Linux gate (task 7094): build + ctest on Debian trixie in Docker. See
@@ -266,7 +266,7 @@ cpp-lint-gate: ## The GATING half of cpp-lint (clang-format --Werror + doxygen);
 	$(call require_pinned_llvm,$(CLANG_FORMAT_BIN))
 	@echo "== cpp-lint-gate: clang-format --dry-run --Werror (pinned $(CLANG_FORMAT_BIN)) =="
 	$(CLANG_FORMAT_BIN) --dry-run --Werror $(CPP_FILES)
-	cmake --build $(CPP_BUILD_DIR)
+	cmake --build $(CPP_BUILD_DIR) --target all planar_tests
 	@echo "== cpp-lint-gate: doxygen Doxyfile.lint (retries only on signal death; see docs/toolchain-parity.md) =="
 	# A HIGHER retry bound than interactive `cpp-lint` uses. doxygen 1.18.0
 	# has a content-independent SIGBUS at a measured 25-50% per run (task
@@ -312,7 +312,9 @@ cpp-lint: ## Pinned clang-format + clang-tidy + doxygen gate over first-party C+
 	# freshly configured-but-unbuilt build dir, clang-tidy fails with
 	# "module 'std' not found" / "no such file ... .modmap". `cmake --build`
 	# here makes that a non-issue rather than an operator-order footgun.
-	cmake --build $(CPP_BUILD_DIR)
+	# `planar_tests` too: clang-tidy walks the *.t.cpp files as well, and
+	# test binaries are EXCLUDE_FROM_ALL (cmake/module.cmake).
+	cmake --build $(CPP_BUILD_DIR) --target all planar_tests
 	find src -type f \( -name '*.cppm' -o -name '*.cpp' \) -print0 | xargs -0 $(CLANG_TIDY_BIN) -p $(CPP_BUILD_DIR)
 	@echo "== cpp-lint: doxygen Doxyfile.lint (retries only on signal death; see docs/toolchain-parity.md) =="
 	scripts/cpp-lint-doxygen.sh Doxyfile.lint
@@ -335,7 +337,8 @@ test-cpp-report: ## Run the C++ ctest suite and REPORT its skip tally (a skipped
 	scripts/ctest-report.sh --build-dir build/debug $(ARGS)
 
 .PHONY: ctest-registry-check
-ctest-registry-check: ## Prove ctest runs every case the test binaries contain (task 6790; needs build/debug built)
+ctest-registry-check: ## Prove ctest runs every case the test binaries contain (task 6790)
+	cmake --build $(CPP_BUILD_DIR) --target planar_tests
 	scripts/ctest-registry-check.sh --build-dir $(CPP_BUILD_DIR)
 
 # The registry can drift in BOTH directions while ctest reports a clean pass:
@@ -350,7 +353,7 @@ ctest-registry-check: ## Prove ctest runs every case the test binaries contain (
 .PHONY: test-cpp-solver
 test-cpp-solver: ## Run the ctest suite against a solver-ON build (decision 1032)
 	cmake --preset debug -DPLANAR_WITH_MTKAHYPAR=ON
-	cmake --build $(CPP_BUILD_DIR)
+	cmake --build $(CPP_BUILD_DIR) --target all planar_tests
 	ctest --test-dir $(CPP_BUILD_DIR) --output-on-failure $(ARGS)
 
 # This lane builds WITH the solver (decision 1032): groups_recommend's

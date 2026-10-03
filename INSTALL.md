@@ -240,7 +240,7 @@ The repo root IS the CMake project root (`CMakeLists.txt` and `CMakePresets.json
 git clone https://github.com/rdrsss/planar.git
 cd planar
 cmake --preset debug                                    # or --preset release
-cmake --build build/debug
+cmake --build build/debug --target all planar_tests   # test binaries are not in `all`
 ctest --test-dir build/debug --output-on-failure         # Catch2 unit tests
 ```
 
@@ -248,7 +248,7 @@ The repo also ships a `Makefile` with the common targets:
 
 ```bash
 make build              # cmake --preset release; copies the 5 binaries and scriptorium into ./bin/
-make test               # cmake --preset debug; cmake --build; ctest
+make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-all           # unit (ctest) + registry check + coverage + cli-usage-check + surface/exit-code/eval contracts + cpp-lint-gate
 make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
 ```

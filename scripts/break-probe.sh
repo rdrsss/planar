@@ -329,7 +329,7 @@ build() {
   if [ -n "$TARGET" ]; then
     cmake --build "$BUILD_DIR" --target "$TARGET" > "$BACKUP_DIR/build.log" 2>&1
   else
-    cmake --build "$BUILD_DIR" > "$BACKUP_DIR/build.log" 2>&1
+    cmake --build "$BUILD_DIR" --target all planar_tests > "$BACKUP_DIR/build.log" 2>&1
   fi
 }
 

@@ -44,6 +44,7 @@ if(TARGET Catch2::Catch2WithMain)
 
   add_executable(queue_contention_probe_tests main.t.cpp
     "${CMAKE_SOURCE_DIR}/cmake/test_support/arena_sweep_listener.cpp")
+  planar_mark_test_binary(queue_contention_probe_tests)
   set_target_properties(queue_contention_probe_tests PROPERTIES
     CXX_STANDARD 26
     CXX_STANDARD_REQUIRED ON

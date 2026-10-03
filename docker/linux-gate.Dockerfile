@@ -100,7 +100,7 @@ RUN --mount=type=cache,target=/src/build/debug,id=planar-linux-gate-build \
     { cmake --preset debug >/out/configure.log 2>&1 || rc=$?; \
       echo "configure_exit=$rc" >>/out/status.txt; } ; \
     if [ "$rc" = 0 ]; then \
-      cmake --build build/debug -j"${JOBS}" >/out/build.log 2>&1 || rc=$?; \
+      cmake --build build/debug -j"${JOBS}" --target all planar_tests >/out/build.log 2>&1 || rc=$?; \
       echo "build_exit=$rc" >>/out/status.txt; \
     fi; \
     if [ "$rc" = 0 ]; then \

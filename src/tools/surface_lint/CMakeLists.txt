@@ -38,6 +38,7 @@ if(TARGET Catch2::Catch2WithMain)
 
   add_executable(surface_lint_tests main.t.cpp
     "${CMAKE_SOURCE_DIR}/cmake/test_support/arena_sweep_listener.cpp")
+  planar_mark_test_binary(surface_lint_tests)
   set_target_properties(surface_lint_tests PROPERTIES
     CXX_STANDARD 26
     CXX_STANDARD_REQUIRED ON

@@ -943,7 +943,7 @@ make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copi
                         # the five Planar binaries and scriptorium into ./bin/
 make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
                         # cmake --install into PREFIX/bin (default ~/.local/bin)
-make test               # cmake --preset debug; cmake --build; ctest
+make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-cpp-report    # the same ctest suite plus its SKIP TALLY (expected: 0)
 make test-cpp-solver    # ctest against a -DPLANAR_WITH_MTKAHYPAR=ON build
 make test-all           # unit (ctest) + ctest-registry-check + coverage +
@@ -952,7 +952,7 @@ make test-all           # unit (ctest) + ctest-registry-check + coverage +
 
 # Direct CMake/ctest from the repo root
 cmake --preset debug                          # or --preset release
-cmake --build build/debug
+cmake --build build/debug --target all planar_tests   # test binaries are not in `all`
 ctest --test-dir build/debug --output-on-failure
 ```
 

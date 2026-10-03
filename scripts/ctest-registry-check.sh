@@ -109,8 +109,8 @@ printf 'ctest-registry-check: %d targets, %d cases in binaries, %d registered\n'
 
 if [ "$mismatches" -ne 0 ]; then
   printf 'ctest-registry-check: FAILED — %d target(s) disagree.\n' "$mismatches" >&2
-  printf 'Rebuild refreshes a stale file:  cmake --build %s\n' "$build_dir" >&2
-  printf 'To force a clean registry:       find %s -name "*_tests-*_tests.cmake" -delete && cmake --build %s\n' \
+  printf 'Rebuild refreshes a stale file:  cmake --build %s --target planar_tests\n' "$build_dir" >&2
+  printf 'To force a clean registry:       find %s -name "*_tests-*_tests.cmake" -delete && cmake --build %s --target planar_tests\n' \
     "$build_dir" "$build_dir" >&2
   exit 1
 fi
