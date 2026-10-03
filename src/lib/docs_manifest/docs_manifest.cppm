@@ -28,7 +28,7 @@
 /// `manifest.build(layout.dir, allocator)`, the zero-overlay form, and
 /// `manifest.write`. No ported call site reaches the other four, so they
 /// are not transcribed; a future leaf that needs drift detection
-/// (`diff`/`verify`) or documenter provenance (`SourceOverlay`) gets them
+/// (`diff`/`verify`) or per-doc provenance (`SourceOverlay`) gets them
 /// then, against its own oracle capture, rather than carried here unused
 /// and untested. Every `entry`'s `sources` is therefore always empty in
 /// this port, which is the zero-overlay oracle behavior exactly.

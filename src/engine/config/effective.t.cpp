@@ -327,13 +327,13 @@ TEST_CASE("resolve: built-in roles and role_vendors resolve from the config file
   CHECK(res->effective.at("role_vendors.coder").value == "codex");
   // Built-ins the file does not mention have no embedded default either, so
   // they are absent rather than empty.
-  CHECK_FALSE(res->effective.contains("roles.documenter"));
+  CHECK_FALSE(res->effective.contains("roles.test-coder"));
   CHECK_FALSE(res->effective.contains("role_vendors.reviewer"));
 }
 
 TEST_CASE("resolve: a custom (non-built-in) role is picked up too", "[effective][models]") {
   // plan 586 task 3937: any roles.<name> / role_vendors.<name> in the file
-  // that is not one of the six built-ins still lands in the effective map.
+  // that is not one of the four built-ins still lands in the effective map.
   auto res = resolve(std::string_view{"[roles]\nmy-custom-role = \"large\"\n"
                                       "[role_vendors]\nmy-custom-role = \"claude\"\n"},
                      env_view::empty(), std::nullopt);

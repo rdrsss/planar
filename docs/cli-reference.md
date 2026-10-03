@@ -5599,8 +5599,6 @@ feature       = "gpt-5.5"
 coder      = "medium"   # coder resolves to the active vendor's `medium` model
 reviewer   = "large"
 test-coder = "medium"
-documenter = "medium"
-doc-author = "large"
 sync-reconciler = "large"
 ```
 

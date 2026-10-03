@@ -247,8 +247,7 @@ Every agent role, its tier, its capability, and its primary work. Agent
 frontmatter carries no `tier:` or `capability:` key: an agent that has a
 `## Tier` section states its tier there (the source of truth — see
 §Conventions) and this table MUST agree with it; for an agent without that
-section this table is the record. `documenter` and `doc-author` have no source
-file under `agents/`. Rows marked † are the six built-in roles whose
+section this table is the record. Rows marked † are the four built-in roles whose
 `roles.<name>` and `role_vendors.<name>` keys `planar config show --effective`
 resolves from the operator's config file. `src/engine/config/defaults.toml`
 ships no `[roles]` section, so there is no embedded second copy of these tiers.
@@ -274,8 +273,6 @@ hyphenated one is the alias).
 | `reviewer` †        | large  | read-only   | approve / request-changes / open-question / abort |
 | `research`          | large  | read-only   | Read-only investigation dispatch; returns a cited findings brief |
 | `janitor`           | medium | coordinate  | Merge, reconcile, cleanup, plan closeout |
-| `documenter` †      | large  | read-only   | Proposes the doc worklist from repo drift |
-| `doc-author` †      | large  | write       | Authors approved reference prose under `docs/` |
 | `ext-sync`          | large  | coordinate  | Propagates a feature to Jira / GitHub Issues |
 | `sync-reconciler` † | large  | coordinate  | Reconciles local/external sync conflicts |
 | `importer`          | large  | write       | Translates an existing repo's planning content into Planar |
