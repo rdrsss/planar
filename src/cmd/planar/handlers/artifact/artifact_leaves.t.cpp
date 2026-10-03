@@ -813,7 +813,7 @@ TEST_CASE("document authority derives and validates every adjacent Unicode passa
                                "--segment-quote",
                                "Unicode café ☕",
                                "--json"});
-  CHECK(omitted.code != 0);
+  CHECK(omitted.code == 2);
   CHECK(omitted.err.contains("noncontiguous_covered_keys"));
 
   auto mid_codepoint = dispatch(
@@ -821,14 +821,14 @@ TEST_CASE("document authority derives and validates every adjacent Unicode passa
       {"document",      "validate-range", "--kind",          "artifact", "--id",      "1",         "--content-revision", revision,
        "--start-key",   unicode_key,      "--start-offset",  "12",       "--end-key", unicode_key, "--end-offset",       "13",
        "--covered-key", unicode_key,      "--segment-quote", "",         "--json"});
-  CHECK(mid_codepoint.code != 0);
+  CHECK(mid_codepoint.code == 2);
   CHECK(mid_codepoint.err.contains("invalid_utf8_boundary"));
 
   auto stale = dispatch(fx, {"document",           "validate-range", "--kind",       "artifact", "--id",           "1",
                              "--content-revision", "forged",         "--start-key",  title_key,  "--start-offset", "0",
                              "--end-key",          title_key,        "--end-offset", "9",        "--covered-key",  title_key,
                              "--segment-quote",    "Canonical",      "--json"});
-  CHECK(stale.code != 0);
+  CHECK(stale.code == 2);
   CHECK(stale.err.contains("stale_revision"));
 
   auto forged_quote =
@@ -836,27 +836,40 @@ TEST_CASE("document authority derives and validates every adjacent Unicode passa
                     "--content-revision", revision,         "--start-key",  paragraph_key, "--start-offset", "0",
                     "--end-key",          paragraph_key,    "--end-offset", "15",          "--covered-key",  paragraph_key,
                     "--segment-quote",    "forged passage", "--json"});
-  CHECK(forged_quote.code != 0);
+  CHECK(forged_quote.code == 2);
   CHECK(forged_quote.err.contains("forged_quote"));
 
   auto reversed = dispatch(fx, {"document", "validate-range", "--kind", "artifact", "--id", "1", "--content-revision", revision,
                                 "--start-key", unicode_key, "--start-offset", "0", "--end-key", heading_key, "--end-offset", "7",
                                 "--covered-key", unicode_key, "--json"});
-  CHECK(reversed.code != 0);
+  CHECK(reversed.code == 2);
   CHECK(reversed.err.contains("reversed_range"));
 
   auto foreign = dispatch(fx, {"document", "validate-range", "--kind", "artifact", "--id", "1", "--content-revision", revision,
                                "--start-key", heading_key, "--start-offset", "0", "--end-key", "artifact:2:foreign:0",
                                "--end-offset", "1", "--covered-key", heading_key, "--json"});
-  CHECK(foreign.code != 0);
+  CHECK(foreign.code == 2);
   CHECK(foreign.err.contains("foreign_key"));
+
+  // An unsupported --kind is caller input, not a missing row: exit 2 on both
+  // leaves, never the generic 1 a not-found or database failure reports.
+  auto bad_kind_project = dispatch(fx, {"document", "project", "--kind", "task", "--id", "1", "--json"});
+  CHECK(bad_kind_project.code == 2);
+  auto bad_kind_range =
+      dispatch(fx, {"document",           "validate-range", "--kind",       "task",      "--id",           "1",
+                    "--content-revision", revision,         "--start-key",  heading_key, "--start-offset", "0",
+                    "--end-key",          heading_key,      "--end-offset", "7",         "--covered-key",  heading_key,
+                    "--segment-quote",    "Heading",        "--json"});
+  CHECK(bad_kind_range.code == 2);
+  auto absent_artifact = dispatch(fx, {"document", "project", "--kind", "artifact", "--id", "999", "--json"});
+  CHECK(absent_artifact.code == 1);
 
   REQUIRE(dispatch(fx, {"artifact", "update", "1", "--body", "changed after projection", "--json"}).code == 0);
   auto mutated = dispatch(fx, {"document",           "validate-range", "--kind",       "artifact",  "--id",           "1",
                                "--content-revision", revision,         "--start-key",  heading_key, "--start-offset", "0",
                                "--end-key",          heading_key,      "--end-offset", "7",         "--covered-key",  heading_key,
                                "--segment-quote",    "Heading",        "--json"});
-  CHECK(mutated.code != 0);
+  CHECK(mutated.code == 2);
   CHECK(mutated.err.contains("stale_revision"));
 }
 
@@ -890,7 +903,7 @@ TEST_CASE("document authority rejects identical range evidence from another data
                         "--content-revision", revision,         "--start-key",  title_key,  "--start-offset", "0",
                         "--end-key",          title_key,        "--end-offset", "4",        "--covered-key",  title_key,
                         "--segment-quote",    "Same",           "--json"});
-  CHECK(replay.code != 0);
+  CHECK(replay.code == 2);
   CHECK(replay.err.contains("stale_revision"));
 
   auto const second_projection = dispatch(second, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
