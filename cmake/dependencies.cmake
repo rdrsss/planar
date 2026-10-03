@@ -117,12 +117,9 @@ endif()
 # so there is no second tree to stay format-compatible with and sqlite is
 # free to move independently.
 #
-# Bumped to 3.53.3 at task 6496 (plan 1033 M1) to match Centurion's pin, so
-# that the one `sqlite3` target both trees link is the version both declare
-# (cmake/centurion.cmake § One pin per shared package, on the Centurion-enabled
-# dev/centurion-integration build). SHA256 re-verified
+# Bumped to 3.53.3 at task 6496 (plan 1033 M1). SHA256 verified
 # independently by downloading the archive from sqlite.org and running
-# `shasum -a 256`; it equals Centurion's. Re-verify again before any bump.
+# `shasum -a 256`. Re-verify again before any bump.
 CPMAddPackage(
   NAME sqlite
   VERSION 3.53.3
@@ -225,8 +222,8 @@ CPMAddPackage(
 # one, since BUILD_SHARED_LIBS is OFF).
 #
 # VERSION is stated explicitly (task 6496): CPM cannot parse one out of the
-# `curl-8_7_1` tag and recorded this package as version "1", which made
-# Centurion's own `curl 8.21.0` request compare against a meaningless number.
+# `curl-8_7_1` tag and recorded this package as version "1", so any other
+# CPMAddPackage(curl ...) request would compare against a meaningless number.
 CPMAddPackage(
   NAME curl
   VERSION 8.7.1
@@ -540,22 +537,3 @@ CPMAddPackage(
     "KAHYPAR_PYTHON OFF"
     "KAHYPAR_BUILD_DEBIAN_PACKAGE OFF"
 )
-
-# --- First-party dependencies: external/, never committed -------------------
-#
-# The vendoring rule above (pinned archive, committed under vendor/) exists to
-# protect against THIRD-PARTY upstreams moving or vanishing. It does not apply
-# to repositories this project's owner controls: they are still pinned by
-# URL + URL_HASH SHA-256, so a build is still exact, but their cache lives
-# under the gitignored `external/` directory and is NEVER committed. Only the
-# hash is the contract; the bytes are re-fetched once per checkout.
-#
-# No first-party dependency is declared at present, so no configure
-# touches the network for one. To add one, declare a
-#   set(PLANAR_EXTERNAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external" CACHE PATH ...)
-# entry here and wrap its CPMAddPackage call in a NORMAL
-# `set(CPM_SOURCE_CACHE "${PLANAR_EXTERNAL_DIR}")` ... `unset(CPM_SOURCE_CACHE)`
-# pair: CPM derives its cache directory from CPM_SOURCE_CACHE at call time, so
-# the normal variable shadows the vendor/ cache entry for that call only. A
-# populated external/<name>/<CUSTOM_CACHE_KEY> is then reused without any
-# download, exactly as vendor/ is; an empty one is fetched and hash-checked.

@@ -193,12 +193,9 @@ Do not claim the guard is universal without measuring. Matrix:
   redirects.
 - Third-party sources are cached under `vendor/` and committed, so a
   configured build does not touch the network.
-- First-party dependencies (repositories the owner controls) are pinned the
-  same way but cached under the gitignored `external/`; a fresh checkout's
-  first configure fetches them. None is declared at present, so a public
-  clone configures with no network access and no token. A private
-  first-party repository must never become a build dependency of
-  master. Do not move a third-party dependency to `external/` to save space.
+- Every build dependency is third-party and committed under `vendor/`; a
+  public clone configures with no network access and no token. A private or
+  first-party repository must never become a build dependency of master.
 - External programs that the binaries, a bundled skill or agent, or the
   installer shell out to are listed in both `README.md` § Prerequisites and
   the `BUILD_DEPS` / `RUN_DEPS` manifests in `install.sh`. Update both in the
@@ -218,7 +215,6 @@ Do not claim the guard is universal without measuring. Matrix:
 | `src/lib/` | Shared base modules: `db`, `core`, `cliapp`, `http`, `git`, `process`, `json_dom`, `json_text`, `log` and others. |
 | `src/tools/` | Project tooling: `cli_usage_lint`, `surface_lint`, `cli_docs_coverage`, `scriptorium`, `queue_contention_probe`. |
 | `vendor/` | Committed CPM cache of third-party release archives. |
-| `external/` | Gitignored CPM cache of first-party dependencies (none declared at present). |
 | `migrations/` | Schema migrations in sqlx-cli format. See `migrations/README.md`. |
 | `templates/` | Propagation templates and operator-editable defaults. |
 | `workflows/` | Lua workflows and `command-policy.json`. |

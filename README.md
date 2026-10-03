@@ -389,7 +389,6 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `cmake/dependencies.cmake` | Every third-party dependency as a pinned `CPMAddPackage(...)` (release archive + SHA256, cached under `vendor/`) |
 | `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/` and `templates/defaults/` into generated modules the runtime embeds |
 | `vendor/` | CPM's committed source cache for third-party dependencies — pinned release archives only, no `git clone`/submodule vendoring |
-| `external/` | Reserved, gitignored CPM source cache for first-party dependencies — pinned the same way as `vendor/` but never committed. No first-party dependency is declared at present, so it stays absent |
 | `src/cmd/parity_harness.hpp` | The cross-process (black-box) test harness — `run_pinned()` execs a built binary over fixed argv in a scratch environment with its own `PLANAR_DB` and `HOME`. Cases live in `src/cmd/*/parity.t.cpp` and `src/cmd/planar/cross_process.t.cpp` |
 | `migrations/` | SQLite migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`) — single authoritative source |
 | `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `jira/`); embedded at build time |
