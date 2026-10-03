@@ -396,7 +396,7 @@ The resolved set follows the read-resolver contract:
 **Output (human, member project cwd):**
 ```
 resolved scope (from cwd):
-  project:billing  (root_path: /Users/mn/work/acme/billing)
+  project:billing  (root_path: /home/user/work/acme/billing)
 
 To override, pass --scope <slug> to any verb, or cd into a
 different registered scope.
@@ -408,9 +408,9 @@ derived from your current working directory.)
 **Output (human, workspace root cwd):**
 ```
 resolved scope (from cwd):
-  org:acme  (root_path: /Users/mn/work/acme)
-  project:billing  (root_path: /Users/mn/work/acme/billing)
-  project:shipping  (root_path: /Users/mn/work/acme/shipping)
+  org:acme  (root_path: /home/user/work/acme)
+  project:billing  (root_path: /home/user/work/acme/billing)
+  project:shipping  (root_path: /home/user/work/acme/shipping)
 
 To override, pass --scope <slug> to any verb, or cd into a
 different registered scope.
@@ -431,7 +431,7 @@ cd into a registered scope or pass --scope <slug> to any verb.
     {"kind":"association","id":7,"slug":"billing","name":"Billing","kind_label":"project"}
   ],
   "source": "cwd",
-  "cwd": "/Users/mn/work/acme"
+  "cwd": "/home/user/work/acme"
 }
 ```
 
@@ -3401,9 +3401,9 @@ After the org + projects are committed, init runs a pipeline pass that (1) build
 **Output (human):**
 ```
 created org:work (Work)
-  ├─ project:repo-a   [/Users/mn/work/repo-a]   (auto-created, member-of org:work)
-  ├─ project:repo-b   [/Users/mn/work/repo-b]   (auto-created, member-of org:work)
-  └─ project:repo-c   [/Users/mn/work/repo-c]   (auto-created, member-of org:work)
+  ├─ project:repo-a   [/home/user/work/repo-a]   (auto-created, member-of org:work)
+  ├─ project:repo-b   [/home/user/work/repo-b]   (auto-created, member-of org:work)
+  └─ project:repo-c   [/home/user/work/repo-c]   (auto-created, member-of org:work)
 
 3 repos initialized as projects, all members of org:work.
 Routing table refreshed (3 projects, 1 cross-repo deps).
@@ -3416,11 +3416,11 @@ Run `planar assoc tree` to view the hierarchy.
 ```json
 {
   "org":      {"id":1,"slug":"work","name":"Work","created":true},
-  "projects": [{"slug":"repo-a","path":"/Users/mn/work/repo-a","created":true,"membership_created":true}],
+  "projects": [{"slug":"repo-a","path":"/home/user/work/repo-a","created":true,"membership_created":true}],
   "pipeline": {
     "skipped":     false,
     "routing":    {"project_count":3,"cross_repo_deps":1,"enrich_enabled":false,"enrich_misses":0},
-    "regenerate": {"agents_path":"/Users/mn/.planar/workspaces/1/AGENTS.md","bytes":1842},
+    "regenerate": {"agents_path":"/home/user/.planar/workspaces/1/AGENTS.md","bytes":1842},
     "symlinks":   {"strategy":"symlink","installed":["AGENTS.md","CLAUDE.md"]}
   }
 }
@@ -3446,8 +3446,8 @@ planar workspace doctor
 
 **Output (human):**
 ```
-fix: created state dir /Users/mn/.planar/workspaces/1
-fix: reinstalled symlink /Users/mn/work/AGENTS.md → /Users/mn/.planar/workspaces/1/AGENTS.md
+fix: created state dir /home/user/.planar/workspaces/1
+fix: reinstalled symlink /home/user/work/AGENTS.md → /home/user/.planar/workspaces/1/AGENTS.md
 org:work repaired 2 issues
 org:side ok
 ```
@@ -3455,8 +3455,8 @@ org:side ok
 **Output (`--json`):**
 ```json
 {"orgs":[{"slug":"work","org_id":1,"issues_found":2,"issues_repaired":[
-  {"kind":"fix","detail":"created state dir /Users/mn/.planar/workspaces/1"},
-  {"kind":"fix","detail":"reinstalled symlink /Users/mn/work/AGENTS.md → ..."}
+  {"kind":"fix","detail":"created state dir /home/user/.planar/workspaces/1"},
+  {"kind":"fix","detail":"reinstalled symlink /home/user/work/AGENTS.md → ..."}
 ]}]}
 ```
 
@@ -3481,12 +3481,12 @@ With `--enrich`, the builder additionally consults the workspace-enrichment cach
 
 **Output (human):**
 ```
-built /Users/mn/.planar/workspaces/1/routing-table.json (3 projects, 1 cross-repo deps)
+built /home/user/.planar/workspaces/1/routing-table.json (3 projects, 1 cross-repo deps)
 ```
 
 **Output (`--json`):**
 ```json
-{"path":"/Users/mn/.planar/workspaces/1/routing-table.json","projects":3,"dependency_edges":1,"enrich_enabled":false,"enrich_misses":0}
+{"path":"/home/user/.planar/workspaces/1/routing-table.json","projects":3,"dependency_edges":1,"enrich_enabled":false,"enrich_misses":0}
 ```
 
 **Schema effects:** Reads `associations`, `projects`, `project_associations`, `plans`, `tasks`, `questions`, `entity_links`. Writes `<state-dir>/routing-table.json` atomically (temp + rename).
@@ -3514,7 +3514,7 @@ generated: 2026-05-18T... (static-v1)
 projects:  3
 
 - repo-a
-    path:         /Users/mn/work/repo-a
+    path:         /home/user/work/repo-a
     capabilities: go-service, grpc
     summary:      Customer-facing API service
     depends_on:   repo-b
@@ -3552,7 +3552,7 @@ regenerated AGENTS.md for org:work (3 projects, 1842 bytes)
 
 **Output (`--json`):**
 ```json
-{"agents_path":"/Users/mn/.planar/workspaces/1/AGENTS.md","project_count":3,"bytes_written":1842}
+{"agents_path":"/home/user/.planar/workspaces/1/AGENTS.md","project_count":3,"bytes_written":1842}
 ```
 
 **Schema effects:** Reads `associations`, `plans`, `tasks`, `questions`. Writes `<state-dir>/AGENTS.md` and `<state-dir>/.manifest-docs` atomically. The symlinks at the workspace root are not touched (they already point at the canonical target).

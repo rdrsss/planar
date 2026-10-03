@@ -1163,9 +1163,9 @@ The verb refuses if `~/work/.git` exists (use `planar init` for a single repo) o
 
 ```
 created org:work (Work)
-  ├─ project:repo-a   [/Users/mn/work/repo-a]   (auto-created, member-of org:work)
-  ├─ project:repo-b   [/Users/mn/work/repo-b]   (auto-created, member-of org:work)
-  └─ project:repo-c   [/Users/mn/work/repo-c]   (auto-created, member-of org:work)
+  ├─ project:repo-a   [/home/user/work/repo-a]   (auto-created, member-of org:work)
+  ├─ project:repo-b   [/home/user/work/repo-b]   (auto-created, member-of org:work)
+  └─ project:repo-c   [/home/user/work/repo-c]   (auto-created, member-of org:work)
 
 3 repos initialized as projects, all members of org:work.
 Routing table refreshed (3 projects, 1 cross-repo deps).
@@ -1177,7 +1177,7 @@ Inspect what landed:
 
 ```
 ls -la ~/work/AGENTS.md ~/work/CLAUDE.md
-# both → /Users/mn/.planar/workspaces/1/AGENTS.md
+# both → /home/user/.planar/workspaces/1/AGENTS.md
 
 ls ~/.planar/workspaces/1/
 # AGENTS.md  routing-table.json  .manifest-docs
