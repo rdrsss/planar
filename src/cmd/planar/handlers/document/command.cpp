@@ -9,7 +9,6 @@ import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
 import planar.document_authority;
-import planar.sha256;
 import planar.cmd.planar.context;
 import planar.cmd.planar.declare;
 import planar.cmd.planar.exit;
@@ -70,114 +69,6 @@ auto json(std::string_view value) -> std::string {
   }
   out += '"';
   return out;
-}
-
-auto trim(std::string_view input) -> std::string_view {
-  while (!input.empty() && (input.front() == ' ' || input.front() == '\t' || input.front() == '\r'))
-    input.remove_prefix(1);
-  while (!input.empty() && (input.back() == ' ' || input.back() == '\t' || input.back() == '\r'))
-    input.remove_suffix(1);
-  return input;
-}
-
-auto classify(std::string_view line) -> std::pair<std::string, std::string_view> {
-  auto value = trim(line);
-  if (value.starts_with("#")) {
-    while (value.starts_with("#"))
-      value.remove_prefix(1);
-    return {"heading", trim(value)};
-  }
-  if (value.starts_with("- ") || value.starts_with("* "))
-    return {"list_item", trim(value.substr(2))};
-  if (value.starts_with("> "))
-    return {"quote", trim(value.substr(2))};
-  if (value.starts_with("```"))
-    return {"code_fence", value};
-  return {"paragraph", value};
-}
-
-auto add_markdown(std::vector<passage>& out, std::string_view source_kind, std::string source_id, std::string_view path,
-                  std::string_view body) -> void {
-  std::map<std::string, std::size_t, std::less<>> occurrences;
-  std::size_t                                     line_no = 0;
-  for (auto part : std::views::split(body, '\n')) {
-    ++line_no;
-    std::string_view line{part.begin(), part.end()};
-    if (trim(line).empty())
-      continue;
-    auto [kind, text] = classify(line);
-    auto identity   = sha256::hex(std::format("{}\n{}\n{}\n{}", source_kind, source_id, path, std::format("{}\n{}", kind, text)));
-    auto occurrence = occurrences[identity]++;
-    out.push_back({.key         = std::format("{}:{}:{}:{}", source_kind, source_id, identity, occurrence),
-                   .kind        = std::move(kind),
-                   .text        = std::string{text},
-                   .source_kind = std::string{source_kind},
-                   .source_id   = source_id,
-                   .source_path = std::string{path},
-                   .start_line  = static_cast<std::int64_t>(line_no),
-                   .end_line    = static_cast<std::int64_t>(line_no)});
-  }
-}
-
-auto bind_id(db::connection& conn, std::string_view sql, std::int64_t id) -> std::expected<db::statement, domain_error> {
-  auto stmt = conn.prepare(sql);
-  if (!stmt || !stmt->bind_int64(1, id))
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "document query failed"));
-  return std::move(*stmt);
-}
-
-auto build_document(db::connection& conn, std::string_view kind, std::int64_t id) -> std::expected<document, domain_error> {
-  document result{.source_uuid = {}, .id = std::format("{}:{}", kind, id)};
-  if (kind == "artifact") {
-    auto stmt = bind_id(conn, "select title, body from artifacts where id = ?", id);
-    if (!stmt)
-      return std::unexpected(stmt.error());
-    auto step = stmt->step();
-    if (!step || *step != db::step_result::row)
-      return std::unexpected(error_from_body(domain_error_kind::not_found, "document source not found"));
-    add_markdown(result.passages, "artifact", std::to_string(id), "title", std::format("# {}", stmt->column_text(0)));
-    if (!stmt->is_null(1))
-      add_markdown(result.passages, "artifact", std::to_string(id), "body", stmt->column_text(1));
-  } else if (kind == "plan") {
-    auto stmt = bind_id(conn, "select title, summary from plans where id = ?", id);
-    if (!stmt)
-      return std::unexpected(stmt.error());
-    auto step = stmt->step();
-    if (!step || *step != db::step_result::row)
-      return std::unexpected(error_from_body(domain_error_kind::not_found, "document source not found"));
-    add_markdown(result.passages, "plan", std::to_string(id), "title", std::format("# {}", stmt->column_text(0)));
-    if (!stmt->is_null(1))
-      add_markdown(result.passages, "plan", std::to_string(id), "summary", stmt->column_text(1));
-    auto artifacts =
-        bind_id(conn,
-                "select a.id, a.title, a.body from entity_links e join artifacts a on a.id = e.to_id "
-                "where e.from_kind = 'plan' and e.from_id = ? and e.to_kind = 'artifact' and e.relationship = 'derives-from' "
-                "order by case a.kind when 'product_spec' then 1 when 'tech_spec' then 2 when 'roadmap' then 3 when 'test_spec' "
-                "then 4 else 5 end, e.created_at, e.id",
-                id);
-    if (!artifacts)
-      return std::unexpected(artifacts.error());
-    while (true) {
-      auto row = artifacts->step();
-      if (!row)
-        return std::unexpected(error_from_body(domain_error_kind::generic_failure, "document query failed"));
-      if (*row == db::step_result::done)
-        break;
-      auto artifact_id = artifacts->column_int64(0);
-      add_markdown(result.passages, "artifact", std::to_string(artifact_id), "title",
-                   std::format("## {}", artifacts->column_text(1)));
-      if (!artifacts->is_null(2))
-        add_markdown(result.passages, "artifact", std::to_string(artifact_id), "body", artifacts->column_text(2));
-    }
-  } else {
-    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "document kind must be plan or artifact"));
-  }
-  std::string canonical = "block-document-v1\n" + result.id;
-  for (auto const& p : result.passages)
-    canonical +=
-        std::format("\n{}\n{}\n{}\n{}:{}:{}:{}", p.key, p.kind, p.text, p.source_kind, p.source_id, p.source_path, p.start_line);
-  result.revision = sha256::hex(canonical);
-  return result;
 }
 
 auto render(const document& doc) -> std::string {
