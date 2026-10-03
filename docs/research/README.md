@@ -1,12 +1,9 @@
 # Research Instrumentation
 
-Planar's research program, experiments, datasets, analyses, claims, and papers now
-live in the canonical
-[`locumipsum/research`](https://github.com/locumipsum/research) repository.
-The context-closure project is under
-[`projects/context-closure`](https://github.com/locumipsum/research/tree/main/projects/context-closure).
+Planar's research program, experiments, datasets, analyses, claims, and papers are
+maintained outside this repository.
 
-This directory retains only documentation owned by the Planar instrument:
+This directory holds only documentation owned by the Planar instrument:
 
 - [`run-record-schema.md`](run-record-schema.md) — rationale and schema boundary
   for durable run, event, and touch records;
@@ -21,7 +18,7 @@ behavior. Research protocols must pin a Planar commit and consume documented CLI
 or export surfaces; they must not treat this directory as the evidence authority.
 
 Do not add new protocols, results, raw datasets, analysis narratives, literature
-reviews, or manuscripts here. Put project-specific material in the research
-repository and link back to immutable Planar commits when instrument provenance is
-needed.
+reviews, or manuscripts here. Keep project-specific material in the research
+program's own repository and link back to immutable Planar commits when instrument
+provenance is needed.
 
