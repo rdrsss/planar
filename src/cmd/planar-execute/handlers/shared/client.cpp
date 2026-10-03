@@ -93,8 +93,8 @@ auto translate(const planar::cmd::execute::call_result& answer) -> planar::cmd::
 /// changes the answer.
 /// @return The exit code to stop with, or nullopt when the engine is linked.
 auto refuse_without_engine() -> std::optional<int> {
-  namespace ex           = planar::cmd::execute;
-  const char* const why  = ex::engine_unavailable_reason();
+  namespace ex          = planar::cmd::execute;
+  const char* const why = ex::engine_unavailable_reason();
   if (why == nullptr) {
     return std::nullopt;
   }
