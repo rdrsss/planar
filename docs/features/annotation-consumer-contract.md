@@ -61,3 +61,33 @@ receipts have no per-row revision (`revision: 0` in the JSON representation),
 because each affected annotation carries its own revision and audit record.
 Consumers recovering after a timeout or restart must look up the original
 operation UUID against the original source before deciding whether to retry.
+
+## Contextual threads
+
+Entity annotation reads additionally expose `messages` in `(created_at, id)`
+order and `contextual_anchor` (null for page threads). Each message has its own
+integer revision; editing it uses `edit-message`, its `message_id`, and that
+revision. `reply` appends a message without changing earlier messages or the
+thread lifecycle. Lifecycle actions still use the annotation revision.
+Each message's `history` retains recorded body revisions in ascending integer
+revision order, including the current body and its timestamp. Migration records
+the legacy current revision without inventing pre-migration edit history. Edits
+append a snapshot atomically; lifecycle actions preserve those snapshots.
+Reply and message-edit receipts retain `revision` as the thread revision and
+add durable `message_id` and `message_revision` fields; receipt lookup and
+idempotent replay return the same message identity and revision.
+
+Contextual `create` and explicit `reanchor` requests name `document_kind`,
+`document_id`, `document_version: 1`, and the exact `content_revision` returned
+by the Planar document projection. This digest is independent of integer thread
+and message revisions. A block request supplies one identical start/end key and
+no offsets or segments. A range supplies boundary byte offsets and the complete
+ordered `segments` array of `{block_key, quote}` evidence. Planar derives the
+full normalized quote under the same transaction that writes the thread; an
+optional supplied `normalized_quote` must match it exactly. Missing intervening
+blocks, reordered or foreign keys, forged quotes, offsets splitting UTF-8, and
+stale source revisions refuse the entire mutation, including its receipt.
+
+Request target and scope assertions must match the stored entity-thread owner;
+they do not reassign it. Legacy scope patch fields and file annotations retain
+their existing semantics.

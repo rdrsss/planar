@@ -85,6 +85,7 @@ import planar.db.migrations;
 import planar.engine.identity;
 import planar.engine.planning;
 import planar.json_dom;
+import planar.document_authority;
 import planar.cmd.planar.context;
 import planar.cmd.planar.cli_log;
 import planar.cmd.planar.dispatch;
@@ -483,6 +484,12 @@ TEST_CASE("annotation read JSON exposes stable entity targets, revisions, filter
   CHECK(capabilities.out.contains(std::format("\"source_uuid\":\"{}\"", *source)));
   CHECK(capabilities.out.contains("\"annotation_read\":true"));
   CHECK(capabilities.out.contains("\"entity_anchors\":true"));
+  CHECK(capabilities.out.contains("\"threads\":true"));
+  CHECK(capabilities.out.contains("\"message_order\":[\"created_at\",\"id\"]"));
+  CHECK(capabilities.out.contains("\"schema_versions\":[1]"));
+  CHECK(capabilities.out.contains("\"cross_block\":\"adjacent\""));
+  CHECK(capabilities.out.contains("\"legacy_entity_notes\":\"one_message_page_threads\""));
+  CHECK(capabilities.out.contains("\"file_annotations\":\"unchanged\""));
   CHECK(capabilities.out.contains("\"filters\":[\"anchor_kind\",\"target_kind\",\"target_id\""));
 
   auto const after = ann::show(conn, id);
@@ -1664,4 +1671,77 @@ TEST_CASE("annotation command measures tag limits in UTF-8 characters", "[cmd][a
   CHECK(rejected.code == 2);
   CHECK(rejected.err == "error: tags must contain strings of at most 64 characters\n");
   CHECK(tag_snapshot(conn, 1) == tag64);
+}
+
+TEST_CASE("contextual command JSON commits authority-bound anchors and recoverable message identities",
+          "[cmd][annotate][thread][6765]") {
+  auto const fx = make_fixture("contextthread");
+  REQUIRE(dispatch(fx, {"annotate", "list"}).code == 0);
+  auto conn = open_db(fx);
+  auto plan = planar::engine::planning::create_plan(conn, {.title = "Target"});
+  REQUIRE(plan.has_value());
+  auto doc = planar::document_authority::project(conn, "plan", plan->id);
+  REQUIRE(doc.has_value());
+  REQUIRE_FALSE(doc->passages.empty());
+  auto request = std::format(
+      R"({{"operation":"create","operation_id":"context-cli","source_uuid":"{}","target_kind":"plan","target_id":{},"body":"first","document_kind":"plan","document_id":{},"document_version":1,"content_revision":"{}","contextual_kind":"block","start_block_key":"{}","end_block_key":"{}"}})",
+      doc->source_uuid, plan->id, plan->id, doc->content_revision, doc->passages.front().key, doc->passages.front().key);
+  auto created = dispatch(fx, {"annotate", "command", "--request", "@-"}, request);
+  REQUIRE(created.code == 0);
+  namespace ann = planar::engine::planning::annotation;
+  auto stored   = ann::show(conn, 1);
+  REQUIRE(stored.has_value());
+  REQUIRE(stored->contextual.has_value());
+  CHECK(stored->contextual->content_revision == doc->content_revision);
+  REQUIRE(stored->messages.size() == 1);
+  auto reply_request =
+      std::format(R"({{"operation":"reply","operation_id":"reply-cli","source_uuid":"{}","annotation_id":1,"body":"second"}})",
+                  doc->source_uuid);
+  auto replied = dispatch(fx, {"annotate", "command", "--request", "@-"}, reply_request);
+  REQUIRE(replied.code == 0);
+  auto reply_json = planar::json_dom::parse_json(replied.out);
+  REQUIRE(reply_json.has_value());
+  REQUIRE(reply_json->find("message_id") != nullptr);
+  CHECK(replied.out.find("\"message_revision\":1") != std::string::npos);
+  auto replayed = dispatch(fx, {"annotate", "command", "--request", "@-"}, reply_request);
+  REQUIRE(replayed.code == 0);
+  CHECK(replayed.out.find("\"message_id\":2") != std::string::npos);
+  auto receipt =
+      dispatch(fx, {"annotate", "receipt", "--source-uuid", doc->source_uuid, "--operation-id", "reply-cli", "--json"});
+  REQUIRE(receipt.code == 0);
+  CHECK(receipt.out.find("\"message_id\":2") != std::string::npos);
+  auto edit_request = std::format(
+      R"({{"operation":"edit-message","operation_id":"edit-cli","source_uuid":"{}","annotation_id":1,"message_id":2,"expected_revision":1,"body":"second edited"}})",
+      doc->source_uuid);
+  REQUIRE(dispatch(fx, {"annotate", "command", "--request", "@-"}, edit_request).code == 0);
+  stored = ann::show(conn, 1);
+  REQUIRE(stored.has_value());
+  REQUIRE(stored->messages.size() == 2);
+  CHECK(stored->messages[0].body == "first");
+  CHECK(stored->messages[1].body == "second edited");
+  CHECK(stored->messages[1].revision == 2);
+  REQUIRE(stored->messages[1].history.size() == 2);
+  CHECK(stored->messages[1].history[0].revision == 1);
+  CHECK(stored->messages[1].history[0].body == "second");
+  CHECK(stored->messages[1].history[1].revision == 2);
+  CHECK(stored->messages[1].history[1].body == "second edited");
+  auto shown = dispatch(fx, {"annotate", "show", "1", "--json"});
+  REQUIRE(shown.code == 0);
+  CHECK(shown.out.contains("\"history\":[{\"revision\":1,\"body\":\"second\""));
+  REQUIRE(dispatch(fx, {"plan", "update", std::to_string(plan->id), "--summary", "Changed summary"}).code == 0);
+  auto changed_doc = planar::document_authority::project(conn, "plan", plan->id);
+  REQUIRE(changed_doc.has_value());
+  REQUIRE(changed_doc->content_revision != doc->content_revision);
+  REQUIRE(changed_doc->passages.front().key == doc->passages.front().key);
+  auto before_stale  = ann::render_json(*stored);
+  auto stale_request = std::format(
+      R"({{"operation":"reanchor","operation_id":"stale-cli","source_uuid":"{}","annotation_id":1,"expected_revision":1,"document_kind":"plan","document_id":{},"document_version":1,"content_revision":"{}","contextual_kind":"block","start_block_key":"{}","end_block_key":"{}"}})",
+      doc->source_uuid, plan->id, doc->content_revision, doc->passages.front().key, doc->passages.front().key);
+  CHECK(dispatch(fx, {"annotate", "command", "--request", "@-"}, stale_request).code != 0);
+  auto absent = ann::show_receipt(conn, doc->source_uuid, "stale-cli");
+  REQUIRE(absent.has_value());
+  CHECK_FALSE(absent->has_value());
+  stored = ann::show(conn, 1);
+  REQUIRE(stored.has_value());
+  CHECK(ann::render_json(*stored) == before_stale);
 }

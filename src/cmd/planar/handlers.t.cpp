@@ -3460,7 +3460,7 @@ TEST_CASE("init creates the database, applies every migration, and registers cwd
   // --- the DATABASE, which is the contract stdout only summarises ---
   REQUIRE(std::filesystem::exists(fx.db_path));
   auto const version = read_schema_version(fx);
-  CHECK(version == 40);
+  CHECK(version == 41);
   // Not just "some migrations ran": the real schema carries ~90 tables, so a
   // partially-applied chain cannot pass this by having written a
   // `schema_migrations` row.
@@ -3550,7 +3550,7 @@ TEST_CASE("init --skip-project migrates the database and registers nothing", "[c
 
   // Migrated — but no row. Both halves matter: a handler that skipped the
   // whole verb would also leave `projects` empty.
-  CHECK(read_schema_version(fx) == 40);
+  CHECK(read_schema_version(fx) == 41);
   CHECK(read_table_count(fx) > 80);
   CHECK_FALSE(read_project(fx).has_value());
 }

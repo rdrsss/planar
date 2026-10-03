@@ -92,26 +92,65 @@ export struct anchor_fields {
   std::string                 text;       ///< Snippet of the anchored text; `""` when unknown.
 };
 
+/// An immutable recorded message revision, ordered by revision number.
+export struct message_revision {
+  std::int64_t revision{}; ///< Revision at the time of the edit or migration.
+  std::string  body;       ///< Preserved text of this revision.
+  std::string  updated_at; ///< Timestamp when this revision was recorded.
+};
+
+/// A revisioned child message, ordered by its immutable creation time and id.
+export struct message {
+  std::int64_t                  id{};       ///< Stable message identity.
+  std::string                   body;       ///< Current revision's text.
+  std::int64_t                  revision{}; ///< Optimistic editing revision.
+  std::string                   vendor;     ///< Creator vendor.
+  std::optional<std::string>    origin;     ///< Creator surface.
+  std::string                   created_at; ///< Immutable creation timestamp.
+  std::string                   updated_at; ///< Last edit timestamp.
+  std::vector<message_revision> history;    ///< Recorded body revisions in ascending revision order.
+};
+
+/// Source-bound contextual evidence for an entity thread.
+export struct contextual_anchor {
+  std::string                                      document_kind;    ///< Plan or artifact.
+  std::int64_t                                     document_id{};    ///< Document entity identity.
+  std::string                                      content_revision; ///< Complete projection digest at creation/re-anchor.
+  std::string                                      kind;             ///< Block or range.
+  std::string                                      start_block_key;  ///< First covered key.
+  std::string                                      end_block_key;    ///< Last covered key.
+  std::optional<std::int64_t>                      start_offset;     ///< UTF-8 byte boundary.
+  std::optional<std::int64_t>                      end_offset;       ///< UTF-8 byte boundary.
+  std::string                                      normalized_quote; ///< Server-derived joined quote.
+  std::string                                      prefix_context;   ///< Leading bounded quote evidence.
+  std::string                                      suffix_context;   ///< Trailing bounded quote evidence.
+  std::string                                      state;            ///< Persisted anchor state.
+  std::int64_t                                     revision{};       ///< Anchor revision distinct from messages.
+  std::vector<std::pair<std::string, std::string>> segments;         ///< Complete ordered quote evidence.
+};
+
 /// @brief A stored annotation. Mirrors zig's `annotation.Annotation`.
 export struct annotation {
-  std::int64_t                 id{};                            ///< Row id.
-  scope_kind                   scope_kind_{scope_kind::global}; ///< Stored scope kind.
-  std::optional<std::int64_t>  scope_id;                        ///< Stored scope id; unset for global.
-  anchor_fields                anchor;                          ///< Anchor descriptor.
-  anchor_kind                  anchor_kind_{anchor_kind::file}; ///< File or entity discriminator.
-  std::optional<entity_target> target;                          ///< Entity target; unset for file anchors.
-  std::optional<std::string>   title;                           ///< Title; nullable.
-  std::optional<std::string>   slug;                            ///< Slug; nullable and globally UNIQUE.
-  std::string                  body;                            ///< Body; NOT NULL, defaults to `""`.
-  status                       status_{status::active};         ///< Lifecycle status.
-  std::string                  vendor;                          ///< Vendor tag; NOT NULL, defaults to `""`.
-  std::optional<std::string>   origin;                          ///< Immutable-provenance surface, when supplied.
-  std::int64_t                 revision{1};                     ///< Monotonic annotation revision.
-  std::optional<std::int64_t>  plan_id;                         ///< Direct FK column (not an entity_link).
-  std::optional<std::int64_t>  task_id;                         ///< Direct FK column (not an entity_link).
-  std::vector<std::string>     tags;                            ///< Tags, lexicographically ascending.
-  std::string                  created_at;                      ///< Creation timestamp.
-  std::string                  updated_at;                      ///< Last-modification timestamp.
+  std::int64_t                     id{};                            ///< Row id.
+  scope_kind                       scope_kind_{scope_kind::global}; ///< Stored scope kind.
+  std::optional<std::int64_t>      scope_id;                        ///< Stored scope id; unset for global.
+  anchor_fields                    anchor;                          ///< Anchor descriptor.
+  anchor_kind                      anchor_kind_{anchor_kind::file}; ///< File or entity discriminator.
+  std::optional<entity_target>     target;                          ///< Entity target; unset for file anchors.
+  std::optional<std::string>       title;                           ///< Title; nullable.
+  std::optional<std::string>       slug;                            ///< Slug; nullable and globally UNIQUE.
+  std::string                      body;                            ///< Body; NOT NULL, defaults to `""`.
+  status                           status_{status::active};         ///< Lifecycle status.
+  std::string                      vendor;                          ///< Vendor tag; NOT NULL, defaults to `""`.
+  std::optional<std::string>       origin;                          ///< Immutable-provenance surface, when supplied.
+  std::int64_t                     revision{1};                     ///< Monotonic annotation revision.
+  std::optional<std::int64_t>      plan_id;                         ///< Direct FK column (not an entity_link).
+  std::optional<std::int64_t>      task_id;                         ///< Direct FK column (not an entity_link).
+  std::vector<std::string>         tags;                            ///< Tags, lexicographically ascending.
+  std::string                      created_at;                      ///< Creation timestamp.
+  std::string                      updated_at;                      ///< Last-modification timestamp.
+  std::vector<message>             messages;                        ///< Entity-thread messages in (created_at,id) order.
+  std::optional<contextual_anchor> contextual;                      ///< Unset for page threads and file notes.
 };
 
 /// @brief Arguments to `create`. Mirrors zig's `annotation.CreateArgs`.
@@ -195,7 +234,10 @@ export enum class command_kind : std::uint8_t {
   remove,
   bulk_resolve,
   bulk_dismiss,
-  bulk_archive
+  bulk_archive,
+  reply,
+  edit_message,
+  reanchor
 };
 
 /// @brief Input to one receipt-backed annotation mutation.
@@ -206,26 +248,42 @@ export struct command_args {
   std::optional<std::string_view> scope;               ///< Scope-ref slug; unset means global.
   std::optional<entity_target>    target;              ///< Entity target, for a `create` of an entity annotation.
   std::optional<std::int64_t>     annotation_id;       ///< The row to mutate; unset for `create`.
+  std::optional<std::int64_t>     message_id;          ///< Message identity for `edit-message`.
   std::optional<std::int64_t>     expected_revision;   ///< Optimistic lock; a stale value is `revision_conflict`.
   std::optional<std::string_view> title;               ///< New title, when supplied.
   bool                            clear_title = false; ///< A JSON null title; distinct from omission.
   std::optional<std::string_view> body;                ///< New body, when supplied.
-  std::vector<std::string>        tags;                ///< Replacement tag set for `replace_tags`.
-  std::optional<list_filter>      bulk_filter;         ///< Selection for the `bulk_*` operations.
-  std::string_view                origin{"local-annotation-writer"}; ///< Provenance recorded on the annotation.
+  std::optional<std::string_view> document_kind;       ///< `plan` or `artifact` for `reanchor`.
+  std::optional<std::int64_t>     document_id;         ///< Authoritative document identity.
+  std::optional<std::int64_t>     document_version;    ///< Projection format version (1).
+  std::optional<std::string_view> content_revision;    ///< Exact authoritative projection revision token.
+  std::optional<std::string_view> contextual_kind;     ///< `block` or `range`.
+  std::optional<std::string_view> start_block_key;     ///< First covered block.
+  std::optional<std::string_view> end_block_key;       ///< Last covered block.
+  std::optional<std::int64_t>     start_offset;        ///< Range start offset.
+  std::optional<std::int64_t>     end_offset;          ///< Range end offset.
+  std::optional<std::string_view> normalized_quote;    ///< Derived full quote evidence.
+  std::optional<std::string_view> prefix_context;      ///< Bounded leading context.
+  std::optional<std::string_view> suffix_context;      ///< Bounded trailing context.
+  std::vector<std::pair<std::string, std::string>> anchor_segments;                   ///< Ordered block-key/quote evidence.
+  std::vector<std::string>                         tags;                              ///< Replacement tag set for `replace_tags`.
+  std::optional<list_filter>                       bulk_filter;                       ///< Selection for the `bulk_*` operations.
+  std::string_view                                 origin{"local-annotation-writer"}; ///< Provenance recorded on the annotation.
 };
 
 /// @brief Durable result for a command UUID. Receipts are never purged.
 export struct operation_receipt {
-  std::string                 operation_uuid;  ///< The idempotency key this receipt answers for.
-  std::string                 source_uuid;     ///< The database source that committed it.
-  std::string                 payload_digest;  ///< Digest of the request; a reused uuid with another payload conflicts.
-  std::optional<std::int64_t> annotation_id;   ///< The row written, when the operation touched exactly one.
-  std::optional<std::int64_t> revision;        ///< That row's revision after the write.
-  std::string                 outcome;         ///< Stored outcome text for the committed operation.
-  std::string                 created_at;      ///< When the receipt was committed.
-  std::optional<std::int64_t> affected_count;  ///< Immutable aggregate count for bulk operations.
-  bool                        replayed{false}; ///< True when this answers a REPLAY rather than a fresh commit.
+  std::string                 operation_uuid;   ///< The idempotency key this receipt answers for.
+  std::string                 source_uuid;      ///< The database source that committed it.
+  std::string                 payload_digest;   ///< Digest of the request; a reused uuid with another payload conflicts.
+  std::optional<std::int64_t> annotation_id;    ///< The row written, when the operation touched exactly one.
+  std::optional<std::int64_t> revision;         ///< That row's revision after the write.
+  std::string                 outcome;          ///< Stored outcome text for the committed operation.
+  std::string                 created_at;       ///< When the receipt was committed.
+  std::optional<std::int64_t> affected_count;   ///< Immutable aggregate count for bulk operations.
+  std::optional<std::int64_t> message_id;       ///< Message identity for a reply or message edit.
+  std::optional<std::int64_t> message_revision; ///< Message revision, independent of the thread revision.
+  bool                        replayed{false};  ///< True when this answers a REPLAY rather than a fresh commit.
 };
 
 /// @brief Atomically apply a command, revision/audit mutation, and receipt.

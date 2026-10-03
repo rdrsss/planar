@@ -552,10 +552,12 @@ auto annotate_capabilities(context& ctx, const cliapp::parsed_args& args) -> han
     std::string out{"{\"source_uuid\":"};
     json_text::append_json_string(out, *source);
     out +=
-        R"(,"annotation_read":true,"entity_anchors":true,"revisions":true,"filters":["anchor_kind","target_kind","target_id","status","scope","tag","plan","task","vendor","anchor_path"],"commands":["create","edit","replace-tags","resolve","dismiss","archive"],"receipt_lookup":true})";
+        R"(,"annotation_read":true,"entity_anchors":true,"revisions":true,"threads":true,"message_order":["created_at","id"],"contextual_anchors":{"schema_versions":[1],"kinds":["page","block","range"],"cross_block":"adjacent","reanchor":"explicit_revision_checked"},"legacy_entity_notes":"one_message_page_threads","file_annotations":"unchanged","filters":["anchor_kind","target_kind","target_id","status","scope","tag","plan","task","vendor","anchor_path"],"commands":["create","edit","reply","edit-message","reanchor","replace-tags","resolve","dismiss","archive"],"receipt_lookup":true})";
     ctx.out() << out << '\n';
   } else {
-    ctx.out() << "annotation read: available\nentity anchors: available\nrevisions: available\nsource uuid: " << *source << '\n';
+    ctx.out() << "annotation read: available\nentity anchors: available\ncontextual threads: available (anchor schema 1)\n"
+                 "revisions: available\nsource uuid: "
+              << *source << '\n';
   }
   return {};
 }
@@ -818,11 +820,14 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
     auto const* field = parsed_json->find(name);
     return field == nullptr || field->kind == json_dom::json_kind::integer;
   };
-  for (std::string_view name : {"scope", "target_kind", "body", "anchor_path", "vendor", "tag"}) {
+  for (std::string_view name :
+       {"scope", "target_kind", "body", "anchor_path", "vendor", "tag", "document_kind", "contextual_kind", "start_block_key",
+        "end_block_key", "normalized_quote", "prefix_context", "suffix_context", "content_revision"}) {
     if (!is_string(name))
       return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} must be a string", name)));
   }
-  for (std::string_view name : {"target_id", "annotation_id", "expected_revision", "plan_id", "task_id"}) {
+  for (std::string_view name : {"target_id", "annotation_id", "message_id", "expected_revision", "plan_id", "task_id",
+                                "document_id", "document_version", "start_offset", "end_offset"}) {
     if (!is_integer(name))
       return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("{} must be an integer", name)));
   }
@@ -857,10 +862,14 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
                       : *operation == "bulk-resolve" ? ann::command_kind::bulk_resolve
                       : *operation == "bulk-dismiss" ? ann::command_kind::bulk_dismiss
                       : *operation == "bulk-archive" ? ann::command_kind::bulk_archive
+                      : *operation == "reply"        ? ann::command_kind::reply
+                      : *operation == "edit-message" ? ann::command_kind::edit_message
+                      : *operation == "reanchor"     ? ann::command_kind::reanchor
                                                      : ann::command_kind{};
   if (*operation != "create" && *operation != "edit" && *operation != "replace-tags" && *operation != "resolve" &&
       *operation != "dismiss" && *operation != "archive" && *operation != "remove" && *operation != "bulk-resolve" &&
-      *operation != "bulk-dismiss" && *operation != "bulk-archive") {
+      *operation != "bulk-dismiss" && *operation != "bulk-archive" && *operation != "reply" && *operation != "edit-message" &&
+      *operation != "reanchor") {
     return std::unexpected(
         error_from_body(domain_error_kind::invalid_input, std::format("unknown annotation operation '{}'", *operation)));
   }
@@ -892,6 +901,21 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
       tags.push_back(tag.string);
     }
   }
+  std::vector<std::pair<std::string, std::string>> anchor_segments;
+  if (auto const* fields = parsed_json->find("segments"); fields != nullptr) {
+    if (fields->kind != json_dom::json_kind::array || fields->array.empty() || fields->array.size() > 256)
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, "segments must contain 1 to 256 objects"));
+    for (const auto& segment : fields->array) {
+      auto const* key   = segment.find("block_key");
+      auto const* quote = segment.find("quote");
+      if (segment.kind != json_dom::json_kind::object || key == nullptr || quote == nullptr ||
+          key->kind != json_dom::json_kind::string || quote->kind != json_dom::json_kind::string || key->string.empty() ||
+          quote->string.empty())
+        return std::unexpected(
+            error_from_body(domain_error_kind::invalid_input, "each segment requires non-empty block_key and quote strings"));
+      anchor_segments.emplace_back(key->string, quote->string);
+    }
+  }
   auto conn = ctx.db().ensure_db();
   if (!conn)
     return std::unexpected(conn.error());
@@ -914,10 +938,24 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
                .scope             = as_view(scope),
                .target            = target,
                .annotation_id     = integer_field("annotation_id"),
+               .message_id        = integer_field("message_id"),
                .expected_revision = integer_field("expected_revision"),
                .title             = as_view(title),
                .clear_title       = title_field != nullptr && title_field->kind == json_dom::json_kind::null_,
                .body              = as_view(body),
+               .document_kind     = as_view(string_field("document_kind")),
+               .document_id       = integer_field("document_id"),
+               .document_version  = integer_field("document_version"),
+               .content_revision  = as_view(string_field("content_revision")),
+               .contextual_kind   = as_view(string_field("contextual_kind")),
+               .start_block_key   = as_view(string_field("start_block_key")),
+               .end_block_key     = as_view(string_field("end_block_key")),
+               .start_offset      = integer_field("start_offset"),
+               .end_offset        = integer_field("end_offset"),
+               .normalized_quote  = as_view(string_field("normalized_quote")),
+               .prefix_context    = as_view(string_field("prefix_context")),
+               .suffix_context    = as_view(string_field("suffix_context")),
+               .anchor_segments   = std::move(anchor_segments),
                .tags              = std::move(tags),
                .bulk_filter       = (parsed == ann::command_kind::bulk_resolve || parsed == ann::command_kind::bulk_dismiss ||
                                      parsed == ann::command_kind::bulk_archive)
@@ -942,6 +980,8 @@ auto annotate_command(context& ctx, const cliapp::parsed_args& args) -> handler_
       std::format(",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":", receipt->annotation_id.value_or(0),
                   receipt->revision.value_or(0), receipt->affected_count.value_or(0));
   json_text::append_json_string(out, receipt->outcome);
+  if (receipt->message_id)
+    out += std::format(",\"message_id\":{},\"message_revision\":{}", *receipt->message_id, receipt->message_revision.value_or(0));
   out += receipt->replayed ? ",\"replayed\":true" : ",\"replayed\":false";
   if (count > 10000) {
     out += std::format(",\"retention_warning\":{{\"receipt_count\":{},\"storage_bytes\":{},\"message\":", count, storage_bytes);
@@ -976,6 +1016,9 @@ auto annotate_receipt(context& ctx, const cliapp::parsed_args& args) -> handler_
       ",\"annotation_id\":{},\"revision\":{},\"affected_count\":{},\"outcome\":", (**receipt).annotation_id.value_or(0),
       (**receipt).revision.value_or(0), (**receipt).affected_count.value_or(0));
   json_text::append_json_string(out, (**receipt).outcome);
+  if ((**receipt).message_id)
+    out += std::format(",\"message_id\":{},\"message_revision\":{}", *(**receipt).message_id,
+                       (**receipt).message_revision.value_or(0));
   out += (**receipt).replayed ? ",\"replayed\":true}" : ",\"replayed\":false}";
   ctx.out() << out << '\n';
   return {};

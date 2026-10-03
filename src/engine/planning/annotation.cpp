@@ -12,6 +12,7 @@ import planar.log;
 import planar.scope_ref;
 import planar.policy;
 import planar.sha256;
+import planar.document_authority;
 import planar.engine.planning.transitions;
 
 namespace planar::engine::planning::annotation {
@@ -237,6 +238,78 @@ auto validate_entity_target(db::connection& conn, const entity_target& target,
   return {};
 }
 
+auto load_thread(db::connection& conn, annotation& row) -> std::expected<void, annotation_error> {
+  if (row.anchor_kind_ == anchor_kind::file)
+    return {};
+  auto messages = conn.prepare("select id,body,revision,vendor,origin,created_at,updated_at from annotation_messages "
+                               "where annotation_id=? order by created_at,id");
+  if (!messages || !messages->bind_int64(1, row.id))
+    return std::unexpected(annotation_error::query_failed);
+  for (;;) {
+    auto step = messages->step();
+    if (!step)
+      return std::unexpected(annotation_error::query_failed);
+    if (*step == db::step_result::done)
+      break;
+    row.messages.push_back({.id       = messages->column_int64(0),
+                            .body     = std::string{messages->column_text(1)},
+                            .revision = messages->column_int64(2),
+                            .vendor   = std::string{messages->column_text(3)},
+                            .origin = messages->is_null(4) ? std::nullopt : std::optional{std::string{messages->column_text(4)}},
+                            .created_at = std::string{messages->column_text(5)},
+                            .updated_at = std::string{messages->column_text(6)}});
+    auto& message = row.messages.back();
+    auto  history = conn.prepare("select revision,body,updated_at from annotation_message_revisions "
+                                 "where message_id=? order by revision");
+    if (!history || !history->bind_int64(1, message.id))
+      return std::unexpected(annotation_error::query_failed);
+    for (;;) {
+      auto history_step = history->step();
+      if (!history_step)
+        return std::unexpected(annotation_error::query_failed);
+      if (*history_step == db::step_result::done)
+        break;
+      message.history.push_back({.revision   = history->column_int64(0),
+                                 .body       = std::string{history->column_text(1)},
+                                 .updated_at = std::string{history->column_text(2)}});
+    }
+  }
+  auto anchor = conn.prepare("select document_kind,document_id,content_revision,anchor_kind,start_block_key,end_block_key,"
+                             "start_offset,end_offset,normalized_quote,prefix_context,suffix_context,anchor_state,revision "
+                             "from annotation_contextual_anchors where annotation_id=?");
+  if (!anchor || !anchor->bind_int64(1, row.id))
+    return std::unexpected(annotation_error::query_failed);
+  auto step = anchor->step();
+  if (!step)
+    return std::unexpected(annotation_error::query_failed);
+  if (*step == db::step_result::done)
+    return {};
+  row.contextual = contextual_anchor{.document_kind    = std::string{anchor->column_text(0)},
+                                     .document_id      = anchor->column_int64(1),
+                                     .content_revision = std::string{anchor->column_text(2)},
+                                     .kind             = std::string{anchor->column_text(3)},
+                                     .start_block_key  = std::string{anchor->column_text(4)},
+                                     .end_block_key    = std::string{anchor->column_text(5)},
+                                     .start_offset     = opt_int(*anchor, 6),
+                                     .end_offset       = opt_int(*anchor, 7),
+                                     .normalized_quote = std::string{anchor->column_text(8)},
+                                     .prefix_context   = std::string{anchor->column_text(9)},
+                                     .suffix_context   = std::string{anchor->column_text(10)},
+                                     .state            = std::string{anchor->column_text(11)},
+                                     .revision         = anchor->column_int64(12)};
+  auto segments  = conn.prepare("select block_key,quote from annotation_anchor_segments where annotation_id=? order by ordinal");
+  if (!segments || !segments->bind_int64(1, row.id))
+    return std::unexpected(annotation_error::query_failed);
+  for (;;) {
+    auto segment_step = segments->step();
+    if (!segment_step)
+      return std::unexpected(annotation_error::query_failed);
+    if (*segment_step == db::step_result::done)
+      return {};
+    row.contextual->segments.emplace_back(segments->column_text(0), segments->column_text(1));
+  }
+}
+
 /// @brief The single `UPDATE annotations SET status = ?` both the three
 /// lifecycle verbs and `update(status = ...)` funnel through.
 auto write_status(db::connection& conn, std::int64_t id, status new_status) -> std::expected<void, annotation_error> {
@@ -404,6 +477,12 @@ auto command_name(command_kind operation) -> std::string_view {
     return "bulk-dismiss";
   case command_kind::bulk_archive:
     return "bulk-archive";
+  case command_kind::reply:
+    return "reply";
+  case command_kind::edit_message:
+    return "edit-message";
+  case command_kind::reanchor:
+    return "reanchor";
   }
   return "unknown";
 }
@@ -445,28 +524,148 @@ auto command_digest(const command_args& args) -> std::string {
     append(std::format("{}", args.bulk_filter->task_id.value_or(-1)));
     append(args.bulk_filter->status_ ? status_to_text(*args.bulk_filter->status_) : "none");
   }
+  // Schema-40 receipts contain precisely the fields above. Only extend the
+  // fingerprint when a request actually uses the schema-41 command surface.
+  // This preserves old UUID replays while preventing new fields from aliasing
+  // an otherwise identical legacy payload.
+  if (args.message_id || args.document_kind || args.document_id || args.document_version || args.content_revision ||
+      args.contextual_kind || args.start_block_key || args.end_block_key || args.start_offset || args.end_offset ||
+      args.normalized_quote || args.prefix_context || args.suffix_context || !args.anchor_segments.empty()) {
+    append(std::format("{}", args.message_id.value_or(-1)));
+    optional(args.document_kind);
+    append(std::format("{}", args.document_id.value_or(-1)));
+    append(std::format("{}", args.document_version.value_or(-1)));
+    optional(args.content_revision);
+    optional(args.contextual_kind);
+    optional(args.start_block_key);
+    optional(args.end_block_key);
+    append(std::format("{}", args.start_offset.value_or(-1)));
+    append(std::format("{}", args.end_offset.value_or(-1)));
+    optional(args.normalized_quote);
+    optional(args.prefix_context);
+    optional(args.suffix_context);
+    for (const auto& [key, quote] : args.anchor_segments) {
+      append(key);
+      append(quote);
+    }
+  }
   return sha256::hex(material);
 }
 
 auto receipt_from_row(db::statement& stmt, bool replayed) -> operation_receipt {
-  return {.operation_uuid = std::string(stmt.column_text(0)),
-          .source_uuid    = std::string(stmt.column_text(1)),
-          .payload_digest = std::string(stmt.column_text(2)),
-          .annotation_id  = opt_int(stmt, 3),
-          .revision       = opt_int(stmt, 4),
-          .outcome        = std::string(stmt.column_text(5)),
-          .created_at     = std::string(stmt.column_text(6)),
-          .affected_count = opt_int(stmt, 7),
-          .replayed       = replayed};
+  return {.operation_uuid   = std::string(stmt.column_text(0)),
+          .source_uuid      = std::string(stmt.column_text(1)),
+          .payload_digest   = std::string(stmt.column_text(2)),
+          .annotation_id    = opt_int(stmt, 3),
+          .revision         = opt_int(stmt, 4),
+          .outcome          = std::string(stmt.column_text(5)),
+          .created_at       = std::string(stmt.column_text(6)),
+          .affected_count   = opt_int(stmt, 7),
+          .message_id       = opt_int(stmt, 8),
+          .message_revision = opt_int(stmt, 9),
+          .replayed         = replayed};
+}
+
+// Called only under execute_command's immediate transaction. The projection's
+// nested savepoint keeps validation and persistence in the same source snapshot.
+auto write_contextual_anchor(db::connection& conn, const command_args& args, std::int64_t id)
+    -> std::expected<void, annotation_error> {
+  if (!args.document_kind || !args.document_id || args.document_version != 1 || !args.content_revision || !args.contextual_kind ||
+      !args.start_block_key || !args.end_block_key)
+    return std::unexpected(annotation_error::invalid_anchor);
+  const bool range = *args.contextual_kind == "range";
+  const bool block = *args.contextual_kind == "block";
+  if ((!range && !block) || args.anchor_segments.size() > 256 || args.prefix_context.value_or("").size() > 1024 ||
+      args.suffix_context.value_or("").size() > 1024)
+    return std::unexpected(annotation_error::invalid_anchor);
+  auto thread = show(conn, id);
+  if (!thread)
+    return std::unexpected(thread.error());
+  if (*args.document_kind != "plan" && *args.document_kind != "artifact")
+    return std::unexpected(annotation_error::invalid_anchor);
+  const auto document_table = *args.document_kind == "plan" ? "plans" : "artifacts";
+  auto       owner          = conn.prepare(std::format("select scope_kind, scope_id from {} where id = ?", document_table));
+  if (!owner || !owner->bind_int64(1, *args.document_id))
+    return std::unexpected(annotation_error::query_failed);
+  auto owner_step = owner->step();
+  if (!owner_step)
+    return std::unexpected(annotation_error::query_failed);
+  if (*owner_step != db::step_result::row)
+    return std::unexpected(annotation_error::target_not_found);
+  if (scope_kind_from_text(owner->column_text(0)) != thread->scope_kind_ || opt_int(*owner, 1) != thread->scope_id)
+    return std::unexpected(annotation_error::target_scope_mismatch);
+  auto doc = document_authority::project(conn, *args.document_kind, *args.document_id);
+  if (!doc)
+    return std::unexpected(annotation_error::invalid_anchor);
+  if (doc->source_uuid != args.source_uuid)
+    return std::unexpected(annotation_error::source_mismatch);
+  if (doc->content_revision != *args.content_revision)
+    return std::unexpected(annotation_error::revision_conflict);
+  std::string normalized;
+  if (block) {
+    if (args.start_offset || args.end_offset || !args.anchor_segments.empty() || args.start_block_key != args.end_block_key ||
+        !args.normalized_quote.value_or("").empty() ||
+        std::ranges::find(doc->passages, *args.start_block_key, &document_authority::passage::key) == doc->passages.end())
+      return std::unexpected(annotation_error::invalid_anchor);
+  } else {
+    if (!args.start_offset || !args.end_offset || *args.start_offset < 0 || *args.end_offset < 0 || args.anchor_segments.empty())
+      return std::unexpected(annotation_error::invalid_anchor);
+    document_authority::range_evidence evidence{.content_revision = std::string{*args.content_revision},
+                                                .start_key        = std::string{*args.start_block_key},
+                                                .start_offset     = static_cast<std::size_t>(*args.start_offset),
+                                                .end_key          = std::string{*args.end_block_key},
+                                                .end_offset       = static_cast<std::size_t>(*args.end_offset)};
+    for (const auto& [key, quote] : args.anchor_segments) {
+      if (key.size() > 512 || quote.empty() || quote.size() > 16384)
+        return std::unexpected(annotation_error::invalid_anchor);
+      evidence.covered_keys.push_back(key);
+      evidence.segment_quotes.push_back(quote);
+    }
+    auto validated = document_authority::validate(*doc, evidence);
+    if (!validated || validated->normalized_quote.empty() || validated->normalized_quote.size() > 65536)
+      return std::unexpected(annotation_error::invalid_anchor);
+    normalized = std::move(validated->normalized_quote);
+    if (args.normalized_quote && *args.normalized_quote != normalized)
+      return std::unexpected(annotation_error::invalid_anchor);
+  }
+  auto erase = conn.prepare("delete from annotation_anchor_segments where annotation_id = ?");
+  if (!erase || !erase->bind_int64(1, id) || !erase->step())
+    return std::unexpected(annotation_error::query_failed);
+  auto write = conn.prepare(
+      "insert into annotation_contextual_anchors(annotation_id,schema_version,document_kind,document_id,document_version,"
+      "content_revision,anchor_kind,start_block_key,end_block_key,start_offset,end_offset,normalized_quote,prefix_context,"
+      "suffix_context) values (?,1,?,?,1,?,?,?,?,?,?,?,?,?) on conflict(annotation_id) do update set "
+      "document_kind=excluded.document_kind,document_id=excluded.document_id,content_revision=excluded.content_revision,"
+      "anchor_kind=excluded.anchor_kind,start_block_key=excluded.start_block_key,end_block_key=excluded.end_block_key,"
+      "start_offset=excluded.start_offset,end_offset=excluded.end_offset,normalized_quote=excluded.normalized_quote,"
+      "prefix_context=excluded.prefix_context,suffix_context=excluded.suffix_context,anchor_state='attached',"
+      "revision=annotation_contextual_anchors.revision+1,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+  if (!write || !write->bind_int64(1, id) || !write->bind_text(2, *args.document_kind) ||
+      !write->bind_int64(3, *args.document_id) || !write->bind_text(4, *args.content_revision) ||
+      !write->bind_text(5, *args.contextual_kind) || !write->bind_text(6, *args.start_block_key) ||
+      !write->bind_text(7, *args.end_block_key) ||
+      !(args.start_offset ? write->bind_int64(8, *args.start_offset) : write->bind_null(8)) ||
+      !(args.end_offset ? write->bind_int64(9, *args.end_offset) : write->bind_null(9)) || !write->bind_text(10, normalized) ||
+      !write->bind_text(11, args.prefix_context.value_or("")) || !write->bind_text(12, args.suffix_context.value_or("")) ||
+      !write->step())
+    return std::unexpected(annotation_error::invalid_anchor);
+  for (std::size_t ordinal = 0; ordinal < args.anchor_segments.size(); ++ordinal) {
+    auto segment = conn.prepare("insert into annotation_anchor_segments values (?,?,?,?)");
+    if (!segment || !segment->bind_int64(1, id) || !segment->bind_int64(2, static_cast<std::int64_t>(ordinal)) ||
+        !segment->bind_text(3, args.anchor_segments[ordinal].first) ||
+        !segment->bind_text(4, args.anchor_segments[ordinal].second) || !segment->step())
+      return std::unexpected(annotation_error::invalid_anchor);
+  }
+  return {};
 }
 
 } // namespace
 
 auto show_receipt(db::connection& conn, std::string_view source, std::string_view operation_uuid)
     -> std::expected<std::optional<operation_receipt>, annotation_error> {
-  auto stmt = conn.prepare(
-      "select operation_uuid, source_uuid, payload_digest, annotation_id, revision, outcome, created_at, affected_count "
-      "from annotation_operation_receipts where source_uuid = ? and operation_uuid = ?");
+  auto stmt = conn.prepare("select operation_uuid, source_uuid, payload_digest, annotation_id, revision, outcome, created_at, "
+                           "affected_count, message_id, message_revision "
+                           "from annotation_operation_receipts where source_uuid = ? and operation_uuid = ?");
   if (!stmt || !stmt->bind_text(1, source) || !stmt->bind_text(2, operation_uuid))
     return std::unexpected(annotation_error::query_failed);
   auto step = stmt->step();
@@ -510,6 +709,31 @@ auto execute_command(db::connection& conn, const command_args& args) -> std::exp
   std::optional<std::int64_t> id;
   std::optional<std::int64_t> revision;
   std::optional<std::int64_t> affected_count;
+  std::optional<std::int64_t> message_id;
+  std::optional<std::int64_t> message_revision;
+  if (args.annotation_id) {
+    auto current = show(conn, *args.annotation_id);
+    if (!current)
+      return std::unexpected(current.error());
+    if (current->anchor_kind_ == anchor_kind::entity) {
+      // Request ownership assertions are distinct from the operator's
+      // membership-aware authorization selector and legacy scope patches.
+      if (args.target &&
+          (!current->target || args.target->kind != current->target->kind || args.target->id != current->target->id))
+        return std::unexpected(annotation_error::target_scope_mismatch);
+      if (args.scope) {
+        auto owner = resolve_scope(conn, args.scope);
+        if (!owner)
+          return std::unexpected(owner.error());
+        if (owner->first != current->scope_kind_ || owner->second != current->scope_id)
+          return std::unexpected(annotation_error::target_scope_mismatch);
+      }
+      if (!current->target)
+        return std::unexpected(annotation_error::invalid_anchor);
+      if (auto owner = validate_entity_target(conn, *current->target, {current->scope_kind_, current->scope_id}); !owner)
+        return std::unexpected(owner.error());
+    }
+  }
   if (args.operation == command_kind::bulk_resolve || args.operation == command_kind::bulk_dismiss ||
       args.operation == command_kind::bulk_archive) {
     if (!args.bulk_filter)
@@ -556,6 +780,108 @@ auto execute_command(db::connection& conn, const command_args& args) -> std::exp
       return std::unexpected(created.error());
     id       = created->id;
     revision = created->revision;
+    if (args.contextual_kind) {
+      if (auto anchor = write_contextual_anchor(conn, args, *id); !anchor)
+        return std::unexpected(anchor.error());
+    } else if (args.document_kind || args.document_id || args.document_version || args.content_revision || args.start_block_key ||
+               args.end_block_key || args.start_offset || args.end_offset || args.normalized_quote || args.prefix_context ||
+               args.suffix_context || !args.anchor_segments.empty()) {
+      return std::unexpected(annotation_error::invalid_anchor);
+    }
+  } else if (args.operation == command_kind::reply) {
+    if (!args.annotation_id || !args.body || args.body->empty())
+      return std::unexpected(annotation_error::invalid_command);
+    auto current = show(conn, *args.annotation_id);
+    if (!current)
+      return std::unexpected(current.error());
+    if (current->anchor_kind_ != anchor_kind::entity)
+      return std::unexpected(annotation_error::invalid_anchor);
+    auto insert_message = conn.prepare(
+        "insert into annotation_messages(annotation_id, body, vendor, origin) values (?, ?, ?, ?) returning id, revision");
+    if (!insert_message || !insert_message->bind_int64(1, *args.annotation_id) || !insert_message->bind_text(2, *args.body) ||
+        !insert_message->bind_text(3, current->vendor) || !insert_message->bind_text(4, args.origin) || !insert_message->step())
+      return std::unexpected(annotation_error::query_failed);
+    id               = *args.annotation_id;
+    revision         = current->revision;
+    message_id       = insert_message->column_int64(0);
+    message_revision = insert_message->column_int64(1);
+    if (auto audit = record_audit(conn, {.verb    = audit::verb::update,
+                                         .entity  = {.kind = "annotation", .id = *args.annotation_id},
+                                         .summary = "append annotation thread reply"});
+        !audit)
+      return std::unexpected(audit.error());
+  } else if (args.operation == command_kind::edit_message) {
+    if (!args.annotation_id || !args.message_id || !args.expected_revision || !args.body || args.body->empty())
+      return std::unexpected(annotation_error::invalid_command);
+    auto edit = conn.prepare("update annotation_messages set body = ?, revision = revision + 1, "
+                             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') "
+                             "where id = ? and annotation_id = ? and revision = ? returning revision");
+    if (!edit || !edit->bind_text(1, *args.body) || !edit->bind_int64(2, *args.message_id) ||
+        !edit->bind_int64(3, *args.annotation_id) || !edit->bind_int64(4, *args.expected_revision))
+      return std::unexpected(annotation_error::query_failed);
+    auto step = edit->step();
+    if (!step)
+      return std::unexpected(annotation_error::query_failed);
+    if (*step == db::step_result::done)
+      return std::unexpected(annotation_error::revision_conflict);
+    id               = *args.annotation_id;
+    message_id       = args.message_id;
+    message_revision = edit->column_int64(0);
+    // The first message is the legacy body projection. Advance its thread
+    // revision too, so an old editor cannot overwrite a newer message edit.
+    auto first = conn.prepare("select id from annotation_messages where annotation_id = ? order by created_at, id limit 1");
+    if (!first || !first->bind_int64(1, *id))
+      return std::unexpected(annotation_error::query_failed);
+    auto first_step = first->step();
+    if (!first_step || *first_step == db::step_result::done)
+      return std::unexpected(annotation_error::query_failed);
+    if (first->column_int64(0) == *message_id) {
+      auto sync = conn.prepare("update annotations set body = ?, revision = revision + 1, "
+                               "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ?");
+      if (!sync || !sync->bind_text(1, *args.body) || !sync->bind_int64(2, *id) || !sync->step())
+        return std::unexpected(annotation_error::query_failed);
+    }
+    auto current = show(conn, *id);
+    if (!current)
+      return std::unexpected(current.error());
+    revision = current->revision;
+    if (auto audit = record_audit(conn, {.verb    = audit::verb::update,
+                                         .entity  = {.kind = "annotation", .id = *args.annotation_id},
+                                         .summary = "edit annotation thread message"});
+        !audit)
+      return std::unexpected(audit.error());
+  } else if (args.operation == command_kind::reanchor) {
+    if (!args.annotation_id || !args.expected_revision || !args.document_kind || !args.document_id || !args.document_version ||
+        !args.contextual_kind || !args.start_block_key || !args.end_block_key)
+      return std::unexpected(annotation_error::invalid_command);
+    auto current = show(conn, *args.annotation_id);
+    if (!current)
+      return std::unexpected(current.error());
+    if (current->anchor_kind_ != anchor_kind::entity || current->revision != *args.expected_revision)
+      return std::unexpected(current->revision == *args.expected_revision ? annotation_error::invalid_anchor
+                                                                          : annotation_error::revision_conflict);
+    auto anchor_revision = conn.prepare("select revision from annotation_contextual_anchors where annotation_id = ?");
+    if (!anchor_revision || !anchor_revision->bind_int64(1, *args.annotation_id))
+      return std::unexpected(annotation_error::query_failed);
+    auto anchor_step = anchor_revision->step();
+    if (!anchor_step)
+      return std::unexpected(annotation_error::query_failed);
+    const bool exists = *anchor_step == db::step_result::row;
+    if (auto anchor = write_contextual_anchor(conn, args, *args.annotation_id); !anchor)
+      return std::unexpected(anchor.error());
+    auto bump = conn.prepare("update annotations set revision = revision + 1, "
+                             "updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') where id = ? and revision = ?");
+    if (!bump || !bump->bind_int64(1, *args.annotation_id) || !bump->bind_int64(2, *args.expected_revision) || !bump->step())
+      return std::unexpected(annotation_error::query_failed);
+    id       = *args.annotation_id;
+    revision = *args.expected_revision + 1;
+    if (!exists) {
+      if (auto audit = record_audit(conn, {.verb    = audit::verb::update,
+                                           .entity  = {.kind = "annotation", .id = *args.annotation_id},
+                                           .summary = "explicit contextual re-anchor"});
+          !audit)
+        return std::unexpected(audit.error());
+    }
   } else {
     if (!args.annotation_id.has_value() || !args.expected_revision.has_value())
       return std::unexpected(annotation_error::invalid_command);
@@ -607,13 +933,16 @@ auto execute_command(db::connection& conn, const command_args& args) -> std::exp
     } else
       return std::unexpected(annotation_error::invalid_command);
   }
-  auto insert = conn.prepare("insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, "
-                             "annotation_id, revision, outcome, affected_count) values (?, ?, ?, ?, ?, ?, ?)");
+  auto insert = conn.prepare(
+      "insert into annotation_operation_receipts(operation_uuid, source_uuid, payload_digest, "
+      "annotation_id, revision, outcome, affected_count, message_id, message_revision) values (?, ?, ?, ?, ?, ?, ?, ?, ?)");
   if (!insert || !insert->bind_text(1, args.operation_uuid) || !insert->bind_text(2, args.source_uuid) ||
       !insert->bind_text(3, digest) || !(id ? insert->bind_int64(4, *id) : insert->bind_null(4)) ||
       !(revision ? insert->bind_int64(5, *revision) : insert->bind_null(5)) ||
       !insert->bind_text(6, command_name(args.operation)) ||
-      !(affected_count ? insert->bind_int64(7, *affected_count) : insert->bind_null(7)) || !insert->step())
+      !(affected_count ? insert->bind_int64(7, *affected_count) : insert->bind_null(7)) ||
+      !(message_id ? insert->bind_int64(8, *message_id) : insert->bind_null(8)) ||
+      !(message_revision ? insert->bind_int64(9, *message_revision) : insert->bind_null(9)) || !insert->step())
     return std::unexpected(annotation_error::query_failed);
   auto committed = tx->commit();
   if (!committed)
@@ -654,6 +983,8 @@ auto show(db::connection& conn, std::int64_t id) -> std::expected<annotation, an
     return std::unexpected(tags.error());
   }
   row->tags = std::move(*tags);
+  if (auto thread = load_thread(conn, *row); !thread)
+    return std::unexpected(thread.error());
   return row;
 }
 
@@ -919,6 +1250,8 @@ auto list(db::connection& conn, const list_filter& filter) -> std::expected<std:
       return std::unexpected(tags.error());
     }
     row.tags = std::move(*tags);
+    if (auto thread = load_thread(conn, row); !thread)
+      return std::unexpected(thread.error());
   }
   return out;
 }
@@ -1420,7 +1753,47 @@ auto render_json(const annotation& a) -> std::string {
     }
     out += json_string(a.tags[i]);
   }
-  out += std::format(R"(],"created_at":{},"updated_at":{}}})", json_string(a.created_at), json_string(a.updated_at));
+  out += std::format(R"(],"created_at":{},"updated_at":{})", json_string(a.created_at), json_string(a.updated_at));
+  if (a.anchor_kind_ == anchor_kind::entity) {
+    out += ",\"messages\":[";
+    for (std::size_t i = 0; i < a.messages.size(); ++i) {
+      if (i)
+        out += ',';
+      const auto& m = a.messages[i];
+      out +=
+          std::format(R"({{"id":{},"body":{},"revision":{},"vendor":{},"origin":{},"created_at":{},"updated_at":{},"history":[)",
+                      m.id, json_string(m.body), m.revision, json_string(m.vendor), json_optional_string(m.origin),
+                      json_string(m.created_at), json_string(m.updated_at));
+      for (std::size_t j = 0; j < m.history.size(); ++j) {
+        if (j)
+          out += ',';
+        const auto& revision = m.history[j];
+        out += std::format(R"({{"revision":{},"body":{},"updated_at":{}}})", revision.revision, json_string(revision.body),
+                           json_string(revision.updated_at));
+      }
+      out += "]}";
+    }
+    out += "],\"contextual_anchor\":";
+    if (!a.contextual)
+      out += "null";
+    else {
+      const auto& c = *a.contextual;
+      out += std::format(
+          R"({{"schema_version":1,"document_kind":{},"document_id":{},"document_version":1,"content_revision":{},"kind":{},"start_block_key":{},"end_block_key":{},"start_offset":{},"end_offset":{},"normalized_quote":{},"prefix_context":{},"suffix_context":{},"state":{},"revision":{},"segments":[)",
+          json_string(c.document_kind), c.document_id, json_string(c.content_revision), json_string(c.kind),
+          json_string(c.start_block_key), json_string(c.end_block_key), json_optional_int(c.start_offset),
+          json_optional_int(c.end_offset), json_string(c.normalized_quote), json_string(c.prefix_context),
+          json_string(c.suffix_context), json_string(c.state), c.revision);
+      for (std::size_t i = 0; i < c.segments.size(); ++i) {
+        if (i)
+          out += ',';
+        out +=
+            std::format(R"({{"block_key":{},"quote":{}}})", json_string(c.segments[i].first), json_string(c.segments[i].second));
+      }
+      out += "]}";
+    }
+  }
+  out += '}';
   return out;
 }
 
