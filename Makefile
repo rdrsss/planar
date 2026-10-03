@@ -64,7 +64,7 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the five Planar binaries, Scriptorium, and pinned centuriond into ./bin/
+build: ## Build the five Planar binaries and Scriptorium into ./bin/
 	@mkdir -p $(BIN_DIR)
 	cmake --preset release -DPLANAR_VERSION_META=OFF
 	cmake --build build/release $(ARGS)
@@ -74,14 +74,6 @@ build: ## Build the five Planar binaries, Scriptorium, and pinned centuriond int
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(SCRIPTORIUM_BINARY) $(SCRIPTORIUM_BIN)
-	@# centuriond ships BESIDE planar-execute (task 6711): the client resolves
-	@# the daemon as its own sibling, so a ./bin/ that has the client without
-	@# the daemon produces a "not an executable daemon" refusal at first submit
-	@# rather than at build time. Built from the pinned archive as a separate
-	@# CMake project, so this is a copy of what scripts/install-centuriond.sh
-	@# produced rather than a second build of it.
-	@$(MAKE) --no-print-directory centuriond-local CENTURIOND_PREFIX=build/centuriond-release
-	@cp -f build/centuriond-release/bin/centuriond $(BIN_DIR)/centuriond
 
 .PHONY: install
 install: ## Build and install the five Planar executables and Scriptorium into PREFIX/bin
@@ -149,28 +141,18 @@ test: test-install-manifest test-install-deps ## Run unit tests
 
 # Linux gate (task 7094): build + ctest on Debian trixie in Docker. See
 # docker/linux-gate.Dockerfile and docs/testing.md. Docker is a developer
-# tool, not a build dependency. external/ (Centurion) is handed in as a named
-# build context, so no token ever enters an image layer.
+# tool, not a build dependency. Every dependency is committed under vendor/,
+# so the image needs no token and no extra build context.
 LINUX_GATE_PLATFORM ?= linux/arm64
 LINUX_GATE_JOBS     ?= 4
 LINUX_GATE_OUT      ?= build/linux-gate
 LINUX_GATE_CTEST_ARGS ?=
-# The pinned Centurion tag is read from cmake/dependencies.cmake, the one place it is set.
-LINUX_GATE_CENTURION_TAG ?= $(shell sed -n 's/^set(PLANAR_CENTURION_TAG "\(.*\)")/\1/p' cmake/dependencies.cmake)
-# external/ lives in the primary checkout, so a linked worktree falls back to it.
-LINUX_GATE_EXTERNAL ?= $(shell if [ -d external/centurion/$(LINUX_GATE_CENTURION_TAG) ]; then echo "$(CURDIR)/external"; else d=$$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); echo "$${d%/.git}/external"; fi)
 
 .PHONY: linux-gate
 linux-gate: ## Build and run the whole ctest suite on Linux in Docker (arm64): make linux-gate [LINUX_GATE_JOBS=4 LINUX_GATE_CTEST_ARGS="-L process"]
-	@test -d "$(LINUX_GATE_EXTERNAL)/centurion/$(LINUX_GATE_CENTURION_TAG)" || { \
-	  echo "make linux-gate: no populated external/centurion/$(LINUX_GATE_CENTURION_TAG) under '$(LINUX_GATE_EXTERNAL)'."; \
-	  echo "  Run 'GITHUB_TOKEN=\$$(gh auth token) cmake --preset debug' once on the host, or set LINUX_GATE_EXTERNAL."; \
-	  exit 1; }
 	rm -rf $(LINUX_GATE_OUT)
 	DOCKER_BUILDKIT=1 docker build --platform $(LINUX_GATE_PLATFORM) \
 	  --target gate -f docker/linux-gate.Dockerfile \
-	  --build-context external=$(LINUX_GATE_EXTERNAL)/centurion/$(LINUX_GATE_CENTURION_TAG) \
-	  --build-arg CENTURION_TAG=$(LINUX_GATE_CENTURION_TAG) \
 	  --build-arg JOBS=$(LINUX_GATE_JOBS) --build-arg CTEST_ARGS="$(LINUX_GATE_CTEST_ARGS)" \
 	  --progress=plain --output type=local,dest=$(LINUX_GATE_OUT) .
 	@echo "--- linux-gate: $(LINUX_GATE_OUT)/{configure,build,ctest}.log ---"
@@ -518,32 +500,6 @@ eval-orchestrator-fast: eval-orchestrator-unit ## Provider-free contract lane (d
 eval-orchestrator-unit: ## Harness unit tests
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
 		-s evals/orchestrator -p 'test_*.py'
-
-CENTURIOND_PREFIX ?= build/centuriond-prefix
-
-.PHONY: centuriond-local
-centuriond-local: ## Build + install a stock centuriond into $(CENTURIOND_PREFIX) from the pinned archive
-	$(configure_debug)
-	scripts/install-centuriond.sh --no-release \
-		--pin $(CPP_BUILD_DIR)/centurion-pin.env \
-		--prefix $(CURDIR)/$(CENTURIOND_PREFIX) \
-		--build-dir $(CURDIR)/build/centuriond-debug \
-		--toolchain $(CURDIR)/cmake/llvm-toolchain.cmake
-
-.PHONY: centurion-client-proof
-centurion-client-proof: centuriond-local ## Link centurion::client under Planar's LLVM and reach readiness against an installed centuriond (task 6497)
-	cmake --build $(CPP_BUILD_DIR) --target centurion_client_proof
-	PLANAR_CENTURIOND=$(CURDIR)/$(CENTURIOND_PREFIX)/bin/centuriond \
-		$(CPP_BUILD_DIR)/bin/centurion_client_proof --reporter compact --success
-
-.PHONY: centuriond-dist-test
-centuriond-dist-test: ## Prove an installed centuriond runs with its source cache deleted (task 6709; slow: builds gRPC)
-	$(configure_debug)
-	scripts/centuriond-dist-test.sh $(CPP_BUILD_DIR)
-
-# Deliberately NOT in test-all: it compiles Centurion's whole gRPC stack from
-# a throwaway source copy (~10 min cold), because building against the shared
-# cache is exactly what would let a source-dependent install pass.
 
 .PHONY: exit-code-contract
 exit-code-contract: ## Prove the DOCUMENTED exit codes are the ones the binaries return (tasks 6813/6814)

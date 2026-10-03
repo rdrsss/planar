@@ -106,7 +106,8 @@ __pycache__/
 # untracked file after every configure with PLANAR_WITH_MTKAHYPAR=ON.
 /vendor/mtkahypar/*/mt-kahypar/io/version.h
 
-# First-party dependency sources (repositories this project's owner controls,
-# e.g. Centurion). Pinned by URL + SHA-256 in cmake/dependencies.cmake and
-# fetched once per checkout; never committed (unlike third-party vendor/).
+# First-party dependency sources (repositories this project's owner controls).
+# None is declared at present; when one is, it is pinned by URL + SHA-256 in
+# cmake/dependencies.cmake, fetched once per checkout, and never committed
+# (unlike third-party vendor/).
 /external/
