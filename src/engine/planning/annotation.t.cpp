@@ -75,6 +75,9 @@
 import std;
 import planar.db;
 import planar.db.migrate;
+import planar.db.migrations;
+import planar.sha256;
+import planar.document_authority;
 import planar.engine.planning.annotation;
 import planar.engine.planning.transitions;
 
@@ -1513,4 +1516,287 @@ TEST_CASE("receipt retention threshold preserves replay across a reopened source
   CHECK(result->replayed);
   CHECK(scalar_int(reopened, "select count(*) from annotation_operation_receipts") == 10001);
   CHECK(scalar_int(reopened, "select count(*) from annotations") == 1);
+}
+
+TEST_CASE("thread replies append concurrently and message edits require the expected revision", "[annotation][thread][6765]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global', 'thread', 'thread', 'draft')");
+  auto source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+  auto created = ann::execute_command(conn, {.operation      = ann::command_kind::create,
+                                             .operation_uuid = "thread-create",
+                                             .source_uuid    = *source,
+                                             .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                                             .body           = "first"});
+  REQUIRE(created.has_value());
+
+  auto writer_a = planar::db::connection::open(scratch.path_.string());
+  auto writer_b = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(writer_a.has_value());
+  REQUIRE(writer_b.has_value());
+  std::latch                                                                  ready{2};
+  std::optional<std::expected<ann::operation_receipt, ann::annotation_error>> reply_a, reply_b;
+  auto append = [&](planar::db::connection& writer, std::string_view operation, std::string_view body, auto& result) {
+    ready.arrive_and_wait();
+    result = ann::execute_command(writer, {.operation      = ann::command_kind::reply,
+                                           .operation_uuid = operation,
+                                           .source_uuid    = *source,
+                                           .annotation_id  = created->annotation_id,
+                                           .body           = body});
+  };
+  {
+    std::jthread a{[&] { append(*writer_a, "reply-a", "A", reply_a); }};
+    std::jthread b{[&] { append(*writer_b, "reply-b", "B", reply_b); }};
+  }
+  REQUIRE(reply_a.has_value());
+  REQUIRE(reply_b.has_value());
+  REQUIRE(reply_a->has_value());
+  REQUIRE(reply_b->has_value());
+  CHECK((**reply_a).message_id != (**reply_b).message_id);
+  CHECK((**reply_a).message_revision == 1);
+  CHECK((**reply_b).message_revision == 1);
+  CHECK((**reply_a).revision == created->revision);
+  CHECK((**reply_b).revision == created->revision);
+  CHECK(scalar_int(conn, "select count(*) from annotation_messages where annotation_id = 1") == 3);
+  const auto message_id    = scalar_int(conn, "select max(id) from annotation_messages where annotation_id = 1");
+  const auto original_body = scalar_text(conn, std::format("select body from annotation_messages where id = {}", message_id));
+  auto       edited        = ann::execute_command(conn, {.operation         = ann::command_kind::edit_message,
+                                                         .operation_uuid    = "edit-b",
+                                                         .source_uuid       = *source,
+                                                         .annotation_id     = 1,
+                                                         .message_id        = message_id,
+                                                         .expected_revision = 1,
+                                                         .body              = "B2"});
+  REQUIRE(edited.has_value());
+  CHECK(edited->revision == created->revision);
+  CHECK(edited->message_id == message_id);
+  CHECK(edited->message_revision == 2);
+  auto recovered = ann::show_receipt(conn, *source, "edit-b");
+  REQUIRE(recovered.has_value());
+  REQUIRE(recovered->has_value());
+  CHECK((**recovered).message_id == message_id);
+  CHECK((**recovered).message_revision == 2);
+  auto stale = ann::execute_command(conn, {.operation         = ann::command_kind::edit_message,
+                                           .operation_uuid    = "edit-b-stale",
+                                           .source_uuid       = *source,
+                                           .annotation_id     = 1,
+                                           .message_id        = message_id,
+                                           .expected_revision = 1,
+                                           .body              = "lost"});
+  REQUIRE_FALSE(stale.has_value());
+  CHECK(stale.error() == ann::annotation_error::revision_conflict);
+  CHECK(scalar_text(conn, std::format("select body from annotation_messages where id = {}", message_id)) == "B2");
+  auto history = ann::show(conn, 1);
+  REQUIRE(history.has_value());
+  auto message = std::ranges::find(history->messages, message_id, &ann::message::id);
+  REQUIRE(message != history->messages.end());
+  REQUIRE(message->history.size() == 2);
+  CHECK(message->history[0].body == original_body);
+  CHECK(message->history[1].body == "B2");
+  auto resolved = ann::execute_command(conn, {.operation         = ann::command_kind::resolve,
+                                              .operation_uuid    = "resolve-thread",
+                                              .source_uuid       = *source,
+                                              .annotation_id     = 1,
+                                              .expected_revision = 1});
+  REQUIRE(resolved.has_value());
+  auto after_lifecycle = ann::show(conn, 1);
+  REQUIRE(after_lifecycle.has_value());
+  CHECK(after_lifecycle->messages.size() == history->messages.size());
+  CHECK(scalar_int(conn, "select count(*) from annotation_message_revisions") == 4);
+}
+
+TEST_CASE("schema-40 receipts replay after migration 41 only for the identical legacy payload", "[annotation][receipt][6765]") {
+  scratch_db_path scratch;
+  auto            opened = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(opened.has_value());
+  auto& conn = *opened;
+  REQUIRE(planar::db::apply_all(conn, planar::db::migrations().subspan(0, 40)));
+  exec(conn, "insert into plans(scope_kind,title,slug,status) values ('global','legacy','legacy','draft')");
+  exec(conn, "insert into annotations(scope_kind,anchor_kind,target_kind,target_id,plan_id,body,origin) "
+             "values ('global','entity','plan',1,1,'original','local-annotation-writer')");
+  auto source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+  // Exact schema-40 create fingerprint: the original field order and
+  // length-prefix encoding, with no schema-41 message or anchor fields.
+  const std::array<std::string, 12> legacy_fields = {"create",  *source,   "omitted",  "-1",   "-1", "not-null",
+                                                     "omitted", "present", "original", "plan", "1",  "0"};
+  std::string                       material;
+  for (const auto& field : legacy_fields)
+    material += std::format("{}:{}", field.size(), field);
+  auto receipt = conn.prepare("insert into annotation_operation_receipts"
+                              "(operation_uuid,source_uuid,payload_digest,annotation_id,revision,outcome) "
+                              "values ('schema39-create',?,?,1,1,'create')");
+  REQUIRE(receipt.has_value());
+  REQUIRE(receipt->bind_text(1, *source));
+  REQUIRE(receipt->bind_text(2, planar::sha256::hex(material)));
+  REQUIRE(receipt->step());
+  REQUIRE(planar::db::apply_all(conn));
+  CHECK(scalar_int(conn, "select max(version) from schema_migrations") == 41);
+  ann::command_args request{.operation      = ann::command_kind::create,
+                            .operation_uuid = "schema39-create",
+                            .source_uuid    = *source,
+                            .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                            .body           = "original"};
+  auto              replay = ann::execute_command(conn, request);
+  REQUIRE(replay.has_value());
+  CHECK(replay->replayed);
+  CHECK(scalar_int(conn, "select count(*) from annotations") == 1);
+  request.body = "changed";
+  auto changed = ann::execute_command(conn, request);
+  REQUIRE_FALSE(changed.has_value());
+  CHECK(changed.error() == ann::annotation_error::receipt_conflict);
+  request.body            = "original";
+  request.contextual_kind = "page";
+  auto extended           = ann::execute_command(conn, request);
+  REQUIRE_FALSE(extended.has_value());
+  CHECK(extended.error() == ann::annotation_error::receipt_conflict);
+}
+
+TEST_CASE("legacy and first-message edits share a revision boundary after replies", "[annotation][thread][6765]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into plans(scope_kind,title,slug,status) values ('global','mixed','mixed','draft')");
+  auto source = ann::source_uuid(conn);
+  REQUIRE(source.has_value());
+  auto created = ann::execute_command(conn, {.operation      = ann::command_kind::create,
+                                             .operation_uuid = "mixed-create",
+                                             .source_uuid    = *source,
+                                             .target         = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                                             .body           = "first"});
+  REQUIRE(created.has_value());
+  const auto first_id = scalar_int(conn, "select id from annotation_messages where annotation_id = 1");
+  auto       modern   = ann::execute_command(conn, {.operation         = ann::command_kind::edit_message,
+                                                    .operation_uuid    = "mixed-modern",
+                                                    .source_uuid       = *source,
+                                                    .annotation_id     = 1,
+                                                    .message_id        = first_id,
+                                                    .expected_revision = 1,
+                                                    .body              = "modern"});
+  REQUIRE(modern.has_value());
+  CHECK(modern->revision == 2);
+  CHECK(modern->message_revision == 2);
+  auto stale = ann::execute_command(conn, {.operation         = ann::command_kind::edit,
+                                           .operation_uuid    = "mixed-stale",
+                                           .source_uuid       = *source,
+                                           .annotation_id     = 1,
+                                           .expected_revision = 1,
+                                           .body              = "lost"});
+  REQUIRE_FALSE(stale.has_value());
+  CHECK(stale.error() == ann::annotation_error::revision_conflict);
+  auto reply = ann::execute_command(conn, {.operation      = ann::command_kind::reply,
+                                           .operation_uuid = "mixed-reply",
+                                           .source_uuid    = *source,
+                                           .annotation_id  = 1,
+                                           .body           = "second"});
+  REQUIRE(reply.has_value());
+  auto legacy = ann::execute_command(conn, {.operation         = ann::command_kind::edit,
+                                            .operation_uuid    = "mixed-legacy",
+                                            .source_uuid       = *source,
+                                            .annotation_id     = 1,
+                                            .expected_revision = 2,
+                                            .body              = "legacy"});
+  REQUIRE(legacy.has_value());
+  CHECK(legacy->revision == 3);
+  auto shown = ann::show(conn, 1);
+  REQUIRE(shown.has_value());
+  REQUIRE(shown->messages.size() == 2);
+  CHECK(shown->body == "legacy");
+  CHECK(shown->messages[0].body == "legacy");
+  CHECK(shown->messages[0].revision == 3);
+  CHECK(shown->messages[1].body == "second");
+  REQUIRE(shown->messages[0].history.size() == 3);
+  CHECK(shown->messages[0].history[0].body == "first");
+  CHECK(shown->messages[0].history[1].body == "modern");
+  CHECK(shown->messages[0].history[2].body == "legacy");
+  CHECK(scalar_int(conn, "select count(*) from annotation_operation_receipts where operation_uuid = 'mixed-stale'") == 0);
+}
+
+TEST_CASE("contextual mutations validate authoritative adjacent Unicode ranges atomically", "[annotation][thread][authority]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into plans(scope_kind,title,slug,status,summary) values "
+             "('global','Document','document','draft','# Heading\nParagraph\n- middle item\nUnicode café ☕')");
+  auto doc = planar::document_authority::project(conn, "plan", 1);
+  REQUIRE(doc.has_value());
+  REQUIRE(doc->passages.size() == 5);
+  std::vector<std::pair<std::string, std::string>> segments;
+  for (const auto& p : doc->passages)
+    segments.emplace_back(p.key, p.text);
+  ann::command_args request{.operation        = ann::command_kind::create,
+                            .operation_uuid   = "context-create",
+                            .source_uuid      = doc->source_uuid,
+                            .target           = ann::entity_target{.kind = ann::target_kind::plan, .id = 1},
+                            .body             = "review",
+                            .document_kind    = "plan",
+                            .document_id      = 1,
+                            .document_version = 1,
+                            .content_revision = doc->content_revision,
+                            .contextual_kind  = "range",
+                            .start_block_key  = doc->passages.front().key,
+                            .end_block_key    = doc->passages.back().key,
+                            .start_offset     = 0,
+                            .end_offset       = static_cast<std::int64_t>(doc->passages.back().text.size()),
+                            .anchor_segments  = segments};
+  auto              created = ann::execute_command(conn, request);
+  REQUIRE(created.has_value());
+  auto stored = ann::show(conn, *created->annotation_id);
+  REQUIRE(stored.has_value());
+  REQUIRE(stored->contextual.has_value());
+  CHECK(stored->contextual->segments == segments);
+  CHECK(stored->contextual->normalized_quote == "Document\nHeading\nParagraph\nmiddle item\nUnicode café ☕");
+  CHECK(stored->messages.size() == 1);
+  CHECK(ann::render_json(*stored).contains("\"messages\":["));
+  CHECK(ann::render_json(*stored).contains(doc->content_revision));
+
+  auto invalid           = request;
+  invalid.operation_uuid = "invalid-create";
+  SECTION("missing middle real block") {
+    invalid.anchor_segments.erase(invalid.anchor_segments.begin() + 2);
+  }
+  SECTION("forged quote") {
+    invalid.anchor_segments[2].second = "forged";
+  }
+  SECTION("foreign block") {
+    invalid.anchor_segments[2].first = "foreign";
+  }
+  SECTION("reordered covered blocks") {
+    std::swap(invalid.anchor_segments[1], invalid.anchor_segments[2]);
+  }
+  SECTION("block from another document") {
+    exec(conn, "insert into plans(scope_kind,title,slug,status,summary) values "
+               "('global','Other','other','draft','Paragraph')");
+    auto other = planar::document_authority::project(conn, "plan", 2);
+    REQUIRE(other.has_value());
+    invalid.anchor_segments[2].first = other->passages.back().key;
+  }
+  SECTION("reversed boundaries") {
+    std::swap(invalid.start_block_key, invalid.end_block_key);
+  }
+  SECTION("offset splits UTF8") {
+    invalid.end_offset = static_cast<std::int64_t>(doc->passages.back().text.size() - 1);
+  }
+  SECTION("stale projection") {
+    invalid.content_revision = "stale";
+  }
+  SECTION("forged normalized quote") {
+    invalid.normalized_quote = "forged";
+  }
+  SECTION("source changed after evidence was projected") {
+    exec(conn, "update plans set summary = '# Heading\nChanged paragraph\n- middle item\nUnicode café ☕' where id = 1");
+  }
+  auto rejected = ann::execute_command(conn, invalid);
+  REQUIRE_FALSE(rejected.has_value());
+  CHECK(scalar_int(conn, "select count(*) from annotations") == 1);
+  CHECK(scalar_int(conn, "select count(*) from annotation_operation_receipts") == 1);
+  invalid.operation         = ann::command_kind::reanchor;
+  invalid.operation_uuid    = "invalid-reanchor";
+  invalid.annotation_id     = created->annotation_id;
+  invalid.expected_revision = 1;
+  REQUIRE_FALSE(ann::execute_command(conn, invalid).has_value());
+  auto unchanged = ann::show(conn, *created->annotation_id);
+  REQUIRE(unchanged.has_value());
+  CHECK(unchanged->revision == 1);
+  CHECK(unchanged->contextual->segments == segments);
+  CHECK(scalar_int(conn, "select count(*) from annotation_operation_receipts") == 1);
 }

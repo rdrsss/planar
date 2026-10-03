@@ -119,7 +119,7 @@ TEST_CASE("apply_all migrates a fresh database to head", "[db][migrate]") {
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1)); // count == max version: no gaps
-  REQUIRE(stmt->column_int64(1) == 40);
+  REQUIRE(stmt->column_int64(1) == 41);
 }
 
 TEST_CASE("the embedded migration chain's versions are strictly monotonic", "[db][migrations]") {
@@ -310,7 +310,7 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 40);
+  REQUIRE(stmt->column_int64(1) == 41);
 }
 
 TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-for-row", "[db][migrate][parity]") {
@@ -377,8 +377,9 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
       {38, "execution supervision: claim supervisor/attempt, run engine, nullable run plan, supervision action kinds"},
       {39, "workflow_runs: nullable pid, lease expires_at, CHECK one of pid/expires_at is set (decision D11)"},
       {40, "host queue: queue_entries, queue_history, queue_schema marker, sequence floor 1000000"},
+      {41, "contextual annotation threads, revisioned messages, and adjacent range anchors"},
   };
-  REQUIRE(k_expected.size() == 40);
+  REQUIRE(k_expected.size() == 41);
 
   scratch_db_path cpp_scratch;
   auto            cpp_conn = planar::db::connection::open(cpp_scratch.path_.string());
@@ -401,7 +402,7 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
     REQUIRE(cpp_stmt->column_text(1) == k_expected[rows].second);
     ++rows;
   }
-  REQUIRE(rows == 40);
+  REQUIRE(rows == 41);
 }
 
 TEST_CASE("migration 34 preserves legacy file annotations and guards entity annotation rollback",
@@ -411,7 +412,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 33)));
   REQUIRE(conn->execute(
       "insert into annotations (scope_kind, anchor_path, anchor_text, title, body, status, vendor, created_at, updated_at) "
@@ -441,6 +442,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(legacy_tag->step().value() == planar::db::step_result::done);
 
   // Peel from head so the chain stays contiguous for the re-apply below.
+  REQUIRE(conn->execute(chain[40].down_sql_));
   REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
@@ -476,15 +478,19 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   CHECK(preserved_identity->column_text(0) == source_uuid);
   REQUIRE(preserved_identity->step().value() == planar::db::step_result::done);
 
-  REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
-  REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
-                        "values ('global', 'entity', null, 'plan', 1, 'durable note', 1);"));
+  // Exercise migration 34's entity rollback guard in its own schema. A note
+  // created at schema 41 has an independent message identity and correctly
+  // cannot pass migration 41's lossless downgrade guard.
+  REQUIRE(conn->execute(chain[40].down_sql_));
   REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
   REQUIRE(conn->execute(chain[36].down_sql_));
   REQUIRE(conn->execute(chain[35].down_sql_));
   REQUIRE(conn->execute(chain[34].down_sql_));
+  REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'target', 'target', 'draft');"));
+  REQUIRE(conn->execute("insert into annotations (scope_kind, anchor_kind, anchor_path, target_kind, target_id, body, plan_id) "
+                        "values ('global', 'entity', null, 'plan', 1, 'durable note', 1);"));
   REQUIRE_FALSE(conn->execute(chain[33].down_sql_).has_value());
   auto guard = conn->prepare("select count(*) from sqlite_master where type = 'table' and name = 'annotation_rollback_guard'");
   REQUIRE(guard.has_value());
@@ -512,7 +518,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 35)));
   REQUIRE(
       conn->execute("insert into cli_invocations "
@@ -539,7 +545,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   auto marker = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(marker.has_value());
   REQUIRE(marker->step().value() == planar::db::step_result::row);
-  CHECK(marker->column_int64(0) == 40);
+  CHECK(marker->column_int64(0) == 41);
 }
 
 namespace {
@@ -568,7 +574,7 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
   REQUIRE(chain[37].version_ == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
 
@@ -660,10 +666,10 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   CHECK(scalar(*conn, "select group_concat(run_id) from (select run_id from agent_work_claims order by id)") == "1,2");
   CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
 
-  // And forward again — through migrations 39 and 40 too, confirming the
+  // And forward again — through migrations 39, 40 and 41 too, confirming the
   // tail of the chain still applies cleanly on top of 38's re-applied shape.
   REQUIRE(planar::db::apply_all(*conn));
-  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "40");
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "41");
 }
 
 TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, without a table rebuild", "[db][migrate][6846]") {
@@ -672,7 +678,7 @@ TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, w
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
   REQUIRE(chain[38].version_ == 39);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
 
@@ -738,7 +744,7 @@ TEST_CASE("migration 38's up guard FIRES when the stored workflow_runs CREATE TA
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
   REQUIRE(chain[37].version_ == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
 
@@ -776,7 +782,7 @@ TEST_CASE("migration 39's up guard FIRES when the stored workflow_runs CREATE TA
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
   REQUIRE(chain[38].version_ == 39);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
 
@@ -805,7 +811,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
 
   // Walk the chain forward one migration at a time. At each version,
   // capture the schema, roll that single migration back, re-apply it, and
@@ -838,7 +844,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 40);
+  REQUIRE(stmt->column_int64(1) == 41);
 }
 
 TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their indexes", "[db][migrate][6808]") {
@@ -878,8 +884,9 @@ TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their
   CHECK(has_index("ux_annotations_slug"));
 
   const auto chain = planar::db::migrations();
-  // Peel 00040, 00039 and 00038 first so 00037's down runs against the schema it was written for.
+  // Peel 00041, 00040, 00039 and 00038 first so 00037's down runs against the schema it was written for.
   REQUIRE(chain[36].version_ == 37);
+  REQUIRE(conn->execute(chain[40].down_sql_));
   REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
   REQUIRE(conn->execute(chain[37].down_sql_));
@@ -891,6 +898,74 @@ TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their
   }
 }
 
+TEST_CASE("migration 00041 losslessly promotes entity notes to page threads and preserves file notes",
+          "[db][migrate][6765][annotation-thread]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 41);
+  REQUIRE(chain[40].version_ == 41);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 40)));
+
+  REQUIRE(conn->execute("insert into plans (id, scope_kind, title, slug, status) values (91, 'global', 'thread target', "
+                        "'thread-target', 'draft')"));
+  REQUIRE(
+      conn->execute("insert into annotations (id, scope_kind, anchor_kind, target_kind, target_id, body, status, vendor, origin, "
+                    "revision, plan_id, created_at, updated_at) values "
+                    "(701, 'global', 'entity', 'plan', 91, 'legacy entity', 'resolved', 'codex', 'explorer', 7, 91, "
+                    "'2000-01-01T00:00:00.000Z', '2000-01-02T00:00:00.000Z')"));
+  REQUIRE(conn->execute("insert into annotations (id, scope_kind, anchor_kind, anchor_path, body, revision) "
+                        "values (990, 'global', 'file', 'src/a.cpp', 'legacy file', 3)"));
+  REQUIRE(conn->execute("insert into annotation_tags (annotation_id, tag) values (701, 'review')"));
+
+  REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select count(*) from annotation_messages") == "1");
+  CHECK(scalar(*conn, "select id || ':' || annotation_id || ':' || revision || ':' || body from annotation_messages") ==
+        "701:701:7:legacy entity");
+  CHECK(scalar(*conn, "select count(*) from annotation_messages where annotation_id = 990") == "0");
+  CHECK(scalar(*conn, "select tag from annotation_tags where annotation_id = 701") == "review");
+  CHECK(scalar(*conn, "select count(*) from annotation_contextual_anchors") == "0");
+  CHECK(scalar(*conn, "select message_id || ':' || revision || ':' || body from annotation_message_revisions") ==
+        "701:7:legacy entity");
+  REQUIRE_FALSE(conn->execute("update annotation_message_revisions set body = 'lost' where message_id = 701"));
+
+  // The untouched migrated shape is exactly reversible.
+  REQUIRE(conn->execute(chain[40].down_sql_));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "40");
+  REQUIRE(planar::db::apply_all(*conn));
+
+  auto anchor_insert =
+      conn->execute("insert into annotation_contextual_anchors (annotation_id, schema_version, document_kind, document_id, "
+                    "document_version, content_revision, anchor_kind, start_block_key, end_block_key, start_offset, end_offset, "
+                    "normalized_quote) "
+                    "values (701, 1, 'plan', 91, 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'range', "
+                    "'p:1', 'p:2', 2, 6, 'alpha beta')");
+  const auto anchor_insert_detail = anchor_insert.has_value() ? std::string{"ok"} : anchor_insert.error().message_;
+  INFO(anchor_insert_detail);
+  REQUIRE(anchor_insert.has_value());
+  REQUIRE(conn->execute("insert into annotation_anchor_segments (annotation_id, ordinal, block_key, quote) values "
+                        "(701, 0, 'p:1', 'alpha'), (701, 1, 'p:2', 'beta')"));
+  REQUIRE_FALSE(conn->execute("insert into annotation_anchor_segments (annotation_id, ordinal, block_key, quote) "
+                              "values (701, 3, 'p:4', 'discontinuous')"));
+  REQUIRE_FALSE(conn->execute("update annotation_contextual_anchors set anchor_state = 'orphaned' where annotation_id = 701"));
+  REQUIRE(conn->execute("update annotation_contextual_anchors set anchor_state = 'orphaned', revision = 2, "
+                        "updated_at = '2002-01-01T00:00:00.000Z' where annotation_id = 701 and revision = 1"));
+  CHECK(scalar(*conn, "select summary from audit_log where entity_kind = 'annotation' and entity_id = 701 "
+                      "order by id desc limit 1") == "explicit contextual re-anchor");
+  REQUIRE(conn->execute("delete from annotation_contextual_anchors where annotation_id = 701"));
+
+  // Valid replies with identical timestamps are retained and replay in the
+  // required (created_at,id) order. Once history exists, rollback refuses.
+  REQUIRE(conn->execute("insert into annotation_messages (annotation_id, body, created_at, updated_at) values "
+                        "(701, 'reply b', '2001-01-01T00:00:00.000Z', '2001-01-01T00:00:00.000Z'), "
+                        "(701, 'reply c', '2001-01-01T00:00:00.000Z', '2001-01-01T00:00:00.000Z')"));
+  CHECK(scalar(*conn, "select group_concat(body, '|') from (select body from annotation_messages "
+                      "where annotation_id = 701 order by created_at, id)") == "legacy entity|reply b|reply c");
+  REQUIRE_FALSE(conn->execute(chain[40].down_sql_));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "41");
+}
+
 TEST_CASE("the down chain from head deletes schema_migrations rows in strict descending mirror order, "
           "leaving no orphan rows, and a full rollback reaches an empty database",
           "[db][migrate][rollback]") {
@@ -900,7 +975,7 @@ TEST_CASE("the down chain from head deletes schema_migrations rows in strict des
   REQUIRE(planar::db::apply_all(*conn));
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
 
   // Roll back one migration at a time, from the tip down to the
   // foundation, asserting the mirror-order contract at every step: before
@@ -1018,7 +1093,7 @@ TEST_CASE("apply_contiguous ACCEPTS the embedded chain, so the refusal above is 
 
 TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[db][migrate][guard]") {
   auto const head = planar::db::embedded_max();
-  REQUIRE(head == 40);
+  REQUIRE(head == 41);
 
   SECTION("a fresh, never-initialized database is BEHIND at version 0") {
     scratch_db_path scratch;
@@ -1363,9 +1438,11 @@ TEST_CASE("migration 40's down refuses by name while queue_entries has a row, an
   REQUIRE(planar::db::apply_all(*conn));
 
   auto const chain = planar::db::migrations();
-  REQUIRE(chain.size() == 40);
+  REQUIRE(chain.size() == 41);
   REQUIRE(chain[39].version_ == 40);
   REQUIRE(chain[39].name_ == "host_queue");
+  // Peel the annotation migration (00041) so migration 40 is the head under test.
+  REQUIRE(conn->execute(chain[40].down_sql_));
 
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'p', 'p', 'active')"));
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'q', 'q', 'draft')"));
