@@ -922,6 +922,34 @@ TEST_CASE("document authority refuses missing and unmigrated sources without cre
   CHECK(query_rows(conn, "select count(*) from sqlite_master where type='table' and name='schema_migrations'", 1) == "0");
 }
 
+// The "missing" half of the case above puts the database under a parent
+// directory that does not exist, so NEITHER open mode can create it and the
+// fixture cannot tell `open_read_only` from `open`. Here the parent exists
+// and only planar.db is absent: a read-write open would create the file (and
+// a WAL-mode one its -wal/-shm sidecars), so this is the case that pins the
+// read-only open itself (review finding F3).
+TEST_CASE("document authority refuses an absent database in an existing directory without creating it",
+          "[cmd][document][readonly]") {
+  auto const fx = make_fixture("doc_readonly_absent_file");
+  REQUIRE(std::filesystem::is_directory(fx.db_path.parent_path()));
+  REQUIRE_FALSE(std::filesystem::exists(fx.db_path));
+  auto const sidecars =
+      std::array{fx.db_path, std::filesystem::path{fx.db_path.string() + "-wal"},
+                 std::filesystem::path{fx.db_path.string() + "-shm"}, std::filesystem::path{fx.db_path.string() + "-journal"}};
+
+  auto const projected = dispatch(fx, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  CHECK(projected.code != 0);
+  CHECK(projected.err.contains("read-only"));
+  auto const validated =
+      dispatch(fx, {"document", "validate-range", "--kind", "artifact", "--id", "1", "--content-revision", "r", "--start-key",
+                    "k", "--start-offset", "0", "--end-key", "k", "--end-offset", "0", "--json"});
+  CHECK(validated.code != 0);
+  for (auto const& path : sidecars) {
+    INFO("path: " << path.string());
+    CHECK_FALSE(std::filesystem::exists(path));
+  }
+}
+
 TEST_CASE("document authority projects one coherent snapshot while a writer changes related rows", "[cmd][document][snapshot]") {
   auto const fx = make_fixture("doc_snapshot");
   seed_association_and_plan(fx);
