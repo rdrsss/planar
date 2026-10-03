@@ -240,7 +240,7 @@ make fmt        # reformat first-party C++ with the pinned clang-format
 make help       # every target
 
 cmake --preset debug
-cmake --build build/debug
+cmake --build build/debug --target all planar_tests   # test binaries are not in `all`
 ctest --test-dir build/debug --output-on-failure
 ```
 
@@ -248,6 +248,14 @@ ctest --test-dir build/debug --output-on-failure
   install` and `install.sh` pass it. Embedding the live sha and dirty flag by
   default invalidates the whole build graph on every commit.
 - `make test` alone is not the merge gate; `make test-all` is.
+- Test binaries are not in the default `all` target. `cmake --build build/<preset>`
+  builds the product only; `--target planar_tests` builds every Catch2
+  binary (`make test`, `make linux-gate` and the full CI tier do both). A
+  cold build spent a quarter of its CPU compiling tests that `make build`,
+  `make install` and `install.sh` never ran (measured 2026-10-03). Every
+  test executable goes through `planar_mark_test_binary()` in
+  `cmake/module.cmake`; a hand-rolled `add_executable(<x>_tests …)` that
+  skips it lands back in `all`.
 - A green ctest run does not prove the suite ran. `make
   ctest-registry-check` does. A `ctest -R` filter that matches nothing is
   also green, so check the matched count.

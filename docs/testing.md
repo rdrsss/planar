@@ -9,7 +9,7 @@ walk are in [lifecycles.md](lifecycles.md).
 
 | Command | What it proves |
 |---------|----------------|
-| `make test` | Builds the `debug` preset, then runs every Catch2 case under `ctest` in parallel. `TEST_JOBS=1` runs them serially. |
+| `make test` | Builds the `debug` preset including the `planar_tests` aggregate (test binaries are not in `all`), then runs every Catch2 case under `ctest` in parallel. `TEST_JOBS=1` runs them serially. |
 | `make test-cpp-report` | The same suite, plus its skip tally. The expected tally is zero. |
 | `make ctest-registry-check` | ctest runs exactly the cases the test binaries contain. Needs `build/debug` built. |
 | `make coverage` | The `(verb, subcommand)` leaf-coverage ratio has not dropped below `scripts/coverage-baseline.txt`. |

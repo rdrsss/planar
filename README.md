@@ -141,7 +141,7 @@ This build does not include the Centurion workflow engine. `planar-execute`'s en
 git clone https://github.com/rdrsss/planar.git
 cd planar
 cmake --preset debug
-cmake --build build/debug
+cmake --build build/debug --target all planar_tests   # test binaries are not in `all`
 ctest --test-dir build/debug --output-on-failure
 ```
 

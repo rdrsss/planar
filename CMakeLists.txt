@@ -240,6 +240,15 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(dependencies)   # CPM + vendored packages (cmake/dependencies.cmake)
 include(module)         # planar_module() (cmake/module.cmake)
 
+# `planar_tests` — the one target that builds every Catch2 test binary.
+# Test executables are EXCLUDE_FROM_ALL (cmake/module.cmake,
+# planar_mark_test_binary()), so `cmake --build <dir>` builds the product
+# only; `cmake --build <dir> --target planar_tests` builds the suite. Measured
+# before this change (2026-10-03, cold release build on 8 cores): the 150
+# test targets plus Catch2 were 81 of 320 CPU-minutes, compiled by
+# `make build`, `make install` and `install.sh` and then never run.
+add_custom_target(planar_tests)
+
 add_subdirectory(src)
 
 # src/tools/ — project tooling (decision 1000). Configured after src/ so

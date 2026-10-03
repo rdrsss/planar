@@ -48,6 +48,33 @@
 # or binary added tomorrow inherits the sweep with no per-target opt-in.
 set(_planar_arena_sweep_source "${CMAKE_CURRENT_LIST_DIR}/test_support/arena_sweep_listener.cpp")
 
+# planar_mark_test_binary(<target>) — take a Catch2 test executable out of
+# the default `all` target and hang it off the `planar_tests` aggregate
+# (CMakeLists.txt) instead. Every test executable in the tree goes through
+# this, including the hand-rolled ones under src/tools/, so the build/run
+# split has exactly one definition:
+#
+#   cmake --build <dir>                        # product only
+#   cmake --build <dir> --target planar_tests  # every test binary
+#
+# `make test`, `make linux-gate` and the full CI tier build `planar_tests`
+# explicitly; `make build`, `make install` and `install.sh` no longer compile
+# the suite at all. catch_discover_tests() is unaffected: its discovery step
+# is a POST_BUILD of the test binary and still runs whenever that binary is
+# built, so a registered-but-unbuilt test cannot exist — ctest reports a
+# "Not Run"/missing-executable failure for a test whose binary was never
+# built, which `make test` cannot hit because it builds `planar_tests` first.
+function(planar_mark_test_binary target)
+  if(NOT TARGET planar_tests)
+    message(FATAL_ERROR
+      "planar_mark_test_binary(${target}): the planar_tests aggregate does "
+      "not exist yet; CMakeLists.txt must add_custom_target(planar_tests) "
+      "before add_subdirectory(src).")
+  endif()
+  set_target_properties(${target} PROPERTIES EXCLUDE_FROM_ALL ON)
+  add_dependencies(planar_tests ${target})
+endfunction()
+
 function(planar_module name)
   set(options EMBED)
   set(one_value_args)
@@ -126,6 +153,7 @@ function(planar_module name)
 
     set(_test_target "planar_${name}_tests")
     add_executable(${_test_target} ${_test_sources} ${_planar_arena_sweep_source})
+    planar_mark_test_binary(${_test_target})
     set_target_properties(${_test_target} PROPERTIES
       CXX_STANDARD 26
       CXX_STANDARD_REQUIRED ON
@@ -334,6 +362,7 @@ function(planar_binary name)
 
   set(_test_target "${_target}_tests")
   add_executable(${_test_target} ${_test_sources} ${_planar_arena_sweep_source})
+  planar_mark_test_binary(${_test_target})
   if(ARG_INTERFACE)
     target_sources(${_test_target}
       PUBLIC

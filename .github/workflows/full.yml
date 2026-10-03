@@ -48,7 +48,7 @@ jobs:
           docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -v "$PWD":/src -w /src planar-toolchain bash -euc '
               cmake --preset debug
-              cmake --build build/debug -j4
+              cmake --build build/debug -j4 --target all planar_tests
               # -j2, not -j4: a few queue and contention tests assert latency
               # bounds and worker fairness, and fail under heavy parallel load.
               ctest --test-dir build/debug -j2 --output-on-failure
