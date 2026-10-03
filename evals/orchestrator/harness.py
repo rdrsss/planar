@@ -1360,10 +1360,6 @@ def grade_coherence(root: Path = ROOT) -> None:
         ["agents/janitor.md"],
     )
     must(
-        r"docs_outcome: not-configured",
-        ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
-    )
-    must(
         r"coder.*(narrative )?report|coder's report",
         ["skills/src/pl-reviewer.md", "agents/reviewer.md", "agents/methodology.md"],
     )

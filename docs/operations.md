@@ -10,7 +10,7 @@ Three flows carry most work:
 1. **The spec pipeline** turns a goal into a structured task graph
    (draft -> review -> ingest).
 2. **The orchestration lifecycle** turns that graph into merged, reviewed code
-   across seven phases.
+   across six phases.
 3. **The claim ritual** is the atomic coordination primitive every
    code-writing dispatch rides on.
 
@@ -110,19 +110,16 @@ Detail: [`workflows.md` Recipe 1](workflows.md#recipe-1--start-a-new-feature),
 
 The orchestrator is the top-level dispatcher. It selects phases from the
 anchor plan's status and drives a feature through planning, ingestion,
-execution, optional finalization, optional propagation/archive, and the
-default-on documentation pass. Planning and ingestion are hard-gated;
+execution, optional finalization, and optional propagation/archive.
+Planning and ingestion are hard-gated;
 execution runs a reviewer loop capped at five iterations.
 
 The orchestrator, coder, reviewer, test-coder, and janitor roles that drive
 this lifecycle live in this repo's `agents/` (raised to armarium at plan 929,
 returned at the armarium reintegration), alongside their companion
-methodology, doctrine, and model-tier-routing docs. The documenter and
-doc-author roles referenced in Phase 6 live in tabularium (the stack's
-standalone documentation tool, which owns the manifest database they operate;
-moved there at the doc-cluster transfer, planar plan 933). Planar itself
-drives the primitives these roles compose: the `planar-agent` claim ritual
-(§3 below), `tabularium diff`, and the doc manifest gates.
+methodology, doctrine, and model-tier-routing docs. Planar itself
+drives the primitive these roles compose: the `planar-agent` claim ritual
+(§3 below).
 
 ```mermaid
 flowchart TD
@@ -154,8 +151,7 @@ flowchart TD
     DN -->|"yes + --finalize"| P37["Phase 3.7 Finalization<br/>janitor merge -> reconcile -> closeout"]
     DN -->|"yes"| OPT["Phase 4 / 5<br/>propagate / archive when requested"]
     P37 --> OPT
-    OPT --> DOC["Phase 6 Documenter<br/>diff -> gated worklist -> build"]
-    DOC --> END(["done"])
+    OPT --> END(["done"])
 ```
 
 **Phases 1-2** are the spec pipeline above. The orchestrator surfaces drafted
@@ -191,12 +187,6 @@ verification, Planar reconciliation, branch/worktree cleanup, and
 
 **Phases 4-5** are explicit: `--propagate` creates external counterparts and
 `--archive` archives the workbench tree. The database retains the feature.
-
-**Phase 6** is default-on unless `--no-docs` is supplied. The orchestrator runs
-`tabularium diff`, dispatches the documenter to propose a worklist
-(`extend-cover`, `create-doc`, `nodoc`, `defer`), gates each row with the
-operator, and then runs the caller-owned doc manifest gates. The documenter
-proposes; doc-author writes only approved prose rows.
 
 Detail: [`workflows.md` Recipe 2](workflows.md#recipe-2--run-the-orchestrator)
 and `agents/methodology.md`.

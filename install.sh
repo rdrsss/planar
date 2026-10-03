@@ -555,7 +555,6 @@ RUN_DEPS=(
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
-  "tabularium||bundled documentation-maintenance workflows"
 )
 
 check_deps "build" 1 "${BUILD_DEPS[@]}"

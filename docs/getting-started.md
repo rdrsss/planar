@@ -5,9 +5,6 @@ template_version: 1
 regenerated_at: 2026-05-18T00:00:00Z
 regenerated_by: hand
 references:
-  doc_tech_spec:
-    kind: planar
-    entity: artifact:67
   founding_tech_spec:
     kind: planar
     entity: artifact:30
@@ -245,29 +242,7 @@ sub-plans, and their tasks — and records each counterpart in
 write local fields (decision 996); use it to see whether the remote drifted,
 then update the local entity yourself if warranted.
 
-## 8. Docs as a first-class repo concern
-
-Outward-facing docs under `docs/` are tracked by the separately installed
-`tabularium` tool in its machine-local database. The
-manifest links each published doc to one or more **repo-path
-sources** (directories or files in the working tree), so any drift
-in covered subtrees surfaces as a regenerate-candidate on the next
-diff. The workflow is:
-
-```sh
-# After authoring a new doc, wire it to the source areas it covers:
-tabularium cover docs/features/login-flow.md src/login/
-tabularium build       # refresh machine-local project state
-
-# Routine drift checks:
-tabularium verify      # O(1) root compare against the live tree
-tabularium diff        # three-signal breakdown if anything moved
-```
-
-Source drift in `src/login/` then surfaces as a
-regenerate-candidate on the next `tabularium diff`[^doc_tech_spec].
-
-## 9. Where to go next
+## 8. Where to go next
 
 - [Concepts](concepts.md) — the mental model: scope, association,
   plan, task, handoff, workbench.
@@ -291,4 +266,3 @@ regenerate-candidate on the next `tabularium diff`[^doc_tech_spec].
 | `ext propagate-one`: "external system '<slug>' not found" | System not yet registered | `planar-ext ext register github <slug> --project <owner/repo>` first |
 
 [^founding_tech_spec]:
-[^doc_tech_spec]:

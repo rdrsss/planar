@@ -218,8 +218,6 @@ compile time by each binary's verb set, not by runtime ACLs:
   security boundary (a caller can always run its command directly).
 - `planar-watch` is incapable of writing to the DB at all — both the
   verb set and the read-only DB handle are load-bearing.
-- Documentation state is outside Planar. The standalone `tabularium` tool owns
-  a machine-local SQLite database and only reads the documented repository.
 
 The operator-recovery verbs `planar-agent reconcile` and
 `planar-agent abort` live on `planar-agent` (not `planar`) because both
@@ -733,7 +731,7 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 
 | Agent | Tier | Responsibility |
 |-------|------|---------------|
-| `orchestrator` | large | Receives a goal or task list; manages the full feature lifecycle across up to seven phases; dispatches to coders; routes output through reviewers; enforces the iteration cap. |
+| `orchestrator` | large | Receives a goal or task list; manages the full feature lifecycle across up to six phases; dispatches to coders; routes output through reviewers; enforces the iteration cap. |
 | `coder` | medium | Implements one task (or task group) end-to-end; receives reviewer feedback and addresses it in the next iteration. |
 | `test-coder` | large | Adversarial test authoring against the coder diff; dispatched when uncovered test-spec slugs intersect the cycle's tasks. |
 | `reviewer` | large | Reviews coder output; returns `approve`, `request-changes`, `open-question`, or `abort`. |
@@ -741,8 +739,6 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | `planner` | large | Drafts planning documents (product spec, tech spec, roadmap, test spec) from a goal statement and registers them as workbench artifacts. |
 | `spec-reviewer` | large | Adversarially reviews draft planning artifacts before ingestion and returns a readiness verdict. |
 | `ingestor` | large | Reads planning documents from the workbench and decomposes them into plans, tasks, decisions, and scenarios in the database. |
-| `documenter` | large | Proposes the doc worklist from `tabularium diff`; runs after Phase 3 so the post-cycle tree is visible. |
-| `doc-author` | large | Writes only operator-approved reference prose under `docs/`; never decides coverage or mutates manifest state. |
 | `ext-sync` | large | Propagates the feature tree to the operational plane and syncs changes bidirectionally. |
 | `sync-reconciler` | large | Compares local and external sync-conflict evidence and coordinates the exact operator-approved whole-entity resolution. |
 | `importer` | large | Translates an existing repository's planning artefacts (specs, ADRs, roadmaps, backlog files, GitHub issues) into Planar's data model without a goal statement. |
@@ -761,9 +757,8 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | 3.7 — Finalization | `janitor` | Explicit `--finalize` or interactive confirm after Phase 3; merge -> reconcile -> closeout gate |
 | 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` |
 | 5 — Archive | `pl-workbench-archive` | Anchor plan done, user requests `--archive` |
-| 6 — Documenter | `pl-documenter` | Default-on after Phase 3; `tabularium diff` -> gated worklist -> `tabularium build` |
 
-The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; Phase 6 is default-on but still gates every proposed doc action with the operator. The iteration cap is 5 per reviewer dispatch cycle.
+The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; The iteration cap is 5 per reviewer dispatch cycle.
 
 ### Vendor surfaces
 
@@ -789,7 +784,7 @@ do not invent work and no guidance or manifest file is changed automatically.
 | Copilot | `$PLANAR_HOME/copilot-skills/` | `~/.copilot/skills/` |
 | Gemini | `$PLANAR_HOME/gemini-skills/` | `~/.gemini/antigravity-cli/skills/` |
 
-Agent role specs (vendor-neutral) live under `agents/`. The planning-lifecycle files are `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, `agents/feedback-triager.md`, and `agents/introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here (raised to armarium, the stack's meta repo, at plan 918/929 and returned at the armarium reintegration). The documenter and doc-author roles (and their `pl-documenter` / `pl-doc-maintain` skills) live in tabularium, which owns the doc-system tool they drive (moved at the doc-cluster transfer, planar plan 933); Phase 6 still dispatches them (see the §Roles table above, which lists the conceptual lifecycle roles regardless of which repo ships each surface).
+Agent role specs (vendor-neutral) live under `agents/`. The planning-lifecycle files are `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, `agents/feedback-triager.md`, and `agents/introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here (raised to armarium, the stack's meta repo, at plan 918/929 and returned at the armarium reintegration).
 
 Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
 frontmatter metadata (one lowercase SHA-256 hex value each, versioned,

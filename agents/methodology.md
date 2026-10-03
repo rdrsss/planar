@@ -39,7 +39,6 @@ completed work. Full phase documentation lives in
 | 3.7 — Finalization | `janitor` (spawned subagent) | Phase 3 cycles complete with approval, validation evidence, and a confirmed Git delivery profile; user requests `--finalize` or confirms interactively | Explicit per invocation; integration must be proven and `planar plan closeout --dry-run` must pass before apply |
 | 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` | Explicit per invocation |
 | 5 — Archive | `pl-workbench-archive` | Anchor plan `done`, user requests `--archive` | Explicit per invocation |
-| 6 — Documentation | Tabularium `tabularium-documenter` | Stable integrated tree and documentation preflight configured | Missing config is a verified `not-configured` skip; configured work uses Tabularium row gates |
 
 **Key invariants:**
 - The orchestrator never auto-applies ingestion. The ingestor always runs in preview mode first; `--apply` is gated on explicit user confirmation.
@@ -50,9 +49,6 @@ completed work. Full phase documentation lives in
 - The orchestrator never auto-archives. Archive is always an explicit user action.
 - The orchestrator never finalizes silently. Phase 3.7 is gated on explicit operator opt-in (`--finalize` flag or interactive confirm). Coders never close plans; the janitor is the only agent role that runs `planar plan closeout`.
 - The orchestrator never picks dispatch granularity silently. Phase 3 begins with a strict/grouped/single proposal that the user must confirm (unless an explicit `--strict`/`--grouped`/`--batch` flag was supplied at invocation).
-- Phase 6 never initializes documentation configuration. Missing executable or
-  repository configuration records `docs_outcome: not-configured`; a configured
-  clean diff records `verified-noop`.
 - For an `active` or `paused` anchor plan, the orchestrator skips Phases 1,
   1.5, and 2 and enters Phase 3 directly.
 - Phase 3 work selection is claim-aware. Active, unexpired agent claims make a task or child milestone unavailable to new dispatch unless the operator explicitly forces stale-claim recovery.

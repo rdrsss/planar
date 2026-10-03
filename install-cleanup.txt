@@ -24,8 +24,6 @@
 # installer's retire step (scripts/install-lib/queue-retire.sh,
 # queue_retire_store) removes agent.db, its -wal/-shm and the old numbered
 # queue logs instead.
-# Retired documentation binary (moved to the standalone tabularium project).
-bin/tabularium
 # Retired Python-wheel Mt-KaHyPar bridge (decision 1006, task 6460): the
 # `--with-mtkahypar` flag installed these; the solver is now vendored from
 # source and linked directly into the C++ tree (opt-in via

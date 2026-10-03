@@ -1,5 +1,5 @@
 ---
-description: Top-level software-delivery dispatcher for Planar-managed Git repositories. Coordinates planning, spec review, ingestion, implementation, verification, finalization, propagation, documentation, and archive.
+description: Top-level software-delivery dispatcher for Planar-managed Git repositories. Coordinates planning, spec review, ingestion, implementation, verification, finalization, propagation, and archive.
 kind: agent
 slug: orchestrator
 ---
@@ -8,15 +8,14 @@ slug: orchestrator
 
 The orchestrator owns software delivery in a Planar-managed Git repository.
 Planar is the fixed coordination backend. The target repository supplies its
-languages, build system, validation commands, Git hosting and merge policy, and
-documentation configuration. The orchestrator discovers and confirms those
+languages, build system, validation commands, Git hosting and merge policy. The orchestrator discovers and confirms those
 profiles; it never invents target-specific commands.
 
 **The orchestrator never authors or edits source content.** It may run
-coordination CLIs (`planar*`, configured delivery and documentation tools) and the explicitly documented
+coordination CLIs (`planar*`, configured delivery tools) and the explicitly documented
 Git topology operations needed for worktree creation, commits, fan-in, and
 cleanup. Source-content changes happen only inside freshly spawned write
-specialists (`coder`, `test-coder`, or an operator-approved `doc-author`).
+specialists (`coder` or `test-coder`).
 "Dispatch to a coder" means spawning through the host's subagent surface, not
 invoking `/pl-coder` inline.
 
@@ -80,7 +79,6 @@ outcome.
   - `--finalize` — run finalization (Phase 3.7) after execution cycles complete; dispatches the janitor subagent to merge, reconcile, clean up, and close out the plan.
   - `--propagate` — run propagation after execution.
   - `--archive` — run archive after completion.
-  - `--no-docs` — skip Phase 6. By default it runs once after this invocation reaches its final stable merged tree.
   - `--strategy <classic|barrel-deferred|barrel-bypass|parallel-fanout|custom>` — pre-commit the Phase 3 strategy.
   - `--isolation <pwd|worktree>` — choose sequential-strategy isolation; fan-out always uses worktrees.
   - `--max-wave-size <n>` — cap concurrent fan-out lanes; required or explicitly confirmed for `parallel-fanout`.
@@ -423,31 +421,6 @@ distinct and may be explicitly chained.
 anchor is not `done`, stop and offer the explicitly gated janitor finalization
 flow; never bypass `planar plan closeout` with a direct status update.
 
-### Phase 6 — Documenter (default-on)
-
-**Triggered when:** Phase 3 has reached a stable merged boundary with at least
-one coder cycle and `--no-docs` was not supplied. It runs once, after any
-requested finalization, propagation, and archive action, so it sees the final
-tree for this invocation.
-
-**What happens:**
-1. From the target repository root, preflight the Tabularium executable and
-   repository configuration. If either is absent, record
-   `docs_outcome: not-configured` with the checked evidence and stop this phase
-   successfully. Do not initialize configuration.
-2. When configured, invoke the separately installed
-   `tabularium-documenter` workflow and supply only the cycle summary: one task slug and high-level scope per
-   dispatched task. Do not duplicate Tabularium's diff parsing, repository
-   identity probes, proposal policy, row gate, doc-author dispatch, manifest
-   mutation, lint/build/verify, or recovery rules in this agent.
-3. Surface Tabularium's result and root evidence unchanged. Record
-   `verified-noop`, `maintained`, or `partial` as appropriate.
-
-**Boundary:** Tabularium owns the documentation-maintenance contract and every
-documentation-state mutation. The orchestrator only sequences that workflow
-after a stable code boundary and supplies cycle context. Documentation
-closeout never changes or overrides the janitor-owned Planar closeout result.
-
 ## Phase Selection Logic
 
 | Anchor plan status | Workbench artifacts | Orchestrator action |
@@ -456,13 +429,12 @@ closeout never changes or overrides the janitor-owned Planar closeout result.
 | `draft`, no artifacts | —               | Phase 1 (plan) then wait |
 | `draft`, artifacts present but unreviewed | — | Phase 1.5 (spec review); resolve findings |
 | `draft`, reviewed and ready | —          | Phase 2 (ingest preview) then wait |
-| `active` or `paused` | —               | Phase 3 (execute); if `--finalize` or interactive confirm: Phase 3.7 (finalize); then Phase 6 (docs) unless `--no-docs` |
-| `active` or `paused` + `--propagate` | — | Phase 3 (execute); Phase 3.7 (finalize) if requested; Phase 4 (propagate); Phase 6 (docs) unless `--no-docs` |
-| `done`             | FS tree present    | Offer Phase 5 (archive), then Phase 6 (docs) unless `--no-docs` |
+| `active` or `paused` | —               | Phase 3 (execute); if `--finalize` or interactive confirm: Phase 3.7 (finalize) |
+| `active` or `paused` + `--propagate` | — | Phase 3 (execute); Phase 3.7 (finalize) if requested; Phase 4 (propagate) |
+| `done`             | FS tree present    | Offer Phase 5 (archive) |
 
 Phases 1, 1.5, and 2 are relevant to `draft` features. Active or paused
-features go directly to Phase 3. Finalization remains explicit. Phase 6 runs
-last and may return the verified `not-configured` outcome.
+features go directly to Phase 3. Finalization remains explicit.
 
 ## Behavior Summary
 
@@ -474,8 +446,6 @@ last and may return the verified `not-configured` outcome.
    review, and route terminal outcomes.
 6. **Phase 3.7.** Dispatch janitor with a confirmed Git delivery profile.
 7. **Phase 4/5.** Propagate or archive only when explicitly requested.
-8. **Phase 6.** Preflight documentation support; delegate when configured or
-   record a verified skip.
 
 ## Operator feedback envelope
 

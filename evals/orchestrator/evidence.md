@@ -30,9 +30,8 @@ will eventually be recorded in the results ledger, `evals/RESULTS.md`
 | Straight-through classic lifecycle | `classic-lifecycle-success` | Contract + lifecycle | Claim, coder, approval, and completion ordering; exact counts; done task; zero claims; expected file; passing fixture test | Controlled single-task specialists, not production agents |
 | Review uses the captured base-relative diff | `classic-review-cycle-base-relative-diff` | Contract | Orchestrator and specialists share the base-ref rule | No live multi-commit or rewritten-base scenario |
 | Reviewer request-changes loops correctly | `classic-reviewer-bounce` | Contract + lifecycle | One bounce, two coder finishes, later approval, then completion | Controlled reviewer response; no iteration-cap live run |
-| Delivery and documentation profiles stay separate | `delivery-and-documentation-profiles` | Contract | Required delivery modes and `docs_outcome` contract exist | No documentation system is invoked |
+| Delivery profiles are confirmed | `delivery-profiles` | Contract | Required delivery modes exist | Does not execute a delivery |
 | Dispatch capability boundaries | `dispatch-command-capability-boundaries` | Contract | Canonical/legacy command and role boundaries are encoded | Does not execute every dispatch strategy |
-| Documentation delegates to Tabularium | `documentation-delegates-to-tabularium` | Contract | Runtime contracts route documentation through the owned workflow | No Tabularium lifecycle is executed |
 | Review bypass is expert opt-in | `review-bypass-is-explicit-expert-opt-in` | Contract | Bypass is explicit and never recommended | No live attempt to coerce or accidentally select bypass |
 | No mutation before Phase 3 gates | `phase3-model-routing-host-boundary` | Live | `grade_live_artifacts` byte-compares `before.dispatch-state.json`/`after.dispatch-state.json`, `before.planar.sql`/`after.planar.sql`, and `before.git-state`/`after.git-state`, failing with "Planar state changed before approval" on any diff, then reads `claims.after.json` and requires `active == []` ("claim created before approval") — a genuine no-mutation-before-gates state grader, strictly stronger than a text pin (plan 1065 M4, task 6861: the prior `phase3-no-mutation-before-gates` contract case pinned operator-gate prose and was retired rather than rewritten, since `contract_assertions` cannot express a state comparison) | Only graded on a live run (`make eval-orchestrator-live`, operator-invoked, not in `make eval`/`make test-all`); the free/deterministic contract and lifecycle lanes no longer catch a surface that starts permitting pre-gate mutation |
 | Host-bound model routing and pre-gate immutability | `phase3-model-routing-host-boundary` | Contract + live | Per-task slug rows, medium tier, active-host model, explicit gate, identical dispatch/SQLite/Git snapshots, zero active claims | One synthetic plan; proves no successful state change, not that no mutation command was attempted |
@@ -76,7 +75,7 @@ false-positive rate, or adversarial robustness for arbitrary prose.
   asserted as case postconditions.
 - The lifecycle uses a single synthetic Git repository and controlled
   specialists. It does not exercise heterogeneous build systems, multi-repo
-  fan-in, external propagation, documentation maintenance, or archive recovery.
+  fan-in, external propagation, or archive recovery.
 - Model runs are samples. A pass is evidence for that vendor/model invocation,
   not a statistical reliability estimate.
 - Regex contract checks establish the presence or absence of selected text, not

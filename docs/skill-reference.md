@@ -22,12 +22,9 @@ shows the underlying supported interface.
 | Resume interrupted work or diagnose degraded state | `/pl-resume <task-id>` or `/pl-doctor` | `planar resume`, `planar audit`, `planar health`, `planar-agent reconcile` |
 | Inspect one external link's local history | `/pl-audit-trail --link <link-id>` | `planar audit trail --link <link-id>` |
 | Reconcile a local/external sync conflict | `/pl-sync status` or `/pl-sync resolve <event-id>` | `planar-ext sync status`, `planar audit trail`, guarded `planar-ext sync resolve` |
-| Maintain published documentation | Raised to tabularium (owns the doc-system tool and its `/tabularium-doc-maintain` full loop / `/tabularium-documenter` proposal sweep); planar drives the underlying tool verbs | `tabularium diff|cover|nodoc|lint|build|verify` |
 
 `/pl-local-import` remains an import-only compatibility entry point; prefer
-`/pl-local` for the complete local lifecycle. Documentation maintenance was
-raised to tabularium (see the Documentation Maintenance section below); planar
-drives the underlying `tabularium` tool verbs. Sync reconciliation is
+`/pl-local` for the complete local lifecycle. Sync reconciliation is
 shipped through `/pl-sync` and its gated `sync-reconciler` specialist.
 
 ---
@@ -225,9 +222,6 @@ Planar ships five executables. Four are planning-state binaries, each with a dis
 
 An external Lua-based **harness** (a **separate external project**, distinct from `planar-execute`) is a pure CLI driver that shells these binaries to orchestrate LLM calls; it holds no DB handle and is not part of the Planar binary set.
 
-Documentation workflows call the separately installed `tabularium` tool. It is
-not a Planar build artifact and owns its machine-local manifest database.
-
 Every skill in this document routes its writes through the binary that owns them. Skills that schedule agent work (`/pl-orchestrator` and `/pl-coder`) drive the `planar-agent pull → heartbeat → complete|fail|release|block` ritual; skills that surface live operator views (status, dashboard, audit trail) read through `planar` and `planar-watch`.
 
 ---
@@ -303,7 +297,6 @@ Read-only investigation. Runs a bounded, cited findings-brief investigation for 
 **Example:**
 ```
 /pl-research "what does the claim ritual actually enforce on a stale lease"
-/pl-research "is there prior art for this in tabularium" --scope tabularium
 ```
 
 Source: `skills/src/pl-research.md` · `agents/research.md`
@@ -767,8 +760,8 @@ Source: `skills/src/pl-handoff.md` · `agents/methodology.md` § Heartbeat statu
 
 Route an operator outcome to an available workflow, or show the exact CLI help
 for a named verb. Intent routing covers interrupted-work recovery, active-work
-observation, durable knowledge, operator-local skills and agents, feedback,
-and published-documentation maintenance. It distinguishes invocable workflows
+observation, durable knowledge, operator-local skills and agents, and
+feedback. It distinguishes invocable workflows
 from CLI fallbacks when a planned skill is not yet authored, and always exposes
 the underlying supported CLI commands.
 
@@ -894,22 +887,6 @@ Source: `skills/src/pl-models-config.md`
 
 ---
 
-## Documentation Maintenance
-
-The documenter and doc-author roles and the `/tabularium-documenter` /
-`/tabularium-doc-maintain` skills (formerly `/pl-documenter` / `/pl-doc-maintain`)
-that drive the gated documentation-maintenance loop were raised to
-tabularium (the stack's standalone documentation tool, which owns the manifest
-database they operate) at the doc-cluster transfer (planar plan 933). They no
-longer render or install from this repo — see tabularium's own skill and agent
-sources for those entry points. Planar retains and drives the primitives they
-compose: the `planar-agent` claim ritual and the underlying `tabularium diff` /
-`cover` / `nodoc` / `lint` / `build` / `verify` tool verbs. For the operator
-recipes see [`workflows.md` Recipe 33](workflows.md#recipe-33--run-the-gated-documentation-maintenance-loop)
-and the Phase 6 lifecycle in [`operations.md`](operations.md#2-the-orchestration-lifecycle).
-
----
-
 ## Usage Introspection
 
 ### `/pl-introspect`
@@ -996,7 +973,7 @@ Source: `skills/src/pl-report-issue.md`
 
 ## Agent Role Specs
 
-The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — live here too (raised to armarium at plan 918/929, returned at the armarium reintegration). The documenter and doc-author roles live in tabularium (which owns the doc-system tool they drive; moved at the doc-cluster transfer, planar plan 933); see tabularium's own agent sources for those.
+The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — live here too (raised to armarium at plan 918/929, returned at the armarium reintegration).
 
 | File | Role |
 |------|------|
@@ -1016,7 +993,6 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 | `agents/ext-sync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
 | `agents/importer.md` | Importer role: translates an existing repository's planning content into Planar; deterministic classifier first, optional LLM interpretation pass |
 | `agents/synthesizer.md` | Synthesizer role: produces fresh planning artifacts from existing docs, git log, and source code via an LLM pass |
-| `(raised to tabularium)` | Documenter and doc-author roles — read-only documentation drift classifier and operator-approved prose author — raised to tabularium at the doc-cluster transfer (planar plan 933) |
 | `agents/introspector.md` | Introspector role: cross-vendor redacted signal adapters, preview/apply gate, finding taxonomy, dedup contract, feedback-plan bootstrap |
 | `agents/feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |
 | `agents/sync-reconciler.md` | Large-tier coordinate role: compares local and remote conflict evidence, recommends one of four dispositions, and coordinates only the exact whole-entity resolution the operator confirms; it is read-and-recommend by default and never performs direct local or remote field mutation |

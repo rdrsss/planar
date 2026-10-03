@@ -622,12 +622,11 @@ flowchart TD
     G5 --> P4[Phase 4 · planar-ext ext propagate]
     P4 --> G6{{--archive, plan done}}
     G6 --> P5[Phase 5 · workbench archive]
-    P5 --> P6[Phase 6 · tabularium documenter<br/>unless --no-docs]
 ```
 
 Phase selection keys off the anchor plan status: `draft` without artifacts
 → Phase 1; `draft` reviewed → Phase 2; `active`/`paused` → Phase 3 (plus
-3.7 and 4 on request); `done` → offer Phase 5 then 6. Double-bordered nodes
+3.7 and 4 on request); `done` → offer Phase 5. Double-bordered nodes
 are operator gates; the orchestrator never crosses one silently.
 
 Reviewer verdicts and what each triggers (`agents/reviewer.md`):

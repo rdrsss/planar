@@ -360,7 +360,6 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 - **All read-only verbs.** `show`, `list`, `status`, `audit trail`, `tree` — reads do not corrupt state and the audit-from-anywhere case is the common case.
 - **Identity-bucket verbs** (`assoc`, `init`, `promote`/`demote`, `scope`, `workspace`). Associations *are* scope; `promote`/`demote` deliberately cross scopes (that is the verb's job).
 - **Operator-state verbs** (`handoff`, `capture`, `resume`). These manage vendor-session rows, not project-scoped entities. The legitimate polyrepo handoff workflow is "a session inside repo A captures a handoff that references a task in repo B".
-- **External `tabularium` verbs** (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`). Tabularium owns its own machine-local state, so Planar's operator-vs-entity scope guard does not apply.
 
 ### No escape hatch
 

@@ -37,13 +37,13 @@
   },
   "interaction": [
     {
-      "send": "Execute with worktree isolation, strict dispatch, and no documentation phase."
+      "send": "Execute with worktree isolation and strict dispatch."
     }
   ],
   "lifecycle": {
     "scenario": "controlled-classic",
     "surface": "agent",
-    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits worktree isolation, strict dispatch shape, and --no-docs. Dispatch three independent coder lanes concurrently, one per task, each in its own git worktree; fan every lane's branch into a single epic branch before completing any claim. Do not finalize, propagate, or archive.",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits worktree isolation and strict dispatch shape. Dispatch three independent coder lanes concurrently, one per task, each in its own git worktree; fan every lane's branch into a single epic branch before completing any claim. Do not finalize, propagate, or archive.",
     "timeout_seconds": 600,
     "operator_responses": [
       "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Dispatch the three controlled worktree lanes concurrently.",

@@ -253,8 +253,7 @@ regrading.
 run the repo-scoped installed-projection check and refuse stale Planar
 artifacts, preventing a green result against an older global install. The
 helper filters Scriptorium status to artifacts defined by this config so
-separately installed Tabularium artifacts are not misreported as Planar
-orphans.
+separately installed artifacts are not misreported as Planar orphans.
 
 ## Artifacts
 

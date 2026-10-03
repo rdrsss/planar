@@ -238,7 +238,7 @@ cue's "same-scope writes MUST NOT emit any cue" rule.
 
 Research has no fixed phase number in
 [`agents/methodology.md`](methodology.md#phases)'s Phases table
-(1 / 1.5 / 2 / 3 / 3.5 / 3.7 / 4 / 5 / 6) — it is an out-of-band dispatch available
+(1 / 1.5 / 2 / 3 / 3.5 / 3.7 / 4 / 5) — it is an out-of-band dispatch available
 at any point, not a lifecycle gate like Phase 3.7's finalization. Two
 dispatch shapes:
 

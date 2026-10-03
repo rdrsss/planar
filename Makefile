@@ -467,10 +467,6 @@ fmt-check: ## Verify clang-format is clean (no build required, unlike cpp-lint)
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) build
 
-.PHONY: docs-manifest
-docs-manifest: ## Regenerate the docs/.manifest-docs Merkle index
-	planar doc manifest --write
-
 # ── Skill/agent evaluation suites (returned from armarium with the
 #    orchestration layer). Deterministic lanes are provider-free; live lanes
 #    invoke a model host and are opt-in.

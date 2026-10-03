@@ -24,7 +24,7 @@ which tasks can run in parallel, and where test coverage is still missing.
 The workflow planner should choose:
 
 - topology: sequential, fan-out, quality spine, or recovery
-- worker roles: coder, test-coder, reviewer, documenter
+- worker roles: coder, test-coder, reviewer
 - model-tier intent for each worker
 - context capsules and must-read paths
 - mock cases and live-run safety posture

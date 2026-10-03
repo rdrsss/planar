@@ -7,4 +7,4 @@ This repository exists only for Planar lifecycle evaluation.
 - The orchestrator must delegate implementation and review to the
   project-scoped controlled specialists.
 - Do not edit `src/value.txt` from the parent or orchestrator context.
-- Do not finalize, propagate, archive, or run documentation maintenance.
+- Do not finalize, propagate, or archive.

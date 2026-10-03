@@ -93,9 +93,6 @@ brew install cmake ninja llvm python git gh jq ripgrep tbb
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
 - `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`, `pl-orchestrator`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session below (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
-- `tabularium` — required only by the bundled documentation-maintenance
-  workflows. It is a separate project and is not built or installed by Planar;
-  install it from `locumipsum/tabularium` when using those workflows.
 
 The full source-checkout installer also uses the base-system utilities declared
 in `install.sh`'s `BUILD_DEPS` / `RUN_DEPS` manifests (`awk`, `basename`, `cat`, `chmod`, `cmp`,
@@ -361,9 +358,7 @@ have separate vendor-specific outputs and install targets.
 Fifteen agent roles cover orchestration and review, planning and ingestion,
 external propagation, repo adoption, introspection and feedback triage,
 guarded sync reconciliation, research, testing, and closeout. The
-documentation roles — `documenter` and `doc-author` — live in tabularium,
-which owns the doc-system tool they drive. The specialist boundaries are
-deliberate: `feedback-triager` and `sync-reconciler` coordinate preview-gated
+specialist boundaries are deliberate: `feedback-triager` and `sync-reconciler` coordinate preview-gated
 changes, `research` is read-only, and planning-state writes still go through
 the owning CLI binary. See
 [`agents/methodology.md`](agents/methodology.md) for orchestration and

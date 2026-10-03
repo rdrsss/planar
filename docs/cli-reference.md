@@ -8412,7 +8412,7 @@ For quick reference, all documented commands grouped by domain:
 | `run` | `run start`, `run event`, `run finish`, `run show` |
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
-| `schema` | `schema` (also on `planar-agent`, `planar-watch`, `tabularium`) |
+| `schema` | `schema` (also on `planar-agent` and `planar-watch`) |
 ## Domain: `closure`
 
 Derived-closure extraction: given a task's touched `(repo, path)` seeds, walk

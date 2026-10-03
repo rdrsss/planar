@@ -40,7 +40,7 @@ with no published doc).
 > CLI verbs are from the Go implementation and were **never ported**: the
 > current C++ `planar` binary has no `doc` domain at all (this includes the
 > `planar doc lint` verb named in the M1–M2 entry below). Published-documentation
-> drift and coverage are delegated to the standalone `tabularium` tool.
+> drift and coverage are delegated to a separate documentation tool.
 
 ### Plan 135: workspace AGENTS.md generation
 
@@ -89,4 +89,4 @@ milestones. M1 (migration 0008) extended `artifacts.kind` with
 covering GFM footnote citations plus a structured `references:`
 front-matter block, the URL HEAD validator with on-disk cache and
 30-day re-check policy, and the per-entry planar-entity resolver.
-Pre-commit hook ships under `scripts/git-hooks/`.
+A pre-commit hook for the docs checks shipped alongside it.
