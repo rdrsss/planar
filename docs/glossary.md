@@ -46,3 +46,5 @@ containing the canonical `AGENTS.md`, the routing-table JSON, and
 per-workspace config; the workspace root itself holds symlinks
 pointing at those canonical files. See the
 [workspace-agents feature page](features/workspace-agents.md).
+
+<!-- ci skip-path test: docs-only change, safe to discard -->
