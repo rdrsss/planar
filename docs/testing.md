@@ -34,6 +34,16 @@ the gate to run before a pull request; CI is the independent backstop.
 | `ci.yml` (fast tier) | Pull requests into `master`, and pushes to `master` | `make fmt-check`, the installer fixtures, and the planning eval harness unit tests. It does not build the C++ tree. A newer push cancels the older run. |
 | `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, and the orchestrator eval harness unit tests (which need the built binaries on `PATH`), on Linux, in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
 
+The fast tier does nothing for a change that touches only `agents/`, `skills/`,
+`docs/`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`, or a
+top-level `*.md` or `LICENSE` file. The `checks` job still starts and reports
+success with its steps skipped, so a required `checks` status is satisfied
+(a workflow-level `paths:` filter would never start the job, and a required
+check that never reports blocks the merge). Any other path counts as code, as
+does a run that cannot be classified. Because those files feed pinned
+projections and doc gates, the nightly full tier still checks them: run
+`make test-all` before a pull request that edits `agents/` or `skills/`.
+
 Pull requests into any other branch run neither workflow. Agents integrate
 into `dev/integration` and open a pull request from it to `master` when a
 batch is ready, so CI runs once per batch, not once per merge. Add the

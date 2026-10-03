@@ -3,6 +3,14 @@
 # build the C++ tree: that is the full tier (full.yml), which runs nightly and
 # on demand. Pull requests into any other branch, such as dev/integration, run
 # nothing here, so agent churn on an integration branch costs no CI.
+#
+# It also does nothing for a change that touches only agents, skills, docs or
+# community files. The job still starts and reports success, so a required
+# `checks` status can be satisfied; it just skips its real steps. (A
+# workflow-level `paths:` filter would not start the job at all, and a required
+# check that never reports blocks the merge.) The nightly full tier still
+# builds and tests everything, so a pinned projection or doc gate that drifts
+# is caught there.
 name: CI
 
 on:
@@ -14,6 +22,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # One run per pull request (or per ref); a newer push cancels the older run.
 concurrency:
@@ -26,9 +35,54 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      - name: Detect code changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+          # Anything not recognised as agents, skills, docs or a community
+          # file counts as code, and so does any run we cannot classify.
+          files=""
+          case "$EVENT" in
+            pull_request)
+              files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')" ;;
+            push)
+              case "$BEFORE" in
+                ""|0000000000000000000000000000000000000000) files="" ;;
+                *) files="$(gh api "repos/$REPO/compare/$BEFORE...$SHA" --jq '.files[].filename')" ;;
+              esac ;;
+          esac
+          code=true
+          if [ -n "$files" ]; then
+            code=false
+            while IFS= read -r f; do
+              case "$f" in
+                agents/*|skills/*|docs/*|.github/ISSUE_TEMPLATE/*|.github/PULL_REQUEST_TEMPLATE.md) ;;
+                */*) code=true; break ;;
+                *.md|LICENSE) ;;
+                *) code=true; break ;;
+              esac
+            done <<EOF2
+          $files
+          EOF2
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "code changes: $code"
+          printf '%s\n' "$files" | head -n 40
+      - name: Skipped, no code changes
+        if: steps.changes.outputs.code != 'true'
+        run: echo "Only agents, skills, docs or community files changed; nothing to run."
       - name: Check out
+        if: steps.changes.outputs.code == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install the pinned clang-format (LLVM 23, apt.llvm.org)
+        if: steps.changes.outputs.code == 'true'
         run: |
           set -eu
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /usr/share/keyrings/llvm.asc >/dev/null
@@ -38,8 +92,11 @@ jobs:
           sudo apt-get install -y --no-install-recommends clang-format-23
           /usr/lib/llvm-23/bin/clang-format --version
       - name: Formatting
+        if: steps.changes.outputs.code == 'true'
         run: make fmt-check LLVM_PREFIX=/usr/lib/llvm-23
       - name: Installer fixtures
+        if: steps.changes.outputs.code == 'true'
         run: make test-install-manifest test-install-deps
       - name: Planning eval harness unit tests
+        if: steps.changes.outputs.code == 'true'
         run: make eval-planning-unit
