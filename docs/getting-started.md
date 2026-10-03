@@ -1,15 +1,3 @@
----
-title: Getting started
-doc_kind: getting_started
-template_version: 1
-regenerated_at: 2026-05-18T00:00:00Z
-regenerated_by: hand
-references:
-  founding_tech_spec:
-    kind: planar
-    entity: artifact:30
----
-
 # Getting started
 
 This walkthrough takes you from a fresh checkout to your first plan,
@@ -51,7 +39,7 @@ planar --help
 ## 2. Initialise the database
 
 `planar init` creates `~/.planar/planar.db` (the operational SQLite
-store) and registers the current directory as a project[^founding_tech_spec]:
+store) and registers the current directory as a project:
 
 ```sh
 mkdir -p ~/work/example-app
@@ -81,6 +69,14 @@ planar assoc add project:example-app ~/work/example-app
 
 Scope is derived from your current working directory, so write verbs
 run from inside the repo now route to `project:example-app` by default.
+
+To group several projects under one association you can scope work to,
+create an `org` association and add the project to it:
+
+```sh
+planar assoc create org:my-org --kind org --name "My Org"
+planar assoc add org:my-org "$(pwd)"
+```
 
 Inspect the result:
 
@@ -118,7 +114,7 @@ planar plan create "M1 — landing page" --slug login-flow-m1 \
 
 ## 4. Your first task
 
-Tasks are the unit of execution[^founding_tech_spec]. Create one
+Tasks are the unit of execution. Create one
 under the plan you just made:
 
 ```sh
@@ -143,7 +139,7 @@ The *workbench* is a bidirectionally synced filesystem under
 `~/.planar/workbench/`. Every plan with the workbench enabled gets
 a directory there; specs, ADRs, and design notes are plain markdown
 files, and `planar workbench sync` round-trips them with the
-`artifacts` table[^founding_tech_spec].
+`artifacts` table.
 
 Workbench files carry Planar-generated frontmatter (entity kind and
 id), so create the artifact through the CLI and let the workbench
@@ -242,7 +238,85 @@ sub-plans, and their tasks — and records each counterpart in
 write local fields (decision 996); use it to see whether the remote drifted,
 then update the local entity yourself if warranted.
 
-## 8. Where to go next
+## 8. Capture, hand off, and resume
+
+The walkthrough so far recorded intent. This section records the *work*
+itself, then moves it to a fresh agent. The examples below assume plan 1 and
+task 1; substitute your own ids. Everything here writes only to the local
+SQLite store.
+
+Give the plan ordered steps, tasks with a next action, and an open question:
+
+```sh
+planar plan step add 1 "Inventory v1 callers"
+planar plan step add 1 "Document v2 contracts"
+planar task add "Inventory v1 callers" --plan 1 --next-action "grep the monorepo"
+planar task add "Document v2 contracts" --plan 1
+planar question add "Do we deprecate before delete, or atomically?"
+```
+
+Capture the working session. Vendor identity comes from `$PLANAR_VENDOR`:
+
+```sh
+export PLANAR_VENDOR=claude-code
+planar capture session --task 1
+planar capture note "found 7 callers under services/billing"
+planar capture command "rg -l 'v1.client'"     # cli-lint-ignore: `-l` belongs to the recorded rg command inside the quotes
+planar capture snapshot "halfway through the inventory" --task 1 --next-action "audit services/payments"
+```
+
+Record a decision tied to the active session:
+
+```sh
+planar decision add "Deprecate v1 over two releases" --body "Warn in release N, remove in N+2"
+```
+
+Hand off. One command captures a snapshot, opens a handoff record, and
+validates it, all atomically:
+
+```sh
+planar handoff 1 --vendor codex --note "halfway through; payments next"
+```
+
+Resume on a fresh agent in a different vendor:
+
+```sh
+export PLANAR_VENDOR=codex
+planar resume 1            # 8-section packet, ready to drop into context
+planar resume validate 1   # exit 0 if resumable; 1 with remediation if not
+```
+
+`resume validate` is the CI gate: it exits `0` when the task can be resumed
+from zero conversational context, and `1` with remediation when it cannot.
+
+## 9. What's going on? — `planar tree`
+
+The fastest answer to "what work do I have, where does it live, and what's
+the structure?" is `planar tree`:
+
+```sh
+planar tree                              # active scope: plans → tasks → derived artifacts
+planar tree --all-scopes                 # every scope (global section always rendered)
+planar tree --status todo                # only open work
+planar tree --kind plan --depth 2        # plan outline, two levels deep
+planar tree --json | jq                  # nested machine-readable shape
+```
+
+The verb walks `plans.parent_plan_id` for plan hierarchy,
+`tasks.plan_id` / `parent_task_id` for tasks and subtasks, and
+`entity_links(derives-from)` for the artifacts, decisions, scenarios, and
+questions attached to each plan. It is read-only: no schema writes, no
+external calls.
+
+The flag surface is exactly seven flags — `--scope`, `--all-scopes`,
+`--depth`, `--kind`, `--status`, `--sort`, `--json` — and `--kind` /
+`--status` each take a single value. It does not mirror Unix `tree(1)`: none
+of that tool's flags (`-L`, `-I`, `-P`, `--prune`, `--noreport`,
+`--dirsfirst`, `-J`, …) are accepted, and every one of them fails at parse
+time with exit 2. See
+[CLI reference § Domain: `tree`](cli-reference.md#domain-tree).
+
+## 10. Where to go next
 
 - [Concepts](concepts.md) — the mental model: scope, association,
   plan, task, handoff, workbench.
@@ -264,5 +338,3 @@ then update the local entity yourself if warranted.
 | `plan show`: "plan id must be an integer" | A slug was passed where an id is required | Pass the numeric plan id |
 | `workbench sync`: `MALFORMED … (MissingRequiredField)` | A hand-created file lacks the generated frontmatter | Create the entity with `planar artifact add`, then sync |
 | `ext propagate-one`: "external system '<slug>' not found" | System not yet registered | `planar-ext ext register github <slug> --project <owner/repo>` first |
-
-[^founding_tech_spec]:

@@ -1,16 +1,6 @@
----
-title: Changelog
-doc_kind: changelog
-template_version: 1
-regenerated_at: 2026-05-18T00:00:00Z
-regenerated_by: hand
----
-
 # Changelog
 
-This page is aggregated from `kind=changelog_entry` artifacts under
-`assoc:project:planar`, newest first. Each entry corresponds to a
-shipped milestone or plan.
+A changelog of shipped milestones and plans, newest first.
 
 ## 2026-10-01
 

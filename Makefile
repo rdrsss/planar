@@ -470,8 +470,8 @@ fmt-check: ## Verify clang-format is clean (no build required, unlike cpp-lint)
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) build
 
-# ── Skill/agent evaluation suites (returned from armarium with the
-#    orchestration layer). Deterministic lanes are provider-free; live lanes
+# ── Skill/agent evaluation suites for the
+#    orchestration layer. Deterministic lanes are provider-free; live lanes
 #    invoke a model host and are opt-in.
 
 .PHONY: eval

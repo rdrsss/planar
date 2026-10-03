@@ -1,21 +1,3 @@
----
-title: Scope resolution
-doc_kind: feature
-template_version: 1
-regenerated_at: 2026-05-18T00:00:00Z
-regenerated_by: hand
-references:
-  scope_product_spec:
-    kind: planar
-    entity: artifact:63
-  scope_tech_spec:
-    kind: planar
-    entity: artifact:64
-  scope_roadmap:
-    kind: planar
-    entity: artifact:65
----
-
 # Scope resolution
 
 Planar resolves every write verb to a single scope before it touches the
@@ -32,7 +14,7 @@ and a flag that never existed on this binary.
 
 - Pins every write verb (`plan create`, `task add`, `artifact add`,
   `decision add`, `question add`, `scenario add`, …) to exactly one scope
-  before any row is created[^scope_product_spec].
+  before any row is created.
 - Reads **two** inputs, not three: an explicit `--scope` flag and the
   cwd-derived scope. There is no stack to consult.
 - Surfaces the cwd-derived resolution through `planar scope show`.
@@ -174,7 +156,3 @@ deleted at the M10 cutover; that path no longer exists.
 - [Concepts: write resolution](../concepts.md#write-resolution)
 - [Concepts: cross-scope guard](../concepts.md#cross-scope-guard)
 - [CLI reference: cross-scope guard](../cli-reference.md#cross-scope-guard)
-
-[^scope_product_spec]:
-[^scope_tech_spec]:
-[^scope_roadmap]:

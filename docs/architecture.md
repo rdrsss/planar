@@ -34,7 +34,7 @@ flowchart TD
         B5["<b>planar-ext</b><br/>operational-plane RW<br/>external_links/systems/sync_events only"]
     end
 
-    DB[("SQLite database<br/>~/.planar/planar.db<br/>39 migrations · embedded at build time")]
+    DB[("SQLite database<br/>~/.planar/planar.db<br/>41 migrations · embedded at build time")]
 
     Surface -->|invoke| Binaries
     B1 -->|read / write| DB
@@ -66,6 +66,12 @@ Migrations are plain SQL files under `migrations/` in sqlx-cli format (`NNNNN_<n
 `schema_migrations` is the public schema-version contract. Every migration inserts one row with a version number and description. Read-side tools (e.g., a web viewer, an Obsidian bridge) must open the database read-only and query `schema_migrations` to verify they support the current version before operating. Every binary that holds a SQLite handle performs this handshake at startup, in `planar.db.migrate`'s `assert_schema_compatible` (`planar-execute` holds no handle and is exempt). A database **ahead** of the binary — migrated by a newer build — is refused by all four with exit code 7. A database **behind** the binary is refused with exit code 7 by the three consumer binaries (`planar-agent`, `planar-watch`, `planar-ext`), whose remediation is `planar init`; `planar` itself owns migration and applies the pending chain instead. A database whose applied set has a **hole** in it — `max(version)` reports a version whose predecessors are not all present, which `max(version)` alone cannot distinguish from a healthy database — produces a warning on stderr rather than a refusal, so the diagnostic verbs stay reachable. The embedded chain itself must be contiguous (`1..n`, no holes); `apply_all` refuses a chain that is merely monotonic.
 
 Authoring rules (file naming, the `schema_migrations` insert/delete contract, the `.sqlfluff` linter config, and the up/down/up roundtrip test) live in [`migrations/README.md`](../migrations/README.md). New migrations are created via `sqlx migrate add -r <name> --source migrations`; the next `cmake --build` regenerates the embedded module (CMake re-runs configure automatically on new/removed migration files).
+
+### The schema is the contract
+
+Forty-one migration files (`migrations/00001_foundation.up.sql` through `migrations/00041_contextual_annotation_threads.up.sql`) define Planar's schema. The runtime applies them from a generated `planar.db.migrations` module, `#embed`-produced at CMake configure time (`cmake/generate_migrations.cmake`); the public schema-version tracker is `schema_migrations`.
+
+Read-side tooling — viewers, query CLIs, Obsidian bridges, future binaries — opens `~/.planar/planar.db` with `PRAGMA query_only = 1`, reads `schema_migrations` to verify version compatibility, and operates without going through the binary. The contract is the schema, not the codebase. The table inventory is below.
 
 ### Application tables
 
@@ -290,7 +296,7 @@ Revived in plan 633, `planar-execute` is a deterministic, spawn-free Lua workflo
 
 Its source tree lives under `src/cmd/planar-execute/` (its own `planar_binary()` target in `src/cmd/planar-execute/CMakeLists.txt`); it links the Lua 5.5 C library (vendored), but does not link `src/lib/db/` or `vendor/sqlite/`. See [`docs/concepts.md` § Deterministic workflow engine](concepts.md#deterministic-workflow-engine) for the concept overview and host-surface reference.
 
-> **Being reversed deliberately — decision 1007, plan 1033.** Centurion becomes Planar's workflow engine and harness, and `planar-execute` becomes its configuration, bootstrap and client entry point: it stops executing workflows locally and never opens Centurion's database. The spawn-free property is not dropped — supervision, leases, cancellation fencing and budgets move to Centurion as designed responsibilities, with exactly one supervisor per Planar claim. Planar itself still does not shell out to provider CLIs. Until plan 1033's cutover milestone lands, this section describes the shipped binary: the embedded runner is preserved and the guards and boundary tests that pin it are unchanged. This build does not link the Centurion client: the engine verbs (`submit`, `status`, `cancel`, `follow`, `host`) require a Centurion-enabled build (the `dev/centurion-integration` branch), and this build refuses them with `planar-execute was built without the Centurion engine` and exit `1`. The Planar side of the supervision contract (migration 00038, engine-supervised claims, the `planar-watch` supervisor display) ships and compiles without it.
+> **Centurion engine verbs are not part of this build.** In this tree `planar-execute` is the deterministic, spawn-free Lua runner; the embedded runner and the guards and boundary tests that pin it are the shipped surface. The Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host`) require a Centurion-enabled build (the `dev/centurion-integration` branch); this build does not link the Centurion client and refuses them with `planar-execute was built without the Centurion engine` and exit `1`. The Planar side of the supervision contract (migration 00038, engine-supervised claims, the `planar-watch` supervisor display) ships and compiles without it.
 
 ### Live tail wake abstraction
 
@@ -340,6 +346,40 @@ consumers.
 Planar vendors the official SQLite amalgamation, CPM-cached under `vendor/sqlite/` and compiled by the CMake build (`cmake/dependencies.cmake`) as a static library with the same flags the Zig build used: `SQLITE_THREADSAFE=1`, `SQLITE_ENABLE_FTS5`, `SQLITE_ENABLE_JSON1`, `SQLITE_DQS=0`, `SQLITE_DEFAULT_FOREIGN_KEYS=1`, and `SQLITE_USE_URI=1`. There is no system SQLite requirement and no external wrapper.
 
 The C++ bindings and RAII wrappers (`connection`, `statement`, `transaction`) live in `src/lib/db/db.cppm`/`db.cpp`; migration application lives in `src/lib/db/migrate.cppm`/`migrate.cpp` against the generated `planar.db.migrations` module.
+
+---
+
+## Repository Layout
+
+The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json` sit at the top level alongside the C++ module tree (`src/`), build-support CMake modules (`cmake/`), the CPM-cached vendor sources (`vendor/`), and the tool sources (`src/tools/`). There is no second implementation tree — `zig/` was deleted at the M10 cutover. The tree under `src/` is described in [Source Layout](#source-layout) below.
+
+| Path | Role |
+|------|------|
+| `CMakeLists.txt`, `CMakePresets.json` | Top-level CMake project (C++26, modules) and the pinned `debug`/`release` presets |
+| `src/cmd/` | One directory per binary — `planar/`, `planar-agent/`, `planar-watch/`, `planar-execute/`, `planar-ext/` — each its own CMake target |
+| `src/engine/` | Domain logic and state transitions, bucketed as `identity/`, `planning/`, `external/`, `runtime/`, plus subsystem dirs (`extsync/`, `workbench/`, `templates/`, `routing/`, `config/`, and others) |
+| `src/lib/` | Shared base modules: `db/` (connection + migrations), `cliapp/` (CLI11-backed parser wrapper), `adapter/`, `http/`, `git/`, `process/`, `log/`, and the other leaf libraries |
+| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `cli_docs_coverage/`, `surface_lint/`, `scriptorium/`, `queue_contention_probe/`) |
+| `cmake/dependencies.cmake` | Every third-party dependency as a pinned `CPMAddPackage(...)` (release archive + SHA256, cached under `vendor/`) |
+| `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/` and `templates/defaults/` into generated modules the runtime embeds |
+| `vendor/` | CPM's committed source cache for third-party dependencies — pinned release archives only, no `git clone`/submodule vendoring |
+| `src/cmd/parity_harness.hpp` | The cross-process (black-box) test harness — `run_pinned()` execs a built binary over fixed argv in a scratch environment with its own `PLANAR_DB` and `HOME`. Cases live in `src/cmd/*/parity.t.cpp` and `src/cmd/planar/cross_process.t.cpp` |
+| `migrations/` | SQLite migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`) — single authoritative source |
+| `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `github-projects/`, `jira/`); embedded at build time |
+| `templates/doc-prompts/`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install (alongside `templates/defaults/`) |
+| `skills/src/` | Unified authored skill sources (`pl-*.md`) |
+| `$PLANAR_HOME/commands/claude/` | Generated Claude staging tree (install output, not checked in) |
+| `$PLANAR_HOME/codex-skills/` | Generated Codex staging tree (install output, not checked in) |
+| `$PLANAR_HOME/copilot-skills/`, `$PLANAR_HOME/gemini-skills/` | Generated Copilot and Gemini staging trees (install output, not checked in) |
+| `agents/` | Vendor-neutral Planar agent role specs |
+| `workflows/` | Lua workflows run by `planar-execute` (staged into `~/.planar/workflows/` on install) |
+| `docs/` | User-facing reference docs (architecture, CLI, skills, concepts, workflows) |
+| `examples/` | Copy-paste oriented examples for the spec, orchestration, workflow, and propagation flows |
+| `evals/` | Orchestrator and planning evaluation harnesses |
+| `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of the build |
+| `Makefile` | Thin wrapper around `cmake --preset` / `cmake --build` / `ctest` invocations |
+| `install.sh` | Source-checkout installer; builds and installs the C++ binaries via CMake |
+| `scriptorium.yaml` | Repo-root Scriptorium configuration (vendor profile overrides and additions) |
 
 ---
 
@@ -615,7 +655,20 @@ Configuration lives in `~/.planar/config.toml`. The `planar config` domain manag
 
 The `[queue]` table configures the host-wide build and test queue: `slots`, `poll_interval`, `stale_after`, `grace` and `history_days` (ranges and units in [`docs/cli-reference.md`](cli-reference.md#the-queue-table)). Its typed, range-checked view is `planar.engine.config.queue` (`src/engine/config/queue.cppm`): `load_queue_settings(path)` reads only `config.toml`, never a database, so a `planar-agent` handler calls it at each poll and hands the engine `slots`, `stale_after_ms`, `grace_ms` and `history_days` even when `planar.db` is schema-locked. `planar config validate` reports every refused `[queue]` value with its key.
 
-Notable config keys: the per-association `github_lead_repo` (used by the GitHub zero-repo propagation strategy), `external.jira.base_url`, the `external.jira.status.*` and `external.github-issues.status.*` status maps, and template set selection (`templates.default_set`).
+`~/.planar/config.toml` is hand-edited or written by an agent (TOML). Validate it with `planar config validate` and inspect the effective result with `planar config show --effective`. A minimal example:
+
+```toml
+[templates]
+default_set = "default"
+
+[associations."org:my-org"]
+github_lead_repo = "owner/repo"
+default_template_set = "my-custom-set"
+```
+
+`PLANAR_CONFIG_PATH` overrides the config file location, and `PLANAR_WORKBENCH_ROOT` overrides the workbench directory (default `~/.planar/workbench/`).
+
+Notable config keys: the per-association `github_lead_repo` (used by the GitHub zero-repo propagation strategy), `external.jira.base_url`, the `external.jira.status.*` and `external.github-issues.status.*` status maps, and template set selection (`templates.default_set`, and per association `default_template_set`).
 
 ---
 
@@ -631,7 +684,9 @@ The resolution chain for any template file:
 
 Templates are JSON files; string values may contain a Go-template-compatible placeholder mini-language (`{{.Plan.Title}}`, `{{range .Touches}}…{{end}}`, `{{if .ExternalKey}}…{{end}}`) which `src/engine/templates/render.cpp` substitutes against a rendering context exposing `.Task`, `.Plan`, `.Feature`, `.Scenario`, `.Touches`, `.Assoc`, `.ExternalKey`, and `.Children`. Non-string JSON values pass through unchanged. The placeholder syntax was preserved from the original Go implementation so existing template authors did not need to relearn the surface — but the renderer itself is first-party C++ with no Go dependency.
 
-`planar templates list` shows all available templates and their source level. `planar templates validate` checks them for syntax errors. `planar templates render <set> <system> <kind> --entity <ref>` renders a template against a live entity for inspection.
+Template files live at `~/.planar/templates/<set>/<system>/<kind>.json` and control the payloads sent to Jira and GitHub when `planar-ext ext propagate` creates or updates external counterparts. Ten defaults ship with the binary (5 `github-issues`, 1 `github-projects`, 4 `jira`) and `planar templates init` extracts them to `~/.planar/templates/default/`. Override the set per association with the `default_template_set` config key.
+
+`planar templates list` shows all available templates and their source level. `planar templates validate` checks them for syntax errors. `planar templates render <set> <system> <kind> --entity <ref>` renders a template against a live entity for inspection, for example `planar templates render default github-issues issue --entity task:42`.
 
 ---
 
@@ -733,6 +788,7 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 |-------|------|---------------|
 | `orchestrator` | large | Receives a goal or task list; manages the full feature lifecycle across up to six phases; dispatches to coders; routes output through reviewers; enforces the iteration cap. |
 | `coder` | medium | Implements one task (or task group) end-to-end; receives reviewer feedback and addresses it in the next iteration. |
+| `research` | large | Read-only investigation dispatch; turns a question into a structured, cited findings brief and never writes code or mutates repository or Planar state. |
 | `test-coder` | large | Adversarial test authoring against the coder diff; dispatched when uncovered test-spec slugs intersect the cycle's tasks. |
 | `reviewer` | large | Reviews coder output; returns `approve`, `request-changes`, `open-question`, or `abort`. |
 | `janitor` | medium | Merge, Planar state reconciliation, worktree/branch cleanup, and `planar plan closeout` after Phase 3 finalization. |
@@ -771,11 +827,7 @@ directories.
 This is a source-of-truth boundary, not merely a directory convention. Review
 and edit `skills/src/` and `agents/`; validate projections in an out-of-tree
 render destination. Never repair guidance drift by editing a generated vendor
-projection. At documentation closeout the orchestrator derives the migration
-tail, schema version, exact five-binary set, generated-surface boundary, and
-`AGENTS.md`/`CLAUDE.md` equivalence from repository/build evidence. Explicit
-contradictions become operator-gated `guidance-identity-drift` rows; omissions
-do not invent work and no guidance or manifest file is changed automatically.
+projection.
 
 | Vendor | Staged projection | Installed to |
 |--------|-------------------|-------------|
@@ -784,7 +836,13 @@ do not invent work and no guidance or manifest file is changed automatically.
 | Copilot | `$PLANAR_HOME/copilot-skills/` | `~/.copilot/skills/` |
 | Gemini | `$PLANAR_HOME/gemini-skills/` | `~/.gemini/antigravity-cli/skills/` |
 
-Agent role specs (vendor-neutral) live under `agents/`. The planning-lifecycle files are `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, `agents/feedback-triager.md`, and `agents/introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here (raised to armarium, the stack's meta repo, at plan 918/929 and returned at the armarium reintegration).
+`planar skills` is a retirement notice with no subcommands, so the unified source is never installed directly. Claude consumes flat command files, while Codex consumes skill directories directly. Copilot and Gemini also consume skill directories: the installer converts their flat rendered files (`$PLANAR_HOME/skills/copilot/pl-*.md`, `$PLANAR_HOME/skills/gemini/pl-*.md`) into `SKILL.md` directories. Installed Codex, Copilot, and Gemini skills are real copies so their loaders can discover them without following directory symlinks; Claude commands are symlinked as flat slash commands. Planar agent sources live in `agents/` and have separate vendor-specific outputs and install targets.
+
+Forty unified `pl-*` skill sources (`skills/src/pl-*.md`) render for each selected vendor. They cover the planning, workbench, external, onboarding, and entity workflows, plus intent-oriented status and help, durable knowledge, operational observation, the complete local lifecycle (with `pl-local-import` retained as a compatibility wrapper), preview/apply introspection and feedback triage, and guarded sync reconciliation. Repo-relative vendor trees are not checked in; canonical edits belong in `skills/src/`, and drift is gated by semantic lint plus the in-tree `scriptorium check` / `scriptorium status` against an out-of-tree staging directory (`planar skills render` no longer exists).
+
+Fifteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, `importer`, `synthesizer`, `introspector`, `feedback-triager`, and `research`) cover orchestration and review, planning and ingestion, external propagation, repo adoption, introspection and feedback triage, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `feedback-triager` and `sync-reconciler` coordinate preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
+
+Agent role specs (vendor-neutral) live under `agents/`. The planning-lifecycle files are `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, `agents/feedback-triager.md`, and `agents/introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
 
 Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
 frontmatter metadata (one lowercase SHA-256 hex value each, versioned,

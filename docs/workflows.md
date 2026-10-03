@@ -4,6 +4,31 @@ End-to-end recipes for common Planar operations. These assume you have run `plan
 
 ---
 
+## The Planning Pipeline at a Glance
+
+The planning loop goes from goal statement through spec drafting, task decomposition, execution, and operational-plane propagation. The five steps below are the whole loop; Recipes 1, 2, 3 and 6 cover each in depth.
+
+```
+# 1. Draft a feature spec and roadmap into the workbench.
+/pl-spec-draft "migrate billing service to v2 API"
+
+# 2. Review the Markdown files under ~/.planar/workbench/, edit as needed, then ingest.
+/pl-spec-ingest 7 --apply        # decomposes roadmap bullets into tasks + scenarios
+
+# 3. Execute through the standard coder/reviewer loop.
+/pl-orchestrator 7
+
+# 4. Propagate the feature to the operational plane (Jira or GitHub Issues).
+/pl-ext-propagate 7
+
+# 5. Archive the workbench tree when done (DB retains all entities).
+/pl-workbench-archive archive plan:7
+```
+
+Each step corresponds to a vendor skill. Claude uses `/pl-*` slash commands; Codex uses `$pl-*` skills such as `$pl-spec-draft`. The `pl-orchestrator` runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch.
+
+---
+
 ## Recipe 1 — Start a New Feature
 
 Use this when you have a goal and want to produce a structured plan with tasks ready for execution.
@@ -1319,6 +1344,45 @@ the race window but cannot eliminate the provider GET-to-write race when the
 provider lacks conditional updates. If the command or adapter fails ambiguously,
 inspect the link audit, sync status, and entity post-state before retrying or
 seeking fresh approval.
+
+### Operational-plane sync, end to end
+
+`ext` and `sync` verbs run on **`planar-ext`**, the operational-plane binary (decisions 995–1001): it opens SQLite directly with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, and owns both adapters, Jira and GitHub Issues together. `link` / `unlink` and `audit` stay on `planar` (the operator binary still records and reads external links directly). Sync is on-demand only; background daemons are explicitly out of scope.
+
+```
+# Register a system. Credentials come from env vars or the gh CLI.
+planar-ext ext register jira my-jira \
+    --base-url https://acme.atlassian.net \
+    --project PROJ \
+    --auth-env JIRA_USER,JIRA_TOKEN          # email,api-token pair
+
+planar-ext ext register github my-gh \
+    --project rdrsss/planar                   # omit --auth-env to shell out to `gh auth token`
+
+# Link a task to a remote ticket.
+planar link task:1 --to my-jira:PROJ-1234 --sync two-way
+
+# Sync on demand. planar-ext no longer writes remote values into planning
+# entities (decision 996): it fetches and emits remote_title/remote_status;
+# an agent verifies and calls `planar` to make the actual planning write.
+planar-ext sync pull 1
+planar-ext sync push 1
+
+# Conflicts surface explicitly; never resolved silently.
+planar-ext sync status                            # last_sync_status per link
+planar-ext sync resolve 7 --keep local \
+    --evidence-token <token> \
+    --expected-local-updated-at <timestamp>       # resolves sync_event id 7
+
+# Audit trail from either direction.
+planar audit trail --link 1                   # everything for link 1
+planar audit publish-decision 5               # post decision 5 to all linked remotes
+planar audit handoff-readiness --threshold 90 # CI gate
+```
+
+Auth methods supported today: `token-env` (a single variable is a bearer token; a `USER,TOKEN` pair is HTTP Basic) and `gh-cli` (shells out to `gh auth token`). OAuth-stored and OS-keychain credentials are deferred.
+
+For whole-feature propagation (create all operational counterparts for a plan tree at once), use `planar-ext ext propagate <plan>`; [Recipe 3](#recipe-3--propagate-to-github-issues) walks through it. Use `--restrategize` to change the strategy of an already-propagated plan. The multi-repo GitHub `projects-v2` strategy is permanently cut (decision 1001): it is recognized only to be refused, with a pointer at the alternative.
 
 ---
 
