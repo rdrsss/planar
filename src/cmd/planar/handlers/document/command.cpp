@@ -17,24 +17,6 @@ import planar.cmd.planar.handler;
 namespace planar::cmd::handlers {
 namespace {
 
-struct passage {
-  std::string  key;
-  std::string  kind;
-  std::string  text;
-  std::string  source_kind;
-  std::string  source_id;
-  std::string  source_path;
-  std::int64_t start_line;
-  std::int64_t end_line;
-};
-
-struct document {
-  std::string          source_uuid;
-  std::string          id;
-  std::string          revision;
-  std::vector<passage> passages;
-};
-
 auto json(std::string_view value) -> std::string {
   std::string out{"\""};
   for (unsigned char c : value) {
@@ -71,18 +53,18 @@ auto json(std::string_view value) -> std::string {
   return out;
 }
 
-auto render(const document& doc) -> std::string {
+auto render(const document_authority::document& doc) -> std::string {
   std::string out = std::format(
       "{{\"contract_version\":\"block-document-v1\",\"source_uuid\":{},\"document_id\":{},\"content_revision\":{},\"passages\":[",
-      json(doc.source_uuid), json(doc.id), json(doc.revision));
+      json(doc.source_uuid), json(doc.id), json(doc.content_revision));
   for (std::size_t i = 0; i < doc.passages.size(); ++i) {
     auto const& p = doc.passages[i];
     if (i != 0)
       out += ',';
     out += std::format("{{\"key\":{},\"kind\":{},\"text\":{},\"source\":{{\"kind\":{},\"id\":{},\"path\":{},\"start_line\":{},"
                        "\"end_line\":{}}}}}",
-                       json(p.key), json(p.kind), json(p.text), json(p.source_kind), json(p.source_id), json(p.source_path),
-                       p.start_line, p.end_line);
+                       json(p.key), json(p.kind), json(p.text), json(p.source.kind), json(p.source.id), json(p.source.path),
+                       p.source.start_line, p.source.end_line);
   }
   out += "]}";
   return out;
@@ -96,29 +78,44 @@ auto source(const cliapp::parsed_args& args) -> std::expected<std::pair<std::str
   return std::pair{*kind, *id};
 }
 
-auto utf8_boundary(std::string_view value, std::size_t offset) -> bool {
-  return offset <= value.size() && (offset == value.size() || (static_cast<unsigned char>(value[offset]) & 0xc0U) != 0x80U);
+/// @brief The stable reason string a rejected range reports for `err`.
+/// @param err The validator's refusal.
+/// @return The reason token, spelled as the library enumerator.
+auto rejection_reason(document_authority::error err) -> std::string_view {
+  switch (err) {
+  case document_authority::error::invalid_kind:
+    return "invalid_kind";
+  case document_authority::error::not_found:
+    return "not_found";
+  case document_authority::error::query_failed:
+    return "query_failed";
+  case document_authority::error::stale_revision:
+    return "stale_revision";
+  case document_authority::error::missing_boundary:
+    return "missing_boundary";
+  case document_authority::error::foreign_key:
+    return "foreign_key";
+  case document_authority::error::reversed_range:
+    return "reversed_range";
+  case document_authority::error::invalid_utf8_boundary:
+    return "invalid_utf8_boundary";
+  case document_authority::error::noncontiguous_covered_keys:
+    return "noncontiguous_covered_keys";
+  case document_authority::error::forged_quote:
+    return "forged_quote";
+  }
+  return "unknown";
 }
 
 auto authoritative_document(db::connection& conn, std::string_view kind, std::int64_t id)
-    -> std::expected<document, domain_error> {
+    -> std::expected<document_authority::document, domain_error> {
   auto projected = document_authority::project(conn, kind, id);
   if (!projected) {
     auto error_kind = projected.error() == document_authority::error::not_found ? domain_error_kind::not_found
                                                                                 : domain_error_kind::generic_failure;
     return std::unexpected(error_from_body(error_kind, "document projection failed"));
   }
-  document result{.source_uuid = projected->source_uuid, .id = projected->id, .revision = projected->content_revision};
-  for (auto const& item : projected->passages)
-    result.passages.push_back({.key         = item.key,
-                               .kind        = item.kind,
-                               .text        = item.text,
-                               .source_kind = item.source.kind,
-                               .source_id   = item.source.id,
-                               .source_path = item.source.path,
-                               .start_line  = item.source.start_line,
-                               .end_line    = item.source.end_line});
-  return result;
+  return std::move(*projected);
 }
 
 auto open_authority_source(context& ctx) -> std::expected<db::connection, domain_error> {
@@ -179,59 +176,41 @@ auto document_validate_range(context& ctx, const cliapp::parsed_args& args) -> h
   auto end_key      = cliapp::flag_string(args, "--end-key");
   auto start_offset = cliapp::flag_int(args, "--start-offset");
   auto end_offset   = cliapp::flag_int(args, "--end-offset");
-  auto covered      = cliapp::flag_strings(args, "--covered-key");
-  auto quotes       = cliapp::flag_strings(args, "--segment-quote");
   auto reject       = [&](std::string_view code) -> handler_result {
     return std::unexpected(error_from_body(domain_error_kind::sync_conflict, std::format("document range rejected: {}", code)));
   };
-  if (!revision || *revision != doc->revision)
-    return reject("stale_revision");
+  if (!revision || *revision != doc->content_revision)
+    return reject(rejection_reason(document_authority::error::stale_revision));
   if (!start_key || !end_key || !start_offset || !end_offset)
-    return reject("missing_boundary");
-  auto find  = [&](std::string_view key) { return std::ranges::find(doc->passages, key, &passage::key); };
-  auto first = find(*start_key), last = find(*end_key);
-  if (first == doc->passages.end() || last == doc->passages.end())
-    return reject("foreign_key");
-  if (first > last)
-    return reject("reversed_range");
-  auto                     begin  = static_cast<std::size_t>(first - doc->passages.begin());
-  auto                     finish = static_cast<std::size_t>(last - doc->passages.begin());
-  std::vector<std::string> actual_keys;
-  std::vector<std::string> actual_quotes;
-  for (auto i = begin; i <= finish; ++i) {
-    auto const& text = doc->passages[i].text;
-    auto        from = i == begin ? static_cast<std::size_t>(*start_offset) : 0U;
-    auto        to   = i == finish ? static_cast<std::size_t>(*end_offset) : text.size();
-    if (from > to || to > text.size() || !utf8_boundary(text, from) || !utf8_boundary(text, to))
-      return reject("invalid_utf8_boundary");
-    actual_keys.push_back(doc->passages[i].key);
-    actual_quotes.push_back(text.substr(from, to - from));
-  }
-  if (covered != actual_keys)
-    return reject("noncontiguous_covered_keys");
-  if (quotes != actual_quotes)
-    return reject("forged_quote");
-  std::string normalized;
-  for (std::size_t i = 0; i < actual_quotes.size(); ++i) {
-    if (i != 0)
-      normalized += '\n';
-    normalized += actual_quotes[i];
-  }
+    return reject(rejection_reason(document_authority::error::missing_boundary));
+  // A negative offset wraps to a value past every passage, which the
+  // validator refuses as `invalid_utf8_boundary` -- the same outcome the
+  // handler-local copy this replaced produced.
+  document_authority::range_evidence const evidence{.content_revision = *revision,
+                                                    .start_key        = *start_key,
+                                                    .start_offset     = static_cast<std::size_t>(*start_offset),
+                                                    .end_key          = *end_key,
+                                                    .end_offset       = static_cast<std::size_t>(*end_offset),
+                                                    .covered_keys     = cliapp::flag_strings(args, "--covered-key"),
+                                                    .segment_quotes   = cliapp::flag_strings(args, "--segment-quote")};
+  auto                                     validated = document_authority::validate(*doc, evidence);
+  if (!validated)
+    return reject(rejection_reason(validated.error()));
   std::string out = std::format("{{\"contract_version\":\"block-range-validation-v1\",\"source_uuid\":{},\"document_id\":{},"
                                 "\"content_revision\":{},\"covered_keys\":[",
-                                json(doc->source_uuid), json(doc->id), json(doc->revision));
-  for (std::size_t i = 0; i < actual_keys.size(); ++i) {
+                                json(doc->source_uuid), json(validated->document_id), json(validated->content_revision));
+  for (std::size_t i = 0; i < validated->covered_keys.size(); ++i) {
     if (i != 0)
       out += ',';
-    out += json(actual_keys[i]);
+    out += json(validated->covered_keys[i]);
   }
   out += "],\"segment_quotes\":[";
-  for (std::size_t i = 0; i < actual_quotes.size(); ++i) {
+  for (std::size_t i = 0; i < validated->segment_quotes.size(); ++i) {
     if (i != 0)
       out += ',';
-    out += json(actual_quotes[i]);
+    out += json(validated->segment_quotes[i]);
   }
-  out += std::format("],\"normalized_quote\":{}}}", json(normalized));
+  out += std::format("],\"normalized_quote\":{}}}", json(validated->normalized_quote));
   ctx.out() << out << '\n';
   return {};
 }
