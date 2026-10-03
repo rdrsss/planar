@@ -4215,8 +4215,9 @@ class DocsHonestyTest(unittest.TestCase):
     `evals/README.md` and `evals/orchestrator/evidence.md` must not claim an
     unowned cadence (CI, nightly, release, smoke, "every change", "Full
     Stack"). CI here is only the fast tier (`ci.yml`: formatting, installer
-    fixtures and the eval harness UNIT tests) and the nightly/on-demand full
-    tier (`full.yml`: Linux build and ctest); no eval lane runs in CI. And
+    fixtures and the planning eval harness UNIT tests) and the nightly/on-demand
+    full tier (`full.yml`: Linux build, ctest and the orchestrator harness UNIT
+    tests); no eval lane runs in CI. And
     `evals/RESULTS.md` does not exist yet (planned for a later milestone), so
     a bare cadence claim is a documentation-honesty violation unless the line
     does one of two things:

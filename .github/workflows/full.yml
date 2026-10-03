@@ -4,7 +4,8 @@
 # It runs nightly, on a manual dispatch, on version tags, and on a pull
 # request that carries the `ci:full` label.
 #
-# `make test-all` through the host queue remains the pre-merge gate; this
+# It also runs the orchestrator eval harness unit tests, which need the built
+# binaries on PATH. `make test-all` through the host queue remains the pre-merge gate; this
 # workflow is the independent Linux backstop.
 name: Full
 
@@ -49,4 +50,5 @@ jobs:
               cmake --preset debug
               cmake --build build/debug -j4
               ctest --test-dir build/debug -j4 --output-on-failure
+              PATH="/src/build/debug/bin:$PATH" make eval-orchestrator-unit
             '

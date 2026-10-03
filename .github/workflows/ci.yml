@@ -41,5 +41,5 @@ jobs:
         run: make fmt-check LLVM_PREFIX=/usr/lib/llvm-23
       - name: Installer fixtures
         run: make test-install-manifest test-install-deps
-      - name: Eval harness unit tests
-        run: make eval-orchestrator-unit eval-planning-unit
+      - name: Planning eval harness unit tests
+        run: make eval-planning-unit
