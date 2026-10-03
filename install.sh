@@ -517,7 +517,7 @@ title "Planar — install from $REPO_ROOT"
 # only override; --force is not one.
 queue_live_guard preflight || exit 1
 
-# Dependency manifest — keep in sync with README.md § Prerequisites and the
+# Dependency manifest — keep in sync with INSTALL.md § Prerequisites and the
 # CLAUDE.md "external tool dependencies" rule. Format: "cmd|brewpkg|what for"
 # (empty brewpkg = base system tool, no Homebrew hint).
 #

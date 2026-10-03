@@ -1,15 +1,6 @@
----
-title: Glossary
-doc_kind: glossary
-template_version: 1
-regenerated_at: 2026-05-18T00:00:00Z
-regenerated_by: hand
----
-
 # Glossary
 
-This page is aggregated from `kind=glossary_term` artifacts under
-`assoc:project:planar`. One sub-section per term, alphabetical.
+A glossary of Planar terms, one sub-section per term, in alphabetical order.
 
 ## Association
 

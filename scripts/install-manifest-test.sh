@@ -803,13 +803,13 @@ run_uninstall_nopy "$QR_UHOME" >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
 assert_present "$QR_UHOME/.planar/planar.db"
 
 # Dependencies: python3's reason names the retirement reader; neither ps nor
-# sysctl is a manifest entry or a README prerequisite (question 1011).
+# sysctl is a manifest entry or an INSTALL.md prerequisite (question 1011).
 grep -Fq '"python3|python|CMake configure (the Python test runners); install.sh'"'"'s agent.db retirement reader' "$ROOT/install.sh" \
   || fail "python3's BUILD_DEPS reason does not name the agent.db retirement reader"
 ! grep -Eq '^  "(ps|sysctl)\|' "$ROOT/install.sh" || fail "ps or sysctl is in BUILD_DEPS/RUN_DEPS"
-sed -n '/^## Prerequisites/,/^### /p' "$ROOT/README.md" > "$TMP/prereqs.md"
-grep -Fq 'old-queue-database retirement reader' "$TMP/prereqs.md" || fail "README Prerequisites does not name the retirement reader"
-! grep -Eq '`(ps|sysctl)`' "$TMP/prereqs.md" || fail "README Prerequisites names ps or sysctl"
+sed -n '/^## Prerequisites/,/^### /p' "$ROOT/INSTALL.md" > "$TMP/prereqs.md"
+grep -Fq 'old-queue-database retirement reader' "$TMP/prereqs.md" || fail "INSTALL.md Prerequisites does not name the retirement reader"
+! grep -Eq '`(ps|sysctl)`' "$TMP/prereqs.md" || fail "INSTALL.md Prerequisites names ps or sysctl"
 
 # install.sh runs under `set -eEuo pipefail` with an ERR trap (on_err), and
 # -E carries that trap into command substitutions. The seam's substitutions

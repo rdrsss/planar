@@ -10,15 +10,39 @@ Plus [uninstall](#uninstall), [troubleshooting](#troubleshooting), and the [inst
 
 ## Prerequisites
 
-- **CMake >= 4.3, Ninja, and the pinned LLVM toolchain.** Required for all install paths — these configure and build the C++26 binaries. The presets discover the LLVM prefix through `cmake/llvm-toolchain.cmake` (an explicit `-DPLANAR_LLVM_PREFIX` always wins); `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` / `clang++` before invoking CMake. See [docs/toolchain-parity.md](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
-- **`tbb` and `python3`.** Required to configure: the vendored Mt-KaHyPar `find_package(TBB)`s the system library, and the configure registers Python test runners. No network access or token is needed: every dependency is committed under `vendor/`.
-- **Git, >= 2.31.** Required for the full install (clones the source repo) and at runtime for repo discovery; see `docs/toolchain-parity.md`'s git row for why the 2.31 floor is load-bearing.
-- *Optional:* **`gh` CLI** — only if you plan to authenticate against GitHub Issues through `gh auth token` (the default when `--auth-env` is omitted) instead of an env-var token.
-- *Optional:* **`sqlx-cli`** — only if you want to author new migration pairs ad-hoc. `cargo install sqlx-cli --no-default-features --features sqlite`.
+Planar shells out to a small set of external tools. On macOS, install them via Homebrew:
 
-[README.md § Prerequisites](README.md#prerequisites) is the full inventory, including the runtime tools the bundled skills use (`jq`, `ripgrep`).
+```bash
+brew install cmake ninja llvm python git gh jq ripgrep tbb
+```
+
+- `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries, on every install path. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
+- `tbb` (>= 2021.5) — **required to build**, since `cmake/dependencies.cmake` vendors Mt-KaHyPar (decision 1006, task 6459) as a pinned CPM source block and Mt-KaHyPar's own CMake `find_package(TBB)`s it. Unlike every other third-party dependency this tree takes, TBB is **not** vendored as source: upstream states TBB does not support static linking, so this is a deliberately accepted dynamic system dependency rather than a hermetic one. `install.sh` preflights `brew --prefix tbb` and fails fast if it is missing, matching CMake's own `find_package(TBB)` failure.
+- `python3` — **required to configure**. The configure step registers Python test runners (`src/tools/scriptorium/core.test.py`, `scripts/install-lib/queue_retire.test.py`, `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. `install.sh` also runs it as its old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program), and `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
+- Scriptorium is built from `src/tools/scriptorium/` and installed by CMake; no external Scriptorium executable is required. It needs no dependency beyond Glaze, which the rest of the tree already vendors.
+- No network access and no token are needed to configure or build: every dependency is committed under `vendor/` as a pinned release archive.
+- `docker` — optional, developer-only. `make linux-gate` builds and tests the tree on Debian trixie in a container (see [docs/testing.md](docs/testing.md#the-linux-gate)). It is not an installer dependency.
+- `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. The full install also needs it to clone the source repository.
+- `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
+- `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`, `pl-orchestrator`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
+- `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session in [docs/getting-started.md](docs/getting-started.md#8-capture-hand-off-and-resume) (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
+
+The full source-checkout installer also uses the base-system utilities declared
+in `install.sh`'s `BUILD_DEPS` / `RUN_DEPS` manifests (`awk`, `basename`, `cat`, `chmod`, `cmp`,
+`cp`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`,
+`readlink`, `rm`, `rmdir`, and `tr`) alongside CMake, Ninja, and the exact pinned LLVM compiler paths above. These ship with supported Unix-like systems;
+the installer preflights them before making changes.
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
+
+### Optional / research tools
+
+- `mtkahypar` — the external [Mt-KaHyPar](https://github.com/kahypar/mt-kahypar) hypergraph partitioner backs the optimal arm of `planar groups recommend --solver=mtkahypar`. As of decision 1006 (tasks 6459/6460) it is **vendored from source** via `cmake/dependencies.cmake` and linked directly into the C++ tree (`libmtkahypar`) — the earlier `--with-mtkahypar` Python-wheel adapter (`bin/mtkahypar`, `opt/mtkahypar/<version>/venv/`) is retired and no `python3` step is needed for this feature any more. The linkage is **off by default**: `mtkahypar` is an `EXCLUDE_FROM_ALL` CMake target, so a plain `cmake --build` never compiles it. Configure with `-DPLANAR_WITH_MTKAHYPAR=ON` to build and link the real seam (requires `tbb`, see above), or pass `--with-solver` to `install.sh`; without it `groups recommend --solver mtkahypar` degrades gracefully to greedy and reports `optimal_available:false`. This fallback is a deliberate, permanent contract, not a placeholder for missing Mt-KaHyPar support.
+- `sqlx-cli` and `sqlite3` — only needed for ad-hoc developer workflows against a scratch database (see [Build from source](#build-from-source)); the runtime embeds migrations via build-time codegen and uses the vendored SQLite amalgamation, so neither CLI is a runtime dependency. Install the optional `sqlx-cli` for authoring new migration pairs:
+
+```bash
+cargo install sqlx-cli --no-default-features --features sqlite
+```
 
 ## Quick install (`make install`)
 
@@ -45,13 +69,37 @@ planar health
 ```
 
 This installs only the executables. Runtime migrations and default propagation
-templates are embedded, so the CLI works in isolation. It does not stage or
-wire the legacy vendor surfaces; for those, use the
-[full install](#full-install-installsh).
+templates are *embedded* at build time, so the CLI works standalone against a
+local database. Agent specs, slash commands, and skills are **not** embedded —
+they are separate source files rendered and staged by `install.sh` — so none of
+the vendor surfaces (Claude `/pl-*` slash commands, Codex, Copilot, and Gemini
+skills) are wired up by a `make install` or a `cmake --install` alone; for those,
+use the [full install](#full-install-installsh).
+
+The five binaries and the in-tree `scriptorium` renderer are installed. The four
+that open a database (all but `planar-execute`, which holds no SQLite handle at
+all) statically link the vendored SQLite amalgamation — no system library
+dependency.
+
+This build does not include the Centurion workflow engine. `planar-execute`'s
+engine verbs (`submit`, `status`, `cancel`, `follow`, `host`) require a
+Centurion-enabled build (the `dev/centurion-integration` branch); this build
+refuses them with `planar-execute was built without the Centurion engine` and
+exit `1`. `planar-execute run` is unaffected.
 
 `make install` always builds the `release` CMake preset with version metadata
-stamped in (`-DPLANAR_VERSION_META=ON`). For a debug build instead, configure
-and build by hand:
+stamped in (`-DPLANAR_VERSION_META=ON`). To run the same release-preset build by
+hand and install under `~/.planar` instead:
+
+```bash
+cmake --preset release -DPLANAR_VERSION_META=ON
+cmake --build build/release
+cmake --install build/release --prefix "$HOME/.planar"
+```
+
+This puts the five binaries and `scriptorium` in `~/.planar/bin/`; add that
+directory to your `$PATH` and run `planar health` as above. For a debug build
+instead, configure and build by hand:
 
 ```bash
 cmake --preset debug
@@ -99,7 +147,7 @@ planar health
 
 And in Claude Code, the slash commands should now resolve:
 
-- `/pl-orchestrator <task-id> [<task-id>...]` — drive a goal, plan, or task list end-to-end through the phased lifecycle (planning / spec review / ingestion / execution / finalization / propagation / archive / documentation).
+- `/pl-orchestrator <task-id> [<task-id>...]` — drive a goal, plan, or task list end-to-end through the phased lifecycle (planning / spec review / ingestion / execution / finalization / propagation / archive).
 - `/pl-coder <task-id>` — implement one task.
 - `/pl-reviewer <task-id> <iteration>` — review coder output.
 - `/pl-init`, `/pl-scope`, `/pl-plan`, `/pl-task`, `/pl-question`, `/pl-scenario`, `/pl-promote`, `/pl-workbench`, `/pl-sync`, `/pl-ext-create`, `/pl-audit-trail`, `/pl-resume`, `/pl-handoff`, `/pl-help`, `/pl-health` — the core reference workflows wrapping `planar` subcommands.
@@ -252,6 +300,10 @@ make test               # cmake --preset debug; cmake --build --target all plana
 make test-all           # unit (ctest) + registry check + coverage + cli-usage-check + surface/exit-code/eval contracts + cpp-lint-gate
 make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
 ```
+
+On a machine where several agents build at once, send builds and tests through
+the host queue instead of running them directly, for example `planar-agent
+queue run --detach -- make test` (see [docs/testing.md](docs/testing.md)).
 
 For dev-mode install where edits to the source repo are picked up live by the binary's siblings (skills, agents, commands) and vendor surfaces, use `./install.sh --link`. Note that binary edits still require a rebuild (`make build` or re-running `install.sh`).
 
@@ -409,7 +461,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── 00001_foundation.down.sql
 │   ├── 00002_planning.up.sql
 │   ├── 00002_planning.down.sql
-│   └── … (through 00039_workflow_runs_lease)
+│   └── … (through 00041_contextual_annotation_threads)
 ├── agents/                             # vendor-neutral agent role specs
 │   ├── methodology.md
 │   ├── models.md
@@ -480,7 +532,7 @@ PLANAR_VENDOR=claude-code planar capture session --task 1
 
 ## Next steps
 
-- [README quickstart](README.md#quickstart) — a worked example of the full flow.
+- [docs/getting-started.md](docs/getting-started.md) — a worked example of the full flow, from `planar init` through plans, tasks, capture, handoff, and resume.
 - [docs/cli-reference.md](docs/cli-reference.md) — every command, flag, and exit code.
 - [docs/architecture.md](docs/architecture.md) — system design: storage model, three operational context planes, schema contract, workbench, and configuration.
 - [docs/workflows.md](docs/workflows.md) — end-to-end recipes: planning pipeline, bidirectional workbench, ext-sync propagation.

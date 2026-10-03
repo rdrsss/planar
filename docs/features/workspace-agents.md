@@ -1,21 +1,3 @@
----
-title: Workspace AGENTS.md generation
-doc_kind: feature
-template_version: 1
-regenerated_at: 2026-05-18T00:00:00Z
-regenerated_by: hand
-references:
-  workspace_product_spec:
-    kind: planar
-    entity: artifact:76
-  workspace_tech_spec:
-    kind: planar
-    entity: artifact:77
-  workspace_roadmap:
-    kind: planar
-    entity: artifact:78
----
-
 # Workspace AGENTS.md generation
 
 A *workspace* in Planar is the polyrepo root where you hold several
@@ -23,7 +5,7 @@ member projects side by side — typically the directory that contains
 `web-app/`, `platform/`, `infra/`, and friends as siblings. Planar
 generates a single `AGENTS.md` (with a sibling `CLAUDE.md` symlink)
 that gives any agent dropped into that root a consistent routing
-table across every member project[^workspace_product_spec].
+table across every member project.
 
 ## What it does
 
@@ -33,15 +15,14 @@ table across every member project[^workspace_product_spec].
 - Owns a per-workspace state directory at
   `~/.planar/workspaces/<org_id>/`. The canonical AGENTS.md and the
   routing-table JSON live there; the repo workspace root holds only
-  symlinks pointing back at them[^workspace_tech_spec].
+  symlinks pointing back at them.
 - Builds a routing table from static signals — file presence, README
   excerpts, dependency declarations — without invoking an LLM. The
   static pass is deterministic and gates the optional enrichment
   pass.
 - Regenerates AGENTS.md by rendering the workspace doc-kind template
   against the routing table plus live database queries. The
-  manifest layer from the outward-docs system tracks
-  drift[^workspace_roadmap].
+  documentation manifest layer tracks drift.
 - Always carries the host build and test queue rule in the generated
   AGENTS.md, once. The default template places it with `{{.QueueRule}}`;
   a template in `~/.planar/templates/doc-prompts/agents.md` that does not
@@ -131,7 +112,3 @@ AGENTS.md and the regenerator's output as a hand-edit signal, and
 - [Workflows: scaffolding a new workspace](../workflows.md)
 - [Features: scope resolution](scope-resolution.md) — workspace init
   feeds the org association the scope resolver later reads.
-
-[^workspace_product_spec]:
-[^workspace_tech_spec]:
-[^workspace_roadmap]:

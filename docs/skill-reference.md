@@ -230,8 +230,7 @@ Every skill in this document routes its writes through the binary that owns them
 
 The orchestrator, coder, reviewer, research, and test-coder roles that manage
 the full feature lifecycle and the coder/reviewer execution loop live in this
-repo (raised to armarium at plan 918/929, returned at the armarium
-reintegration). `/pl-orchestrator`, `/pl-coder`, `/pl-reviewer`,
+repo. `/pl-orchestrator`, `/pl-coder`, `/pl-reviewer`,
 `/pl-research`, and `/pl-test-coder` render and install from
 `skills/src/` like every other skill. Planar also drives the primitives they
 compose: the `planar-agent` claim ritual, `planar test-spec status` coverage
@@ -241,7 +240,7 @@ and [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
 
 ### `/pl-orchestrator`
 
-Deliver software in a Planar-managed Git repository: coordinate planning, spec review, ingestion, implementation, verification, finalization, propagation, documentation, and archive with explicit operator gates.
+Deliver software in a Planar-managed Git repository: coordinate planning, spec review, ingestion, implementation, verification, finalization, propagation, and archive with explicit operator gates.
 
 **Example:**
 ```
@@ -973,7 +972,7 @@ Source: `skills/src/pl-report-issue.md`
 
 ## Agent Role Specs
 
-The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — live here too (raised to armarium at plan 918/929, returned at the armarium reintegration).
+The vendor-neutral role specs live under `agents/`. Vendor skill files defer to them for the authoritative behavior description. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — live here too.
 
 | File | Role |
 |------|------|

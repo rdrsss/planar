@@ -39,7 +39,7 @@ flat `skills/<vendor>/pl-*.md` files, which the installer materializes as
 `SKILL.md` directories under `~/.copilot/skills/` and
 `~/.gemini/antigravity-cli/skills/`, respectively. These paths are relative to
 the Scriptorium output root, normally `$PLANAR_HOME`. The repository
-[README](../../../README.md#vendor-surfaces) lists the staging directories and
+[architecture document](../../../docs/architecture.md#vendor-surfaces) lists the staging directories and
 the separate agent surfaces.
 
 `planar-golden.sha256` pins the relative paths and bytes of the 232 current

@@ -115,8 +115,7 @@ Planning and ingestion are hard-gated;
 execution runs a reviewer loop capped at five iterations.
 
 The orchestrator, coder, reviewer, test-coder, and janitor roles that drive
-this lifecycle live in this repo's `agents/` (raised to armarium at plan 929,
-returned at the armarium reintegration), alongside their companion
+this lifecycle live in this repo's `agents/`, alongside their companion
 methodology, doctrine, and model-tier-routing docs. Planar itself
 drives the primitive these roles compose: the `planar-agent` claim ritual
 (§3 below).

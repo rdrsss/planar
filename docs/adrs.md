@@ -1,17 +1,8 @@
----
-title: Architecture decision records
-doc_kind: adr_index
-template_version: 1
-regenerated_at: 2026-05-18T00:00:00Z
-regenerated_by: hand
----
-
 # Architecture decision records
 
 The table below indexes every accepted architecture decision record.
-The full text of each ADR lives as a Planar artifact under
-`assoc:project:planar`; this page is the curated reading order plus
-a one-paragraph summary of each decision.
+This page gives a reading order for the ADRs plus a one-paragraph
+summary of each decision.
 
 | ADR  | Title                                                           | Status                  |
 |------|-----------------------------------------------------------------|-------------------------|
@@ -63,7 +54,7 @@ tests, clippy-clean, wiremock-backed adapter tests). The decision
 was later overturned after hands-on adapter review surfaced an
 ergonomics-vs-workload mismatch this assessment did not anticipate.
 The implementation lives at commit `3923743`; the retrospective is
-in `docs/lessons-learned-rust-to-go.md` (Planar artifact 34).
+not part of this repository.
 
 ## ADR-0005 — Go as runtime *(superseded)*
 

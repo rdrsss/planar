@@ -445,7 +445,7 @@ endif()
 # FetchContent), this pins to the system Homebrew `tbb` formula via
 # `find_package(TBB)`, matching decision 1006's explicit acceptance of a
 # dynamic TBB runtime dependency. `tbb` is added to `install.sh`'s
-# `BUILD_DEPS`/`RUN_DEPS` and `README.md` § Prerequisites in the same
+# `BUILD_DEPS`/`RUN_DEPS` and `INSTALL.md` § Prerequisites in the same
 # change (CLAUDE.md: an un-manifested dependency silently breaks for users
 # who lack it).
 if(APPLE)

@@ -197,7 +197,7 @@ Do not claim the guard is universal without measuring. Matrix:
   public clone configures with no network access and no token. A private or
   first-party repository must never become a build dependency of master.
 - External programs that the binaries, a bundled skill or agent, or the
-  installer shell out to are listed in both `README.md` § Prerequisites and
+  installer shell out to are listed in both `INSTALL.md` § Prerequisites and
   the `BUILD_DEPS` / `RUN_DEPS` manifests in `install.sh`. Update both in the
   same change.
 - When an installed artifact stops shipping, add its `$PLANAR_HOME`-relative
