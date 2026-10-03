@@ -222,35 +222,8 @@ set(PLANAR_LLVM_PREFIX "${_planar_llvm_found}" CACHE PATH "LLVM prefix used to b
 #     (docs/toolchain-parity.md § Derived import-std / embed flag set).
 set(CMAKE_C_COMPILER "${PLANAR_LLVM_PREFIX}/bin/clang" CACHE FILEPATH "C compiler" FORCE)
 set(CMAKE_CXX_COMPILER "${PLANAR_LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "C++ compiler" FORCE)
-# `-Wno-unused-command-line-argument` on non-Apple UNIX only. With
-# `-nostdinc++ -isystem .../c++/v1` supplied, `-stdlib=libc++` has no
-# COMPILE-time effect on Linux (it still matters at link, where it also
-# appears), so clang reports it as an unused argument. Apple's driver
-# consumes it, which is why this never fires on macOS. It only bites in
-# third-party sub-builds that compile with their own `-Werror` --
-# Centurion's vendored BoringSSL `fipsmodule/bcm.cc` was the first --
-# and this repo cannot reach into those to adjust their flags. Scoped to
-# a driver-level nit: it silences no diagnostic about the code itself, and
-# first-party targets keep `PLANAR_WARNINGS_AS_ERRORS`. Measured while
-# building the Linux gate (Dockerfile, task 6936).
-set(_planar_llvm_extra_cxx_flags "")
-if(UNIX AND NOT APPLE)
-  set(_planar_llvm_extra_cxx_flags " -Wno-unused-command-line-argument")
-endif()
-set(CMAKE_CXX_FLAGS "-stdlib=libc++ -nostdinc++ -isystem ${PLANAR_LLVM_PREFIX}/include/c++/v1${_planar_llvm_extra_cxx_flags}"
+set(CMAKE_CXX_FLAGS "-stdlib=libc++ -nostdinc++ -isystem ${PLANAR_LLVM_PREFIX}/include/c++/v1"
     CACHE STRING "C++ flags" FORCE)
-# `-lc++abi` on non-Apple UNIX only. On macOS libc++abi is folded into
-# libc++, so the driver needs nothing extra; on Linux it is a separate DSO
-# and the driver does NOT add it, so a static archive that references e.g.
-# `std::length_error::~length_error` fails to link with
-# "libc++abi.so.1: DSO missing from command line". Measured while building
-# the Linux gate (Dockerfile, task 6936): Centurion's vendored protobuf
-# `protoc` was the first target to hit it. Appending it on Apple too would
-# change the pinned flag set docs/toolchain-parity.md records byte-for-byte.
-set(_planar_llvm_abi_flag "")
-if(UNIX AND NOT APPLE)
-  set(_planar_llvm_abi_flag " -lc++abi")
-endif()
-set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++ -L${_planar_llvm_libdir} -Wl,-rpath,${_planar_llvm_libdir}${_planar_llvm_abi_flag}"
+set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++ -L${_planar_llvm_libdir} -Wl,-rpath,${_planar_llvm_libdir}"
     CACHE STRING "Executable linker flags" FORCE)
 set(CMAKE_CXX_STDLIB_MODULES_JSON "${_planar_llvm_json}" CACHE FILEPATH "libc++ import-std module manifest" FORCE)

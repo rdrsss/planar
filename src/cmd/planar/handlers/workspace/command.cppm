@@ -41,8 +41,8 @@
 /// ## `regenerate` is now wired; `init` alone is still absent
 ///
 /// `regenerate` left the unported inventory at task 6364 — see
-/// `planar.engine.workspace.regenerate`'s header for the vendored xxh64 and
-/// the ported template engine. `init` remains a 615-line handler that
+/// `planar.engine.workspace.regenerate`'s header for the ported template
+/// engine. `init` remains a 615-line handler that
 /// COMPOSES scan + registration + routing build + regenerate + symlink
 /// install, which decision 947 places at layer 3 — one of the four things
 /// it composes now exists in this tree, but the compose itself does not.

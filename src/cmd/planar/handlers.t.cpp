@@ -1396,9 +1396,8 @@ TEST_CASE("workspace routing build writes a table and reports it", "[cmd][handle
 // =========================================================================
 // task 6364 — `workspace regenerate`.
 //
-// The engine-level manifest suite pins xxh64 vectors and an oracle-captured
-// document digest. These command-layer cases cover the three refusal guards
-// and the full write path, including the two generated files. A hermetic
+// These command-layer cases cover the three refusal guards and the full
+// write path, including the generated AGENTS.md. A hermetic
 // live Zig/C++ differential run (same database seed and same absolute state
 // path, resetting the arena between binaries) is recorded in the task report;
 // the assertions below keep each independently reachable after that capture.
@@ -1437,7 +1436,7 @@ TEST_CASE("workspace regenerate refuses its missing-org, ambiguous-org, and miss
   CHECK(ambiguous.err == k_ambiguous);
 }
 
-TEST_CASE("workspace regenerate writes AGENTS.md and its xxh64 manifest", "[cmd][handlers][parity]") {
+TEST_CASE("workspace regenerate writes AGENTS.md", "[cmd][handlers][parity]") {
   auto const fx        = make_fixture("wrghappy");
   auto const state_dir = seed_org(fx);
   write_routing_table(state_dir, R"({"schema_version":1,"workspace_id":1,"workspace_slug":"acme","workspace_name":"Acme",)"
@@ -1448,10 +1447,8 @@ TEST_CASE("workspace regenerate writes AGENTS.md and its xxh64 manifest", "[cmd]
   CHECK(text.code == 0);
   CHECK(text.err.empty());
 
-  auto const agents_path   = state_dir / "AGENTS.md";
-  auto const manifest_path = state_dir / ".manifest-docs";
+  auto const agents_path = state_dir / "AGENTS.md";
   REQUIRE(std::filesystem::exists(agents_path));
-  REQUIRE(std::filesystem::exists(manifest_path));
 
   std::ifstream     agents_input(agents_path, std::ios::binary);
   const std::string agents{std::istreambuf_iterator<char>(agents_input), std::istreambuf_iterator<char>()};
@@ -1461,18 +1458,11 @@ TEST_CASE("workspace regenerate writes AGENTS.md and its xxh64 manifest", "[cmd]
   // before this fallback paragraph — D2 requires retaining that quirk.
   CHECK(agents.contains("## Projects in this workspace\n\n\n_No projects registered."));
 
-  std::ifstream     manifest_input(manifest_path, std::ios::binary);
-  const std::string manifest{std::istreambuf_iterator<char>(manifest_input), std::istreambuf_iterator<char>()};
-  CHECK(manifest.starts_with("{\"version\":1,\"algo\":\"xxh64\","));
-  CHECK(manifest.contains("\"generated_at\":\"now\""));
-  CHECK(manifest.contains(std::format("\"{}\"", agents_path.string())));
-
   auto const as_json = dispatch(fx, {"workspace", "regenerate", "--json"});
   CHECK(as_json.code == 0);
   CHECK(as_json.err.empty());
   CHECK(as_json.out.starts_with(std::format("{{\"agents_path\":\"{}\"", agents_path.string())));
-  CHECK(as_json.out.contains(std::format("\"manifest_path\":\"{}\"", manifest_path.string())));
-  CHECK(as_json.out.contains(std::format("\"project_count\":0,\"bytes_written\":{},", agents.size())));
+  CHECK(as_json.out.contains(std::format("\"project_count\":0,\"bytes_written\":{}}}\n", agents.size())));
   CHECK(as_json.out.ends_with("}\n"));
 }
 

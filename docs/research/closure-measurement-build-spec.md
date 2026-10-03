@@ -219,7 +219,6 @@ extractor, no grouping. Arms: `strict`, `eligibility`.
 
 7. **Pilot.** One plan, one rep, `strict` + `eligibility` only. Produces the
    first RQ1 number. **Hard go/no-go gate** for M2/M3.
-   *Historical research record:* [`closure-v1/pilot-notes.md`](https://github.com/locumipsum/research/blob/main/projects/context-closure/experiments/closure-v1/pilot-notes.md).
    *Accept:* RQ1 precision/recall computed; pipeline produces no orphaned or
    unjoinable records.
 
@@ -300,7 +299,7 @@ Goal: form slices by minimizing closure replication under the window budget.
 
 4. **Grouped arm + full corpus runs.** Three arms × corpus × N reps,
    interleaved, against a spend ledger with a pre-committed ceiling.
-   *Historical research record:* [`closure-v1/results.md`](https://github.com/locumipsum/research/blob/main/projects/context-closure/experiments/closure-v1/results.md); instrument fixture: `metrics/parallelism_recovered.sql`.
+   Instrument fixture: `metrics/parallelism_recovered.sql`.
    *Accept:* RQ2/RQ3 numbers computed; paired per-plan deltas reported.
 
 ---

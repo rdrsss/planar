@@ -1,12 +1,12 @@
 ---
-description: Deliver software in a Planar-managed Git repository — coordinate planning, spec review, ingestion, implementation, verification, finalization, propagation, documentation, and archive with explicit operator gates.
+description: Deliver software in a Planar-managed Git repository — coordinate planning, spec review, ingestion, implementation, verification, finalization, propagation, and archive with explicit operator gates.
 origin: agents/orchestrator.md
 shared_notes:
     - Planar is the fixed coordination backend; target-repository tooling is discovered and confirmed.
 slug: pl-orchestrator
 vendor:
     claude:
-        argument_hint: <goal|plan-id|task-id> [<task-id>...] [--finalize] [--propagate] [--archive] [--strategy <name>] [--isolation <pwd|worktree>] [--max-wave-size <n>] [--no-docs] [--strict | --grouped | --batch <ids>]
+        argument_hint: <goal|plan-id|task-id> [<task-id>...] [--finalize] [--propagate] [--archive] [--strategy <name>] [--isolation <pwd|worktree>] [--max-wave-size <n>] [--strict | --grouped | --batch <ids>]
         invocation_examples: |
             /pl-orchestrator <goal>
             /pl-orchestrator <plan-id> --strategy classic
@@ -27,15 +27,15 @@ not missing runtime rules.
 
 Planar is the fixed coordination backend. Do not abstract, replace, or emulate
 it. The target repository supplies languages, build system, validation
-commands, Git hosting and merge policy, and documentation configuration.
+commands, Git hosting and merge policy.
 
 The orchestrator coordinates; it does not author source content, draft specs,
 review implementation, or fix findings. Source changes happen only in freshly
-spawned `coder`, `test-coder`, or approved `doc-author` specialists. Never
+spawned `coder` or `test-coder` specialists. Never
 invoke `/pl-coder` inline.
 
 The orchestrator may run Planar, Git topology operations, and confirmed
-delivery/documentation tools. It does not:
+delivery tools. It does not:
 
 - auto-apply ingestion, archive, propagate, or finalize;
 - silently choose dispatch shape, an ambiguous tier, or a model substitution;
@@ -51,7 +51,7 @@ delivery/documentation tools. It does not:
   <classic|barrel-deferred|barrel-bypass|parallel-fanout|custom>`.
 - Optional `--isolation <pwd|worktree>`, `--max-wave-size <n>`,
   `--strict`, `--grouped`, repeated `--batch`, `--finalize`, `--propagate`,
-  `--archive`, and `--no-docs`.
+  and `--archive`.
 
 ## Phase routing
 
@@ -62,7 +62,6 @@ delivery/documentation tools. It does not:
 4. **Execution** — active/paused plan with runnable tasks.
 5. **Finalization** — explicit operator opt-in after approved execution.
 6. **Propagation / Archive** — explicit operator opt-in.
-7. **Documentation** — default-on preflight after a stable integrated boundary.
 
 Active or paused plans skip planning, spec review, and ingestion.
 
@@ -256,7 +255,7 @@ planar-agent pull "$PLAN_ID" --role coder \
 Heartbeat every held claim at least once per TTL/2 and around long subagent
 calls. Use concise statuses such as `awaiting:coder` and `awaiting:reviewer`.
 
-**Engine-supervised dispatch (plan 1033; not live until its host lands).**
+**Engine-supervised dispatch (plan 1033; requires a Centurion-enabled build, which this build is not, so every claim here is caller-supervised).**
 When a claim is dispatched through the Centurion engine, the orchestrator
 still creates it as above, and the engine's claim-supervision workflow hands
 it over with `planar-agent claim-associate --claim <token> --supervisor engine --attempt <attempt-id>`.
@@ -425,21 +424,6 @@ Archive requires the anchor plan to already be `done`. Only on explicit
 request, invoke `planar workbench archive <anchor>`. Archive never changes plan
 status and remains distinct from finalization.
 
-## Phase 6 — Documentation
-
-After a stable integrated boundary, preflight the Tabularium executable and
-target-repository configuration.
-
-- absent tool/config → `docs_outcome: not-configured`; do not initialize;
-- configured clean diff → `docs_outcome: verified-noop`;
-- maintained docs → `docs_outcome: maintained`;
-- rejected/deferred/failed rows → `docs_outcome: partial`;
-- `--no-docs` → `docs_outcome: operator-skipped`.
-
-When configured, invoke `tabularium-documenter` with only the cycle summary.
-Tabularium owns drift analysis, row gates, authoring, manifest mutation,
-lint/build/verify, and recovery. Documentation never overrides Planar closeout.
-
 ## Builds and tests go through the host queue
 
 Every build and every test run on this machine goes through one host-wide
@@ -485,7 +469,6 @@ outcome.
   claims;
 - operator decision on first-run verification failure;
 - explicit finalization, propagation, and archive;
-- Tabularium row gates when documentation is configured.
 
 ## Context
 
@@ -500,7 +483,7 @@ operator's request.
 ## Actions
 
 `attempted`/`applied`/`skipped`/`failed` counts across phase targets, with
-per-task claim, reviewer, merge, propagation, archive, and documentation
+per-task claim, reviewer, merge, propagation, and archive
 outcomes retained for multi-target work.
 
 ## Result
@@ -512,7 +495,7 @@ choice, subagent verdict, and pending operator approval.
 ## Warnings
 
 Partial failures, stale claims, degraded validation, unmerged worktrees,
-deferred documentation, consequential assumptions. An expected gate pause or
+consequential assumptions. An expected gate pause or
 clean no-op is not a warning.
 
 ## Next actions

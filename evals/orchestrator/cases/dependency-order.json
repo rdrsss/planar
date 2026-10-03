@@ -34,13 +34,13 @@
   },
   "interaction": [
     {
-      "send": "Execute with classic, pwd, strict, and no documentation phase."
+      "send": "Execute with classic, pwd, strict."
     }
   ],
   "lifecycle": {
     "scenario": "controlled-classic",
     "surface": "agent",
-    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits strategy classic, isolation pwd, dispatch shape strict, and --no-docs. Execute the controlled dependency-ordered tasks through coder and reviewer until both reach a terminal state. Do not finalize, propagate, or archive.",
+    "prompt": "Run the current orchestrator agent for active plan {{PLAN_ID}}. The operator explicitly pre-commits strategy classic, isolation pwd, and dispatch shape strict. Execute the controlled dependency-ordered tasks through coder and reviewer until both reach a terminal state. Do not finalize, propagate, or archive.",
     "timeout_seconds": 600,
     "operator_responses": [
       "Yes. Confirm the displayed medium tier and gpt-5.6-terra candidate. Continue through the controlled coder and reviewer cycle.",

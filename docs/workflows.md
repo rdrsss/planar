@@ -173,7 +173,6 @@ Confirm (`yes`) or adjust. The orchestrator then dispatches Group A to a freshly
 | `--grouped` | Orchestrator picks groupings; skip the gate |
 | `--batch 43,44,45 --batch 46,47` | Explicit groupings; skip the gate |
 | `--finalize` | Run Phase 3.7 finalization after execution cycles complete; dispatches the janitor to merge, reconcile, and close out the plan |
-| `--no-docs` | Skip Phase 6 (documenter); by default, documenter runs after a cycle that saw at least one merged coder run |
 | `--propagate` | After all tasks are done, run `ext propagate` automatically |
 | `--archive` | After propagation, archive the workbench tree |
 
@@ -501,10 +500,7 @@ git add docs/planning/billing-export/
 git commit -m "snapshot billing-export spec for review"
 ```
 
-The copy is static — re-run the `cp` to refresh it. For a more
-disciplined "publish a user-facing doc that tracks repo-state
-provenance" path, see [`docs/features/doc-system.md`](features/doc-system.md)
-and `tabularium cover`.
+The copy is static — re-run the `cp` to refresh it.
 
 ---
 
@@ -986,55 +982,6 @@ There is no flag that downgrades a cross-scope-guard refusal to a warning — `-
 
 ---
 
-## Recipe 10 — Doc hygiene pre-commit
-
-Outward-facing docs under `docs/` are tracked by the separately installed `tabularium` tool in its machine-local database. The hook compares the live tree against the manifest and validates workbench frontmatter so file-level drift cannot land silently.
-
-### What it checks
-
-- `tabularium verify` — compare of the recomputed repo merkle root against the machine-local stored root. Fails on any drift in the covered tree.
-- `tabularium lint` — validates documentation schemas and citations under `docs/`.
-- `planar workbench lint --all` — scans every workbench Markdown file with the same
-  frontmatter parser used by pull/push/status/sync and fails on YAML syntax, identity,
-  per-entity title/status schema, artifact kind, or anchor-plan issues. The hook runs all
-  three checks and combines their exit status so one failure does not hide diagnostics from
-  the remaining checks.
-
-### Opt in
-
-The hook is shipped but not installed by default. Symlink it from `.git/hooks/`:
-
-```
-ln -s ../../scripts/git-hooks/pre-commit-docs .git/hooks/pre-commit
-```
-
-Verify it runs:
-
-```
-git commit -m 'noop'
-# → runs all three checks listed above
-```
-
-### Fixing failures
-
-- `verify: DRIFT` — review the breakdown with `tabularium diff`. The output classifies each changed path as `regenerate-candidate`, `hand-edit`, or `new-authoring` / `deletion`. Once the docs are settled, refresh the manifest:
-
-```
-tabularium build
-```
-
-- `tabularium lint: N issue(s)` — each line is `<path>: <type>: <detail>`. Fix the reported schema or citation issue, then rerun the check.
-- `planar workbench lint` issues name the Markdown path and line, a stable diagnostic code,
-  and a repair hint. Run `planar workbench lint --path <path>` to isolate one file, or
-  `planar workbench lint <plan>` to recheck its complete feature tree. CI can run
-  `planar workbench lint --all --json` and consume one NDJSON object per issue.
-
-### Bypass
-
-Use `git commit --no-verify` once you have read the failures and decided to defer the fix. Note in the commit message why.
-
----
-
 ## Recipe 11 — Enriching a workspace routing table with LLM summaries
 
 `planar workspace routing build` is deterministic by default: it scans
@@ -1163,9 +1110,9 @@ The verb refuses if `~/work/.git` exists (use `planar init` for a single repo) o
 
 ```
 created org:work (Work)
-  ├─ project:repo-a   [/Users/mn/work/repo-a]   (auto-created, member-of org:work)
-  ├─ project:repo-b   [/Users/mn/work/repo-b]   (auto-created, member-of org:work)
-  └─ project:repo-c   [/Users/mn/work/repo-c]   (auto-created, member-of org:work)
+  ├─ project:repo-a   [/home/user/work/repo-a]   (auto-created, member-of org:work)
+  ├─ project:repo-b   [/home/user/work/repo-b]   (auto-created, member-of org:work)
+  └─ project:repo-c   [/home/user/work/repo-c]   (auto-created, member-of org:work)
 
 3 repos initialized as projects, all members of org:work.
 Routing table refreshed (3 projects, 1 cross-repo deps).
@@ -1177,10 +1124,10 @@ Inspect what landed:
 
 ```
 ls -la ~/work/AGENTS.md ~/work/CLAUDE.md
-# both → /Users/mn/.planar/workspaces/1/AGENTS.md
+# both → /home/user/.planar/workspaces/1/AGENTS.md
 
 ls ~/.planar/workspaces/1/
-# AGENTS.md  routing-table.json  .manifest-docs
+# AGENTS.md  routing-table.json
 ```
 
 ### Meta repo variant
@@ -1298,70 +1245,6 @@ The `associations` row, the `projects` rows, and their membership links remain i
 - Architecture: [docs/architecture.md § Workspace State Directory Model](architecture.md#workspace-state-directory-model).
 - CLI verbs: [docs/cli-reference.md § Domain: `workspace`](cli-reference.md#domain-workspace).
 - Unified skill source: [`skills/src/pl-workspace-scan.md`](../skills/src/pl-workspace-scan.md). Vendor projections are generated at install time.
-
----
-
-## Recipe 13 — Maintaining the docs surface
-
-Outward-facing docs under `docs/` are tracked by the separately installed `tabularium` tool and its machine-local merkle state. Recipes 10 (pre-commit hook) and 12 (workspace) cover the mechanical guards; this recipe covers the human-judgement layer: keeping published docs in sync with what the repo actually looks like.
-
-### Daily / per-PR loop
-
-Every change that touches the repo is covered by two verbs.
-
-- `tabularium verify` — root-hash compare against Tabularium's machine-local project state. The pre-commit hook from [Recipe 10](#recipe-10--doc-hygiene-pre-commit) invokes this; the recipe also explains how to interpret each drift signal.
-- `tabularium lint` — documentation-schema and citation checks under `docs/`.
-
-When either verb fails, fix the issue and retry — the pre-commit hook keeps drift out of the tree.
-
-### After landing a body of work
-
-For the complete gated loop, invoke tabularium's `/tabularium-doc-maintain`
-skill. The documenter/doc-author cluster that drives this loop — and the skill
-itself, formerly planar's `/pl-doc-maintain` — was raised to tabularium (which
-owns the doc-system tool and its manifest database) at the doc-cluster transfer
-(planar plan 933); planar no longer ships it, but the workflow it runs is
-unchanged. It reads `tabularium diff --json`, sends the drift to the read-only
-documenter, and shows every proposed row before any mutation. The documenter
-classifies each changed source into four outcomes:
-
-- **Extend an existing entry.** A doc already covers a related path; add the changed path to its `sources` map via `tabularium cover <path> <repo-path>`.
-- **Author a new doc.** No existing entry covers the change. After row
-  approval, only the `doc-author` specialist may write the approved published
-  prose; the caller then applies `tabularium cover`.
-- **Add to nodoc.** The change is genuinely not worth documenting (vendored code, generated artifacts, etc.). Record the decision via `tabularium nodoc <repo-path>`; the entry is re-evaluated whenever that path's hash changes.
-- **Defer.** Evidence or operator intent is insufficient. Preserve the row and
-  recovery command; do not absorb it by rebuilding the manifest.
-
-The documenter never writes prose or manifest state. `doc-author` never decides
-coverage and receives only approved prose rows. The caller owns approved
-`cover`/`nodoc` operations and the final `lint → build → verify → clean diff`
-sequence. If there is no drift, no specialist is dispatched and the existing
-manifest root is verified without an unnecessary rebuild. If one independent
-row fails, completed rows remain visible and the result is `partial` with an
-exact retry; the workflow does not claim cross-row rollback.
-
-### After mutating sources
-
-Touching anything under `src/`, `migrations/`, `templates/`, or `vendor/` may invalidate a doc that covers that subtree. The manifest detects this via the per-entry merkle of `sources`; surface the affected docs with:
-
-```
-tabularium diff
-```
-
-Each row carries one of three signals:
-
-- `regenerate-candidate` — a source the doc covers drifted. Refresh the prose, then `tabularium build` to reseat the entry hash.
-- `hand-edit` — the doc body changed without its sources moving. Usually fine; just re-run `tabularium build` once the prose is settled.
-- `new-authoring` / `deletion` — a path appeared without a covering entry, or an entry's source path is gone. Either wire coverage (`tabularium cover ...`), mark as `nodoc`, or accept the deletion and rebuild.
-
-The pre-commit hook gates on `verify`, not `diff`, so the diff is your visibility into "what would `build` change". Always read it before running build.
-
-### Cross-references
-
-- Pre-commit hook: [Recipe 10 — Doc hygiene pre-commit](#recipe-10--doc-hygiene-pre-commit).
-- Workspace docs surface: [Recipe 12 — Working in a polyrepo workspace](#recipe-12--working-in-a-polyrepo-workspace).
-- CLI verbs: the standalone Tabularium README and `tabularium --help`.
 
 ---
 
@@ -3051,27 +2934,6 @@ events and reports failed or deferred events with exact recovery commands.
 
 ---
 
-## Recipe 33 — Run the gated documentation-maintenance loop
-
-```bash
-/tabularium-doc-maintain
-```
-
-This loop lives in tabularium: the documenter/doc-author cluster and the
-`/tabularium-doc-maintain` skill (formerly planar's `/pl-doc-maintain`) were
-raised to tabularium — which owns the doc-system tool and its manifest database
-— at the doc-cluster transfer (planar plan 933). The caller reads
-`tabularium diff --json`, obtains read-only documenter
-proposals, and requires an operator disposition for every row. Approved
-`create-doc` or prose-refresh rows alone go to `doc-author`; approved `nodoc`
-rows bypass prose authoring. The caller—not either specialist—applies coverage
-state and runs `tabularium lint`, `build`, `verify`, and a final clean diff.
-Unapproved rows remain visible. A clean initial diff is a no-op and does not
-rebuild the manifest; a partial apply preserves verified rows and reports the
-exact failed-row recovery command.
-
----
-
 ## Recipe 34 — Close a capacity-aware orchestration cycle
 
 ### Contain a provider-capacity failure
@@ -3097,20 +2959,6 @@ provider-blocked, abandoned, and unfinished sets. Run its `planar resume
 `planar-agent reconcile --plan 42 --dry-run --json`. The workflow itself never
 spawns, aborts, reconciles, or resets the provider. Resume that provider only
 after an explicit dispatch decision with a newly confirmed maximum wave size.
-
-### Close documentation with repository identity evidence
-
-Run tabularium's `/tabularium-doc-maintain` (raised to tabularium at the
-doc-cluster transfer, planar plan 933; formerly planar's `/pl-doc-maintain`).
-Before classifying manifest rows, the workflow derives
-the migration tail/schema insert, exact five binaries from `CMakeLists.txt`,
-canonical generated-surface boundary, and `AGENTS.md`/`CLAUDE.md` equivalence.
-An explicit contradiction becomes an operator-gated
-`guidance-identity-drift` row. Approve, reject, or defer it like any other row;
-unresolved identity drift prevents a *clean documentation closeout* but does
-not alter janitor-owned plan closeout. Neither the documenter nor doc-author
-repairs guidance, symlinks, generated projections, or the manifest
-automatically.
 
 ### Review recurring design hazards before ingestion
 

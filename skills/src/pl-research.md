@@ -10,7 +10,6 @@ vendor:
         invocation_examples: |
             /pl-research "does the existing auth layer already support OAuth device flow"
             /pl-research "what does the claim ritual actually enforce on a stale lease" --scope planar
-            /pl-research "is there prior art for this in tabularium" --scope tabularium
 ---
 
 # Research ({{ VendorTitle }})

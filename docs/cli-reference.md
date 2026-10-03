@@ -396,7 +396,7 @@ The resolved set follows the read-resolver contract:
 **Output (human, member project cwd):**
 ```
 resolved scope (from cwd):
-  project:billing  (root_path: /Users/mn/work/acme/billing)
+  project:billing  (root_path: /home/user/work/acme/billing)
 
 To override, pass --scope <slug> to any verb, or cd into a
 different registered scope.
@@ -408,9 +408,9 @@ derived from your current working directory.)
 **Output (human, workspace root cwd):**
 ```
 resolved scope (from cwd):
-  org:acme  (root_path: /Users/mn/work/acme)
-  project:billing  (root_path: /Users/mn/work/acme/billing)
-  project:shipping  (root_path: /Users/mn/work/acme/shipping)
+  org:acme  (root_path: /home/user/work/acme)
+  project:billing  (root_path: /home/user/work/acme/billing)
+  project:shipping  (root_path: /home/user/work/acme/shipping)
 
 To override, pass --scope <slug> to any verb, or cd into a
 different registered scope.
@@ -431,7 +431,7 @@ cd into a registered scope or pass --scope <slug> to any verb.
     {"kind":"association","id":7,"slug":"billing","name":"Billing","kind_label":"project"}
   ],
   "source": "cwd",
-  "cwd": "/Users/mn/work/acme"
+  "cwd": "/home/user/work/acme"
 }
 ```
 
@@ -3401,9 +3401,9 @@ After the org + projects are committed, init runs a pipeline pass that (1) build
 **Output (human):**
 ```
 created org:work (Work)
-  ├─ project:repo-a   [/Users/mn/work/repo-a]   (auto-created, member-of org:work)
-  ├─ project:repo-b   [/Users/mn/work/repo-b]   (auto-created, member-of org:work)
-  └─ project:repo-c   [/Users/mn/work/repo-c]   (auto-created, member-of org:work)
+  ├─ project:repo-a   [/home/user/work/repo-a]   (auto-created, member-of org:work)
+  ├─ project:repo-b   [/home/user/work/repo-b]   (auto-created, member-of org:work)
+  └─ project:repo-c   [/home/user/work/repo-c]   (auto-created, member-of org:work)
 
 3 repos initialized as projects, all members of org:work.
 Routing table refreshed (3 projects, 1 cross-repo deps).
@@ -3416,11 +3416,11 @@ Run `planar assoc tree` to view the hierarchy.
 ```json
 {
   "org":      {"id":1,"slug":"work","name":"Work","created":true},
-  "projects": [{"slug":"repo-a","path":"/Users/mn/work/repo-a","created":true,"membership_created":true}],
+  "projects": [{"slug":"repo-a","path":"/home/user/work/repo-a","created":true,"membership_created":true}],
   "pipeline": {
     "skipped":     false,
     "routing":    {"project_count":3,"cross_repo_deps":1,"enrich_enabled":false,"enrich_misses":0},
-    "regenerate": {"agents_path":"/Users/mn/.planar/workspaces/1/AGENTS.md","bytes":1842},
+    "regenerate": {"agents_path":"/home/user/.planar/workspaces/1/AGENTS.md","bytes":1842},
     "symlinks":   {"strategy":"symlink","installed":["AGENTS.md","CLAUDE.md"]}
   }
 }
@@ -3446,8 +3446,8 @@ planar workspace doctor
 
 **Output (human):**
 ```
-fix: created state dir /Users/mn/.planar/workspaces/1
-fix: reinstalled symlink /Users/mn/work/AGENTS.md → /Users/mn/.planar/workspaces/1/AGENTS.md
+fix: created state dir /home/user/.planar/workspaces/1
+fix: reinstalled symlink /home/user/work/AGENTS.md → /home/user/.planar/workspaces/1/AGENTS.md
 org:work repaired 2 issues
 org:side ok
 ```
@@ -3455,8 +3455,8 @@ org:side ok
 **Output (`--json`):**
 ```json
 {"orgs":[{"slug":"work","org_id":1,"issues_found":2,"issues_repaired":[
-  {"kind":"fix","detail":"created state dir /Users/mn/.planar/workspaces/1"},
-  {"kind":"fix","detail":"reinstalled symlink /Users/mn/work/AGENTS.md → ..."}
+  {"kind":"fix","detail":"created state dir /home/user/.planar/workspaces/1"},
+  {"kind":"fix","detail":"reinstalled symlink /home/user/work/AGENTS.md → ..."}
 ]}]}
 ```
 
@@ -3481,12 +3481,12 @@ With `--enrich`, the builder additionally consults the workspace-enrichment cach
 
 **Output (human):**
 ```
-built /Users/mn/.planar/workspaces/1/routing-table.json (3 projects, 1 cross-repo deps)
+built /home/user/.planar/workspaces/1/routing-table.json (3 projects, 1 cross-repo deps)
 ```
 
 **Output (`--json`):**
 ```json
-{"path":"/Users/mn/.planar/workspaces/1/routing-table.json","projects":3,"dependency_edges":1,"enrich_enabled":false,"enrich_misses":0}
+{"path":"/home/user/.planar/workspaces/1/routing-table.json","projects":3,"dependency_edges":1,"enrich_enabled":false,"enrich_misses":0}
 ```
 
 **Schema effects:** Reads `associations`, `projects`, `project_associations`, `plans`, `tasks`, `questions`, `entity_links`. Writes `<state-dir>/routing-table.json` atomically (temp + rename).
@@ -3514,7 +3514,7 @@ generated: 2026-05-18T... (static-v1)
 projects:  3
 
 - repo-a
-    path:         /Users/mn/work/repo-a
+    path:         /home/user/work/repo-a
     capabilities: go-service, grpc
     summary:      Customer-facing API service
     depends_on:   repo-b
@@ -3543,7 +3543,7 @@ cross-repo edges:
 planar workspace regenerate [<workspace>]
 ```
 
-**Description:** Render the canonical `AGENTS.md` for a workspace. Reads `<state-dir>/routing-table.json` (produced by `routing build`), re-fetches live cross-repo plans and open questions from the database (these go stale fast, so the regenerator queries them every run rather than trusting cached counts), renders the AGENTS.md template (operator-installed at `~/.planar/templates/doc-prompts/agents.md` or the embedded fallback), always includes the host build and test queue rule exactly once (the text `planar-agent queue rule` prints: the default templates place it with `{{.QueueRule}}`, and a template that does not place it gets it appended after the rendered text), and atomically writes the result to `<state-dir>/AGENTS.md`. Plan 96's drift manifest (`<state-dir>/.manifest-docs`) is rebuilt alongside the AGENTS.md write so hand-edits surface as drift on the next `manifest verify`. Errors with an explicit "run routing build first" hint when `routing-table.json` is missing.
+**Description:** Render the canonical `AGENTS.md` for a workspace. Reads `<state-dir>/routing-table.json` (produced by `routing build`), re-fetches live cross-repo plans and open questions from the database (these go stale fast, so the regenerator queries them every run rather than trusting cached counts), renders the AGENTS.md template (operator-installed at `~/.planar/templates/doc-prompts/agents.md` or the embedded fallback), always includes the host build and test queue rule exactly once (the text `planar-agent queue rule` prints: the default templates place it with `{{.QueueRule}}`, and a template that does not place it gets it appended after the rendered text), and atomically writes the result to `<state-dir>/AGENTS.md`. Errors with an explicit "run routing build first" hint when `routing-table.json` is missing.
 
 **Output (human):**
 ```
@@ -3552,10 +3552,10 @@ regenerated AGENTS.md for org:work (3 projects, 1842 bytes)
 
 **Output (`--json`):**
 ```json
-{"agents_path":"/Users/mn/.planar/workspaces/1/AGENTS.md","project_count":3,"bytes_written":1842}
+{"agents_path":"/home/user/.planar/workspaces/1/AGENTS.md","project_count":3,"bytes_written":1842}
 ```
 
-**Schema effects:** Reads `associations`, `plans`, `tasks`, `questions`. Writes `<state-dir>/AGENTS.md` and `<state-dir>/.manifest-docs` atomically. The symlinks at the workspace root are not touched (they already point at the canonical target).
+**Schema effects:** Reads `associations`, `plans`, `tasks`, `questions`. Writes `<state-dir>/AGENTS.md` atomically. The symlinks at the workspace root are not touched (they already point at the canonical target).
 
 **Exit codes:**
 - `0` — success.
@@ -5599,8 +5599,6 @@ feature       = "gpt-5.5"
 coder      = "medium"   # coder resolves to the active vendor's `medium` model
 reviewer   = "large"
 test-coder = "medium"
-documenter = "medium"
-doc-author = "large"
 sync-reconciler = "large"
 ```
 
@@ -7735,6 +7733,17 @@ asserts the observed exit-code set is exactly `{0, 1, 2}`.
 
 ### The Centurion client verbs (plan 1033 M2)
 
+> **These verbs require a Centurion-enabled build** (the
+> `dev/centurion-integration` branch). This build does not link the Centurion
+> client, and it refuses each of them. The refusal comes after argument
+> parsing, so a malformed invocation is still a usage failure (exit `2`). It
+> comes before a profile is resolved or any state is written, and it prints
+> `planar-execute: planar-execute was built without the Centurion engine` on
+> stderr, nothing on stdout, and exits `1`. That is the code a durable
+> refusal maps to, because only a different build changes the answer. The
+> rest of this section describes the verbs as a Centurion-enabled build runs
+> them.
+
 `planar-execute` is becoming a CLIENT of a Centurion daemon (decision 1007 /
 1075). These verbs act on the daemon serving one execution profile
 (`[execute.profiles.<name>]`, default `default`); only `submit` ever STARTS a
@@ -7765,8 +7774,9 @@ answer rather than a reason to start one.
 
 #### The installed daemon
 
-`centuriond` is installed BESIDE the Planar binaries — `make build` copies it
-into `./bin/` and `install.sh` writes `$PLANAR_HOME/bin/centuriond` — because
+This build installs no daemon. On a Centurion-enabled build, `centuriond` is
+installed BESIDE the Planar binaries — `make build` copies it into `./bin/`
+and `install.sh` writes `$PLANAR_HOME/bin/centuriond` — because
 `planar-execute` resolves it as its own sibling, the same rule `cli.planar(...)`
 uses for `planar`. What runs is the daemon that shipped with this client, not
 whatever a `PATH` names first.
@@ -8400,7 +8410,7 @@ For quick reference, all documented commands grouped by domain:
 | `run` | `run start`, `run event`, `run finish`, `run show` |
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
-| `schema` | `schema` (also on `planar-agent`, `planar-watch`, `tabularium`) |
+| `schema` | `schema` (also on `planar-agent` and `planar-watch`) |
 ## Domain: `closure`
 
 Derived-closure extraction: given a task's touched `(repo, path)` seeds, walk

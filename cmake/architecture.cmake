@@ -203,10 +203,14 @@
 # proof.
 
 #
-# The Centurion boundary (plan 1033 M1, task 6708 — pass 4 below): Centurion
-# is added as a subdirectory (cmake/centurion.cmake), so its whole target
-# graph exists in this configure. Planar's planar-execute becomes a Centurion
-# CLIENT (decision 1007), and the boundary is that it is ONLY a client:
+# The Centurion boundary (plan 1033 M1, task 6708 — pass 4 below): a
+# Centurion-enabled build (dev/centurion-integration) adds Centurion as a
+# subdirectory (cmake/centurion.cmake there), so its whole target graph exists
+# in that configure. This build declares no Centurion target, so pass 4 finds
+# nothing to check and returns cleanly; the centurion-* fixtures, which
+# declare stand-in targets, still prove each rule. Planar's planar-execute
+# becomes a Centurion CLIENT (decision 1007), and the boundary is that it is
+# ONLY a client:
 #
 #   1. A planar_* target may link exactly one Centurion target,
 #      `centurion::client`. Any other `centurion_*` edge — store, runtime,

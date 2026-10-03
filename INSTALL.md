@@ -11,8 +11,7 @@ Plus [uninstall](#uninstall), [troubleshooting](#troubleshooting), and the [inst
 ## Prerequisites
 
 - **CMake >= 4.3, Ninja, and the pinned LLVM toolchain.** Required for all install paths — these configure and build the C++26 binaries. The presets discover the LLVM prefix through `cmake/llvm-toolchain.cmake` (an explicit `-DPLANAR_LLVM_PREFIX` always wins); `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` / `clang++` before invoking CMake. See [docs/toolchain-parity.md](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
-- **`tbb` and `python3`.** Required to configure: the vendored Mt-KaHyPar `find_package(TBB)`s the system library, and Centurion's configure runs Botan's `configure.py`.
-- **Network access and a GitHub token on the first configure.** Centurion is fetched into the gitignored `external/` directory: `GITHUB_TOKEN=$(gh auth token) cmake --preset debug`. Later configures reuse it offline.
+- **`tbb` and `python3`.** Required to configure: the vendored Mt-KaHyPar `find_package(TBB)`s the system library, and the configure registers Python test runners. No network access or token is needed: every dependency is committed under `vendor/`.
 - **Git, >= 2.31.** Required for the full install (clones the source repo) and at runtime for repo discovery; see `docs/toolchain-parity.md`'s git row for why the 2.31 floor is load-bearing.
 - *Optional:* **`gh` CLI** — only if you plan to authenticate against GitHub Issues through `gh auth token` (the default when `--auth-env` is omitted) instead of an env-var token.
 - *Optional:* **`sqlx-cli`** — only if you want to author new migration pairs ad-hoc. `cargo install sqlx-cli --no-default-features --features sqlite`.
@@ -75,7 +74,6 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 That's it. The script:
 
 - Builds all five binaries and `scriptorium` from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON -DPLANAR_WITH_MTKAHYPAR=OFF`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext,scriptorium}`.
-- Installs a stock `centuriond` (plan 1033) through `scripts/install-centuriond.sh`: built from the same pinned Centurion archive as a separate CMake project into `build/centuriond-release/` (or a checksum-verified Centurion release binary when the pinned tag publishes one), written to `~/.planar/bin/centuriond` with its migrations and `build-identity.json` under `~/.planar/share/centurion/`. The first build compiles Centurion's gRPC stack and takes several minutes; later installs are incremental. The first configure of a checkout also needs `GITHUB_TOKEN` for the private Centurion archive — the installer borrows `gh auth token` when none is exported.
 - Stages `agents/`, `skills/src/`, `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen), then renders the per-vendor outputs there with `scriptorium render`.
 - Installs the 40 rendered skills, and the rendered agents, into each selected vendor's harness dirs.
 - Atomically writes `~/.planar/install-manifest.json` after the selected vendor
@@ -249,7 +247,7 @@ ctest --test-dir build/debug --output-on-failure         # Catch2 unit tests
 The repo also ships a `Makefile` with the common targets:
 
 ```bash
-make build              # cmake --preset release; copies the 5 binaries, scriptorium, and centuriond into ./bin/
+make build              # cmake --preset release; copies the 5 binaries and scriptorium into ./bin/
 make test               # cmake --preset debug; cmake --build; ctest
 make test-all           # unit (ctest) + registry check + coverage + cli-usage-check + surface/exit-code/eval contracts + cpp-lint-gate
 make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
@@ -402,9 +400,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-watch                    # human-facing read-only viewer
 │   ├── planar-execute                  # deterministic spawn-free Lua workflow engine
 │   ├── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
-│   ├── scriptorium                     # in-tree skill and agent renderer
-│   └── centuriond                      # stock Centurion workflow daemon
-├── share/centurion/                    # centuriond migrations + build-identity.json
+│   └── scriptorium                     # in-tree skill and agent renderer
 ├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`; mode 0600)
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)

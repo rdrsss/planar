@@ -29,7 +29,6 @@ module;
 module planar.engine.workspace.regenerate;
 
 import std;
-import planar.docs_manifest;
 import planar.engine.workspace.routing;
 import planar.json_text;
 import planar.queuerule;
@@ -612,23 +611,10 @@ auto regenerate(db::connection& conn, const identity::env_lookup& env, std::int6
     }
   }
 
-  auto built_manifest = docs_manifest::build(layout->dir);
-  if (!built_manifest.has_value()) {
-    return std::unexpected(
-        failure{.kind = error_kind::generic_failure, .message = "regenerating AGENTS.md failed: ManifestBuildFailed"});
-  }
-  const auto manifest_path = layout->dir / docs_manifest::file_name;
-  if (!docs_manifest::write(manifest_path, *built_manifest)) {
-    return std::unexpected(
-        failure{.kind = error_kind::generic_failure, .message = "regenerating AGENTS.md failed: AccessDenied"});
-  }
-
   return result{
       .agents_path   = layout->agents_md.string(),
-      .manifest_path = manifest_path.string(),
       .project_count = static_cast<std::int64_t>(table->projects.size()),
       .bytes_written = static_cast<std::int64_t>(rendered->size()),
-      .manifest_root = built_manifest->root,
   };
 }
 

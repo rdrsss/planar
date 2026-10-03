@@ -54,7 +54,7 @@ Operating the queue (watching, cancelling, settings, file modes) is in [`operati
 
 `planar-execute` (revived in plan 633) is a deterministic, spawn-free Lua workflow engine — the fourth binary. An LLM caller (or any script) invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted, deterministic host surface, runs the named phase, and prints the workflow's `flow.result(table)` payload as JSON on stdout. It is the deterministic, spawn-free complement to a full external workflow harness: `planar-execute` runs only deterministic work and hands control back to its caller for any model step.
 
-> **Being reversed deliberately — decision 1007, plan 1033.** Centurion becomes Planar's workflow engine and harness; `planar-execute` becomes its configuration, bootstrap and client entry point. The invariants below are not being abandoned by drift: supervision, leases, cancellation fencing and budgets move to Centurion as designed responsibilities, and Planar itself still does not shell out to provider CLIs. Until plan 1033's cutover milestone lands, everything in this section describes the shipped binary's `run` path; the Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host status|drain|stop`, `profile show`) already ship beside it.
+> **Being reversed deliberately — decision 1007, plan 1033.** Centurion becomes Planar's workflow engine and harness; `planar-execute` becomes its configuration, bootstrap and client entry point. The invariants below are not being abandoned by drift: supervision, leases, cancellation fencing and budgets move to Centurion as designed responsibilities, and Planar itself still does not shell out to provider CLIs. Until plan 1033's cutover milestone lands, everything in this section describes the shipped binary's `run` path; `profile show` ships beside it, and so do the Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host status|drain|stop`), but they require a Centurion-enabled build (the `dev/centurion-integration` branch). This build refuses them with `planar-execute was built without the Centurion engine` and exit `1`.
 
 ### No DB handle, no model spawn
 
@@ -360,7 +360,6 @@ Several verb classes were audited and explicitly left unguarded; the absence is 
 - **All read-only verbs.** `show`, `list`, `status`, `audit trail`, `tree` — reads do not corrupt state and the audit-from-anywhere case is the common case.
 - **Identity-bucket verbs** (`assoc`, `init`, `promote`/`demote`, `scope`, `workspace`). Associations *are* scope; `promote`/`demote` deliberately cross scopes (that is the verb's job).
 - **Operator-state verbs** (`handoff`, `capture`, `resume`). These manage vendor-session rows, not project-scoped entities. The legitimate polyrepo handoff workflow is "a session inside repo A captures a handoff that references a task in repo B".
-- **External `tabularium` verbs** (`build`, `verify`, `diff`, `cover`, `nodoc`, `lint`). Tabularium owns its own machine-local state, so Planar's operator-vs-entity scope guard does not apply.
 
 ### No escape hatch
 
@@ -427,7 +426,6 @@ The canonical content for a workspace lives at `~/.planar/workspaces/<org_id>/`:
 - `routing-table.json` — generated; structured project map (capabilities, dependencies, summaries, open-work counts).
 - `config.toml` — optional; per-workspace settings (`enrich_command`, etc.).
 - `routing-table-overrides.json` — optional; operator overrides merged on every routing build.
-- `.manifest-docs` — drift manifest (plan 96) tracking the generated files.
 
 For sibling workspaces, two symlinks at the workspace root (`<workspace-root>/AGENTS.md`, `<workspace-root>/CLAUDE.md`) point at the same canonical `AGENTS.md` target so Codex / Copilot (which read `AGENTS.md`) and Claude Code (which reads `CLAUDE.md`) see identical content. On filesystems that reject symlinks the installer falls back to a regular-file copy and records the degraded mode so regeneration rewrites the copy.
 

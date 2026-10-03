@@ -139,8 +139,7 @@
 # `$PLANAR_HOME/workspaces/<id>/` state-directory layout, and the
 # diagnose-and-repair pass behind `workspace doctor` -- ONE of the five
 # `workspace` leaves. `routing build`, `routing show` and `regenerate` are
-# deferred on size and on a missing xxh64, and `workspace init` is
-# architecturally blocked at layer 3 (see src/engine/workspace/CMakeLists.txt).
+# deferred on size, and `workspace init` is architecturally blocked at layer 3 (see src/engine/workspace/CMakeLists.txt).
 
 # `src/engine/workbench` (plan 996, task 6037) is the bidirectional workbench
 # sync surface: the front-matter parser (and, more to the point, the set of
@@ -199,7 +198,6 @@ add_subdirectory(queuerule)
 add_subdirectory(json_dom)
 add_subdirectory(sha256)
 add_subdirectory(document_authority)
-add_subdirectory(docs_manifest)
 add_subdirectory(policy)
 add_subdirectory(git)
 add_subdirectory(process)

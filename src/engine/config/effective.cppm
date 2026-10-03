@@ -90,8 +90,7 @@ export inline constexpr std::array<std::string_view, 6> work_types = {"schema", 
 /// @brief The built-in agent roles that always get a `roles.<name>` /
 /// `role_vendors.<name>` pick, whether or not the config file mentions
 /// them. Mirrors zig's `role_keys` / `builtin_roles`.
-export inline constexpr std::array<std::string_view, 6> builtin_roles = {"coder",      "reviewer",   "test-coder",
-                                                                         "documenter", "doc-author", "sync-reconciler"};
+export inline constexpr std::array<std::string_view, 4> builtin_roles = {"coder", "reviewer", "test-coder", "sync-reconciler"};
 
 /// @brief The effective map: flat dotted-key → `value_with_source`.
 /// `std::map` keeps keys in ascending lexicographic order natively, so

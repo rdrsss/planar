@@ -218,8 +218,6 @@ compile time by each binary's verb set, not by runtime ACLs:
   security boundary (a caller can always run its command directly).
 - `planar-watch` is incapable of writing to the DB at all — both the
   verb set and the read-only DB handle are load-bearing.
-- Documentation state is outside Planar. The standalone `tabularium` tool owns
-  a machine-local SQLite database and only reads the documented repository.
 
 The operator-recovery verbs `planar-agent reconcile` and
 `planar-agent abort` live on `planar-agent` (not `planar`) because both
@@ -289,9 +287,9 @@ See [docs/concepts.md § Interactive cockpit](concepts.md#interactive-cockpit) f
 
 Revived in plan 633, `planar-execute` is a deterministic, spawn-free Lua workflow engine. A caller invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`), runs the named phase, and prints `flow.result(table)` as JSON. The CLI boundary is an exact `(binary, command path)` allowlist, and each Planar binary is resolved beside the running `planar-execute` rather than through `PATH`. `git.*` is confined with `-C <worktree>` plus validated refs. `fs.*` walks from an opened sandbox-root handle, opens every parent and final entry with no-follow semantics, and rejects absolute paths, dot segments, alternate separators, and symlink components. The sandbox exposes no model-spawning primitive and nils `os`/`io`/`load`/`loadfile`/`loadstring`/`require`/`dofile`/`math.random`. The engine holds no SQLite handle and does not participate in the claim ritual; the caller owns transitions between deterministic phases and any LLM work.
 
-Its source tree lives under `src/cmd/planar-execute/` (its own `planar_binary()` target in `src/cmd/planar-execute/CMakeLists.txt`); it links the Lua 5.5 C library (vendored) and the Centurion client, but does not link `src/lib/db/` or `vendor/sqlite/`. See [`docs/concepts.md` § Deterministic workflow engine](concepts.md#deterministic-workflow-engine) for the concept overview and host-surface reference.
+Its source tree lives under `src/cmd/planar-execute/` (its own `planar_binary()` target in `src/cmd/planar-execute/CMakeLists.txt`); it links the Lua 5.5 C library (vendored), but does not link `src/lib/db/` or `vendor/sqlite/`. See [`docs/concepts.md` § Deterministic workflow engine](concepts.md#deterministic-workflow-engine) for the concept overview and host-surface reference.
 
-> **Being reversed deliberately — decision 1007, plan 1033.** Centurion becomes Planar's workflow engine and harness, and `planar-execute` becomes its configuration, bootstrap and client entry point: it stops executing workflows locally and never opens Centurion's database. The spawn-free property is not dropped — supervision, leases, cancellation fencing and budgets move to Centurion as designed responsibilities, with exactly one supervisor per Planar claim. Planar itself still does not shell out to provider CLIs. Until plan 1033's cutover milestone lands, this section describes the shipped binary: the embedded runner is preserved and the guards and boundary tests that pin it are unchanged.
+> **Being reversed deliberately — decision 1007, plan 1033.** Centurion becomes Planar's workflow engine and harness, and `planar-execute` becomes its configuration, bootstrap and client entry point: it stops executing workflows locally and never opens Centurion's database. The spawn-free property is not dropped — supervision, leases, cancellation fencing and budgets move to Centurion as designed responsibilities, with exactly one supervisor per Planar claim. Planar itself still does not shell out to provider CLIs. Until plan 1033's cutover milestone lands, this section describes the shipped binary: the embedded runner is preserved and the guards and boundary tests that pin it are unchanged. This build does not link the Centurion client: the engine verbs (`submit`, `status`, `cancel`, `follow`, `host`) require a Centurion-enabled build (the `dev/centurion-integration` branch), and this build refuses them with `planar-execute was built without the Centurion engine` and exit `1`. The Planar side of the supervision contract (migration 00038, engine-supervised claims, the `planar-watch` supervisor display) ships and compiles without it.
 
 ### Live tail wake abstraction
 
@@ -386,7 +384,7 @@ flowchart LR
 | `src/cmd/planar/` | Operator binary entry and command families under `handlers/<family>/`. `planar` also registers an `explore` leaf for the interactive cockpit, but that leaf's handler only prints the leaf's help (exit 0) — the cockpit is not implemented (decision 980; see [Interactive cockpit](#interactive-cockpit--specified-not-implemented) above). |
 | `src/cmd/planar-agent/` | Agent-callable coordination binary — its claim, action, run, context, recovery, and terminal-operation handlers, and the `queue` domain (`handlers/queue/`): `queue run -- <command>` is the foreground host-wide build and test queue verb, and `queue status <seq>` (`handlers/queue/status.cppm`) is its read-only companion: it opens `planar.db` read-only, asks the engine's `query_status` and prints the answer as text or `--json`. It reads `[queue]` configuration and the queue tables, hands the engine (`src/engine/hostqueue/`) plain values, and returns the command's exit status through dispatch's pass-through outcome. |
 | `src/cmd/planar-watch/` | Read-only viewer binary — root command families under `handlers/<family>/` (including the `--follow` wake loop). |
-| `src/cmd/planar-execute/` | Manual CLI parser and per-command handlers for the legacy Lua `run` path and Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host`). Links the vendored Lua runtime and Centurion client, but no `src/lib/db/` or SQLite. |
+| `src/cmd/planar-execute/` | Manual CLI parser and per-command handlers for the legacy Lua `run` path and Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host`), which this build refuses (they require a Centurion-enabled build). Links the vendored Lua runtime, but no Centurion target, no `src/lib/db/` and no SQLite. |
 | `src/cmd/planar-ext/` | Operational-plane binary (decisions 995–1001) — `ext`/`sync` command families, the strategy selector (`handlers/ext/ext_strategy.cpp`), and the adapter factory (`handlers/shared/ext_adapter_factory.cppm`). Opens SQLite directly; read-only on planning tables, read-write on exactly `external_links`/`external_systems`/`sync_events`. |
 
 Each `src/cmd/<binary>/` target is registered through `src/cmd/CMakeLists.txt`'s guarded helper (never a bare `add_executable()`), which is what lets `planar-ext`'s write-capability allowlist be enforced at the same registration point as every other binary's capability boundary.
@@ -571,8 +569,7 @@ A workspace is an `associations` row of `kind=org` together with its `project_as
 ├── AGENTS.md                       # canonical, generated by workspace regenerate
 ├── routing-table.json              # structured project map, generated by routing build
 ├── config.toml                     # optional per-workspace settings (enrich_command, etc.)
-├── routing-table-overrides.json    # optional manual overrides merged on every build
-└── .manifest-docs                  # plan-96 drift manifest tracking the generated files
+└── routing-table-overrides.json    # optional manual overrides merged on every build
 ```
 
 The state directory lives alongside the rest of Planar's state under `~/.planar/`: the database (`planar.db`), the workbench tree (`workbench/`), the templates layer (`templates/`), and the enrichment cache (`cache/workspace-enrichment/<org_id>/`). Keeping everything under one root makes backup, sync, and clean-slate operations a single-path operation.
@@ -733,7 +730,7 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 
 | Agent | Tier | Responsibility |
 |-------|------|---------------|
-| `orchestrator` | large | Receives a goal or task list; manages the full feature lifecycle across up to seven phases; dispatches to coders; routes output through reviewers; enforces the iteration cap. |
+| `orchestrator` | large | Receives a goal or task list; manages the full feature lifecycle across up to six phases; dispatches to coders; routes output through reviewers; enforces the iteration cap. |
 | `coder` | medium | Implements one task (or task group) end-to-end; receives reviewer feedback and addresses it in the next iteration. |
 | `test-coder` | large | Adversarial test authoring against the coder diff; dispatched when uncovered test-spec slugs intersect the cycle's tasks. |
 | `reviewer` | large | Reviews coder output; returns `approve`, `request-changes`, `open-question`, or `abort`. |
@@ -741,8 +738,6 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | `planner` | large | Drafts planning documents (product spec, tech spec, roadmap, test spec) from a goal statement and registers them as workbench artifacts. |
 | `spec-reviewer` | large | Adversarially reviews draft planning artifacts before ingestion and returns a readiness verdict. |
 | `ingestor` | large | Reads planning documents from the workbench and decomposes them into plans, tasks, decisions, and scenarios in the database. |
-| `documenter` | large | Proposes the doc worklist from `tabularium diff`; runs after Phase 3 so the post-cycle tree is visible. |
-| `doc-author` | large | Writes only operator-approved reference prose under `docs/`; never decides coverage or mutates manifest state. |
 | `ext-sync` | large | Propagates the feature tree to the operational plane and syncs changes bidirectionally. |
 | `sync-reconciler` | large | Compares local and external sync-conflict evidence and coordinates the exact operator-approved whole-entity resolution. |
 | `importer` | large | Translates an existing repository's planning artefacts (specs, ADRs, roadmaps, backlog files, GitHub issues) into Planar's data model without a goal statement. |
@@ -761,9 +756,8 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | 3.7 — Finalization | `janitor` | Explicit `--finalize` or interactive confirm after Phase 3; merge -> reconcile -> closeout gate |
 | 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` |
 | 5 — Archive | `pl-workbench-archive` | Anchor plan done, user requests `--archive` |
-| 6 — Documenter | `pl-documenter` | Default-on after Phase 3; `tabularium diff` -> gated worklist -> `tabularium build` |
 
-The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; Phase 6 is default-on but still gates every proposed doc action with the operator. The iteration cap is 5 per reviewer dispatch cycle.
+The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; The iteration cap is 5 per reviewer dispatch cycle.
 
 ### Vendor surfaces
 
@@ -789,7 +783,7 @@ do not invent work and no guidance or manifest file is changed automatically.
 | Copilot | `$PLANAR_HOME/copilot-skills/` | `~/.copilot/skills/` |
 | Gemini | `$PLANAR_HOME/gemini-skills/` | `~/.gemini/antigravity-cli/skills/` |
 
-Agent role specs (vendor-neutral) live under `agents/`. The planning-lifecycle files are `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, `agents/feedback-triager.md`, and `agents/introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here (raised to armarium, the stack's meta repo, at plan 918/929 and returned at the armarium reintegration). The documenter and doc-author roles (and their `pl-documenter` / `pl-doc-maintain` skills) live in tabularium, which owns the doc-system tool they drive (moved at the doc-cluster transfer, planar plan 933); Phase 6 still dispatches them (see the §Roles table above, which lists the conceptual lifecycle roles regardless of which repo ships each surface).
+Agent role specs (vendor-neutral) live under `agents/`. The planning-lifecycle files are `agents/planner.md`, `agents/spec-reviewer.md`, `agents/ingestor.md`, `agents/ext-sync.md`, `agents/importer.md`, `agents/synthesizer.md`, `agents/sync-reconciler.md`, `agents/feedback-triager.md`, and `agents/introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here (raised to armarium, the stack's meta repo, at plan 918/929 and returned at the armarium reintegration).
 
 Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
 frontmatter metadata (one lowercase SHA-256 hex value each, versioned,
@@ -946,8 +940,7 @@ The CMake project root IS the repo root: `CMakeLists.txt` and `CMakePresets.json
 ```bash
 # Makefile wrappers
 make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copies
-                        # the five Planar binaries, scriptorium, and the pinned
-                        # centuriond into ./bin/
+                        # the five Planar binaries and scriptorium into ./bin/
 make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
                         # cmake --install into PREFIX/bin (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build; ctest
@@ -988,11 +981,8 @@ The black-box lane follows two stylistic conventions documented in [Testing § B
 - **One connection per process.** Passed through explicit context/handler parameters; no global mutable state.
 - **Migrations are append-only.** Never edit a released migration. Add a new file with the next sequence number via `sqlx migrate add -r <name> --source migrations`.
 - **The adapter boundary is interface-typed.** The sync engine and propagation modules dispatch through the `external_adapter` interface; they never branch on adapter kind.
-- **No external (system) C dependencies — only vendored, CPM-cached C/C++ source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, `planar-watch`, `planar-ext`) and `vendor/lua/` (linked into `planar-execute`) are the C the build touches; `vendor/curl/`, `vendor/glaze/`, `vendor/spdlog/`, `vendor/cli11/`, `vendor/catch2/`, `vendor/xxhash/`, `vendor/tree_sitter/`, `vendor/tree_sitter_zig/`, and the optional solver's `vendor/mtkahypar/`, `vendor/kahypar_shared_resources/`, `vendor/whfc/` round out the dependency set.
-  - **First-party sources live in `external/`, not `vendor/`** (decision 1143, plan 1033 M1). Centurion is pinned by URL + SHA-256 like everything in `vendor/`, but cached in the gitignored `external/` and never committed; `cmake/centurion.cmake` adds it as an `EXCLUDE_FROM_ALL` subdirectory so that `centurion::client` exists as a target. Packages both trees declare resolve to Planar's single pin (CPM is first-wins by name): spdlog 1.17.0, SQLite 3.53.3, Lua 5.5.0 (exposed to Centurion as `Lua::Lua`), and curl 8.7.1. Curl is the one version Centurion asks to be newer; Planar keeps 8.7.1 because curl 8.15 removed its macOS SecureTransport backend. Centurion's remaining stack (gRPC, protobuf, abseil, BoringSSL, c-ares, re2, zlib, botan, libuv, simdjson, uuidv7, etc) has no Planar counterpart and comes from the `vendor/` tree inside Centurion's own archive.
-  - **`centuriond` is installed, never linked** (tech-spec D8/D13, task 6709). `install.sh` runs `scripts/install-centuriond.sh`, which builds the stock daemon from the same pinned tree as a separate CMake project (CLI and terminal UI off, tests off, Planar's pinned LLVM), or takes a Centurion release binary verified against its published SHA-256 when the pinned tag has one. It installs `$PLANAR_HOME/bin/centuriond`, `$PLANAR_HOME/share/centurion/migrations/` and `$PLANAR_HOME/share/centurion/build-identity.json` (tag, commit, archive hash, `source-build` or `release-binary`, binary hash, migrations directory). That identity is the `centuriond build identity` element of the client's compatibility tuple (D7). A source build compiles the installed migrations directory in as the daemon's default, and `make centuriond-dist-test` proves the installed daemon migrates a fresh state directory after its source tree has been deleted.
-  - **The toolchain proof is a test** (tech-spec D9, task 6497, decision 1144). `make centurion-client-proof` builds `src/tools/centurion_client_proof/`, which links `centurion::client` into a C++26 target under the pinned LLVM, starts the installed `centuriond` under a scratch HOME, and completes readiness (`probe_bundle_capability`) over its Unix socket. Centurion's C++23 module graph builds at Planar's C++26 with no accommodation. Opt-in until `planar-execute` links the client in M2, since building it compiles Centurion's gRPC stack.
-  - **Dependency audit** (task 6500, measured 2026-09-22). Centurion's arrival adds **no runtime program**: the installed `centuriond` spawns no process (its whole workflow surface is in-process at this milestone; `command.exec` activities arrive with M3 and will shell `git` and the configured check commands, which are already `RUN_DEPS`), and it links only macOS system frameworks plus the same pinned Homebrew LLVM `libc++` every Planar binary already requires. What it does add is **build-tier**: `python3` (Botan's configure-time amalgamation) and the `shasum` / `tar` / `mktemp` / `uname` the installer uses to verify and unpack a release asset. Both manifests — `README.md` § Prerequisites and `install.sh`'s `BUILD_DEPS` — carry all five.
+- **No external (system) C dependencies — only vendored, CPM-cached C/C++ source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, `planar-watch`, `planar-ext`) and `vendor/lua/` (linked into `planar-execute`) are the C the build touches; `vendor/curl/`, `vendor/glaze/`, `vendor/spdlog/`, `vendor/cli11/`, `vendor/catch2/`, `vendor/tree_sitter/`, `vendor/tree_sitter_zig/`, and the optional solver's `vendor/mtkahypar/`, `vendor/kahypar_shared_resources/`, `vendor/whfc/` round out the dependency set.
+  - **First-party sources live in `external/`, not `vendor/`.** A dependency on a repository this project's owner controls is pinned by URL + SHA-256 like everything in `vendor/`, but cached in the gitignored `external/` and never committed. None is declared in this build, so a configure needs no network access and no token. The Centurion integration (its client link, the `centuriond` install, and their toolchain proof and dependency audit) lives on the `dev/centurion-integration` branch.
 - **Skills call the binaries.** Agent skills do not write the database directly. They invoke `planar` / `planar-agent` / `planar-ext` verbs and read stdout. `planar-watch` is read-only and opens the database via `file:?mode=ro`.
 - **Schema is the contract.** Read-side tools must check `schema_migrations.version` before operating against the database. `planar`, `planar-agent`, `planar-watch` and `planar-ext` all enforce this at startup (exit 7 on a version mismatch); see the schema-contract section above for which direction each binary refuses.
 - **The capability split is verb-level.** Each of the four planning-state binaries can only do what its registered verb set (and, for `planar-ext`, its `sqlite3_set_authorizer` allowlist) lets it do; the `src/cmd/*/capability.t.cpp` cases fail the build if a write verb is registered on `planar-watch` or a planning-entity verb on `planar-agent`. `planar-execute` holds no DB handle at all and is bounded by the verb sets of the binaries it shells.

@@ -17,8 +17,6 @@
 #                                     # tables, read-write on external_links /
 #                                     # external_systems / sync_events)
 #     bin/scriptorium                 # in-tree skill + agent renderer
-#     bin/centuriond                  # stock Centurion workflow daemon
-#     share/centurion/                # centuriond migrations + build identity
 #     install-manifest.json           # managed vendor projections
 #     planar.db                       # created on first `planar init` (0600;
 #                                     # the install root is 0700); also holds the
@@ -531,11 +529,8 @@ BUILD_DEPS=(
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
-  "python3|python|Centurion's configure; install.sh's agent.db retirement reader (scripts/install-lib/queue_retire.py); the counter-reset log helper (scripts/queue-logs-after-reset.py)"
-  "shasum||digest centuriond and verify a Centurion release asset"
-  "mktemp||stage centuriond release downloads"
-  "tar||unpack a Centurion release asset"
-  "uname||select the Centurion release asset for this platform"
+  "python3|python|CMake configure (the Python test runners); install.sh's agent.db retirement reader (scripts/install-lib/queue_retire.py); the counter-reset log helper (scripts/queue-logs-after-reset.py)"
+  "mktemp||capture the queue retirement probe's stderr (scripts/install-lib/queue-retire.sh)"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
   "mkdir||create the install tree"
@@ -560,7 +555,6 @@ RUN_DEPS=(
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
-  "tabularium||bundled documentation-maintenance workflows"
 )
 
 check_deps "build" 1 "${BUILD_DEPS[@]}"
@@ -694,23 +688,6 @@ mkdir -p "$PLANAR_HOME/bin"
 # PLANAR_WITH_MTKAHYPAR was inherited from whatever last configured the
 # directory (task 6537). `--with-solver` is the only way to turn it on here,
 # and it requires the tbb preflight above.
-#
-# First-party dependencies (Centurion, a private repository) are fetched into
-# the gitignored external/ on the first configure, not committed under
-# vendor/ (task 6495). That download needs a GitHub token; borrow gh's when
-# the operator has not exported one. A later configure reuses external/ and
-# needs neither.
-if [[ -z "${GITHUB_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
-  # An unauthenticated gh is normal when Centurion is already cached. Its
-  # failed token lookup must not fire the inherited ERR trap inside $().
-  trap - ERR
-  _planar_gh_token="$(gh auth token 2>/dev/null)" || _planar_gh_token=""
-  trap 'on_err $? $LINENO' ERR
-  if [[ -n "$_planar_gh_token" ]]; then
-    export GITHUB_TOKEN="$_planar_gh_token"
-  fi
-  unset _planar_gh_token
-fi
 ( cd "$REPO_ROOT" \
   && cmake --preset "$BUILD_PRESET" -B "$BUILD_DIR" \
        -DPLANAR_VERSION_META=ON \
@@ -736,22 +713,6 @@ PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
   err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
 ok "built 5 Planar binaries and scriptorium → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
-
-# Stock centuriond from the same pinned Centurion archive planar-execute's
-# client links (plan 1033 M1, task 6709; tech-spec D8/D13). Built as a
-# SEPARATE CMake project — a Centurion release binary is preferred when the
-# pinned tag publishes one — and installed with its migrations and build
-# identity under $PLANAR_HOME. The Planar configure above wrote the pin to
-# $BUILD_DIR/centurion-pin.env; the daemon's build tree is kept under build/
-# so a re-install only recompiles what changed.
-"$REPO_ROOT/scripts/install-centuriond.sh" \
-  --pin "$BUILD_DIR/centurion-pin.env" \
-  --prefix "$PLANAR_HOME" \
-  --build-dir "$REPO_ROOT/build/centuriond-$BUILD_PRESET" \
-  --toolchain "$REPO_ROOT/cmake/llvm-toolchain.cmake" \
-  || err "could not install centuriond (see the output above)"
-[[ -x "$PLANAR_HOME/bin/centuriond" ]] || err "centuriond was not installed"
-ok "installed centuriond → $PLANAR_HOME/bin  ${C_DIM}($(grep -o '"source": "[^"]*"' "$PLANAR_HOME/share/centurion/build-identity.json"))${C_RESET}"
 
 # CMake install only writes the targets it builds — it never removes files a
 # PRIOR install left behind. Iterate the cleanup manifest and delete

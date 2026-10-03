@@ -61,7 +61,6 @@ authored; do not claim that the planned skill can be invoked.
 | Manage durable knowledge | **Available:** `pl-knowledge` resolves typed targets, composes scope-safe decision, artifact, annotation, and relationship operations, and verifies their durable post-state. The underlying entity verbs remain available for direct inspection and precise CRUD. | `/pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17`; direct interfaces: `planar decision --help`, `planar artifact --help`, `planar annotate --help`, `planar links --help` |
 | Manage operator-local skills or agents | **Available:** `pl-local` covers import, list, link, unlink, migrate, and repair across the operator-local lifecycle. Retain `pl-local-import` only for legacy or import-only compatibility. | `/pl-local list`; repair links: `/pl-local repair`; legacy import: `/pl-local-import ~/my-skills/` |
 | Inspect feedback or triage findings | **Available:** `pl-introspect` previews redacted friction findings; `pl-feedback-triage` previews and applies structured local triage; `pl-report-issue` separately previews an external report. | `/pl-introspect --days 7`; then `/pl-feedback-triage --plan <id>` |
-| Maintain published documentation | **Raised to tabularium:** the `pl-documenter` / `pl-doc-maintain` skills moved to tabularium (which owns the doc-system tool they drive); planar routes documentation maintenance to the `tabularium` CLI — see the Docs Domain section below. | `tabularium diff`, `tabularium verify`, `tabularium lint` |
 
 If the request is a verb lookup rather than an outcome, bypass intent routing:
 
@@ -108,27 +107,9 @@ Give zero to three executable commands, beginning with the selected example.
 When routing fails or a named verb is unavailable, give the exact inspection
 command: `planar --help`, `planar <subcommand> --help`, or `planar schema`.
 
-## Docs Domain
-
-Outward-facing documentation under `docs/` is managed through the separately
-installed `tabularium` tool and its machine-local manifest database:
-
-- `tabularium build` — recompute the manifest from the current working tree.
-- `tabularium verify` — compare the stored manifest root against the current tree (the O(1) root compare).
-- `tabularium diff` — list drift records via the drift classifier (regenerate-candidate / hand-edit / new-authoring / deletion / nodoc-stale).
-- `tabularium cover <doc-path> <source-path>` — add or remove a source path on a doc entry.
-- `tabularium nodoc <path>` — add or remove a path in the nodoc map.
-- `tabularium lint [--path <dir>]` — validate GFM footnote citations against the structured `references:` front-matter block; flags `undeclared_citation`, `unused_declaration`, `unresolvable_external`, `unresolvable_planar`, and `malformed_entry` issues.
-- `tabularium schema` — print the `tabularium` command tree as a JSON catalog.
-
-> The historical synthesis verbs (`promote`, `regenerate`, `backlinks`,
-> `orphans`, `coverage`) are not part of the current Planar CLI.
-
-See [Features: outward-facing docs system](../../docs/features/doc-system.md) for the full mental model.
-
 ## Context
 
-Report the requested command path, tool (`planar` or `tabularium`), and text
+Report the requested command path, tool, and text
 help mode. If no path was supplied, say that top-level discovery was used.
 
 ## Intent
@@ -160,7 +141,7 @@ the request; do not pad the response with unrelated commands.
 ## Recovery
 
 For a failed lookup, provide the exact broader command, such as `planar --help`,
-`planar <subcommand> --help`, or `tabularium schema`. This skill is read-only and
+`planar <subcommand> --help`, or `planar schema`. This skill is read-only and
 has no undo path.
 
 ## Vendor Notes

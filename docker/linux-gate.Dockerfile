@@ -22,14 +22,11 @@
 #   gate       FROM scratch, holds only /out. `make linux-gate` exports it
 #              with `--output` and turns status.txt into the exit code.
 #
-# external/ (Centurion, a PRIVATE first-party repo fetched at configure time)
-# is NOT copied into a layer and no token enters the image. The Makefile
-# passes the already-populated host directory as the named build context
-# `external` (--build-context external=<dir>/external/centurion/<tag>, just the pinned
-# tag: the directory also holds other tags and is ~1 GB) and it is
-# bind-mounted (writes discarded) at /src/external/centurion/<tag> for the one
-# RUN that configures. If it is ever necessary to fetch inside the build,
-# use a BuildKit secret (--secret id=gh,env=GITHUB_TOKEN); never ARG/ENV.
+# Every dependency is committed under vendor/, so the configure inside the
+# image touches no network for sources and needs no token or extra build
+# context. If a first-party (external/) dependency is ever declared again and
+# must be fetched inside the build, use a BuildKit secret
+# (--secret id=gh,env=GITHUB_TOKEN); never ARG/ENV.
 #
 # The build tree lives in a BuildKit cache mount, not in an image layer, so
 # repeat runs are incremental and the image stays small. Reclaim the disk
@@ -91,15 +88,13 @@ RUN set -eu; \
 FROM toolchain AS run
 # Sibling-lane hosts are shared; the Makefile passes a bounded job count.
 ARG JOBS=4
-ARG CENTURION_TAG
 ARG CTEST_ARGS=
 WORKDIR /src
 COPY . /src
 
 # The whole gate is one RUN so the build cache mount is visible to every step.
 # It always exits 0 and records the verdict: see the header.
-RUN --mount=type=bind,from=external,target=/src/external/centurion/${CENTURION_TAG},rw \
-    --mount=type=cache,target=/src/build/debug,id=planar-linux-gate-build \
+RUN --mount=type=cache,target=/src/build/debug,id=planar-linux-gate-build \
     mkdir -p /out; \
     rc=0; \
     { cmake --preset debug >/out/configure.log 2>&1 || rc=$?; \

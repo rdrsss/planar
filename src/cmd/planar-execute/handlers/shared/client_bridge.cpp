@@ -1,13 +1,16 @@
 /// @file client_bridge.cpp
-/// @brief The Centurion client seam: a bounded liveness probe (plan 1033 M2, task 6502).
+/// @brief The engine-less Centurion client seam: every call refuses.
 ///
-/// This is the ONLY translation unit in Planar that talks to a Centurion
-/// daemon, and `centurion::client` is the only Centurion target the build
-/// links (`cmake/architecture.cmake` FATALs on any other edge). A plain TU
-/// rather than a module unit: the client's value types come from headers that
-/// do not compile inside a module purview on the pinned toolchain.
+/// This build links no Centurion target, so there is no daemon to talk to.
+/// Each `client_bridge.hpp` function answers the way a durable refusal does
+/// (`call_outcome::refused`: retrying replays the same answer, because a
+/// rebuilt binary is the only thing that changes it) and carries one message,
+/// `planar-execute was built without the Centurion engine`. The engine verbs
+/// check `engine_unavailable_reason()` first and refuse before resolving a
+/// profile, so none of them reports a merely absent daemon or writes host
+/// state. The Centurion-enabled bridge lives on the dev/centurion-integration
+/// branch.
 import std;
-import centurion.client;
 
 // AFTER the imports: the header declares std:: types but includes no standard
 // header, so the includer's `import std;` is what makes them visible (the same
@@ -16,162 +19,54 @@ import centurion.client;
 
 namespace planar::cmd::execute {
 
-/// @brief Definition of the bounded liveness probe; see client_bridge.hpp for the contract.
-/// @param socket_path Filesystem path of the daemon's Unix socket.
-/// @return True when a daemon answered.
-auto probe_socket(const char* socket_path) -> bool {
-  if (socket_path == nullptr || *socket_path == '\0') {
-    return false;
-  }
-  // Short deadline on purpose: `ensure_host` polls this while it owns the
-  // overall readiness budget, so a probe that blocked for its own sake would
-  // make that budget meaningless.
-  const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{2}};
-
-  // A REAL question, not a connect: the Unix listener routes no health check,
-  // and a daemon whose socket exists but whose services are not armed would
-  // pass a connect-only probe and then fail the first real call.
-  return centurion::client::probe_bundle_capability(target).has_value();
-}
-
 namespace {
 
-/// @brief Whether a run status is one a run never leaves.
-auto is_terminal(std::string_view status) -> bool {
-  return status == "RUN_STATUS_COMPLETED" || status == "RUN_STATUS_FAILED" || status == "RUN_STATUS_CANCELLED" ||
-         status == "RUN_STATUS_NONDETERMINISTIC";
-}
+/// @brief The single refusal every entry point reports.
+constexpr const char* engine_absent = "planar-execute was built without the Centurion engine";
 
-/// @brief Project a Centurion snapshot onto the view the module side reads.
-auto view_of(const centurion::client::run_snapshot& snapshot) -> run_view {
-  return run_view{.run_id_      = snapshot.run_id_,
-                  .status_      = snapshot.status_,
-                  .result_json_ = snapshot.result_json_.value_or(std::string{}),
-                  .error_json_  = snapshot.error_json_.value_or(std::string{}),
-                  .terminal_    = is_terminal(snapshot.status_),
-                  .sequence_    = snapshot.last_event_sequence_};
-}
-
-/// @brief Classify a client failure into what the caller may do about it.
-///
-/// Centurion's own rules, not a guess: `conflict` is explicitly "never
-/// retryable with the same input", while `aborted`, `unavailable` and
-/// `resource_exhausted` leave the request id replayable. A broken transport
-/// or an exceeded deadline is UNCERTAIN — the start may or may not have
-/// committed — and the only safe move there is to replay the same request id
-/// and let the ledger answer.
-auto classify(const centurion::client::error& failure) -> call_outcome {
-  using centurion::client::error_code;
-  switch (failure.code_) {
-  case error_code::aborted:
-  case error_code::unavailable:
-  case error_code::resource_exhausted:
-    return call_outcome::retryable;
-  case error_code::deadline_exceeded:
-  case error_code::cancelled:
-    return call_outcome::uncertain;
-  case error_code::internal:
-    // NOT uncertain. `internal` is Centurion's *unclassified* failure, and it
-    // is what a permanently malformed request gets — a live submit against a
-    // bundle whose contract the host could not use returned `internal` on
-    // every attempt. Treating it as uncertain made the client replay a call
-    // that could never succeed, silently, until its follow budget expired.
-    // Centurion names everything genuinely replayable (`aborted`,
-    // `unavailable`, `resource_exhausted`), so anything else is reported.
-    return call_outcome::refused;
-  default:
-    return call_outcome::refused;
-  }
+/// @brief A durable refusal carrying the build's reason.
+auto refused() -> call_result {
+  return call_result{.outcome_ = call_outcome::refused, .run_ = {}, .message_ = engine_absent};
 }
 
 } // namespace
 
+/// @brief Definition of the engine-availability query; see client_bridge.hpp for the contract.
+/// @return Always the refusal text: this build has no engine.
+auto engine_unavailable_reason() -> const char* {
+  return engine_absent;
+}
+
+/// @brief Definition of the liveness probe; see client_bridge.hpp for the contract.
+/// @return Always false: no daemon can answer a build without a client.
+auto probe_socket(const char* /*socket_path*/) -> bool {
+  return false;
+}
+
 /// @brief Definition of the bundle-run submission; see client_bridge.hpp for the contract.
-/// @param socket_path The daemon's Unix socket.
-/// @param bundle_name Bundle to start.
-/// @param input_json Canonical JSON input.
-/// @param request_id Durable idempotency key.
-/// @return The started run, or why it was refused.
-auto submit_bundle_run(const char* socket_path, const char* bundle_name, const char* input_json, const char* request_id)
-    -> call_result {
-  const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{30}};
-  auto started = centurion::client::start_bundle_run(target, centurion::client::start_bundle_run_input{
-                                                                 .bundle_name_    = bundle_name,
-                                                                 .bundle_version_ = 0,
-                                                                 // The host decides which version is current; a client that
-                                                                 // pinned one would keep starting a retired bundle.
-                                                                 .use_published_version_ = true,
-                                                                 .input_json_            = input_json,
-                                                                 .request_id_            = std::string(request_id),
-                                                             });
-  if (!started) {
-    return call_result{.outcome_ = classify(started.error()), .run_ = {}, .message_ = started.error().message_};
-  }
-  return call_result{.outcome_ = call_outcome::ok, .run_ = view_of(started->run_), .message_ = {}};
+/// @return A durable refusal.
+auto submit_bundle_run(const char* /*socket_path*/, const char* /*bundle_name*/, const char* /*input_json*/,
+                       const char* /*request_id*/) -> call_result {
+  return refused();
 }
 
 /// @brief Definition of the cursor-based follow; see client_bridge.hpp for the contract.
-/// @param socket_path The daemon's Unix socket.
-/// @param run_id The run to follow.
-/// @param after_sequence Exclusive cursor.
-/// @param sink Invoked once per committed event.
-/// @return How the follow ended.
-auto follow_run(const char* socket_path, const char* run_id, std::uint64_t after_sequence, const follow_sink& sink)
-    -> call_result {
-  const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path),
-                                           // Long: a follow is meant to sit on a run that may take minutes.
-                                           .deadline_ = std::chrono::hours{1}};
-  std::stop_source                  stopping;
-  auto                              followed = centurion::client::watch_run(
-      target, run_id, after_sequence,
-      [&sink, &stopping](const centurion::client::run_event& event) -> std::expected<void, centurion::client::error> {
-        const bool keep_going = sink(follow_event{.sequence_       = event.sequence_,
-                                                  .event_type_     = event.event_type_,
-                                                  .payload_json_   = event.payload_json_,
-                                                  .current_status_ = event.current_status_.value_or(std::string{})});
-        if (!keep_going) {
-          // Stopping the FOLLOW, never the run: Centurion is explicit that a
-          // client disconnect is not cancellation.
-          stopping.request_stop();
-        }
-        return {};
-      },
-      stopping.get_token());
-  if (!followed) {
-    return call_result{.outcome_ = classify(followed.error()), .run_ = {}, .message_ = followed.error().message_};
-  }
-  return call_result{.outcome_ = call_outcome::ok, .run_ = {}, .message_ = {}};
+/// @return A durable refusal; the sink is never invoked.
+auto follow_run(const char* /*socket_path*/, const char* /*run_id*/, std::uint64_t /*after_sequence*/,
+                const follow_sink& /*sink*/) -> call_result {
+  return refused();
 }
 
 /// @brief Definition of the console-less cancel; see client_bridge.hpp for the contract.
-/// @param socket_path The daemon's Unix socket.
-/// @param run_id The run to cancel.
-/// @param expected_sequence The caller's optimistic cursor.
-/// @return The run after the control settled, or why it was refused.
-auto cancel_run(const char* socket_path, const char* run_id, std::uint64_t expected_sequence) -> call_result {
-  const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{15}};
-  auto                              outcome = centurion::client::cancel_run(
-      target, centurion::client::cancel_run_input{// Empty: the bundle-admitted authorization basis (Centurion ADR-0057).
-                                                  .console_session_id_      = {},
-                                                  .run_id_                  = run_id,
-                                                  .expected_event_sequence_ = expected_sequence});
-  if (!outcome) {
-    return call_result{.outcome_ = classify(outcome.error()), .run_ = {}, .message_ = outcome.error().message_};
-  }
-  return call_result{.outcome_ = call_outcome::ok, .run_ = view_of(outcome->run_), .message_ = {}};
+/// @return A durable refusal.
+auto cancel_run(const char* /*socket_path*/, const char* /*run_id*/, std::uint64_t /*expected_sequence*/) -> call_result {
+  return refused();
 }
 
 /// @brief Definition of the run projection read; see client_bridge.hpp for the contract.
-/// @param socket_path The daemon's Unix socket.
-/// @param run_id The run to read.
-/// @return The run, or why it could not be read.
-auto fetch_run(const char* socket_path, const char* run_id) -> call_result {
-  const centurion::client::endpoint target{.target_ = std::format("unix:{}", socket_path), .deadline_ = std::chrono::seconds{10}};
-  auto                              current = centurion::client::get_run(target, run_id);
-  if (!current) {
-    return call_result{.outcome_ = classify(current.error()), .run_ = {}, .message_ = current.error().message_};
-  }
-  return call_result{.outcome_ = call_outcome::ok, .run_ = view_of(*current), .message_ = {}};
+/// @return A durable refusal.
+auto fetch_run(const char* /*socket_path*/, const char* /*run_id*/) -> call_result {
+  return refused();
 }
 
 } // namespace planar::cmd::execute

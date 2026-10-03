@@ -17,6 +17,16 @@
 
 namespace planar::cmd::execute {
 
+/// @brief Why this build cannot reach a Centurion engine, or null when it can.
+///
+/// The engine verbs (`submit`, `status`, `cancel`, `follow`, `host`) consult
+/// this before doing anything else. A build that does not link
+/// `centurion::client` returns its one-line refusal here, and every verb
+/// prints it and exits with the code `flow_result::refused` maps to, instead
+/// of reporting a daemon that merely is not running.
+/// @return The refusal text, or nullptr when the engine is linked.
+[[nodiscard]] auto engine_unavailable_reason() -> const char*;
+
 /// @brief Whether a Centurion daemon is accepting on this socket right now.
 ///
 /// A BOUNDED probe: it asks the daemon a real question (Centurion's
