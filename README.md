@@ -20,10 +20,17 @@ trackers (Jira, GitHub Issues) through explicit link records and
 proposal-shaped pulls, so org-level visibility and audit trails come for free
 without a remote system silently overwriting local intent.
 
+**Project continuity belongs to the context plane and remains owned by the
+user, independent of the provider or harness running the next task.** You can
+move between providers and harnesses while keeping the same context plane:
+recorded decisions, task ownership, dependencies, and handoff context remain
+available to the next agent. Each participating harness uses Planar's CLI and
+coordination protocol to continue from that shared state.
+
 Planar is local-first and Jira-shaped, but it lives next to the developer
-rather than inside the org's stack, and it is **vendor-agnostic by design**:
-Claude, Codex, Copilot, and Gemini are first-class today, with additional agent
-runtimes expected.
+rather than inside the org's stack, and it is **provider- and harness-agnostic
+by design**: Claude, Codex, Copilot, and Gemini are first-class today, with
+additional agent runtimes expected.
 
 ## Status
 

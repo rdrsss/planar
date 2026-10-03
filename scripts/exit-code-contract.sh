@@ -226,6 +226,22 @@ check 1 "planar-ext: unknown flag"          planar-ext --no-such-flag
 # --- the removed-verb stubs -------------------------------------------------
 check 2 "planar: removed verb (scope use)"  planar scope use anything
 
+# --- `document` (task 6939, review F4): a rejected range is caller evidence
+# disagreeing with the snapshot, so it exits 2 -- NOT 3, which this table
+# reserves for an operational-plane sync conflict. An unsupported --kind is
+# caller input (2); an absent row stays the generic 1; the schema handshake
+# keeps its usual codes.
+if ! doc_out="$(cd "$workdir" && "$bin_dir/planar" artifact add Contract --kind tech_spec --body "one line" 2>&1)"; then
+  printf 'exit-code-contract: setup failed: artifact add exited non-zero:\n%s\n' "$doc_out" >&2
+  exit 2
+fi
+check 2 "planar: document unsupported --kind" planar document project --kind task --id 1 --json
+check 1 "planar: document source not found"   planar document project --kind artifact --id 987654321 --json
+check 2 "planar: document stale range"        planar document validate-range --kind artifact --id 1 \
+  --content-revision stale --start-key k --start-offset 0 --end-key k --end-offset 0 --json
+fcheck 7 "planar: document schema ahead"  planar PLANAR_DB="$fixtures/ahead.db"  -- document project --kind artifact --id 1 --json
+fcheck 1 "planar: document schema behind" planar PLANAR_DB="$fixtures/behind.db" -- document project --kind artifact --id 1 --json
+
 # --- the worktree gate (task 6845): a planning verb run from inside a git
 # worktree exits 8, BEFORE the parser even runs -- so this fires even
 # though `task add` with no flags would otherwise be the exit-2 "missing

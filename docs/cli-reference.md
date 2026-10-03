@@ -2526,6 +2526,82 @@ planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind> [--json
 
 ---
 
+## Domain: `document`
+
+Read-only, revision-bound projections of plan and artifact content. Both
+leaves open the database read-only and verify the schema version before
+reading; they never create, migrate, or write the database, and write no
+session entry or workbench file. The one row that can appear is the
+binary-wide opt-in `cli_invocations` log: when `[introspection].cli_log` is
+on, every `planar` invocation, these included, appends one row to an
+*existing* database (it never creates or migrates one). Every flag takes literal
+text — none accepts the `@<file>` grammar described under
+[Conventions](#conventions).
+
+**Output is always JSON.** `--json` is accepted on both leaves for symmetry
+with the rest of the CLI and changes nothing; there is no human-text
+rendering.
+
+### `planar document project`
+
+```bash
+planar document project --kind plan|artifact --id <id> --json
+```
+
+Emits Planar's authoritative `block-document-v1` projection. Each passage has
+a stable key, authoritative text, and source mapping. `content_revision` binds
+the complete ordered projection to the source state.
+
+**Output:**
+```json
+{"contract_version":"block-document-v1","source_uuid":"<db-uuid>","document_id":"<db-uuid>:artifact:1","content_revision":"<sha256>","passages":[{"key":"<db-uuid>:...","kind":"heading","text":"...","source":{"kind":"artifact","id":"1","path":"body","start_line":1,"end_line":1}}]}
+```
+
+### `planar document validate-range`
+
+```bash
+planar document validate-range --kind plan|artifact --id <id> \
+  --content-revision <revision> --start-key <key> --start-offset <bytes> \
+  --end-key <key> --end-offset <bytes> \
+  --covered-key <key>... --segment-quote <text>... --json
+```
+
+Validates a complete adjacent range at one content revision. Offsets are UTF-8
+byte offsets and must lie on code-point boundaries. Covered keys and segment
+quotes are evidence, not authority: Planar recomputes and compares them before
+returning the canonical keys, segment quotes, and normalized full quote.
+
+**Output (`block-range-validation-v1`):**
+```json
+{"contract_version":"block-range-validation-v1","source_uuid":"<db-uuid>","document_id":"<db-uuid>:artifact:1","content_revision":"<sha256>","covered_keys":["<key>","..."],"segment_quotes":["<text>","..."],"normalized_quote":"<segments joined by \\n>"}
+```
+
+**Rejection reasons.** A rejected range exits `2` with
+`error: document range rejected: <reason>` on stderr. Checks run in this order
+and the first failure is reported:
+
+| Reason | Meaning |
+|--------|---------|
+| `stale_revision` | `--content-revision` is not the revision just projected: the source changed, or the evidence came from another database. |
+| `missing_boundary` | A boundary key or offset is absent. All four are required flags, so the parser normally refuses first (exit `2`). |
+| `foreign_key` | `--start-key` or `--end-key` is not a passage of this projection. |
+| `reversed_range` | The end passage precedes the start passage. |
+| `invalid_utf8_boundary` | An offset is negative, past the passage end, before the start offset in a single-passage range, or splits a UTF-8 code point. |
+| `noncontiguous_covered_keys` | The `--covered-key` list is not exactly the ordered passages from start to end. |
+| `forged_quote` | The `--segment-quote` list is not exactly the projected text of each covered segment. |
+
+The recovery for every reason is the same: re-run `document project`, rebuild
+the evidence from that output, and resend. Retrying unchanged evidence fails
+the same way.
+
+**Exit codes (both leaves):**
+- `0` — success.
+- `1` — the source row is absent; the database file cannot be opened read-only (including when it does not exist); a projection query failed; the schema is **behind** this binary or has a gap.
+- `2` — an unsupported `--kind` (anything but `plan` / `artifact`), a parse failure, or (on `validate-range`) a rejected range.
+- `7` — the schema is **newer** than this binary supports.
+
+---
+
 ## Domain: `annotate`
 
 Annotations are either file-anchored review notes or entity-anchored notes on a plan or task. File annotations can carry a `commit_sha` and `text_hash` for later verification; entity annotations have no invented file path. Annotations have a lifecycle (`active` → `resolved` / `dismissed` → `archived`; or `active` → `archived` directly), free-form tags, and bulk operations over a filter. They are scope-aware like every other planning entity. `archived` is the single final retention state (plan 692): `resolved` and `dismissed` are outcome states that may still progress to `archived` via `annotate sweep` or `annotate archive`.
@@ -8297,6 +8373,7 @@ For quick reference, all documented commands grouped by domain:
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |
 | `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
+| `document` | `document project`, `document validate-range` |
 | `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate capabilities`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
 | `workbench` | `workbench lint`, `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |

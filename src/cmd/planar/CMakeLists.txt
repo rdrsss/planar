@@ -653,6 +653,7 @@ planar_binary(planar
     handlers/artifact/list.cppm
     handlers/artifact/show.cppm
     handlers/artifact/add.cppm
+    handlers/document/command.cppm
     editor.cppm
     editflow.cppm
     handlers/shared/drafting.cppm
@@ -754,6 +755,7 @@ planar_binary(planar
     handlers/decision/command.cpp
     handlers/scenario/command.cpp
     handlers/artifact/command.cpp
+    handlers/document/command.cpp
     editor.cpp
     editflow.cpp
     handlers/shared/drafting.cpp
@@ -812,6 +814,7 @@ planar_binary(planar
     engine_health
     engine_models
     engine_planning
+    document_authority
     # New at task 6299, for handlers/shared/promotion.cpp. `promote` and `demote`
     # are the binary's only consumers of this bucket, and it carries their
     # output renderers as well as the two mutations — see its own header for

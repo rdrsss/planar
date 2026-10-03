@@ -54,6 +54,7 @@
 
 import std;
 import planar.db;
+import planar.document_authority;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.main;
@@ -722,4 +723,401 @@ TEST_CASE("artifact link requires --relationship before checking the subject", "
 
   auto conn = open_db(fx);
   CHECK(query_rows(conn, "select count(*) from entity_links", 1) == "0");
+}
+
+TEST_CASE("document authority derives and validates every adjacent Unicode passage", "[cmd][document][range]") {
+  auto const fx = make_fixture("doc_range");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Canonical", "--kind", "tech_spec", "--body",
+                        "# Heading\nFirst paragraph\n- middle item\nUnicode café ☕", "--json"})
+              .code == 0);
+
+  auto const projected = dispatch(fx, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  REQUIRE(projected.code == 0);
+  CHECK(projected.out.contains("\"contract_version\":\"block-document-v1\""));
+  CHECK(projected.out.contains("\"text\":\"Unicode café ☕\""));
+
+  auto field = [&](std::string_view marker, std::size_t from = 0) {
+    auto begin = projected.out.find(marker, from);
+    REQUIRE(begin != std::string::npos);
+    begin += marker.size();
+    auto end = projected.out.find('"', begin);
+    REQUIRE(end != std::string::npos);
+    return std::pair{projected.out.substr(begin, end - begin), end};
+  };
+  auto const [revision, revision_end]       = field("\"content_revision\":\"");
+  auto const [title_key, title_end]         = field("\"key\":\"", revision_end);
+  auto const [heading_key, heading_end]     = field("\"key\":\"", title_end);
+  auto const [paragraph_key, paragraph_end] = field("\"key\":\"", heading_end);
+  auto const [list_key, list_end]           = field("\"key\":\"", paragraph_end);
+  auto const [unicode_key, ignored]         = field("\"key\":\"", list_end);
+
+  auto const valid = dispatch(fx, {"document",
+                                   "validate-range",
+                                   "--kind",
+                                   "artifact",
+                                   "--id",
+                                   "1",
+                                   "--content-revision",
+                                   revision,
+                                   "--start-key",
+                                   heading_key,
+                                   "--start-offset",
+                                   "0",
+                                   "--end-key",
+                                   unicode_key,
+                                   "--end-offset",
+                                   "17",
+                                   "--covered-key",
+                                   heading_key,
+                                   "--covered-key",
+                                   paragraph_key,
+                                   "--covered-key",
+                                   list_key,
+                                   "--covered-key",
+                                   unicode_key,
+                                   "--segment-quote",
+                                   "Heading",
+                                   "--segment-quote",
+                                   "First paragraph",
+                                   "--segment-quote",
+                                   "middle item",
+                                   "--segment-quote",
+                                   "Unicode café ☕",
+                                   "--json"});
+  CHECK(valid.code == 0);
+  CHECK(valid.out.contains("\"normalized_quote\":\"Heading\\nFirst paragraph\\nmiddle item\\nUnicode café ☕\""));
+
+  auto omitted = dispatch(fx, {"document",
+                               "validate-range",
+                               "--kind",
+                               "artifact",
+                               "--id",
+                               "1",
+                               "--content-revision",
+                               revision,
+                               "--start-key",
+                               heading_key,
+                               "--start-offset",
+                               "0",
+                               "--end-key",
+                               unicode_key,
+                               "--end-offset",
+                               "17",
+                               "--covered-key",
+                               heading_key,
+                               "--covered-key",
+                               unicode_key,
+                               "--segment-quote",
+                               "Heading",
+                               "--segment-quote",
+                               "Unicode café ☕",
+                               "--json"});
+  CHECK(omitted.code == 2);
+  CHECK(omitted.err.contains("noncontiguous_covered_keys"));
+
+  auto mid_codepoint = dispatch(
+      fx,
+      {"document",      "validate-range", "--kind",          "artifact", "--id",      "1",         "--content-revision", revision,
+       "--start-key",   unicode_key,      "--start-offset",  "12",       "--end-key", unicode_key, "--end-offset",       "13",
+       "--covered-key", unicode_key,      "--segment-quote", "",         "--json"});
+  CHECK(mid_codepoint.code == 2);
+  CHECK(mid_codepoint.err.contains("invalid_utf8_boundary"));
+
+  auto stale = dispatch(fx, {"document",           "validate-range", "--kind",       "artifact", "--id",           "1",
+                             "--content-revision", "forged",         "--start-key",  title_key,  "--start-offset", "0",
+                             "--end-key",          title_key,        "--end-offset", "9",        "--covered-key",  title_key,
+                             "--segment-quote",    "Canonical",      "--json"});
+  CHECK(stale.code == 2);
+  CHECK(stale.err.contains("stale_revision"));
+
+  auto forged_quote =
+      dispatch(fx, {"document",           "validate-range", "--kind",       "artifact",    "--id",           "1",
+                    "--content-revision", revision,         "--start-key",  paragraph_key, "--start-offset", "0",
+                    "--end-key",          paragraph_key,    "--end-offset", "15",          "--covered-key",  paragraph_key,
+                    "--segment-quote",    "forged passage", "--json"});
+  CHECK(forged_quote.code == 2);
+  CHECK(forged_quote.err.contains("forged_quote"));
+
+  auto reversed = dispatch(fx, {"document", "validate-range", "--kind", "artifact", "--id", "1", "--content-revision", revision,
+                                "--start-key", unicode_key, "--start-offset", "0", "--end-key", heading_key, "--end-offset", "7",
+                                "--covered-key", unicode_key, "--json"});
+  CHECK(reversed.code == 2);
+  CHECK(reversed.err.contains("reversed_range"));
+
+  auto foreign = dispatch(fx, {"document", "validate-range", "--kind", "artifact", "--id", "1", "--content-revision", revision,
+                               "--start-key", heading_key, "--start-offset", "0", "--end-key", "artifact:2:foreign:0",
+                               "--end-offset", "1", "--covered-key", heading_key, "--json"});
+  CHECK(foreign.code == 2);
+  CHECK(foreign.err.contains("foreign_key"));
+
+  // An unsupported --kind is caller input, not a missing row: exit 2 on both
+  // leaves, never the generic 1 a not-found or database failure reports.
+  auto bad_kind_project = dispatch(fx, {"document", "project", "--kind", "task", "--id", "1", "--json"});
+  CHECK(bad_kind_project.code == 2);
+  auto bad_kind_range =
+      dispatch(fx, {"document",           "validate-range", "--kind",       "task",      "--id",           "1",
+                    "--content-revision", revision,         "--start-key",  heading_key, "--start-offset", "0",
+                    "--end-key",          heading_key,      "--end-offset", "7",         "--covered-key",  heading_key,
+                    "--segment-quote",    "Heading",        "--json"});
+  CHECK(bad_kind_range.code == 2);
+  auto absent_artifact = dispatch(fx, {"document", "project", "--kind", "artifact", "--id", "999", "--json"});
+  CHECK(absent_artifact.code == 1);
+
+  REQUIRE(dispatch(fx, {"artifact", "update", "1", "--body", "changed after projection", "--json"}).code == 0);
+  auto mutated = dispatch(fx, {"document",           "validate-range", "--kind",       "artifact",  "--id",           "1",
+                               "--content-revision", revision,         "--start-key",  heading_key, "--start-offset", "0",
+                               "--end-key",          heading_key,      "--end-offset", "7",         "--covered-key",  heading_key,
+                               "--segment-quote",    "Heading",        "--json"});
+  CHECK(mutated.code == 2);
+  CHECK(mutated.err.contains("stale_revision"));
+}
+
+TEST_CASE("document authority rejects identical range evidence from another database source", "[cmd][document][source]") {
+  auto const first  = make_fixture("doc_source_first");
+  auto const second = make_fixture("doc_source_second");
+  for (auto const* fx : {&first, &second}) {
+    REQUIRE(dispatch(*fx, {"init", "--json"}).code == 0);
+    REQUIRE(dispatch(*fx, {"artifact", "add", "Same", "--kind", "tech_spec", "--body", "Same body", "--json"}).code == 0);
+  }
+
+  auto const projected = dispatch(first, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  REQUIRE(projected.code == 0);
+  auto field = [&](std::string_view marker, std::size_t from = 0) {
+    auto begin = projected.out.find(marker, from);
+    REQUIRE(begin != std::string::npos);
+    begin += marker.size();
+    auto end = projected.out.find('"', begin);
+    REQUIRE(end != std::string::npos);
+    return std::pair{projected.out.substr(begin, end - begin), end};
+  };
+  auto const [source_uuid, source_end] = field("\"source_uuid\":\"");
+  auto const [document_id, id_end]     = field("\"document_id\":\"", source_end);
+  auto const [revision, revision_end]  = field("\"content_revision\":\"", id_end);
+  auto const [title_key, ignored]      = field("\"key\":\"", revision_end);
+  CHECK(document_id.starts_with(source_uuid + ":artifact:1"));
+  CHECK(title_key.starts_with(source_uuid + ":artifact:1:"));
+
+  auto const replay =
+      dispatch(second, {"document",           "validate-range", "--kind",       "artifact", "--id",           "1",
+                        "--content-revision", revision,         "--start-key",  title_key,  "--start-offset", "0",
+                        "--end-key",          title_key,        "--end-offset", "4",        "--covered-key",  title_key,
+                        "--segment-quote",    "Same",           "--json"});
+  CHECK(replay.code == 2);
+  CHECK(replay.err.contains("stale_revision"));
+
+  auto const second_projection = dispatch(second, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  REQUIRE(second_projection.code == 0);
+  CHECK_FALSE(second_projection.out.contains(std::format("\"source_uuid\":\"{}\"", source_uuid)));
+  CHECK_FALSE(second_projection.out.contains(std::format("\"content_revision\":\"{}\"", revision)));
+  CHECK_FALSE(second_projection.out.contains(std::format("\"key\":\"{}\"", title_key)));
+}
+
+TEST_CASE("document authority refuses missing and unmigrated sources without creating or migrating them",
+          "[cmd][document][readonly]") {
+  auto missing              = make_fixture("doc_readonly_missing");
+  missing.db_path           = missing.root / "absent" / "nested" / "planar.db";
+  auto const missing_result = dispatch(missing, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  CHECK(missing_result.code != 0);
+  CHECK_FALSE(std::filesystem::exists(missing.db_path));
+  CHECK_FALSE(std::filesystem::exists(missing.db_path.parent_path()));
+
+  auto const unmigrated = make_fixture("doc_readonly_unmigrated");
+  {
+    auto created = planar::db::connection::open(unmigrated.db_path.string());
+    REQUIRE(created.has_value());
+  }
+  auto const before_size       = std::filesystem::file_size(unmigrated.db_path);
+  auto const unmigrated_result = dispatch(unmigrated, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  CHECK(unmigrated_result.code != 0);
+  CHECK(std::filesystem::file_size(unmigrated.db_path) == before_size);
+  auto conn = open_db(unmigrated);
+  CHECK(query_rows(conn, "select count(*) from sqlite_master where type='table' and name='schema_migrations'", 1) == "0");
+}
+
+// The "missing" half of the case above puts the database under a parent
+// directory that does not exist, so NEITHER open mode can create it and the
+// fixture cannot tell `open_read_only` from `open`. Here the parent exists
+// and only planar.db is absent: a read-write open would create the file (and
+// a WAL-mode one its -wal/-shm sidecars), so this is the case that pins the
+// read-only open itself (review finding F3).
+TEST_CASE("document authority refuses an absent database in an existing directory without creating it",
+          "[cmd][document][readonly]") {
+  auto const fx = make_fixture("doc_readonly_absent_file");
+  REQUIRE(std::filesystem::is_directory(fx.db_path.parent_path()));
+  REQUIRE_FALSE(std::filesystem::exists(fx.db_path));
+  auto const sidecars =
+      std::array{fx.db_path, std::filesystem::path{fx.db_path.string() + "-wal"},
+                 std::filesystem::path{fx.db_path.string() + "-shm"}, std::filesystem::path{fx.db_path.string() + "-journal"}};
+
+  auto const projected = dispatch(fx, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  CHECK(projected.code != 0);
+  CHECK(projected.err.contains("read-only"));
+  auto const validated =
+      dispatch(fx, {"document", "validate-range", "--kind", "artifact", "--id", "1", "--content-revision", "r", "--start-key",
+                    "k", "--start-offset", "0", "--end-key", "k", "--end-offset", "0", "--json"});
+  CHECK(validated.code != 0);
+  for (auto const& path : sidecars) {
+    INFO("path: " << path.string());
+    CHECK_FALSE(std::filesystem::exists(path));
+  }
+}
+
+TEST_CASE("document authority projects one coherent snapshot while a writer changes related rows", "[cmd][document][snapshot]") {
+  auto const fx = make_fixture("doc_snapshot");
+  seed_association_and_plan(fx);
+  REQUIRE(dispatch(fx, {"task", "add", "Snapshot task", "--plan", "1", "--body", "A", "--editor=false", "--json"}).code == 0);
+  {
+    auto        conn = open_db(fx);
+    std::string long_summary;
+    for (int i = 0; i < 30000; ++i)
+      long_summary += std::format("line {}\n", i);
+    auto stmt = conn.prepare("update plans set title='Plan A', summary=? where id=1");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_text(1, long_summary));
+    REQUIRE(stmt->step() == planar::db::step_result::done);
+  }
+
+  std::atomic<bool> writer_ready{false};
+  std::atomic<bool> writer_failed{false};
+  std::jthread      writer([&](std::stop_token stop) {
+    auto opened = planar::db::connection::open(fx.db_path.string());
+    if (!opened) {
+      writer_failed.store(true, std::memory_order_release);
+      writer_ready.store(true, std::memory_order_release);
+      return;
+    }
+    auto conn    = std::move(*opened);
+    bool state_b = true;
+    writer_ready.store(true, std::memory_order_release);
+    while (!stop.stop_requested()) {
+      auto txn = conn.begin_transaction(planar::db::lock_mode::immediate);
+      if (!txn)
+        continue;
+      auto const tag = state_b ? "B" : "A";
+      if (!conn.execute(
+              std::format("update plans set title='Plan {}' where id=1; update tasks set body='{}' where id=1;", tag, tag)) ||
+          !txn->commit()) {
+        writer_failed.store(true, std::memory_order_release);
+        return;
+      }
+      state_b = !state_b;
+    }
+  });
+  while (!writer_ready.load(std::memory_order_acquire))
+    std::this_thread::yield();
+  REQUIRE_FALSE(writer_failed.load(std::memory_order_acquire));
+
+  for (int attempt = 0; attempt < 8; ++attempt) {
+    auto reader = planar::db::connection::open_read_only(fx.db_path.string());
+    REQUIRE(reader.has_value());
+    auto projected = planar::document_authority::project(*reader, "plan", 1);
+    REQUIRE(projected.has_value());
+    auto const title = std::ranges::find_if(
+        projected->passages, [](auto const& item) { return item.source.kind == "plan" && item.source.path == "title"; });
+    auto const task_body = std::ranges::find_if(
+        projected->passages, [](auto const& item) { return item.source.kind == "task" && item.source.path == "body"; });
+    REQUIRE(title != projected->passages.end());
+    REQUIRE(task_body != projected->passages.end());
+    CHECK((title->text == "Plan A" || title->text == "Plan B"));
+    CHECK(task_body->text == title->text.substr(title->text.size() - 1));
+  }
+  writer.request_stop();
+  CHECK_FALSE(writer_failed.load(std::memory_order_acquire));
+}
+
+TEST_CASE("document authority matches the rich Markdown parity fixture", "[cmd][document][markdown]") {
+  auto const fx = make_fixture("doc_markdown");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  auto const body = R"MARKDOWN(# [Linked](https://example.test) <em>heading</em>
+unsafe [label](javascript:bad) and [safe](#anchor)
+```cpp
+int main() {
+  return 0;
+}
+```
+| H1 | H2 |
+| --- | :---: |
+| a | b |
+| c | d |
+<script>alert(1)</script>Visible)MARKDOWN";
+  REQUIRE(dispatch(fx, {"artifact", "add", "Rich parity", "--kind", "tech_spec", "--body", body, "--json"}).code == 0);
+
+  auto const projected = dispatch(fx, {"document", "project", "--kind", "artifact", "--id", "1", "--json"});
+  REQUIRE(projected.code == 0);
+  CHECK(projected.out.contains(
+      R"("kind":"heading","text":"Linked heading","source":{"kind":"artifact","id":"1","path":"body","start_line":1,"end_line":1})"));
+  CHECK(projected.out.contains(
+      R"("kind":"paragraph","text":"unsafe label and safe","source":{"kind":"artifact","id":"1","path":"body","start_line":2,"end_line":2})"));
+  CHECK(projected.out.contains(
+      R"("kind":"code","text":"int main() {\n  return 0;\n}","source":{"kind":"artifact","id":"1","path":"body","start_line":3,"end_line":7})"));
+  CHECK(projected.out.contains(
+      R"("kind":"table","text":"H1 H2 a b c d","source":{"kind":"artifact","id":"1","path":"body","start_line":8,"end_line":11})"));
+  CHECK(projected.out.contains(
+      R"("kind":"paragraph","text":"alert(1)Visible","source":{"kind":"artifact","id":"1","path":"body","start_line":12,"end_line":12})"));
+  CHECK_FALSE(projected.out.contains("javascript:bad"));
+  CHECK_FALSE(projected.out.contains("<script>"));
+}
+
+TEST_CASE("plan document authority covers canonical selectable sections once and in order", "[cmd][document][plan]") {
+  auto const fx = make_fixture("doc_plan_full");
+  seed_association_and_plan(fx);
+  REQUIRE(
+      dispatch(fx, {"artifact", "add", "Product", "--kind", "product_spec", "--body", "Artifact body", "--plan", "1", "--json"})
+          .code == 0);
+  REQUIRE(dispatch(fx, {"decision", "add", "Decision A", "--body", "Decision body", "--plan", "1", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"question", "add", "Question A", "--body", "Question body", "--plan", "1", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "step", "add", "1", "Milestone body", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Task A", "--plan", "1", "--body", "Task body", "--editor=false", "--json"}).code == 0);
+  {
+    auto conn = open_db(fx);
+    // A second relationship to the same decision is a reference, not a
+    // second authored passage. The projection's DISTINCT is the canonical
+    // render-once/link-later rule from block-document-v1.
+    REQUIRE(conn.execute("insert or ignore into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
+                         "values ('plan',1,'decision',1,'cites')"));
+    REQUIRE(conn.execute("insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
+                         "values ('plan',1,'task',1,'depends-on')"));
+    REQUIRE(conn.execute("insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
+                         "values ('plan',1,'repo',1,'touches')"));
+  }
+
+  auto const projected = dispatch(fx, {"document", "project", "--kind", "plan", "--id", "1", "--json"});
+  REQUIRE(projected.code == 0);
+  auto const artifact   = projected.out.find(R"("source":{"kind":"artifact")");
+  auto const decision   = projected.out.find(R"("source":{"kind":"decision")");
+  auto const question   = projected.out.find(R"("source":{"kind":"question")");
+  auto const milestone  = projected.out.find(R"("source":{"kind":"plan_step")");
+  auto const task       = projected.out.find(R"("source":{"kind":"task")");
+  auto const dependency = projected.out.find(R"("path":"relationship")", task);
+  auto const resource   = projected.out.find(R"("text":"touches")", dependency);
+  CHECK(artifact < decision);
+  CHECK(decision < question);
+  CHECK(question < milestone);
+  CHECK(milestone < task);
+  CHECK(task < dependency);
+  CHECK(dependency < resource);
+  auto const source_marker = std::string_view{R"("source_uuid":")"};
+  auto const source_begin  = projected.out.find(source_marker) + source_marker.size();
+  auto const source_end    = projected.out.find('"', source_begin);
+  auto const source_uuid   = projected.out.substr(source_begin, source_end - source_begin);
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:decision:1:", source_uuid)));
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:question:1:", source_uuid)));
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:plan_step:1:", source_uuid)));
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:task:1:", source_uuid)));
+  CHECK(projected.out.contains(std::format("\"key\":\"{}:entity_link:", source_uuid)));
+  CHECK(projected.out.contains(R"("path":"ordinal")"));
+  CHECK(projected.out.contains(R"("path":"endpoints")"));
+  auto const decision_body = projected.out.find("Decision body");
+  REQUIRE(decision_body != std::string::npos);
+  CHECK(projected.out.find("Decision body", decision_body + 1) == std::string::npos);
+
+  auto const revision_marker = std::string_view{R"("content_revision":")"};
+  auto const revision_begin  = projected.out.find(revision_marker) + revision_marker.size();
+  auto const revision_end    = projected.out.find('"', revision_begin);
+  auto const revision        = projected.out.substr(revision_begin, revision_end - revision_begin);
+  REQUIRE(dispatch(fx, {"task", "update", "1", "--body", "Task changed", "--json"}).code == 0);
+  auto const after = dispatch(fx, {"document", "project", "--kind", "plan", "--id", "1", "--json"});
+  REQUIRE(after.code == 0);
+  CHECK_FALSE(after.out.contains(std::format(R"("content_revision":"{}")", revision)));
 }

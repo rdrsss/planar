@@ -47,6 +47,7 @@ import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.decision;
 import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.artifact;
+import planar.cmd.planar.handlers.document;
 import planar.cmd.planar.handlers.drafting;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.link;
@@ -405,6 +406,8 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("artifact list", handlers::artifact_list);
   table.emplace("artifact update", handlers::artifact_update);
   table.emplace("artifact link", handlers::artifact_link);
+  table.emplace("document project", handlers::document_project);
+  table.emplace("document validate-range", handlers::document_validate_range);
   // The DRAFTING QUARTET, all sixteen arms, landed together at task 6205
   // with the `editflow` port every one of them was blocked on. Four cycles
   // deferred them four times; `engine_workbench` landing left

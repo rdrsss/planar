@@ -2,6 +2,15 @@
 
 Planar is a local-first task tracker and agent-operations infrastructure tool. It spans planning, tasking, scoping, durable agent handoff, vendor parity, and operational-plane integration with Jira and GitHub Issues.
 
+Planar also owns the read-only `block-document-v1` authority for plan and
+artifact content. The projection binds a source document identity to a SHA-256
+content revision and an ordered list of source-mapped passages. Range
+validation always rebuilds that projection from one database snapshot: callers
+provide the revision, boundary keys, UTF-8 byte offsets, every claimed covered
+key, and every claimed segment quote. Planar rejects stale, foreign, reordered,
+discontinuous, or forged evidence and returns the actual covered keys and
+server-derived normalized quote only after the complete range matches.
+
 This document describes the system as it stands today — for a new contributor or curious user who wants to understand how Planar works without reading the full source. For the operational flows drawn as diagrams — the spec pipeline, orchestration lifecycle, and claim ritual — see [Operations](operations.md).
 
 ---

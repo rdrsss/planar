@@ -1500,8 +1500,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // resolve`) moved off this binary's tree entirely, and the now-childless
   // `ext`/`sync` GROUP nodes left with them. Verified by running this test
   // against the live tree, not by arithmetic on this comment.
+  // Task 6939 adds the two `document` leaves. The parent is a group node,
+  // so only `project` and `validate-range` change this leaf census.
   auto const leaves = planar::cliapp::leaf_keys(*tree);
-  CHECK(leaves.size() == 216);
+  CHECK(leaves.size() == 218);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
