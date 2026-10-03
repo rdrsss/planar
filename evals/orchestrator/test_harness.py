@@ -4214,8 +4214,8 @@ class DocsHonestyTest(unittest.TestCase):
 
     `evals/README.md` and `evals/orchestrator/evidence.md` must not claim an
     unowned cadence (CI, nightly, release, smoke, "every change", "Full
-    Stack"). There is no CI configuration in this repository (`.github/`
-    does not exist) and `evals/RESULTS.md` does not exist yet (planned for
+    Stack"). There is no CI configuration in this repository
+    (`.github/workflows/` does not exist) and `evals/RESULTS.md` does not exist yet (planned for
     a later milestone), so a bare cadence claim is a documentation-honesty
     violation unless the line does one of two things:
 
@@ -4325,7 +4325,7 @@ class DocsHonestyTest(unittest.TestCase):
 
     def test_no_ci_configuration_exists(self) -> None:
         """Guards the premise: if CI ever lands, this test (and the docs) must change."""
-        self.assertFalse((self.REPO_ROOT / ".github").exists())
+        self.assertFalse((self.REPO_ROOT / ".github" / "workflows").exists())
 
     def test_seeded_counter_example_is_rejected(self) -> None:
         # Task 6878's motivating counter-example: a naked "runs nightly in
