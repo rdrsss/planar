@@ -238,7 +238,7 @@ grep -Fq 'does not look like a Planar install' "$TMP/guard-foreign-stderr" \
 # retired agent.db is not tightened: install removes it. The function is
 # exercised through the exact block extracted from install.sh, like the
 # ownership guard above.
-mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
 assert_mode() { [[ "$(mode_of "$1")" == "$2" ]] || fail "expected mode $2 on $1, got $(mode_of "$1")"; }
 sed -n '/^harden_planar_home() {/,/^}/p' "$ROOT/install.sh" > "$TMP/harden.sh"
 grep -Fq 'chmod' "$TMP/harden.sh" || fail "harden_planar_home not found in install.sh"

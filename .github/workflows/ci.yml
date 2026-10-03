@@ -1,0 +1,45 @@
+# Fast tier. Runs on pull requests that target master (and on pushes to master,
+# as a backstop for anything that lands without a pull request). It does NOT
+# build the C++ tree: that is the full tier (full.yml), which runs nightly and
+# on demand. Pull requests into any other branch, such as dev/integration, run
+# nothing here, so agent churn on an integration branch costs no CI.
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per pull request (or per ref); a newer push cancels the older run.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install the pinned clang-format (LLVM 23, apt.llvm.org)
+        run: |
+          set -eu
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /usr/share/keyrings/llvm.asc >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/llvm.asc] https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-format-23
+          /usr/lib/llvm-23/bin/clang-format --version
+      - name: Formatting
+        run: make fmt-check LLVM_PREFIX=/usr/lib/llvm-23
+      - name: Installer fixtures
+        run: make test-install-manifest test-install-deps
+      - name: Planning eval harness unit tests
+        run: make eval-planning-unit

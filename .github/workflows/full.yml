@@ -1,0 +1,56 @@
+# Full tier: the whole debug build and ctest suite on Linux, using the same
+# pinned toolchain image as `make linux-gate` (docker/linux-gate.Dockerfile).
+# It is slow and builds from cold, so it does not run on every pull request.
+# It runs nightly, on a manual dispatch, on version tags, and on a pull
+# request that carries the `ci:full` label.
+#
+# It also runs the orchestrator eval harness unit tests, which need the built
+# binaries on PATH. `make test-all` through the host queue remains the pre-merge gate; this
+# workflow is the independent Linux backstop.
+name: Full
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: linux build and test
+    # A pull request runs this only while it carries the ci:full label.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - name: Build the pinned toolchain image
+        run: DOCKER_BUILDKIT=1 docker build --target toolchain -t planar-toolchain -f docker/linux-gate.Dockerfile .
+      - name: Configure, build and test
+        run: |
+          set -eu
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD":/src -w /src planar-toolchain bash -euc '
+              cmake --preset debug
+              cmake --build build/debug -j4
+              # -j2, not -j4: a few queue and contention tests assert latency
+              # bounds and worker fairness, and fail under heavy parallel load.
+              ctest --test-dir build/debug -j2 --output-on-failure
+              PATH="/src/build/debug/bin:$PATH" make eval-orchestrator-unit
+            '

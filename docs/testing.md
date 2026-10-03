@@ -23,6 +23,23 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make linux-gate` | The `debug` build and the whole ctest suite on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
 | `make test-cpp-solver` | The ctest suite against a `-DPLANAR_WITH_MTKAHYPAR=ON` build. |
 
+## Continuous integration
+
+CI is deliberately small, because agents merge often and a per-merge gate
+would run constantly. `make test-all` through the host queue (below) is still
+the gate to run before a pull request; CI is the independent backstop.
+
+| Workflow | Runs | What |
+|---|---|---|
+| `ci.yml` (fast tier) | Pull requests into `master`, and pushes to `master` | `make fmt-check`, the installer fixtures, and the planning eval harness unit tests. It does not build the C++ tree. A newer push cancels the older run. |
+| `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, and the orchestrator eval harness unit tests (which need the built binaries on `PATH`), on Linux, in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
+
+Pull requests into any other branch run neither workflow. Agents integrate
+into `dev/integration` and open a pull request from it to `master` when a
+batch is ready, so CI runs once per batch, not once per merge. Add the
+`ci:full` label to a `master`-bound pull request that touches C++ or CMake and
+should be built on Linux before it merges.
+
 ## Builds and tests go through the host queue
 
 On a machine shared by several agents and projects, a build or test is not
