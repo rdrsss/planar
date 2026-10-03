@@ -111,6 +111,8 @@ auto authoritative_document(db::connection& conn, std::string_view kind, std::in
     -> std::expected<document_authority::document, domain_error> {
   auto projected = document_authority::project(conn, kind, id);
   if (!projected) {
+    if (projected.error() == document_authority::error::invalid_kind)
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, "document kind must be plan or artifact"));
     auto error_kind = projected.error() == document_authority::error::not_found ? domain_error_kind::not_found
                                                                                 : domain_error_kind::generic_failure;
     return std::unexpected(error_from_body(error_kind, "document projection failed"));
@@ -176,8 +178,14 @@ auto document_validate_range(context& ctx, const cliapp::parsed_args& args) -> h
   auto end_key      = cliapp::flag_string(args, "--end-key");
   auto start_offset = cliapp::flag_int(args, "--start-offset");
   auto end_offset   = cliapp::flag_int(args, "--end-offset");
-  auto reject       = [&](std::string_view code) -> handler_result {
-    return std::unexpected(error_from_body(domain_error_kind::sync_conflict, std::format("document range rejected: {}", code)));
+  // Every rejection is the caller's evidence disagreeing with the snapshot
+  // just projected, so it is `invalid_input` (exit 2): the recovery is to
+  // re-project and resend, never to retry unchanged. Not `sync_conflict`
+  // (exit 3), whose documented recovery is `sync resolve` on the
+  // operational plane, and not the generic 1 that a missing row or a
+  // database failure reports.
+  auto reject = [&](std::string_view code) -> handler_result {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::format("document range rejected: {}", code)));
   };
   if (!revision || *revision != doc->content_revision)
     return reject(rejection_reason(document_authority::error::stale_revision));
