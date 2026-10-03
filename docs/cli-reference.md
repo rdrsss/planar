@@ -2432,30 +2432,6 @@ artifact 3: "Billing Tech Spec"  [tech_spec, draft]  (scope: association:3 [from
 
 ---
 
-### `planar document project`
-
-```bash
-planar document project --kind plan|artifact --id <id> --json
-```
-
-Emits Planar's authoritative `block-document-v1` projection. Each passage has
-a stable key, authoritative text, and source mapping. `content_revision` binds
-the complete ordered projection to the source state.
-
-### `planar document validate-range`
-
-```bash
-planar document validate-range --kind plan|artifact --id <id> \
-  --content-revision <revision> --start-key <key> --start-offset <bytes> \
-  --end-key <key> --end-offset <bytes> \
-  --covered-key <key>... --segment-quote <text>... --json
-```
-
-Validates a complete adjacent range at one content revision. Offsets are UTF-8
-byte offsets and must lie on code-point boundaries. Covered keys and segment
-quotes are evidence, not authority: Planar recomputes and compares them before
-returning the canonical keys, segment quotes, and normalized full quote.
-
 ### `planar artifact show <artifact-id>`
 
 **Synopsis:**
@@ -2547,6 +2523,40 @@ planar artifact link <artifact-id> <to-kind:to-id> --relationship <kind> [--json
 **Schema effects:** Inserts into `entity_links(from_kind='artifact', from_id, to_kind, to_id, relationship)`.
 
 **Capture:** Appends `session_entries` row with `prefix='action'`.
+
+---
+
+## Domain: `document`
+
+Read-only, revision-bound projections of plan and artifact content. Both
+leaves open the database read-only and verify the schema version before
+reading; neither writes a row, a session entry, or a workbench file. Every flag
+takes literal text — none accepts the `@<file>` grammar described under
+[Conventions](#conventions).
+
+### `planar document project`
+
+```bash
+planar document project --kind plan|artifact --id <id> --json
+```
+
+Emits Planar's authoritative `block-document-v1` projection. Each passage has
+a stable key, authoritative text, and source mapping. `content_revision` binds
+the complete ordered projection to the source state.
+
+### `planar document validate-range`
+
+```bash
+planar document validate-range --kind plan|artifact --id <id> \
+  --content-revision <revision> --start-key <key> --start-offset <bytes> \
+  --end-key <key> --end-offset <bytes> \
+  --covered-key <key>... --segment-quote <text>... --json
+```
+
+Validates a complete adjacent range at one content revision. Offsets are UTF-8
+byte offsets and must lie on code-point boundaries. Covered keys and segment
+quotes are evidence, not authority: Planar recomputes and compares them before
+returning the canonical keys, segment quotes, and normalized full quote.
 
 ---
 
@@ -8321,6 +8331,7 @@ For quick reference, all documented commands grouped by domain:
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |
 | `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
+| `document` | `document project`, `document validate-range` |
 | `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate capabilities`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
 | `workbench` | `workbench lint`, `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |
