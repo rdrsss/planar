@@ -20,7 +20,6 @@ notice is given here or in the source header noted.
 | Tree-sitter | MIT | `vendor/tree_sitter/*/LICENSE` |
 | tree-sitter-zig | MIT | `vendor/tree_sitter_zig/*/LICENSE` |
 | WHFC | MIT | `vendor/whfc/*/LICENSE` |
-| xxHash | BSD-2-Clause | `vendor/xxhash/*/LICENSE` |
 
 ## Lua
 

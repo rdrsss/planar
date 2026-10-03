@@ -84,8 +84,8 @@ cwd-not-on-top mismatches print a non-blocking warning
 The outward-facing docs system's foundation shipped in two
 milestones. M1 (migration 0008) extended `artifacts.kind` with
 `research`, `getting_started`, `changelog_entry`, and
-`glossary_term`. M2 added the `.manifest-docs` Merkle index
-(xxh3-keyed, two-level), the citation linter (`planar doc lint`)
+`glossary_term`. M2 added a Merkle drift index
+(xxh3-keyed, two-level; since removed from Planar), the citation linter (`planar doc lint`)
 covering GFM footnote citations plus a structured `references:`
 front-matter block, the URL HEAD validator with on-disk cache and
 30-day re-check policy, and the per-entry planar-entity resolver.

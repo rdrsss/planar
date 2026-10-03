@@ -559,12 +559,7 @@ auto workspace_regenerate(context& ctx, const cliapp::parsed_args& args) -> hand
   if (flag_bool(args, "--json")) {
     std::string out = "{\"agents_path\":";
     json_text::append_json_string(out, outcome->agents_path);
-    out += ",\"manifest_path\":";
-    json_text::append_json_string(out, outcome->manifest_path);
-    out += std::format(",\"project_count\":{},\"bytes_written\":{},\"manifest_root\":", outcome->project_count,
-                       outcome->bytes_written);
-    json_text::append_json_string(out, outcome->manifest_root);
-    out += "}\n";
+    out += std::format(",\"project_count\":{},\"bytes_written\":{}}}\n", outcome->project_count, outcome->bytes_written);
     ctx.out() << out;
     return {};
   }

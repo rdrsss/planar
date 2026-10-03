@@ -25,7 +25,7 @@
 /// Plan 918 M5: the in-band `x-planar-source-digest`/
 /// `x-planar-projection-digest` projection-digest scheme is retired —
 /// scriptorium now owns install-drift detection out-of-band via its own
-/// merkle+xxhash manifest. This module keeps its non-digest duties: manifest
+/// merkle manifest. This module keeps its non-digest duties: manifest
 /// presence/validity classification, vendor selection, and unmanaged-entry
 /// discovery. Freshness is a plain existence + byte/symlink comparison
 /// against the staged authority, not a semantic digest match.

@@ -802,14 +802,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // (1410 lines, no architectural blocker) and that sizing held —
       // SQLite plus filesystem, no new dependency.
       //
-      // `workspace regenerate` left this inventory at task 6364. It was
-      // carried as blocked on an unvendored xxh64 for its `.manifest-docs`
-      // merkle — verified TRANSITIVELY true rather than stale: `regenerate`'s
-      // own source has no xxh64 reference, but it calls `manifest.build`,
-      // which does. xxHash 0.8.3 is now vendored (`cmake/dependencies.cmake`)
-      // behind the new layer-1 `planar.docs_manifest` module — NOT
-      // `engine_docs`, since D15/D18 forbid an `engine_* -> engine_*` edge
-      // and this bucket is its only consumer. See
+      // `workspace regenerate` left this inventory at task 6364. See
       // `planar.engine.workspace.regenerate`'s header for the ported
       // hand-rolled template engine and its one deliberate reproduced quirk.
       //

@@ -1127,7 +1127,7 @@ ls -la ~/work/AGENTS.md ~/work/CLAUDE.md
 # both → /home/user/.planar/workspaces/1/AGENTS.md
 
 ls ~/.planar/workspaces/1/
-# AGENTS.md  routing-table.json  .manifest-docs
+# AGENTS.md  routing-table.json
 ```
 
 ### Meta repo variant

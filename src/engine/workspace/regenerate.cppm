@@ -1,7 +1,6 @@
 /// @file regenerate.cppm
 /// @brief `planar.engine.workspace.regenerate` — render workspace
-/// `AGENTS.md` from the routing table and write the `.manifest-docs` merkle
-/// beside it (plan 996, task 6364).
+/// `AGENTS.md` from the routing table and write it (plan 996, task 6364).
 ///
 /// Behavior-preserving port (D2) of
 /// zig/src/engine/workspace/regenerate.zig plus the render half of
@@ -60,10 +59,8 @@ namespace planar::engine::workspace::regenerate {
 /// @brief What a successful regenerate reports.
 export struct result {
   std::string  agents_path;       ///< `<state-dir>/AGENTS.md`.
-  std::string  manifest_path;     ///< `<state-dir>/.manifest-docs`.
   std::int64_t project_count = 0; ///< `routing_table.projects.size()`.
   std::int64_t bytes_written = 0; ///< Bytes written to `agents_path`.
-  std::string  manifest_root;     ///< The built manifest's `root` digest.
 };
 
 /// @brief Which oracle-observed failure bucket a regenerate hit. See this
@@ -82,8 +79,7 @@ export struct failure {
   std::string message; ///< The exact unrendered error body.
 };
 
-/// @brief Render `AGENTS.md` for `org_id`'s workspace and write it plus its
-/// `.manifest-docs` merkle.
+/// @brief Render `AGENTS.md` for `org_id`'s workspace and write it.
 /// @param conn An open connection.
 /// @param env Environment lookup, passed straight through to `identity`.
 /// @param org_id The org association whose workspace to regenerate.

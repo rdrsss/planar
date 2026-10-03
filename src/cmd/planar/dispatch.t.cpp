@@ -650,7 +650,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // 47 before task 6110 ported ONE leaf out of it — `workspace routing
   // show` — leaving 46. One leaf, and the scope cut is the finding: the
   // `workspace` family's other three unported leaves each carried a distinct
-  // blocker (`routing build` on size, `regenerate` on an unvendored xxh64,
+  // blocker (`routing build` on size, `regenerate` on its template engine,
   // `init` on the absent layer-3 cmd surface). `synthesize` subsequently
   // moved in task 6106 after its staging engine and literal import dependency
   // landed.
@@ -921,11 +921,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   routing build  NOT blocked. 1410 lines, SQLite + filesystem, no new
   //                  dependency and no spawn seam. Size was the whole of it,
   //                  and the estimate held.
-  //   regenerate     BLOCKED on an unvendored xxh64 (`.manifest-docs`
-  //                  merkle) plus a hand-rolled template engine. Vendoring
-  //                  is its own change under the pinned-release-archive
-  //                  rule, so it is a prerequisite TASK, not a step of this
-  //                  one.
+  //   regenerate     BLOCKED on a hand-rolled template engine, which is
+  //                  a prerequisite TASK, not a step of this one.
   //   init           BLOCKED at layer 3, and STRICTLY LESS SO than before:
   //                  it composes scan + registration + routing build +
   //                  regenerate + symlinks, and one of those four now
@@ -1113,13 +1110,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // it is not yet wired on `planar-ext` either — see surface.cpp's
   // `unported_paths` header.
   CHECK(unported.size() == 1);
-  // `workspace regenerate` had already moved at task 6364. It had been carried
-  // as blocked on an unvendored xxh64 for its `.manifest-docs` merkle —
-  // verified TRANSITIVELY true (the leaf's own source has no xxh64
-  // reference; it reaches one hop out through `manifest.build`) rather than
-  // stale. xxHash 0.8.3 is now vendored (`cmake/dependencies.cmake`) behind
-  // the new layer-1 `planar.docs_manifest` module, and the leaf's
-  // hand-rolled template engine was ported alongside it. See
+  // `workspace regenerate` had already moved at task 6364, with its
+  // hand-rolled template engine. See
   // `planar.engine.workspace.regenerate`'s header for the full account.
 
   // 6 -> 4: task 6189 (this branch) ported `workspace init` and

@@ -104,22 +104,9 @@
 #     -- which is precisely the failure mode routing.cppm's header warns
 #     about, arriving on the arm one layer up from the one it warns about.
 #
-#   - ~~`workspace regenerate`.~~ PORTED (task 6364, this cycle), as
-#     `regenerate.cppm`/`.cpp`. It was carried as blocked on an unvendored
-#     xxh64 for its `.manifest-docs` merkle -- verified TRANSITIVELY true
-#     (`regenerate.zig` itself has no xxh64 reference; the dependency is one
-#     hop out, through `manifest.build` in `../docs/manifest.zig`) -- plus a
-#     hand-rolled template engine this leaf now also carries.
-#
-#     xxHash 0.8.3 is vendored at `cmake/dependencies.cmake` and wrapped by
-#     the new layer-1 `planar.docs_manifest` module
-#     (`src/lib/docs_manifest/`) -- NOT `engine_docs`, because D15/D18
-#     forbid an `engine_* -> engine_*` edge and this bucket is the only
-#     consumer. See that module's own header for the full argument, plus
-#     two oracle findings it reproduces deliberately: `generated_at` is the
-#     LITERAL STRING `"now"` in every manifest the oracle ever writes (not
-#     an actual timestamp), and manifest entry paths are the UN-relativized
-#     path passed to `build()`.
+#   - ~~`workspace regenerate`.~~ PORTED (task 6364), as
+#     `regenerate.cppm`/`.cpp`, with a hand-rolled template engine this leaf
+#     also carries.
 #
 #     The hand-rolled template engine's one deliberate quirk survived the
 #     port unchanged: `parseDirective` trims `" \t\r\n-"` off the directive
@@ -129,11 +116,6 @@
 #     own rendered output carries the resulting blank lines. Captured
 #     end-to-end against a live `workspace init` run (`regenerate.cppm`'s
 #     header) and reproduced byte-for-byte, not fixed forward.
-#
-#     Digest parity: `docs_manifest.t.cpp` feeds the oracle's own captured
-#     `AGENTS.md` bytes through this port's `normalize()` + `hash_hex()` and
-#     asserts `doc_hash` / `sources_hash` / `entry_hash` match the oracle's
-#     `.manifest-docs` output exactly -- not merely "a hash is produced".
 #
 #   - `workspace init`. Architecturally blocked, not merely deferred: it
 #     composes scan + project registration + routing build + regenerate +
@@ -173,7 +155,6 @@ planar_module(engine_workspace
     db
     json_dom
     json_text
-    docs_manifest
     queuerule
   EMBED)
 

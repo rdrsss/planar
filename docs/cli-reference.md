@@ -3543,7 +3543,7 @@ cross-repo edges:
 planar workspace regenerate [<workspace>]
 ```
 
-**Description:** Render the canonical `AGENTS.md` for a workspace. Reads `<state-dir>/routing-table.json` (produced by `routing build`), re-fetches live cross-repo plans and open questions from the database (these go stale fast, so the regenerator queries them every run rather than trusting cached counts), renders the AGENTS.md template (operator-installed at `~/.planar/templates/doc-prompts/agents.md` or the embedded fallback), always includes the host build and test queue rule exactly once (the text `planar-agent queue rule` prints: the default templates place it with `{{.QueueRule}}`, and a template that does not place it gets it appended after the rendered text), and atomically writes the result to `<state-dir>/AGENTS.md`. Plan 96's drift manifest (`<state-dir>/.manifest-docs`) is rebuilt alongside the AGENTS.md write so hand-edits surface as drift on the next `manifest verify`. Errors with an explicit "run routing build first" hint when `routing-table.json` is missing.
+**Description:** Render the canonical `AGENTS.md` for a workspace. Reads `<state-dir>/routing-table.json` (produced by `routing build`), re-fetches live cross-repo plans and open questions from the database (these go stale fast, so the regenerator queries them every run rather than trusting cached counts), renders the AGENTS.md template (operator-installed at `~/.planar/templates/doc-prompts/agents.md` or the embedded fallback), always includes the host build and test queue rule exactly once (the text `planar-agent queue rule` prints: the default templates place it with `{{.QueueRule}}`, and a template that does not place it gets it appended after the rendered text), and atomically writes the result to `<state-dir>/AGENTS.md`. Errors with an explicit "run routing build first" hint when `routing-table.json` is missing.
 
 **Output (human):**
 ```
@@ -3555,7 +3555,7 @@ regenerated AGENTS.md for org:work (3 projects, 1842 bytes)
 {"agents_path":"/home/user/.planar/workspaces/1/AGENTS.md","project_count":3,"bytes_written":1842}
 ```
 
-**Schema effects:** Reads `associations`, `plans`, `tasks`, `questions`. Writes `<state-dir>/AGENTS.md` and `<state-dir>/.manifest-docs` atomically. The symlinks at the workspace root are not touched (they already point at the canonical target).
+**Schema effects:** Reads `associations`, `plans`, `tasks`, `questions`. Writes `<state-dir>/AGENTS.md` atomically. The symlinks at the workspace root are not touched (they already point at the canonical target).
 
 **Exit codes:**
 - `0` — success.

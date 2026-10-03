@@ -426,7 +426,6 @@ The canonical content for a workspace lives at `~/.planar/workspaces/<org_id>/`:
 - `routing-table.json` — generated; structured project map (capabilities, dependencies, summaries, open-work counts).
 - `config.toml` — optional; per-workspace settings (`enrich_command`, etc.).
 - `routing-table-overrides.json` — optional; operator overrides merged on every routing build.
-- `.manifest-docs` — drift manifest (plan 96) tracking the generated files.
 
 For sibling workspaces, two symlinks at the workspace root (`<workspace-root>/AGENTS.md`, `<workspace-root>/CLAUDE.md`) point at the same canonical `AGENTS.md` target so Codex / Copilot (which read `AGENTS.md`) and Claude Code (which reads `CLAUDE.md`) see identical content. On filesystems that reject symlinks the installer falls back to a regular-file copy and records the degraded mode so regeneration rewrites the copy.
 
