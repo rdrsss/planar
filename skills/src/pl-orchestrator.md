@@ -256,7 +256,7 @@ planar-agent pull "$PLAN_ID" --role coder \
 Heartbeat every held claim at least once per TTL/2 and around long subagent
 calls. Use concise statuses such as `awaiting:coder` and `awaiting:reviewer`.
 
-**Engine-supervised dispatch (plan 1033; not live until its host lands).**
+**Engine-supervised dispatch (plan 1033; requires a Centurion-enabled build, which this build is not, so every claim here is caller-supervised).**
 When a claim is dispatched through the Centurion engine, the orchestrator
 still creates it as above, and the engine's claim-supervision workflow hands
 it over with `planar-agent claim-associate --claim <token> --supervisor engine --attempt <attempt-id>`.

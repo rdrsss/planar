@@ -87,15 +87,20 @@ not a runtime ACL.
 `planar-execute run <wf.lua> --phase <name>` runs a deterministic Lua
 workflow locally over allowlisted host functions (`cli`, `git`, `fs`, `flow`,
 `ctx`). It exposes no model-spawning host function and is outside the claim
-ritual. The binary also carries the Centurion client verbs: `submit`,
-`status`, `cancel`, `follow`, `host` and `profile`.
+ritual. The binary also carries `profile` and the Centurion client verbs:
+`submit`, `status`, `cancel`, `follow` and `host`.
 
 Decision 1007 and plan 1033 make Centurion the workflow engine, with
-`planar-execute` as its configuration, bootstrap and client entry point. The
-local `run` path stays until plan 1033's cutover milestone (M5). Until then,
-every guard and boundary test that pins the embedded runner stays in force.
-Do not relax one ahead of the milestone that replaces it. Planar itself still
-never shells a headless model.
+`planar-execute` as its configuration, bootstrap and client entry point. Master
+does NOT link Centurion: the integration lives on
+`dev/centurion-integration`, and here the five client verbs require a
+Centurion-enabled build and refuse with "planar-execute was built without the
+Centurion engine" (exit 1). The engine-side contract that compiles without
+Centurion ships here: migration 00038, engine-supervised claims, the engine
+selector and `profile show`. The local `run` path stays until plan 1033's
+cutover milestone (M5). Until then, every guard and boundary test that pins
+the embedded runner stays in force. Do not relax one ahead of the milestone
+that replaces it. Planar itself still never shells a headless model.
 
 ### Claim ritual
 
@@ -190,11 +195,12 @@ Do not claim the guard is universal without measuring. Matrix:
   redirects.
 - Third-party sources are cached under `vendor/` and committed, so a
   configured build does not touch the network.
-- First-party dependencies (Centurion) are pinned the same way but cached
-  under the gitignored `external/`. A fresh checkout's first configure
-  fetches them, and a private repo needs a token: `GITHUB_TOKEN=$(gh auth
-  token) cmake --preset debug`. Do not move a third-party dependency to
-  `external/` to save space.
+- First-party dependencies (repositories the owner controls) are pinned the
+  same way but cached under the gitignored `external/`; a fresh checkout's
+  first configure fetches them. None is declared at present, so a public
+  clone configures with no network access and no token. A private
+  first-party repository must never become a build dependency of
+  master. Do not move a third-party dependency to `external/` to save space.
 - External programs that the binaries, a bundled skill or agent, or the
   installer shell out to are listed in both `README.md` § Prerequisites and
   the `BUILD_DEPS` / `RUN_DEPS` manifests in `install.sh`. Update both in the
@@ -212,9 +218,9 @@ Do not claim the guard is universal without measuring. Matrix:
 | `src/cmd/parity_harness.hpp` | The black-box test harness: `make_arena()` and `run_pinned()`. |
 | `src/engine/` | Domain logic and state transitions, one `engine_*` target per directory. |
 | `src/lib/` | Shared base modules: `db`, `core`, `cliapp`, `http`, `git`, `process`, `json_dom`, `json_text`, `log` and others. |
-| `src/tools/` | Project tooling: `cli_usage_lint`, `surface_lint`, `cli_docs_coverage`, `scriptorium`, `centurion_client_proof`. |
+| `src/tools/` | Project tooling: `cli_usage_lint`, `surface_lint`, `cli_docs_coverage`, `scriptorium`, `queue_contention_probe`. |
 | `vendor/` | Committed CPM cache of third-party release archives. |
-| `external/` | Gitignored CPM cache of first-party dependencies. |
+| `external/` | Gitignored CPM cache of first-party dependencies (none declared at present). |
 | `migrations/` | Schema migrations in sqlx-cli format. See `migrations/README.md`. |
 | `templates/` | Propagation templates and operator-editable defaults. |
 | `workflows/` | Lua workflows and `command-policy.json`. |

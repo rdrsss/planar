@@ -93,13 +93,8 @@ build never fails on a red suite. It records `configure.log`, `build.log`,
 `status=0`. Read `ctest.log` there rather than the build output: BuildKit
 clips a step's log at 2 MiB.
 
-Centurion lives in the gitignored `external/` directory and its repository is
-private. The gate does not fetch it and no token enters an image layer. The
-Makefile passes the pinned tag's already-populated directory (from this
-checkout, or from the primary checkout when run in a linked worktree) as a
-named build context and bind-mounts it for the one `RUN` that builds. Populate
-it once on the host with `GITHUB_TOKEN=$(gh auth token) cmake --preset debug`,
-or set `LINUX_GATE_EXTERNAL`.
+Every dependency is committed under `vendor/`, so the gate needs no token, no
+network fetch during configure, and no extra build context.
 
 The build tree lives in a BuildKit cache mount, so a second run is
 incremental, and it costs disk while it stays. Run `make linux-gate-prune`

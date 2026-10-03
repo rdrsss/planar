@@ -136,9 +136,10 @@ The claim ritual is expressed entirely in `planar-agent` verbs (the dedicated ag
 
 ### Engine-supervised claims (plan 1033, decision 1007)
 
-**Not live yet.** The verbs below exist, but nothing dispatches through the
-Centurion engine until plan 1033's host lands (M2) and its claim-supervision
-workflow runs (M4). Until then every claim is **caller-supervised** and the
+**Not live in this build.** The `planar-agent` verbs below ship and work, but
+nothing dispatches through the Centurion engine: `planar-execute`'s engine
+verbs require a Centurion-enabled build (`dev/centurion-integration`), and
+this build refuses them. Here every claim is **caller-supervised** and the
 ritual above holds unchanged. What follows is the variant that ritual gains.
 
 The orchestrator still **creates** the claim (`pull` / `claim --entity`) and
