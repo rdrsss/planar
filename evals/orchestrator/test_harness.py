@@ -4214,10 +4214,12 @@ class DocsHonestyTest(unittest.TestCase):
 
     `evals/README.md` and `evals/orchestrator/evidence.md` must not claim an
     unowned cadence (CI, nightly, release, smoke, "every change", "Full
-    Stack"). There is no CI configuration in this repository
-    (`.github/workflows/` does not exist) and `evals/RESULTS.md` does not exist yet (planned for
-    a later milestone), so a bare cadence claim is a documentation-honesty
-    violation unless the line does one of two things:
+    Stack"). CI here is only the fast tier (`ci.yml`: formatting, installer
+    fixtures and the eval harness UNIT tests) and the nightly/on-demand full
+    tier (`full.yml`: Linux build and ctest); no eval lane runs in CI. And
+    `evals/RESULTS.md` does not exist yet (planned for a later milestone), so
+    a bare cadence claim is a documentation-honesty violation unless the line
+    does one of two things:
 
     1. DENIES the cadence (e.g. "no CI", "not run in CI", "no automated",
        "operator-invoked only") -- a line saying the term does NOT apply
@@ -4323,9 +4325,16 @@ class DocsHonestyTest(unittest.TestCase):
             "target:\n" + "\n".join(violations),
         )
 
-    def test_no_ci_configuration_exists(self) -> None:
-        """Guards the premise: if CI ever lands, this test (and the docs) must change."""
-        self.assertFalse((self.REPO_ROOT / ".github" / "workflows").exists())
+    def test_ci_workflows_are_the_documented_tiers(self) -> None:
+        """Guards the premise: CI is exactly the fast and full tiers.
+
+        If a workflow is added, removed or renamed, this test and the docs'
+        cadence wording (docs/testing.md, "Continuous integration") must change.
+        """
+        workflows = sorted(
+            path.name for path in (self.REPO_ROOT / ".github" / "workflows").glob("*.yml")
+        )
+        self.assertEqual(workflows, ["ci.yml", "full.yml"])
 
     def test_seeded_counter_example_is_rejected(self) -> None:
         # Task 6878's motivating counter-example: a naked "runs nightly in
