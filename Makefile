@@ -454,16 +454,7 @@ clean: ## Remove build artifacts
 #    invoke a model host and are opt-in.
 
 .PHONY: eval
-eval: eval-render eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures ## Deterministic render, contract, negative-control, and lifecycle-fixture checks
-
-.PHONY: eval-render
-eval-render: ## Dry-run scriptorium render of skills/src + agents
-	cmake --build $(CPP_BUILD_DIR) --target scriptorium
-	$(CPP_BIN_DIR)/scriptorium render --config scriptorium.yaml --dry-run --json >/dev/null
-
-.PHONY: eval-installed
-eval-installed: ## Check installed projections match this checkout (run after ./install.sh)
-	./scripts/check-self-installed.sh
+eval: eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures ## Deterministic contract, negative-control, and lifecycle-fixture checks
 
 .PHONY: eval-orchestrator
 eval-orchestrator: ## Orchestrator contract evals
@@ -500,9 +491,9 @@ eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-
 
 # Why this exists separately from `make eval`, and why test-all uses it:
 #
-# `make eval` also runs `eval-render`, which builds the in-tree Scriptorium
-# target first. The three contract lanes below need only python3 and the
-# checkout, so they remain a separate fast gate.
+# `make eval` also runs `eval-orchestrator`, the shell-driven contract
+# lane. The three contract lanes below need only python3 and the checkout,
+# so they remain a separate fast gate.
 #
 # They are worth gating because they police the AGENT CONTRACTS: the
 # executable prompts under agents/ and skills/src/ that the orchestrator and

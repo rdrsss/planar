@@ -15,6 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import vendors
 
+# Built from pieces so this file itself never contains the retired literal.
+LEGACY_SLASH = "/" + "pl-"
+
 
 class ModelArgvTests(unittest.TestCase):
     def test_model_argv_emits_separate_elements(self) -> None:
@@ -44,7 +47,7 @@ class AllowedToolsTests(unittest.TestCase):
 
 
 class PreviewCommandTests(unittest.TestCase):
-    def test_codex_skill_surface_uses_orchestrator_shorthand(self) -> None:
+    def test_codex_skill_surface_names_the_planar_orchestrator_agent(self) -> None:
         command = vendors.build_preview_command(
             vendor="codex",
             surface="skill",
@@ -52,7 +55,10 @@ class PreviewCommandTests(unittest.TestCase):
             prompt="do the thing",
         )
         self.assertEqual(command[0], "codex")
-        self.assertEqual(command[-1], "$orchestrator 42\n\ndo the thing")
+        self.assertEqual(
+            command[-1],
+            "Use the planar-orchestrator agent to orchestrate plan 42\n\ndo the thing",
+        )
         self.assertIn("--sandbox", command)
 
     def test_codex_agent_surface_forces_subagent_delegation(self) -> None:
@@ -62,10 +68,11 @@ class PreviewCommandTests(unittest.TestCase):
             plan_id="42",
             prompt="do the thing",
         )
-        self.assertIn("agent_type=orchestrator", command[-1])
+        self.assertIn("agent_type=planar-orchestrator", command[-1])
+        self.assertNotIn("agent_type=" + "orchestrator", command[-1])
         self.assertIn("do the thing", command[-1])
 
-    def test_claude_skill_surface_uses_slash_command(self) -> None:
+    def test_claude_skill_surface_names_the_agent_with_the_plan_id(self) -> None:
         command = vendors.build_preview_command(
             vendor="claude",
             surface="skill",
@@ -74,7 +81,11 @@ class PreviewCommandTests(unittest.TestCase):
         )
         self.assertEqual(command[0], "claude")
         self.assertNotIn("--agent", command)
-        self.assertEqual(command[-1], "/pl-orchestrator 42\n\ndo the thing")
+        self.assertEqual(
+            command[-1],
+            "Use the planar-orchestrator agent to orchestrate plan 42\n\ndo the thing",
+        )
+        self.assertNotIn(LEGACY_SLASH, command[-1])
         self.assertIn(vendors.allowed_tools_arg(vendors.DEFAULT_ALLOWED_TOOLS), command)
 
     def test_claude_agent_surface_passes_agent_flag_and_bare_prompt(self) -> None:
@@ -85,7 +96,7 @@ class PreviewCommandTests(unittest.TestCase):
             prompt="do the thing",
         )
         self.assertIn("--agent", command)
-        self.assertEqual(command[command.index("--agent") + 1], "orchestrator")
+        self.assertEqual(command[command.index("--agent") + 1], "planar-orchestrator")
         self.assertEqual(command[-1], "do the thing")
 
     def test_host_model_is_threaded_through_as_separate_argv_elements(self) -> None:
@@ -123,6 +134,7 @@ class LifecycleCommandTests(unittest.TestCase):
             vendor="claude", prompt="go", encoded_instructions='"hi"'
         )
         self.assertIn("--agent", command)
+        self.assertEqual(command[command.index("--agent") + 1], "planar-orchestrator")
         self.assertEqual(command[-1], "go")
 
     def test_codex_resume_turn_carries_session_id(self) -> None:
@@ -146,6 +158,27 @@ class LifecycleCommandTests(unittest.TestCase):
         self.assertIn("--resume", command)
         self.assertEqual(command[command.index("--resume") + 1], "sess-123")
         self.assertEqual(command[-1], "continue")
+
+
+class NoLegacyDispatchTests(unittest.TestCase):
+    """No eval adapter dispatches via the retired slash commands or the
+    unprefixed orchestrator agent name."""
+
+    def test_no_python_source_under_evals_uses_the_legacy_forms(self) -> None:
+        evals_dir = Path(__file__).resolve().parents[1]
+        this_file = Path(__file__).resolve()
+        patterns = (LEGACY_SLASH, "agent_type=" + "orchestrator", "--agent " + "orchestrator")
+        offenders = []
+        for path in sorted(evals_dir.rglob("*.py")):
+            if path.resolve() == this_file:
+                continue
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                # `skills/src/` contract paths contain the slash form but are
+                # authored-source assertions, not dispatch; they carry a
+                # `.md` suffix.
+                if any(p in line for p in patterns) and "skills/src/pl-" not in line:
+                    offenders.append(f"{path.relative_to(evals_dir)}:{number}: {line.strip()}")
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

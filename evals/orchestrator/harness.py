@@ -2066,16 +2066,20 @@ def prepare_phase3_preview(
     arena_root = artifact_dir / "arena"
     env = arena.make_arena(arena_root)
     arena.assert_isolated(env, arena_root)
-    # Stage the running vendor's read surfaces (slash commands, skills,
-    # agents, auth) from the real install into the scratch arena before
-    # anything runs (Planar question 983): the live prompt below is
-    # `/pl-orchestrator <plan-id>` / a codex `$orchestrator` invocation,
-    # which resolves from the vendor's real config dir, not an empty
-    # scratch one. Fails closed (VendorStagingError) before `git init` or
-    # any host process if a required surface is missing. Threads
-    # options.surface through so `agents` is promoted to required when
-    # this run invokes the vendor as an agent (surface == "agent").
-    arena.stage_vendor_config(env, options.vendor, surface=options.surface)
+    # Stage the running vendor's auth and the checkout's Planar surface
+    # (skills/planar/ plus agents/planar-*.md) into the scratch arena before
+    # anything runs (Planar question 983): the live prompt names the
+    # `planar-orchestrator` agent, which resolves from the arena's agent
+    # directory. Fails closed (VendorStagingError) before `git init` or any
+    # host process if a required surface is missing. options.surface is
+    # threaded through unchanged.
+    arena.stage_vendor_config(
+        env,
+        options.vendor,
+        surface=options.surface,
+        repo_root=ROOT,
+        required_agents=(vendors.ORCHESTRATOR_AGENT,),
+    )
     # Staging a vendor's read surfaces is not the same as authenticating
     # it: Keychain-backed `claude` login does not follow into a scratch
     # `CLAUDE_CONFIG_DIR` at all (Planar artifact 626 / task 6872). Fails
@@ -2266,6 +2270,61 @@ def run_phase3_preview(
     run_phase3_preview_from_prepared(case_path, case, options, artifact_dir)
 
 
+# Inline orchestrator contract used for the controlled lifecycle fixture when
+# the checkout has no `agents/planar-orchestrator.md` (the pre-rename tree).
+INLINE_ORCHESTRATOR_FIXTURE = (
+    "# Orchestrator (inline lifecycle fixture)\n\n"
+    "Drive the Planar claim ritual for the plan: pull a task, dispatch the "
+    "planar-coder specialist, dispatch the planar-reviewer specialist, and "
+    "complete the claim only after approval. Never edit source content in "
+    "this context.\n"
+)
+
+
+def orchestrator_agent_source() -> str:
+    """The orchestrator contract text for the controlled lifecycle fixture.
+
+    Read from `agents/planar-orchestrator.md` in the checkout when it exists;
+    otherwise `INLINE_ORCHESTRATOR_FIXTURE`.
+    """
+    path = ROOT / "agents" / f"{vendors.ORCHESTRATOR_AGENT}.md"
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return INLINE_ORCHESTRATOR_FIXTURE
+
+
+def write_lifecycle_agents(
+    repo: Path, instructions_path: Path, fixture_root: Path
+) -> None:
+    """Write the project-scoped controlled agents, `planar-` prefixed, for
+    both vendors (`.claude/agents/*.md`, `.codex/agents/*.toml`)."""
+    role_data = [
+        (
+            vendors.ORCHESTRATOR_AGENT,
+            "Runs the Planar orchestration lifecycle without authoring source changes.",
+            instructions_path,
+        ),
+        (
+            "planar-coder",
+            "Controlled lifecycle-eval coder.",
+            fixture_root / "coder.instructions.md",
+        ),
+        (
+            "planar-reviewer",
+            "Controlled lifecycle-eval reviewer.",
+            fixture_root / "reviewer.instructions.md",
+        ),
+        (
+            "planar-test-coder",
+            "Controlled lifecycle-eval test-coder.",
+            fixture_root / "test-coder.instructions.md",
+        ),
+    ]
+    for name, description, source in role_data:
+        write_codex_agent(repo, name, description, source)
+        write_claude_agent(repo, name, description, source)
+
+
 def toml_string(value: str) -> str:
     return json.dumps(value)
 
@@ -2400,7 +2459,12 @@ def prepare_lifecycle_fixture(
     # made to fail closed over a surface (e.g. codex `auth.json`) it never
     # reads.
     if options.vendor:
-        arena.stage_vendor_config(env, options.vendor, surface=options.surface)
+        arena.stage_vendor_config(
+            env,
+            options.vendor,
+            surface=options.surface,
+            repo_root=ROOT,
+        )
         # Same fail-closed auth requirement as run_phase3_preview: staging
         # is not authenticating (Planar artifact 626 / task 6872). Skipped
         # alongside staging for fixture replay (options.vendor == ""),
@@ -2557,7 +2621,7 @@ def prepare_lifecycle_fixture(
             "coder, reviewer, and test-coder definitions are the only specialist "
             "contracts for this run.\n\n"
             "Never edit source content in the orchestrator context.\n\n"
-            + (ROOT / "agents" / "orchestrator.md").read_text(encoding="utf-8")
+            + orchestrator_agent_source()
         )
         instructions_path = repo / ".eval" / "orchestrator.instructions.md"
         write_text(instructions_path, instructions)
@@ -2565,31 +2629,7 @@ def prepare_lifecycle_fixture(
             repo / ".codex" / "config.toml",
             "[agents]\nmax_concurrent_threads_per_session = 4\n",
         )
-        role_data = [
-            (
-                "orchestrator",
-                "Runs the Planar orchestration lifecycle without authoring source changes.",
-                instructions_path,
-            ),
-            (
-                "coder",
-                "Controlled lifecycle-eval coder.",
-                fixture_root / "coder.instructions.md",
-            ),
-            (
-                "reviewer",
-                "Controlled lifecycle-eval reviewer.",
-                fixture_root / "reviewer.instructions.md",
-            ),
-            (
-                "test-coder",
-                "Controlled lifecycle-eval test-coder.",
-                fixture_root / "test-coder.instructions.md",
-            ),
-        ]
-        for name, description, source in role_data:
-            write_codex_agent(repo, name, description, source)
-            write_claude_agent(repo, name, description, source)
+        write_lifecycle_agents(repo, instructions_path, fixture_root)
         for support in ("cross-scope-writes", "doctrine", "methodology", "models"):
             for vendor in ("codex", "claude"):
                 shutil.copy2(

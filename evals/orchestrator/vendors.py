@@ -173,6 +173,15 @@ def model_argv(host_model: "str | None") -> list[str]:
     return ["--model", host_model] if host_model else []
 
 
+ORCHESTRATOR_AGENT = "planar-orchestrator"
+PLANNER_AGENT = "planar-planner"
+
+
+def orchestrate_prompt(plan_id: str, prompt: str) -> str:
+    """The by-name dispatch prompt for the orchestrator agent."""
+    return f"Use the {ORCHESTRATOR_AGENT} agent to orchestrate plan {plan_id}\n\n{prompt}"
+
+
 def build_preview_command(
     *,
     vendor: str,
@@ -190,7 +199,7 @@ def build_preview_command(
         if surface == "agent":
             adapter = (
                 "Do not read or invoke any skill. Immediately spawn the installed "
-                "orchestrator subagent with agent_type=orchestrator and "
+                f"{ORCHESTRATOR_AGENT} subagent with agent_type={ORCHESTRATOR_AGENT} and "
                 "fork_turns=none, then delegate this entire task to it. An explicit "
                 "agent type must not use a full-history fork. Do not execute the "
                 "orchestration workflow in the parent agent. After the child returns, "
@@ -201,7 +210,7 @@ def build_preview_command(
                 f"response before returning. {prompt}"
             )
         else:
-            adapter = f"$orchestrator {plan_id}\n\n{prompt}"
+            adapter = orchestrate_prompt(plan_id, prompt)
         return [
             "codex",
             "exec",
@@ -216,7 +225,7 @@ def build_preview_command(
             "claude",
             *model_argv(host_model),
             "--agent",
-            "orchestrator",
+            ORCHESTRATOR_AGENT,
             "-p",
             "--output-format",
             "stream-json",
@@ -236,7 +245,7 @@ def build_preview_command(
         "--permission-mode",
         "dontAsk",
         allowed_tools_arg(allowed_tools),
-        f"/pl-orchestrator {plan_id}\n\n{prompt}",
+        orchestrate_prompt(plan_id, prompt),
     ]
 
 
@@ -263,7 +272,7 @@ def build_lifecycle_command(
     return [
         "claude",
         "--agent",
-        "orchestrator",
+        ORCHESTRATOR_AGENT,
         "-p",
         "--output-format",
         "stream-json",

@@ -351,7 +351,7 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
     live path silently ran against an unstaged (or wrong) vendor config.
     """
 
-    def test_run_phase3_preview_claude_fails_closed_on_missing_commands(self) -> None:
+    def test_run_phase3_preview_claude_fails_closed_on_missing_planar_skill(self) -> None:
         case = {
             "id": "staging-guard-probe",
             "tasks": [{"slug": "task-one", "title": "Task one"}],
@@ -368,10 +368,12 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
         ) as results_root, tempfile.TemporaryDirectory(
             prefix="planar-eval-staging-guard-fakehome-"
         ) as fake_home:
-            # Created, but deliberately empty: no `commands` subdirectory,
-            # so `claude`'s one REQUIRED surface is missing.
+            # A checkout with no `skills/planar/`, so the REQUIRED Planar
+            # skill surface is missing.
             fake_real_root = Path(fake_home) / "fake-claude"
             fake_real_root.mkdir()
+            empty_checkout = Path(fake_home) / "empty-checkout"
+            empty_checkout.mkdir()
             options = harness.Options(
                 mode="live",
                 vendor="claude",
@@ -382,13 +384,14 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
             )
             with mock.patch.object(
                 arena, "real_vendor_root", return_value=fake_real_root
-            ), mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
+            ), mock.patch.object(harness, "ROOT", empty_checkout), \
+                mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
                 mock.patch.object(harness, "run_command") as run_command_mock:
                 with self.assertRaises(arena.VendorStagingError) as ctx:
                     harness.run_phase3_preview(
                         Path("<staging-guard-probe>"), case, options
                     )
-                self.assertIn("commands", str(ctx.exception))
+                self.assertIn(str(Path("skills") / "planar"), str(ctx.exception))
             run_to_file_mock.assert_not_called()
             run_command_mock.assert_not_called()
 
@@ -473,6 +476,10 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
             self.assertEqual(stage_mock.call_count, 1)
             _, kwargs = stage_mock.call_args
             self.assertEqual(kwargs.get("surface"), "agent")
+            # The Planar surface is staged from this checkout, and the
+            # orchestrator agent is required for a live preview run.
+            self.assertEqual(kwargs.get("repo_root"), harness.ROOT)
+            self.assertEqual(kwargs.get("required_agents"), ("planar-orchestrator",))
 
     def test_prepare_lifecycle_fixture_threads_options_surface_to_staging(self) -> None:
         case = {
@@ -510,6 +517,46 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
             self.assertEqual(stage_mock.call_count, 1)
             _, kwargs = stage_mock.call_args
             self.assertEqual(kwargs.get("surface"), "agent")
+
+
+class LifecycleFixtureAgentTests(unittest.TestCase):
+    """The lifecycle fixture writes `planar-`prefixed agents."""
+
+    def test_orchestrator_source_falls_back_to_the_inline_fixture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agent-src-") as tmp:
+            with mock.patch.object(harness, "ROOT", Path(tmp)):
+                self.assertEqual(
+                    harness.orchestrator_agent_source(),
+                    harness.INLINE_ORCHESTRATOR_FIXTURE,
+                )
+
+    def test_orchestrator_source_reads_the_checkout_agent_when_present(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agent-src-") as tmp:
+            (Path(tmp) / "agents").mkdir()
+            (Path(tmp) / "agents" / "planar-orchestrator.md").write_text(
+                "from the checkout\n", encoding="utf-8"
+            )
+            with mock.patch.object(harness, "ROOT", Path(tmp)):
+                self.assertEqual(harness.orchestrator_agent_source(), "from the checkout\n")
+
+    def test_lifecycle_agents_are_written_with_the_planar_prefix(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            root = Path(tmp)
+            fixture = root / "fixture"
+            fixture.mkdir()
+            for role in ("coder", "reviewer", "test-coder"):
+                (fixture / f"{role}.instructions.md").write_text(f"{role} text\n")
+            instructions = root / "orch.md"
+            instructions.write_text("orch text\n")
+            repo = root / "repo"
+            harness.write_lifecycle_agents(repo, instructions, fixture)
+            for role in ("orchestrator", "coder", "reviewer", "test-coder"):
+                self.assertTrue((repo / ".claude" / "agents" / f"planar-{role}.md").is_file(), role)
+                self.assertTrue((repo / ".codex" / "agents" / f"planar-{role}.toml").is_file(), role)
+                self.assertFalse((repo / ".claude" / "agents" / f"{role}.md").exists(), role)
+                self.assertFalse((repo / ".codex" / "agents" / f"{role}.toml").exists(), role)
+            claude = (repo / ".claude" / "agents" / "planar-orchestrator.md").read_text()
+            self.assertIn('name: "planar-orchestrator"', claude)
 
 
 class VendorAuthBeforeHostStartTests(unittest.TestCase):
@@ -658,7 +705,12 @@ class VendorAuthBeforeHostStartTests(unittest.TestCase):
             prefix="planar-eval-auth-guard-fakehome-"
         ) as fake_home:
             fake_real_root = Path(fake_home) / "fake-claude"
-            (fake_real_root / "commands").mkdir(parents=True)
+            fake_real_root.mkdir(parents=True)
+            fake_checkout = Path(fake_home) / "checkout"
+            (fake_checkout / "skills" / "planar").mkdir(parents=True)
+            (fake_checkout / "skills" / "planar" / "SKILL.md").write_text("# planar\n")
+            (fake_checkout / "agents").mkdir()
+            (fake_checkout / "agents" / "planar-orchestrator.md").write_text("# o\n")
             options = harness.Options(
                 mode="live",
                 vendor="claude",
@@ -681,7 +733,7 @@ class VendorAuthBeforeHostStartTests(unittest.TestCase):
 
             with mock.patch.object(
                 arena, "real_vendor_root", return_value=fake_real_root
-            ), mock.patch.object(
+            ), mock.patch.object(harness, "ROOT", fake_checkout), mock.patch.object(
                 harness.arena, "make_arena", side_effect=scrubbed_make_arena
             ), mock.patch.object(
                 harness, "run_to_file"
