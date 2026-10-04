@@ -38,7 +38,7 @@ ln -s "$PREFIX/agents/codex/coder.toml" "$CODEX_HOME/agents/coder.toml"
 MANIFEST="$PREFIX/install-manifest.json"
 printf '{"old":true}\n' > "$MANIFEST"
 install_manifest_begin "build-fixture" copy
-install_manifest_add_extra mtkahypar
+install_manifest_add_extra fixture-extra
 install_manifest_record_vendor codex "$PREFIX" "$HOME" "$CODEX_HOME"
 install_manifest_write "$MANIFEST"
 
@@ -46,7 +46,7 @@ grep -q '"version": 1' "$MANIFEST"
 grep -q '"build_id": "build-fixture"' "$MANIFEST"
 grep -q '"install_mode": "copy"' "$MANIFEST"
 grep -q '"vendors": \["codex"\]' "$MANIFEST"
-grep -q '"extras": \["mtkahypar"\]' "$MANIFEST"
+grep -q '"extras": \["fixture-extra"\]' "$MANIFEST"
 [[ "$(grep -o '"vendor": "codex"' "$MANIFEST" | wc -l | tr -d ' ')" -eq 2 ]]
 grep -q '"kind": "skill".*"install_kind": "copy"' "$MANIFEST"
 grep -q '"kind": "agent".*"install_kind": "link"' "$MANIFEST"

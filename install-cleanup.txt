@@ -31,3 +31,8 @@
 # dead weight from any prior install.
 bin/mtkahypar
 opt/mtkahypar/
+# Retired vendored Mt-KaHyPar shared library (decision 1293): installs built
+# with `install.sh --with-solver` put the solver's dynamic library here. Master
+# no longer builds, links or installs it (the solver arm lives on branch
+# `dev/grouping-solvers`), so a re-install removes it.
+lib/libmtkahypar.dylib
