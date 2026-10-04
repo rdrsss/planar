@@ -182,7 +182,7 @@ install_manifest_record_staged() {
   while IFS= read -r -d '' f; do
     rel="${f#"$planar_home"/}"
     install_manifest_add_extra "${rel//\/\//\/}"
-  done < <(find "$planar_home/skills/planar/" -type f -print0)
+  done < <(find "$planar_home/skills/planar/" -type f -print0 | sort -z)
   for f in "$repo_root"/agents/*.md; do
     [[ -f "$f" ]] && install_manifest_add_extra "agents/$(basename "$f")"
   done
@@ -202,9 +202,14 @@ install_manifest_json_quote() {
   printf '"%s"' "$value"
 }
 
-# The temp file is created beside the authority file so mv is a same-filesystem
-# atomic rename. FD 3 is explicitly closed before replacement; a failed build
-# removes the temp and leaves the previous manifest authoritative.
+# The single manifest writer, called after every placed target (install.sh) as
+# well as at the ends. The temp file is created beside the authority file so mv
+# is a same-filesystem atomic rename: a crash between the temp write and the
+# rename leaves the previous complete manifest authoritative, never a truncated
+# one. FD 3 is explicitly closed before replacement; a failed build removes the
+# temp and leaves the previous manifest authoritative. When the rendered bytes
+# equal the manifest already on disk the rename is skipped, so a re-run that
+# changes nothing does not touch the file (its mtime stays).
 install_manifest_write() {
   local destination="$1" tmp="${1}.tmp.$$" i
   rm -f "$tmp"
@@ -243,6 +248,10 @@ install_manifest_write() {
     exec 3>&- 2>/dev/null || true
     rm -f "$tmp"
     return 1
+  fi
+  if [[ -f "$destination" ]] && cmp -s "$tmp" "$destination"; then
+    rm -f "$tmp"
+    return 0
   fi
   if ! mv -f "$tmp" "$destination"; then
     rm -f "$tmp"

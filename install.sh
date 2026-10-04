@@ -529,6 +529,9 @@ BUILD_DEPS=(
   "mkdir||create the install tree"
   "rm||replace prior-install artifacts"
   "mv||atomically replace the install manifest"
+  "cmp||skip a manifest or vendor target that is already identical"
+  "sort||order the manifest's recorded paths so its bytes are stable"
+  "diff||compare a copied vendor skill directory with the staged one"
   "find||walk vendor + template source trees"
   "head||take the first match in scripts/install-manifest.sh and scripts/install-lib/queue-retire.sh"
   "rmdir||remove emptied vendor skill directories"
@@ -543,7 +546,7 @@ BUILD_DEPS=(
   "chmod||mark shipped scripts executable"
 )
 RUN_DEPS=(
-  "cmp||checks installed projection bytes in scripts/check-self-installed.sh (not run by the installer; the manifest-health task replaces it)"
+  "cmp||checks installed projection bytes in scripts/check-self-installed.sh (also a build dep above)"
   "git|git|repo discovery + 'planar import' (required at runtime)"
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
@@ -932,26 +935,21 @@ vendor_marker() {
   esac
 }
 
-# prev_manifest_records <path> — true when the previous install manifest (still
-# on disk: it is rewritten after placement) records <path> as a whole JSON string.
-prev_manifest_records() {
-  [[ -f "$PLANAR_HOME/install-manifest.json" ]] || return 1
-  grep -Fq -- "$(install_manifest_json_quote "$1")" "$PLANAR_HOME/install-manifest.json"
+# The previous install manifest, read once before any placement. The manifest
+# on disk is rewritten after every placed target, so ownership is judged against
+# this snapshot, never against a file the run itself has already changed.
+PREV_MANIFEST_TEXT=""
+load_prev_manifest() {
+  PREV_MANIFEST_TEXT=""
+  [[ -f "$PLANAR_HOME/install-manifest.json" ]] || return 0
+  PREV_MANIFEST_TEXT="$(cat "$PLANAR_HOME/install-manifest.json" 2>/dev/null || true)"
 }
 
-# check_destination <path> — refuse a destination that cannot be proven Planar's:
-# absent, a symlink into $PLANAR_HOME, or a path the previous manifest records.
-# Never removes anything. Task 7218 formalizes this against the manifest.
-check_destination() {
-  local dst="$1" target
-  if [[ -L "$dst" ]]; then
-    target="$(readlink "$dst" 2>/dev/null || true)"
-    [[ "$target" == "$PLANAR_HOME"/* ]] && return 0
-  elif [[ ! -e "$dst" ]]; then
-    return 0
-  fi
-  prev_manifest_records "$dst" && return 0
-  err "$dst already exists and no Planar manifest records it, so Planar will not replace it (move or remove it, then re-run)"
+# prev_manifest_records <path> — true when the previous install manifest records
+# <path> as a whole JSON string.
+prev_manifest_records() {
+  [[ -n "$PREV_MANIFEST_TEXT" ]] || return 1
+  [[ "$PREV_MANIFEST_TEXT" == *"$(install_manifest_json_quote "$1")"* ]]
 }
 
 # opencode_derive <staged agent .md> — print the OpenCode form of an agent: the
@@ -974,28 +972,174 @@ opencode_derive() {
   ' "$1"
 }
 
-# place_one <src> <dst> <format> — put one file at <dst>. A Markdown agent and a
-# Copilot agent follow $MODE (link = a symlink to the staged file, which for
-# Copilot carries the .agent.md name; copy = a copy). An OpenCode agent is a
-# derived file: it is always a regular file.
-place_one() {
+# derive_to <staged agent .md> <out> — opencode_derive into a file.
+derive_to() { opencode_derive "$1" > "$2"; }
+
+# target_content_equal <src> <dst> <fmt> — the bytes at <dst> are what placing
+# <src> would produce, whatever form <dst> has: a link is followed. A skill is a
+# directory tree (same file set, same bytes); an OpenCode agent is compared with
+# its derived form; everything else is a single file.
+target_content_equal() {
+  local src="$1" dst="$2" fmt="$3" tmp rc=0
+  case "$fmt" in
+    skill)
+      [[ -d "$dst" ]] && diff -r "$src/" "$dst/" >/dev/null 2>&1
+      ;;
+    opencode)
+      [[ -f "$dst" ]] || return 1
+      tmp="$(mktemp)"
+      if derive_to "$src" "$tmp" 2>/dev/null; then cmp -s "$tmp" "$dst" || rc=1; else rc=1; fi
+      rm -f "$tmp"
+      return "$rc"
+      ;;
+    *)
+      [[ -f "$dst" ]] && cmp -s "$src" "$dst"
+      ;;
+  esac
+}
+
+# target_matches <src> <dst> <fmt> — <dst> already is exactly what this run
+# would place under $MODE, so it is left alone. The form matters: in link mode a
+# Markdown/Copilot agent or a skill is a symlink to <src>; in copy mode it is a
+# regular file (a skill: a real directory holding no symlink) with the same
+# bytes; an OpenCode agent is a derived regular file in both modes.
+target_matches() {
   local src="$1" dst="$2" fmt="$3"
-  mkdir -p "$(dirname "$dst")"
-  rm -f "$dst"   # never write through a link into $PLANAR_HOME
-  if [[ "$fmt" == opencode ]]; then
-    opencode_derive "$src" > "$dst" || err "could not derive the OpenCode agent from $src (frontmatter lacks a description?)"
-  elif [[ "$MODE" == "link" ]]; then
-    ln -s "$src" "$dst"
-  else
-    cp -f "$src" "$dst"
+  if [[ "$fmt" != opencode && "$MODE" == link ]]; then
+    [[ -L "$dst" && "$(readlink "$dst" 2>/dev/null || true)" == "$src" ]]
+    return
   fi
+  [[ ! -L "$dst" ]] || return 1
+  target_content_equal "$src" "$dst" "$fmt" || return 1
+  if [[ "$fmt" == skill ]]; then
+    [[ -z "$(find "$dst" -type l 2>/dev/null | head -n 1)" ]]
+  fi
+}
+
+# check_destination <path> [<src> <fmt>] — refuse a destination that cannot be
+# proven Planar's. It is Planar's when it is absent, a symlink into $PLANAR_HOME,
+# a path the previous manifest records, or (when <src> and <fmt> are given)
+# already holds exactly what placing <src> would write, which covers a target
+# placed by a run that stopped before it could record it. Anything else is
+# refused. Never removes anything. The pre-check over every planned target and
+# the per-target check inside the placement loop both call this one function.
+check_destination() {
+  local dst="$1" src="${2:-}" fmt="${3:-}" target
+  if [[ -L "$dst" ]]; then
+    target="$(readlink "$dst" 2>/dev/null || true)"
+    [[ "$target" == "$PLANAR_HOME"/* ]] && return 0
+  elif [[ ! -e "$dst" ]]; then
+    return 0
+  fi
+  prev_manifest_records "$dst" && return 0
+  [[ -n "$src" ]] && target_content_equal "$src" "$dst" "$fmt" && return 0
+  err "$dst already exists and no Planar manifest records it, so Planar will not replace it (move or remove it, then re-run)"
+}
+
+# _try <command...> — run a command with the ERR trap suspended, keeping its
+# output as PLACE_REASON and returning its status, so a placement failure
+# reaches the caller as a reason instead of ending the install in on_err.
+PLACE_REASON=""
+_try() {
+  local rc=0
+  trap - ERR
+  PLACE_REASON="$("$@" 2>&1)" || rc=$?
+  trap 'on_err $? $LINENO' ERR
+  return "$rc"
+}
+
+# place_target <src> <dst> <fmt> — put one target at <dst>, replacing whatever
+# is there. A skill is a directory: a link to the staged directory, or a copy of
+# it. A Markdown agent and a Copilot agent follow $MODE (link = a symlink to the
+# staged file, which for Copilot carries the .agent.md name; copy = a copy). An
+# OpenCode agent is a derived file: always a regular file. Returns non-zero with
+# PLACE_REASON set when a step fails; it never calls err, so the caller names
+# the target. Nothing is written through a link into $PLANAR_HOME.
+place_target() {
+  local src="$1" dst="$2" fmt="$3" tmp
+  _try mkdir -p "$(dirname "$dst")" || return 1
+  case "$fmt" in
+    skill)
+      _try rm -rf "$dst" || return 1
+      if [[ "$MODE" == "link" ]]; then
+        _try ln -s "$src" "$dst" || return 1
+      else
+        _try mkdir -p "$dst" || return 1
+        _try cp -R "$src/." "$dst/" || return 1
+      fi
+      ;;
+    opencode)
+      tmp="$(mktemp)"
+      if ! _try derive_to "$src" "$tmp"; then
+        rm -f "$tmp"
+        PLACE_REASON="could not derive the OpenCode agent from $src (frontmatter lacks a description?)${PLACE_REASON:+: $PLACE_REASON}"
+        return 1
+      fi
+      _try rm -f "$dst" || { rm -f "$tmp"; return 1; }
+      _try cp -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
+      rm -f "$tmp"
+      ;;
+    *)
+      _try rm -f "$dst" || return 1
+      if [[ "$MODE" == "link" ]]; then
+        _try ln -s "$src" "$dst" || return 1
+      else
+        _try cp -f "$src" "$dst" || return 1
+      fi
+      ;;
+  esac
 }
 
 # Vendors that are selected by --vendors, and of those the ones found.
 VENDORS_FOUND=()
 VENDORS_SKIPPED=()
-PLACED_PATHS=()          # every placed path, recorded in the manifest's extras
-PLAN_SRC=(); PLAN_DST=(); PLAN_FMT=()
+# The placement plan, in placement order. PLAN_STATE[i] is "done" once target i
+# is placed (or found already in place) by this run, "carried" while the
+# previous manifest still owns it and this run has not reached it, else "".
+PLAN_SRC=(); PLAN_DST=(); PLAN_FMT=(); PLAN_STATE=()
+PLAN_PATHS=()            # PLAN_PATHS[i]: the newline-joined manifest paths of target i
+STAGED_EXTRAS=()         # the staged-tree extras, read once (the staged tree does not change)
+STAGED_EXTRAS_READ=0
+
+# target_paths <i> — the manifest paths of planned target <i>: the target itself,
+# and for a skill every file beneath it, sorted so the manifest bytes do not
+# depend on directory order.
+target_paths() {
+  local src="${PLAN_SRC[$1]}" dst="${PLAN_DST[$1]}" f
+  printf '%s\n' "$dst"
+  [[ "${PLAN_FMT[$1]}" == skill ]] || return 0
+  while IFS= read -r -d '' f; do
+    printf '%s\n' "$dst/${f#"$src"/}"
+  done < <(find -L "$src" -type f -print0 | sort -z)
+}
+
+# record_manifest — write the manifest as it stands now: the staged paths, then
+# the paths of every target that is done or still carried, in plan order. It is
+# called after each placed target, so a stop at any point leaves every target
+# placed so far recorded; install_manifest_write renames a temp file into place
+# and skips the rename when the bytes are unchanged. Placed vendor paths are
+# recorded in `extras` (absolute paths), not as `projections` rows: the
+# installed-surface reader still validates projection rows against the four
+# retired vendors, and the surface-reader task retargets it. `vendors` and
+# `projections` stay empty until then. Files found only in vendor destinations
+# (including personal local-* extensions) are deliberately excluded.
+record_manifest() {
+  local i p
+  install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
+  if [[ "$STAGED_EXTRAS_READ" -eq 0 ]]; then
+    install_manifest_record_staged "$PLANAR_HOME" "$REPO_ROOT"
+    STAGED_EXTRAS=("${INSTALL_MANIFEST_EXTRAS[@]}")
+    STAGED_EXTRAS_READ=1
+  else
+    INSTALL_MANIFEST_EXTRAS=("${STAGED_EXTRAS[@]}")
+  fi
+  for ((i = 0; i < ${#PLAN_DST[@]}; i++)); do
+    [[ -n "${PLAN_STATE[$i]:-}" ]] || continue
+    while IFS= read -r p; do install_manifest_add_extra "$p"; done <<< "${PLAN_PATHS[$i]}"
+  done
+  install_manifest_write "$PLANAR_HOME/install-manifest.json" \
+    || err "could not write $PLANAR_HOME/install-manifest.json; the previous manifest is intact (placed targets are still on disk; re-run to finish)"
+}
 
 if [[ -n "$VENDORS" ]]; then
   title "Placing vendor surfaces"
@@ -1021,7 +1165,11 @@ if [[ -n "$VENDORS" ]]; then
   log "vendors skipped: ${_skipped_txt:-none}"
 
   # Plan every placement first, so a foreign destination stops the install before
-  # anything is written.
+  # anything is written. PLACEMENT ORDER IS FIXED: the VENDOR_TARGETS rows top to
+  # bottom; within a row the skill is one directory and the agent sources follow
+  # the glob's sorted order (planar-coder first). The install-stage tests rely
+  # on this order (a stop at the Nth target leaves exactly the first N-1 placed
+  # and recorded).
   for _row in "${VENDOR_TARGETS[@]}"; do
     IFS='|' read -r _owners _fmt _dir <<< "$_row"
     _active=0
@@ -1051,43 +1199,58 @@ if [[ -n "$VENDORS" ]]; then
     esac
   done
 
+  load_prev_manifest
   for ((_i = 0; _i < ${#PLAN_DST[@]}; _i++)); do
-    check_destination "${PLAN_DST[$_i]}"
+    check_destination "${PLAN_DST[$_i]}" "${PLAN_SRC[$_i]}" "${PLAN_FMT[$_i]}"
+    PLAN_PATHS+=("$(target_paths "$_i")")
+    if prev_manifest_records "${PLAN_DST[$_i]}"; then PLAN_STATE+=(carried); else PLAN_STATE+=(""); fi
   done
 
+  # A manifest exists before the first target is placed, so a stop at the very
+  # first target still leaves the staged paths (and what the previous install
+  # owned) recorded.
+  record_manifest
+
+  _n_placed=0; _n_replaced=0; _n_unchanged=0
   for ((_i = 0; _i < ${#PLAN_DST[@]}; _i++)); do
     _src="${PLAN_SRC[$_i]}"; _dst="${PLAN_DST[$_i]}"; _fmt="${PLAN_FMT[$_i]}"
-    if [[ "$_fmt" == skill ]]; then
-      # A skill is a directory: a link to the staged directory, or a copy of it.
-      mkdir -p "$(dirname "$_dst")"
-      rm -rf "$_dst"   # proven Planar's by check_destination
-      place "$_src" "$_dst"
-      PLACED_PATHS+=("$_dst")
-      while IFS= read -r -d '' _f; do
-        PLACED_PATHS+=("$_dst/${_f#"$_src"/}")
-      done < <(find -L "$_src" -type f -print0)
-      vlog "skill → $_dst ($MODE)"
+    check_destination "$_dst" "$_src" "$_fmt"
+    if [[ ! -e "$_dst" && ! -L "$_dst" ]]; then
+      _word=placed
+    elif target_matches "$_src" "$_dst" "$_fmt"; then
+      _word=unchanged
     else
-      place_one "$_src" "$_dst" "$_fmt"
-      PLACED_PATHS+=("$_dst")
-      vlog "agent → $_dst ($([[ "$_fmt" == opencode ]] && echo 'derived copy' || echo "$MODE"))"
+      _word=replaced
     fi
+    if [[ "$_word" != unchanged ]]; then
+      place_target "$_src" "$_dst" "$_fmt" \
+        || err "could not place $_dst: ${PLACE_REASON:-unknown failure}. Stopped at this target; the targets before it stay in place and recorded in the manifest. Fix the cause and re-run to finish."
+    fi
+    PLAN_STATE[_i]="done"
+    record_manifest
+    case "$_word" in
+      placed)    _n_placed=$((_n_placed + 1)) ;;
+      replaced)  _n_replaced=$((_n_replaced + 1)) ;;
+      unchanged) _n_unchanged=$((_n_unchanged + 1)) ;;
+    esac
+    vlog "$_word: $_dst ($([[ "$_fmt" == opencode ]] && echo 'derived copy' || echo "$MODE"))"
   done
-  log "placed ${#PLAN_DST[@]} target path(s): skill dirs and agent files follow $MODE; OpenCode agents are derived regular files"
+  # Skill dirs and agent files follow $MODE; OpenCode agents are derived regular files.
+  if [[ ${#PLAN_DST[@]} -eq 0 ]]; then
+    log "no vendor targets to place"
+  elif [[ $((_n_placed + _n_replaced)) -eq 0 ]]; then
+    log "no changes: all ${#PLAN_DST[@]} vendor target(s) already match ($MODE)"
+  else
+    log "placed $_n_placed, replaced $_n_replaced, unchanged $_n_unchanged of ${#PLAN_DST[@]} vendor target(s) ($MODE)"
+  fi
 fi
 
 # ---------- install authority ----------
 
-# The versioned manifest is written only after every placement has succeeded.
-# Placed vendor paths are recorded in `extras` (absolute paths), not as
-# `projections` rows: the installed-surface reader still validates projection
-# rows against the four retired vendors, and the surface-reader task retargets it.
-# `vendors` and `projections` stay empty until then. Files found only in vendor
-# destinations (including personal local-* extensions) are deliberately excluded.
-install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
-install_manifest_record_staged "$PLANAR_HOME" "$REPO_ROOT"
-for _p in ${PLACED_PATHS[@]+"${PLACED_PATHS[@]}"}; do install_manifest_add_extra "$_p"; done
-install_manifest_write "$PLANAR_HOME/install-manifest.json"
+# The manifest was written after each placed target above; this last write covers
+# an install with no vendor targets and is a no-op (same bytes, no rename) when
+# nothing changed since the last target.
+record_manifest
 vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_EXTRAS[@]} recorded paths)"
 
 # ---------- ownership stamp ----------

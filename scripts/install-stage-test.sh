@@ -71,8 +71,10 @@ run_install() {
   mkdir -p "$home"
   # CODEX_HOME is unset unless the scenario sets RUN_CODEX_HOME: Codex's
   # presence marker is "CODEX_HOME set, else ~/.codex/ exists".
+  # RUN_SHIM, when set, is a directory searched before everything else (the
+  # scenarios use it to put a failing `mv` in front of the installer's).
   env -u CODEX_HOME ${RUN_CODEX_HOME:+CODEX_HOME="$RUN_CODEX_HOME"} \
-    PATH="$STUBS:$PATH" HOME="$home" PLANAR_HOME="$home/.planar" \
+    PATH="${RUN_SHIM:+$RUN_SHIM:}$STUBS:$PATH" HOME="$home" PLANAR_HOME="$home/.planar" \
     PLANAR_DB="$home/planar.db" NO_COLOR=1 \
     "$repo/install.sh" --build-dir "$home/build" "$@" >"$home/out" 2>"$home/err"
 }
@@ -428,6 +430,7 @@ if run_install "$REPO" "$TMP/h14b"; then fail "a foreign agent file did not stop
 grep -Fq "$TMP/h14b/.claude/agents/planar-coder.md" "$TMP/h14b/err" || fail "the error does not name the agent path"
 [[ "$(placed_set "$TMP/h14b")" == "./.claude/agents/planar-coder.md" ]] || fail "something was placed despite the foreign agent: $(placed_set "$TMP/h14b")"
 [[ "$(cat "$TMP/h14b/.claude/agents/planar-coder.md")" == foreign ]] || fail "the foreign agent was changed"
+grep -Fq 'no Planar manifest records it' "$TMP/h14b/err" || fail "the agent error does not say no manifest records it: $(cat "$TMP/h14b/err")"
 
 # 15. --vendors is a filter: naming an absent vendor warns, an unknown one
 # warns, neither is an error; CODEX_HOME set is Codex's marker.
@@ -466,4 +469,147 @@ text = '\n'.join(lines[i] for i in rows)
 assert 'opencode/skills' not in text and '/commands' not in text
 PY
 
-printf 'install-stage tests: 17 scenarios passed\n'
+# ---------------------------------------------------------------------------
+# Transactional placement (task 7218): fixed order, the manifest recorded after
+# every target through a temp file and a rename, a stop on failure that names
+# the target, a re-run that finishes the rest or reports no changes, and a mode
+# switch that replaces the prior form.
+# ---------------------------------------------------------------------------
+
+NTARGETS=93   # 3 skill directories + 15 agents x 6 agent targets, all six vendors
+
+# summary_has HOME TEXT -- the one summary line the placement step prints.
+summary_has() { grep -Fq "  $2" "$1/out" || fail "the placement summary lacks '$2': $(grep -E 'vendor target|no changes' "$1/out")"; }
+
+# manifest_abs HOME -- the absolute (placed vendor) paths the manifest records.
+manifest_abs() {
+  python3 - "$1/.planar/install-manifest.json" <<'PY'
+import json, sys
+for e in json.load(open(sys.argv[1]))['extras']:
+    if e.startswith('/'):
+        print(e)
+PY
+}
+
+# 18. A second run in the same mode changes nothing: the no-changes summary,
+# the manifest byte-identical, and nothing outside the prefix (plus the
+# manifest itself) with a newer mtime. The prefix's staged trees are rewritten
+# by the staging step on every run, so they are not part of this claim.
+for mode in copy link; do
+  flag=(); [[ "$mode" == link ]] && flag=(--link)
+  mk_home "h18$mode" "${ALL6[@]}"
+  run_install "$REPO" "$TMP/h18$mode" ${flag[@]+"${flag[@]}"} || fail "first $mode install failed: $(cat "$TMP/h18$mode/err")"
+  cp "$TMP/h18$mode/.planar/install-manifest.json" "$TMP/m18$mode.json"
+  touch "$TMP/stamp18$mode"; sleep 1
+  run_install "$REPO" "$TMP/h18$mode" --verbose ${flag[@]+"${flag[@]}"} || fail "second $mode install failed: $(cat "$TMP/h18$mode/err")"
+  summary_has "$TMP/h18$mode" "no changes: all $NTARGETS vendor target(s) already match ($mode)"
+  [[ "$(grep -c 'unchanged: ' "$TMP/h18$mode/out")" == "$NTARGETS" ]] || fail "$mode: not every target was reported unchanged"
+  ! grep -Eq '(placed|replaced): ' "$TMP/h18$mode/out" || fail "$mode: a no-change run placed or replaced something"
+  cmp -s "$TMP/m18$mode.json" "$TMP/h18$mode/.planar/install-manifest.json" || fail "$mode: the manifest changed on a no-change run"
+  [[ ! "$TMP/h18$mode/.planar/install-manifest.json" -nt "$TMP/stamp18$mode" ]] || fail "$mode: the manifest was rewritten on a no-change run"
+  touched="$(find "$TMP/h18$mode" -newer "$TMP/stamp18$mode" ! -path "$TMP/h18$mode/.planar" ! -path "$TMP/h18$mode/.planar/*" \
+    ! -path "$TMP/h18$mode/build" ! -path "$TMP/h18$mode/build/*" ! -path "$TMP/h18$mode/out" ! -path "$TMP/h18$mode/err" \
+    ! -path "$TMP/h18$mode/planar.db*" ! -path "$TMP/h18$mode")"
+  [[ -z "$touched" ]] || fail "$mode: a no-change run modified: $(echo "$touched" | head -5)"
+  assert_placed "$TMP/h18$mode" "${ALL6[@]}"
+done
+
+# 19. A failure in the middle: the fourth target (the first Claude agent) cannot
+# be created because a regular file sits where its parent directory must go.
+# The pre-check passes it (nothing exists at the destination), placement fails.
+# The installer stops naming the target and the reason, the three skill
+# directories before it stay placed and recorded, nothing after it exists; once
+# the cause is gone a re-run places only the rest.
+mk_home h19 "${ALL6[@]}"
+: > "$TMP/h19/.claude/agents"
+if run_install "$REPO" "$TMP/h19" --verbose; then fail "a mid-run failure did not stop the installer"; fi
+grep -Fq "could not place $TMP/h19/.claude/agents/planar-coder.md" "$TMP/h19/err" || fail "the stop does not name the fourth target: $(cat "$TMP/h19/err")"
+grep -Eq 'File exists|Not a directory' "$TMP/h19/err" || fail "the stop does not give the reason: $(cat "$TMP/h19/err")"
+for d in .claude/skills/planar .agents/skills/planar .gemini/antigravity-cli/skills/planar; do
+  [[ -f "$TMP/h19/$d/SKILL.md" ]] || fail "target before the failure was not placed: $d"
+done
+[[ "$(grep -c 'placed: ' "$TMP/h19/out")" == 3 ]] || fail "expected exactly three placed targets before the stop: $(grep 'placed: ' "$TMP/h19/out")"
+for d in .codex/agents .copilot/agents .gemini/agents .config/opencode/agents .gemini/antigravity-cli/agents; do
+  [[ ! -e "$TMP/h19/$d" || -z "$(find "$TMP/h19/$d" -type f | head -1)" ]] || fail "a target after the failure was placed: $d"
+done
+[[ -f "$TMP/h19/.claude/agents" && ! -d "$TMP/h19/.claude/agents" ]] || fail "the blocker file was disturbed"
+python3 - "$TMP/h19" <<'PY' || fail "the manifest after the stop does not record exactly the three placed targets"
+import json, sys
+h = sys.argv[1]
+m = json.load(open(h + '/.planar/install-manifest.json'))
+absolute = sorted(e for e in m['extras'] if e.startswith('/'))
+roots = [h + '/.claude/skills/planar', h + '/.agents/skills/planar', h + '/.gemini/antigravity-cli/skills/planar']
+for r in roots:
+    assert r in absolute, r
+assert all(any(e == r or e.startswith(r + '/') for r in roots) for e in absolute), absolute
+PY
+rm -f "$TMP/h19/.claude/agents"
+run_install "$REPO" "$TMP/h19" --verbose || fail "the re-run after the fix failed: $(cat "$TMP/h19/err")"
+summary_has "$TMP/h19" "placed $((NTARGETS - 3)), replaced 0, unchanged 3 of $NTARGETS vendor target(s) (copy)"
+[[ "$(grep -c 'unchanged: ' "$TMP/h19/out")" == 3 && "$(grep -c 'placed: ' "$TMP/h19/out")" == $((NTARGETS - 3)) ]] || fail "the re-run did not report only the remainder as changed"
+assert_placed "$TMP/h19" "${ALL6[@]}"
+check_formats "$REPO" "$TMP/h19" "${ALL6[@]}"
+assert_manifest "$TMP/h19"
+
+# 20. A crash between the manifest's temp write and its rename. A `mv` shim in
+# front of the installer's PATH fails the third rename of install-manifest.json
+# (the first is the manifest written before any target, the second follows the
+# first target, the third would follow the second). The manifest on disk is the
+# previous complete one and parses; no temp file is left; the second target is
+# on disk but unrecorded, and a re-run completes without refusing it.
+SHIM="$TMP/shim"; mkdir -p "$SHIM"
+cat > "$SHIM/mv" <<'SHIMEOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *install-manifest.json)
+      n="$(cat "$SHIM_COUNT" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" > "$SHIM_COUNT"
+      if [[ "$n" -eq "$SHIM_FAIL_AT" ]]; then echo "mv: simulated rename failure" >&2; exit 1; fi ;;
+  esac
+done
+exec /bin/mv "$@"
+SHIMEOF
+chmod +x "$SHIM/mv"
+mk_home h20 "${ALL6[@]}"
+if RUN_SHIM="$SHIM" SHIM_COUNT="$TMP/shim-count" SHIM_FAIL_AT=3 run_install "$REPO" "$TMP/h20"; then fail "a failed manifest rename did not stop the installer"; fi
+[[ "$(cat "$TMP/shim-count")" == 3 ]] || fail "the shim did not see exactly three manifest renames: $(cat "$TMP/shim-count")"
+grep -Fq 'previous manifest is intact' "$TMP/h20/err" || fail "the rename failure was not reported: $(cat "$TMP/h20/err")"
+[[ -z "$(find "$TMP/h20/.planar" -name 'install-manifest.json.tmp.*')" ]] || fail "a manifest temp file was left behind"
+python3 - "$TMP/h20" <<'PY' || fail "the manifest after a failed rename is not the previous complete version"
+import json, sys
+h = sys.argv[1]
+m = json.load(open(h + '/.planar/install-manifest.json'))
+absolute = [e for e in m['extras'] if e.startswith('/')]
+assert absolute and all(e == h + '/.claude/skills/planar' or e.startswith(h + '/.claude/skills/planar/') for e in absolute), absolute
+PY
+[[ -f "$TMP/h20/.agents/skills/planar/SKILL.md" ]] || fail "the second target should be on disk, unrecorded"
+run_install "$REPO" "$TMP/h20" --verbose || fail "the re-run after a failed rename refused or failed: $(cat "$TMP/h20/err")"
+summary_has "$TMP/h20" "placed $((NTARGETS - 2)), replaced 0, unchanged 2 of $NTARGETS vendor target(s) (copy)"
+assert_placed "$TMP/h20" "${ALL6[@]}"
+assert_manifest "$TMP/h20"
+
+# 21. Switching mode replaces the prior form of every target and records the
+# new mode; the path set is identical; OpenCode's derived files are the same
+# regular files in both modes, so they are unchanged.
+mk_home h21 "${ALL6[@]}"
+run_install "$REPO" "$TMP/h21" || fail "copy install failed: $(cat "$TMP/h21/err")"
+placed_set "$TMP/h21" > "$TMP/set21-copy"
+grep -Fq '"install_mode": "copy"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest does not record copy mode"
+run_install "$REPO" "$TMP/h21" --link || fail "copy -> link switch failed: $(cat "$TMP/h21/err")"
+summary_has "$TMP/h21" "placed 0, replaced $((NTARGETS - 15)), unchanged 15 of $NTARGETS vendor target(s) (link)"
+placed_set "$TMP/h21" > "$TMP/set21-link"
+cmp -s "$TMP/set21-copy" "$TMP/set21-link" || fail "the path set changed on the switch to link mode"
+grep -Fq '"install_mode": "link"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest still records copy mode after the switch"
+[[ -z "$(find "$TMP/h21/.claude" "$TMP/h21/.codex" "$TMP/h21/.copilot" "$TMP/h21/.gemini" "$TMP/h21/.agents" -type f ! -name settings.json)" ]] \
+  || fail "link mode left a regular file where a link belongs"
+[[ -L "$TMP/h21/.agents/skills/planar" && -L "$TMP/h21/.claude/agents/planar-coder.md" ]] || fail "the switch to link did not link"
+run_install "$REPO" "$TMP/h21" || fail "link -> copy switch failed: $(cat "$TMP/h21/err")"
+summary_has "$TMP/h21" "placed 0, replaced $((NTARGETS - 15)), unchanged 15 of $NTARGETS vendor target(s) (copy)"
+placed_set "$TMP/h21" | cmp -s - "$TMP/set21-copy" || fail "the path set changed on the switch back to copy"
+grep -Fq '"install_mode": "copy"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest still records link mode after the switch back"
+[[ -z "$(find "$TMP/h21/.claude" "$TMP/h21/.codex" "$TMP/h21/.copilot" "$TMP/h21/.gemini" "$TMP/h21/.agents" -type l)" ]] \
+  || fail "copy mode left a symlink where a copy belongs"
+assert_manifest "$TMP/h21"
+check_formats "$REPO" "$TMP/h21" "${ALL6[@]}"
+
+printf 'install-stage tests: 21 scenarios passed\n'

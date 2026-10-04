@@ -909,6 +909,57 @@ PYCRASH
 grep -Fq 'unexpected failure: judge exploded' "$QR_CASE/err" || fail "the crash refusal does not carry the reader's failure: $(cat "$QR_CASE/err")"
 [[ -e "$QR_P/agent.db" ]] || fail "a crashed reader let agent.db go"
 
+# The manifest is written after every placed target, so the writer must be
+# atomic: a crash between the write and the rename leaves the previous complete
+# manifest, never a truncated one (task 7218). check_atomic_writer sources a
+# writer, writes version 1, then writes version 2 with `mv` failing (the rename
+# that "crashes"): the destination must still be byte-for-byte version 1, still
+# parse as JSON, no temp file may be left beside it, and the failed write must
+# report failure. A writer that opens the destination in place fails it. A
+# no-change write must not touch the file.
+check_atomic_writer() {
+  local writer="$1" dir="$TMP/atomic" dest rc=0
+  rm -rf "$dir"; mkdir -p "$dir"; dest="$dir/manifest.json"
+  ( source "$writer"
+    install_manifest_begin build-v1 copy
+    install_manifest_add_extra first
+    install_manifest_write "$dest" ) >/dev/null 2>&1 || return 1
+  cp "$dest" "$dir/v1.json"
+  ( source "$writer"
+    mv() { return 1; }
+    install_manifest_begin build-v2 link
+    install_manifest_add_extra second
+    install_manifest_write "$dest" ) >/dev/null 2>&1 && rc=0 || rc=$?
+  [[ "$rc" -ne 0 ]] || return 1
+  cmp -s "$dir/v1.json" "$dest" || return 1
+  python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$dest" || return 1
+  [[ "$(find "$dir" -name 'manifest.json.*' | wc -l | tr -d ' ')" == 0 ]] || return 1
+  ( source "$writer"
+    install_manifest_begin build-v2 link
+    install_manifest_add_extra second
+    install_manifest_write "$dest" ) >/dev/null 2>&1 || return 1
+  grep -Fq 'build-v2' "$dest" || return 1
+}
+check_atomic_writer "$ROOT/scripts/install-manifest.sh" || fail "install_manifest_write is not an atomic temp-file-and-rename writer"
+cat > "$TMP/inplace-writer.sh" <<'FIXTURE'
+# A deliberately wrong writer: it opens the destination in place.
+install_manifest_begin() { FX_BUILD="$1"; FX_MODE="$2"; FX_EXTRAS=(); }
+install_manifest_add_extra() { FX_EXTRAS+=("$1"); }
+install_manifest_write() {
+  printf '{"build_id": "%s", "install_mode": "%s", "extras": ["%s"]}\n' "$FX_BUILD" "$FX_MODE" "${FX_EXTRAS[0]}" > "$1"
+}
+FIXTURE
+if check_atomic_writer "$TMP/inplace-writer.sh"; then fail "an in-place manifest writer passed the atomic-writer check"; fi
+# A write whose bytes equal the manifest on disk leaves the file alone.
+unchanged_dest="$TMP/atomic/unchanged.json"
+install_manifest_begin build-same copy
+install_manifest_add_extra same
+install_manifest_write "$unchanged_dest"
+touch -t 200001010000 "$unchanged_dest"
+install_manifest_write "$unchanged_dest"
+[[ "$(find "$unchanged_dest" -newer "$TMP/inplace-writer.sh" | wc -l | tr -d ' ')" == 0 ]] || fail "an unchanged manifest was rewritten"
+[[ ! -e "$unchanged_dest.tmp.$$" ]] || fail "a no-change write left its temp file"
+
 qr_kill_sleepers
-printf 'install-manifest tests: 13 passed\n'
+printf 'install-manifest tests: 14 passed\n'
 
