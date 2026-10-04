@@ -14,11 +14,11 @@ namespace planar::cmd::handlers::local_cli {
 /// @return Registered CLI node.
 export auto attach_link(CLI::App* local) -> CLI::App* {
   CLI::App* link = local->add_subcommand("link", "Create or reuse symlinks from vendor paths to local source.");
-  add_bool(*link, "--dry-run", k_undocumented);
-  add_string(*link, "--vendor", k_undocumented);
-  add_bool(*link, "--reconcile", k_undocumented);
-  add_json(*link, k_undocumented);
-  add_positional_optional(*link, "name", k_undocumented);
+  add_bool(*link, "--dry-run", "Preview the planned installs without touching the filesystem");
+  add_string(*link, "--vendor", "Restrict to one vendor: claude, codex, copilot");
+  add_bool(*link, "--reconcile", "Run the reconcile pass instead of linking; takes no name");
+  add_json(*link, "Emit machine-readable JSON instead of text");
+  add_positional_optional(*link, "name", "Link only the source with this name (default: all)");
   return link;
 }
 } // namespace planar::cmd::handlers::local_cli

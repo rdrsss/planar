@@ -27,16 +27,17 @@ export auto attach_evals(CLI::App& models) -> CLI::App* {
       "history reports insufficient-data rather than a fabricated score.\n  Writes nothing: no routing-map mutation, no "
       "database write. Applying\n  a recommendation is a separate, explicit operator-gated action.");
   add_string(*evals, "--vendor", "Cohort vendor; enables evidence-backed ranking");
-  add_string(*evals, "--role", "Cohort role");
-  add_string(*evals, "--tier", "Cohort tier (small|medium|large)");
-  add_string(*evals, "--work-type", "Cohort work type");
-  add_string(*evals, "--complexity", "Cohort complexity (bounded|standard|high-risk)");
-  add_string(*evals, "--project", "Cohort project id");
-  add_string(*evals, "--validation-policy", "Cohort validation policy version");
-  add_string(*evals, "--routing-policy", "Cohort routing policy version");
+  add_string(*evals, "--role", "Cohort role (required with --vendor; ignored without it)");
+  add_string(*evals, "--tier", "Cohort tier (small|medium|large) (required with --vendor; ignored without it)");
+  add_string(*evals, "--work-type", "Cohort work type (required with --vendor; ignored without it)");
+  add_string(*evals, "--complexity",
+             "Cohort complexity (bounded|standard|high-risk) (required with --vendor; ignored without it)");
+  add_string(*evals, "--project", "Cohort project id (required with --vendor; ignored without it)");
+  add_string(*evals, "--validation-policy", "Cohort validation policy version (required with --vendor; ignored without it)");
+  add_string(*evals, "--routing-policy", "Cohort routing policy version (required with --vendor; ignored without it)");
   add_string(*evals, "--min-samples", "Minimum samples before a candidate is ranked (default 5)");
   add_string(*evals, "--quality-floor", "Wilson lower-bound floor (default 0.5)");
-  add_json(*evals, k_undocumented);
+  add_json(*evals, "Emit machine-readable JSON instead of text");
   return evals;
 }
 } // namespace planar::cmd::handlers::models_cli

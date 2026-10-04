@@ -12,7 +12,7 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_view(CLI::App& task) -> CLI::App* {
   CLI::App* view = task.add_subcommand("view", "View task's workbench file.");
-  add_positional(*view, "task-id", k_undocumented);
+  add_positional(*view, "task-id", "Task id");
   return view;
 }
 } // namespace planar::cmd::handlers::task_cli

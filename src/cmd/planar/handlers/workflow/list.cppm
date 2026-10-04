@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::workflow_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App* workflow) -> CLI::App* {
   CLI::App* list = workflow->add_subcommand("list", "List shipped and sandbox workflows.");
-  add_bool(*list, "--local", k_undocumented);
-  add_json(*list, k_undocumented);
+  add_bool(*list, "--local", "Show only sandbox (local) workflows");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::workflow_cli

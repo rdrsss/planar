@@ -14,12 +14,12 @@ namespace planar::cmd::handlers::local_cli {
 /// @return Registered CLI node.
 export auto attach_import(CLI::App* local) -> CLI::App* {
   CLI::App* import_leaf = local->add_subcommand("import", "Import a skill or agent from an external directory.");
-  add_string(*import_leaf, "--kind", k_undocumented);
-  add_bool(*import_leaf, "--force", k_undocumented);
-  add_bool(*import_leaf, "--dry-run", k_undocumented);
-  add_bool(*import_leaf, "--no-link", k_undocumented);
-  add_json(*import_leaf, k_undocumented);
-  add_positional(*import_leaf, "path", k_undocumented);
+  add_string(*import_leaf, "--kind", "Target kind: skill, agent (default: skill)");
+  add_bool(*import_leaf, "--force", "Overwrite a sandbox file of the same name; otherwise collisions are skipped");
+  add_bool(*import_leaf, "--dry-run", "Preview the planned imports and links without writing");
+  add_bool(*import_leaf, "--no-link", "Import only; skip the link step");
+  add_json(*import_leaf, "Emit machine-readable JSON instead of text");
+  add_positional(*import_leaf, "path", "Source .md file, skill directory, or directory of sources");
   return import_leaf;
 }
 } // namespace planar::cmd::handlers::local_cli

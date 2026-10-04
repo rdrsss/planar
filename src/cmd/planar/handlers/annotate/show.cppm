@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App& annotate) -> CLI::App* {
   CLI::App* show = annotate.add_subcommand("show", "Show an annotation.");
-  add_json(*show, k_undocumented);
-  add_positional(*show, "annotation-id", k_undocumented);
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "annotation-id", "Annotation id");
   return show;
 }
 } // namespace planar::cmd::handlers::annotate_cli

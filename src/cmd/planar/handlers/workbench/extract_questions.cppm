@@ -15,8 +15,8 @@ namespace planar::cmd::handlers::workbench_cli {
 export auto attach_extract_questions(CLI::App& workbench) -> CLI::App* {
   CLI::App* extract_questions =
       workbench.add_subcommand("extract-questions", "Parse Open questions from top-level workbench specs (read-only).");
-  add_json(*extract_questions, k_undocumented);
-  add_positional(*extract_questions, "plan", k_undocumented);
+  add_json(*extract_questions, "Emit machine-readable JSON instead of text");
+  add_positional(*extract_questions, "plan", "Anchor plan id or slug");
   return extract_questions;
 }
 } // namespace planar::cmd::handlers::workbench_cli

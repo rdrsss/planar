@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::groups_cli {
 /// @return Registered CLI node.
 export auto attach_recommend(CLI::App* groups) -> CLI::App* {
   CLI::App* recommend = groups->add_subcommand("recommend", "Recommend closure-minimizing task slices for a plan.");
-  add_string(*recommend, "--budget", k_undocumented);
-  add_string(*recommend, "--solver", k_undocumented);
-  add_json(*recommend, k_undocumented);
-  add_positional(*recommend, "plan-id", k_undocumented);
+  add_string(*recommend, "--budget", "Per-slice window budget, an unsigned integer (default: 128000)");
+  add_string(*recommend, "--solver", "Solver: greedy, mtkahypar (default: greedy)");
+  add_json(*recommend, "Emit machine-readable JSON instead of text");
+  add_positional(*recommend, "plan-id", "Plan id");
   return recommend;
 }
 } // namespace planar::cmd::handlers::groups_cli

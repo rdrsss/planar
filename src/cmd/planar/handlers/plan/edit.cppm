@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_edit(CLI::App& plan) -> CLI::App* {
   CLI::App* edit = plan.add_subcommand("edit", "Edit a plan in $EDITOR (editor-first flow).");
-  add_bool(*edit, "--no-pull", k_undocumented);
-  add_json(*edit, k_undocumented);
-  add_positional(*edit, "plan-id", k_undocumented);
+  add_bool(*edit, "--no-pull", "Accepted for parity; the handler does not read it");
+  add_json(*edit, "Accepted for parity; the handler does not read it");
+  add_positional(*edit, "plan-id", "Plan id or slug");
   return edit;
 }
 } // namespace planar::cmd::handlers::plan_cli

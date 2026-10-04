@@ -14,21 +14,21 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_add(CLI::App& annotate) -> CLI::App* {
   CLI::App* add = annotate.add_subcommand("add", "Create a new annotation.");
-  add_string(*add, "--anchor-path", k_undocumented);
-  add_int(*add, "--line-start", k_undocumented);
-  add_int(*add, "--line-end", k_undocumented);
-  add_string(*add, "--commit-sha", k_undocumented);
-  add_string(*add, "--text-hash", k_undocumented);
-  add_string(*add, "--text", k_undocumented);
-  add_string(*add, "--title", k_undocumented);
-  add_string(*add, "--slug", k_undocumented);
-  add_string(*add, "--body", k_undocumented);
-  add_string(*add, "--vendor", k_undocumented);
-  add_int(*add, "--plan", k_undocumented);
-  add_int(*add, "--task", k_undocumented);
-  add_string(*add, "--tags", k_undocumented);
-  add_string(*add, "--scope", k_undocumented);
-  add_json(*add, k_undocumented);
+  add_string(*add, "--anchor-path", "File path the annotation is anchored to (required)");
+  add_int(*add, "--line-start", "First line of the anchored range");
+  add_int(*add, "--line-end", "Last line of the anchored range");
+  add_string(*add, "--commit-sha", "Commit the anchored content was captured at, for later verification");
+  add_string(*add, "--text-hash", "Hash of the anchored text, for later drift detection");
+  add_string(*add, "--text", "Annotation text");
+  add_string(*add, "--title", "Annotation title");
+  add_string(*add, "--slug", "Annotation slug");
+  add_string(*add, "--body", "Annotation body (literal text)");
+  add_string(*add, "--vendor", "Vendor that authored the annotation");
+  add_int(*add, "--plan", "Plan id the annotation is associated with");
+  add_int(*add, "--task", "Task id the annotation is associated with");
+  add_string(*add, "--tags", "Comma-separated tags");
+  add_string(*add, "--scope", "Scope slug the annotation is created under");
+  add_json(*add, "Emit machine-readable JSON instead of text");
   return add;
 }
 } // namespace planar::cmd::handlers::annotate_cli

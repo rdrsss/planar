@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::workbench_cli {
 /// @return Registered CLI node.
 export auto attach_edit(CLI::App& workbench) -> CLI::App* {
   CLI::App* edit = workbench.add_subcommand("edit", "Edit a feature's workbench files in $EDITOR.");
-  add_string(*edit, "--editor", k_undocumented);
-  add_json(*edit, k_undocumented);
-  add_positional(*edit, "plan", k_undocumented);
+  add_string(*edit, "--editor", "Editor command to open the workbench files with");
+  add_json(*edit, "Emit machine-readable JSON instead of text");
+  add_positional(*edit, "plan", "Plan id or slug");
   return edit;
 }
 } // namespace planar::cmd::handlers::workbench_cli

@@ -14,10 +14,11 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_review(CLI::App& question) -> CLI::App* {
   CLI::App* review = question.add_subcommand("review", "Reviewer entry point for question diff.");
-  add_bool(*review, "--approve", k_undocumented);
-  add_bool(*review, "--request-changes", k_undocumented);
-  add_json(*review, k_undocumented);
-  add_positional(*review, "question-id", k_undocumented);
+  add_bool(*review, "--approve", "Report an approve verdict on the pending workbench diff (not persisted)");
+  add_bool(*review, "--request-changes",
+           "Report a request-changes verdict on the pending workbench diff (not persisted); excludes --approve");
+  add_json(*review, "Emit machine-readable JSON instead of text");
+  add_positional(*review, "question-id", "Question id");
   return review;
 }
 } // namespace planar::cmd::handlers::question_cli

@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_step_list(CLI::App& step) -> CLI::App* {
   CLI::App* list = step.add_subcommand("list", "List steps of a plan.");
-  add_json(*list, k_undocumented);
-  add_positional(*list, "plan-id", k_undocumented);
+  add_json(*list, "Emit machine-readable JSON instead of text");
+  add_positional(*list, "plan-id", "Plan id or slug");
   return list;
 }
 } // namespace planar::cmd::handlers::plan_cli

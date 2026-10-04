@@ -24,11 +24,11 @@ export auto attach_touches_infer(CLI::App& touches) -> CLI::App* {
       "Proposal still resolves ambiguity wide (decision 906) \xe2\x80\x94 a directory\n  expands, a basename yields every match, "
       "nothing unplaceable is\n  invented. What --wide controls is which proposals are WRITTEN.\n\n  --repo <slug> names the "
       "checkout to resolve against; without it the repo\n  is derived from the current directory (longest matching root_path).");
-  add_string(*infer, "--repo", k_undocumented);
-  add_bool(*infer, "--apply", k_undocumented);
-  add_bool(*infer, "--wide", k_undocumented);
-  add_json(*infer, k_undocumented);
-  add_positional(*infer, "task-id", k_undocumented);
+  add_string(*infer, "--repo", "Repo slug to resolve paths against (default: derived from the cwd)");
+  add_bool(*infer, "--apply", "Write the proposed touch paths; without it the run is a preview");
+  add_bool(*infer, "--wide", "Also write directory and basename expansions, not just exact files");
+  add_json(*infer, "Emit machine-readable JSON instead of text");
+  add_positional(*infer, "task-id", "Task id");
   return infer;
 }
 } // namespace planar::cmd::handlers::task_cli

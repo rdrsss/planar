@@ -13,9 +13,9 @@ namespace planar::cmd::handlers::models_cli {
 export auto attach_registry_verify_identity(CLI::App& registry) -> CLI::App* {
   CLI::App* verify_identity =
       registry.add_subcommand("verify-identity", "Compare requested and actual spawn identity without aliasing.");
-  add_int_required(*verify_identity, "--candidate", k_undocumented);
-  add_string_required(*verify_identity, "--actual-vendor", k_undocumented);
-  add_string_required(*verify_identity, "--actual-id", k_undocumented);
+  add_int_required(*verify_identity, "--candidate", "Registry candidate id");
+  add_string_required(*verify_identity, "--actual-vendor", "Vendor the spawn actually reported");
+  add_string_required(*verify_identity, "--actual-id", "Candidate identifier the spawn actually reported");
   return verify_identity;
 }
 } // namespace planar::cmd::handlers::models_cli

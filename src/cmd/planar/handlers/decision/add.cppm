@@ -14,13 +14,13 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_add(CLI::App& decision) -> CLI::App* {
   CLI::App* add = decision.add_subcommand("add", "Create a new decision record.");
-  add_string(*add, "--body", k_undocumented);
-  add_string(*add, "--rationale", k_undocumented);
-  add_int(*add, "--plan", k_undocumented);
-  add_string(*add, "--scope", k_undocumented);
-  add_bool(*add, "--editor", k_undocumented);
-  add_json(*add, k_undocumented);
-  add_positional(*add, "title", k_undocumented);
+  add_string(*add, "--body", "Decision body text; a leading @ reads it from a file");
+  add_string(*add, "--rationale", "Why the decision was made; a leading @ reads it from a file");
+  add_int(*add, "--plan", "Plan id to attach the decision to");
+  add_string(*add, "--scope", "Scope slug to resolve against instead of the cwd-derived scope");
+  add_bool(*add, "--editor", "Accepted but not implemented; without --body it warns and the verb still refuses");
+  add_json(*add, "Emit machine-readable JSON instead of text");
+  add_positional(*add, "title", "Title of the new decision");
   return add;
 }
 } // namespace planar::cmd::handlers::decision_cli

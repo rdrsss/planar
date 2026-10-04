@@ -147,8 +147,8 @@ auto declare_tree(CLI::App& root) -> void {
   add_int_default(*tree, "--depth", "-1", "Max tree depth (-1 = unbounded)");
   add_string(*tree, "--kind", "Restrict to a single kind");
   add_string(*tree, "--status", "Restrict to a single status");
-  add_string(*tree, "--sort", "Sort key");
-  add_json(*tree, k_undocumented);
+  add_string(*tree, "--sort", "Sort key: id, updated, created, unsorted");
+  add_json(*tree, "Emit machine-readable JSON instead of text");
 }
 
 } // namespace planar::cmd::handlers

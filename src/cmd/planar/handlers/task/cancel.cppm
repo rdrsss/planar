@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_cancel(CLI::App& task) -> CLI::App* {
   CLI::App* cancel = task.add_subcommand("cancel", "Cancel a task.");
-  add_string(*cancel, "--scope", k_undocumented);
-  add_json(*cancel, k_undocumented);
-  add_positional(*cancel, "task-id", k_undocumented);
+  add_string(*cancel, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_json(*cancel, "Emit machine-readable JSON instead of text");
+  add_positional(*cancel, "task-id", "Task id");
   return cancel;
 }
 } // namespace planar::cmd::handlers::task_cli

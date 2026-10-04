@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_remove(CLI::App& annotate) -> CLI::App* {
   CLI::App* remove = annotate.add_subcommand("remove", "Remove an annotation.");
-  add_int(*remove, "--expected-revision", k_undocumented);
-  add_json(*remove, k_undocumented);
-  add_positional(*remove, "annotation-id", k_undocumented);
+  add_int(*remove, "--expected-revision", "Annotation revision the caller last saw (required); mismatch refuses");
+  add_json(*remove, "Emit machine-readable JSON instead of text");
+  add_positional(*remove, "annotation-id", "Annotation id");
   return remove;
 }
 } // namespace planar::cmd::handlers::annotate_cli

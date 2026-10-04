@@ -217,9 +217,9 @@ auto declare_link(CLI::App& root) -> void {
   add_string_required(*link, "--to", "<system-slug>:<external-id>");
   add_string(*link, "--role", "Link role: mirror, parent, child, reference (default: reference)");
   add_string(*link, "--sync", "Sync direction: read-only, write-back, two-way (default: read-only)");
-  add_bool(*link, "--propagate", "Propagate feature after linking (M10)");
-  add_string(*link, "--scope", k_undocumented);
-  add_json(*link, k_undocumented);
+  add_bool(*link, "--propagate", "Not implemented; refuses with exit 6 (use `planar-ext ext propagate`)");
+  add_string(*link, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_json(*link, "Emit machine-readable JSON instead of text");
   add_positional(*link, "ref", "Entity ref (kind:id)");
 }
 

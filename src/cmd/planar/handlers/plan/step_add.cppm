@@ -12,11 +12,11 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_step_add(CLI::App& step) -> CLI::App* {
   CLI::App* add = step.add_subcommand("add", "Append a new step to a plan.");
-  add_int(*add, "--after", k_undocumented);
-  add_string(*add, "--scope", k_undocumented);
-  add_json(*add, k_undocumented);
-  add_positional(*add, "plan-id", k_undocumented);
-  add_positional(*add, "body", k_undocumented);
+  add_int(*add, "--after", "Insert after this step ordinal, renumbering later steps (default: append)");
+  add_string(*add, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_json(*add, "Emit machine-readable JSON instead of text");
+  add_positional(*add, "plan-id", "Plan id or slug");
+  add_positional(*add, "body", "Step body text");
   return add;
 }
 } // namespace planar::cmd::handlers::plan_cli

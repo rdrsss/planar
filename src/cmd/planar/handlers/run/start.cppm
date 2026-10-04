@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::run_cli {
 /// @return Registered CLI node.
 export auto attach_start(CLI::App* run) -> CLI::App* {
   CLI::App* start = run->add_subcommand("start", "Mint a new operational run record and print its run_uid as JSON.");
-  add_int_required(*start, "--plan", k_undocumented);
-  add_string(*start, "--workflow", k_undocumented);
-  add_json(*start, k_undocumented);
+  add_int_required(*start, "--plan", "Plan id to associate the run with");
+  add_string(*start, "--workflow", "Workflow name recorded on the run");
+  add_json(*start, "Emit machine-readable JSON instead of text");
   return start;
 }
 } // namespace planar::cmd::handlers::run_cli

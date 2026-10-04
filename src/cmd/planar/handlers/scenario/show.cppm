@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::scenario_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App& scenario) -> CLI::App* {
   CLI::App* show = scenario.add_subcommand("show", "Show a scenario's details.");
-  add_json(*show, k_undocumented);
-  add_positional(*show, "scenario-id", k_undocumented);
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "scenario-id", "Scenario id");
   return show;
 }
 } // namespace planar::cmd::handlers::scenario_cli

@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::models_cli {
 /// @return Registered CLI node.
 export auto attach_registry_unbind(CLI::App& registry) -> CLI::App* {
   CLI::App* unbind = registry.add_subcommand("unbind", "Remove one explicit role and tier binding.");
-  add_int_required(*unbind, "--candidate", k_undocumented);
-  add_string_required(*unbind, "--role", k_undocumented);
-  add_string_required(*unbind, "--tier", k_undocumented);
+  add_int_required(*unbind, "--candidate", "Registry candidate id");
+  add_string_required(*unbind, "--role", "Role binding to remove");
+  add_string_required(*unbind, "--tier", "Tier: small, medium, large");
   return unbind;
 }
 } // namespace planar::cmd::handlers::models_cli

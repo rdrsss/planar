@@ -12,7 +12,7 @@ namespace planar::cmd::handlers::workspace_cli {
 /// @return Registered CLI node.
 export auto attach_doctor(CLI::App* workspace) -> CLI::App* {
   CLI::App* doctor = workspace->add_subcommand("doctor", "Scan and fix workspace registration and state consistency.");
-  add_json(*doctor, k_undocumented);
+  add_json(*doctor, "Emit machine-readable JSON instead of text");
   return doctor;
 }
 } // namespace planar::cmd::handlers::workspace_cli
