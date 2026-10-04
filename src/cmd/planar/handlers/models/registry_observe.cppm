@@ -12,14 +12,14 @@ namespace planar::cmd::handlers::models_cli {
 /// @return Registered CLI node.
 export auto attach_registry_observe(CLI::App& registry) -> CLI::App* {
   CLI::App* observe = registry.add_subcommand("observe", "Append an exact, versioned host capability observation.");
-  add_int_required(*observe, "--candidate", k_undocumented);
-  add_string_required(*observe, "--host", k_undocumented);
-  add_int_required(*observe, "--version", k_undocumented);
-  add_string_required(*observe, "--availability", k_undocumented);
-  add_string_required(*observe, "--spawn-verification", k_undocumented);
-  add_string_required(*observe, "--evidence-ref", k_undocumented);
-  add_string_required(*observe, "--captured-at", k_undocumented);
-  add_string_required(*observe, "--expires-at", k_undocumented);
+  add_int_required(*observe, "--candidate", "Registry candidate id");
+  add_string_required(*observe, "--host", "Host id");
+  add_int_required(*observe, "--version", "Observation version");
+  add_string_required(*observe, "--availability", "Availability: available, unavailable, unknown");
+  add_string_required(*observe, "--spawn-verification", "Spawn verification: verified, unverified, failed, mismatch");
+  add_string_required(*observe, "--evidence-ref", "Reference to the evidence for this observation");
+  add_string_required(*observe, "--captured-at", "When the observation was captured (timestamp)");
+  add_string_required(*observe, "--expires-at", "When the observation expires (timestamp)");
   return observe;
 }
 } // namespace planar::cmd::handlers::models_cli

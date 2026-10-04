@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App& question) -> CLI::App* {
   CLI::App* show = question.add_subcommand("show", "Show a question's details.");
-  add_json(*show, k_undocumented);
-  add_positional(*show, "question-id", k_undocumented);
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "question-id", "Question id");
   return show;
 }
 } // namespace planar::cmd::handlers::question_cli

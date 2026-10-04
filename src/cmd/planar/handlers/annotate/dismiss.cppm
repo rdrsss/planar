@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_dismiss(CLI::App& annotate) -> CLI::App* {
   CLI::App* dismiss = annotate.add_subcommand("dismiss", "Dismiss an annotation.");
-  add_json(*dismiss, k_undocumented);
-  add_positional(*dismiss, "annotation-id", k_undocumented);
+  add_json(*dismiss, "Emit machine-readable JSON instead of text");
+  add_positional(*dismiss, "annotation-id", "Annotation id");
   return dismiss;
 }
 } // namespace planar::cmd::handlers::annotate_cli

@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::assoc_cli {
 /// @return Registered CLI node.
 export auto attach_detect(CLI::App* assoc) -> CLI::App* {
   CLI::App* detect = assoc->add_subcommand("detect", "Propose (or apply) auto-detected associations for the current directory.");
-  add_bool(*detect, "--apply", k_undocumented);
-  add_json(*detect, k_undocumented);
+  add_bool(*detect, "--apply", "Create the proposed associations and add the current project (default: preview only)");
+  add_json(*detect, "Emit machine-readable JSON instead of text");
   return detect;
 }
 } // namespace planar::cmd::handlers::assoc_cli

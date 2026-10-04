@@ -12,11 +12,11 @@ namespace planar::cmd::handlers::bench_cli {
 /// @return Registered CLI node.
 export auto attach_harvest(CLI::App* bench) -> CLI::App* {
   CLI::App* harvest = bench->add_subcommand("harvest", "Harvest git diff as actual touches for a run/task.");
-  add_int_required(*harvest, "--task", k_undocumented);
-  add_string_required(*harvest, "--worktree", k_undocumented);
-  add_string(*harvest, "--base", k_undocumented);
-  add_string(*harvest, "--head", k_undocumented);
-  add_positional(*harvest, "run-uid", k_undocumented);
+  add_int_required(*harvest, "--task", "Task id the harvested touches are attributed to");
+  add_string_required(*harvest, "--worktree", "Worktree directory to run git diff in");
+  add_string(*harvest, "--base", "Base ref of a committed range; requires --head (default: working tree)");
+  add_string(*harvest, "--head", "Head ref of a committed range; requires --base");
+  add_positional(*harvest, "run-uid", "Run uid");
   return harvest;
 }
 } // namespace planar::cmd::handlers::bench_cli

@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::run_cli {
 /// @return Registered CLI node.
 export auto attach_finish(CLI::App* run) -> CLI::App* {
   CLI::App* finish = run->add_subcommand("finish", "Set the terminal status on a run.");
-  add_string_required(*finish, "--status", k_undocumented);
-  add_json(*finish, k_undocumented);
-  add_positional(*finish, "run-uid", k_undocumented);
+  add_string_required(*finish, "--status", "Terminal status: completed, aborted, error");
+  add_json(*finish, "Emit machine-readable JSON instead of text");
+  add_positional(*finish, "run-uid", "Run uid returned by run start");
   return finish;
 }
 } // namespace planar::cmd::handlers::run_cli

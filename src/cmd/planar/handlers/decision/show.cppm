@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App& decision) -> CLI::App* {
   CLI::App* show = decision.add_subcommand("show", "Show a decision's details.");
-  add_json(*show, k_undocumented);
-  add_positional(*show, "decision-id", k_undocumented);
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "decision-id", "Decision id");
   return show;
 }
 } // namespace planar::cmd::handlers::decision_cli

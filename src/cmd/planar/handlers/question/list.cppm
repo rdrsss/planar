@@ -14,11 +14,11 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& question) -> CLI::App* {
   CLI::App* list = question.add_subcommand("list", "List questions.");
-  add_string(*list, "--scope", k_undocumented);
-  add_string(*list, "--status", k_undocumented);
-  add_string(*list, "--touches", k_undocumented);
-  add_int(*list, "--plan", k_undocumented);
-  add_json(*list, k_undocumented);
+  add_string(*list, "--scope", "Restrict to this scope slug instead of the cwd-derived scope");
+  add_string(*list, "--status", "Restrict to a status or comma-separated list: open, answered, wontfix");
+  add_string(*list, "--touches", "Restrict to entities scoped to or touching this repo slug");
+  add_int(*list, "--plan", "Restrict to questions attached to this plan id");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::question_cli

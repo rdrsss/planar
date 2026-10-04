@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::audit_cli {
 /// @return Registered CLI node.
 export auto attach_session(CLI::App* audit) -> CLI::App* {
   CLI::App* session = audit->add_subcommand("session", "Show the timeline for a session.");
-  add_json(*session, k_undocumented);
-  add_positional(*session, "session-id", k_undocumented);
+  add_json(*session, "Emit machine-readable JSON instead of text");
+  add_positional(*session, "session-id", "Session id");
   return session;
 }
 } // namespace planar::cmd::handlers::audit_cli

@@ -18,12 +18,12 @@ export auto attach_run(CLI::App* workflow) -> CLI::App* {
              "[--args <json>]\n  [--worktree <dir>] [--sandbox-root <dir>]`.  The workflow's\n  flow.result JSON streams to "
              "stdout; the exit code is forwarded\n  exactly (non-zero on flow.fail or engine error).\n\n  planar-execute "
              "resolution order: $PLANAR_EXECUTE_BIN →\n  sibling of argv[0] → PATH.");
-  add_string_required(*run, "--phase", "Phase function to invoke inside the workflow.");
-  add_string(*run, "--args", "JSON args blob forwarded to planar-execute --args.");
-  add_string(*run, "--worktree", "Worktree directory forwarded to planar-execute --worktree.");
-  add_string(*run, "--sandbox-root", "Sandbox root forwarded to planar-execute --sandbox-root.");
-  add_bool(*run, "--local", "Restrict resolution to sandbox (local) workflows only.");
-  add_positional(*run, "name", k_undocumented);
+  add_string_required(*run, "--phase", "Phase function to invoke inside the workflow");
+  add_string(*run, "--args", "JSON args blob forwarded to planar-execute --args");
+  add_string(*run, "--worktree", "Worktree directory forwarded to planar-execute --worktree");
+  add_string(*run, "--sandbox-root", "Sandbox root forwarded to planar-execute --sandbox-root");
+  add_bool(*run, "--local", "Restrict resolution to sandbox (local) workflows only");
+  add_positional(*run, "name", "Workflow name, resolved across shipped and sandbox workflows");
   return run;
 }
 } // namespace planar::cmd::handlers::workflow_cli

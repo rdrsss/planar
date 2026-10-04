@@ -18,9 +18,9 @@
 //
 // ## The allowance
 //
-// `planar`, `planar-agent`, `planar-ext` and `planar-watch` still have
+// `planar-agent`, `planar-ext` and `planar-watch` still have
 // undocumented flags; their sweeps are later tasks in this milestone.
-// `planar-execute` already has none and is held to the rule today. The
+// `planar` and `planar-execute` have none and are held to the rule today. The
 // allowance only shrinks: a binary in it that has NO empty description left
 // fails the walk and tells the maintainer to delete its entry, so a finished
 // sweep cannot silently regress behind a stale allowance.
@@ -96,7 +96,7 @@ auto describe(empty_description const& e) -> std::string {
 
 // Binaries whose sweep has not landed. Remove an entry when its last empty
 // description is fixed; the second case below fails until you do.
-constexpr std::array<std::string_view, 4> k_allowed_empty = {"planar", "planar-agent", "planar-ext", "planar-watch"};
+constexpr std::array<std::string_view, 3> k_allowed_empty = {"planar-agent", "planar-ext", "planar-watch"};
 
 auto is_allowed(std::string_view binary) -> bool {
   return std::ranges::find(k_allowed_empty, binary) != k_allowed_empty.end();

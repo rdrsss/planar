@@ -527,19 +527,19 @@ auto declare_import(CLI::App& root) -> void {
       "import", "import translates the planning artefacts of an existing\n  repository into Planar's data model. It discovers\n  "
                 "tech specs, roadmap milestones, ADRs, and backlog files,\n  infers completion status from checkbox state and "
                 "git history,\n  and produces an ImportPlan for review before committing.");
-  add_bool(*importer, "--from-github", "Pull source from GitHub issues");
-  add_bool(*importer, "--dry-run", k_undocumented);
-  add_bool(*importer, "--strict", k_undocumented);
-  add_string(*importer, "--roadmap", "Path to a roadmap source");
-  add_bool(*importer, "--apply", k_undocumented);
-  add_bool(*importer, "--apply-removals", k_undocumented);
-  add_bool(*importer, "--no-status-inference", k_undocumented);
-  add_bool(*importer, "--interpret", k_undocumented);
+  add_bool(*importer, "--from-github", "Accepted but not read by this build");
+  add_bool(*importer, "--dry-run", "Accepted but not read; use the default preview (no --apply)");
+  add_bool(*importer, "--strict", "Accepted but not read by this build");
+  add_string(*importer, "--roadmap", "Accepted but not read by this build");
+  add_bool(*importer, "--apply", "Commit the import plan; without it, preview only");
+  add_bool(*importer, "--apply-removals", "Also commit proposed removals; requires --apply");
+  add_bool(*importer, "--no-status-inference", "Accepted but not read by this build");
+  add_bool(*importer, "--interpret", "Run the optional LLM interpretation pass after the deterministic classifier");
   add_string(*importer, "--accept-spec", "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'");
   add_bool(*importer, "--no-forward-specs", "Skip forward-spec processing entirely");
-  add_string(*importer, "--scope", k_undocumented);
-  add_json(*importer, k_undocumented);
-  add_positional(*importer, "repo-root", k_undocumented);
+  add_string(*importer, "--scope", "Scope slug to resolve against instead of the cwd-derived scope");
+  add_json(*importer, "Emit machine-readable JSON instead of text");
+  add_positional(*importer, "repo-root", "Repository root to import from");
 }
 
 } // namespace planar::cmd::handlers

@@ -15,10 +15,10 @@ namespace planar::cmd::handlers::templates_cli {
 export auto attach_render(CLI::App* templates) -> CLI::App* {
   CLI::App* render = templates->add_subcommand("render", "Render a template against a database entity (dry run; no writes).");
   add_string_required(*render, "--entity", "Entity ref (kind:id) — task:42, plan:7, scenario:3");
-  add_json(*render, k_undocumented);
-  add_positional(*render, "set", k_undocumented);
-  add_positional(*render, "system", k_undocumented);
-  add_positional(*render, "kind", k_undocumented);
+  add_json(*render, "Emit machine-readable JSON instead of text");
+  add_positional(*render, "set", "Template set name");
+  add_positional(*render, "system", "External system name, e.g. jira, github-issues");
+  add_positional(*render, "kind", "Template kind, e.g. epic");
   return render;
 }
 } // namespace planar::cmd::handlers::templates_cli

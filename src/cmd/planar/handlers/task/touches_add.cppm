@@ -19,11 +19,11 @@ export auto attach_touches_add(CLI::App& touches) -> CLI::App* {
              "path.\n  The parallelizability rules (`plan recommend-strategy`) read these\n  path-level declarations for rules "
              "2/3/4 (disjoint touches, migration\n  touched, singleton file touched). Declare path touches per file (repeat\n  "
              "the verb), not as a list.");
-  add_string(*add, "--path", k_undocumented);
-  add_string(*add, "--scope", k_undocumented);
-  add_json(*add, k_undocumented);
-  add_positional(*add, "task-id", k_undocumented);
-  add_positional(*add, "repo-slug", k_undocumented);
+  add_string(*add, "--path", "Repo-relative file path to record as a path-level touch");
+  add_string(*add, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_json(*add, "Emit machine-readable JSON instead of text");
+  add_positional(*add, "task-id", "Task id");
+  add_positional(*add, "repo-slug", "Slug of a registered repo the task touches");
   return add;
 }
 } // namespace planar::cmd::handlers::task_cli

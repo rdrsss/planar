@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::scope_cli {
 /// @return Registered CLI node.
 export auto attach_suggest(CLI::App* scope) -> CLI::App* {
   CLI::App* suggest = scope->add_subcommand("suggest", "Suggest scope associations based on cwd.");
-  add_json(*suggest, k_undocumented);
+  add_json(*suggest, "Emit machine-readable JSON instead of text");
   return suggest;
 }
 } // namespace planar::cmd::handlers::scope_cli

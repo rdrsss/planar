@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_accept(CLI::App& decision) -> CLI::App* {
   CLI::App* accept = decision.add_subcommand("accept", "Accept a proposed decision.");
-  add_string(*accept, "--scope", k_undocumented);
-  add_json(*accept, k_undocumented);
-  add_positional(*accept, "decision-id", k_undocumented);
+  add_string(*accept, "--scope", "Scope slug to resolve against instead of the cwd-derived scope");
+  add_json(*accept, "Emit machine-readable JSON instead of text");
+  add_positional(*accept, "decision-id", "Decision id");
   return accept;
 }
 } // namespace planar::cmd::handlers::decision_cli

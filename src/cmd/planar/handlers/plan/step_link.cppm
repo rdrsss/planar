@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_step_link(CLI::App& step) -> CLI::App* {
   CLI::App* link = step.add_subcommand("link", "Associate a plan step with the task that materializes it.");
-  add_string(*link, "--scope", k_undocumented);
-  add_json(*link, k_undocumented);
-  add_positional(*link, "step-id", k_undocumented);
-  add_positional(*link, "task-id", k_undocumented);
+  add_string(*link, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_json(*link, "Emit machine-readable JSON instead of text");
+  add_positional(*link, "step-id", "Plan step id");
+  add_positional(*link, "task-id", "Task id");
   return link;
 }
 } // namespace planar::cmd::handlers::plan_cli

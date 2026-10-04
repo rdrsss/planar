@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::local_cli {
 /// @return Registered CLI node.
 export auto attach_unlink(CLI::App* local) -> CLI::App* {
   CLI::App* unlink = local->add_subcommand("unlink", "Remove symlinks from vendor paths.");
-  add_bool(*unlink, "--purge", k_undocumented);
-  add_json(*unlink, k_undocumented);
-  add_positional(*unlink, "name", k_undocumented);
+  add_bool(*unlink, "--purge", "Also delete the source file from the local sandbox");
+  add_json(*unlink, "Emit machine-readable JSON instead of text");
+  add_positional(*unlink, "name", "Name of the skill or agent to unlink");
   return unlink;
 }
 } // namespace planar::cmd::handlers::local_cli

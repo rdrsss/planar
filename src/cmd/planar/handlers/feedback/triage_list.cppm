@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::feedback_cli {
 /// @return Registered CLI node.
 export auto attach_triage_list(CLI::App* triage) -> CLI::App* {
   CLI::App* list = triage->add_subcommand("list", "List triaged findings.");
-  add_int(*list, "--plan", k_undocumented);
-  add_string(*list, "--severity", k_undocumented);
-  add_string(*list, "--disposition", k_undocumented);
-  add_json(*list, k_undocumented);
+  add_int(*list, "--plan", "Only findings on this feedback plan id");
+  add_string(*list, "--severity", "Only findings of this severity: info, low, medium, high, critical");
+  add_string(*list, "--disposition", "Only findings with this disposition (e.g. untriaged, accepted, duplicate)");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::feedback_cli

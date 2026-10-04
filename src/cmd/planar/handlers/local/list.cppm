@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::local_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App* local) -> CLI::App* {
   CLI::App* list = local->add_subcommand("list", "List locally-installed skills and agents.");
-  add_string(*list, "--vendor", k_undocumented);
-  add_json(*list, k_undocumented);
+  add_string(*list, "--vendor", "Only list installs for this vendor: claude, codex, copilot");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::local_cli

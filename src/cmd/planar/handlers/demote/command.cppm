@@ -14,8 +14,8 @@ export auto declare_demote(CLI::App& root) -> void {
       "demote", "Reverse a promotion — move an entity back to global personal scope.\n\n  The destination is always global; the "
                 "optional --from flag names the\n  source association slug for clarity. Association-to-association\n  "
                 "transitions go through promote.\n\n  Example:\n    planar demote task:42 --from project:planar");
-  add_string(*demote, "--from", "Source association slug");
-  add_json(*demote, k_undocumented);
+  add_string(*demote, "--from", "Accepted but ignored; demotion always targets global");
+  add_json(*demote, "Emit machine-readable JSON instead of text");
   add_positional(*demote, "ref", "Entity ref (kind:id)");
 }
 } // namespace planar::cmd::handlers

@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_edit(CLI::App& decision) -> CLI::App* {
   CLI::App* edit = decision.add_subcommand("edit", "Edit a decision in $EDITOR (editor-first flow).");
-  add_bool(*edit, "--no-pull", k_undocumented);
-  add_json(*edit, k_undocumented);
-  add_positional(*edit, "decision-id", k_undocumented);
+  add_bool(*edit, "--no-pull", "Accepted for parity; the handler does not read it");
+  add_json(*edit, "Accepted for parity; the handler does not read it");
+  add_positional(*edit, "decision-id", "Decision id");
   return edit;
 }
 } // namespace planar::cmd::handlers::decision_cli

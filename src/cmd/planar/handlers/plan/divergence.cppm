@@ -18,8 +18,8 @@ export auto attach_divergence(CLI::App& plan) -> CLI::App* {
       "whose verdict differs between sources is a FLIP \xe2\x80\x94 the two sources\n  disagree about whether those tasks can "
       "run in parallel.\n\n  Jaccard distance = flips / |declared_overlaps \xe2\x88\xaa derived_overlaps|.\n  0.0 = sources "
       "agree on every pair; 1.0 = no overlapping pair in common.\n\n  READ-ONLY: computes and reports; writes nothing.");
-  add_json(*divergence, k_undocumented);
-  add_positional(*divergence, "plan-id", k_undocumented);
+  add_json(*divergence, "Emit machine-readable JSON instead of text");
+  add_positional(*divergence, "plan-id", "Plan id or slug");
   return divergence;
 }
 } // namespace planar::cmd::handlers::plan_cli

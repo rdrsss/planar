@@ -14,11 +14,11 @@ namespace planar::cmd::handlers::artifact_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& artifact) -> CLI::App* {
   CLI::App* list = artifact.add_subcommand("list", "List artifacts.");
-  add_string(*list, "--kind", k_undocumented);
-  add_string(*list, "--scope", k_undocumented);
-  add_string(*list, "--status", k_undocumented);
-  add_int(*list, "--plan", k_undocumented);
-  add_json(*list, k_undocumented);
+  add_string(*list, "--kind", "Restrict to a single artifact kind");
+  add_string(*list, "--scope", "Scope slug to filter by (default: cwd-derived read set)");
+  add_string(*list, "--status", "Filter by status: draft, active, superseded, retired");
+  add_int(*list, "--plan", "Restrict to artifacts attached to this plan id");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::artifact_cli

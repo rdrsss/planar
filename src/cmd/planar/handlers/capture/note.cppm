@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::capture_cli {
 /// @return Registered CLI node.
 export auto attach_note(CLI::App* capture) -> CLI::App* {
   CLI::App* note = capture->add_subcommand("note", "Append a narrative note to the active session.");
-  add_int(*note, "--session", k_undocumented);
-  add_json(*note, k_undocumented);
-  add_positional(*note, "body", k_undocumented);
+  add_int(*note, "--session", "Session id (default: the vendor tuple's active session)");
+  add_json(*note, "Emit machine-readable JSON instead of text");
+  add_positional(*note, "body", "Note text; may be @<file>");
   return note;
 }
 } // namespace planar::cmd::handlers::capture_cli

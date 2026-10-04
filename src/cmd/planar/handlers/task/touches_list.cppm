@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_touches_list(CLI::App& touches) -> CLI::App* {
   CLI::App* list = touches.add_subcommand("list", "List the repo- and path-level touches declared on a task.");
-  add_json(*list, k_undocumented);
-  add_positional(*list, "task-id", k_undocumented);
+  add_json(*list, "Emit machine-readable JSON instead of text");
+  add_positional(*list, "task-id", "Task id");
   return list;
 }
 } // namespace planar::cmd::handlers::task_cli

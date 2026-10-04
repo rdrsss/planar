@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App& plan) -> CLI::App* {
   CLI::App* show = plan.add_subcommand("show", "Show a plan's details, steps, and child plans.");
-  add_json(*show, k_undocumented);
-  add_positional(*show, "plan-id", k_undocumented);
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "plan-id", "Plan id or slug");
   return show;
 }
 } // namespace planar::cmd::handlers::plan_cli

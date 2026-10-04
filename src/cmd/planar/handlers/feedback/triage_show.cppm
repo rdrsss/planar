@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::feedback_cli {
 /// @return Registered CLI node.
 export auto attach_triage_show(CLI::App* triage) -> CLI::App* {
   CLI::App* show = triage->add_subcommand("show", "Show a triaged finding.");
-  add_json(*show, k_undocumented);
-  add_positional(*show, "finding", k_undocumented);
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "finding", "Finding ref (task:id or question:id)");
   return show;
 }
 } // namespace planar::cmd::handlers::feedback_cli

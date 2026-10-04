@@ -17,8 +17,8 @@ export auto attach_facts_stage(CLI::App* facts) -> CLI::App* {
                "  them and an edited task could never restage them. This stages exactly\n  one task, stamped `operator-v1`, "
                "and never touches a sibling's facts.\n\n  Citation facts are staged only for artifacts this task already "
                "cites\n  AND references explicitly in its body; it never invents a citation.");
-  add_json(*facts_stage, k_undocumented);
-  add_positional(*facts_stage, "task-id", k_undocumented);
+  add_json(*facts_stage, "Emit machine-readable JSON instead of text");
+  add_positional(*facts_stage, "task-id", "Task id");
   return facts_stage;
 }
 } // namespace planar::cmd::handlers::task_cli

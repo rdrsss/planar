@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::test_spec_cli {
 /// @return Registered CLI node.
 export auto attach_status(CLI::App* test_spec) -> CLI::App* {
   CLI::App* status = test_spec->add_subcommand("status", "Print per-milestone test-spec coverage for an anchor plan.");
-  add_json(*status, k_undocumented);
+  add_json(*status, "Emit machine-readable JSON instead of text");
   add_positional(*status, "plan", "Plan slug or numeric id");
   return status;
 }
