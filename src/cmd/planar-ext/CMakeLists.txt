@@ -103,5 +103,7 @@ target_link_libraries(planar_cmd_planar_ext PRIVATE glaze::glaze)
 if(TARGET planar_cmd_planar_ext_tests)
   target_link_libraries(planar_cmd_planar_ext_tests PRIVATE CLI11::CLI11_Module SQLite::SQLite3 glaze::glaze)
   target_include_directories(planar_cmd_planar_ext_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+  target_compile_definitions(planar_cmd_planar_ext_tests PRIVATE
+    "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_ext>\"")
   add_dependencies(planar_cmd_planar_ext_tests planar_cmd_planar_ext)
 endif()

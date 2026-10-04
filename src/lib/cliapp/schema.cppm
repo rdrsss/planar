@@ -82,6 +82,8 @@ export module planar.cliapp.schema;
 
 import std;
 import cli11;
+import planar.cliapp.args;
+import planar.cliapp.surface;
 import planar.cliapp.walk;
 
 namespace planar::cliapp {
@@ -174,5 +176,38 @@ export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_vi
 /// newline).
 export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
                         std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string;
+
+/// @brief What a `schema` invocation asks for.
+export struct schema_request {
+  /// The command to look up, as the operator typed it; unset selects every command.
+  std::optional<std::string> command;
+  /// Whether to reduce each command to its full path and summary.
+  bool compact = false;
+};
+
+/// @brief Declare `--command` and `--compact` on a binary's `schema` node.
+/// @param schema_node The `schema` subcommand.
+export auto declare_schema_flags(CLI::App& schema_node) -> void;
+
+/// @brief Read the `schema` flags from a parse result.
+/// @param args The parsed arguments of the `schema` leaf.
+/// @return The request those flags describe.
+export auto schema_request_of(const parsed_args& args) -> schema_request;
+
+/// @brief Narrow a full flat catalog to what `request` asks for.
+///
+/// With no request fields set the catalog is returned unchanged, byte for
+/// byte. `--command` selects one command object, copied verbatim from the
+/// catalog; the name resolves as the full path (`planar task update`) or
+/// relative to the root (`task update`), with runs of whitespace collapsed.
+/// `--compact` rewrites every command to `{"command":...,"summary":...}`
+/// inside the same envelope with `"layout":"compact"`. Both together emit the
+/// one compact row, bare.
+/// @param catalog A catalog produced by `schema_json` (or any emitter of the
+/// same flat shape, such as `planar-execute`'s).
+/// @param request The selection.
+/// @return The JSON document without a trailing newline, or a message naming
+/// the unknown command.
+export auto select_schema(std::string_view catalog, const schema_request& request) -> std::expected<std::string, std::string>;
 
 } // namespace planar::cliapp

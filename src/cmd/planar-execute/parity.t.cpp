@@ -524,3 +524,43 @@ TEST_CASE("planar-execute: a build without the Centurion engine refuses every en
   CHECK(malformed.code == 2);
   CHECK_FALSE(malformed.err.contains("built without the Centurion engine"));
 }
+
+TEST_CASE("planar-execute schema --command and --compact select from the catalog", "[cmd][execute][schema][7204]") {
+  auto const full = run_cpp("schema7204full", {"schema"});
+  REQUIRE(full.code == 0);
+
+  // One command, by full path or relative to the root, in either flag spelling.
+  auto const one = run_cpp("schema7204one", {"schema", "--command", "planar-execute run"});
+  CHECK(one.code == 0);
+  CHECK(one.err.empty());
+  CHECK(one.out.starts_with(R"({"name":"run",)"));
+  CHECK(one.out.contains(R"("command":"planar-execute run")"));
+  CHECK(one.out.size() < 4096);
+  CHECK(full.out.contains(one.out.substr(0, one.out.size() - 1)));
+  CHECK(run_cpp("schema7204rel", {"schema", "--command=run"}).out == one.out);
+
+  // An unknown path: exit 2, named on stderr, nothing on stdout.
+  auto const bad = run_cpp("schema7204bad", {"schema", "--command", "planar-execute run nonesuch"});
+  CHECK(bad.code == 2);
+  CHECK(bad.out.empty());
+  CHECK(bad.err.contains("planar-execute run nonesuch"));
+
+  // Compact: one two-key row per command, so far fewer bytes.
+  auto const compact = run_cpp("schema7204compact", {"schema", "--compact"});
+  CHECK(compact.code == 0);
+  auto const rows = [](std::string_view text, std::string_view needle) {
+    std::size_t n = 0;
+    for (auto at = text.find(needle); at != std::string_view::npos; at = text.find(needle, at + needle.size())) {
+      ++n;
+    }
+    return n;
+  };
+  CHECK(rows(compact.out, R"({"command":")") == rows(full.out, R"("path":[)"));
+  CHECK_FALSE(compact.out.contains(R"("flags")"));
+  CHECK(compact.out.size() < 40 * 1024);
+
+  // Both: the one row, bare.
+  auto const row = run_cpp("schema7204row", {"schema", "--compact", "--command", "run"});
+  CHECK(row.code == 0);
+  CHECK(row.out.starts_with(R"({"command":"planar-execute run","summary":")"));
+}

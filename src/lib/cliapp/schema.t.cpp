@@ -578,3 +578,35 @@ TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11
   std::error_code ec;
   std::filesystem::remove_all(scratch_root, ec);
 }
+
+TEST_CASE("select_schema narrows a flat catalog without re-rendering it", "[cliapp][schema][7204]") {
+  CLI::App app{"", "tool"};
+  app.require_subcommand(0);
+  CLI::App* grp = app.add_subcommand("grp", "A group");
+  grp->require_subcommand(0);
+  grp->add_subcommand("leaf", "A leaf with \"quotes\" and a } brace");
+  auto const catalog = planar::cliapp::schema_json(app);
+
+  using planar::cliapp::schema_request;
+  using planar::cliapp::select_schema;
+  CHECK(select_schema(catalog, {}).value() == catalog);
+
+  auto const one = select_schema(catalog, schema_request{.command = "grp leaf"});
+  REQUIRE(one.has_value());
+  CHECK(one->starts_with(R"({"name":"leaf")"));
+  CHECK(catalog.contains(*one));
+  CHECK(select_schema(catalog, schema_request{.command = "tool  grp   leaf"}).value() == *one);
+
+  auto const row = select_schema(catalog, schema_request{.command = "grp leaf", .compact = true});
+  CHECK(row.value() == R"({"command":"tool grp leaf","summary":"A leaf with \"quotes\" and a } brace"})");
+
+  auto const compact = select_schema(catalog, schema_request{.compact = true});
+  CHECK(compact.value() == R"({"schemaVersion":1,"layout":"compact","root":"tool","commands":[{"command":"tool","summary":""},)"
+                           R"({"command":"tool grp","summary":"A group"},)"
+                           R"({"command":"tool grp leaf","summary":"A leaf with \"quotes\" and a } brace"}]})");
+
+  auto const missing = select_schema(catalog, schema_request{.command = "grp nope"});
+  REQUIRE_FALSE(missing.has_value());
+  CHECK(missing.error().contains("grp nope"));
+  CHECK_FALSE(select_schema(catalog, schema_request{.command = ""}).has_value());
+}

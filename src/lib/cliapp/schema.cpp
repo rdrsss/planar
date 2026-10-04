@@ -5,6 +5,8 @@ module planar.cliapp.schema;
 
 import std;
 import cli11;
+import planar.cliapp.args;
+import planar.cliapp.surface;
 import planar.cliapp.walk;
 import planar.json_text;
 
@@ -392,6 +394,183 @@ auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std
   }
   out += "]";
   out += "}";
+  return out;
+}
+
+namespace {
+
+/// @brief Advance past one JSON string whose opening quote is at `pos`.
+/// @return The index one past the closing quote.
+auto skip_string(std::string_view text, std::size_t pos) -> std::size_t {
+  ++pos;
+  while (pos < text.size() && text[pos] != '"') {
+    pos += text[pos] == '\\' ? 2 : 1;
+  }
+  return pos + 1;
+}
+
+/// @brief Advance past one JSON value (string, object, array or scalar).
+/// @return The index one past the value.
+auto skip_value(std::string_view text, std::size_t pos) -> std::size_t {
+  if (pos < text.size() && text[pos] == '"') {
+    return skip_string(text, pos);
+  }
+  int depth = 0;
+  while (pos < text.size()) {
+    char const c = text[pos];
+    if (c == '"') {
+      pos = skip_string(text, pos);
+      continue;
+    }
+    if (c == '{' || c == '[') {
+      ++depth;
+    } else if (c == '}' || c == ']') {
+      if (depth == 0) {
+        return pos;
+      }
+      --depth;
+      if (depth == 0) {
+        return pos + 1;
+      }
+    } else if (c == ',' && depth == 0) {
+      return pos;
+    }
+    ++pos;
+  }
+  return pos;
+}
+
+/// @brief The raw JSON text of the string value under top-level `key` of `object`.
+/// @return The value including its quotes, or empty when absent.
+auto string_member(std::string_view object, std::string_view key) -> std::string_view {
+  std::size_t pos = 1; // past '{'
+  while (pos < object.size() && object[pos] != '}') {
+    if (object[pos] == ',') {
+      ++pos;
+      continue;
+    }
+    auto const key_end   = skip_string(object, pos);
+    auto const name      = object.substr(pos + 1, key_end - pos - 2);
+    pos                  = key_end + 1; // past ':'
+    auto const value_end = skip_value(object, pos);
+    if (name == key) {
+      return object.substr(pos, value_end - pos);
+    }
+    pos = value_end;
+  }
+  return {};
+}
+
+/// @brief Split the `commands` array of a flat catalog into its objects.
+auto command_objects(std::string_view catalog) -> std::vector<std::string_view> {
+  std::vector<std::string_view> out;
+  constexpr std::string_view    marker = "\"commands\":[";
+  auto const                    at     = catalog.find(marker);
+  if (at == std::string_view::npos) {
+    return out;
+  }
+  std::size_t pos = at + marker.size();
+  while (pos < catalog.size() && catalog[pos] == '{') {
+    auto const end = skip_value(catalog, pos);
+    out.push_back(catalog.substr(pos, end - pos));
+    pos = end;
+    if (pos < catalog.size() && catalog[pos] == ',') {
+      ++pos;
+    }
+  }
+  return out;
+}
+
+auto compact_row(std::string_view object) -> std::string {
+  std::string out = "{\"command\":";
+  out += string_member(object, "command");
+  out += ",\"summary\":";
+  out += string_member(object, "summary");
+  out += "}";
+  return out;
+}
+
+auto collapse_whitespace(std::string_view text) -> std::string {
+  std::string out;
+  std::size_t pos = 0;
+  while (pos < text.size()) {
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) {
+      ++pos;
+    }
+    auto const begin = pos;
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) == 0) {
+      ++pos;
+    }
+    if (pos > begin) {
+      if (!out.empty()) {
+        out += ' ';
+      }
+      out += text.substr(begin, pos - begin);
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+auto declare_schema_flags(CLI::App& schema_node) -> void {
+  schema_node.add_option("--command")
+      ->description("Emit only this command's catalog object, by full path (\"planar task update\") or relative to the root "
+                    "(\"task update\"); an unknown path exits 2 with nothing on stdout");
+  add_bool_flag(schema_node, "--compact",
+                "Emit one {command, summary} row per command instead of the full catalog; with --command, only that "
+                "command's row");
+}
+
+auto schema_request_of(const parsed_args& args) -> schema_request {
+  return schema_request{.command = flag_string(args, "--command"), .compact = flag_bool(args, "--compact")};
+}
+
+auto select_schema(std::string_view catalog, const schema_request& request) -> std::expected<std::string, std::string> {
+  if (!request.command.has_value() && !request.compact) {
+    return std::string{catalog};
+  }
+  auto const objects = command_objects(catalog);
+
+  if (request.command.has_value()) {
+    constexpr std::string_view root_key = "\"root\":";
+    auto const                 root_at  = catalog.find(root_key);
+    std::string_view const     root_raw =
+        root_at == std::string_view::npos
+            ? std::string_view{}
+            : catalog.substr(root_at + root_key.size(),
+                             skip_string(catalog, root_at + root_key.size()) - root_at - root_key.size());
+    std::string const root_name = root_raw.size() >= 2 ? std::string{root_raw.substr(1, root_raw.size() - 2)} : std::string{};
+    auto const        typed     = collapse_whitespace(*request.command);
+    auto const        wanted = typed.empty()
+                                   ? std::string{}
+                                   : (typed == root_name || typed.starts_with(root_name + " ") ? typed : root_name + " " + typed);
+    auto const        quoted = quote(wanted);
+    for (auto const object : objects) {
+      if (!typed.empty() && string_member(object, "command") == quoted) {
+        return request.compact ? compact_row(object) : std::string{object};
+      }
+    }
+    return std::unexpected(std::format("schema: unknown command '{}'", *request.command));
+  }
+
+  std::string out      = "{\"schemaVersion\":1,\"layout\":\"compact\",\"root\":";
+  auto const  root_key = std::string_view{"\"root\":"};
+  auto const  root_at  = catalog.find(root_key);
+  out += root_at == std::string_view::npos
+             ? std::string{"\"\""}
+             : std::string{catalog.substr(root_at + root_key.size(),
+                                          skip_string(catalog, root_at + root_key.size()) - root_at - root_key.size())};
+  out += ",\"commands\":[";
+  bool first = true;
+  for (auto const object : objects) {
+    if (!first) {
+      out += ",";
+    }
+    first = false;
+    out += compact_row(object);
+  }
+  out += "]}";
   return out;
 }
 

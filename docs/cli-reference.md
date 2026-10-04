@@ -7717,6 +7717,25 @@ planar-ext schema
 planar-execute schema
 ```
 
+### Narrowing the catalog: `--command` and `--compact`
+
+The full `planar` catalog is about 350 KB, so every binary's `schema` takes two flags that cut it down. With neither flag the output is the full catalog, unchanged.
+
+| Flag | Effect |
+|------|--------|
+| `--command <path>` | Emit exactly that command's catalog object (the same object that appears in `commands[]`) and nothing else. `<path>` is the full path (`"planar task update"`) or relative to the root (`"task update"`, `task`); runs of whitespace are collapsed. |
+| `--compact` | Emit one row per command with only `command` (the full path) and `summary`, inside the usual envelope with `"layout":"compact"`. The row count equals the full catalog's command count; for `planar` the output is about 24 KB. |
+
+With both flags the output is the compact row for that one command. A path that names no command exits `2`, names the path on stderr (`error: schema: unknown command '<path>'`), and writes nothing to stdout. `--command` is bound to its value, so a bare verb name such as `task` is a lookup and never a subcommand: `planar schema --command task` prints the `planar task` object, wherever the flag sits relative to the verb.
+
+```sh
+planar schema --command "planar task update"
+planar schema --compact
+planar-agent schema --compact --command "queue status"
+```
+
+`planar-execute` reads the same two flags in its own parser (`--command=<path>` is accepted too) and takes the same exit code.
+
 `planar`, `planar-agent`, `planar-watch` and `planar-ext` each also expose a
 `version` verb (`planar version`, `planar-agent version`, `planar-watch version`,
 `planar-ext version`) that prints the binary's version, commit, and compiler;
@@ -7942,6 +7961,9 @@ stdout, exit `0`, nothing on stderr. Added by decision 1030 so
 `cli_usage_lint` polices authored references to `planar-execute` verbs; the
 catalog is a description of the hand-rolled parser, pinned against it by
 test, not a second parser.
+`--command <path>` and `--compact` narrow the output as described under
+[Introspection: `schema`](#introspection-schema-all-planning-state-binaries); an
+unknown path exits `2` with the message on stderr.
 
 ---
 

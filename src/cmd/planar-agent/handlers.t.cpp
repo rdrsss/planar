@@ -365,5 +365,10 @@ TEST_CASE("planar-agent leaf help for schema is pinned exactly", "[cmd][agent][h
                    "\n"
                    "\n"
                    "OPTIONS:\n"
-                   "  -h,     --help              Print this help message and exit\n");
+                   "  -h,     --help              Print this help message and exit\n"
+                   "          --command           Emit only this command's catalog object, by full path (\"planar\n"
+                   "                              task update\") or relative to the root (\"task update\"); an unknown\n"
+                   "                              path exits 2 with nothing on stdout\n"
+                   "          --compact           Emit one {command, summary} row per command instead of the full\n"
+                   "                              catalog; with --command, only that command's row\n");
 }

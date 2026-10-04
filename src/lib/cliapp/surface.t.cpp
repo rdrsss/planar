@@ -237,6 +237,11 @@ auto build_hoist_tree(CLI::App& app) -> void {
   add_bool_flag(*inner, "--json", k_undocumented);
   inner->add_option("name");
   outer->add_subcommand("other", "Other");
+  // The real tree declares `--command` as a value-taking option on the
+  // `schema` leaf and nowhere as a bare flag; the hoist protects a flag's
+  // value only under that condition, so the fixture declares it the same way.
+  CLI::App* schema = app.add_subcommand("schema", "Schema");
+  schema->add_option("--command");
 }
 
 /// @brief Hoist `args` (argv[0] excluded) against `build_hoist_tree`.
@@ -290,4 +295,20 @@ TEST_CASE("a token after the terminator is never a verb", "[cliapp][surface][hoi
 TEST_CASE("an already ordered argv is left exactly as it was", "[cliapp][surface][hoist]") {
   CHECK(hoist({"outer", "inner", "--json"}) == std::vector<std::string>{"outer", "inner", "--json"});
   CHECK(hoist({}) == std::vector<std::string>{});
+}
+
+TEST_CASE("the value of --command is never read as a verb", "[cliapp][surface][hoist][7204]") {
+  // `outer` is a child of the root, so a bare `outer` after a flag WOULD be
+  // hoisted into the path; as the value of `--command` it must stay in the tail.
+  CHECK(hoist({"--command", "outer", "outer", "inner"}) == std::vector<std::string>{"outer", "inner", "--command", "outer"});
+  CHECK(hoist({"outer", "--command", "inner", "other"}) == std::vector<std::string>{"outer", "other", "--command", "inner"});
+  // The `=` form is one flag-shaped token and was never at risk.
+  CHECK(hoist({"--command=outer", "outer"}) == std::vector<std::string>{"outer", "--command=outer"});
+  // A trailing `--command` with no value is left for the parser to refuse.
+  CHECK(hoist({"outer", "--command"}) == std::vector<std::string>{"outer", "--command"});
+  // The protection is a property of the declaration, not of the spelling: a
+  // flag the tree never declares, and a flag declared as a bare bool, do not
+  // swallow the token after them, so a verb there is still hoisted.
+  CHECK(hoist({"--nothing", "outer", "inner"}) == std::vector<std::string>{"outer", "inner", "--nothing"});
+  CHECK(hoist({"outer", "inner", "--json", "other"}) == std::vector<std::string>{"outer", "inner", "--json", "other"});
 }

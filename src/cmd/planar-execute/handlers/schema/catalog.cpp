@@ -84,7 +84,9 @@ auto catalog_json() -> std::string {
   add_string(*show, "--profile", "Execution profile to resolve ([execute.profiles.<name>]); default: default.");
   show->add_flag("--json")->description("Emit {\"engine\":…,\"engine_source\":…} instead of key: value lines.");
 
-  root.add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
+  CLI::App* schema =
+      root.add_subcommand("schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals).");
+  cliapp::declare_schema_flags(*schema);
 
   static constexpr std::array<std::pair<std::string_view, std::string_view>, 4> k_summaries{{
       {"planar-execute run", "Run one phase of a Lua workflow and print its flow.result JSON."},

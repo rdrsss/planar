@@ -8,12 +8,12 @@ import cli11;
 import planar.cliapp.args;
 import planar.cliapp.schema;
 import planar.cmd.planar_agent.context;
+import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
 
 namespace planar::cmd::agent::handlers {
 
 auto schema(context& ctx, const cliapp::parsed_args& args, const CLI::App& root) -> handler_result {
-  (void)args;
   // FRAGMENT renderer: `schema_json` documents itself as returning no
   // trailing newline, so the newline is appended here — matching
   // handlers/schema.zig's `writeAll(catalog)` + `writeAll("\n")`. See this
@@ -23,7 +23,11 @@ auto schema(context& ctx, const cliapp::parsed_args& args, const CLI::App& root)
   // `planar.cmd.planar_agent.surface`'s header and `planar.cliapp.schema`'s
   // header, divergence 1), so there is nothing for a summary table to
   // supply that `description` does not already carry.
-  ctx.out() << cliapp::schema_json(root) << '\n';
+  auto const selected = cliapp::select_schema(cliapp::schema_json(root), cliapp::schema_request_of(args));
+  if (!selected) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, selected.error()));
+  }
+  ctx.out() << *selected << '\n';
   return {};
 }
 
