@@ -129,12 +129,16 @@ smoke-reset: ## Delete the throwaway smoke database
 test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures
 	bash scripts/install-manifest-test.sh
 
+.PHONY: test-install-stage
+test-install-stage: ## Run focused installer staging-step fixtures (skills/planar, agents, codex-agents)
+	bash scripts/install-stage-test.sh
+
 .PHONY: test-install-deps
 test-install-deps: ## Run focused installer compiler-preflight fixture
 	bash scripts/install-deps-test.sh
 
 .PHONY: test
-test: test-install-manifest test-install-deps ## Run unit tests
+test: test-install-manifest test-install-stage test-install-deps ## Run unit tests
 	$(configure_debug)
 	cmake --build build/debug --target all planar_tests $(ARGS)
 	ctest --test-dir build/debug --output-on-failure -j $(TEST_JOBS) $(ARGS)

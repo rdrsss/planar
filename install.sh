@@ -27,6 +27,8 @@
 #                                     # time via CMake codegen)
 #     agents/                         # vendor-neutral agent role specs, plus
 #                                     # rendered agents/{claude,codex,copilot,gemini}/
+#     skills/planar/                  # staged planar skill (SKILL.md + references/)
+#     codex-agents/planar-*.toml      # Codex custom agents rendered from agents/
 #     skills/src/pl-*.md              # unified authored skill sources
 #     commands/claude/pl-*.md         # rendered Claude slash commands
 #     skills/codex/pl-*/SKILL.md      # rendered Codex skills
@@ -521,7 +523,7 @@ BUILD_DEPS=(
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
-  "python3|python|CMake configure (the Python test runners); install.sh's agent.db retirement reader (scripts/install-lib/queue_retire.py); the counter-reset log helper (scripts/queue-logs-after-reset.py)"
+  "python3|python|CMake configure (the Python test runners); install.sh's agent.db retirement reader (scripts/install-lib/queue_retire.py); the counter-reset log helper (scripts/queue-logs-after-reset.py); the Codex agent TOML renderer (scripts/render-codex-agents.py)"
   "mktemp||capture the queue retirement probe's stderr (scripts/install-lib/queue-retire.sh)"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
@@ -621,6 +623,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     log "re-check $PLANAR_HOME/agent.db for live queue entries, then retire it and its old numbered queue logs"
   fi
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
+  log "stage skills/planar/ and agents/*.md; render the Codex agent TOML into $PLANAR_HOME/codex-agents"
   log "render per-vendor skill + agent outputs into $PLANAR_HOME"
   log "place templates/ (missing-only; --force overwrites)"
   if [[ -n "$VENDORS" ]]; then
@@ -770,6 +773,51 @@ if [[ -d "$REPO_ROOT/skills/src" ]]; then
   log "skills/src/ → $PLANAR_HOME/skills/src ($MODE)"
 fi
 
+# ---------- stage the planar skill and agents ----------
+
+# Stage the vendor-neutral skill and agents once, before any vendor placement:
+# skills/planar/ (SKILL.md + references/) and the nineteen agents/*.md files
+# (the fifteen planar-*.md roles and the four doctrine documents) are copied
+# or linked per $MODE, and the Codex custom-agent TOML files are rendered from
+# agents/ into codex-agents/. The TOML never goes under agents/codex/, which
+# belongs to the retired render. agents/<vendor>/ subdirectories are left to
+# the cleanup task.
+title "Staging the planar skill and agents"
+[[ -f "$REPO_ROOT/skills/planar/SKILL.md" ]] || err "skills/planar/SKILL.md not found in $REPO_ROOT (required to stage the planar skill)"
+[[ -d "$REPO_ROOT/agents" ]] || err "agents/ not found in $REPO_ROOT (required to stage the planar agents)"
+
+rm -rf "$PLANAR_HOME/skills/planar"
+mkdir -p "$PLANAR_HOME/skills"
+place "$REPO_ROOT/skills/planar" "$PLANAR_HOME/skills/planar"
+log "skills/planar/ → $PLANAR_HOME/skills/planar ($MODE)"
+
+mkdir -p "$PLANAR_HOME/agents"
+_staged_agents=0
+for f in "$REPO_ROOT"/agents/*.md; do
+  [[ -f "$f" ]] || continue
+  rm -f "$PLANAR_HOME/agents/$(basename "$f")"
+  place "$f" "$PLANAR_HOME/agents/$(basename "$f")"
+  vlog "agents/$(basename "$f") → $PLANAR_HOME/agents ($MODE)"
+  _staged_agents=$((_staged_agents + 1))
+done
+log "agents/*.md → $PLANAR_HOME/agents ($_staged_agents files, $MODE)"
+
+# The renderer exits 1 naming a malformed file and writes nothing. Render into
+# a sibling directory and move it into place only on success, so a failure
+# leaves no codex-agents/ behind and a prior good one intact.
+_codex_new="$PLANAR_HOME/codex-agents.new"
+rm -rf "$_codex_new"
+if ! _codex_out="$(python3 "$REPO_ROOT/scripts/render-codex-agents.py" "$REPO_ROOT/agents" "$_codex_new" 2>&1)"; then
+  rm -rf "$_codex_new"
+  err "rendering the Codex agents failed: $_codex_out"
+fi
+rm -rf "$PLANAR_HOME/codex-agents"
+mv "$_codex_new" "$PLANAR_HOME/codex-agents"
+log "codex-agents/ ← agents/ ($(count_glob "$PLANAR_HOME"/codex-agents/*.toml) TOML files)"
+
+# Retired by the vendor-table task; kept until it lands. The vendor block below
+# still consumes this render's outputs (commands/claude, skills/codex,
+# skills/copilot, skills/gemini, agents/<vendor>).
 # Render the per-vendor outputs (commands/claude, skills/codex,
 # skills/copilot, skills/gemini, agents/{claude,codex,copilot,gemini})
 # directly into $PLANAR_HOME by shelling the CMake-installed in-tree
@@ -1319,6 +1367,7 @@ if [[ -n "$VENDORS" ]]; then
     esac
   done
 fi
+install_manifest_record_staged "$PLANAR_HOME" "$REPO_ROOT"
 install_manifest_write "$PLANAR_HOME/install-manifest.json"
 vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_ROW_VENDOR[@]} managed projections)"
 

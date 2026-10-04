@@ -170,6 +170,28 @@ install_manifest_record_vendor() {
   esac
 }
 
+# install_manifest_record_staged <planar_home> <repo_root> -- record the staged
+# vendor-neutral trees as `extras`, one $PLANAR_HOME-relative path per file:
+# skills/planar/**, the agents/*.md the checkout ships, and the rendered
+# codex-agents/*.toml. They are not projections: no vendor owns them, and the
+# installed-surface reader rejects a projection row whose vendor is not one of
+# the four. `extras` is the schema's existing free-form string list. Call it
+# after install_manifest_begin, which clears the list.
+install_manifest_record_staged() {
+  local planar_home="$1" repo_root="$2" f rel
+  while IFS= read -r -d '' f; do
+    rel="${f#"$planar_home"/}"
+    install_manifest_add_extra "${rel//\/\//\/}"
+  done < <(find "$planar_home/skills/planar/" -type f -print0)
+  for f in "$repo_root"/agents/*.md; do
+    [[ -f "$f" ]] && install_manifest_add_extra "agents/$(basename "$f")"
+  done
+  for f in "$planar_home"/codex-agents/*.toml; do
+    [[ -f "$f" ]] && install_manifest_add_extra "codex-agents/$(basename "$f")"
+  done
+  return 0
+}
+
 install_manifest_json_quote() {
   local value="$1"
   value=${value//\\/\\\\}

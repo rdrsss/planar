@@ -120,6 +120,7 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 That's it. The script:
 
 - Builds all five binaries and `scriptorium` from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext,scriptorium}`.
+- Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and renders the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
 - Stages `agents/`, `skills/src/`, `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen), then renders the per-vendor outputs there with `scriptorium render`.
 - Installs the 40 rendered skills, and the rendered agents, into each selected vendor's harness dirs.
 - Atomically writes `~/.planar/install-manifest.json` after the selected vendor
@@ -470,6 +471,8 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-ext-sync.md
 │   ├── … (the remaining role specs and shared docs)
 │   └── claude/ codex/ copilot/ gemini/ # rendered per-vendor agent files
+├── skills/planar/                      # staged planar skill (SKILL.md + references/)
+├── codex-agents/                       # Codex custom agents (planar-*.toml) rendered from agents/
 ├── commands/claude/                    # Claude slash-command sources
 │   ├── pl-orchestrator.md
 │   ├── pl-coder.md
