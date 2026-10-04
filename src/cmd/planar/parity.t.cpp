@@ -1789,6 +1789,10 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
     auto const      sandbox = space.cpp_root / "localhome" / ".planar" / "local";
     std::filesystem::create_directories(sandbox / "skills" / "broken", ec); // the one walk error
     std::filesystem::create_directories(sandbox / "agents", ec);
+    // Presence markers: a vendor directory is written only when its marker
+    // exists, so the arena's home declares Claude and Codex as installed.
+    std::filesystem::create_directories(space.cpp_root / "localhome" / ".claude", ec);
+    std::filesystem::create_directories(space.cpp_root / "localhome" / ".codex", ec);
     for (auto const& [rel, body] : sources) {
       auto const path = sandbox / rel;
       std::filesystem::create_directories(path.parent_path(), ec);
@@ -1819,17 +1823,16 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        "to flat/SKILL.md\n"
        "lint [warning] skill/nodesc.description: description is empty; vendors surface this as the skill summary\n"
        "nodesc (skill)\n"
-       "  claude   dry-run [symlink]  ->  <ARENA>/localhome/.claude/commands/local-nodesc.md\n"
-       "  codex    dry-run [symlink]  ->  <ARENA>/localhome/.codex/skills/local-nodesc\n"
-       "  copilot  dry-run [symlink]  ->  <ARENA>/localhome/.copilot/skills/local-nodesc\n"
+       "  claude   dry-run [copy]  ->  <ARENA>/localhome/.claude/skills/planar-local-nodesc\n"
+       "  shared   dry-run [copy]  ->  <ARENA>/localhome/.agents/skills/planar-local-nodesc\n"
        "three (skill)\n"
-       "  claude   dry-run [symlink]  ->  <ARENA>/localhome/.claude/commands/local-three.md\n"
-       "  codex    dry-run [symlink]  ->  <ARENA>/localhome/.codex/skills/local-three\n"
-       "  copilot  dry-run [symlink]  ->  <ARENA>/localhome/.copilot/skills/local-three\n"
+       "  claude   dry-run [copy]  ->  <ARENA>/localhome/.claude/skills/planar-local-three\n"
+       "  shared   dry-run [copy]  ->  <ARENA>/localhome/.agents/skills/planar-local-three\n"
        "an-agent (agent)\n"
-       "  agents   dry-run [symlink]  ->  <ARENA>/localhome/.planar/agents/local-an-agent.md\n"
+       "  claude   dry-run [copy]  ->  <ARENA>/localhome/.claude/agents/planar-local-an-agent.md\n"
+       "  codex    dry-run [copy]  ->  <ARENA>/localhome/.codex/agents/planar-local-an-agent.toml\n"
        "\n"
-       "dry-run: 7 would-be installs across 3 source(s)\n",
+       "dry-run: 6 would-be installs across 3 source(s)\n",
        ""},
       {"lclink",
        {"local", "link"},
@@ -1839,17 +1842,16 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        "to flat/SKILL.md\n"
        "lint [warning] skill/nodesc.description: description is empty; vendors surface this as the skill summary\n"
        "nodesc (skill)\n"
-       "  claude   created [symlink]  ->  <ARENA>/localhome/.claude/commands/local-nodesc.md\n"
-       "  codex    created [symlink]  ->  <ARENA>/localhome/.codex/skills/local-nodesc\n"
-       "  copilot  created [symlink]  ->  <ARENA>/localhome/.copilot/skills/local-nodesc\n"
+       "  claude   created [copy]  ->  <ARENA>/localhome/.claude/skills/planar-local-nodesc\n"
+       "  shared   created [copy]  ->  <ARENA>/localhome/.agents/skills/planar-local-nodesc\n"
        "three (skill)\n"
-       "  claude   created [symlink]  ->  <ARENA>/localhome/.claude/commands/local-three.md\n"
-       "  codex    created [symlink]  ->  <ARENA>/localhome/.codex/skills/local-three\n"
-       "  copilot  created [symlink]  ->  <ARENA>/localhome/.copilot/skills/local-three\n"
+       "  claude   created [copy]  ->  <ARENA>/localhome/.claude/skills/planar-local-three\n"
+       "  shared   created [copy]  ->  <ARENA>/localhome/.agents/skills/planar-local-three\n"
        "an-agent (agent)\n"
-       "  agents   created [symlink]  ->  <ARENA>/localhome/.planar/agents/local-an-agent.md\n"
+       "  claude   created [copy]  ->  <ARENA>/localhome/.claude/agents/planar-local-an-agent.md\n"
+       "  codex    created [copy]  ->  <ARENA>/localhome/.codex/agents/planar-local-an-agent.toml\n"
        "\n"
-       "done: 7 linked, 0 unchanged, 0 skipped across 3 source(s)\n",
+       "done: 6 linked, 0 unchanged, 0 skipped across 3 source(s)\n",
        ""},
       {"lclink2",
        {"local", "link"},
@@ -1859,17 +1861,16 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        "to flat/SKILL.md\n"
        "lint [warning] skill/nodesc.description: description is empty; vendors surface this as the skill summary\n"
        "nodesc (skill)\n"
-       "  claude   unchanged [symlink]  ->  <ARENA>/localhome/.claude/commands/local-nodesc.md\n"
-       "  codex    unchanged [symlink]  ->  <ARENA>/localhome/.codex/skills/local-nodesc\n"
-       "  copilot  unchanged [symlink]  ->  <ARENA>/localhome/.copilot/skills/local-nodesc\n"
+       "  claude   unchanged [copy]  ->  <ARENA>/localhome/.claude/skills/planar-local-nodesc\n"
+       "  shared   unchanged [copy]  ->  <ARENA>/localhome/.agents/skills/planar-local-nodesc\n"
        "three (skill)\n"
-       "  claude   unchanged [symlink]  ->  <ARENA>/localhome/.claude/commands/local-three.md\n"
-       "  codex    unchanged [symlink]  ->  <ARENA>/localhome/.codex/skills/local-three\n"
-       "  copilot  unchanged [symlink]  ->  <ARENA>/localhome/.copilot/skills/local-three\n"
+       "  claude   unchanged [copy]  ->  <ARENA>/localhome/.claude/skills/planar-local-three\n"
+       "  shared   unchanged [copy]  ->  <ARENA>/localhome/.agents/skills/planar-local-three\n"
        "an-agent (agent)\n"
-       "  agents   unchanged [symlink]  ->  <ARENA>/localhome/.planar/agents/local-an-agent.md\n"
+       "  claude   unchanged [copy]  ->  <ARENA>/localhome/.claude/agents/planar-local-an-agent.md\n"
+       "  codex    unchanged [copy]  ->  <ARENA>/localhome/.codex/agents/planar-local-an-agent.toml\n"
        "\n"
-       "done: 0 linked, 7 unchanged, 0 skipped across 3 source(s)\n",
+       "done: 0 linked, 6 unchanged, 0 skipped across 3 source(s)\n",
        ""},
       {"lclinkj",
        {"local", "link", "--json"},
@@ -1877,73 +1878,68 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
        "SKILL.md\",\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Frontmatter\":{\"Description\":\"\",\"ArgumentHint\":\"\",\"Tier\":"
        "\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[],\"Kind\":\"\"},\"Body\":\"No description, so this "
-       "LINTS.\\n\"},\"Records\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/commands/"
-       "local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
-       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_"
-       "path\":\"<ARENA>/localhome/.codex/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "nodesc\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_"
-       "path\":\"<ARENA>/localhome/.copilot/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "nodesc\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n"
+       "LINTS.\\n\"},\"Records\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/skills/"
+       "planar-local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"shared\",\"target_path\":"
+       "\"<ARENA>/localhome/.agents/skills/planar-local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n"
        "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/skills/three/"
        "SKILL.md\",\"Name\":\"three\",\"Kind\":\"skill\",\"Frontmatter\":{\"Description\":\"Three "
        "vendors.\",\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[\"claude\",\"codex\","
        "\"copilot\"],\"Kind\":\"\"},\"Body\":\"B.\\n\"},\"Records\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/"
-       ".claude/commands/local-three.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/"
-       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_"
-       "path\":\"<ARENA>/localhome/.codex/skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "three\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_path\":"
-       "\"<ARENA>/localhome/.copilot/skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "three\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n"
+       ".claude/skills/planar-local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"shared\",\"target_path\":"
+       "\"<ARENA>/localhome/.agents/skills/planar-local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n"
        "{\"Source\":{\"SourcePath\":\"<ARENA>/localhome/.planar/local/agents/"
        "an-agent.md\",\"Name\":\"an-agent\",\"Kind\":\"agent\",\"Frontmatter\":{\"Description\":\"An "
        "agent.\",\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[],\"Kind\":\"\"},\"Body\":\"A."
-       "\\n\"},\"Records\":[{\"vendor\":\"agents\",\"target_path\":\"<ARENA>/localhome/.planar/agents/"
-       "local-an-agent.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/"
-       "an-agent.md\",\"mode\":\"symlink\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n",
+       "\\n\"},\"Records\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/agents/"
+       "planar-local-an-agent.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/"
+       "an-agent.md\",\"mode\":\"copy\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_"
+       "path\":\"<ARENA>/localhome/.codex/agents/planar-local-an-agent.toml\",\"source_path\":\"<ARENA>/localhome/.planar/local/"
+       "agents/an-agent.md\",\"mode\":\"copy\",\"action\":\"unchanged\",\"linked_at\":\"<STAMP>\"}]}\n",
        ""},
       {"lclist1",
        {"local", "list"},
        0,
        "name          kind     vendor   status   target\n"
-       "nodesc        skill    claude   live     <ARENA>/localhome/.claude/commands/local-nodesc.md\n"
-       "nodesc        skill    codex    live     <ARENA>/localhome/.codex/skills/local-nodesc\n"
-       "nodesc        skill    copilot  live     <ARENA>/localhome/.copilot/skills/local-nodesc\n"
-       "three         skill    claude   live     <ARENA>/localhome/.claude/commands/local-three.md\n"
-       "three         skill    codex    live     <ARENA>/localhome/.codex/skills/local-three\n"
-       "three         skill    copilot  live     <ARENA>/localhome/.copilot/skills/local-three\n"
-       "an-agent      agent    agents   live     <ARENA>/localhome/.planar/agents/local-an-agent.md\n",
+       "nodesc        skill    claude   live     <ARENA>/localhome/.claude/skills/planar-local-nodesc\n"
+       "nodesc        skill    shared   live     <ARENA>/localhome/.agents/skills/planar-local-nodesc\n"
+       "three         skill    claude   live     <ARENA>/localhome/.claude/skills/planar-local-three\n"
+       "three         skill    shared   live     <ARENA>/localhome/.agents/skills/planar-local-three\n"
+       "an-agent      agent    claude   live     <ARENA>/localhome/.claude/agents/planar-local-an-agent.md\n"
+       "an-agent      agent    codex    live     <ARENA>/localhome/.codex/agents/planar-local-an-agent.toml\n",
        ""},
       {"lclistj1",
        {"local", "list", "--json"},
        0,
        "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/"
-       "commands/local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
-       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/"
-       "skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "nodesc\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/"
-       "skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "nodesc\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "skills/planar-local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"shared\",\"target_path\":\"<ARENA>/localhome/.agents/"
+       "skills/planar-local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
        "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/"
-       "commands/local-three.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/"
-       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/"
-       "skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "three\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"copilot\",\"target_path\":\"<ARENA>/localhome/.copilot/"
-       "skills/local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "three\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
-       "{\"Name\":\"an-agent\",\"Kind\":\"agent\",\"Record\":{\"vendor\":\"agents\",\"target_path\":\"<ARENA>/localhome/.planar/"
-       "agents/local-an-agent.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/"
-       "an-agent.md\",\"mode\":\"symlink\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n",
+       "skills/planar-local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"three\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"shared\",\"target_path\":\"<ARENA>/localhome/.agents/"
+       "skills/planar-local-three\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/three/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"an-agent\",\"Kind\":\"agent\",\"Record\":{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/localhome/.claude/"
+       "agents/planar-local-an-agent.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/"
+       "an-agent.md\",\"mode\":\"copy\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n"
+       "{\"Name\":\"an-agent\",\"Kind\":\"agent\",\"Record\":{\"vendor\":\"codex\",\"target_path\":\"<ARENA>/localhome/.codex/"
+       "agents/planar-local-an-agent.toml\",\"source_path\":\"<ARENA>/localhome/.planar/local/agents/"
+       "an-agent.md\",\"mode\":\"copy\",\"action\":\"live\",\"linked_at\":\"<STAMP>\"}}\n",
        ""},
       {"lclistv",
        {"local", "list", "--vendor", "codex"},
        0,
        "name          kind     vendor   status   target\n"
-       "nodesc        skill    codex    live     <ARENA>/localhome/.codex/skills/local-nodesc\n"
-       "three         skill    codex    live     <ARENA>/localhome/.codex/skills/local-three\n",
+       "nodesc        skill    shared   live     <ARENA>/localhome/.agents/skills/planar-local-nodesc\n"
+       "three         skill    shared   live     <ARENA>/localhome/.agents/skills/planar-local-three\n"
+       "an-agent      agent    codex    live     <ARENA>/localhome/.codex/agents/planar-local-an-agent.toml\n",
        ""},
       {"lclistvn",
        {"local", "list", "--vendor", "nope"},
@@ -1964,11 +1960,10 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        "warning: <ARENA>/localhome/.planar/local/skills/flat.md: legacy flat skill file; run `planar local migrate` to convert "
        "to flat/SKILL.md\n"
        "three (skill)\n"
-       "  claude   unchanged [symlink]  ->  <ARENA>/localhome/.claude/commands/local-three.md\n"
-       "  codex    skipped  ->  <ARENA>/localhome/.codex/skills/local-three\n"
-       "  copilot  skipped  ->  <ARENA>/localhome/.copilot/skills/local-three\n"
+       "  claude   unchanged [copy]  ->  <ARENA>/localhome/.claude/skills/planar-local-three\n"
+       "  shared   skipped  ->  <ARENA>/localhome/.agents/skills/planar-local-three\n"
        "\n"
-       "done: 0 linked, 1 unchanged, 2 skipped across 1 source(s)\n",
+       "done: 0 linked, 1 unchanged, 1 skipped across 1 source(s)\n",
        ""},
       {"lclinkmiss",
        {"local", "link", "nosuch"},
@@ -2000,7 +1995,8 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        {"local", "unlink", "an-agent"},
        0,
        "an-agent (agent)\n"
-       "  agents   removed  <-  <ARENA>/localhome/.planar/agents/local-an-agent.md\n",
+       "  claude   removed  <-  <ARENA>/localhome/.claude/agents/planar-local-an-agent.md\n"
+       "  codex    removed  <-  <ARENA>/localhome/.codex/agents/planar-local-an-agent.toml\n",
        ""},
       {"lcunlink2",
        {"local", "unlink", "an-agent"},
@@ -2011,12 +2007,10 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        {"local", "unlink", "nodesc", "--json"},
        0,
        "{\"result\":{\"Name\":\"nodesc\",\"Kind\":\"skill\",\"Removed\":[{\"vendor\":\"claude\",\"target_path\":\"<ARENA>/"
-       "localhome/.claude/commands/local-nodesc.md\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
-       "SKILL.md\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"codex\",\"target_path\":"
-       "\"<ARENA>/localhome/.codex/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "nodesc\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"copilot\",\"target_path\":"
-       "\"<ARENA>/localhome/.copilot/skills/local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/"
-       "nodesc\",\"mode\":\"symlink\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"}],\"PurgedFile\":\"\"}}\n",
+       "localhome/.claude/skills/planar-local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"},{\"vendor\":\"shared\",\"target_path\":\"<"
+       "ARENA>/localhome/.agents/skills/planar-local-nodesc\",\"source_path\":\"<ARENA>/localhome/.planar/local/skills/nodesc/"
+       "SKILL.md\",\"mode\":\"copy\",\"action\":\"removed\",\"linked_at\":\"<STAMP>\"}],\"PurgedFile\":\"\"}}\n",
        ""},
       {"lcunlinkghost",
        {"local", "unlink", "ghost", "--purge"},
@@ -2037,7 +2031,8 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
        {"local", "list"},
        0,
        "name          kind     vendor   status   target\n"
-       "three         skill    claude   live     <ARENA>/localhome/.claude/commands/local-three.md\n",
+       "three         skill    claude   live     <ARENA>/localhome/.claude/skills/planar-local-three\n"
+       "three         skill    shared   live     <ARENA>/localhome/.agents/skills/planar-local-three\n",
        ""},
       {"lcimpbad",
        {"local", "import", "nope.md", "--kind", "bogus"},
@@ -2143,10 +2138,15 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
     auto const mine = manifests_of(space.cpp_root);
     REQUIRE(mine.at("skills") ==
             "{\n  \"version\": 1,\n  \"entries\": [\n    {\n      \"name\": \"three\",\n      \"source_path\": "
-            "\"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n      \"links\": [\n        {\n          \"vendor\": "
-            "\"claude\",\n          \"target_path\": \"<ARENA>/localhome/.claude/commands/local-three.md\",\n          "
-            "\"source_path\": \"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n          \"mode\": \"symlink\",\n     "
-            "     \"linked_at\": \"<STAMP>\"\n        }\n      ]\n    }\n  ]\n}\n");
+            "\"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n      \"links\": [\n"
+            "        {\n          \"vendor\": \"claude\",\n          \"target_path\": "
+            "\"<ARENA>/localhome/.claude/skills/planar-local-three\",\n          \"source_path\": "
+            "\"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n          \"mode\": \"copy\",\n          \"linked_at\": "
+            "\"<STAMP>\"\n        },\n"
+            "        {\n          \"vendor\": \"shared\",\n          \"target_path\": "
+            "\"<ARENA>/localhome/.agents/skills/planar-local-three\",\n          \"source_path\": "
+            "\"<ARENA>/localhome/.planar/local/skills/three/SKILL.md\",\n          \"mode\": \"copy\",\n          \"linked_at\": "
+            "\"<STAMP>\"\n        }\n      ]\n    }\n  ]\n}\n");
     REQUIRE(mine.at("agents") == "{\n  \"version\": 1,\n  \"entries\": []\n}\n");
   }
 
@@ -2154,7 +2154,7 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
     std::map<std::string, std::string> entries;
     auto const                         home = root / "localhome";
     std::error_code                    ec;
-    for (auto const& vendor_dir : {".claude", ".codex", ".copilot", ".planar"}) {
+    for (auto const& vendor_dir : {".agents", ".claude", ".codex", ".copilot", ".planar"}) {
       auto const base = home / vendor_dir;
       if (!std::filesystem::is_directory(base, ec)) {
         continue;
@@ -2179,24 +2179,24 @@ TEST_CASE("a seeded local sandbox lifecycle is pinned", "[cmd][parity][cli-surfa
   // NON-VACUITY: an empty walk would make this worthless, so the exact end
   // state is pinned rather than merely "non-empty".
   //
-  // MEASURED, not reasoned about: the sequence's last mutating step is
-  // `local link --reconcile`, which drops every install whose sandbox
-  // source is gone -- and the preceding `unlink`/`--purge` steps removed
-  // those sources. So the tree ends as three vendor directories plus
-  // `.planar/agents`, with ZERO symlinks surviving. That "reconcile really
-  // did remove them" is the property worth pinning here; an earlier draft
-  // of this block asserted seven entries with `local-three` still linked,
-  // which is what the sequence looks like several steps earlier.
-  CHECK(cpp_installs.size() == 4);
-  CHECK(cpp_installs.at(".claude/commands") == "dir");
-  CHECK(cpp_installs.at(".codex/skills") == "dir");
-  CHECK(cpp_installs.at(".copilot/skills") == "dir");
-  CHECK(cpp_installs.at(".planar/agents") == "dir");
-  // No symlink survives reconcile. Asserting the count alone would pass if
-  // a stale symlink replaced a directory entry one-for-one.
+  // The sequence's mutating steps leave exactly ONE live projection, the
+  // `three` skill (its Claude copy and its shared-root copy); `unlink` removed
+  // the other projections' files and left their now-empty parent directories.
+  // Nothing is written under the OLD locations (`.claude/commands`,
+  // `.codex/skills`, `.copilot`, `.planar/agents`), and no projection is a
+  // symlink: the copy is the product.
+  CHECK(cpp_installs.size() == 8);
+  CHECK(cpp_installs.at(".agents/skills") == "dir");
+  CHECK(cpp_installs.at(".agents/skills/planar-local-three") == "dir");
+  CHECK(cpp_installs.at(".agents/skills/planar-local-three/SKILL.md") == "regular");
+  CHECK(cpp_installs.at(".claude/agents") == "dir");
+  CHECK(cpp_installs.at(".claude/skills") == "dir");
+  CHECK(cpp_installs.at(".claude/skills/planar-local-three") == "dir");
+  CHECK(cpp_installs.at(".claude/skills/planar-local-three/SKILL.md") == "regular");
+  CHECK(cpp_installs.at(".codex/agents") == "dir");
   for (auto const& [rel, kind] : cpp_installs) {
     INFO("surviving install: " << rel);
-    CHECK(kind == "dir");
+    CHECK(kind != "symlink");
   }
 }
 

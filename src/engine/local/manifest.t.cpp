@@ -325,10 +325,10 @@ TEST_CASE("manifest frontmatter tolerates CR inside the block but NOT in the fen
 
 // --- resolved_vendors and lint ----------------------------------------------
 
-TEST_CASE("manifest resolved_vendors expands an empty list to all three") {
-  // EMPTY means "all three", not "none". An author who omitted the key never
+TEST_CASE("manifest resolved_vendors expands an empty list to every vendor") {
+  // EMPTY means "every vendor", not "none". An author who omitted the key never
   // meant an uninstallable skill.
-  REQUIRE(mf::resolved_vendors({}) == std::vector<std::string>{"claude", "codex", "copilot"});
+  REQUIRE(mf::resolved_vendors({}) == std::vector<std::string>{"claude", "codex", "copilot", "gemini", "opencode"});
 }
 
 TEST_CASE("manifest resolved_vendors sorts what the author wrote") {

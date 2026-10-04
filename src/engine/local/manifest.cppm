@@ -114,12 +114,12 @@ export enum class kind {
   agent, ///< `<root>/.planar/local/agents/<name>.md`.
 };
 
-/// @brief The three vendors a skill can be installed into, in sorted order.
+/// @brief The vendors a skill's `vendors:` may name, in sorted order.
 ///
 /// This is also the DEFAULT set: a skill whose frontmatter names no vendors is
-/// installed into all three. Oracle-confirmed — a skill with no `vendors:` key
-/// produced claude, codex and copilot targets.
-export inline constexpr std::array<std::string_view, 3> all_vendors{"claude", "codex", "copilot"};
+/// installed into every present vendor's root. `codex`, `copilot`, `gemini` and
+/// `opencode` all read the shared skills root.
+export inline constexpr std::array<std::string_view, 5> all_vendors{"claude", "codex", "copilot", "gemini", "opencode"};
 
 /// @brief The per-kind link manifest's filename.
 ///
@@ -319,7 +319,7 @@ export enum class mode {
 
 /// @brief One recorded install target in the on-disk link manifest.
 export struct manifest_record {
-  std::string    vendor;                         ///< `claude` / `codex` / `copilot`, or `agents` for an agent.
+  std::string    vendor;                         ///< `claude` / `codex` / `copilot`, or `shared` for the shared skills root.
   std::string    target_path;                    ///< Where the install landed.
   std::string    source_path;                    ///< What it points at.
   manifest::mode mode = manifest::mode::symlink; ///< How it was materialised.

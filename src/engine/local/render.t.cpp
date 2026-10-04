@@ -24,7 +24,7 @@
 //     alpha         skill    claude   live     /tmp/pb/h/.claude/commands/local-alpha.md
 //     alpha         skill    codex    live     /tmp/pb/h/.codex/skills/local-alpha
 //     alpha         skill    copilot  live     /tmp/pb/h/.copilot/skills/local-alpha
-//     beta          agent    agents   live     /tmp/pb/h/.planar/agents/local-beta.md
+//     beta          agent    shared   live     /tmp/pb/h/.planar/agents/local-beta.md
 //
 //   $Z local link --dry-run
 //     alpha (skill)
@@ -107,7 +107,7 @@ auto fixture_rows() -> std::vector<lk::list_record> {
   return {live_row("alpha", mf::kind::skill, "claude", k_claude, k_src),
           live_row("alpha", mf::kind::skill, "codex", k_codex, k_src_dir),
           live_row("alpha", mf::kind::skill, "copilot", k_copilot, k_src_dir),
-          live_row("beta", mf::kind::agent, "agents", k_agent, k_agsrc)};
+          live_row("beta", mf::kind::agent, "shared", k_agent, k_agsrc)};
 }
 
 auto alpha_file() -> mf::sandbox_file {
@@ -159,7 +159,7 @@ TEST_CASE("render list_text reproduces the oracle's table") {
           "alpha         skill    claude   live     /tmp/pb/h/.claude/commands/local-alpha.md\n"
           "alpha         skill    codex    live     /tmp/pb/h/.codex/skills/local-alpha\n"
           "alpha         skill    copilot  live     /tmp/pb/h/.copilot/skills/local-alpha\n"
-          "beta          agent    agents   live     /tmp/pb/h/.planar/agents/local-beta.md\n");
+          "beta          agent    shared   live     /tmp/pb/h/.planar/agents/local-beta.md\n");
 }
 
 TEST_CASE("render list_text pushes an over-long value right rather than truncating") {
@@ -178,9 +178,18 @@ TEST_CASE("render list_text keeps the header when a filter matches nothing") {
 }
 
 TEST_CASE("render list_text applies a matching filter") {
-  REQUIRE(rd::list_text(fixture_rows(), "codex") ==
+  REQUIRE(rd::list_text(fixture_rows(), "claude") ==
           "name          kind     vendor   status   target\n"
-          "alpha         skill    codex    live     /tmp/pb/h/.codex/skills/local-alpha\n");
+          "alpha         skill    claude   live     /tmp/pb/h/.claude/commands/local-alpha.md\n");
+}
+
+TEST_CASE("render list_text lets a vendor that reads the shared root select its rows") {
+  // `shared` is the shared skills root, so `--vendor codex` selects the codex
+  // row AND the `shared` row; `--vendor claude` selects neither.
+  const auto out = rd::list_text(fixture_rows(), "codex");
+  REQUIRE(out.contains("alpha         skill    codex"));
+  REQUIRE(out.contains("beta          agent    shared"));
+  REQUIRE_FALSE(rd::list_text(fixture_rows(), "claude").contains("shared"));
 }
 
 TEST_CASE("render list_json emits NDJSON with PascalCase outer keys") {
@@ -235,7 +244,7 @@ auto dry_run_results() -> std::vector<lk::link_result> {
   return {{"alpha",
            mf::kind::skill,
            {dry("claude", k_claude, k_src), dry("codex", k_codex, k_src_dir), dry("copilot", k_copilot, k_src_dir)}},
-          {"beta", mf::kind::agent, {dry("agents", k_agent, k_agsrc)}}};
+          {"beta", mf::kind::agent, {dry("shared", k_agent, k_agsrc)}}};
 }
 
 } // namespace
@@ -247,7 +256,7 @@ TEST_CASE("render link_source_text reproduces the oracle's dry-run block") {
                                               "  codex    dry-run [symlink]  ->  /tmp/pb/h/.codex/skills/local-alpha\n"
                                               "  copilot  dry-run [symlink]  ->  /tmp/pb/h/.copilot/skills/local-alpha\n");
   REQUIRE(rd::link_source_text(results[1]) == "beta (agent)\n"
-                                              "  agents   dry-run [symlink]  ->  /tmp/pb/h/.planar/agents/local-beta.md\n");
+                                              "  shared   dry-run [symlink]  ->  /tmp/pb/h/.planar/agents/local-beta.md\n");
 }
 
 TEST_CASE("render link_source_text drops the bracket group entirely for a skipped record") {
@@ -282,7 +291,7 @@ TEST_CASE("render link_summary_text counts a real run") {
                      {{"claude", "", "", mf::mode::symlink, "created", "", ""},
                       {"codex", "", "", mf::mode::symlink, "updated", "", ""},
                       {"copilot", "", "", std::nullopt, "skipped", "", ""}}});
-  results.push_back({"beta", mf::kind::agent, {{"agents", "", "", mf::mode::symlink, "unchanged", "", ""}}});
+  results.push_back({"beta", mf::kind::agent, {{"shared", "", "", mf::mode::symlink, "unchanged", "", ""}}});
   REQUIRE(rd::link_summary_text(results, false) == "\ndone: 2 linked, 1 unchanged, 1 skipped across 2 source(s)\n");
 }
 
@@ -511,24 +520,27 @@ TEST_CASE("render reconcile_json uses snake_case, unlike its siblings") {
           "\"/tmp/pb/h/.claude/commands/local-alpha.md\",\"/tmp/pb/h/.codex/skills/local-alpha\"]}\n");
 }
 
-TEST_CASE("render reconcile_text reports a repair as removed") {
-  // `target-missing` RE-CREATED the installs, and the line still says
-  // "removed 1 install(s)". The oracle's wording; see link.cppm for why the
-  // underlying field is named `removed_targets` in both cases.
+TEST_CASE("render reconcile_text says wrote for a refresh and removed for a removal") {
   const std::vector<lk::reconcile_action> actions{
-      {"alpha", mf::kind::skill, "target-missing", std::string{k_src}, {std::string{k_claude}}}};
-  REQUIRE(rd::reconcile_text(actions, false) == "alpha (skill) - target-missing; removed 1 install(s)\n"
+      {"alpha", mf::kind::skill, "stale", std::string{k_src}, {std::string{k_claude}}},
+      {"alpha", mf::kind::skill, "legacy", std::string{k_src}, {std::string{k_codex}}}};
+  REQUIRE(rd::reconcile_text(actions, false) == "alpha (skill) - stale; wrote 1 path(s)\n"
                                                 "  /tmp/pb/h/.claude/commands/local-alpha.md\n"
+                                                "alpha (skill) - legacy; removed 1 path(s)\n"
+                                                "  /tmp/pb/h/.codex/skills/local-alpha\n"
                                                 "\n"
-                                                "done: 1 stale entry(ies) cleaned\n");
+                                                "done: 2 change(s)\n");
 }
 
 TEST_CASE("render reconcile_text switches both verbs on dry-run") {
-  REQUIRE(rd::reconcile_text(reconcile_fixture(), true) == "alpha (skill) - source-missing; would remove 2 install(s)\n"
+  REQUIRE(rd::reconcile_text(reconcile_fixture(), true) == "alpha (skill) - source-missing; would remove 2 path(s)\n"
                                                            "  /tmp/pb/h/.claude/commands/local-alpha.md\n"
                                                            "  /tmp/pb/h/.codex/skills/local-alpha\n"
                                                            "\n"
-                                                           "dry-run: 1 stale entry(ies) would be cleaned\n");
+                                                           "dry-run: 2 change(s) would be made\n");
+  const std::vector<lk::reconcile_action> writes{
+      {"alpha", mf::kind::skill, "target-missing", std::string{k_src}, {std::string{k_claude}}}};
+  REQUIRE(rd::reconcile_text(writes, true).starts_with("alpha (skill) - target-missing; would write 1 path(s)\n"));
 }
 
 // ===========================================================================

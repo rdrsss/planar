@@ -7,8 +7,9 @@
 // The same discipline `runs_leaves.t.cpp` and `annotate_leaves.t.cpp`
 // established, translated to the state this family actually owns. `local`
 // touches NO database: its durable state is two JSON manifests
-// (`<sandbox>/{skills,agents}/.link-manifest.json`) and the vendor symlink
-// trees under `<home>/.{claude,codex,copilot}/` and `<home>/.planar/agents/`.
+// (`<sandbox>/{skills,agents}/.link-manifest.json`) and the vendor copies
+// under `<home>/.claude/`, `<home>/.agents/`, `<home>/.codex/` and the other
+// presence-marked vendor directories.
 // So `manifest_rows` and `install_rows` play the part `run_snapshot` plays
 // there, and they preserve exactly the distinction row assertions exist for:
 //
@@ -18,7 +19,7 @@
 //     entry with zero links, while a source never linked at all leaves the
 //     file untouched — and every leaf here prints identical stdout in the
 //     two cases.
-//   - `install_rows` renders a path that is a symlink, a regular file, or
+//   - `install_state` renders a path that is a symlink, a regular file, or
 //     absent as three DIFFERENT tokens, because `local list` reports
 //     `live` for a non-symlink install too (see link.cppm's
 //     `classify_existing`). Reading the manifest alone cannot tell a live
@@ -32,8 +33,8 @@
 // filter case builds a fixture where three answers must all differ and all
 // be non-empty in different ways:
 //
-//   unfiltered      three rows, one per vendor  (the survival baseline)
-//   --vendor codex  exactly the codex row SURVIVES, the other two are gone
+//   unfiltered      two rows, one per projection  (the survival baseline)
+//   --vendor codex  exactly the shared-root row SURVIVES, the Claude one is gone
 //   --vendor nope   the header line, then `no rows matched filter`
 //
 // An inert filter returns the three-row answer all three times. A filter
@@ -315,6 +316,29 @@ auto install_state(const std::filesystem::path& path) -> std::string {
   return std::filesystem::is_directory(path, ec) ? "dir" : "regular";
 }
 
+/// @brief Create vendor presence markers under the fixture's sandbox home.
+/// @param fx The fixture.
+/// @param markers Directories, or a file when the name ends `.json`.
+auto mark(const fixture& fx, std::initializer_list<std::string_view> markers) -> void {
+  for (auto const marker : markers) {
+    auto const path = fx.root / "localhome" / std::string{marker};
+    if (marker.ends_with(".json")) {
+      write_file(path, "{}\n");
+    } else {
+      std::error_code ec;
+      std::filesystem::create_directories(path, ec);
+    }
+  }
+}
+
+/// @brief The path of a projected skill directory under the Claude skills root.
+/// @param fx The fixture.
+/// @param name The unprefixed name.
+/// @return `<home>/.claude/skills/planar-local-<name>`.
+auto claude_skill(const fixture& fx, std::string_view name) -> std::filesystem::path {
+  return fx.root / "localhome" / ".claude" / "skills" / std::format("planar-local-{}", name);
+}
+
 /// @brief Seed a three-vendor skill under the sandbox.
 /// @param fx The fixture.
 /// @param name The skill's name.
@@ -348,52 +372,165 @@ TEST_CASE("local list on a virgin sandbox says so, and --json says NOTHING", "[c
   CHECK(manifest_rows(fx, "agents") == "<NO-MANIFEST>");
 }
 
-TEST_CASE("local link writes the manifest AND the symlinks, and list reads them back", "[cmd][local][link]") {
+TEST_CASE("local link writes the manifest AND the copies, and list reads them back", "[cmd][local][link]") {
   auto const fx = make_fixture("linkwrite");
+  mark(fx, {".claude", ".codex"});
   seed_three_vendor_skill(fx, "alpha");
   write_file(sandbox(fx) / "agents" / "beta.md", "---\nname: beta\ndescription: An agent.\n---\n\nAgent.\n");
+  auto const alpha_source = read_file(sandbox(fx) / "skills" / "alpha" / "SKILL.md");
 
-  // BASELINE FIRST: nothing recorded, nothing installed. Without this the
-  // post-state below would be consistent with a fixture that had arrived
-  // pre-linked.
+  // BASELINE FIRST: nothing recorded, nothing installed.
   REQUIRE(manifest_rows(fx, "skills") == "<NO-MANIFEST>");
-  REQUIRE(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-alpha.md") == "absent");
+  REQUIRE(install_state(claude_skill(fx, "alpha")) == "absent");
 
   auto const dry = dispatch(fx, {"local", "link", "--dry-run"});
   CHECK(dry.code == 0);
   CHECK(dry.out.contains("dry-run: 4 would-be installs across 2 source(s)\n"));
-  // A DRY RUN WRITES NOTHING. Stdout alone cannot tell a rehearsal from a
-  // real run here — the per-record verb differs, but a handler that passed
-  // `dry_run` to the renderer and not to the engine would print `dry-run`
-  // and still create every symlink.
+  // A DRY RUN WRITES NOTHING: a handler that passed `dry_run` to the renderer
+  // and not to the engine would print `dry-run` and still write every copy.
   CHECK(manifest_rows(fx, "skills") == "<NO-MANIFEST>");
   CHECK(manifest_rows(fx, "agents") == "<NO-MANIFEST>");
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-alpha.md") == "absent");
+  CHECK(install_state(claude_skill(fx, "alpha")) == "absent");
 
   auto const real = dispatch(fx, {"local", "link"});
   CHECK(real.code == 0);
   CHECK(real.out.contains("done: 4 linked, 0 unchanged, 0 skipped across 2 source(s)\n"));
   CHECK_FALSE(real.db_open);
 
-  CHECK(manifest_rows(fx, "skills") ==
-        "alpha|claude|symlink|<STAMP>\nalpha|codex|symlink|<STAMP>\nalpha|copilot|symlink|<STAMP>");
-  CHECK(manifest_rows(fx, "agents") == "beta|agents|symlink|<STAMP>");
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-alpha.md") == "symlink");
-  CHECK(install_state(fx.root / "localhome" / ".codex" / "skills" / "local-alpha") == "symlink");
-  CHECK(install_state(fx.root / "localhome" / ".copilot" / "skills" / "local-alpha") == "symlink");
-  CHECK(install_state(fx.root / "localhome" / ".planar" / "agents" / "local-beta.md") == "symlink");
+  CHECK(manifest_rows(fx, "skills") == "alpha|claude|copy|<STAMP>\nalpha|shared|copy|<STAMP>");
+  CHECK(manifest_rows(fx, "agents") == "beta|claude|copy|<STAMP>\nbeta|codex|copy|<STAMP>");
+  // The projection is a COPY under the new names, with `name` rewritten...
+  CHECK(install_state(claude_skill(fx, "alpha")) == "dir");
+  CHECK(install_state(fx.root / "localhome" / ".agents" / "skills" / "planar-local-alpha") == "dir");
+  CHECK(read_file(claude_skill(fx, "alpha") / "SKILL.md").contains("name: planar-local-alpha\n"));
+  CHECK(install_state(fx.root / "localhome" / ".claude" / "agents" / "planar-local-beta.md") == "regular");
+  CHECK(read_file(fx.root / "localhome" / ".codex" / "agents" / "planar-local-beta.toml")
+            .starts_with("name = \"planar-local-beta\"\n"));
+  // ...the source is untouched, and the OLD locations are never written.
+  CHECK(read_file(sandbox(fx) / "skills" / "alpha" / "SKILL.md") == alpha_source);
+  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands") == "absent");
+  CHECK(install_state(fx.root / "localhome" / ".codex" / "skills") == "absent");
+  CHECK(install_state(fx.root / "localhome" / ".copilot") == "absent");
+  CHECK(install_state(fx.root / "localhome" / ".planar" / "agents") == "absent");
 
-  // A SECOND run is `unchanged`, not `created` — and must not disturb the
-  // recorded rows.
+  // `list --json` reports each projection live.
+  auto const listed = dispatch(fx, {"local", "list", "--json"});
+  CHECK(listed.code == 0);
+  CHECK(listed.out.contains("\"Name\":\"alpha\",\"Kind\":\"skill\",\"Record\":{\"vendor\":\"shared\""));
+  std::size_t live = 0;
+  for (std::size_t at = listed.out.find("\"action\":\"live\""); at != std::string::npos;
+       at             = listed.out.find("\"action\":\"live\"", at + 1)) {
+    ++live;
+  }
+  CHECK(live == 4);
+
+  // A SECOND run is `unchanged`, not `created`.
   auto const again = dispatch(fx, {"local", "link"});
   CHECK(again.code == 0);
   CHECK(again.out.contains("done: 0 linked, 4 unchanged, 0 skipped across 2 source(s)\n"));
-  CHECK(manifest_rows(fx, "skills") ==
-        "alpha|claude|symlink|<STAMP>\nalpha|codex|symlink|<STAMP>\nalpha|copilot|symlink|<STAMP>");
+  CHECK(manifest_rows(fx, "skills") == "alpha|claude|copy|<STAMP>\nalpha|shared|copy|<STAMP>");
+}
+
+TEST_CASE("local link projects an agent into every present vendor directory", "[cmd][local][link]") {
+  auto const fx = make_fixture("agentfan");
+  mark(fx, {".claude", ".codex", ".copilot", ".config/opencode"});
+  write_file(sandbox(fx) / "agents" / "helper.md", "---\ndescription: Helps.\n---\n\nHelp body.\n");
+
+  REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
+  auto const home = fx.root / "localhome";
+  CHECK(read_file(home / ".claude" / "agents" / "planar-local-helper.md").contains("name: planar-local-helper\n"));
+  CHECK(read_file(home / ".copilot" / "agents" / "planar-local-helper.agent.md").contains("name: planar-local-helper\n"));
+  CHECK(read_file(home / ".config" / "opencode" / "agents" / "planar-local-helper.md") ==
+        "---\ndescription: Helps.\nmode: subagent\n---\n\nHelp body.\n");
+  CHECK(read_file(home / ".codex" / "agents" / "planar-local-helper.toml") ==
+        "name = \"planar-local-helper\"\ndescription = \"Helps.\"\ndeveloper_instructions = \"Help body.\\n\"\n");
+  // A vendor with no marker gets nothing.
+  CHECK(install_state(home / ".gemini") == "absent");
+}
+
+TEST_CASE("local list reports a stale copy, and --reconcile refreshes it exactly once", "[cmd][local][link][reconcile]") {
+  auto const fx = make_fixture("stale");
+  mark(fx, {".claude", ".codex"});
+  write_file(sandbox(fx) / "skills" / "mine" / "SKILL.md", "---\nname: mine\ndescription: Mine.\n---\n\nBody.\n");
+  REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
+
+  {
+    std::ofstream(sandbox(fx) / "skills" / "mine" / "SKILL.md", std::ios::app) << "An added line.\n";
+  }
+  auto const listed = dispatch(fx, {"local", "list"});
+  CHECK(listed.out.contains("mine          skill    shared   stale"));
+  CHECK(listed.out.contains("mine          skill    claude   stale"));
+
+  auto const first = dispatch(fx, {"local", "link", "--reconcile"});
+  CHECK(first.code == 0);
+  CHECK(first.out.contains("mine (skill) - stale; wrote 2 path(s)\n"));
+  CHECK(first.out.contains("\ndone: 2 change(s)\n"));
+  CHECK(read_file(claude_skill(fx, "mine") / "SKILL.md").contains("An added line."));
+  CHECK(dispatch(fx, {"local", "list"}).out.contains("mine          skill    claude   live"));
+
+  auto const copy  = claude_skill(fx, "mine") / "SKILL.md";
+  auto const mtime = std::filesystem::last_write_time(copy);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  auto const second = dispatch(fx, {"local", "link", "--reconcile"});
+  CHECK(second.code == 0);
+  CHECK(second.out == "reconcile: manifest already consistent with the filesystem\n");
+  CHECK((std::filesystem::last_write_time(copy) == mtime));
+}
+
+TEST_CASE("local link --reconcile migrates the old projections and leaves a foreign file", "[cmd][local][link][reconcile]") {
+  auto const fx = make_fixture("migrateold");
+  mark(fx, {".claude", ".codex"});
+  write_file(sandbox(fx) / "skills" / "mine" / "SKILL.md", "---\nname: mine\ndescription: Mine.\n---\n\nBody.\n");
+  auto const home    = fx.root / "localhome";
+  auto const foreign = home / ".claude" / "commands" / "local-theirs.md";
+  write_file(foreign, "theirs\n");
+  std::error_code ec;
+  std::filesystem::create_symlink(sandbox(fx) / "skills" / "mine" / "SKILL.md", home / ".claude" / "commands" / "local-mine.md",
+                                  ec);
+  std::filesystem::create_directories(home / ".codex" / "skills", ec);
+  std::filesystem::create_directory_symlink(sandbox(fx) / "skills" / "mine", home / ".codex" / "skills" / "local-mine", ec);
+
+  auto const got = dispatch(fx, {"local", "link", "--reconcile"});
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("mine (skill) - legacy; removed 2 path(s)\n"));
+  CHECK(install_state(home / ".claude" / "commands" / "local-mine.md") == "absent");
+  CHECK(install_state(home / ".codex" / "skills" / "local-mine") == "absent");
+  CHECK(read_file(foreign) == "theirs\n");
+  CHECK(install_state(claude_skill(fx, "mine")) == "dir");
+  CHECK(install_state(home / ".agents" / "skills" / "planar-local-mine") == "dir");
+  // The source survived: removing a directory symlink never reached through it.
+  CHECK(install_state(sandbox(fx) / "skills" / "mine" / "SKILL.md") == "regular");
+  CHECK(dispatch(fx, {"local", "link", "--reconcile"}).out == "reconcile: manifest already consistent with the filesystem\n");
+}
+
+TEST_CASE("local link refuses a foreign destination at exit 6 and writes nothing else", "[cmd][local][link]") {
+  auto const fx = make_fixture("foreign");
+  mark(fx, {".claude", ".codex"});
+  write_file(sandbox(fx) / "skills" / "mine" / "SKILL.md", "---\nname: mine\ndescription: Mine.\n---\n\nBody.\n");
+  auto const foreign = claude_skill(fx, "mine") / "SKILL.md";
+  write_file(foreign, "not planar's\n");
+
+  for (auto const& args : {std::vector<std::string>{"local", "link"}, std::vector<std::string>{"local", "link", "--reconcile"}}) {
+    if (args.back() == "--reconcile") {
+      // Reconcile acts on tracked sources: an old symlink projection is what makes this one tracked.
+      std::error_code ec;
+      std::filesystem::create_directories(fx.root / "localhome" / ".codex" / "skills", ec);
+      std::filesystem::create_directory_symlink(sandbox(fx) / "skills" / "mine",
+                                                fx.root / "localhome" / ".codex" / "skills" / "local-mine", ec);
+    }
+    auto const got = dispatch(fx, args);
+    CHECK(got.code == 6);
+    CHECK(got.out.empty());
+    CHECK(got.err.contains(foreign.string()));
+    CHECK(read_file(foreign) == "not planar's\n");
+    CHECK(install_state(fx.root / "localhome" / ".agents") == "absent");
+    CHECK(manifest_rows(fx, "skills") == "<NO-MANIFEST>");
+  }
 }
 
 TEST_CASE("the --vendor filter EXCLUDES, proven three ways with the survivor named", "[cmd][local][list][filter]") {
   auto const fx = make_fixture("vendorfilter");
+  mark(fx, {".claude", ".codex"});
   seed_three_vendor_skill(fx, "gamma");
   REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
 
@@ -401,18 +538,16 @@ TEST_CASE("the --vendor filter EXCLUDES, proven three ways with the survivor nam
   //    an absence below means something.
   auto const all = dispatch(fx, {"local", "list"});
   REQUIRE(all.code == 0);
+  CHECK(all.out.contains("gamma         skill    shared   live"));
   CHECK(all.out.contains("gamma         skill    claude   live"));
-  CHECK(all.out.contains("gamma         skill    codex    live"));
-  CHECK(all.out.contains("gamma         skill    copilot  live"));
 
   // 2. FILTERED TO ONE — the named row SURVIVES and the other two are gone.
   //    Asserted by name, never by counting: a count of one would also pass
   //    against a filter that kept the wrong row.
   auto const codex = dispatch(fx, {"local", "list", "--vendor", "codex"});
   REQUIRE(codex.code == 0);
-  CHECK(codex.out.contains("gamma         skill    codex    live"));
+  CHECK(codex.out.contains("gamma         skill    shared   live"));
   CHECK_FALSE(codex.out.contains("claude"));
-  CHECK_FALSE(codex.out.contains("copilot"));
 
   // 3. FILTERED TO NOTHING — a DIFFERENT sentence from the empty-sandbox one,
   //    and printed AFTER the header row, which is still emitted. "You have
@@ -433,45 +568,39 @@ TEST_CASE("the --vendor filter EXCLUDES, proven three ways with the survivor nam
 
 TEST_CASE("local link --vendor NARROWS what reaches the manifest", "[cmd][local][link][filter]") {
   auto const fx = make_fixture("linkfilter");
+  mark(fx, {".claude", ".codex"});
   seed_three_vendor_skill(fx, "delta");
 
-  auto const filtered = dispatch(fx, {"local", "link", "--vendor", "codex"});
+  auto const filtered = dispatch(fx, {"local", "link", "--vendor", "claude"});
   CHECK(filtered.code == 0);
-  CHECK(filtered.out.contains("done: 1 linked, 0 unchanged, 2 skipped across 1 source(s)\n"));
+  CHECK(filtered.out.contains("done: 1 linked, 0 unchanged, 1 skipped across 1 source(s)\n"));
 
   // THE WRITE SIDE OF THE FILTER. A `skipped` record is excluded from the
   // manifest entirely, so a filtered link narrows the recorded install set
-  // rather than merging into it. Only the surviving vendor is recorded...
-  CHECK(manifest_rows(fx, "skills") == "delta|codex|symlink|<STAMP>");
-  // ...and only its target exists on disk. The other two were reported as
-  // `skipped` on stdout, which a handler that ignored the filter would ALSO
-  // have printed if it had passed the filter to the renderer alone.
-  CHECK(install_state(fx.root / "localhome" / ".codex" / "skills" / "local-delta") == "symlink");
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-delta.md") == "absent");
-  CHECK(install_state(fx.root / "localhome" / ".copilot" / "skills" / "local-delta") == "absent");
+  // rather than merging into it.
+  CHECK(manifest_rows(fx, "skills") == "delta|claude|copy|<STAMP>");
+  CHECK(install_state(claude_skill(fx, "delta")) == "dir");
+  CHECK(install_state(fx.root / "localhome" / ".agents" / "skills" / "planar-local-delta") == "absent");
 }
 
 TEST_CASE("an EMPTY --vendor is not an ABSENT --vendor", "[cmd][local][link][filter]") {
   auto const fx = make_fixture("emptyvendor");
+  mark(fx, {".claude", ".codex"});
   seed_three_vendor_skill(fx, "epsilon");
 
   // The empty string matches no vendor, so every target is skipped and the
-  // manifest records an entry with ZERO links — a state distinct from both
-  // "no manifest" and "three links". A `flag_string` that collapsed an empty
-  // value to `nullopt` would link all three instead, at exit 0, with a
-  // summary line that differs only in its counts.
+  // manifest records an entry with ZERO links. A `flag_string` that collapsed
+  // an empty value to `nullopt` would link everything instead.
   auto const empty = dispatch(fx, {"local", "link", "--vendor", ""});
   CHECK(empty.code == 0);
-  CHECK(empty.out.contains("done: 0 linked, 0 unchanged, 3 skipped across 1 source(s)\n"));
+  CHECK(empty.out.contains("done: 0 linked, 0 unchanged, 2 skipped across 1 source(s)\n"));
   CHECK(manifest_rows(fx, "skills") == "epsilon|<NO-LINKS>");
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-epsilon.md") == "absent");
+  CHECK(install_state(claude_skill(fx, "epsilon")) == "absent");
 
-  // The contrast, in the same fixture: an ABSENT --vendor links everything.
   auto const absent = dispatch(fx, {"local", "link"});
   CHECK(absent.code == 0);
-  CHECK(absent.out.contains("done: 3 linked, 0 unchanged, 0 skipped across 1 source(s)\n"));
-  CHECK(manifest_rows(fx, "skills") ==
-        "epsilon|claude|symlink|<STAMP>\nepsilon|codex|symlink|<STAMP>\nepsilon|copilot|symlink|<STAMP>");
+  CHECK(absent.out.contains("done: 2 linked, 0 unchanged, 0 skipped across 1 source(s)\n"));
+  CHECK(manifest_rows(fx, "skills") == "epsilon|claude|copy|<STAMP>\nepsilon|shared|copy|<STAMP>");
 }
 
 TEST_CASE("local link refuses a named source that does not exist, but not an empty sandbox", "[cmd][local][link]") {
@@ -508,39 +637,38 @@ TEST_CASE("local link --reconcile refuses a positional at exit 2", "[cmd][local]
 
 TEST_CASE("local link --reconcile drops entries whose source is gone", "[cmd][local][link][reconcile]") {
   auto const fx = make_fixture("reconcilereal");
+  mark(fx, {".claude", ".codex"});
   seed_three_vendor_skill(fx, "zeta");
   seed_three_vendor_skill(fx, "eta");
   REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
-  REQUIRE(manifest_rows(fx, "skills") == "eta|claude|symlink|<STAMP>\neta|codex|symlink|<STAMP>\neta|copilot|symlink|<STAMP>\n"
-                                         "zeta|claude|symlink|<STAMP>\nzeta|codex|symlink|<STAMP>\nzeta|copilot|symlink|<STAMP>");
+  REQUIRE(manifest_rows(fx, "skills") == "eta|claude|copy|<STAMP>\neta|shared|copy|<STAMP>\n"
+                                         "zeta|claude|copy|<STAMP>\nzeta|shared|copy|<STAMP>");
 
   std::error_code ec;
   std::filesystem::remove_all(sandbox(fx) / "skills" / "zeta", ec);
 
-  // A DRY RUN reports and changes nothing — asserted on the manifest, since
-  // the reported text is the same either way but for one verb.
+  // A DRY RUN reports and changes nothing.
   auto const dry = dispatch(fx, {"local", "link", "--reconcile", "--dry-run"});
   CHECK(dry.code == 0);
-  CHECK(dry.out.contains("zeta (skill) - source-missing; would remove 3 install(s)\n"));
-  CHECK(dry.out.contains("\ndry-run: 1 stale entry(ies) would be cleaned\n"));
-  CHECK(manifest_rows(fx, "skills").contains("zeta|claude|symlink|<STAMP>"));
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-zeta.md") == "symlink");
+  CHECK(dry.out.contains("zeta (skill) - source-missing; would remove 2 path(s)\n"));
+  CHECK(dry.out.contains("\ndry-run: 2 change(s) would be made\n"));
+  CHECK(manifest_rows(fx, "skills").contains("zeta|claude|copy|<STAMP>"));
+  CHECK(install_state(claude_skill(fx, "zeta")) == "dir");
 
   auto const real = dispatch(fx, {"local", "link", "--reconcile"});
   CHECK(real.code == 0);
-  CHECK(real.out.contains("zeta (skill) - source-missing; removed 3 install(s)\n"));
-  CHECK(real.out.contains("\ndone: 1 stale entry(ies) cleaned\n"));
+  CHECK(real.out.contains("zeta (skill) - source-missing; removed 2 path(s)\n"));
+  CHECK(real.out.contains("\ndone: 2 change(s)\n"));
 
-  // THE SURVIVOR IS NAMED. `eta` must still be recorded and installed —
-  // a reconcile that emptied the manifest would satisfy any assertion that
-  // only checked `zeta`'s absence.
-  CHECK(manifest_rows(fx, "skills") == "eta|claude|symlink|<STAMP>\neta|codex|symlink|<STAMP>\neta|copilot|symlink|<STAMP>");
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-eta.md") == "symlink");
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-zeta.md") == "absent");
+  // THE SURVIVOR IS NAMED.
+  CHECK(manifest_rows(fx, "skills") == "eta|claude|copy|<STAMP>\neta|shared|copy|<STAMP>");
+  CHECK(install_state(claude_skill(fx, "eta")) == "dir");
+  CHECK(install_state(claude_skill(fx, "zeta")) == "absent");
 }
 
 TEST_CASE("local unlink removes installs, and --purge deletes the source", "[cmd][local][unlink]") {
   auto const fx = make_fixture("unlink");
+  mark(fx, {".claude", ".codex"});
   seed_three_vendor_skill(fx, "theta");
   seed_three_vendor_skill(fx, "iota");
   REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
@@ -552,14 +680,12 @@ TEST_CASE("local unlink removes installs, and --purge deletes the source", "[cmd
 
   // The removed installs are gone from BOTH the manifest and the disk, and
   // the untouched sibling SURVIVES in both.
-  CHECK(manifest_rows(fx, "skills") == "iota|claude|symlink|<STAMP>\niota|codex|symlink|<STAMP>\niota|copilot|symlink|<STAMP>");
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-theta.md") == "absent");
-  CHECK(install_state(fx.root / "localhome" / ".claude" / "commands" / "local-iota.md") == "symlink");
-  // ...and `--purge` was NOT passed, so the SOURCE is still there. That is
-  // the whole difference between unlink and purge, and stdout does not say.
+  CHECK(manifest_rows(fx, "skills") == "iota|claude|copy|<STAMP>\niota|shared|copy|<STAMP>");
+  CHECK(install_state(claude_skill(fx, "theta")) == "absent");
+  CHECK(install_state(claude_skill(fx, "iota")) == "dir");
+  // ...and `--purge` was NOT passed, so the SOURCE is still there.
   CHECK(install_state(sandbox(fx) / "skills" / "theta" / "SKILL.md") == "regular");
 
-  // A SECOND unlink of the same name is idempotent and says so.
   auto const twice = dispatch(fx, {"local", "unlink", "theta"});
   CHECK(twice.code == 0);
   CHECK(twice.out == "no installs found for \"theta\" (already unlinked, or no such name)\n");
@@ -572,15 +698,14 @@ TEST_CASE("local unlink removes installs, and --purge deletes the source", "[cmd
 }
 
 TEST_CASE("local unlink on a cross-kind name collision touches only the SKILL", "[cmd][local][unlink]") {
-  // Oracle-verified asymmetry, pinned as a SUCCESS rather than corrected:
-  // `lookup_kind_for_name` checks skills FIRST, so a name that exists as
-  // both resolves to the skill and the agent install is left live. A port
-  // that "fixed" this by unlinking both would diverge from the reference.
+  // `lookup_kind_for_name` checks skills FIRST, so a name that exists as both
+  // resolves to the skill and the agent projection is left live.
   auto const fx = make_fixture("dupname");
+  mark(fx, {".claude"});
   seed_three_vendor_skill(fx, "dup");
   write_file(sandbox(fx) / "agents" / "dup.md", "---\nname: dup\ndescription: Agent dup.\n---\n\nA.\n");
   REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
-  REQUIRE(manifest_rows(fx, "agents") == "dup|agents|symlink|<STAMP>");
+  REQUIRE(manifest_rows(fx, "agents") == "dup|claude|copy|<STAMP>");
 
   auto const got = dispatch(fx, {"local", "unlink", "dup"});
   CHECK(got.code == 0);
@@ -589,8 +714,8 @@ TEST_CASE("local unlink on a cross-kind name collision touches only the SKILL", 
 
   CHECK(manifest_rows(fx, "skills") == "<EMPTY>");
   // THE ORPHAN. Still recorded, still installed.
-  CHECK(manifest_rows(fx, "agents") == "dup|agents|symlink|<STAMP>");
-  CHECK(install_state(fx.root / "localhome" / ".planar" / "agents" / "local-dup.md") == "symlink");
+  CHECK(manifest_rows(fx, "agents") == "dup|claude|copy|<STAMP>");
+  CHECK(install_state(fx.root / "localhome" / ".claude" / "agents" / "planar-local-dup.md") == "regular");
 }
 
 TEST_CASE("local migrate promotes a flat skill into directory shape", "[cmd][local][migrate]") {
@@ -628,7 +753,8 @@ TEST_CASE("local migrate promotes a flat skill into directory shape", "[cmd][loc
 }
 
 TEST_CASE("local import copies sources in, promotes flat skills, then links them", "[cmd][local][import]") {
-  auto const fx  = make_fixture("import");
+  auto const fx = make_fixture("import");
+  mark(fx, {".claude"});
   auto const src = fx.root / "src";
   write_file(src / "one.md", "---\nname: one\ndescription: First.\nvendors: [claude]\n---\n\nOne.\n");
   write_file(src / "notes.txt", "not markdown\n");
@@ -651,7 +777,7 @@ TEST_CASE("local import copies sources in, promotes flat skills, then links them
   CHECK(install_state(sandbox(fx) / "skills" / "one" / "SKILL.md") == "regular");
   CHECK(install_state(sandbox(fx) / "skills" / "one.md") == "absent");
   // ...and the link phase recorded the DESTINATION, not the origin.
-  CHECK(manifest_rows(fx, "skills") == "one|claude|symlink|<STAMP>");
+  CHECK(manifest_rows(fx, "skills") == "one|claude|copy|<STAMP>");
   CHECK(normalize(read_file(sandbox(fx) / "skills" / ".link-manifest.json"), fx)
             .contains("<ROOT>/localhome/.planar/local/skills/one/SKILL.md"));
   CHECK_FALSE(normalize(read_file(sandbox(fx) / "skills" / ".link-manifest.json"), fx).contains("<ROOT>/src/one.md"));
@@ -726,15 +852,16 @@ TEST_CASE("local unlink falls back to BOTH kinds when the source is gone", "[cmd
   // instead. This case is the one a `kinds.push_back(agent)` that quietly
   // went missing would fail.
   auto const fx = make_fixture("unlinkorphan");
+  mark(fx, {".claude"});
   write_file(sandbox(fx) / "agents" / "orphan.md", "---\nname: orphan\ndescription: An agent.\n---\n\nA.\n");
   REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
-  REQUIRE(manifest_rows(fx, "agents") == "orphan|agents|symlink|<STAMP>");
+  REQUIRE(manifest_rows(fx, "agents") == "orphan|claude|copy|<STAMP>");
 
   // Delete the SOURCE, leaving the manifest entry and the install behind.
   std::error_code ec;
   std::filesystem::remove(sandbox(fx) / "agents" / "orphan.md", ec);
   REQUIRE(install_state(sandbox(fx) / "agents" / "orphan.md") == "absent");
-  REQUIRE(install_state(fx.root / "localhome" / ".planar" / "agents" / "local-orphan.md") == "symlink");
+  REQUIRE(install_state(fx.root / "localhome" / ".claude" / "agents" / "planar-local-orphan.md") == "regular");
 
   auto const got = dispatch(fx, {"local", "unlink", "orphan"});
   CHECK(got.code == 0);
@@ -746,7 +873,44 @@ TEST_CASE("local unlink falls back to BOTH kinds when the source is gone", "[cmd
   CHECK_FALSE(got.out.contains("no installs found"));
 
   CHECK(manifest_rows(fx, "agents") == "<EMPTY>");
-  CHECK(install_state(fx.root / "localhome" / ".planar" / "agents" / "local-orphan.md") == "absent");
+  CHECK(install_state(fx.root / "localhome" / ".claude" / "agents" / "planar-local-orphan.md") == "absent");
+}
+
+TEST_CASE("local unlink leaves a foreign replacement alone and says so; reconcile exits 1 on a failed write",
+          "[cmd][local][unlink][reconcile]") {
+  auto const fx   = make_fixture("ownership");
+  auto const home = fx.root / "localhome";
+  mark(fx, {".claude", ".codex"});
+  write_file(sandbox(fx) / "skills" / "mine" / "SKILL.md", "---\nname: mine\ndescription: Mine.\n---\n\nBody.\n");
+  REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
+
+  auto const      claude = home / ".claude" / "skills" / "planar-local-mine";
+  std::error_code ec;
+  std::filesystem::remove_all(claude, ec);
+  write_file(claude / "SKILL.md", "---\nname: theirs\n---\n\nTheirs.\n");
+
+  auto const got = dispatch(fx, {"local", "unlink", "mine"});
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("skipped: not owned  <-  " + claude.string()));
+  CHECK(read_file(claude / "SKILL.md") == "---\nname: theirs\n---\n\nTheirs.\n");
+  CHECK(install_state(home / ".agents" / "skills" / "planar-local-mine") == "absent");
+
+  // The foreign replacement is still in place, so a fresh link refuses it
+  // (exit 6, not owned); clear it, link again, then break the destination.
+  REQUIRE(dispatch(fx, {"local", "link"}).code == 6);
+  std::filesystem::remove_all(claude, ec);
+  REQUIRE(dispatch(fx, {"local", "link"}).code == 0);
+  // Reconcile: a destination that cannot be written fails the verb.
+  std::filesystem::remove_all(claude, ec);
+  auto const skills = home / ".claude" / "skills";
+  std::filesystem::permissions(skills, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec, ec);
+  if (!std::ofstream(skills / "probe").is_open()) {
+    auto const failed = dispatch(fx, {"local", "link", "--reconcile"});
+    std::filesystem::permissions(skills, std::filesystem::perms::owner_all, ec);
+    CHECK(failed.code == 1);
+    CHECK(failed.out.contains("error: could not write 1 path(s); not recorded"));
+  }
+  std::filesystem::permissions(skills, std::filesystem::perms::owner_all, ec);
 }
 
 TEST_CASE("local unlink --purge on an unknown name reports BOTH targeted paths", "[cmd][local][unlink]") {

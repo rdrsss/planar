@@ -209,12 +209,11 @@ export auto reconcile_json(std::span<const link::reconcile_action> actions) -> s
 
 /// @brief Render `local link --reconcile` (no `--json`).
 ///
-/// Every action prints as `removed N install(s)`, INCLUDING `target-missing`
-/// actions where the installs were re-created rather than removed. That is the
-/// oracle's wording; see link.cppm for why the underlying field is named
-/// `removed_targets` in both cases.
+/// One block per action: `source-missing` and `legacy` print `removed N
+/// path(s)`; `stale` and `target-missing` print `wrote N path(s)`. The summary
+/// counts every path changed, `done: N change(s)`.
 /// @param actions What reconcile() did.
-/// @param dry_run Switches `removed` to `would remove` and the summary verb.
+/// @param dry_run Switches the verbs to `would remove` / `would write` and the summary line.
 /// @return The complete stdout payload.
 export auto reconcile_text(std::span<const link::reconcile_action> actions, bool dry_run) -> std::string;
 
