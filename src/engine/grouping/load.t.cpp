@@ -105,6 +105,7 @@ import planar.db;
 import planar.db.migrate;
 import planar.engine.grouping.greedy;
 import planar.engine.grouping.load;
+import planar.engine.grouping.mtkahypar;
 import planar.engine.grouping.optimal_arm;
 
 namespace {
@@ -112,6 +113,7 @@ namespace {
 namespace gg = planar::engine::grouping::greedy;
 namespace gl = planar::engine::grouping::load;
 namespace go = planar::engine::grouping::optimal;
+namespace gm = planar::engine::grouping::mtkahypar;
 
 struct scratch_db_path {
   std::filesystem::path path_;
@@ -862,4 +864,97 @@ TEST_CASE("grouping.greedy: union symbols and slice order are sorted, not hash o
   REQUIRE(out.slices[0].task_ids == std::vector<std::int64_t>{2});
   REQUIRE(out.slices[1].task_ids == std::vector<std::int64_t>{9});
   REQUIRE(out.slices[1].union_symbols == std::vector<std::string>{"aaa", "mmm", "zzz"});
+}
+
+// ---- The Mt-KaHyPar arm (branch dev/grouping-solvers, decision 1293) --------
+// `gm::arm()` is available only in a `-DPLANAR_WITH_MTKAHYPAR=ON` build. An
+// OFF build asserts the degrade path through the arm; an ON build asserts the
+// real solver ran and was never worse than greedy.
+
+TEST_CASE("grouping: the mtkahypar arm reports availability and degrades without the solver", "[grouping][mtkahypar]") {
+  const auto arm = gm::arm();
+  REQUIRE(arm.available);
+  REQUIRE(arm.try_partition);
+
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_fixture_1(conn);
+
+  if (arm.available()) {
+    auto rec = gl::recommend_with(conn, 1, gl::k_default_budget, gl::solver::mtkahypar, arm);
+    REQUIRE(rec.has_value());
+    REQUIRE(rec->solver_ == gl::solver::mtkahypar);
+    REQUIRE(rec->optimal_available);
+    return;
+  }
+
+  // OFF build: no mt_kahypar symbol is linked, the arm refuses, and the
+  // result is byte-identical to greedy's own with optimal_available:false.
+  const auto no_tasks = arm.try_partition(std::span<const gg::task>{}, std::span<const gg::dep>{}, 10);
+  REQUIRE_FALSE(no_tasks.has_value());
+
+  auto greedy_rec = gl::recommend(conn, 1, gl::k_default_budget);
+  auto mtk_rec    = gl::recommend_with(conn, 1, gl::k_default_budget, gl::solver::mtkahypar, arm);
+  REQUIRE(greedy_rec.has_value());
+  REQUIRE(mtk_rec.has_value());
+  REQUIRE(mtk_rec->solver_ == gl::solver::greedy);
+  REQUIRE_FALSE(mtk_rec->optimal_available);
+  REQUIRE_FALSE(mtk_rec->selected_greedy);
+  REQUIRE(gl::render_json(*mtk_rec) == gl::render_json(*greedy_rec));
+}
+
+TEST_CASE("grouping: the mtkahypar arm is never worse than greedy (task 4247)", "[grouping][mtkahypar]") {
+  const auto arm = gm::arm();
+  if (!arm.available()) {
+    SUCCEED("built without -DPLANAR_WITH_MTKAHYPAR=ON; the real comparison needs the linked solver");
+    return;
+  }
+
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_fixture_tie(conn);
+
+  // budget:100 forces the block count to 2 (deduped union x+p+q = 190), so
+  // the solver actually partitions rather than trivially merging everything.
+  auto greedy_rec = gl::recommend(conn, 5, 100);
+  auto mtk_rec    = gl::recommend_with(conn, 5, 100, gl::solver::mtkahypar, arm);
+  REQUIRE(greedy_rec.has_value());
+  REQUIRE(mtk_rec.has_value());
+
+  REQUIRE(mtk_rec->grouping_.total_cost() <= greedy_rec->grouping_.total_cost());
+  REQUIRE(mtk_rec->solver_ == gl::solver::mtkahypar);
+  REQUIRE(mtk_rec->optimal_available);
+  // When greedy's result shipped, its cost must equal greedy's own, not
+  // merely be <= it.
+  if (mtk_rec->selected_greedy) {
+    REQUIRE(mtk_rec->grouping_.total_cost() == greedy_rec->grouping_.total_cost());
+  }
+}
+
+TEST_CASE("grouping: the mtkahypar arm never regresses below greedy even when its own partition would (task 6460 fixture)",
+          "[grouping][mtkahypar]") {
+  // See seed_fixture_forced_split: the block count pigeonholes a split that
+  // greedy's own budget check never forces. This catches an "always accept
+  // the solver" regression that the tie fixture above cannot.
+  const auto arm = gm::arm();
+  if (!arm.available()) {
+    SUCCEED("built without -DPLANAR_WITH_MTKAHYPAR=ON; the real comparison needs the linked solver");
+    return;
+  }
+
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed_fixture_forced_split(conn);
+
+  auto greedy_rec = gl::recommend(conn, 6, 90);
+  auto mtk_rec    = gl::recommend_with(conn, 6, 90, gl::solver::mtkahypar, arm);
+  REQUIRE(greedy_rec.has_value());
+  REQUIRE(mtk_rec.has_value());
+
+  // Greedy achieves the true optimum here (295).
+  REQUIRE(greedy_rec->grouping_.total_cost() == 295);
+  REQUIRE(mtk_rec->grouping_.total_cost() <= 295);
+  REQUIRE(mtk_rec->optimal_available);
+  REQUIRE(mtk_rec->solver_ == gl::solver::mtkahypar);
+  WARN("selected_greedy=" << mtk_rec->selected_greedy << " shipped_cost=" << mtk_rec->grouping_.total_cost());
 }

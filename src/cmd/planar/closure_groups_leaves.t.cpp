@@ -83,6 +83,7 @@ import planar.db;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.main;
+import planar.engine.grouping.mtkahypar;
 
 #include "json_envelope_test_support.hpp"
 
@@ -538,18 +539,31 @@ TEST_CASE("groups recommend accepts --solver mtkahypar and reports that the opti
   }
 
   // Accepting the flag is NOT the inert-filter defect, because the outcome is
-  // REPORTED: `solver` names the partitioner that actually ran and
-  // `optimal_available` says whether the optimal one could. Master ships no
-  // optimal arm (decision 1293), so the verb degrades to greedy and says so.
+  // REPORTED either way: `solver` names the partitioner that actually ran and
+  // `optimal_available` says whether the optimal one could.
+  //
+  // WHICH answer is correct depends on the CONFIGURE, so this case branches on
+  // the same arm probe the handler itself uses (the Mt-KaHyPar arm, which is
+  // available only in a `-DPLANAR_WITH_MTKAHYPAR=ON` build) rather than
+  // pinning one outcome. Master asserts the degraded arm only (decision 1293).
   auto const asked = dispatch(fx, {"groups", "recommend", "1", "--solver", "mtkahypar", "--json"});
   CHECK(asked.code == 0);
-  CHECK(asked.out.contains("\"solver\":\"greedy\""));
-  CHECK(asked.out.contains("\"optimal_available\":false"));
-  CHECK(asked.out.contains("\"selected_greedy\":false"));
 
-  // ...and the answer is identical to an explicit `--solver greedy`, which
-  // is what "degraded" means.
-  auto const greedy = dispatch(fx, {"groups", "recommend", "1", "--solver", "greedy", "--json"});
-  CHECK(greedy.code == 0);
-  CHECK(greedy.out == asked.out);
+  if (::planar::engine::grouping::mtkahypar::arm().available()) {
+    // The solver is linked: the optimal arm really ran. `selected_greedy`
+    // still reports whether greedy WON on cost, so it is not asserted here.
+    CHECK(asked.out.contains("\"solver\":\"mtkahypar\""));
+    CHECK(asked.out.contains("\"optimal_available\":true"));
+  } else {
+    // No solver linked: degrade to greedy and SAY SO.
+    CHECK(asked.out.contains("\"solver\":\"greedy\""));
+    CHECK(asked.out.contains("\"optimal_available\":false"));
+    CHECK(asked.out.contains("\"selected_greedy\":false"));
+
+    // ...and the answer is identical to an explicit `--solver greedy`, which
+    // is what "degraded" means. This equality holds ONLY on the degraded arm.
+    auto const greedy = dispatch(fx, {"groups", "recommend", "1", "--solver", "greedy", "--json"});
+    CHECK(greedy.code == 0);
+    CHECK(greedy.out == asked.out);
+  }
 }

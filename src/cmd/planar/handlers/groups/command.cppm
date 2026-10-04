@@ -10,9 +10,10 @@
 ///
 /// ## `--solver mtkahypar` is ACCEPTED, and that is not a silent degradation
 ///
-/// Master ships greedy only; the Mt-KaHyPar solver arm lives on branch
-/// `dev/grouping-solvers` (decision 1293). The flag is still accepted and the
-/// verb runs greedy and reports `solver:"greedy"` with
+/// Master ships greedy only; this branch (`dev/grouping-solvers`) carries the
+/// Mt-KaHyPar solver arm, linked only with `-DPLANAR_WITH_MTKAHYPAR=ON`
+/// (decision 1293). Without it the flag is still accepted and the verb runs
+/// greedy and reports `solver:"greedy"` with
 /// `optimal_available:false`. The reporting fields carry that fact into both
 /// output forms, so a caller can tell the optimal arm did not run — which is
 /// what separates this from the inert-filter defect the brief warns about. A

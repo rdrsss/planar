@@ -15,8 +15,8 @@ import planar.cmd.planar.handlers.groups.recommend;
 
 namespace planar::cmd::handlers {
 
-namespace load    = engine::grouping::load;
-namespace optimal = engine::grouping::optimal;
+namespace load      = engine::grouping::load;
+namespace mtkahypar = engine::grouping::mtkahypar;
 
 auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const raw_plan = cliapp::positional_string(args, "plan-id").value_or(std::string{});
@@ -40,11 +40,12 @@ auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_
     budget = static_cast<std::uint32_t>(*parsed);
   }
 
-  // Forwarded to `load::recommend_with` with master's only optimal arm,
-  // `optimal::none()` (decision 1293). The recommendation's `solver` field
-  // reports the solver that ACTUALLY ran: a `--solver mtkahypar` run degrades
-  // to `greedy` with `optimal_available:false`. An unknown value is still a
-  // refusal. See command.cppm.
+  // Forwarded to `load::recommend_with` with this branch's Mt-KaHyPar arm
+  // (decision 1293; master passes `optimal::none()`). The recommendation's
+  // `solver` field reports the solver that ACTUALLY ran: a `--solver
+  // mtkahypar` run degrades to `greedy` with `optimal_available:false` when
+  // the build is not linked with `-DPLANAR_WITH_MTKAHYPAR=ON` or the arm's
+  // call fails. An unknown value is still a refusal. See command.cppm.
   auto requested_solver = load::solver::greedy;
   if (auto const raw = cliapp::flag_string(args, "--solver"); raw.has_value()) {
     auto const parsed = load::solver_from_text(*raw);
@@ -59,7 +60,7 @@ auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_
     return std::unexpected(conn.error());
   }
 
-  auto const rec = load::recommend_with(**conn, *plan_id, budget, requested_solver, optimal::none());
+  auto const rec = load::recommend_with(**conn, *plan_id, budget, requested_solver, mtkahypar::arm());
   if (!rec) {
     // `not_found` is exit 1, NOT exit 2: the oracle folds entity-not-found
     // into the generic bucket so a script can `|| exit 1` cleanly. A plan that
