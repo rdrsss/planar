@@ -49,6 +49,7 @@ planar_binary(planar_ext
     database.cppm
     handler.cppm
     scope.cppm
+    docs.cppm
     main.cppm
     handlers/version/command.cppm
     handlers/schema/command.cppm

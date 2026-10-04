@@ -56,6 +56,15 @@ namespace {
 /// rendered through this formatter is byte-identical to the page the same
 /// tree rendered before `add_bool_flag` existed.
 struct negation_hiding_formatter : CLI::Formatter {
+  /// @brief Keep a footer's line breaks and indentation.
+  ///
+  /// CLI11 re-flows a footer as a paragraph by default, which drops the
+  /// indentation of the `Examples:` and `Exit codes:` rows. Nothing else in
+  /// the tree sets a footer.
+  negation_hiding_formatter() {
+    enable_footer_formatting(false);
+  }
+
   /// @brief Render an option's name column without its negation names.
   /// @param opt The option.
   /// @param is_positional Whether it is a positional.

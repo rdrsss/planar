@@ -100,7 +100,34 @@ auto catalog_json() -> std::string {
       {"planar-execute run", "--sandbox-root"},
       {"planar-execute run", "--engine"},
   }};
-  return cliapp::schema_json(root, k_summaries, k_empty_defaults);
+  // The examples and exit codes this catalog reports in each leaf's `docs`.
+  // The usage banner is hand-written and byte-pinned, so unlike the other
+  // binaries there is no `--help` footer to keep in step with this table.
+  static constexpr std::pair<std::string_view, std::string_view> k_examples[] = {
+      {"planar-execute run", R"(planar-execute run workflows/build.lua --phase plan)"},
+      {"planar-execute submit", R"(planar-execute submit bundle.tar --input input.json)"},
+      {"planar-execute status", R"(planar-execute status run-1a2b3c)"},
+      {"planar-execute cancel", R"(planar-execute cancel run-1a2b3c)"},
+      {"planar-execute host status", R"(planar-execute host status)"},
+      {"planar-execute host drain", R"(planar-execute host drain)"},
+      {"planar-execute host stop", R"(planar-execute host stop)"},
+      {"planar-execute follow", R"(planar-execute follow run-1a2b3c)"},
+      {"planar-execute profile show", R"(planar-execute profile show)"},
+  };
+  static constexpr std::pair<std::string_view, std::string_view> k_exit_codes[] = {
+      {"planar-execute run", "0 1 2"},       {"planar-execute submit", "0 1 2 75"},   {"planar-execute status", "0 1 2"},
+      {"planar-execute cancel", "0 1 2"},    {"planar-execute host status", "0 1 2"}, {"planar-execute host drain", "0 1 2"},
+      {"planar-execute host stop", "0 1 2"}, {"planar-execute follow", "0 1 2"},      {"planar-execute profile show", "0 1 2"},
+      {"planar-execute schema", "0 1 2"},
+  };
+  static constexpr cliapp::exit_code_doc k_meanings[] = {
+      {0, R"(Success.)"},
+      {1, R"(Failure: the workflow failed, the request was refused, or this build has no Centurion engine.)"},
+      {2, R"(Usage error: an unknown verb, a missing argument or an unknown flag.)"},
+      {75, R"(Retry later: the engine could not give a definite answer.)"},
+  };
+  static constexpr cliapp::command_docs k_docs{k_examples, k_exit_codes, k_meanings, {}};
+  return cliapp::schema_json(root, k_summaries, k_empty_defaults, k_docs);
 }
 
 } // namespace planar::cmd::execute

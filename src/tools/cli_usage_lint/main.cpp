@@ -79,9 +79,17 @@ struct command_entry {
   bool                            is_leaf = true;
 };
 
+/// One entry of a command's `docs.examples`, with the command that owns it.
+struct catalog_example {
+  std::string command; ///< The owning command's full path, e.g. `planar task update`.
+  std::string text;    ///< The example invocation as the catalog carries it.
+};
+
 struct catalog_t {
   /// "planar workbench list" -> command_entry.
   std::unordered_map<std::string, command_entry> commands;
+  /// Every `docs.examples` entry of every loaded binary, in catalog order.
+  std::vector<catalog_example> examples;
 
   [[nodiscard]] auto contains(std::string const& key) const -> bool {
     return commands.contains(key);
@@ -222,6 +230,13 @@ auto load_schema(catalog_t& catalog, std::string const& bin_path) -> bool {
         if (json_value const* short_field = f.find("short");
             short_field != nullptr && short_field->kind == json_kind::string && !short_field->string.empty())
           entry.flags.insert(std::format("-{}", short_field->string));
+      }
+    }
+    if (json_value const* docs = c.find("docs"); docs != nullptr && docs->kind == json_kind::object) {
+      if (json_value const* examples = docs->find("examples"); examples != nullptr && examples->kind == json_kind::array) {
+        for (auto const& e : examples->array)
+          if (e.kind == json_kind::string)
+            catalog.examples.push_back({.command = command_field->string, .text = e.string});
       }
     }
     catalog.commands[command_field->string] = std::move(entry);
@@ -386,8 +401,10 @@ auto tokenize_ws(std::string_view text) -> std::vector<std::string_view> {
 }
 
 /// Scan a single shell-command-ish run of text for a binary invocation.
-void scan_command(catalog_t& catalog, std::vector<std::string> const& bin_names, std::string const& file, std::size_t line_no,
-                  std::string_view text, std::vector<violation_t>& violations) {
+/// @return The command path the text resolved to, or nullopt when the text
+/// names none of `bin_names`.
+auto scan_command(catalog_t& catalog, std::vector<std::string> const& bin_names, std::string const& file, std::size_t line_no,
+                  std::string_view text, std::vector<violation_t>& violations) -> std::optional<std::string> {
   std::vector<std::string> toks;
   for (auto raw : tokenize_ws(text))
     toks.emplace_back(clean_token(raw));
@@ -406,7 +423,7 @@ void scan_command(catalog_t& catalog, std::vector<std::string> const& bin_names,
       break;
   }
   if (!bi.has_value())
-    return;
+    return std::nullopt;
   std::vector<std::string> const rest(toks.begin() + static_cast<long>(*bi) + 1, toks.end());
 
   std::string resolved                                                          = bin_name;
@@ -433,12 +450,12 @@ void scan_command(catalog_t& catalog, std::vector<std::string> const& bin_names,
 
   command_entry* cmd = catalog.get(resolved);
   if (cmd == nullptr)
-    return;
+    return std::nullopt;
 
   // Ambiguity guard: if we stopped at a placeholder/value while the
   // resolved command still has subcommands, its flag set is unknown.
   if (!cmd->is_leaf && (stop_reason == stop_t::placeholder || stop_reason == stop_t::word))
-    return;
+    return resolved;
 
   for (std::string const& t : rest) {
     // A bare `--` ends the resolved command's own flags: what follows is
@@ -460,6 +477,7 @@ void scan_command(catalog_t& catalog, std::vector<std::string> const& bin_names,
     violations.push_back(
         {.file = file, .line = line_no, .command = resolved, .flag = std::string{name}, .suggestion = suggest(*cmd, name)});
   }
+  return resolved;
 }
 
 /// A code segment may contain several shell commands joined by pipes /
@@ -579,6 +597,39 @@ void scan_dir(catalog_t& catalog, std::vector<std::string> const& bin_names, fs:
     // caller passed as repo-root, not a path relativized against it.
     scan_file(catalog, bin_names, entry.path().string(), content, violations);
   }
+}
+
+/// @brief Catalog mode: validate every `docs.examples` entry of every loaded
+/// binary the way a Markdown invocation is validated.
+///
+/// An example is run through the same resolver and flag check as authored
+/// prose, so an unknown flag is reported with the command path and the flag.
+/// Two further findings are specific to the catalog, where an example is data
+/// owned by one command: an example that names no linted binary, and one that
+/// resolves to a different command than the one carrying it.
+/// @param catalog The loaded catalogs.
+/// @param bin_names The linted binaries' basenames.
+/// @param violations Receives one entry per unknown flag.
+/// @param problems Receives one message per example that names no binary or
+/// belongs to another command.
+/// @return The number of examples checked.
+auto check_catalog_examples(catalog_t& catalog, std::vector<std::string> const& bin_names, std::vector<violation_t>& violations,
+                            std::vector<std::string>& problems) -> std::size_t {
+  std::size_t checked = 0;
+  for (auto const& example : catalog.examples) {
+    ++checked;
+    auto const binary = example.command.substr(0, example.command.find(' '));
+    auto const origin = std::format("{} schema docs.examples", binary);
+    auto const found  = scan_command(catalog, bin_names, origin, checked, example.text, violations);
+    if (!found.has_value()) {
+      problems.push_back(
+          std::format("{}: `{}` has an example that names no linted binary: {}", origin, example.command, example.text));
+    } else if (*found != example.command) {
+      problems.push_back(
+          std::format("{}: `{}` has an example that invokes `{}`: {}", origin, example.command, *found, example.text));
+    }
+  }
+  return checked;
 }
 
 } // namespace
@@ -716,6 +767,13 @@ auto main(int argc, char** argv) -> int {
     }
   }
 
+  // Catalog mode: the examples the binaries themselves publish in `schema`.
+  std::vector<std::string> catalog_problems;
+  std::size_t const        examples_checked = check_catalog_examples(catalog, bin_names, violations, catalog_problems);
+  for (auto const& problem : catalog_problems) {
+    std::println("{}", problem);
+  }
+
   auto const policy = check_command_policy(catalog, bin_names, fs::path{repo_root});
   if (!policy.has_value()) {
     std::println(stderr, "error: {}", policy.error());
@@ -725,9 +783,9 @@ auto main(int argc, char** argv) -> int {
     std::println("{}", problem);
   }
 
-  if (violations.empty() && policy->first.empty()) {
-    std::println("cli-usage-lint: clean ({} files, {} commands, {} command-policy entries)", files_scanned,
-                 catalog.commands.size(), policy->second);
+  if (violations.empty() && policy->first.empty() && catalog_problems.empty()) {
+    std::println("cli-usage-lint: clean ({} files, {} commands, {} command-policy entries, {} catalog examples)", files_scanned,
+                 catalog.commands.size(), policy->second, examples_checked);
     return 0;
   }
 
@@ -750,7 +808,8 @@ auto main(int argc, char** argv) -> int {
       std::println("{}:{}: `{}` has no flag `{}`", v.file, v.line, v.command, v.flag);
     }
   }
-  std::println("cli-usage-lint: {} violation(s) across {} files, {} command-policy problem(s)", violations.size(), files_scanned,
-               policy->first.size());
+  std::println("cli-usage-lint: {} violation(s) across {} files, {} command-policy problem(s), {} catalog problem(s), "
+               "{} catalog examples",
+               violations.size(), files_scanned, policy->first.size(), catalog_problems.size(), examples_checked);
   return 1;
 }

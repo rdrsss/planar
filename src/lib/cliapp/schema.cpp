@@ -40,11 +40,14 @@ auto string_array(std::span<std::string const> values) -> std::string {
 // information, no less.
 constexpr std::string_view k_completion_none = R"({"kind":"none","values":[]})";
 
-// Likewise: no per-node `doc` field existed to source this from, so the
-// Zig `Doc{}` empty-default shape was hardcoded. Reproduced verbatim.
-constexpr std::string_view k_docs_empty = R"({"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],)"
-                                          R"("bugs":[],"authors":[],"homepage":"","license":"","copyright":"",)"
-                                          R"("version":"","sourceUrl":""})";
+// Likewise: no per-node `doc` field existed to source the other slots from,
+// so the Zig `Doc{}` empty-default shape is hardcoded around the two slots
+// (`examples`, `exitCodes`) that `command_docs` fills.
+constexpr std::string_view k_docs_head = R"({"examples":)";
+constexpr std::string_view k_docs_mid  = R"(,"exitCodes":)";
+constexpr std::string_view k_docs_tail = R"(,"notes":[],"seeAlso":[],"files":[],)"
+                                         R"("bugs":[],"authors":[],"homepage":"","license":"","copyright":"",)"
+                                         R"("version":"","sourceUrl":""})";
 
 /// @brief The declared value set of `opt`, when it carries one.
 ///
@@ -343,9 +346,38 @@ auto summary_for(std::span<std::pair<std::string_view, std::string_view> const> 
   return description;
 }
 
+/// @brief The `docs` object for `command`.
+/// @param docs The binary's examples and exit codes.
+/// @param command The full command path.
+/// @return The JSON object.
+auto render_docs(const command_docs& docs, std::string_view command) -> std::string {
+  auto const  entry = docs_for(docs, command);
+  std::string out{k_docs_head};
+  out += "[";
+  for (std::size_t i = 0; i < entry.examples.size(); ++i) {
+    if (i > 0) {
+      out += ",";
+    }
+    out += quote(entry.examples[i]);
+  }
+  out += "]";
+  out += k_docs_mid;
+  out += "[";
+  for (std::size_t i = 0; i < entry.exit_codes.size(); ++i) {
+    if (i > 0) {
+      out += ",";
+    }
+    out += std::format(R"({{"code":{},"meaning":{}}})", entry.exit_codes[i].first, quote(entry.exit_codes[i].second));
+  }
+  out += "]";
+  out += k_docs_tail;
+  return out;
+}
+
 auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::string const> path,
                     std::span<std::pair<std::string_view, std::string_view> const> summaries,
-                    std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string {
+                    std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults,
+                    const command_docs&                                            docs) -> std::string {
   std::vector<std::string> const path_vec(path.begin(), path.end());
   auto const                     description = node.get_description();
   auto const                     command     = command_path(root, path);
@@ -366,7 +398,7 @@ auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::s
   out += "\"flags\":" + render_flags(root, node, path, empty_defaults_for(empty_string_defaults, command)) + ",";
   out += "\"flagGroups\":[],";
   out += "\"positionals\":" + render_positionals(node) + ",";
-  out += "\"docs\":" + std::string(k_docs_empty);
+  out += "\"docs\":" + render_docs(docs, command);
   out += "}";
   return out;
 }
@@ -383,14 +415,95 @@ auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std
 
 auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
                  std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string {
+  return schema_json(root, summaries, empty_string_defaults, command_docs{});
+}
+
+auto docs_for(const command_docs& docs, std::string_view command) -> command_doc_entry {
+  command_doc_entry out;
+  for (auto const& [key, invocation] : docs.examples) {
+    if (key == command) {
+      out.examples.push_back(invocation);
+    }
+  }
+  for (auto const& [key, codes] : docs.exit_codes) {
+    if (key != command) {
+      continue;
+    }
+    std::string_view rest = codes;
+    while (!rest.empty()) {
+      auto const space     = rest.find(' ');
+      auto const token     = rest.substr(0, space);
+      rest                 = space == std::string_view::npos ? std::string_view{} : rest.substr(space + 1);
+      int code             = 0;
+      auto const [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), code);
+      if (ec != std::errc{} || ptr != token.data() + token.size()) {
+        continue;
+      }
+      std::string_view meaning;
+      for (auto const& row : docs.meanings) {
+        if (row.code == code) {
+          meaning = row.meaning;
+          break;
+        }
+      }
+      for (auto const& row : docs.overrides) {
+        if (row.command == command && row.code == code) {
+          meaning = row.meaning;
+          break;
+        }
+      }
+      out.exit_codes.emplace_back(code, meaning);
+    }
+  }
+  return out;
+}
+
+auto render_docs_footer(const command_docs& docs, std::string_view command) -> std::string {
+  auto const  entry = docs_for(docs, command);
+  std::string out;
+  if (!entry.examples.empty()) {
+    out += "Examples:";
+    for (auto const example : entry.examples) {
+      out += std::format("\n  {}", example);
+    }
+  }
+  if (!entry.exit_codes.empty()) {
+    if (!out.empty()) {
+      out += "\n\n";
+    }
+    out += "Exit codes:";
+    for (auto const& [code, meaning] : entry.exit_codes) {
+      out += std::format("\n  {}  {}", code, meaning);
+    }
+  }
+  return out;
+}
+
+auto install_docs_footers(CLI::App& root, const command_docs& docs) -> void {
+  for (auto const& node : all_nodes(root)) {
+    auto text = render_docs_footer(docs, command_path(root, node.path));
+    if (text.empty()) {
+      continue;
+    }
+    // `all_nodes` hands back const views of a tree the caller owns mutably;
+    // installing a footer mutates nothing an invocation reads. The text is
+    // set as a string: CLI11 appends a newline to a callback's result, which
+    // would leave a blank line at the end of the page.
+    const_cast<CLI::App*>(node.node)->footer(std::move(text)); // NOLINT(cppcoreguidelines-pro-type-const-cast)
+  }
+}
+
+auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
+                 std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults, const command_docs& docs)
+    -> std::string {
   std::string out = "{";
   out += "\"schemaVersion\":1,";
   out += "\"layout\":\"flat\",";
   out += "\"root\":" + quote(root.get_name()) + ",";
   out += "\"commands\":[";
-  out += render_command(root, root, {}, summaries, empty_string_defaults);
+  out += render_command(root, root, {}, summaries, empty_string_defaults, docs);
   for (auto const& node : all_nodes(root)) {
-    out += "," + render_command(root, *node.node, node.path, summaries, empty_string_defaults);
+    out += "," + render_command(root, *node.node, node.path, summaries, empty_string_defaults, docs);
   }
   out += "]";
   out += "}";

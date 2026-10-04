@@ -344,14 +344,19 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // EXACTLY (trailing spaces included) rather than loosened to a
   // `contains` check. Task 6123 re-baselined these bytes from the oracle's
   // renderer onto CLI11's; the reason to pin them did not change.
-  CHECK(leaf_help.out == "Print the planar-agent version, commit, and C++ toolchain.\n"
-                         "\n"
-                         "\n"
-                         "version [OPTIONS]\n"
-                         "\n"
-                         "\n"
-                         "OPTIONS:\n"
-                         "  -h,     --help              Print this help message and exit\n");
+  CHECK(leaf_help.out ==
+        "Print the planar-agent version, commit, and C++ toolchain.\n"
+        "\n"
+        "\n"
+        "version [OPTIONS]\n"
+        "\n"
+        "\n"
+        "OPTIONS:\n"
+        "  -h,     --help              Print this help message and exit\n"
+        "\n"
+        "Exit codes:\n"
+        "  0  Success.\n"
+        "  1  Failure: entity or claim not found, an unmapped error, or a usage error such as an unknown flag.\n");
 }
 
 TEST_CASE("planar-agent leaf help for schema is pinned exactly", "[cmd][agent][handlers]") {
@@ -370,5 +375,10 @@ TEST_CASE("planar-agent leaf help for schema is pinned exactly", "[cmd][agent][h
                    "                              task update\") or relative to the root (\"task update\"); an unknown\n"
                    "                              path exits 2 with nothing on stdout\n"
                    "          --compact           Emit one {command, summary} row per command instead of the full\n"
-                   "                              catalog; with --command, only that command's row\n");
+                   "                              catalog; with --command, only that command's row\n"
+                   "\n"
+                   "Exit codes:\n"
+                   "  0  Success.\n"
+                   "  1  Failure: entity or claim not found, an unmapped error, or a usage error such as an unknown flag.\n"
+                   "  2  Bad input: an invalid value or entity ref.\n");
 }

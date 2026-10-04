@@ -8,6 +8,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.cliapp.schema;
 import planar.cmd.planar_agent.context;
+import planar.cmd.planar_agent.docs;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
 
@@ -23,7 +24,7 @@ auto schema(context& ctx, const cliapp::parsed_args& args, const CLI::App& root)
   // `planar.cmd.planar_agent.surface`'s header and `planar.cliapp.schema`'s
   // header, divergence 1), so there is nothing for a summary table to
   // supply that `description` does not already carry.
-  auto const selected = cliapp::select_schema(cliapp::schema_json(root), cliapp::schema_request_of(args));
+  auto const selected = cliapp::select_schema(cliapp::schema_json(root, {}, {}, surface_docs()), cliapp::schema_request_of(args));
   if (!selected) {
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, selected.error()));
   }

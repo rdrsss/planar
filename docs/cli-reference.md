@@ -94,6 +94,23 @@ policy). Measured, and confirmed live:
 So a script that branches on an exit code must know which binary produced it.
 Do not port a `planar` expectation onto `planar-agent` unchanged.
 
+### Examples and exit codes in `--help` and `schema`
+
+Every leaf verb of `planar`, `planar-agent`, `planar-watch` and `planar-ext` ends its `--help` page with an `Examples:` section (one invocation per line) and an `Exit codes:` section (`<code>  <meaning>` per line). `planar task update --help` is the model:
+
+```text
+Examples:
+  planar task update 42 --status doing
+  planar task update 42 --title "Write the migration" --priority 1
+
+Exit codes:
+  0  Success.
+  1  Generic failure: entity not found, an unmapped error, or a busy source.
+  ...
+```
+
+Both sections come from the same table as the `docs.examples` and `docs.exitCodes` arrays of the `schema` catalog (`docs.exitCodes` holds `{"code":N,"meaning":"..."}` objects), so the page and the catalog cannot disagree; `planar schema --command "planar task update"` prints the data. A group such as `planar task` has no sections and `"examples":[]`. The table lives in each binary's `docs.cppm` (`src/cmd/<binary>/docs.cppm`) beside its summary table, and a leaf lists only the codes its handler can return, in ascending order. `planar` and `planar-agent` leaves other than `schema`, `completion`, `version` and `help` each carry at least one example. `planar-execute` publishes its exit codes and examples in `schema` only, because its usage banner is hand-written. `make cli-usage-check` validates every `docs.examples` entry against the live catalogs the same way it validates the invocations in these documents, and reports how many it checked.
+
 ### Error envelope tags — one vocabulary per binary (task 6902)
 
 Every failing `--json` invocation on `planar` or `planar-agent` writes an

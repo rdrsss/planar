@@ -11,6 +11,7 @@ import planar.cliapp.schema;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.docs;
 import planar.cmd.planar.surface;
 import planar.cmd.planar.declare;
 
@@ -24,8 +25,9 @@ auto schema(context& ctx, const cliapp::parsed_args& args, const CLI::App& root)
   // The summaries table is what makes `"summary"` differ from
   // `"description"` on the 57 nodes where the oracle's does. See
   // `planar.cliapp.schema`'s header, divergence 1.
-  auto const selected = cliapp::select_schema(cliapp::schema_json(root, surface_summaries(), surface_empty_string_defaults()),
-                                              cliapp::schema_request_of(args));
+  auto const selected =
+      cliapp::select_schema(cliapp::schema_json(root, surface_summaries(), surface_empty_string_defaults(), surface_docs()),
+                            cliapp::schema_request_of(args));
   if (!selected) {
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, selected.error()));
   }

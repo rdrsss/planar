@@ -146,6 +146,7 @@ planar_binary(planar_agent
     handlers/queue/command.cppm
 
     surface.cppm
+    docs.cppm
     handlers/shared/support.cppm
     handlers/version/version.cppm
     handlers/schema/schema.cppm

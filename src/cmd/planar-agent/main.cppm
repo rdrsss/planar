@@ -4,7 +4,9 @@ module;
 export module planar.cmd.planar_agent.main;
 import std;
 import cli11;
+import planar.cliapp.schema;
 import planar.cliapp.surface;
+import planar.cmd.planar_agent.docs;
 import planar.cmd.planar_agent.handlers.version.command;
 import planar.cmd.planar_agent.handlers.pull.command;
 import planar.cmd.planar_agent.handlers.peek.command;
@@ -64,6 +66,7 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   // its `--no-X` negation — see `planar.cliapp.surface::hide_negations_in_help`.
   // Must come AFTER the whole tree exists.
   cliapp::hide_negations_in_help(*app);
+  cliapp::install_docs_footers(*app, surface_docs());
   return app;
 }
 
