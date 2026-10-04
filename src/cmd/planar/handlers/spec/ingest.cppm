@@ -14,13 +14,13 @@ namespace planar::cmd::handlers::spec_cli {
 /// @return Registered CLI node.
 export auto attach_ingest(CLI::App* spec) -> CLI::App* {
   CLI::App* ingest = spec->add_subcommand("ingest", "Decompose workbench spec documents into the task graph.");
-  add_bool(*ingest, "--apply");
-  add_bool(*ingest, "--apply-removals");
-  add_string_default(*ingest, "--format", "text");
-  add_string(*ingest, "--scope");
-  add_bool(*ingest, "--strict");
-  add_json(*ingest);
-  add_positional(*ingest, "plan");
+  add_bool(*ingest, "--apply", k_undocumented);
+  add_bool(*ingest, "--apply-removals", k_undocumented);
+  add_string_default(*ingest, "--format", "text", k_undocumented);
+  add_string(*ingest, "--scope", k_undocumented);
+  add_bool(*ingest, "--strict", k_undocumented);
+  add_json(*ingest, k_undocumented);
+  add_positional(*ingest, "plan", k_undocumented);
   // Hidden variadic "rest" positional -- see this function's header.
   ingest->add_option("extra-plans")->expected(0, -1)->group("");
   return ingest;

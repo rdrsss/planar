@@ -14,12 +14,12 @@ namespace planar::cmd::handlers::local_cli {
 /// @return Registered CLI node.
 export auto attach_import(CLI::App* local) -> CLI::App* {
   CLI::App* import_leaf = local->add_subcommand("import", "Import a skill or agent from an external directory.");
-  add_string(*import_leaf, "--kind");
-  add_bool(*import_leaf, "--force");
-  add_bool(*import_leaf, "--dry-run");
-  add_bool(*import_leaf, "--no-link");
-  add_json(*import_leaf);
-  add_positional(*import_leaf, "path");
+  add_string(*import_leaf, "--kind", k_undocumented);
+  add_bool(*import_leaf, "--force", k_undocumented);
+  add_bool(*import_leaf, "--dry-run", k_undocumented);
+  add_bool(*import_leaf, "--no-link", k_undocumented);
+  add_json(*import_leaf, k_undocumented);
+  add_positional(*import_leaf, "path", k_undocumented);
   return import_leaf;
 }
 } // namespace planar::cmd::handlers::local_cli

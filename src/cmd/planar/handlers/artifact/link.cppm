@@ -14,11 +14,11 @@ namespace planar::cmd::handlers::artifact_cli {
 /// @return Registered CLI node.
 export auto attach_link(CLI::App& artifact) -> CLI::App* {
   CLI::App* link = artifact.add_subcommand("link", "Create an entity link from an artifact to another entity.");
-  add_string(*link, "--relationship");
-  add_string(*link, "--scope");
-  add_json(*link);
-  add_positional(*link, "artifact-id");
-  add_positional(*link, "ref");
+  add_string(*link, "--relationship", k_undocumented);
+  add_string(*link, "--scope", k_undocumented);
+  add_json(*link, k_undocumented);
+  add_positional(*link, "artifact-id", k_undocumented);
+  add_positional(*link, "ref", k_undocumented);
   return link;
 }
 } // namespace planar::cmd::handlers::artifact_cli

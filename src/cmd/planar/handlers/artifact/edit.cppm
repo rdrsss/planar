@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::artifact_cli {
 /// @return Registered CLI node.
 export auto attach_edit(CLI::App& artifact) -> CLI::App* {
   CLI::App* edit = artifact.add_subcommand("edit", "Edit an artifact in $EDITOR (editor-first flow).");
-  add_bool(*edit, "--no-pull");
-  add_json(*edit);
-  add_positional(*edit, "artifact-id");
+  add_bool(*edit, "--no-pull", k_undocumented);
+  add_json(*edit, k_undocumented);
+  add_positional(*edit, "artifact-id", k_undocumented);
   return edit;
 }
 } // namespace planar::cmd::handlers::artifact_cli

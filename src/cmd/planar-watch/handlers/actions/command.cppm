@@ -27,7 +27,7 @@ export auto add(CLI::App& root) -> void {
   shared::add_int(*actions, "--plan", "Filter by plan id");
   shared::add_int(*actions, "--task", "Filter by task id");
   shared::add_int(*actions, "--limit", "Row cap (default 100)");
-  shared::add_json(*actions);
+  shared::add_json(*actions, cliapp::k_undocumented);
   shared::add_follow(*actions, "Stream snapshots until SIGINT", "Poll interval for --follow (default 1s)");
 }
 } // namespace planar::cmd::watch::handlers::actions_cli

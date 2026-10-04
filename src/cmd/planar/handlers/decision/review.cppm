@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_review(CLI::App& decision) -> CLI::App* {
   CLI::App* review = decision.add_subcommand("review", "Reviewer entry point for decision diff.");
-  add_bool(*review, "--approve");
-  add_bool(*review, "--request-changes");
-  add_json(*review);
-  add_positional(*review, "decision-id");
+  add_bool(*review, "--approve", k_undocumented);
+  add_bool(*review, "--request-changes", k_undocumented);
+  add_json(*review, k_undocumented);
+  add_positional(*review, "decision-id", k_undocumented);
   return review;
 }
 } // namespace planar::cmd::handlers::decision_cli

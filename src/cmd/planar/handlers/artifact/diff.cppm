@@ -15,7 +15,7 @@ namespace planar::cmd::handlers::artifact_cli {
 export auto attach_diff(CLI::App& artifact) -> CLI::App* {
   CLI::App* diff =
       artifact.add_subcommand("diff", "Show a unified diff between the DB's artifact content and the workbench file.");
-  add_positional(*diff, "artifact-id");
+  add_positional(*diff, "artifact-id", k_undocumented);
   return diff;
 }
 } // namespace planar::cmd::handlers::artifact_cli

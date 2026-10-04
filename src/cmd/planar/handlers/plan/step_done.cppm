@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_step_done(CLI::App& step) -> CLI::App* {
   CLI::App* done = step.add_subcommand("done", "Mark a plan step as done.");
-  add_string(*done, "--scope");
-  add_json(*done);
-  add_positional(*done, "step-id");
+  add_string(*done, "--scope", k_undocumented);
+  add_json(*done, k_undocumented);
+  add_positional(*done, "step-id", k_undocumented);
   return done;
 }
 } // namespace planar::cmd::handlers::plan_cli

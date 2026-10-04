@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::audit_cli {
 /// @return Registered CLI node.
 export auto attach_commits(CLI::App* audit) -> CLI::App* {
   CLI::App* commits = audit->add_subcommand("commits", "List commits attributed to sessions and claims.");
-  add_int(*commits, "--session");
-  add_int(*commits, "--task");
-  add_json(*commits);
-  add_bool(*commits, "--shas");
+  add_int(*commits, "--session", k_undocumented);
+  add_int(*commits, "--task", k_undocumented);
+  add_json(*commits, k_undocumented);
+  add_bool(*commits, "--shas", k_undocumented);
   return commits;
 }
 } // namespace planar::cmd::handlers::audit_cli

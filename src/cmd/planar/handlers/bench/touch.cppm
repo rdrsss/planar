@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::bench_cli {
 /// @return Registered CLI node.
 export auto attach_touch(CLI::App* bench) -> CLI::App* {
   CLI::App* touch = bench->add_subcommand("touch", "Record a declared or actual file touch for a run.");
-  add_int_required(*touch, "--task");
-  add_string_required(*touch, "--path");
-  add_string_required(*touch, "--kind");
-  add_positional(*touch, "run-uid");
+  add_int_required(*touch, "--task", k_undocumented);
+  add_string_required(*touch, "--path", k_undocumented);
+  add_string_required(*touch, "--kind", k_undocumented);
+  add_positional(*touch, "run-uid", k_undocumented);
   return touch;
 }
 } // namespace planar::cmd::handlers::bench_cli

@@ -18,11 +18,11 @@ export auto attach_touches_remove(CLI::App& touches) -> CLI::App* {
                 "file should\n  not silently drop a repo claim that may carry other paths.\n\n  Removing the repo edge is not a "
                 "substitute for --path: the parallel\n  eligibility rules read task_touch_paths directly, so orphaned path "
                 "rows\n  keep driving eligibility after their edge is gone.");
-  add_string(*remove, "--path");
-  add_string(*remove, "--scope");
-  add_json(*remove);
-  add_positional(*remove, "task-id");
-  add_positional(*remove, "repo-slug");
+  add_string(*remove, "--path", k_undocumented);
+  add_string(*remove, "--scope", k_undocumented);
+  add_json(*remove, k_undocumented);
+  add_positional(*remove, "task-id", k_undocumented);
+  add_positional(*remove, "repo-slug", k_undocumented);
   return remove;
 }
 } // namespace planar::cmd::handlers::task_cli

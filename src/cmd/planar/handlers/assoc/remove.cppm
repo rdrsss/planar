@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::assoc_cli {
 /// @return Registered CLI node.
 export auto attach_remove(CLI::App* assoc) -> CLI::App* {
   CLI::App* remove = assoc->add_subcommand("remove", "Remove a repo from an association.");
-  add_json(*remove);
-  add_positional(*remove, "slug");
-  add_positional(*remove, "repo-path");
+  add_json(*remove, k_undocumented);
+  add_positional(*remove, "slug", k_undocumented);
+  add_positional(*remove, "repo-path", k_undocumented);
   return remove;
 }
 } // namespace planar::cmd::handlers::assoc_cli

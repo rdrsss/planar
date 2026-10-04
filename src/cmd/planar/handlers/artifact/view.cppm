@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::artifact_cli {
 /// @return Registered CLI node.
 export auto attach_view(CLI::App& artifact) -> CLI::App* {
   CLI::App* view = artifact.add_subcommand("view", "View the artifact's workbench file in $PAGER.");
-  add_positional(*view, "artifact-id");
+  add_positional(*view, "artifact-id", k_undocumented);
   return view;
 }
 } // namespace planar::cmd::handlers::artifact_cli

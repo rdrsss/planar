@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::workbench_cli {
 /// @return Registered CLI node.
 export auto attach_status(CLI::App& workbench) -> CLI::App* {
   CLI::App* status = workbench.add_subcommand("status", "Show drift and conflicts without writing.");
-  add_bool(*status, "--verbose");
-  add_json(*status);
-  add_positional_optional(*status, "plan");
+  add_bool(*status, "--verbose", k_undocumented);
+  add_json(*status, k_undocumented);
+  add_positional_optional(*status, "plan", k_undocumented);
   return status;
 }
 } // namespace planar::cmd::handlers::workbench_cli

@@ -12,12 +12,12 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& task) -> CLI::App* {
   CLI::App* list = task.add_subcommand("list", "List tasks.");
-  add_string(*list, "--scope");
-  add_string(*list, "--status");
-  add_int(*list, "--plan");
-  add_int(*list, "--priority-max");
-  add_string(*list, "--touches");
-  add_json(*list);
+  add_string(*list, "--scope", k_undocumented);
+  add_string(*list, "--status", k_undocumented);
+  add_int(*list, "--plan", k_undocumented);
+  add_int(*list, "--priority-max", k_undocumented);
+  add_string(*list, "--touches", k_undocumented);
+  add_json(*list, k_undocumented);
   return list;
 }
 } // namespace planar::cmd::handlers::task_cli

@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::capture_cli {
 /// @return Registered CLI node.
 export auto attach_file(CLI::App* capture) -> CLI::App* {
   CLI::App* file = capture->add_subcommand("file", "Attach a file to the active session.");
-  add_int(*file, "--session");
-  add_string(*file, "--role");
-  add_json(*file);
-  add_positional(*file, "path");
+  add_int(*file, "--session", k_undocumented);
+  add_string(*file, "--role", k_undocumented);
+  add_json(*file, k_undocumented);
+  add_positional(*file, "path", k_undocumented);
   return file;
 }
 } // namespace planar::cmd::handlers::capture_cli

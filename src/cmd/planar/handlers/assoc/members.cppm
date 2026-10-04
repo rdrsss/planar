@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::assoc_cli {
 /// @return Registered CLI node.
 export auto attach_members(CLI::App* assoc) -> CLI::App* {
   CLI::App* members = assoc->add_subcommand("members", "List all project members of an association.");
-  add_json(*members);
-  add_positional(*members, "slug");
+  add_json(*members, k_undocumented);
+  add_positional(*members, "slug", k_undocumented);
   return members;
 }
 } // namespace planar::cmd::handlers::assoc_cli

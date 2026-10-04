@@ -19,11 +19,11 @@ export auto attach_touches_add(CLI::App& touches) -> CLI::App* {
              "path.\n  The parallelizability rules (`plan recommend-strategy`) read these\n  path-level declarations for rules "
              "2/3/4 (disjoint touches, migration\n  touched, singleton file touched). Declare path touches per file (repeat\n  "
              "the verb), not as a list.");
-  add_string(*add, "--path");
-  add_string(*add, "--scope");
-  add_json(*add);
-  add_positional(*add, "task-id");
-  add_positional(*add, "repo-slug");
+  add_string(*add, "--path", k_undocumented);
+  add_string(*add, "--scope", k_undocumented);
+  add_json(*add, k_undocumented);
+  add_positional(*add, "task-id", k_undocumented);
+  add_positional(*add, "repo-slug", k_undocumented);
   return add;
 }
 } // namespace planar::cmd::handlers::task_cli

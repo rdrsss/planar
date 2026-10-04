@@ -15,7 +15,7 @@ export auto declare_demote(CLI::App& root) -> void {
                 "optional --from flag names the\n  source association slug for clarity. Association-to-association\n  "
                 "transitions go through promote.\n\n  Example:\n    planar demote task:42 --from project:planar");
   add_string(*demote, "--from", "Source association slug");
-  add_json(*demote);
-  add_positional_described(*demote, "ref", "Entity ref (kind:id)");
+  add_json(*demote, k_undocumented);
+  add_positional(*demote, "ref", "Entity ref (kind:id)");
 }
 } // namespace planar::cmd::handlers

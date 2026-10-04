@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::workbench_cli {
 /// @return Registered CLI node.
 export auto attach_pull(CLI::App& workbench) -> CLI::App* {
   CLI::App* pull = workbench.add_subcommand("pull", "Apply FS→DB changes; report DB→FS drift.");
-  add_bool(*pull, "--verbose");
-  add_json(*pull);
-  add_positional(*pull, "plan");
+  add_bool(*pull, "--verbose", k_undocumented);
+  add_json(*pull, k_undocumented);
+  add_positional(*pull, "plan", k_undocumented);
   return pull;
 }
 } // namespace planar::cmd::handlers::workbench_cli

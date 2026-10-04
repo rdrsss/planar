@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_accept(CLI::App& decision) -> CLI::App* {
   CLI::App* accept = decision.add_subcommand("accept", "Accept a proposed decision.");
-  add_string(*accept, "--scope");
-  add_json(*accept);
-  add_positional(*accept, "decision-id");
+  add_string(*accept, "--scope", k_undocumented);
+  add_json(*accept, k_undocumented);
+  add_positional(*accept, "decision-id", k_undocumented);
   return accept;
 }
 } // namespace planar::cmd::handlers::decision_cli

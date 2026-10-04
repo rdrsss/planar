@@ -528,18 +528,18 @@ auto declare_import(CLI::App& root) -> void {
                 "tech specs, roadmap milestones, ADRs, and backlog files,\n  infers completion status from checkbox state and "
                 "git history,\n  and produces an ImportPlan for review before committing.");
   add_bool(*importer, "--from-github", "Pull source from GitHub issues");
-  add_bool(*importer, "--dry-run");
-  add_bool(*importer, "--strict");
+  add_bool(*importer, "--dry-run", k_undocumented);
+  add_bool(*importer, "--strict", k_undocumented);
   add_string(*importer, "--roadmap", "Path to a roadmap source");
-  add_bool(*importer, "--apply");
-  add_bool(*importer, "--apply-removals");
-  add_bool(*importer, "--no-status-inference");
-  add_bool(*importer, "--interpret");
+  add_bool(*importer, "--apply", k_undocumented);
+  add_bool(*importer, "--apply-removals", k_undocumented);
+  add_bool(*importer, "--no-status-inference", k_undocumented);
+  add_bool(*importer, "--interpret", k_undocumented);
   add_string(*importer, "--accept-spec", "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'");
   add_bool(*importer, "--no-forward-specs", "Skip forward-spec processing entirely");
-  add_string(*importer, "--scope");
-  add_json(*importer);
-  add_positional(*importer, "repo-root");
+  add_string(*importer, "--scope", k_undocumented);
+  add_json(*importer, k_undocumented);
+  add_positional(*importer, "repo-root", k_undocumented);
 }
 
 } // namespace planar::cmd::handlers

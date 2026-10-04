@@ -14,11 +14,11 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& question) -> CLI::App* {
   CLI::App* list = question.add_subcommand("list", "List questions.");
-  add_string(*list, "--scope");
-  add_string(*list, "--status");
-  add_string(*list, "--touches");
-  add_int(*list, "--plan");
-  add_json(*list);
+  add_string(*list, "--scope", k_undocumented);
+  add_string(*list, "--status", k_undocumented);
+  add_string(*list, "--touches", k_undocumented);
+  add_int(*list, "--plan", k_undocumented);
+  add_json(*list, k_undocumented);
   return list;
 }
 } // namespace planar::cmd::handlers::question_cli

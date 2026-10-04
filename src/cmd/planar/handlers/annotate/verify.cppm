@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_verify(CLI::App& annotate) -> CLI::App* {
   CLI::App* verify = annotate.add_subcommand("verify", "Verify annotation anchors against workspace state.");
-  add_string(*verify, "--anchor-path");
-  add_string(*verify, "--scope");
-  add_json(*verify);
+  add_string(*verify, "--anchor-path", k_undocumented);
+  add_string(*verify, "--scope", k_undocumented);
+  add_json(*verify, k_undocumented);
   return verify;
 }
 } // namespace planar::cmd::handlers::annotate_cli

@@ -160,8 +160,8 @@ auto declare_unlink(CLI::App& root) -> void {
       "Remove an external_links row by its link id.\n\n  Associated sync_events rows are detached by setting link_id to null\n  "
       "rather than cascade-deleted; they are no longer reachable through\n  the deleted link's audit trail.");
   add_string(*unlink, "--scope", "Scope for the cross-scope guard (currently informational)");
-  add_json(*unlink);
-  add_positional_described(*unlink, "link-id", "External-link id (integer)");
+  add_json(*unlink, k_undocumented);
+  add_positional(*unlink, "link-id", "External-link id (integer)");
 }
 
 } // namespace planar::cmd::handlers

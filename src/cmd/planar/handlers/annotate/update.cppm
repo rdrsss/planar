@@ -14,15 +14,15 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_update(CLI::App& annotate) -> CLI::App* {
   CLI::App* update = annotate.add_subcommand("update", "Update an annotation.");
-  add_string(*update, "--title");
-  add_string(*update, "--slug");
-  add_string(*update, "--body");
-  add_string(*update, "--status");
-  add_int(*update, "--plan");
-  add_int(*update, "--task");
-  add_string(*update, "--scope");
-  add_json(*update);
-  add_positional(*update, "annotation-id");
+  add_string(*update, "--title", k_undocumented);
+  add_string(*update, "--slug", k_undocumented);
+  add_string(*update, "--body", k_undocumented);
+  add_string(*update, "--status", k_undocumented);
+  add_int(*update, "--plan", k_undocumented);
+  add_int(*update, "--task", k_undocumented);
+  add_string(*update, "--scope", k_undocumented);
+  add_json(*update, k_undocumented);
+  add_positional(*update, "annotation-id", k_undocumented);
   return update;
 }
 } // namespace planar::cmd::handlers::annotate_cli

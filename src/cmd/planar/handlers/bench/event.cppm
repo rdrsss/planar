@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::bench_cli {
 /// @return Registered CLI node.
 export auto attach_event(CLI::App* bench) -> CLI::App* {
   CLI::App* event = bench->add_subcommand("event", "Append a journal event to a run.");
-  add_string_required(*event, "--kind");
-  add_int_required(*event, "--seq");
-  add_string(*event, "--payload");
-  add_positional(*event, "run-uid");
+  add_string_required(*event, "--kind", k_undocumented);
+  add_int_required(*event, "--seq", k_undocumented);
+  add_string(*event, "--payload", k_undocumented);
+  add_positional(*event, "run-uid", k_undocumented);
   return event;
 }
 } // namespace planar::cmd::handlers::bench_cli

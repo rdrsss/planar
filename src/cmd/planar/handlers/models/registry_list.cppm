@@ -12,7 +12,7 @@ namespace planar::cmd::handlers::models_cli {
 /// @return Registered CLI node.
 export auto attach_registry_list(CLI::App& registry) -> CLI::App* {
   CLI::App* list = registry.add_subcommand("list", "List registrations, bindings, and latest observations.");
-  add_json(*list);
+  add_json(*list, k_undocumented);
   return list;
 }
 } // namespace planar::cmd::handlers::models_cli

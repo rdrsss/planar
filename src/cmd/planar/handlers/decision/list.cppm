@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& decision) -> CLI::App* {
   CLI::App* list = decision.add_subcommand("list", "List decisions.");
-  add_string(*list, "--scope");
-  add_string(*list, "--status");
-  add_int(*list, "--plan");
-  add_json(*list);
+  add_string(*list, "--scope", k_undocumented);
+  add_string(*list, "--status", k_undocumented);
+  add_int(*list, "--plan", k_undocumented);
+  add_json(*list, k_undocumented);
   return list;
 }
 } // namespace planar::cmd::handlers::decision_cli

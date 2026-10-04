@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::scenario_cli {
 /// @return Registered CLI node.
 export auto attach_view(CLI::App& scenario) -> CLI::App* {
   CLI::App* view = scenario.add_subcommand("view", "View scenario's workbench file.");
-  add_positional(*view, "scenario-id");
+  add_positional(*view, "scenario-id", k_undocumented);
   return view;
 }
 } // namespace planar::cmd::handlers::scenario_cli

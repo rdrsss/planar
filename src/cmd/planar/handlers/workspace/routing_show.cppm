@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::workspace_cli {
 /// @return Registered CLI node.
 export auto attach_routing_show(CLI::App* routing) -> CLI::App* {
   CLI::App* show = routing->add_subcommand("show", "Display current routing table.");
-  add_json(*show);
-  add_positional_optional(*show, "workspace");
+  add_json(*show, k_undocumented);
+  add_positional_optional(*show, "workspace", k_undocumented);
   return show;
 }
 } // namespace planar::cmd::handlers::workspace_cli

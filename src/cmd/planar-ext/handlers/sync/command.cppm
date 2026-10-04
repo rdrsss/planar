@@ -8,8 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 namespace planar::cmd::ext::handlers::sync_cli {
 namespace {
-auto add_json(CLI::App& app) -> void {
-  cliapp::add_bool_flag(app, "--json");
+auto add_json(CLI::App& app, std::string_view desc) -> void {
+  cliapp::add_bool_flag(app, "--json", desc);
 }
 } // namespace
 /// @brief Register this CLI declaration.
@@ -20,30 +20,30 @@ export auto add(CLI::App& root) -> void {
   sync->require_subcommand(0);
 
   CLI::App* pull = sync->add_subcommand("pull", "Pull remote state for one or more external links.");
-  cliapp::add_bool_flag(*pull, "--all");
+  cliapp::add_bool_flag(*pull, "--all", cliapp::k_undocumented);
   pull->add_option("--system");
   pull->add_option("--scope");
-  add_json(*pull);
+  add_json(*pull, cliapp::k_undocumented);
   pull->add_option("ref")->description("<link-id | kind:id>");
 
   CLI::App* push = sync->add_subcommand("push", "Push local changes for one or more external links.");
-  cliapp::add_bool_flag(*push, "--all");
+  cliapp::add_bool_flag(*push, "--all", cliapp::k_undocumented);
   push->add_option("--system");
   push->add_option("--scope");
-  add_json(*push);
+  add_json(*push, cliapp::k_undocumented);
   push->add_option("ref")->description("<link-id | kind:id>");
 
   CLI::App* status = sync->add_subcommand("status", "Report sync status for links.");
   status->add_option("--entity")->description("Filter by entity, e.g. task:42");
   status->add_option("--system")->description("Filter by system slug");
-  add_json(*status);
+  add_json(*status, cliapp::k_undocumented);
 
   CLI::App* resolve = sync->add_subcommand("resolve", "Settle a sync conflict on a link.");
   resolve->add_option("--keep")->description("Which side to keep (local|remote)")->required();
   resolve->add_option("--evidence-token")->description("Exact token from the approved conflict evidence")->required();
   resolve->add_option("--expected-local-updated-at")->description("Approved local entity updated_at version")->required();
   resolve->add_option("--scope");
-  add_json(*resolve);
+  add_json(*resolve, cliapp::k_undocumented);
   resolve->add_option("event-id")->required();
 }
 } // namespace planar::cmd::ext::handlers::sync_cli

@@ -15,7 +15,7 @@ export auto declare_promote(CLI::App& root) -> void {
                  "question, test_scenario (alias:\n  scenario), artifact, decision.\n\n  Examples:\n    planar promote task:42 "
                  "--to org:acme\n    planar promote plan:7 --to project:planar");
   add_string_required(*promote, "--to", "Target association slug");
-  add_json(*promote);
-  add_positional_described(*promote, "ref", "Entity ref (kind:id)");
+  add_json(*promote, k_undocumented);
+  add_positional(*promote, "ref", "Entity ref (kind:id)");
 }
 } // namespace planar::cmd::handlers

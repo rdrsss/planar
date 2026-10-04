@@ -24,6 +24,6 @@ export auto add(CLI::App& root) -> void {
   sync_events->add_option("--outcome")->description("Filter by outcome (ok, conflict, error, noop, \xe2\x80\xa6)");
   sync_events->add_option("--since")->description("Only rows at >= this ISO8601 timestamp");
   shared::add_int(*sync_events, "--limit", "Row cap (default 100)");
-  shared::add_json(*sync_events);
+  shared::add_json(*sync_events, cliapp::k_undocumented);
 }
 } // namespace planar::cmd::watch::handlers::sync_events_cli

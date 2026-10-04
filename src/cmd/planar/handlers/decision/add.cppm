@@ -14,13 +14,13 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_add(CLI::App& decision) -> CLI::App* {
   CLI::App* add = decision.add_subcommand("add", "Create a new decision record.");
-  add_string(*add, "--body");
-  add_string(*add, "--rationale");
-  add_int(*add, "--plan");
-  add_string(*add, "--scope");
-  add_bool(*add, "--editor");
-  add_json(*add);
-  add_positional(*add, "title");
+  add_string(*add, "--body", k_undocumented);
+  add_string(*add, "--rationale", k_undocumented);
+  add_int(*add, "--plan", k_undocumented);
+  add_string(*add, "--scope", k_undocumented);
+  add_bool(*add, "--editor", k_undocumented);
+  add_json(*add, k_undocumented);
+  add_positional(*add, "title", k_undocumented);
   return add;
 }
 } // namespace planar::cmd::handlers::decision_cli

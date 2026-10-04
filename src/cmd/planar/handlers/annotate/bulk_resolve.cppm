@@ -14,14 +14,14 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_bulk_resolve(CLI::App& annotate) -> CLI::App* {
   CLI::App* bulk_resolve = annotate.add_subcommand("bulk-resolve", "Resolve every active annotation matching the filter.");
-  add_string(*bulk_resolve, "--operation-id");
-  add_string(*bulk_resolve, "--anchor-path");
-  add_int(*bulk_resolve, "--plan");
-  add_int(*bulk_resolve, "--task");
-  add_string(*bulk_resolve, "--vendor");
-  add_string(*bulk_resolve, "--tag");
-  add_string(*bulk_resolve, "--scope");
-  add_json(*bulk_resolve);
+  add_string(*bulk_resolve, "--operation-id", k_undocumented);
+  add_string(*bulk_resolve, "--anchor-path", k_undocumented);
+  add_int(*bulk_resolve, "--plan", k_undocumented);
+  add_int(*bulk_resolve, "--task", k_undocumented);
+  add_string(*bulk_resolve, "--vendor", k_undocumented);
+  add_string(*bulk_resolve, "--tag", k_undocumented);
+  add_string(*bulk_resolve, "--scope", k_undocumented);
+  add_json(*bulk_resolve, k_undocumented);
   return bulk_resolve;
 }
 } // namespace planar::cmd::handlers::annotate_cli

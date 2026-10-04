@@ -18,8 +18,8 @@ export auto attach_gc(CLI::App& workbench) -> CLI::App* {
   add_bool(*gc, "--yes", "Discard FS-content drift; remove drifted files anyway");
   add_string(*gc, "--filter-mode", "Terminal-status filter: 'failures' (default) or 'all'");
   add_bool(*gc, "--all-scopes", "Walk every plan's workbench tree");
-  add_json(*gc);
-  add_positional_optional(*gc, "plan");
+  add_json(*gc, k_undocumented);
+  add_positional_optional(*gc, "plan", k_undocumented);
   return gc;
 }
 } // namespace planar::cmd::handlers::workbench_cli

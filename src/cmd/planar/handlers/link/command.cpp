@@ -218,9 +218,9 @@ auto declare_link(CLI::App& root) -> void {
   add_string(*link, "--role", "Link role: mirror, parent, child, reference (default: reference)");
   add_string(*link, "--sync", "Sync direction: read-only, write-back, two-way (default: read-only)");
   add_bool(*link, "--propagate", "Propagate feature after linking (M10)");
-  add_string(*link, "--scope");
-  add_json(*link);
-  add_positional_described(*link, "ref", "Entity ref (kind:id)");
+  add_string(*link, "--scope", k_undocumented);
+  add_json(*link, k_undocumented);
+  add_positional(*link, "ref", "Entity ref (kind:id)");
 }
 
 } // namespace planar::cmd::handlers

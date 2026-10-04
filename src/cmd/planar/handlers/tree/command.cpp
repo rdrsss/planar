@@ -148,7 +148,7 @@ auto declare_tree(CLI::App& root) -> void {
   add_string(*tree, "--kind", "Restrict to a single kind");
   add_string(*tree, "--status", "Restrict to a single status");
   add_string(*tree, "--sort", "Sort key");
-  add_json(*tree);
+  add_json(*tree, k_undocumented);
 }
 
 } // namespace planar::cmd::handlers

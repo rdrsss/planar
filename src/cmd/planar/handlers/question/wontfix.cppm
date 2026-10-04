@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_wontfix(CLI::App& question) -> CLI::App* {
   CLI::App* wontfix = question.add_subcommand("wontfix", "Mark a question as wontfix.");
-  add_string(*wontfix, "--reason");
-  add_json(*wontfix);
-  add_positional(*wontfix, "question-id");
+  add_string(*wontfix, "--reason", k_undocumented);
+  add_json(*wontfix, k_undocumented);
+  add_positional(*wontfix, "question-id", k_undocumented);
   return wontfix;
 }
 } // namespace planar::cmd::handlers::question_cli

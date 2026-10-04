@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::handoff_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App* handoff) -> CLI::App* {
   CLI::App* list = handoff->add_subcommand("list", "List handoffs.");
-  add_string(*list, "--vendor");
-  add_string(*list, "--note");
-  add_json(*list);
-  add_string(*list, "--status");
+  add_string(*list, "--vendor", k_undocumented);
+  add_string(*list, "--note", k_undocumented);
+  add_json(*list, k_undocumented);
+  add_string(*list, "--status", k_undocumented);
   return list;
 }
 } // namespace planar::cmd::handlers::handoff_cli

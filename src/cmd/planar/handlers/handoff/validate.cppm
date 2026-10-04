@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::handoff_cli {
 /// @return Registered CLI node.
 export auto attach_validate(CLI::App* handoff) -> CLI::App* {
   CLI::App* validate = handoff->add_subcommand("validate", "Validate a pending handoff.");
-  add_string(*validate, "--vendor");
-  add_string(*validate, "--note");
-  add_json(*validate);
-  add_positional(*validate, "handoff-id");
+  add_string(*validate, "--vendor", k_undocumented);
+  add_string(*validate, "--note", k_undocumented);
+  add_json(*validate, k_undocumented);
+  add_positional(*validate, "handoff-id", k_undocumented);
   return validate;
 }
 } // namespace planar::cmd::handlers::handoff_cli

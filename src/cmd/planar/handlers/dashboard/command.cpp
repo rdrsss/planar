@@ -263,7 +263,7 @@ auto declare_dashboard(CLI::App& root) -> void {
                    "(claim/heartbeat/complete) and\n  `planar-watch` for the live streaming view.");
   add_string(*dashboard, "--scope", "Limit to a single scope slug");
   add_bool(*dashboard, "--agents", "Fold in live claim state + next-available-work per plan");
-  add_json(*dashboard);
+  add_json(*dashboard, k_undocumented);
 }
 
 } // namespace planar::cmd::handlers

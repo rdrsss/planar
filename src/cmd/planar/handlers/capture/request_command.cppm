@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::capture_cli {
 /// @return Registered CLI node.
 export auto attach_request_command(CLI::App* capture) -> CLI::App* {
   CLI::App* command = capture->add_subcommand("command", "Append a command to the active session.");
-  add_int(*command, "--session");
-  add_string(*command, "--outcome");
-  add_json(*command);
-  add_positional(*command, "command");
+  add_int(*command, "--session", k_undocumented);
+  add_string(*command, "--outcome", k_undocumented);
+  add_json(*command, k_undocumented);
+  add_positional(*command, "command", k_undocumented);
   return command;
 }
 } // namespace planar::cmd::handlers::capture_cli

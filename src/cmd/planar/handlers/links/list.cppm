@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::links_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App* links) -> CLI::App* {
   CLI::App* list = links->add_subcommand("list", "List entity_links where the given entity is source or target.");
-  add_json(*list);
-  add_positional(*list, "ref");
+  add_json(*list, k_undocumented);
+  add_positional(*list, "ref", k_undocumented);
   return list;
 }
 } // namespace planar::cmd::handlers::links_cli

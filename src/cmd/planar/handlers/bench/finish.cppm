@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::bench_cli {
 /// @return Registered CLI node.
 export auto attach_finish(CLI::App* bench) -> CLI::App* {
   CLI::App* finish = bench->add_subcommand("finish", "Set the terminal status on a run.");
-  add_string_required(*finish, "--status");
-  add_positional(*finish, "run-uid");
+  add_string_required(*finish, "--status", k_undocumented);
+  add_positional(*finish, "run-uid", k_undocumented);
   return finish;
 }
 } // namespace planar::cmd::handlers::bench_cli

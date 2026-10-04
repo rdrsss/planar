@@ -23,6 +23,6 @@ export auto add(CLI::App& root) -> void {
                     "caller-supervised")
       ->check(CLI::IsMember{std::vector<std::string>{"caller", "engine"}});
   claim_associate->add_option("--attempt")->description("The Centurion attempt supervising the claim (with --supervisor engine)");
-  shared::add_json(*claim_associate);
+  shared::add_json(*claim_associate, shared::k_undocumented);
 }
 } // namespace planar::cmd::agent::handlers::claim_associate_cli

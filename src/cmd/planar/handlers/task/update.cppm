@@ -12,21 +12,21 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_update(CLI::App& task) -> CLI::App* {
   CLI::App* update = task.add_subcommand("update", "Update mutable fields on a task.");
-  add_string(*update, "--title");
-  add_string(*update, "--body");
-  add_string(*update, "--status");
-  add_string(*update, "--next-action");
-  add_string(*update, "--due");
-  add_int(*update, "--priority");
-  add_int(*update, "--plan");
-  add_string(*update, "--slug");
-  add_string(*update, "--scope");
-  add_bool(*update, "--force");
-  add_string(*update, "--reason");
-  add_bool(*update, "--no-auto-promote");
-  add_bool(*update, "--editor");
-  add_json(*update);
-  add_positional(*update, "task-id");
+  add_string(*update, "--title", k_undocumented);
+  add_string(*update, "--body", k_undocumented);
+  add_string(*update, "--status", k_undocumented);
+  add_string(*update, "--next-action", k_undocumented);
+  add_string(*update, "--due", k_undocumented);
+  add_int(*update, "--priority", k_undocumented);
+  add_int(*update, "--plan", k_undocumented);
+  add_string(*update, "--slug", k_undocumented);
+  add_string(*update, "--scope", k_undocumented);
+  add_bool(*update, "--force", k_undocumented);
+  add_string(*update, "--reason", k_undocumented);
+  add_bool(*update, "--no-auto-promote", k_undocumented);
+  add_bool(*update, "--editor", k_undocumented);
+  add_json(*update, k_undocumented);
+  add_positional(*update, "task-id", k_undocumented);
   return update;
 }
 } // namespace planar::cmd::handlers::task_cli

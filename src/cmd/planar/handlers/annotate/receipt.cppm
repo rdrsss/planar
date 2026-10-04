@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_receipt(CLI::App& annotate) -> CLI::App* {
   CLI::App* receipt = annotate.add_subcommand("receipt", "Look up a durable annotation command receipt.");
-  add_string(*receipt, "--source-uuid");
-  add_string(*receipt, "--operation-id");
-  add_json(*receipt);
+  add_string(*receipt, "--source-uuid", k_undocumented);
+  add_string(*receipt, "--operation-id", k_undocumented);
+  add_json(*receipt, k_undocumented);
   return receipt;
 }
 } // namespace planar::cmd::handlers::annotate_cli

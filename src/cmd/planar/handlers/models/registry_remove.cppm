@@ -12,7 +12,7 @@ namespace planar::cmd::handlers::models_cli {
 /// @return Registered CLI node.
 export auto attach_registry_remove(CLI::App& registry) -> CLI::App* {
   CLI::App* remove = registry.add_subcommand("remove", "Remove a candidate when no immutable evidence references it.");
-  add_int_required(*remove, "--candidate");
+  add_int_required(*remove, "--candidate", k_undocumented);
   return remove;
 }
 } // namespace planar::cmd::handlers::models_cli

@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::workflow_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App* workflow) -> CLI::App* {
   CLI::App* show = workflow->add_subcommand("show", "Show @meta and source path for a named workflow.");
-  add_json(*show);
-  add_positional(*show, "name");
+  add_json(*show, k_undocumented);
+  add_positional(*show, "name", k_undocumented);
   return show;
 }
 } // namespace planar::cmd::handlers::workflow_cli

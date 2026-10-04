@@ -15,14 +15,14 @@ namespace planar::cmd::handlers::annotate_cli {
 export auto attach_bulk_archive(CLI::App& annotate) -> CLI::App* {
   CLI::App* bulk_archive =
       annotate.add_subcommand("bulk-archive", "Archive every annotation matching the filter (including non-active rows).");
-  add_string(*bulk_archive, "--operation-id");
-  add_string(*bulk_archive, "--anchor-path");
-  add_int(*bulk_archive, "--plan");
-  add_int(*bulk_archive, "--task");
-  add_string(*bulk_archive, "--vendor");
-  add_string(*bulk_archive, "--tag");
-  add_string(*bulk_archive, "--scope");
-  add_json(*bulk_archive);
+  add_string(*bulk_archive, "--operation-id", k_undocumented);
+  add_string(*bulk_archive, "--anchor-path", k_undocumented);
+  add_int(*bulk_archive, "--plan", k_undocumented);
+  add_int(*bulk_archive, "--task", k_undocumented);
+  add_string(*bulk_archive, "--vendor", k_undocumented);
+  add_string(*bulk_archive, "--tag", k_undocumented);
+  add_string(*bulk_archive, "--scope", k_undocumented);
+  add_json(*bulk_archive, k_undocumented);
   return bulk_archive;
 }
 } // namespace planar::cmd::handlers::annotate_cli

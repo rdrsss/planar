@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::templates_cli {
 /// @return Registered CLI node.
 export auto attach_path(CLI::App* templates) -> CLI::App* {
   CLI::App* path = templates->add_subcommand("path", "Show template resolution paths.");
-  add_string(*path, "--system");
-  add_string(*path, "--set");
-  add_json(*path);
+  add_string(*path, "--system", k_undocumented);
+  add_string(*path, "--set", k_undocumented);
+  add_json(*path, k_undocumented);
   return path;
 }
 } // namespace planar::cmd::handlers::templates_cli

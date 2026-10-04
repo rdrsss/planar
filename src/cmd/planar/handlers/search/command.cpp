@@ -230,8 +230,8 @@ auto declare_search(CLI::App& root) -> void {
   add_string(*search, "--scope", "Restrict to a scope slug");
   add_int(*search, "--plan", "Restrict to a plan id");
   add_int_default(*search, "--limit", "50", "Max results");
-  add_json(*search);
-  add_positional_described(*search, "query", "FTS5 query string");
+  add_json(*search, k_undocumented);
+  add_positional(*search, "query", "FTS5 query string");
 }
 
 } // namespace planar::cmd::handlers

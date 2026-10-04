@@ -14,12 +14,12 @@ namespace planar::cmd::handlers::config_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App* config) -> CLI::App* {
   CLI::App* show = config->add_subcommand("show", "Print the resolved configuration.");
-  add_bool(*show, "--effective");
-  add_bool(*show, "--raw");
-  add_bool(*show, "--defaults");
-  add_string(*show, "--scope");
-  add_string_default(*show, "--format", "text");
-  add_json(*show);
+  add_bool(*show, "--effective", k_undocumented);
+  add_bool(*show, "--raw", k_undocumented);
+  add_bool(*show, "--defaults", k_undocumented);
+  add_string(*show, "--scope", k_undocumented);
+  add_string_default(*show, "--format", "text", k_undocumented);
+  add_json(*show, k_undocumented);
   return show;
 }
 } // namespace planar::cmd::handlers::config_cli

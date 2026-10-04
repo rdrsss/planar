@@ -29,7 +29,7 @@ export auto add(CLI::App& root) -> void {
                     "(cross-session hierarchy)")
       ->check(cliapp::zig_int_validator());
   shared::add_run_stage(*pull);
-  shared::add_json(*pull);
+  shared::add_json(*pull, shared::k_undocumented);
   pull->add_option("plan-id")->description("Plan id to pull from")->required()->check(cliapp::zig_int_validator());
 }
 } // namespace planar::cmd::agent::handlers::pull_cli

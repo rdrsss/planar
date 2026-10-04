@@ -40,7 +40,7 @@ export auto add(CLI::App& root) -> void {
   dispatch_preview->add_option("--claim-status")->description("Claim status observed at preview time");
   dispatch_preview->add_option("--evidence-state")->description("evidential|observational")->required();
   dispatch_preview->add_option("--expires-at")->description("RFC3339 instant after which the token is dead")->required();
-  shared::add_json(*dispatch_preview);
+  shared::add_json(*dispatch_preview, shared::k_undocumented);
 
   CLI::App* dispatch_confirm = dispatch->add_subcommand(
       "confirm", "Revalidate a preview token against current state and atomically write the dispatch snapshot.");
@@ -63,6 +63,6 @@ export auto add(CLI::App& root) -> void {
   dispatch_confirm->add_option("--claim-status")->description("Currently observed claim status");
   dispatch_confirm->add_option("--reviewer")->description("Reviewer disposition to record (default required)");
   dispatch_confirm->add_option("--decision")->description("confirmed|overridden (default confirmed)");
-  shared::add_json(*dispatch_confirm);
+  shared::add_json(*dispatch_confirm, shared::k_undocumented);
 }
 } // namespace planar::cmd::agent::handlers::dispatch_cli

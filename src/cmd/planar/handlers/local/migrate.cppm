@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::local_cli {
 /// @return Registered CLI node.
 export auto attach_migrate(CLI::App* local) -> CLI::App* {
   CLI::App* migrate = local->add_subcommand("migrate", "Migrate skills/agents to new Planar version.");
-  add_bool(*migrate, "--dry-run");
-  add_json(*migrate);
+  add_bool(*migrate, "--dry-run", k_undocumented);
+  add_json(*migrate, k_undocumented);
   return migrate;
 }
 } // namespace planar::cmd::handlers::local_cli

@@ -13,13 +13,13 @@ namespace planar::cmd::handlers::models_cli {
 export auto attach_registry_eligibility(CLI::App& registry) -> CLI::App* {
   CLI::App* eligibility =
       registry.add_subcommand("eligibility", "Report every independent eligibility gate and named exclusion reason.");
-  add_int_required(*eligibility, "--candidate");
-  add_string_required(*eligibility, "--host");
-  add_string_required(*eligibility, "--role");
-  add_string_required(*eligibility, "--tier");
-  add_string_required(*eligibility, "--now");
-  add_bool(*eligibility, "--override-supported");
-  add_bool(*eligibility, "--policy-permits");
+  add_int_required(*eligibility, "--candidate", k_undocumented);
+  add_string_required(*eligibility, "--host", k_undocumented);
+  add_string_required(*eligibility, "--role", k_undocumented);
+  add_string_required(*eligibility, "--tier", k_undocumented);
+  add_string_required(*eligibility, "--now", k_undocumented);
+  add_bool(*eligibility, "--override-supported", k_undocumented);
+  add_bool(*eligibility, "--policy-permits", k_undocumented);
   return eligibility;
 }
 } // namespace planar::cmd::handlers::models_cli

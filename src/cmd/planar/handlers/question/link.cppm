@@ -14,11 +14,11 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_link(CLI::App& question) -> CLI::App* {
   CLI::App* link = question.add_subcommand("link", "Create an entity link from a question to another entity.");
-  add_string(*link, "--relationship");
-  add_string(*link, "--scope");
-  add_json(*link);
-  add_positional(*link, "question-id");
-  add_positional(*link, "ref");
+  add_string(*link, "--relationship", k_undocumented);
+  add_string(*link, "--scope", k_undocumented);
+  add_json(*link, k_undocumented);
+  add_positional(*link, "question-id", k_undocumented);
+  add_positional(*link, "ref", k_undocumented);
   return link;
 }
 } // namespace planar::cmd::handlers::question_cli

@@ -17,6 +17,6 @@ export auto add(CLI::App& root) -> void {
   shared::add_heartbeat_ttl(*heartbeat);
   heartbeat->add_option("--status")->description("Free-text status string recorded on the heartbeat action row's summary column");
   shared::add_supervision(*heartbeat, false);
-  shared::add_json(*heartbeat);
+  shared::add_json(*heartbeat, shared::k_undocumented);
 }
 } // namespace planar::cmd::agent::handlers::heartbeat_cli

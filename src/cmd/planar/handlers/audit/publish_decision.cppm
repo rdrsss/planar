@@ -15,9 +15,9 @@ namespace planar::cmd::handlers::audit_cli {
 export auto attach_publish_decision(CLI::App* audit) -> CLI::App* {
   CLI::App* publish_decision =
       audit->add_subcommand("publish-decision", "Post the decision body to linked operational-plane targets.");
-  add_string(*publish_decision, "--scope");
-  add_json(*publish_decision);
-  add_positional(*publish_decision, "decision-id");
+  add_string(*publish_decision, "--scope", k_undocumented);
+  add_json(*publish_decision, k_undocumented);
+  add_positional(*publish_decision, "decision-id", k_undocumented);
   return publish_decision;
 }
 } // namespace planar::cmd::handlers::audit_cli

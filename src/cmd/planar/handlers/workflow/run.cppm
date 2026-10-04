@@ -23,7 +23,7 @@ export auto attach_run(CLI::App* workflow) -> CLI::App* {
   add_string(*run, "--worktree", "Worktree directory forwarded to planar-execute --worktree.");
   add_string(*run, "--sandbox-root", "Sandbox root forwarded to planar-execute --sandbox-root.");
   add_bool(*run, "--local", "Restrict resolution to sandbox (local) workflows only.");
-  add_positional(*run, "name");
+  add_positional(*run, "name", k_undocumented);
   return run;
 }
 } // namespace planar::cmd::handlers::workflow_cli

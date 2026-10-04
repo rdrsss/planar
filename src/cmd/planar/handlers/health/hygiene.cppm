@@ -21,7 +21,7 @@ export auto attach_hygiene(CLI::App* health) -> CLI::App* {
   add_int_default(*hygiene, "--stale-doing", "7", "Doing-task age threshold in days");
   add_int_default(*hygiene, "--stale-open", "30", "Open-question age threshold in days");
   // Inherited from `health`, and LAST — see this function's header.
-  add_json(*hygiene);
+  add_json(*hygiene, k_undocumented);
   return hygiene;
 }
 } // namespace planar::cmd::handlers::health_cli

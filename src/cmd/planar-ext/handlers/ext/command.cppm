@@ -8,8 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 namespace planar::cmd::ext::handlers::ext_cli {
 namespace {
-auto add_json(CLI::App& app) -> void {
-  cliapp::add_bool_flag(app, "--json");
+auto add_json(CLI::App& app, std::string_view desc) -> void {
+  cliapp::add_bool_flag(app, "--json", desc);
 }
 } // namespace
 /// @brief Register this CLI declaration.
@@ -27,20 +27,20 @@ export auto add(CLI::App& root) -> void {
   jira->add_option("--base-url")->required();
   jira->add_option("--project")->required();
   jira->add_option("--auth-env")->description("Env var name holding the API token")->required();
-  add_json(*jira);
+  add_json(*jira, cliapp::k_undocumented);
   jira->add_option("slug")->required();
 
   CLI::App* github = reg->add_subcommand("github", "Register a GitHub Issues repository as an external system.");
   github->add_option("--project")->description("GitHub repository owner/repo")->required();
   github->add_option("--auth-env")->description("Env var name holding the token (uses gh-cli if omitted)");
-  add_json(*github);
+  add_json(*github, cliapp::k_undocumented);
   github->add_option("slug")->required();
 
   CLI::App* list = ext->add_subcommand("list", "List registered external systems.");
-  add_json(*list);
+  add_json(*list, cliapp::k_undocumented);
 
   CLI::App* test = ext->add_subcommand("test", "Test connection to an external system.");
-  add_json(*test);
+  add_json(*test, cliapp::k_undocumented);
   test->add_option("slug")->required();
 
   CLI::App* create = ext->add_subcommand("create", "Create an external counterpart for a local entity.");
@@ -49,7 +49,7 @@ export auto add(CLI::App& root) -> void {
   create->add_option("--role")->description("Link role (default: mirror)");
   create->add_option("--sync")->description("Sync direction (default: two-way)");
   create->add_option("--scope");
-  add_json(*create);
+  add_json(*create, cliapp::k_undocumented);
   create->add_option("system-slug")->required();
 
   CLI::App* propagate_one =
@@ -63,7 +63,7 @@ export auto add(CLI::App& root) -> void {
   propagate_one->add_option("--strategy")->description("Override GitHub strategy: parent-issue, projects-v2, tracking-issue");
   propagate_one->add_option("--sync")->description("Sync direction for created link: read-only, write-back, two-way");
   cliapp::add_bool_flag(*propagate_one, "--dry-run", "Preview without contacting the remote system");
-  add_json(*propagate_one);
+  add_json(*propagate_one, cliapp::k_undocumented);
   propagate_one->add_option("system")->required();
 
   // `ext propagate` — the github-parent-issue arm plus the generic
@@ -91,7 +91,7 @@ export auto add(CLI::App& root) -> void {
                         "With --verify-counterparts: delete the link row for a missing counterpart so the next "
                         "propagate recreates it");
   propagate->add_option("--scope");
-  add_json(*propagate);
+  add_json(*propagate, cliapp::k_undocumented);
   propagate->add_option("plan-id")->required();
 }
 } // namespace planar::cmd::ext::handlers::ext_cli

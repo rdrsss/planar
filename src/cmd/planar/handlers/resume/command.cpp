@@ -214,8 +214,8 @@ auto declare_resume(CLI::App& root) -> void {
       " 8. Audit footer   — previous session vendor and timestamp, plus\n                        the active claim's worktree "
       "path (when held)\n                        so the resumer can prepend `cd <path>`");
   resume->require_subcommand(0);
-  add_json(*resume);
-  add_positional_optional(*resume, "task-id");
+  add_json(*resume, k_undocumented);
+  add_positional_optional(*resume, "task-id", k_undocumented);
 
   resume_cli::attach_validate(resume);
 }

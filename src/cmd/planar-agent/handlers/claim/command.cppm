@@ -28,6 +28,6 @@ export auto add(CLI::App& root) -> void {
                         "Claim without changing task status (plan and plan_step are always unchanged)");
   cliapp::add_bool_flag(*claim, "--force", "Take over an existing live claim (operator recovery)");
   shared::add_run_stage(*claim);
-  shared::add_json(*claim);
+  shared::add_json(*claim, shared::k_undocumented);
 }
 } // namespace planar::cmd::agent::handlers::claim_cli

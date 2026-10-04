@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::audit_cli {
 /// @return Registered CLI node.
 export auto attach_handoff_readiness(CLI::App* audit) -> CLI::App* {
   CLI::App* handoff_readiness = audit->add_subcommand("handoff-readiness", "Check resume-readiness for all in-flight tasks.");
-  add_int_default(*handoff_readiness, "--threshold", "90");
-  add_json(*handoff_readiness);
+  add_int_default(*handoff_readiness, "--threshold", "90", k_undocumented);
+  add_json(*handoff_readiness, k_undocumented);
   return handoff_readiness;
 }
 } // namespace planar::cmd::handlers::audit_cli

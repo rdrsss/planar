@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_view(CLI::App& decision) -> CLI::App* {
   CLI::App* view = decision.add_subcommand("view", "View decision's workbench file.");
-  add_positional(*view, "decision-id");
+  add_positional(*view, "decision-id", k_undocumented);
   return view;
 }
 } // namespace planar::cmd::handlers::decision_cli

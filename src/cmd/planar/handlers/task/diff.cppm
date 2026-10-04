@@ -12,7 +12,7 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_diff(CLI::App& task) -> CLI::App* {
   CLI::App* diff = task.add_subcommand("diff", "Diff task against its database-stored version.");
-  add_positional(*diff, "task-id");
+  add_positional(*diff, "task-id", k_undocumented);
   return diff;
 }
 } // namespace planar::cmd::handlers::task_cli

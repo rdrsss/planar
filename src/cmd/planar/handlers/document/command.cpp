@@ -226,22 +226,22 @@ auto document_validate_range(context& ctx, const cliapp::parsed_args& args) -> h
 auto declare_document(CLI::App& root) -> void {
   auto* document     = root.add_subcommand("document", "Project and validate authoritative block documents.");
   auto  source_flags = [](CLI::App& app) {
-    add_string_required(app, "--kind");
-    add_int_required(app, "--id");
+    add_string_required(app, "--kind", k_undocumented);
+    add_int_required(app, "--id", k_undocumented);
   };
   auto* project = document->add_subcommand("project", "Emit an authoritative block-document-v1 projection.");
   source_flags(*project);
-  add_json(*project);
+  add_json(*project, k_undocumented);
   auto* validate = document->add_subcommand("validate-range", "Validate an adjacent revision-bound passage range.");
   source_flags(*validate);
-  add_string_required(*validate, "--content-revision");
-  add_string_required(*validate, "--start-key");
-  add_int_required(*validate, "--start-offset");
-  add_string_required(*validate, "--end-key");
-  add_int_required(*validate, "--end-offset");
-  add_string_list(*validate, "--covered-key");
-  add_string_list(*validate, "--segment-quote");
-  add_json(*validate);
+  add_string_required(*validate, "--content-revision", k_undocumented);
+  add_string_required(*validate, "--start-key", k_undocumented);
+  add_int_required(*validate, "--start-offset", k_undocumented);
+  add_string_required(*validate, "--end-key", k_undocumented);
+  add_int_required(*validate, "--end-offset", k_undocumented);
+  add_string_list(*validate, "--covered-key", k_undocumented);
+  add_string_list(*validate, "--segment-quote", k_undocumented);
+  add_json(*validate, k_undocumented);
 }
 
 } // namespace planar::cmd::handlers

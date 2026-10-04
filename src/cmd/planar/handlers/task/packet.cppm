@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_packet(CLI::App& task) -> CLI::App* {
   CLI::App* packet = task.add_subcommand("packet", "Compile the authoritative current routing packet for a task.");
-  add_json(*packet);
-  add_positional(*packet, "task-id");
+  add_json(*packet, k_undocumented);
+  add_positional(*packet, "task-id", k_undocumented);
   return packet;
 }
 } // namespace planar::cmd::handlers::task_cli

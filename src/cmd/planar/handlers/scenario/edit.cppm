@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::scenario_cli {
 /// @return Registered CLI node.
 export auto attach_edit(CLI::App& scenario) -> CLI::App* {
   CLI::App* edit = scenario.add_subcommand("edit", "Edit a scenario in $EDITOR (editor-first flow).");
-  add_bool(*edit, "--no-pull");
-  add_json(*edit);
-  add_positional(*edit, "scenario-id");
+  add_bool(*edit, "--no-pull", k_undocumented);
+  add_json(*edit, k_undocumented);
+  add_positional(*edit, "scenario-id", k_undocumented);
   return edit;
 }
 } // namespace planar::cmd::handlers::scenario_cli

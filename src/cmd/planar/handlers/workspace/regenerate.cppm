@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::workspace_cli {
 /// @return Registered CLI node.
 export auto attach_regenerate(CLI::App* workspace) -> CLI::App* {
   CLI::App* regenerate = workspace->add_subcommand("regenerate", "Regenerate AGENTS.md from current state.");
-  add_json(*regenerate);
-  add_positional_optional(*regenerate, "workspace");
+  add_json(*regenerate, k_undocumented);
+  add_positional_optional(*regenerate, "workspace", k_undocumented);
   return regenerate;
 }
 } // namespace planar::cmd::handlers::workspace_cli

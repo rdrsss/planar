@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::links_cli {
 /// @return Registered CLI node.
 export auto attach_remove(CLI::App* links) -> CLI::App* {
   CLI::App* remove = links->add_subcommand("remove", "Delete an entity_links row by its id.");
-  add_json(*remove);
-  add_positional(*remove, "link-id");
+  add_json(*remove, k_undocumented);
+  add_positional(*remove, "link-id", k_undocumented);
   return remove;
 }
 } // namespace planar::cmd::handlers::links_cli

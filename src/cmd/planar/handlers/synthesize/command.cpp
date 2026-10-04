@@ -576,18 +576,18 @@ auto declare_synthesize(CLI::App& root) -> void {
       "synthesize", "synthesize reads a repository's existing planning docs, source\n  code, and git history AS INPUT for an LLM "
                     "synthesis pass. It\n  produces fresh product-spec / tech-spec / roadmap artifacts (NOT a\n  verbatim "
                     "transcription) and proposes them via the same workbench\n  pipeline as the planner agent.");
-  add_bool(*synthesize, "--apply");
-  add_bool(*synthesize, "--apply-removals");
-  add_string(*synthesize, "--scope");
-  add_string(*synthesize, "--code-layout");
-  add_bool(*synthesize, "--treat-as-greenfield");
-  add_bool(*synthesize, "--treat-as-nongreenfield");
-  add_bool(*synthesize, "--literal");
+  add_bool(*synthesize, "--apply", k_undocumented);
+  add_bool(*synthesize, "--apply-removals", k_undocumented);
+  add_string(*synthesize, "--scope", k_undocumented);
+  add_string(*synthesize, "--code-layout", k_undocumented);
+  add_bool(*synthesize, "--treat-as-greenfield", k_undocumented);
+  add_bool(*synthesize, "--treat-as-nongreenfield", k_undocumented);
+  add_bool(*synthesize, "--literal", k_undocumented);
   add_string(*synthesize, "--accept-spec", "Non-interactive forward-spec selection — slug, comma-separated slugs, or 'all'");
   add_bool(*synthesize, "--no-forward-specs", "Skip forward-spec processing entirely");
-  add_bool(*synthesize, "--dry-run");
-  add_json(*synthesize);
-  add_positional(*synthesize, "repo-root");
+  add_bool(*synthesize, "--dry-run", k_undocumented);
+  add_json(*synthesize, k_undocumented);
+  add_positional(*synthesize, "repo-root", k_undocumented);
 }
 
 } // namespace planar::cmd::handlers

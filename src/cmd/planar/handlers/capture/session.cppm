@@ -15,11 +15,11 @@ namespace planar::cmd::handlers::capture_cli {
 export auto attach_session(CLI::App* capture) -> CLI::App* {
   CLI::App* session =
       capture->add_subcommand("session", "Open or reuse a session for the current (vendor, vendor-session-id) tuple.");
-  add_string(*session, "--vendor");
-  add_string(*session, "--vendor-session-id");
-  add_string(*session, "--model");
-  add_int(*session, "--task");
-  add_json(*session);
+  add_string(*session, "--vendor", k_undocumented);
+  add_string(*session, "--vendor-session-id", k_undocumented);
+  add_string(*session, "--model", k_undocumented);
+  add_int(*session, "--task", k_undocumented);
+  add_json(*session, k_undocumented);
   return session;
 }
 } // namespace planar::cmd::handlers::capture_cli

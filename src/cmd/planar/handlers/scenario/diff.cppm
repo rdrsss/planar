@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::scenario_cli {
 /// @return Registered CLI node.
 export auto attach_diff(CLI::App& scenario) -> CLI::App* {
   CLI::App* diff = scenario.add_subcommand("diff", "Diff scenario against database version.");
-  add_positional(*diff, "scenario-id");
+  add_positional(*diff, "scenario-id", k_undocumented);
   return diff;
 }
 } // namespace planar::cmd::handlers::scenario_cli

@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::templates_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App* templates) -> CLI::App* {
   CLI::App* list = templates->add_subcommand("list", "List available templates.");
-  add_string(*list, "--system");
-  add_string(*list, "--set");
-  add_json(*list);
+  add_string(*list, "--system", k_undocumented);
+  add_string(*list, "--set", k_undocumented);
+  add_json(*list, k_undocumented);
   return list;
 }
 } // namespace planar::cmd::handlers::templates_cli

@@ -12,7 +12,7 @@ namespace planar::cmd::handlers::models_cli {
 /// @return Registered CLI node.
 export auto attach_registry_export(CLI::App& registry) -> CLI::App* {
   CLI::App* export_cmd = registry.add_subcommand("export", "Export the versioned registry compatibility document.");
-  add_json(*export_cmd);
+  add_json(*export_cmd, k_undocumented);
   return export_cmd;
 }
 } // namespace planar::cmd::handlers::models_cli

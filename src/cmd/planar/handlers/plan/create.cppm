@@ -12,13 +12,13 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_create(CLI::App& plan) -> CLI::App* {
   CLI::App* create = plan.add_subcommand("create", "Create a new plan.");
-  add_string(*create, "--summary");
-  add_string(*create, "--slug");
-  add_string(*create, "--scope");
-  add_string_default(*create, "--status", "draft");
-  add_int(*create, "--parent");
-  add_json(*create);
-  add_positional(*create, "title");
+  add_string(*create, "--summary", k_undocumented);
+  add_string(*create, "--slug", k_undocumented);
+  add_string(*create, "--scope", k_undocumented);
+  add_string_default(*create, "--status", "draft", k_undocumented);
+  add_int(*create, "--parent", k_undocumented);
+  add_json(*create, k_undocumented);
+  add_positional(*create, "title", k_undocumented);
   return create;
 }
 } // namespace planar::cmd::handlers::plan_cli

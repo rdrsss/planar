@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_tag(CLI::App& annotate) -> CLI::App* {
   CLI::App* tag = annotate.add_subcommand("tag", "Add or remove a tag on an annotation.");
-  add_bool(*tag, "--remove");
-  add_json(*tag);
-  add_positional(*tag, "annotation-id");
-  add_positional(*tag, "tag");
+  add_bool(*tag, "--remove", k_undocumented);
+  add_json(*tag, k_undocumented);
+  add_positional(*tag, "annotation-id", k_undocumented);
+  add_positional(*tag, "tag", k_undocumented);
   return tag;
 }
 } // namespace planar::cmd::handlers::annotate_cli

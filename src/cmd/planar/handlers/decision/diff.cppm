@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_diff(CLI::App& decision) -> CLI::App* {
   CLI::App* diff = decision.add_subcommand("diff", "Diff decision against database version.");
-  add_positional(*diff, "decision-id");
+  add_positional(*diff, "decision-id", k_undocumented);
   return diff;
 }
 } // namespace planar::cmd::handlers::decision_cli

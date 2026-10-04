@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::test_spec_cli {
 /// @return Registered CLI node.
 export auto attach_status(CLI::App* test_spec) -> CLI::App* {
   CLI::App* status = test_spec->add_subcommand("status", "Print per-milestone test-spec coverage for an anchor plan.");
-  add_json(*status);
-  add_positional_described(*status, "plan", "Plan slug or numeric id");
+  add_json(*status, k_undocumented);
+  add_positional(*status, "plan", "Plan slug or numeric id");
   return status;
 }
 } // namespace planar::cmd::handlers::test_spec_cli

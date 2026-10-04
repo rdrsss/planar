@@ -15,7 +15,7 @@ export auto attach_recompute_status(CLI::App& plan) -> CLI::App* {
       plan.add_subcommand("recompute-status", "Recompute a plan's roll-up status (--plan <id> or --all).");
   add_int(*recompute_status, "--plan", "Recompute one plan by id.");
   add_bool(*recompute_status, "--all", "Recompute every plan in the DB.");
-  add_json(*recompute_status);
+  add_json(*recompute_status, k_undocumented);
   return recompute_status;
 }
 } // namespace planar::cmd::handlers::plan_cli

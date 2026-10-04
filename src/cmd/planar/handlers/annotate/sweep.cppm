@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_sweep(CLI::App& annotate) -> CLI::App* {
   CLI::App* sweep = annotate.add_subcommand("sweep", "Sweep stale annotations (resolved/dismissed older than --since-days).");
-  add_int_default(*sweep, "--since-days", "30");
-  add_string(*sweep, "--scope");
-  add_json(*sweep);
+  add_int_default(*sweep, "--since-days", "30", k_undocumented);
+  add_string(*sweep, "--scope", k_undocumented);
+  add_json(*sweep, k_undocumented);
   return sweep;
 }
 } // namespace planar::cmd::handlers::annotate_cli

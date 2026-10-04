@@ -36,7 +36,7 @@ export auto attach_evals(CLI::App& models) -> CLI::App* {
   add_string(*evals, "--routing-policy", "Cohort routing policy version");
   add_string(*evals, "--min-samples", "Minimum samples before a candidate is ranked (default 5)");
   add_string(*evals, "--quality-floor", "Wilson lower-bound floor (default 0.5)");
-  add_json(*evals);
+  add_json(*evals, k_undocumented);
   return evals;
 }
 } // namespace planar::cmd::handlers::models_cli

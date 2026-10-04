@@ -21,8 +21,8 @@ export auto attach_closeout(CLI::App& plan) -> CLI::App* {
       "how many are merged to the target branch.\n  Never blocks; absent branches are inconclusive.");
   add_bool(*closeout, "--dry-run", "Evaluate and report only; never writes.");
   add_bool(*closeout, "--check-merge", "Include advisory epic-branch merge roll-up in the output.");
-  add_json(*closeout);
-  add_positional(*closeout, "plan-id");
+  add_json(*closeout, k_undocumented);
+  add_positional(*closeout, "plan-id", k_undocumented);
   return closeout;
 }
 } // namespace planar::cmd::handlers::plan_cli

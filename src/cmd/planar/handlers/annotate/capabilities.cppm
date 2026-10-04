@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_capabilities(CLI::App& annotate) -> CLI::App* {
   CLI::App* capabilities = annotate.add_subcommand("capabilities", "Describe annotation read and command support.");
-  add_json(*capabilities);
+  add_json(*capabilities, k_undocumented);
   return capabilities;
 }
 } // namespace planar::cmd::handlers::annotate_cli

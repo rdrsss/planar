@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::workbench_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& workbench) -> CLI::App* {
   CLI::App* list = workbench.add_subcommand("list", "List features with workbench trees.");
-  add_json(*list);
+  add_json(*list, k_undocumented);
   return list;
 }
 } // namespace planar::cmd::handlers::workbench_cli

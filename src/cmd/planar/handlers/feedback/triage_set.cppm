@@ -12,14 +12,14 @@ namespace planar::cmd::handlers::feedback_cli {
 /// @return Registered CLI node.
 export auto attach_triage_set(CLI::App* triage) -> CLI::App* {
   CLI::App* set = triage->add_subcommand("set", "Set operator-confirmed triage fields.");
-  add_string_required(*set, "--severity");
-  add_string_required(*set, "--disposition");
-  add_string_required(*set, "--reproduction");
-  add_string(*set, "--duplicate-of");
-  add_string(*set, "--evidence");
-  add_string(*set, "--scope");
-  add_json(*set);
-  add_positional(*set, "finding");
+  add_string_required(*set, "--severity", k_undocumented);
+  add_string_required(*set, "--disposition", k_undocumented);
+  add_string_required(*set, "--reproduction", k_undocumented);
+  add_string(*set, "--duplicate-of", k_undocumented);
+  add_string(*set, "--evidence", k_undocumented);
+  add_string(*set, "--scope", k_undocumented);
+  add_json(*set, k_undocumented);
+  add_positional(*set, "finding", k_undocumented);
   return set;
 }
 } // namespace planar::cmd::handlers::feedback_cli

@@ -22,7 +22,7 @@ export auto add(CLI::App& root) -> void {
   context_add->add_option("--body")->description("Record body text")->required();
   context_add->add_option("--compiled-from")
       ->description("Comma-separated context_record ids this capsule was compiled from (capsule kind only)");
-  shared::add_json(*context_add);
+  shared::add_json(*context_add, shared::k_undocumented);
 
   CLI::App* context_capsule = context->add_subcommand(
       "capsule", "Write a compiled capsule context_records row, run-keyed (claim_id=NULL, decision 456).");
@@ -33,7 +33,7 @@ export auto add(CLI::App& root) -> void {
       ->description("Comma-separated context_record ids this capsule distills (provenance)");
   context_capsule->add_option("--session")
       ->description("session_id (integer). Optional \xE2\x80\x94 an ephemeral session is created when omitted.");
-  shared::add_json(*context_capsule);
+  shared::add_json(*context_capsule, shared::k_undocumented);
 
   CLI::App* context_list =
       context->add_subcommand("list", "List context_records for a run, with optional stage/status/kind filters.");
@@ -41,7 +41,7 @@ export auto add(CLI::App& root) -> void {
   context_list->add_option("--stage")->description("Filter to records from this stage");
   context_list->add_option("--status")->description("Filter by status: active|consumed|superseded");
   context_list->add_option("--kind")->description("Filter by kind: finding|risk|artifact|followup|summary|capsule");
-  shared::add_json(*context_list);
+  shared::add_json(*context_list, shared::k_undocumented);
 
   CLI::App* context_resolve = context->add_subcommand(
       "resolve", "Transition context_records active \xE2\x86\x92 consumed|superseded (single record or bulk stage sweep).");
@@ -49,6 +49,6 @@ export auto add(CLI::App& root) -> void {
   context_resolve->add_option("--run")->description("Run id for bulk stage sweep (use with --stage)");
   context_resolve->add_option("--stage")->description("Stage name for bulk sweep (use with --run)");
   context_resolve->add_option("--status")->description("Target status: consumed|superseded")->required();
-  shared::add_json(*context_resolve);
+  shared::add_json(*context_resolve, shared::k_undocumented);
 }
 } // namespace planar::cmd::agent::handlers::context_cli

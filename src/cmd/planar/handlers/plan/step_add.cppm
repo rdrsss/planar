@@ -12,11 +12,11 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_step_add(CLI::App& step) -> CLI::App* {
   CLI::App* add = step.add_subcommand("add", "Append a new step to a plan.");
-  add_int(*add, "--after");
-  add_string(*add, "--scope");
-  add_json(*add);
-  add_positional(*add, "plan-id");
-  add_positional(*add, "body");
+  add_int(*add, "--after", k_undocumented);
+  add_string(*add, "--scope", k_undocumented);
+  add_json(*add, k_undocumented);
+  add_positional(*add, "plan-id", k_undocumented);
+  add_positional(*add, "body", k_undocumented);
   return add;
 }
 } // namespace planar::cmd::handlers::plan_cli

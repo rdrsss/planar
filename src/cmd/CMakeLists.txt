@@ -98,3 +98,62 @@ if(TARGET planar_cmd_planar_execute_tests)
     "PLANAR_OPERATOR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\"")
   add_dependencies(planar_cmd_planar_execute_tests planar_cmd_planar)
 endif()
+
+# --- compile-fail check for the flag-declaration helpers (plan 1104, task 7200)
+#
+# Every helper that declares a flag or positional takes a REQUIRED
+# description, so a call without one must not compile. A defaulted
+# `desc = {}` put back on any of them would compile silently and re-open the
+# empty-help hole, and nothing else would notice until the catalog walk
+# (`planar/catalog_descriptions.t.cpp`) found a flag that had slipped through.
+#
+# There is no ctest idiom for "this translation unit must not compile", so
+# each probe is an OBJECT library kept out of `all` and `planar_tests`, and
+# one ctest case (cmake/tests/compile_fail_driver.cmake) builds them through
+# the build's own generator, compiler, flags and module paths:
+#
+#   - `compile_fail_positive` is the POSITIVE CONTROL, the same calls with a
+#     description; it must build.
+#   - each `compile_fail_neg_*` is the same call without one; it must fail,
+#     and the diagnostic must name the helper, so a probe that fails for an
+#     unrelated reason cannot pass for the right one.
+#
+# The probes compile the three helper interface units themselves (the
+# executables' module sources are not linkable libraries) and link nothing,
+# so the check costs a handful of translation units. It is RUN_SERIAL
+# because it drives a nested build of this build directory.
+# The probe sources live under cmake/tests/ rather than src/: the negative
+# probes are deliberately ill-formed, and `make cpp-lint` runs clang-tidy over
+# every *.cpp under src/, where they would be reported as compile errors.
+set(_planar_compile_fail_dir "${CMAKE_SOURCE_DIR}/cmake/tests/compile_fail")
+set(_planar_compile_fail_probes
+  positive
+  neg_bool_flag
+  neg_declare_string
+  neg_declare_int
+  neg_declare_positional
+  neg_declare_positional_optional
+  neg_agent_json)
+foreach(_probe IN LISTS _planar_compile_fail_probes)
+  set(_target "compile_fail_${_probe}")
+  add_library(${_target} OBJECT EXCLUDE_FROM_ALL "${_planar_compile_fail_dir}/${_probe}.cpp")
+  target_sources(${_target} PRIVATE
+    FILE_SET CXX_MODULES
+    BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}"
+    FILES
+      "${CMAKE_CURRENT_SOURCE_DIR}/planar/declare.cppm"
+      "${CMAKE_CURRENT_SOURCE_DIR}/planar-agent/handlers/shared/cli.cppm")
+  set_target_properties(${_target} PROPERTIES
+    CXX_STANDARD 26
+    CXX_STANDARD_REQUIRED ON
+    CXX_MODULE_STD ON)
+  target_link_libraries(${_target} PRIVATE planar_cliapp CLI11::CLI11_Module)
+endforeach()
+
+add_test(NAME compile_fail_check
+  COMMAND "${CMAKE_COMMAND}"
+    "-DBUILD_DIR=${CMAKE_BINARY_DIR}"
+    "-DPOSITIVE=compile_fail_positive"
+    "-DNEGATIVES=compile_fail_neg_bool_flag:add_bool_flag;compile_fail_neg_declare_string:add_string;compile_fail_neg_declare_int:add_int;compile_fail_neg_declare_positional:add_positional;compile_fail_neg_declare_positional_optional:add_positional_optional;compile_fail_neg_agent_json:add_json"
+    -P "${CMAKE_SOURCE_DIR}/cmake/tests/compile_fail_driver.cmake")
+set_tests_properties(compile_fail_check PROPERTIES LABELS "compile_fail" RUN_SERIAL TRUE)

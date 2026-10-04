@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_cancel(CLI::App& task) -> CLI::App* {
   CLI::App* cancel = task.add_subcommand("cancel", "Cancel a task (single-arg form; Go supports variadic).");
-  add_string(*cancel, "--scope");
-  add_json(*cancel);
-  add_positional(*cancel, "task-id");
+  add_string(*cancel, "--scope", k_undocumented);
+  add_json(*cancel, k_undocumented);
+  add_positional(*cancel, "task-id", k_undocumented);
   return cancel;
 }
 } // namespace planar::cmd::handlers::task_cli

@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::capture_cli {
 /// @return Registered CLI node.
 export auto attach_commits(CLI::App* capture) -> CLI::App* {
   CLI::App* commits = capture->add_subcommand("commits", "Record explicit git commits into a session.");
-  add_int(*commits, "--session");
-  add_string(*commits, "--repo");
-  add_string(*commits, "--since");
-  add_json(*commits);
+  add_int(*commits, "--session", k_undocumented);
+  add_string(*commits, "--repo", k_undocumented);
+  add_string(*commits, "--since", k_undocumented);
+  add_json(*commits, k_undocumented);
   // Hidden variadic "rest" positional -- see `declare_capture`'s header
   // in capture.cppm.
   commits->add_option("shas")->expected(0, -1)->group("");

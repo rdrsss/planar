@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::workbench_cli {
 /// @return Registered CLI node.
 export auto attach_archive(CLI::App& workbench) -> CLI::App* {
   CLI::App* archive = workbench.add_subcommand("archive", "Archive a feature's workbench filesystem tree.");
-  add_json(*archive);
+  add_json(*archive, k_undocumented);
   add_string(*archive, "--filter-mode", "Terminal-status filter: 'failures' (default) or 'all'");
-  add_positional(*archive, "plan");
+  add_positional(*archive, "plan", k_undocumented);
   return archive;
 }
 } // namespace planar::cmd::handlers::workbench_cli

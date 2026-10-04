@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_edit(CLI::App& question) -> CLI::App* {
   CLI::App* edit = question.add_subcommand("edit", "Edit a question in $EDITOR (editor-first flow).");
-  add_bool(*edit, "--no-pull");
-  add_json(*edit);
-  add_positional(*edit, "question-id");
+  add_bool(*edit, "--no-pull", k_undocumented);
+  add_json(*edit, k_undocumented);
+  add_positional(*edit, "question-id", k_undocumented);
   return edit;
 }
 } // namespace planar::cmd::handlers::question_cli

@@ -12,11 +12,11 @@ namespace planar::cmd::handlers::handoff_cli {
 /// @return Registered CLI node.
 export auto attach_abandon(CLI::App* handoff) -> CLI::App* {
   CLI::App* abandon = handoff->add_subcommand("abandon", "Abandon a non-terminal handoff.");
-  add_string(*abandon, "--vendor");
-  add_string(*abandon, "--note");
-  add_json(*abandon);
-  add_string(*abandon, "--reason");
-  add_positional(*abandon, "handoff-id");
+  add_string(*abandon, "--vendor", k_undocumented);
+  add_string(*abandon, "--note", k_undocumented);
+  add_json(*abandon, k_undocumented);
+  add_string(*abandon, "--reason", k_undocumented);
+  add_positional(*abandon, "handoff-id", k_undocumented);
   return abandon;
 }
 } // namespace planar::cmd::handlers::handoff_cli

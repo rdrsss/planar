@@ -7,10 +7,12 @@ import cli11;
 import planar.cliapp.args;
 import planar.cliapp.surface;
 namespace planar::cmd::watch::handlers::shared {
-/// @brief Register this CLI declaration.
-/// @param app Input app.
-export auto add_json(CLI::App& app) -> void {
-  cliapp::add_bool_flag(app, "--json");
+/// @brief Declare the `--json` flag on a verb.
+/// @param app The node to declare it on.
+/// @param desc The help line; `cliapp::k_undocumented` marks a site the
+/// description sweep has not reached.
+export auto add_json(CLI::App& app, std::string_view desc) -> void {
+  cliapp::add_bool_flag(app, "--json", desc);
 }
 
 /// @brief The `--follow` / `--interval` pair the streaming verbs declare.

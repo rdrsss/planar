@@ -19,8 +19,8 @@ export auto attach_next(CLI::App& plan) -> CLI::App* {
               "\xe2\x80\x94 the JSON shape always\n  carries every bucket.");
   add_bool(*next, "--include-claimed", "Show the claimed bucket in text mode (JSON always includes it).");
   add_bool(*next, "--include-stale", "Show the stale bucket in text mode (JSON always includes it).");
-  add_json(*next);
-  add_positional(*next, "plan-id");
+  add_json(*next, k_undocumented);
+  add_positional(*next, "plan-id", k_undocumented);
   return next;
 }
 } // namespace planar::cmd::handlers::plan_cli

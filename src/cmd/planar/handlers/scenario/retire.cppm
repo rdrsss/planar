@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::scenario_cli {
 /// @return Registered CLI node.
 export auto attach_retire(CLI::App& scenario) -> CLI::App* {
   CLI::App* retire = scenario.add_subcommand("retire", "Mark a scenario as retired.");
-  add_string(*retire, "--reason");
-  add_json(*retire);
-  add_positional(*retire, "scenario-id");
+  add_string(*retire, "--reason", k_undocumented);
+  add_json(*retire, k_undocumented);
+  add_positional(*retire, "scenario-id", k_undocumented);
   return retire;
 }
 } // namespace planar::cmd::handlers::scenario_cli

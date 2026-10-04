@@ -27,7 +27,7 @@ export auto add(CLI::App& root) -> void {
                                                  "  --in-flight-only drops plans where active_claims=0 AND\n"
                                                  "  active_actions=0.");
   cliapp::add_bool_flag(*plans, "--in-flight-only", "Skip plans with no live work");
-  shared::add_json(*plans);
+  shared::add_json(*plans, cliapp::k_undocumented);
   shared::add_follow(*plans, "Stream snapshots until SIGINT", "Poll interval for --follow (default 1s)");
 }
 } // namespace planar::cmd::watch::handlers::plans_cli

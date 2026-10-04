@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::groups_cli {
 /// @return Registered CLI node.
 export auto attach_recommend(CLI::App* groups) -> CLI::App* {
   CLI::App* recommend = groups->add_subcommand("recommend", "Recommend closure-minimizing task slices for a plan.");
-  add_string(*recommend, "--budget");
-  add_string(*recommend, "--solver");
-  add_json(*recommend);
-  add_positional(*recommend, "plan-id");
+  add_string(*recommend, "--budget", k_undocumented);
+  add_string(*recommend, "--solver", k_undocumented);
+  add_json(*recommend, k_undocumented);
+  add_positional(*recommend, "plan-id", k_undocumented);
   return recommend;
 }
 } // namespace planar::cmd::handlers::groups_cli

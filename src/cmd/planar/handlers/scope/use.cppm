@@ -15,7 +15,7 @@ namespace planar::cmd::handlers::scope_cli {
 export auto attach_use(CLI::App* scope) -> CLI::App* {
   CLI::App* use = scope->add_subcommand("use", "Removed in plan 153 M5 — see `planar scope show`.");
   set_allow_extras(*use);
-  add_positional_optional(*use, "slug");
+  add_positional_optional(*use, "slug", k_undocumented);
   return use;
 }
 } // namespace planar::cmd::handlers::scope_cli

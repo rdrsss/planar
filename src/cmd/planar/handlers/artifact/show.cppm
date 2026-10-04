@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::artifact_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App& artifact) -> CLI::App* {
   CLI::App* show = artifact.add_subcommand("show", "Show an artifact's metadata and body.");
-  add_json(*show);
-  add_positional(*show, "artifact-id");
+  add_json(*show, k_undocumented);
+  add_positional(*show, "artifact-id", k_undocumented);
   return show;
 }
 } // namespace planar::cmd::handlers::artifact_cli
