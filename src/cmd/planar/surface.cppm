@@ -398,7 +398,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar run show", "Show a run's full state (header + events)."},
       {"planar groups", "Recommend task slices that minimize closure replication."},
       {"planar groups recommend", "Recommend closure-minimizing task slices for a plan."},
-      {"planar explore", "Launch the interactive cockpit (same as bare `planar` on a TTY)."},
+      {"planar explore", "Launch Planar Explorer (reserved; currently prints its help)."},
       {"planar workflow", "Discover, inspect, and run Lua workflows for planar-execute."},
       {"planar workflow list", "List shipped and sandbox workflows."},
       {"planar workflow show", "Show @meta and source path for a named workflow."},

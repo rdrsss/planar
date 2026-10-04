@@ -10,14 +10,13 @@ namespace planar::cmd::handlers {
 /// @brief Provide the declare explore command operation.
 /// @param root Input root.
 export auto declare_explore(CLI::App& root) -> void {
-  CLI::App* explore = root.add_subcommand(
-      "explore", "Launch the interactive Planar cockpit.\n\n  Equivalent to invoking `planar` with no verb on a terminal. Use\n  "
-                 "`planar explore` when you want to force-launch the cockpit by name,\n  or from a context where bare-invocation "
-                 "detection may not fire.\n\n  --plan, --task, and --scope seed the initial focus.\n\n  Falls back to this help "
-                 "text when stdout is not a TTY, when TERM=dumb,\n  when PLANAR_NO_TUI is set, or when --plain is passed.");
+  CLI::App* explore =
+      root.add_subcommand("explore", "Launch Planar Explorer.\n\n  Planar Explorer is a separate project. This command is "
+                                     "reserved for\n  launching it and is not yet implemented: it prints this help text and\n  "
+                                     "exits 0.\n\n  --plan, --task, and --scope are reserved to seed the initial focus.");
   add_string(*explore, "--plan", "Seed initial focus on this plan ID");
   add_string(*explore, "--task", "Seed initial focus on this task ID");
   add_string(*explore, "--scope", "Seed scope filter");
-  add_bool(*explore, "--plain", "Fall back to help/usage instead of launching the cockpit");
+  add_bool(*explore, "--plain", "Print this help page (currently the only behavior)");
 }
 } // namespace planar::cmd::handlers

@@ -182,12 +182,10 @@ auto not_implemented_for(std::string_view verb) -> handler_fn {
 
 /// @brief `explore`'s handler (decision 1003; task 6444).
 ///
-/// `explore` stays in `unported_paths()` — there is no cockpit in this tree
-/// and never will be — but unlike every other entry there, its own path is
-/// NOT a refusal. The oracle's cockpit gate (non-TTY stdout, `TERM=dumb`,
-/// `PLANAR_NO_TUI`, `--plain`) always refuses in a scripted/test
-/// environment, and every refusal path prints the SAME thing: the verb's
-/// own help page, exit 0. `--plan` / `--task` / `--scope` are declared
+/// `explore` stays in `unported_paths()` — it is reserved for launching Planar
+/// Explorer, which is a separate project and is not wired up yet — but unlike
+/// every other entry there, its own path is NOT a refusal: it prints the
+/// verb's own help page, exit 0. `--plan` / `--task` / `--scope` are declared
 /// flags on this leaf (see `k_flags_44` in `surface.cpp`) so CLI11 already
 /// parses and discards them before this handler runs; nothing here needs to
 /// read them.
