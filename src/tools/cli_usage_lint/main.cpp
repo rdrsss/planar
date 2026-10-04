@@ -8,7 +8,7 @@
 /// catalog of its command tree (commands, subcommands, and per-command
 /// flags with inherited flags already merged in). This tool dumps that
 /// schema for each binary, then scans the authored workflow surfaces
-/// (agents/, skills/src/, docs/) for command invocations inside code
+/// (agents/, skills/, docs/) for command invocations inside code
 /// spans and fenced blocks, and reports any `--flag` referenced on a
 /// command that the binary does not actually expose.
 ///
@@ -54,8 +54,12 @@ using planar::json_dom::parse_json;
 /// the schema. Referencing these is always valid.
 constexpr std::array<std::string_view, 2> k_global_ok_flags{"--help", "-h"};
 
-/// Directories under the repo root that hold authored CLI prose.
-constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills/src", "docs"};
+/// Directories under the repo root that hold authored CLI prose. `skills` is
+/// the whole skills tree (plan 1104, task ask-skill-lint): the Agent Skills
+/// layout `skills/<name>/SKILL.md` plus `references/`, and the legacy flat
+/// `skills/src/` until M2 deletes it. One root covers both, so no file is
+/// walked twice.
+constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills", "docs"};
 
 /// Single authored files, outside those directories, that carry commands
 /// agents are told to run.
@@ -696,7 +700,7 @@ auto check_command_policy(catalog_t const& catalog, std::vector<std::string> con
 }
 
 /// @brief Entry point: validate authored CLI invocations under
-/// `<repo-root>/{agents,skills/src,docs}` against the live `<bin> schema`
+/// `<repo-root>/{agents,skills,docs}` against the live `<bin> schema`
 /// catalog of every `<bin-path>` given.
 /// @param argc Argument count; must be at least 3 (`<repo-root> <bin-path>...`).
 /// @param argv Argument vector: `argv[1]` is the repo root, `argv[2..]` are
