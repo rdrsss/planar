@@ -21,6 +21,7 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make test-all` | All of the above, composed. This is the gate to run before a pull request. |
 | `make cpp-lint` | `cpp-lint-gate` plus `clang-tidy`. Not part of `test-all`. |
 | `make linux-gate` | The `debug` build and the whole ctest suite on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
+| `make test-cpp-solver` | The ctest suite against a `-DPLANAR_WITH_MTKAHYPAR=ON` build. |
 
 ## Continuous integration
 
@@ -112,7 +113,7 @@ make linux-gate-prune                            # docker builder prune -f
 
 `docker/linux-gate.Dockerfile` installs apt.llvm.org's LLVM 23 (clang,
 libc++ with its modules manifest, libc++abi), Kitware CMake pinned by version
-and SHA-256, ninja, git, python3, `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
+and SHA-256, ninja, git, python3, `sqlite3`, `libtbb-dev`, `libssl-dev` (vendored libcurl's TLS on Linux) and `patch` (CPM's `PATCHES` keyword). The image
 build never fails on a red suite. It records `configure.log`, `build.log`,
 `ctest.log` and `status.txt`, and the Makefile exports them to
 `build/linux-gate/`, prints the ctest verdict and exits nonzero unless
