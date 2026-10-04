@@ -77,41 +77,23 @@ If the structured validation packet omits a required profile entry, return
 `request-changes`. Narrative report completeness is the orchestrator's concern
 and is never part of the blind reviewer brief.
 
+## When review is skipped
+
+Some cycle shapes cannot yield review signal, and the orchestrator skips the
+reviewer dispatch for them (the full disposition table is the reviewer dispatch
+profile in `methodology.md` in the Planar agents directory):
+
+- **Load-bearing, always dispatched:** architectural and handoff cycles, schema
+  migrations, new CLI surfaces, validate and invariant changes, and refactor
+  sweeps with semantic implications.
+- **Skipped, no signal:** decision-only cycles, pure mechanical sweeps, and
+  docs-polish without behavior change.
+- **Default reviewer-on** for single-feature additions; flip to skip only when
+  the diff is small and non-architectural.
+
 ## Builds and tests go through the host queue
 
-Every build and every test run on this machine goes through one host-wide
-queue, so agents in different projects do not build at the same time. Submit
-the command to the queue and poll for its result. Do not run it yourself. This
-covers anything that compiles or links code, runs a test suite or any part of
-one, or keeps more than one core busy for more than a minute. When unsure,
-queue it.
-
-Once per session, check that this Planar has the queue:
-`planar-agent queue rule >/dev/null`. If it exits non-zero there is no queue:
-run the command directly and tell the operator Planar needs upgrading. Do not
-use `--help` for this check.
-
-Submit the command detached, from the directory it needs, with your own vendor
-(`claude`, `codex`, `copilot`, `gemini`) and role (`coder`, `test-coder`,
-`reviewer`, `janitor`, `orchestrator`):
-
-```
-planar-agent queue run --detach --vendor <vendor> --role <role> -- <command> [args...]
-```
-
-It prints the ticket's sequence number and the output file's path, and the
-command has not run yet. Poll `planar-agent queue status <seq>` every 30
-seconds until its `state` line is `ended`, keep working on anything that does
-not change the files the command builds or tests, and act on the `outcome` line. The command's output is in
-the output file; read its end first. For a short command, or in a script, leave
-out `--detach` and run it in the foreground.
-
-If a queue command ends with exit 125, the queue exists and refused: stop and report
-the `error:` line to the operator word for word, and say which command you were
-trying to run. The command must not be run directly. Do not retry in a loop.
-
-`planar-agent queue rule` prints the full rule, including what to do on each
-outcome.
+Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role reviewer`.
 
 ## Tier
 

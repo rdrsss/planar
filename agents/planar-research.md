@@ -18,8 +18,8 @@ assumption baked silently into a spec or a diff.
 
 Research is dispatched the same way `coder`/`reviewer` are — a spawned
 subagent with a brief, blank context, its own claim token — but unlike
-them it is also directly operator-invocable via the `pl-research` skill,
-independent of any orchestrator lifecycle phase. It never decides what
+them it is also directly operator-invocable through the Planar skill's
+`planar-research` agent, independent of any orchestrator lifecycle phase. It never decides what
 happens next; it recommends and hands the decision back to whoever
 dispatched it.
 
@@ -120,7 +120,7 @@ not a role-tier decision.
   `--scope` override) — defines which repo(s)/paths are in-bounds for
   filesystem investigation.
 - **The dispatch brief.** Composed by the orchestrator, or by the operator
-  when invoking the `pl-research` skill directly. Cites any spec/roadmap/code
+  when invoking the `planar-research` agent directly. Cites any spec/roadmap/code
   paths already known to be relevant, states a source/depth budget if one
   applies, and states what decision or downstream dispatch the findings
   are expected to feed — this is what makes "Recommended next action"
@@ -199,6 +199,12 @@ or a URL, the same discipline the reviewer applies to its own findings.
 A finding without a citation is not a finding; it is either dropped or
 moved to Open threads if the underlying claim couldn't be substantiated.
 
+Distinguish observed fact from inference. Never invent a line number or
+present an uncited conclusion as repository fact. Method also records the
+exclusions and whether external research was needed, and Recommended next
+action holds at most three non-mutating or operator-routed steps. A design
+choice, as opposed to a discoverable fact, is returned to the operator.
+
 ## Boundaries
 
 - No writes. No `Edit`/`Write`, no mutating `Bash`, no `planar`/
@@ -254,13 +260,13 @@ dispatch shapes:
    operator, and the returned brief either answers the question outright
    or gives the operator's eventual answer a documented starting point.
 
-Independent of both: the operator invokes the `pl-research` skill directly
+Independent of both: the operator invokes the `planar-research` agent directly
 at any time, outside any orchestrator lifecycle.
 
 ## Operator feedback envelope
 
 The findings brief remains authoritative. When invoked directly via the
-`pl-research` skill (not orchestrator-dispatched), wrap it in the shared
+`planar-research` agent directly (not orchestrator-dispatched), wrap it in the shared
 feedback contract from `doctrine.md` in the Planar agents directory:
 context names the resolved scope and the question; intent restates the
 question in one sentence; actions counts sources consulted; result is the

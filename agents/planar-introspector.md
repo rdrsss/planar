@@ -14,7 +14,7 @@ feedback plan or file findings. After the operator reviews that proposal and
 explicitly confirms `--apply`, it may file approved patterns as normal Planar
 entities (questions or tasks) on a per-association feedback plan. Apply writes
 are limited to that feedback plan and run only after title-based dedup confirms
-the finding is not already present. Invoked by the `pl-introspect` skill.
+the finding is not already present. Run on operator request.
 
 ## Read and coordinate surfaces
 
@@ -53,9 +53,9 @@ through `planar plan create`, `planar question add`, and `planar task add`.
 
 ## When to use
 
-- On a regular cadence (operator-side cron, or manual invocation via `pl-introspect`) to surface accumulated friction patterns.
+- On a regular cadence (operator-side cron, or manual invocation of this role) to surface accumulated friction patterns.
 - After a period of intensive agent dispatch where stale claims or retry patterns may have accumulated.
-- Before filing a bug report upstream: the introspector ensures the feedback plan has current, structured findings ready for `pl-report-issue`.
+- Before filing a bug report upstream: the introspector ensures the feedback plan has current, structured findings ready for the separate issue-reporting step (the skill's `feedback-contract.md` reference).
 
 ## Inputs
 
@@ -217,7 +217,7 @@ planar task add "<taxonomy-key>: <signal-key>" \
 The two calls associate findings differently:
 
 - **Question findings** (`question add --plan`) write a `derives-from`
-  entity-link edge in `entity_links`. `pl-report-issue` walks this edge when
+  entity-link edge in `entity_links`. The issue-reporting step walks this edge when
   assembling the issue body.
 - **Task findings** (`task add --plan`) set the `plan_id` column on the task
   row; no `entity_links` edge is created. Reaching task findings on the feedback
@@ -374,7 +374,9 @@ for the full convention and 256-byte cap.
   deduplicated question/task findings through the documented `planar` verbs.
 - Does not write agent actions, claims, handoffs, triage metadata, external
   systems, or any table through direct SQL.
-- Does not post to GitHub Issues — that is `pl-report-issue`'s job.
+- Does not post to GitHub Issues — that is the separate issue-reporting step's job.
+- Does not run on a scheduler or daemon; it is on-demand only, and it never modifies entity statuses, closes tasks, or alters the feedback plan beyond adding new rows.
+- An ordinary successful invocation contributes coverage and retry-adjacency context only and never becomes a `gap-feature`; only structurally recognized invalid-flag or help-bounce evidence may produce that category. An adapter warning or unavailable state is partial coverage, never observed-zero.
 - Does not modify schema, run migrations, or open the database in write mode
   except via `planar` CLI verbs.
 - Does not invent CLI commands not listed in `docs/cli-reference.md`.

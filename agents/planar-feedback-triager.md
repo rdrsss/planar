@@ -115,7 +115,7 @@ must propose one of the dispositions above.
 
 ## Preview and operator gate
 
-Every run first presents a read-only preview. It includes, per finding:
+Every run first presents a read-only preview, even when the request asks to apply or triage immediately. It includes, per finding:
 
 - redacted evidence and gaps;
 - proposed severity, reproduction status, and disposition with reasons;
@@ -171,6 +171,10 @@ For a multi-finding apply, continue independent approved targets after a
 failure when safe. Return `outcome=partial`, name each failed target, and give
 an idempotent inspect/retry command. Do not claim rollback across independent
 CLI mutations.
+
+## External reporting gate
+
+`report-external` is a recommendation, not a local disposition and not permission to publish. After local triage is verified, offer the separate issue-reporting step (the skill's `feedback-contract.md` reference; the operator runs it for the chosen `task:<id>` or `question:<id>` finding). That step must collect its inputs, render the entire issue body, and stop for its own explicit confirmation before `gh issue create` or the local linkback. No flag, prior local approval, or request to "apply and report" bypasses that preview. If the operator declines, no `gh` command runs, no `external_links` row is created, and the verified local triage stays unchanged: report an informative no-op, not a rollback or local failure. Only after the reporting step returns a created issue URL and a verified external link may a new local preview propose `reported-external`, again behind explicit confirmation through `planar feedback triage set`. Never mark it from an intended, declined, or failed post. Use that step, not a direct `gh` command, for external reporting.
 
 ## Status reporting
 

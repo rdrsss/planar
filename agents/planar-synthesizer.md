@@ -8,9 +8,9 @@ planar:
 
 # Synthesizer
 
-The **synthesizer** is the LLM-driven role that produces fresh planning artifacts for a repo from its existing material plus a deterministic code-evidence map. It is the sibling role of the `importer` (transcription); both land in the same `pl-spec-ingest` pipeline downstream.
+The **synthesizer** is the LLM-driven role that produces fresh planning artifacts for a repo from its existing material plus a deterministic code-evidence map. It is the sibling role of the `importer` (transcription); both land in the same ingest pipeline (`planar-ingestor`) downstream.
 
-Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini from `skills/src/pl-synthesize.md`.
+Vendor-neutral. The vendor surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini.
 
 ## Tier
 
@@ -20,10 +20,10 @@ Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude
 
 - A repo's planning material is scattered, mid-evolution, or contradicted by reality.
 - The roadmap claims work is done but the source tree doesn't back the claim.
-- You inherited a repo and need to understand what's actually there before pl-spec-ingest.
+- You inherited a repo and need to understand what's actually there before ingestion.
 - Multiple roadmaps from different eras coexist and no single doc is canonical.
 
-Do **not** invoke this agent when the repo's planning material is clean, current, and structured — that's the `importer` role (`/pl-import`).
+Do **not** invoke this agent when the repo's planning material is clean, current, and structured — that's the `planar-importer` role.
 
 ## Role distinction
 
@@ -48,7 +48,7 @@ See [`docs/concepts.md#transcription-vs-synthesis`](../docs/concepts.md#transcri
 
 ## Outputs
 
-- **Synthesized product_spec / tech_spec / roadmap** as primary planning artifacts (`Source: pl-synthesize`).
+- **Synthesized product_spec / tech_spec / roadmap** as primary planning artifacts (stored with the source path `pl-synthesize://<kind>`).
 - **Reference artifacts** — the existing planning docs preserved on the same anchor plan as `kind=research`, superseded but not deleted.
 - **Phase decomposition** with per-phase status and one-paragraph summaries.
 - **Tasks** with rich bodies, per-task code-evidence citations (required when `status != "todo"`), and optional doc citations.
@@ -64,8 +64,11 @@ See [`docs/concepts.md#transcription-vs-synthesis`](../docs/concepts.md#transcri
 3. The CLI builds a fingerprinted synthesis Request and writes it to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
 4. On a cache miss, the CLI exits 0 with the five-line "Awaiting LLM synthesis" notice naming the pending and target paths.
 5. The vendor skill (this role) reads the Request from `_pending.json`.
-6. The skill runs the LLM at temperature 0 with the synthesis prompt: produce fresh planning material, ground done-status claims in `code_evidence.areas[].path`, treat existing docs as CONTEXT not transcription source.
-7. The skill writes a synthesis Result JSON to `<cache-dir>/<fingerprint>.json` matching the schema in [`src/engine/synthesize/synthesize.cppm`](../src/engine/synthesize/synthesize.cppm).
+6. The skill runs the LLM at temperature 0 with this contract:
+   - Produce a fresh product-spec / tech-spec / roadmap that reflects what the repo IS and what it should DO NEXT.
+   - Ground every `status=done` claim in a file path from `code_evidence.areas[].path`. A task cannot be marked done without citing a code path; in greenfield mode (no code) nothing is marked done.
+   - Existing planning docs are CONTEXT. Do not transcribe them verbatim; use them to understand intent, then synthesize fresh artifacts.
+7. The skill writes a synthesis Result JSON to `<cache-dir>/<fingerprint>.json` matching the schema in [`src/engine/synthesize/synthesize.cppm`](../src/engine/synthesize/synthesize.cppm). The Request carries `readme`, `docs` (path to body), `guide_files`, `tree_summary` (shallow listing of the repo root), `git_log`, `code_evidence`, `greenfield` and `workspace_context`. The Result carries `schema_version`, `fingerprint`, `synthesized`, `anchor_title`, `phases[]` (tasks with `slug`, `title`, `body`, `status`, `priority`, `next_action` set only on the doing task, `code_evidence[]` as path plus line range, `citations[]`), `decisions[]`, `deferred_items[]`, `forward_specs[]`, `reference_artifacts[]`, `code_evidence_summary`, `provenance` and `generated_at`.
 8. Operator re-invokes `planar synthesize <repo-root>`.
 9. The CLI reads and validates the cached Result, then merges it with the deterministic baseline and injects the reference artifacts and synthesized planning bodies.
 10. Operator reviews the preview; `--apply` commits.
@@ -100,6 +103,16 @@ any terminal heartbeat.
 See `agents/methodology.md` § Heartbeat status contract
 for the full convention and 256-byte cap.
 
+## Greenfield mode
+
+When a repo has no source code yet (only docs, planning material or a stub README), synthesis enters greenfield mode automatically. Every proposed task is `status=todo`, the roadmap describes all-future work, Validate rejects any Result that marks a task otherwise, and the preview header shows that greenfield mode is active. Forward specs (3–5) and reference artifacts (existing docs as `kind=research`) still apply. The trigger is `EvidenceMap.TotalLines == 0` (no source files of a recognized layout) or every `EvidenceMap.Areas[*].SignalStrength == 0`.
+
+Operator overrides: `--treat-as-greenfield` forces greenfield mode even when code exists (useful for stale-WIP branches where the code is misleading or pre-rewrite); `--treat-as-nongreenfield` bypasses auto-detection for non-conventional layouts that codeprobe under-detects. Passing both is rejected as a user error.
+
+## Workspace context
+
+When the target repo is a member of an org workspace, the Request's `workspace_context` carries `org_slug`, `org_title`, the sibling member projects (self excluded), the workspace's active forward specs with their owning project slug, and org-level decisions. It is ORIENTATION, not source-of-truth. If a sibling has an active forward spec the target roadmap may need to align with it, or the workspace decides "all member projects use SQLite", respect that in the tech spec; but code evidence on the target repo still wins, so a feature that siblings suggest is done lands `status=todo` when the target's code shows no implementation. A repo outside a workspace gets `workspace_context: null` and synthesis stays repo-only. The validator does not consult workspace context when enforcing the code-evidence invariant.
+
 ## Hard contract rules
 
 The synthesizer MUST honor these rules (the validator in [`src/engine/synthesize/synthesize.cppm`](../src/engine/synthesize/synthesize.cppm) enforces every one):
@@ -117,10 +130,12 @@ The synthesizer MUST honor these rules (the validator in [`src/engine/synthesize
 - `provenance` is non-empty.
 - Every `reference_artifacts[].path` resolves under `request.repo_root`.
 
+There is NO confidence floor in this binary and no `--threshold` flag: nothing refuses a synthesized task on a confidence basis.
+
 ## Out of scope
 
-- **No external-system contact.** The synthesizer does not call Jira, GitHub, or any operational-plane adapter. Propagation belongs to `/pl-ext-propagate`.
-- **No automatic `/pl-spec-ingest`.** Accepted forward specs are created in `status=draft`; the operator decides when to run `/pl-spec-ingest <plan-id>` on each.
+- **No external-system contact.** The synthesizer does not call Jira, GitHub, or any operational-plane adapter. Propagation belongs to `planar-ext-sync`.
+- **No automatic ingest.** Accepted forward specs are created in `status=draft`; the operator decides when to run `planar-ingestor` (`planar spec ingest <plan-id>`) on each.
 - **No source-code rewrites.** The synthesizer reads source for evidence only; it never edits source files.
 - **No real LLM calls in the CLI.** The `planar` binary stays free of provider API keys, retries, and rate limits; the vendor skill is the LLM engine.
 - **No verbatim transcription.** That's the `importer` role; `--literal` on `planar synthesize` delegates to `planar import`.
@@ -132,6 +147,7 @@ The synthesizer MUST honor these rules (the validator in [`src/engine/synthesize
 - **Reference artifacts use `kind=research`, not a new kind.** Existing kind avoids a schema migration and keeps the original docs queryable as input material.
 - **Workspace context is orientation, not source-of-truth.** Synthesis stays repo-scoped; org-level signals only widen the anchor title and summary.
 - **Forward specs are 3–5.** Validate enforces the range.
+- **`planar synthesize` is unguarded.** It is not one of the cross-scope guarded verbs and does not refuse a cross-scope write; run from inside the target repo's cwd or pass `--scope <slug>`.
 - **Cache by sha256 fingerprint, not file mtime.** mtime is wrong across `git clone`, container builds, and sync tools. Content sha256 is stable; the operator can `rm -rf` to evict.
 
 ## CLI commands composed

@@ -35,6 +35,10 @@ Do not dispatch the reconciler when status contains no conflicted links or rows.
 A clean or empty status is a caller-owned no-op and must not produce a
 resolution call.
 
+## What a pull and a resolve do not write
+
+A plain `planar-ext sync pull` does not write planning entities (decision 996). It fetches remote state and emits it; when a pulled field differs from the local value, that link's result row carries `remote_title` and/or `remote_status` as evidence to read, not a change already made. An unpopulated field means no drift was observed. `sync resolve --keep remote` does not write the local entity either: it clears the conflict and resets the link baseline to the current local values, so the next pull emits the remote values as ordinary drift. The only path that changes local field values is a separately confirmed `planar <kind> update` after the emitted diff has been presented. Never tell an operator that pulling or resolving "updated" or "synced" their entity; report what was emitted and which write, if any, was separately made. A pull may exit with the documented conflict exit while still emitting valid per-link JSON; treat those rows as conflict evidence, not an adapter failure.
+
 ## Input and evidence contract
 
 The caller supplies the resolved scope, conflict event ID, entity reference,
@@ -54,6 +58,8 @@ fields, detail, and timestamp. It may request an adapter-backed preview through
 an existing read-only CLI surface. It never opens SQLite, reads credentials, or
 calls a remote API directly. Authentication and remote reads stay inside the
 configured adapter.
+
+A link is currently conflicted only when its status is `conflict` and no later resolution event has closed it; an old conflict event is not resolved merely because it remains in the append-only audit trail. If the caller supplied an event ID, require an exact match with the latest unresolved conflict event. Normalize the event's structured `evidence` object into one row per conflicting field (field name, local value, remote value, source, observation time, provider remote version) and keep the raw event detail beside the rows so the operator can audit the interpretation. Do not invent a `sync conflicts` or `sync events` subcommand.
 
 Before recommending a mutating disposition, record:
 
@@ -101,6 +107,8 @@ event, or approval of evidence collection is not confirmation. If evidence
 changes after the preview, discard the approval and present a fresh preview.
 Declining, changing, or postponing the proposal selects `defer` and writes
 nothing.
+
+Approval is event-specific and evidence-specific; with several events, require an explicit decision for each and never widen one approval to the rest. Immediately before an approved resolve, re-read entity status and link audit: the same link must still be conflicted, the approved event must still be the latest unresolved conflict, and the evidence must be unchanged; otherwise invalidate the approval and present a fresh preview. The approved `evidence.token` and the reviewed local entity `updated_at` go through the compare-and-swap flags; a stale event, changed token, changed local version, or fresh remote value mismatch is a conflict result and performs no resolution write.
 
 Only after confirmation of `keep-local` or `keep-remote` may the reconciler run:
 

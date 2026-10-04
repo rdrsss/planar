@@ -10,11 +10,9 @@ planar:
 
 Given a goal statement and the cwd-derived scope (or an explicit `--scope` override), produces the initial planning artifacts for a new feature: a top-level plan row, a workbench directory, and four spec documents registered as artifacts in the database (product-spec, tech-spec, roadmap, test-spec).
 
-Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini from `skills/src/pl-spec-draft.md`.
-
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`. Drafting a coherent product spec, tech spec, roadmap, and test spec from an open-ended goal requires the same level of judgment as orchestration and review.
+`large`. Resolved to a concrete model per the Tier Table in `models.md` in the Planar agents directory. Drafting a coherent product spec, tech spec, roadmap, and test spec from an open-ended goal requires the same level of judgment as orchestration and review.
 
 ## When to use
 
@@ -26,32 +24,19 @@ Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude
 
 - A goal statement (free-form prose). Required.
 - The cwd-derived scope from `planar scope show`. The association slug and any member repos embedded in the resolved scope inform how the roadmap encodes cross-repo intent. Pass `--scope <slug>` to override the cwd derivation for this run.
-- Optionally, a hint about which external system the feature will land in (e.g. `--ext jira` or `--ext github`). When present, the planner embeds the relevant external-link conventions in the doc front matter so the ingestor can pick them up.
+- Optionally, a hint about which external system the feature will land in (e.g. `--ext jira` or `--ext github`). When present, the planner records the relevant external-link conventions in the tech-spec body so the ingestor can pick them up.
 
 ## Outputs
 
 - **One top-level plan row** with `status='draft'` and a filesystem-safe `slug`, created via `planar plan create --slug <slug> --status draft`.
 - **Workbench tree** at `$PLANAR_WORKBENCH_ROOT/<assoc-slug>/p<id>-<slug>/` — the planner creates the directory and writes the artifact files there. The on-disk path is computed from the association slug and plan key; every `:` in the association slug is replaced with `_`, and the feature directory name is `p<plan-id>-<plan-slug>`. To push the rendered workbench content to a registered external operational system (Jira, GitHub Issues), use `planar workbench publish <plan-id> --system <slug>` — or `planar-ext ext propagate <plan-id> --system <slug>` for full plan-subtree counterpart creation (`planar-ext ext propagate-one <system> --from <kind:id>` creates a single entity's counterpart).
-- **Four artifact files**, each registered as a DB artifact row first (to obtain an `artifact_id`), then written to disk with canonical YAML front matter, then persisted via `planar artifact update --body @<filename>`:
+- **Four artifact files**, each registered as a DB artifact row first (to obtain an `artifact_id`), then its body written to a scratch file and persisted via `planar artifact update <artifact-id> --body @<body-file>`; `planar workbench push` then renders the workbench file:
   - `product-spec.md` — `kind=product_spec` (product intent, user stories, non-goals, acceptance signal)
   - `tech-spec.md` — `kind=tech_spec` (architecture, components, schema changes, decisions)
   - `roadmap.md` — `kind=roadmap` (flat milestone list with bulleted work items and `[touches: ...]` annotations)
-  - `test-spec.md` — `kind=test_spec` (test strategy with flat `### Scenario: <title>` H3 scenarios — the canonical grammar — plus a coverage-gap checklist and test-surface-allocation table). Each scenario title names the coverage lens it exercises (happy / empty-null / error / edge); the four buckets are a reasoning tool, not document structure. Frontmatter carries `verifies: [artifact:<product-spec-id>]` so cross-references track which user stories the test plan covers.
+  - `test-spec.md` — `kind=test_spec` (test strategy with flat `### Scenario: <title>` H3 scenarios — the canonical grammar — plus a coverage-gap checklist and test-surface-allocation table). Each scenario title names the coverage lens it exercises (happy / empty-null / error / edge); the four buckets are a reasoning tool, not document structure. The rendered front matter carries `verifies: [artifact:<product-spec-id>]` so cross-references track which user stories the test plan covers; it is not part of the body the planner writes.
 
-  Every produced `.md` file carries a YAML front matter block between `---` delimiters at the top of the file. The canonical schema is the `front_matter` struct in [`src/engine/workbench/parse.cppm`](../src/engine/workbench/parse.cppm). Required fields for planner-written artifact files:
-
-  ```yaml
-  ---
-  entity_kind: artifact
-  entity_id: <artifact-id>        # integer returned by `planar artifact add`
-  anchor_plan_id: <plan-id>       # integer returned by `planar plan create`
-  title: <string>                 # human-readable title of this document
-  status: draft
-  artifact_kind: <product_spec|tech_spec|roadmap|test_spec>
-  ---
-  ```
-
-  Files without valid front matter are treated as malformed by `workbench pull` and are rejected during sync. The planner must write correct front matter before calling `planar workbench push`.
+  The artifact body is stored in the database **without** front matter. `planar workbench push` renders the YAML front matter (the `front_matter` struct in [`src/engine/workbench/parse.cppm`](../src/engine/workbench/parse.cppm)) and the generated header into each workbench file, and `--body @<file>` reads the file's bytes verbatim. The planner therefore never writes front matter itself and never passes a file that carries it to `artifact update`: that would store the front matter inside the body and render it twice.
 
 - **Optional initial scenario files** under `scenarios/`, each registered via `planar scenario add`.
 - **Workbench manifest** seeded via `planar workbench push <plan>`.
@@ -70,14 +55,16 @@ Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude
       planar artifact add "<title>" --kind <kind> --plan <plan-id> --body ""
       ```
       Capture `<artifact-id>` from the output.
-   b. Write `<filename>` in the workbench directory with canonical YAML front matter (using `<artifact-id>` and `<plan-id>`) followed by the planner-generated Markdown body. See [Doc shape](#doc-shape) for the required fields and section structure.
-   c. Persist the full content (front matter + body) into the DB:
+   b. Write the planner-generated Markdown BODY ONLY (no front matter) to a scratch file. See [Doc shape](#doc-shape) for the section structure.
+   c. Persist the body into the DB:
       ```
-      planar artifact update <artifact-id> --body @path/to/<filename>
+      planar artifact update <artifact-id> --body @path/to/<body-file>
       ```
+   d. Register the items of the body's `## Open Questions` section (see [Questions registration](#questions-registration)).
 5. Optionally draft `scenarios/<scenario-slug>.md` for obvious top-level acceptance scenarios and register via `planar scenario add`.
-6. Seed the manifest: `planar workbench push <plan-id>`.
-7. Report to the user: the plan id, the workbench path, and the four artifact ids. Note that the user should review and edit the docs before invoking `pl-spec-ingest`.
+6. Render the workbench: `planar workbench push <plan-id>` writes each artifact into the workbench directory with its front matter and generated header and seeds the manifest.
+7. Run the strict preview described in [Phase 4 self-check](#phase-4-self-check-before-final-emission) and treat its failures as draft failures.
+8. Report to the user: the plan id, the workbench path, the four artifact ids, the registered question ids and the strict-preview coverage result. Note that the user should review and edit the docs before the `planar-ingestor` agent runs. After each successful mutation, read the row back with `planar plan show <plan-id> --json`, `planar artifact show <artifact-id> --json` or `planar question show <question-id> --json`; an exit code or a written file alone does not prove the body or links persisted.
 
 ## Status reporting
 
@@ -91,14 +78,15 @@ The planner emits a status string at each meaningful phase boundary using `plana
 | Authoring Phase 4 — test spec | `"drafting test-spec"` |
 | All four documents written and pushed; waiting for operator review | `"ready for review"` |
 
-See `agents/methodology.md` § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+See `methodology.md` in the Planar agents directory, § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
 
 ## Boundaries
 
 - DB writes only through `planar` CLI verbs. No direct SQL.
 - FS writes only inside the feature's workbench directory (`$PLANAR_WORKBENCH_ROOT/<assoc>/<plan-key>-<slug>/`). Never writes outside it.
-- Does **not** create tasks. Task creation is the ingestor's job (`/pl-spec-ingest`).
-- Does **not** contact external systems. No adapter calls.
+- Does **not** create tasks. Task creation is the `planar-ingestor` agent's job.
+- Does **not** contact external systems. No adapter calls; propagation belongs to the `planar-ext-sync` agent.
+- Cross-scope guard: none of `plan create`, `artifact add`, `artifact update` or `workbench push` compares the operator's scope with a stored entity scope, and on `artifact update` `--scope` reassigns the artifact's stored scope rather than authorizing a write. Run from inside the owning repo so the cwd-derived scope is the intended one.
 - Does **not** modify the scope. The scope is read-only for the planner.
 - Does **not** ingest or decompose. Planner output is a human-reviewable draft; the user controls when ingestion happens.
 
@@ -142,7 +130,7 @@ You are authoring `roadmap.md`. The product- and tech-specs are locked. Your job
 
 ### Phase 4 — Test spec
 
-You are authoring `test-spec.md`. The other three docs are locked. Your job is purely adversarial: **what could go wrong, what scenarios prove this works, what scenarios prove it doesn't**. The frontmatter `verifies: [artifact:<product-spec-id>]` is the structural argument that this document covers the user stories.
+You are authoring `test-spec.md`. The other three docs are locked. Your job is purely adversarial: **what could go wrong, what scenarios prove this works, what scenarios prove it doesn't**. The rendered front matter's `verifies: [artifact:<product-spec-id>]` is the structural argument that this document covers the user stories.
 
 **While in this phase, do NOT:**
 
@@ -188,15 +176,6 @@ The planner emits parseable Markdown so the ingestor can re-read the same files 
 ### `tech-spec.md` section structure
 
 ```markdown
----
-entity_kind: artifact
-entity_id: <artifact-id>
-anchor_plan_id: <plan-id>
-title: <title>
-status: draft
-artifact_kind: tech_spec
----
-
 # <Feature Title> — Tech Spec
 
 ## Status
@@ -242,15 +221,6 @@ The first two H3s above will each produce a `decisions` row and flip the questio
 ### `roadmap.md` section structure
 
 ```markdown
----
-entity_kind: artifact
-entity_id: <artifact-id>
-anchor_plan_id: <plan-id>
-title: <title>
-status: draft
-artifact_kind: roadmap
----
-
 # <Feature Title> — Roadmap
 
 ## <Milestone Name>
@@ -264,34 +234,59 @@ artifact_kind: roadmap
 
 Each H2 becomes a child plan (one per milestone). Each bullet becomes a task. The `[touches: repo-slug, ...]` annotation (bracketed, comma-separated repo slugs at the end of a bullet) becomes `entity_links(relationship='touches', from=task, to=repo)` rows. Bullets without an annotation fall back to association scope.
 
-### `product-spec.md` front matter
+### Front matter is rendered, not authored
 
-All workbench files carry YAML front matter between `---` delimiters. The canonical schema is `front_matter` in [`src/engine/workbench/parse.cppm`](../src/engine/workbench/parse.cppm). Required fields for `product-spec.md`:
+All workbench files carry YAML front matter between `---` delimiters, and `workbench pull` treats a file without valid front matter as malformed. The planner does not write it: the artifact body stored in the database has none, and `planar workbench push` renders it from the artifact row. The `tech-spec.md` and `roadmap.md` examples above show body content only.
 
-```yaml
----
-entity_kind: artifact
-entity_id: <artifact-id>
-anchor_plan_id: <plan-id>
-title: <title>
-status: draft
-artifact_kind: product_spec
----
+### Open Questions authoring convention
+
+- **Structured (preferred):** one `### <title>` H3 heading per question with a paragraph body underneath. Extraction is unambiguous; new drafts use this convention.
+- **Bulleted prose (legacy fallback):** `- <first sentence as title>. <rest of body>.` The first sentence (up to the first `.`) becomes the title and the full bullet text the body. It exists so the ingestor can reconcile specs drafted before the structured convention.
+
+## Questions registration
+
+Once per artifact, immediately after `planar artifact update <artifact-id> --body @<body-file>` completes, the planner registers each item of that document's open-questions section as a first-class `questions` row, then links it to the artifact and the plan. Open questions live in the artifact body and are reconciled into question entities; they do not depend on external notes.
+
+Dedup first. Before registering a candidate, check that no question with the same title (trimmed, case-sensitive) is already linked to the plan:
+
+```
+existing=$(planar question list --json \
+  | jq --arg t "<candidate title>" \
+    '[.[] | select(.entity_links[]? | .kind=="plan" and .id==<plan-id> and .relationship=="derives-from")] | map(select(.title == $t)) | length')
 ```
 
-The planner writes these fields after registering the artifact via `planar artifact add --body ""` and capturing the returned `<artifact-id>`. Files without valid front matter are treated as malformed by `workbench pull`; the planner must always write the front matter before calling `planar workbench push`.
+If `existing` is 0, register it. If it is 1 or more, skip `question add`; in a re-draft (same spec title, newer artifact) link the existing question to the new artifact instead:
+
+```
+existing_id=$(planar question list --json \
+  | jq -r --arg t "<candidate title>" \
+    '.[] | select(.entity_links[]? | .kind=="plan" and .id==<plan-id> and .relationship=="derives-from") | select(.title == $t) | .id')
+planar question link $existing_id artifact:<artifact-id> --relationship derives-from
+```
+
+Registration loop, for each non-duplicate item:
+
+```
+q_id=$(planar question add "<short title>" --body "<expanded prose>" --json | jq -r .id)
+planar question link $q_id artifact:<artifact-id> --relationship derives-from
+planar question link $q_id plan:<plan-id> --relationship derives-from
+```
+
+Registration failures are non-fatal: if `question add` or `question link` exits non-zero, log a warning and continue with the next question; do not abort the draft. A deduplicated question is reported as skipped, not applied. Resume against the captured ids and dedup checks; never recreate completed artifacts or claim rollback of the independent plan, artifact, question, link and filesystem writes.
 
 ## CLI commands composed
 
-The verbs must be composed in this order to ensure every `.md` file carries canonical front matter before the workbench manifest is seeded:
+The verbs must be composed in this order so each artifact's id is known before its body is persisted, and the workbench file with its front matter is rendered last:
 
 1. `planar scope show` — confirm the cwd resolves to a registered scope (or that `--scope` was supplied); abort with a `question` if not.
 2. `planar plan create "<derived title>" --slug <slug> --status draft [--scope assoc:<slug>]` — returns `<plan-id>`.
 3. For each of `product-spec.md`, `tech-spec.md`, `roadmap.md`, and `test-spec.md`:
    1. `planar artifact add "<title>" --kind <kind> --plan <plan-id> --body ""` — returns `<artifact-id>`. Creates an empty-body placeholder row so the id is known before the file is written.
-   2. Write `<filename>` in the workbench directory with canonical YAML front matter using the returned `<artifact-id>` and `<plan-id>`, followed by the planner-generated Markdown body.
-   3. `planar artifact update <artifact-id> --body @<filename>` — persists the full content (front matter + body) into the DB.
+   2. Write the planner-generated Markdown BODY ONLY (no front matter) to a scratch file.
+   3. `planar artifact update <artifact-id> --body @<body-file>` — persists the body, verbatim, into the DB.
+   4. Register the body's open questions (see [Questions registration](#questions-registration)).
 4. (Optional) `planar scenario add <title> [--body <text>] [--scope assoc:<slug>]` — for each top-level acceptance scenario.
-5. `planar workbench push <plan-id>` — seeds the workbench manifest. At this point both the DB and the FS carry identical content with valid front matter; subsequent `planar workbench pull` and `planar workbench status` invocations are clean.
+5. `planar workbench push <plan-id>` — renders each artifact into the workbench directory with its front matter and generated header and seeds the manifest; subsequent `planar workbench pull` and `planar workbench status` invocations are clean.
+6. `planar spec ingest <plan-id> --strict --json` — the read-only strict preview, as the draft's self-check.
 
 Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine.

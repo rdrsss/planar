@@ -106,42 +106,44 @@ they are the coder's job to get right before handoff.
   the spec disagree, the spec wins and the disagreement becomes a
   `question` or a follow-up task; the coder does not silently reconcile
   the gap.
+- **Do not keep working under a stale or mismatched claim.** Claim conflicts
+  are synchronization failures, not warnings; stop and return to the
+  orchestrator.
+
+## Worktrees: inherit the cwd, don't manage them
+
+Under worktree-isolated strategies, the dispatcher sends the coder into a
+pre-created worktree on a pre-created child branch. The dispatcher is the
+model-driven orchestrator for sequential worktree isolation and
+`parallel-fanout`, using `workflows/parallel-dispatch.lua` for deterministic
+branch and path computation. The coder's contract there is narrow:
+
+- **Inherit the dispatched cwd.** That cwd is the worktree path. Stay in it.
+  Do not `cd` out to the main checkout or another worktree to do work.
+- **Do not create, destroy, or relocate worktrees.** `git worktree
+  add/remove/move` are dispatcher verbs, not coder verbs. If the worktree
+  looks wrong, stop and return to the dispatcher rather than reshaping it.
+- **Commit to the child branch the orchestrator created.** Do not cut a new
+  branch, switch branches, or push to other branches. The orchestrator handles
+  fan-in merge to the epic branch after the terminal verb.
+
+Under `pwd` isolation there is no worktree: the coder runs in the operator's
+pwd on the operator's current branch and commits there.
+
+## Test-coder handoff
+
+The coder writes the **minimum** tests to prove the feature compiles and runs.
+Coverage expansion across the test-spec's four return-path buckets (happy /
+empty / error / edge) is the `planar-test-coder` agent's job, dispatched in
+Phase 3.5 when `planar test-spec status` reports uncovered slugs. Do not
+pre-empt it with exhaustive coverage: that inflates the diff and wastes a cycle
+the orchestrator was going to skip via `no-expansion-needed`. Stop at the
+smallest test set that demonstrates the acceptance signal and let the gate
+decide.
 
 ## Builds and tests go through the host queue
 
-Every build and every test run on this machine goes through one host-wide
-queue, so agents in different projects do not build at the same time. Submit
-the command to the queue and poll for its result. Do not run it yourself. This
-covers anything that compiles or links code, runs a test suite or any part of
-one, or keeps more than one core busy for more than a minute. When unsure,
-queue it.
-
-Once per session, check that this Planar has the queue:
-`planar-agent queue rule >/dev/null`. If it exits non-zero there is no queue:
-run the command directly and tell the operator Planar needs upgrading. Do not
-use `--help` for this check.
-
-Submit the command detached, from the directory it needs, with your own vendor
-(`claude`, `codex`, `copilot`, `gemini`) and role (`coder`, `test-coder`,
-`reviewer`, `janitor`, `orchestrator`):
-
-```
-planar-agent queue run --detach --vendor <vendor> --role <role> -- <command> [args...]
-```
-
-It prints the ticket's sequence number and the output file's path, and the
-command has not run yet. Poll `planar-agent queue status <seq>` every 30
-seconds until its `state` line is `ended`, keep working on anything that does
-not change the files the command builds or tests, and act on the `outcome` line. The command's output is in
-the output file; read its end first. For a short command, or in a script, leave
-out `--detach` and run it in the foreground.
-
-If a queue command ends with exit 125, the queue exists and refused: stop and report
-the `error:` line to the operator word for word, and say which command you were
-trying to run. The command must not be run directly. Do not retry in a loop.
-
-`planar-agent queue rule` prints the full rule, including what to do on each
-outcome.
+Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role coder`.
 
 ## Tier
 
