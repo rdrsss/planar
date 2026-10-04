@@ -50,7 +50,8 @@ if(TARGET Catch2::Catch2WithMain)
   target_link_libraries(surface_lint_tests PRIVATE Catch2::Catch2WithMain)
   target_compile_definitions(surface_lint_tests PRIVATE
     PLANAR_SURFACE_LINT_BIN="$<TARGET_FILE:surface_lint>"
-    PLANAR_SURFACE_LINT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+    PLANAR_SURFACE_LINT_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+    PLANAR_REPO_ROOT="${CMAKE_SOURCE_DIR}")
   # UNCONDITIONAL, not `if(TARGET surface_lint)` guarded: surface_lint is
   # created unconditionally a few lines above in this same file, so its
   # absence here would mean this file itself is broken, not a legitimate

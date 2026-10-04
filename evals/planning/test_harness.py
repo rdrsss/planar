@@ -751,36 +751,30 @@ class LiveDrafterModelRequiredTests(unittest.TestCase):
 
 
 class BuildDraftPromptTests(unittest.TestCase):
-    """Reviewer fix C: an embedded `"` in the goal text must not corrupt the
-    `/pl-spec-draft "<goal>"` prompt's own quoted argument.
-    """
+    """The drafter prompt dispatches `planar-planner` by name with the goal."""
 
-    def test_plain_goal_is_wrapped_unescaped(self) -> None:
+    PREFIX = "Use the planar-planner agent to draft the specs for this goal:\n\n"
+
+    def test_plain_goal_follows_the_by_name_dispatch(self) -> None:
         prompt = harness.build_draft_prompt("add real-time notifications")
-        self.assertEqual(prompt, '/pl-spec-draft "add real-time notifications"')
+        self.assertEqual(prompt, self.PREFIX + "add real-time notifications")
 
-    def test_embedded_quotes_are_backslash_escaped(self) -> None:
-        goal = 'support the "premium" tier'
+    def test_embedded_quotes_and_backslashes_pass_through_verbatim(self) -> None:
+        goal = 'support the "premium" tier, literal backslash-quote: \\" here'
         prompt = harness.build_draft_prompt(goal)
-        self.assertEqual(prompt, '/pl-spec-draft "support the \\"premium\\" tier"')
-        self.assertIn('\\"premium\\"', prompt)
+        self.assertEqual(prompt, self.PREFIX + goal)
 
-    def test_embedded_backslash_before_quote_does_not_unescape_it(self) -> None:
-        # Escaping the backslash FIRST is what stops a source `\"` from
-        # colliding with an escape this function inserts.
-        goal = 'a literal backslash-quote: \\" here'
-        prompt = harness.build_draft_prompt(goal)
-        self.assertEqual(prompt, '/pl-spec-draft "a literal backslash-quote: \\\\\\" here"')
-
-    def test_multiline_goal_with_quotes_round_trips(self) -> None:
+    def test_multiline_goal_round_trips(self) -> None:
         goal = 'Line one says "go".\nLine two has no quotes.\nLine three says "stop" too.'
         prompt = harness.build_draft_prompt(goal)
-        self.assertTrue(prompt.startswith('/pl-spec-draft "'))
-        self.assertIn("Line two has no quotes.", prompt)
-        self.assertIn('Line one says \\"go\\".', prompt)
-        self.assertIn('Line three says \\"stop\\" too.', prompt)
+        self.assertTrue(prompt.endswith(goal))
 
-    def test_goal_without_quotes_is_unaffected_by_escaping(self) -> None:
+    def test_prompt_never_uses_a_slash_command(self) -> None:
+        prompt = harness.build_draft_prompt("anything")
+        self.assertNotIn("/" + "pl-", prompt)
+        self.assertFalse(prompt.startswith("/"))
+
+    def test_fixture_goal_is_embedded_unchanged(self) -> None:
         goal = harness.read_asset(harness.load_case("spec-draft-quality"), "goal_fixture")
         self.assertNotIn('"', goal)
         prompt = harness.build_draft_prompt(goal)
@@ -829,9 +823,14 @@ class DrafterRoutingTests(unittest.TestCase):
         self.assertEqual(code, harness.EXIT_PASS, f"stdout:\n{out}\nstderr:\n{err}")
         stage_mock.assert_called_once()
         self.assertEqual(stage_mock.call_args.args[1], "claude")
+        # The planner agent is staged from this checkout and is required.
+        self.assertEqual(stage_mock.call_args.kwargs.get("repo_root"), harness.REPO_ROOT)
+        self.assertEqual(
+            stage_mock.call_args.kwargs.get("required_agents"), ("planar-planner",)
+        )
         self.assertEqual(call_order[:2], ["stage:claude", "auth:claude"])
 
-    def test_drafter_prompt_invokes_the_installed_pl_spec_draft_surface(self) -> None:
+    def test_drafter_prompt_dispatches_planar_planner_by_name(self) -> None:
         prompts: list[tuple[list[str], str]] = []
 
         def _run_model_side_effect(argv, timeout, env):
@@ -856,8 +855,8 @@ class DrafterRoutingTests(unittest.TestCase):
         self.assertEqual(len(prompts), 2)
         drafter_argv, drafter_prompt = prompts[0]
         self.assertTrue(
-            drafter_prompt.startswith('/pl-spec-draft "'),
-            f"drafter prompt did not invoke pl-spec-draft: {drafter_prompt[:80]!r}",
+            drafter_prompt.startswith("Use the planar-planner agent"),
+            f"drafter prompt did not dispatch planar-planner: {drafter_prompt[:80]!r}",
         )
         goal = harness.read_asset(harness.load_case("spec-draft-quality"), "goal_fixture")
         # The FULL multi-line goal, not just its first line: the shipped

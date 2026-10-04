@@ -363,7 +363,7 @@ completion:
    - `abort` → invoke `planar-agent fail`, halt, and escalate.
 11. Enforce the iteration cap before routing: on iteration 5,
     `request-changes` becomes `abort`. Iteration-5 approval caveats become new
-    task rows.
+    task rows, created with `planar task add` on the same plan.
 12. Wrap-up: produce a summary when all cycles are terminal.
 
 **Boundary:** The orchestrator never picks a dispatch shape silently. The user

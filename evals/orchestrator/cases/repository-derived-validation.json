@@ -11,13 +11,9 @@
       "description": "Every execution role names the validation profile.",
       "mode": "all",
       "paths": [
-        "skills/src/pl-orchestrator.md",
         "agents/planar-orchestrator.md",
-        "skills/src/pl-coder.md",
         "agents/planar-coder.md",
-        "skills/src/pl-reviewer.md",
         "agents/planar-reviewer.md",
-        "skills/src/pl-test-coder.md",
         "agents/planar-test-coder.md"
       ],
       "pattern": "validation profile|validation-profile"
@@ -27,7 +23,6 @@
       "description": "The orchestrator cluster contains no language-specific gate examples.",
       "mode": "none",
       "paths": [
-        "skills/src/pl-orchestrator.md",
         "agents/planar-orchestrator.md",
         "agents/methodology.md",
         "agents/doctrine.md"

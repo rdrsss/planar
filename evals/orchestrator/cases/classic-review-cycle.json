@@ -10,14 +10,14 @@
       "id": "orchestrator-captures-base",
       "description": "Both orchestrator surfaces name the coder-cycle base.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
+      "paths": ["agents/planar-orchestrator.md"],
       "pattern": "coder-cycle-base"
     },
     {
       "id": "specialists-read-base-diff",
       "description": "Reviewer and test-coder surfaces inspect the base-relative diff.",
       "mode": "all",
-      "paths": ["skills/src/pl-reviewer.md", "agents/planar-reviewer.md", "skills/src/pl-test-coder.md", "agents/planar-test-coder.md"],
+      "paths": ["agents/planar-reviewer.md", "agents/planar-test-coder.md"],
       "pattern": "git diff <coder-cycle-base>"
     }
   ],
