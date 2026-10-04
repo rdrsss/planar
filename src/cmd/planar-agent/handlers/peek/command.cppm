@@ -13,7 +13,7 @@ namespace planar::cmd::agent::handlers::peek_cli {
 export auto add(CLI::App& root) -> void {
   // --- peek ---------------------------------------------------------------
   CLI::App* peek = root.add_subcommand("peek", "Read-only what's-next selector (same query as pull, no writes).");
-  shared::add_json(*peek, shared::k_undocumented);
+  shared::add_json(*peek, "Emit machine-readable JSON instead of text");
   peek->add_option("plan-id")->description("Plan id to peek into")->required()->check(cliapp::zig_int_validator());
 }
 } // namespace planar::cmd::agent::handlers::peek_cli

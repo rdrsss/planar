@@ -27,6 +27,6 @@ export auto add(CLI::App& root) -> void {
   shared::add_int(*log, "--session", "Filter to one session_id");
   log->add_option("--claim")->description("Filter to one claim_token");
   shared::add_int(*log, "--limit", "Row cap (default 100)");
-  shared::add_json(*log, cliapp::k_undocumented);
+  shared::add_json(*log, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::watch::handlers::log_cli

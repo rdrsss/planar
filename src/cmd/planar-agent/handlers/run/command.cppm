@@ -26,13 +26,13 @@ export auto add(CLI::App& root) -> void {
       "Lease TTL for a pid-less run (accepts bare int seconds or suffixed duration: 10m, 1h, 500ms), extended by "
       "`run heartbeat` and enforced by reconcile. Required when --pid is omitted");
   run_start->add_option("--repo-root")->description("Absolute path of the repo root the harness is driving")->required();
-  shared::add_json(*run_start, shared::k_undocumented);
+  shared::add_json(*run_start, "Emit machine-readable JSON instead of text");
 
   CLI::App* run_end =
       run->add_subcommand("end", "Close a workflow_runs row with a terminal status (completed|failed|interrupted).");
   run_end->add_option("--run-id")->description("The run identifier (run-<pid>-<nanos>) returned by run start")->required();
   run_end->add_option("--status")->description("Terminal status: completed | failed | interrupted")->required();
-  shared::add_json(*run_end, shared::k_undocumented);
+  shared::add_json(*run_end, "Emit machine-readable JSON instead of text");
 
   CLI::App* run_heartbeat = run->add_subcommand("heartbeat", "Extend a pid-less run's lease (expires_at).");
   run_heartbeat->add_option("--run-id")->description("The run identifier (run-<pid>-<nanos>) returned by run start")->required();
@@ -41,6 +41,6 @@ export auto add(CLI::App& root) -> void {
           "New lease TTL, set absolutely from now (accepts bare int seconds or suffixed duration: 10m, 1h, 500ms). Refuses "
           "on a pid-supervised run or a run no longer `running`")
       ->required();
-  shared::add_json(*run_heartbeat, shared::k_undocumented);
+  shared::add_json(*run_heartbeat, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::run_cli

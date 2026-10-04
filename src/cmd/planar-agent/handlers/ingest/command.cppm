@@ -16,6 +16,6 @@ export auto add(CLI::App& root) -> void {
       "ingest", "Translate a vendor hook event into store primitives (claude + copilot adapters wired; codex reserved).");
   ingest->add_option("--vendor")->description("Vendor tag (claude|copilot wired; codex reserved)")->required();
   ingest->add_option("--event")->description("Event JSON: @<file> reads from path; @- reads from stdin")->required();
-  shared::add_json(*ingest, shared::k_undocumented);
+  shared::add_json(*ingest, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::ingest_cli

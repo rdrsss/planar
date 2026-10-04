@@ -16,14 +16,12 @@
 //   - The catalog is the one artifact all five binaries share, so it is the
 //     place a single walk can hold them to one rule.
 //
-// ## The allowance
+// ## No allowance
 //
-// `planar-agent`, `planar-ext` and `planar-watch` still have
-// undocumented flags; their sweeps are later tasks in this milestone.
-// `planar` and `planar-execute` have none and are held to the rule today. The
-// allowance only shrinks: a binary in it that has NO empty description left
-// fails the walk and tells the maintainer to delete its entry, so a finished
-// sweep cannot silently regress behind a stale allowance.
+// All five binaries are held to the rule. The sweeps of `planar-agent`,
+// `planar-ext` and `planar-watch` landed, so no binary may carry an empty
+// description. The last case below pins that `planar-execute` (and the
+// rest) stay outside any allowance.
 //
 // ## Provenance
 //
@@ -92,14 +90,6 @@ auto walk_catalog(std::string const& text) -> std::optional<walk_result> {
 // The line a maintainer reads when a description is empty.
 auto describe(empty_description const& e) -> std::string {
   return std::format("{}: {} {} has an empty description", e.command, e.kind, e.name);
-}
-
-// Binaries whose sweep has not landed. Remove an entry when its last empty
-// description is fixed; the second case below fails until you do.
-constexpr std::array<std::string_view, 3> k_allowed_empty = {"planar-agent", "planar-ext", "planar-watch"};
-
-auto is_allowed(std::string_view binary) -> bool {
-  return std::ranges::find(k_allowed_empty, binary) != k_allowed_empty.end();
 }
 
 struct binary_under_test {
@@ -215,9 +205,6 @@ TEST_CASE("the catalog walk reaches every binary and fails on an empty descripti
     std::println("catalog-descriptions: {} walked {} descriptions, {} empty", bin.name, walked.walked, walked.empties.size());
     CAPTURE(bin.name, walked.walked, walked.empties.size());
     total += walked.walked;
-    if (is_allowed(bin.name)) {
-      continue;
-    }
     for (auto const& e : walked.empties) {
       FAIL_CHECK(describe(e));
     }
@@ -230,19 +217,17 @@ TEST_CASE("the catalog walk reaches every binary and fails on an empty descripti
   REQUIRE(total >= 1100);
 }
 
-TEST_CASE("the catalog walk allows only the binaries still pending", "[catalog][descriptions]") {
+TEST_CASE("the catalog walk allows no binary an empty description", "[catalog][descriptions]") {
+  // Every binary, planar-agent, planar-ext and planar-watch included, is held to
+  // the rule; the sweep of each landed, so the allowance is gone.
   auto const all = binaries();
-  for (auto const& name : k_allowed_empty) {
-    auto const found = std::ranges::find_if(all, [&](binary_under_test const& bin) { return bin.name == name; });
-    REQUIRE(found != all.end());
-    auto const walked = walk_binary(*found);
-    INFO(std::format("{} is in the allowance but has no empty description left; remove it from k_allowed_empty in "
-                     "catalog_descriptions.t.cpp so the sweep cannot regress",
-                     name));
-    CHECK_FALSE(walked.empties.empty());
+  REQUIRE(all.size() == 5);
+  for (auto const& bin : all) {
+    auto const walked = walk_binary(bin);
+    CAPTURE(bin.name);
+    CHECK(walked.empties.empty());
   }
-  // planar-execute's sweep landed with its helpers, so it must never be allowed.
-  CHECK_FALSE(is_allowed("planar-execute"));
+  CHECK(std::ranges::any_of(all, [](binary_under_test const& bin) { return bin.name == "planar-execute"; }));
 }
 
 TEST_CASE("the retired-word scan names the command and the word it found", "[catalog][descriptions][retired]") {

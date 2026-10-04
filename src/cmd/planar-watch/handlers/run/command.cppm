@@ -32,12 +32,12 @@ export auto add(CLI::App& root) -> void {
   shared::add_int(*run_list, "--plan", "Filter by plan id");
   run_list->add_option("--status")->description("Filter by status (default: all)");
   run_list->add_option("--arm")->description("Source arm: wf | op | all (default: all)");
-  shared::add_json(*run_list, cliapp::k_undocumented);
+  shared::add_json(*run_list, "Emit machine-readable JSON instead of text");
 
   CLI::App* run_show = run->add_subcommand(
       "show", "Returns the full workflow_runs row for <id> plus all\n  context_records for that run, grouped and ordered "
               "by\n  stage then created_at.\n\n  Exits non-zero when the run id is unknown.");
-  shared::add_json(*run_show, cliapp::k_undocumented);
+  shared::add_json(*run_show, "Emit machine-readable JSON instead of text");
   run_show->add_option("id")->description("Workflow run id (integer)")->required();
 }
 } // namespace planar::cmd::watch::handlers::run_cli
