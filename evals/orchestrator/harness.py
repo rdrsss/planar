@@ -1925,7 +1925,7 @@ def git_state(repo: Path, env: dict[str, str]) -> str:
 
 
 def require_current_installed_projection() -> None:
-    require_commands(["scriptorium"])
+    require_commands(["planar", "jq"])
     run_passthrough([str(ROOT / "scripts" / "check-self-installed.sh")], cwd=ROOT)
 
 

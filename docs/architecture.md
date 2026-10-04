@@ -822,44 +822,56 @@ reports missing, changed, and unexpected staged files. `scriptorium status`
 reports per-source rendering freshness. Planar's install manifest below owns
 installed vendor files; Scriptorium maintains no separate registry.
 
-After all selected vendor wiring succeeds, `install.sh` atomically replaces
-`$PLANAR_HOME/install-manifest.json` (normally
-`~/.planar/install-manifest.json`). Version 1 records the build id, global
-`copy|link` installation mode, selected managed vendors, selected optional
-installer extras (currently none), and one row per managed skill or
-agent projection. Each row fixes the vendor, projection kind
-and name, staged and installed paths, actual `copy|link` install kind, and the
-two legacy digest fields — populated only when the staged file happens to
-carry the retired `x-planar-*` headers (nothing does, post plan-918 migration
-to scriptorium as renderer); empty otherwise, and never treated as a mismatch
-when empty. Codex and Copilot directory-shaped skills use their staged
-`codex-skills/` or `copilot-skills/` `SKILL.md` as the staged authority; their
-vendor installs are copies even during a global link-mode install. Claude
-skills and vendor agent files are links.
+`install.sh` writes `$PLANAR_HOME/install-manifest.json` (normally
+`~/.planar/install-manifest.json`) before the first vendor target is placed and
+again after every target, through a same-directory temp file and an atomic
+rename, so an interrupted run leaves the previous complete manifest
+authoritative. Version 2 records the build id, the global `copy|link` mode, the
+vendors the run found (`claude`, `codex`, `copilot`, `gemini`, `antigravity`,
+`opencode`), `extras` (the staged `skills/planar/**`, `agents/*.md` and
+`codex-agents/*.toml` paths, and every placed file) and one `projections` row
+per placed target: the skill directory, or one agent file. A row fixes the
+vendor, kind (`skill|agent`), name, staged source, installed path and the
+actual `copy|link` install kind; its two digest fields are always empty. The
+vendor is the target's only owner, or `shared` for `~/.agents/skills`, which
+codex, copilot, gemini and opencode all read: it is placed once, so no one
+vendor owns it. An OpenCode agent is a derived copy (frontmatter reduced to
+`description` and `mode: subagent`) in both modes, so its row is always
+`copy`.
+
+The staged authority the rows compare against is `$PLANAR_HOME/skills/planar/`
+(the skill, compared as a directory, every file), `$PLANAR_HOME/agents/planar-<role>.md`
+(Markdown and Copilot agents; OpenCode's derivation of it) and
+`$PLANAR_HOME/codex-agents/planar-<role>.toml`. The nine roots, each tagged with
+the vendors that read it, are: `~/.claude/skills` (claude), `~/.agents/skills`
+(codex, copilot, gemini, opencode), `~/.gemini/antigravity-cli/skills`
+(antigravity), `~/.claude/agents`, `$CODEX_HOME/agents` (default
+`~/.codex/agents`), `~/.copilot/agents`, `~/.gemini/agents`,
+`~/.gemini/antigravity-cli/agents` and `~/.config/opencode/agents`. A root
+takes part only while one of its vendors is present (the installer's markers:
+`~/.claude/`, `$CODEX_HOME` set or `~/.codex/`, `~/.copilot/`,
+`~/.gemini/settings.json`, `~/.gemini/antigravity-cli/`, `~/.config/opencode/`).
 
 The manifest is the ownership boundary: only its rows are Planar-managed.
-Unselected vendors and destination-only operator extensions are never added.
-The installer writes a temporary file in `$PLANAR_HOME`, closes it, then uses
-a same-directory atomic rename, so an interrupted write cannot make partial
-JSON authoritative. The older `.planar-install` prefix stamp remains for
-legacy-install detection and the prefix adoption guard; an install without the
-versioned manifest remains compatible and can be upgraded by reinstalling.
+Destination-only entries are discovered only under Planar's own names (the
+skill `planar`, agents `planar-*`) so a shared root's other tools are never
+reported. The older `.planar-install` prefix stamp remains for legacy-install
+detection and the prefix adoption guard.
 
 `src/lib/installed_surface/installed_surface.cpp`'s `status()` classifier is the read-only
-consumer of this contract. There is no more standalone `planar skills status`
-CLI verb to expose it directly — plan 918 D5 retired it along with the
-projection-digest path it used to read; `planar skills` is now a placeholder
-verb with no subcommands. The classifier reports selected versus unselected
-vendors and classifies managed rows as `fresh`, `stale`, or `missing` by
-plain existence + byte/symlink comparison against the staged authority (not a
-semantic digest match — that scheme retired with it), and may enumerate
-destination-only `unmanaged` entries without treating discovery as ownership.
-Missing, malformed, future-version, and stamped legacy manifests remain
-aggregate manifest states with a source-checkout `./install.sh --prefix
-<resolved-prefix>` bootstrap command; they are never guessed into managed
-rows. Canonical staged projection drift is reported by `scriptorium check`; installed
-file drift is checked against `install-manifest.json` by
-`scripts/check-self-installed.sh` (Recipe 14A).
+consumer of this contract. There is no standalone `planar skills status`
+CLI verb to expose it directly. The classifier reports selected versus unselected
+vendors and classifies managed rows as `fresh`, `stale` (drifted), or `missing`
+by plain existence + byte/symlink comparison against the staged authority: a
+link to the staged source is `fresh` by construction, a copy is `fresh` only
+when every byte matches. Missing, malformed, unsupported-version and stamped
+legacy manifests remain aggregate manifest states with a source-checkout
+`./install.sh --prefix <resolved-prefix>` bootstrap command; they are never
+guessed into managed rows. A version 1 manifest (the retired four-vendor,
+per-file layout, or the interim one that kept placements only in `extras`) is
+the `legacy` state: one degraded `planar health` contributor naming the
+reinstall, no rows. `scripts/check-self-installed.sh` reads `planar health
+--json`'s `projection_freshness` for the installed host (Recipe 14A).
 
 `planar health` calls this same classifier and folds its summary into the
 `projection_freshness` contributor; classification and ownership decisions

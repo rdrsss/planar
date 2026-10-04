@@ -1536,20 +1536,21 @@ difference. After promotion, you can run `planar local unlink fixup-protos
 
 ## Recipe 14A — Inspect and reconcile installed canonical projections
 
-Canonical sources are rendered by the in-tree Scriptorium tool during
-`install.sh`. Planar's own `install-manifest.json` records installed projections.
-Run these inspections from the repository root:
+`install.sh` stages `skills/planar/` and the agents under `~/.planar` and places
+them into each vendor found on the host. Planar's own `install-manifest.json`
+records every placement. Run these inspections from the repository root:
 
 ```bash
-~/.planar/bin/scriptorium check --config scriptorium.yaml --output-root ~/.planar
-~/.planar/bin/scriptorium status --config scriptorium.yaml --output-root ~/.planar --json
+planar health
 scripts/check-self-installed.sh
 ```
 
-`check` compares current sources with staged bytes and reports missing, changed,
-and unexpected projections. `status` reports rendering freshness per source.
-The self-installed check also verifies installed paths against the Planar
-manifest. To repair a managed projection, run `./install.sh --prefix ~/.planar`.
+`planar health` compares each recorded placement with the staged copy (a
+skill as a directory, every file) and reports `projection_freshness`:
+`fresh`, `stale` (drifted) or `missing` rows, and a `legacy` manifest left by an
+older installer. `scripts/check-self-installed.sh` exits non-zero unless the
+manifest is current with no stale or missing row. To repair a managed
+projection, run `./install.sh --prefix ~/.planar`.
 Personal `planar local` extensions remain outside this install manifest.
 
 ---

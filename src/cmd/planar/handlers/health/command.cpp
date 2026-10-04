@@ -69,9 +69,11 @@ auto resolve_homes(context& ctx) -> std::expected<is_::options, domain_error> {
         error_from_body(domain_error_kind::generic_failure, "health check failed: resolving install homes: HomeNotSet"));
   }
   is_::options opts;
-  opts.home        = *home;
-  opts.planar_home = ctx.env()("PLANAR_HOME").value_or((std::filesystem::path(*home) / ".planar").string());
-  opts.codex_home  = ctx.env()("CODEX_HOME").value_or((std::filesystem::path(*home) / ".codex").string());
+  opts.home            = *home;
+  opts.planar_home     = ctx.env()("PLANAR_HOME").value_or((std::filesystem::path(*home) / ".planar").string());
+  auto const codex_env = ctx.env()("CODEX_HOME");
+  opts.codex_home      = codex_env.value_or((std::filesystem::path(*home) / ".codex").string());
+  opts.codex_home_set  = codex_env.has_value() && !codex_env->empty();
   return opts;
 }
 

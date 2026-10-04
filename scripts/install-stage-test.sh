@@ -154,13 +154,14 @@ run_install "$REPO" "$TMP/h1" --no-vendor || fail "re-install failed: $(cat "$TM
 check_staged "$REPO" "$TMP/h1"
 
 # 3. With a vendor present and selected the installer stays runnable end to
-# end; placed paths go to `extras`, never to projection rows.
+# end; each placed target is one projection row, its files also in `extras`.
 mkdir -p "$TMP/h3/.claude"
 run_install "$REPO" "$TMP/h3" --vendors claude || fail "install with --vendors claude failed: $(cat "$TMP/h3/err")"
 check_staged "$REPO" "$TMP/h3"
 [[ -f "$TMP/h3/.claude/skills/planar/SKILL.md" && -f "$TMP/h3/.claude/agents/planar-coder.md" ]] || fail "the claude vendor was not placed"
 [[ ! -e "$TMP/h3/.claude/commands" ]] || fail "the old ~/.claude/commands target is still written"
-! grep -Fq '"vendor":' "$TMP/h3/.planar/install-manifest.json" || fail "a placed path was recorded as a projection row"
+grep -Fq '"vendors": ["claude"]' "$TMP/h3/.planar/install-manifest.json" || fail "the claude placement was not recorded as a vendor"
+grep -Fq '"vendor": "claude", "kind": "skill", "name": "planar"' "$TMP/h3/.planar/install-manifest.json" || fail "the claude skill has no projection row"
 
 # 4. Link mode: the staged trees point into the checkout.
 run_install "$REPO" "$TMP/h4" --no-vendor --link || fail "link install failed: $(cat "$TMP/h4/err")"
@@ -179,8 +180,8 @@ grep -Fq 'Staging the planar skill and agents' "$TMP/h5/out" || fail "the failur
 [[ ! -e "$TMP/h5/.planar/codex-agents" && ! -e "$TMP/h5/.planar/codex-agents.new" ]] || fail "a failed render left codex-agents/"
 [[ ! -e "$TMP/h5/.planar/install-manifest.json" ]] || fail "a failed staging step still wrote the manifest"
 
-# 6. The manifest function, directly: it records extras only, never projection
-# rows, so the installed-surface reader's schema is untouched.
+# 6. The staged recorder, directly: it adds extras only, never projection rows
+# (no vendor owns a staged path).
 # shellcheck source=install-manifest.sh
 source "$ROOT/scripts/install-manifest.sh"
 install_manifest_begin "build-staged" copy
@@ -305,15 +306,19 @@ PY
   done
 }
 
-# assert_manifest HOME -- every placed file and every skill directory is
-# recorded in extras, and vendors/projections stay empty.
+# assert_manifest HOME [VENDOR...] -- version 2: `vendors` is what the run found
+# (all six when none are named), one projection row per placed target with the
+# right vendor, kind, name, staged source and install kind, and every placed
+# file and skill directory also in extras.
 assert_manifest() {
-  local home="$1"
-  python3 - "$home" <<'PY' || fail "the manifest does not record every placed path"
+  local home="$1"; shift
+  python3 - "$home" "${@:-claude codex copilot gemini antigravity opencode}" <<'PY' || fail "the manifest does not record every placed path"
 import json, os, subprocess, sys
 home = sys.argv[1]
+found = sys.argv[2].split()
 m = json.load(open(home + '/.planar/install-manifest.json'))
-assert m['vendors'] == [] and m['projections'] == [], (m['vendors'], m['projections'])
+assert m['version'] == 2, m['version']
+assert m['vendors'] == found, (m['vendors'], found)
 extras = set(m['extras'])
 out = subprocess.run(['find', '-L', '.', '-type', 'f'], cwd=home, capture_output=True, text=True).stdout.split()
 skip = ('./.planar/', './build/', './out', './err', './planar.db', './.gemini/settings.json')
@@ -330,6 +335,37 @@ for rel in out:
         if d not in extras:
             missing.append(d)
 assert not missing, missing[:5]
+
+# The rows: skills and agents per root.
+codex_home = os.environ.get('RUN_CODEX_HOME') or home + '/.codex'
+agent_roots = {  # vendor -> (directory, suffix)
+    'claude': ('/.claude/agents', '.md'), 'codex': (None, '.toml'), 'copilot': ('/.copilot/agents', '.agent.md'),
+    'gemini': ('/.gemini/agents', '.md'), 'antigravity': ('/.gemini/antigravity-cli/agents', '.md'),
+    'opencode': ('/.config/opencode/agents', '.md')}
+want = {}  # installed path -> (vendor label, kind, staged)
+roles = sorted(f[:-3] for f in os.listdir(home + '/.planar/agents') if f.startswith('planar-'))
+assert len(roles) == 15, roles
+skill_root = {'claude': '/.claude/skills', 'antigravity': '/.gemini/antigravity-cli/skills'}
+for v in found:
+    if v in skill_root:
+        want[home + skill_root[v] + '/planar'] = (v, 'skill', home + '/.planar/skills/planar')
+    elif v in ('codex', 'copilot', 'gemini', 'opencode'):
+        want[home + '/.agents/skills/planar'] = ('shared', 'skill', home + '/.planar/skills/planar')
+    d, suffix = agent_roots[v]
+    d = codex_home + '/agents' if v == 'codex' else home + d
+    for r in roles:
+        staged = home + ('/.planar/codex-agents/%s.toml' if v == 'codex' else '/.planar/agents/%s.md') % r
+        want[d + '/' + r + suffix] = (v, 'agent', staged)
+rows = {r['installed_path']: r for r in m['projections']}
+assert len(rows) == len(m['projections']), 'duplicate installed_path'
+assert set(rows) == set(want), (sorted(set(rows) ^ set(want))[:5])
+for path, (vendor, kind, staged) in want.items():
+    r = rows[path]
+    assert (r['vendor'], r['kind'], r['staged_path']) == (vendor, kind, staged), (path, r)
+    assert r['name'] == ('planar' if kind == 'skill' else os.path.basename(path).split('.')[0]), r
+    assert r['install_kind'] == ('copy' if vendor == 'opencode' else m['install_mode']), r
+    assert r['source_digest'] == '' and r['projection_digest'] == '', r
+    assert path in extras, path
 PY
 }
 
@@ -357,7 +393,7 @@ assert_placed "$TMP/h9" claude
 [[ ! -e "$TMP/h9/.agents" && ! -e "$TMP/h9/.codex" && ! -e "$TMP/h9/.config" && ! -e "$TMP/h9/.gemini" && ! -e "$TMP/h9/.copilot" ]] \
   || fail "a vendor that is not present was written"
 grep -Fq 'vendors skipped: codex (no $CODEX_HOME or ~/.codex/), copilot' "$TMP/h9/out" || fail "the skipped vendors were not printed: $(grep skipped "$TMP/h9/out")"
-assert_manifest "$TMP/h9"
+assert_manifest "$TMP/h9" claude
 
 # 10. Only ~/.config/opencode/: the shared skill and the OpenCode agents.
 mk_home h10 opencode
@@ -612,4 +648,68 @@ grep -Fq '"install_mode": "copy"' "$TMP/h21/.planar/install-manifest.json" || fa
 assert_manifest "$TMP/h21"
 check_formats "$REPO" "$TMP/h21" "${ALL6[@]}"
 
-printf 'install-stage tests: 21 scenarios passed\n'
+# ---------------------------------------------------------------------------
+# `planar health` against a scratch install (task 7219): the installed-surface
+# classifier reads the manifest this installer wrote and compares each recorded
+# placement with the staged authority. Needs a built planar binary: PLANAR_BIN,
+# else build/debug/bin/planar. The scratch HOME, PLANAR_HOME and PLANAR_DB keep
+# the run away from the operator's database.
+# ---------------------------------------------------------------------------
+
+PLANAR_BIN="${PLANAR_BIN:-$ROOT/build/debug/bin/planar}"
+if [[ ! -x "$PLANAR_BIN" ]]; then
+  printf 'install-stage tests: 21 install scenarios passed; health scenarios SKIPPED (no planar binary at %s; set PLANAR_BIN)\n' "$PLANAR_BIN"
+  exit 0
+fi
+
+# health_json HOME -- `planar health --json` for a scratch install.
+health_json() {
+  env -u CODEX_HOME HOME="$1" PLANAR_HOME="$1/.planar" PLANAR_DB="$1/planar.db" "$PLANAR_BIN" health --json
+}
+
+# freshness HOME -- "manifest_status state managed fresh stale missing".
+freshness() {
+  health_json "$1" | python3 -c '
+import json, sys
+f = json.load(sys.stdin)["projection_freshness"]
+print(f["manifest_status"], f["state"], f["managed"], f["fresh"], f["stale"], f["missing"])'
+}
+
+# 22. A copy install across all six vendors: nine roots, 3 skill directories and
+# 90 agent files, every one fresh. One byte changed in the installed Claude
+# skill flips exactly that row to stale and degrades health; restoring it
+# clears it.
+[[ "$(freshness "$TMP/h21")" == "current fresh 93 93 0 0" ]] || fail "all-vendor copy install is not fresh in health: $(freshness "$TMP/h21")"
+SKILLMD="$TMP/h21/.claude/skills/planar/SKILL.md"
+cp "$SKILLMD" "$TMP/skill.bak"
+printf 'x' >> "$SKILLMD"
+[[ "$(freshness "$TMP/h21")" == "current degraded 93 92 1 0" ]] || fail "one drifted byte did not flip exactly one row: $(freshness "$TMP/h21")"
+cp "$TMP/skill.bak" "$SKILLMD"
+[[ "$(freshness "$TMP/h21")" == "current fresh 93 93 0 0" ]] || fail "restoring the byte did not clear the drift: $(freshness "$TMP/h21")"
+rm -rf "$TMP/h21/.agents/skills/planar"
+[[ "$(freshness "$TMP/h21")" == "current degraded 93 92 0 1" ]] || fail "a removed skill directory is not one missing row: $(freshness "$TMP/h21")"
+
+# 23. Link mode: the installed skill is a symlink into the staged tree, and the
+# rows read fresh by construction.
+[[ -L "$TMP/h12/.claude/skills/planar" && "$(readlink "$TMP/h12/.claude/skills/planar")" == "$TMP/h12/.planar/skills/planar" ]] \
+  || fail "the link-mode skill is not a symlink into the staged tree"
+[[ "$(freshness "$TMP/h12")" == "current fresh 93 93 0 0" ]] || fail "link install is not fresh in health: $(freshness "$TMP/h12")"
+
+# 24. An absent vendor produces no row: only ~/.claude/ left on a host whose
+# manifest names all six leaves the two Claude roots (1 skill + 15 agents).
+for d in .codex .copilot .gemini .config; do rm -rf "${TMP:?}/h8/$d"; done
+[[ "$(freshness "$TMP/h8")" == "current fresh 16 16 0 0" ]] || fail "absent vendors still produced rows: $(freshness "$TMP/h8")"
+[[ "$(freshness "$TMP/h9")" == "current fresh 16 16 0 0" ]] || fail "the claude-only install is not 16 fresh rows: $(freshness "$TMP/h9")"
+
+# 25. A manifest in the previous shape (version 1: the four retired vendors, or
+# the interim extras-only layout) is one degraded `legacy` contributor with no
+# rows; health still answers.
+mkdir -p "$TMP/hold/.planar"
+printf '{"version": 1, "build_id": "old", "install_mode": "copy", "vendors": ["claude"], "extras": ["skills/planar/SKILL.md"], "projections": []}\n' \
+  > "$TMP/hold/.planar/install-manifest.json"
+[[ "$(freshness "$TMP/hold")" == "legacy degraded 0 0 0 0" ]] || fail "a version 1 manifest is not one degraded legacy state: $(freshness "$TMP/hold")"
+printf '{"version": 1, "build_id": "old", "install_mode": "copy", "vendors": ["claude"], "projections": [{"vendor": "claude", "kind": "skill", "name": "pl-x", "staged_path": "/s", "installed_path": "/i", "install_kind": "copy", "source_digest": "", "projection_digest": ""}]}\n' \
+  > "$TMP/hold/.planar/install-manifest.json"
+[[ "$(freshness "$TMP/hold")" == "legacy degraded 0 0 0 0" ]] || fail "a version 1 manifest with old rows is not legacy: $(freshness "$TMP/hold")"
+
+printf 'install-stage tests: 25 scenarios passed\n'

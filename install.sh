@@ -546,7 +546,7 @@ BUILD_DEPS=(
   "chmod||mark shipped scripts executable"
 )
 RUN_DEPS=(
-  "cmp||checks installed projection bytes in scripts/check-self-installed.sh (also a build dep above)"
+  "cmp||compares staged and installed bytes in the installer (also a build dep above)"
   "git|git|repo discovery + 'planar import' (required at runtime)"
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
@@ -1096,7 +1096,7 @@ VENDORS_SKIPPED=()
 # The placement plan, in placement order. PLAN_STATE[i] is "done" once target i
 # is placed (or found already in place) by this run, "carried" while the
 # previous manifest still owns it and this run has not reached it, else "".
-PLAN_SRC=(); PLAN_DST=(); PLAN_FMT=(); PLAN_STATE=()
+PLAN_SRC=(); PLAN_DST=(); PLAN_FMT=(); PLAN_STATE=(); PLAN_OWNER=(); PLAN_KIND=(); PLAN_NAME=()
 PLAN_PATHS=()            # PLAN_PATHS[i]: the newline-joined manifest paths of target i
 STAGED_EXTRAS=()         # the staged-tree extras, read once (the staged tree does not change)
 STAGED_EXTRAS_READ=0
@@ -1113,19 +1113,22 @@ target_paths() {
   done < <(find -L "$src" -type f -print0 | sort -z)
 }
 
-# record_manifest — write the manifest as it stands now: the staged paths, then
-# the paths of every target that is done or still carried, in plan order. It is
-# called after each placed target, so a stop at any point leaves every target
-# placed so far recorded; install_manifest_write renames a temp file into place
-# and skips the rename when the bytes are unchanged. Placed vendor paths are
-# recorded in `extras` (absolute paths), not as `projections` rows: the
-# installed-surface reader still validates projection rows against the four
-# retired vendors, and the surface-reader task retargets it. `vendors` and
-# `projections` stay empty until then. Files found only in vendor destinations
+# record_manifest — write the manifest as it stands now (version 2): the staged
+# paths, then for every target that is done or still carried, in plan order, its
+# paths in `extras` (absolute) and one `projections` row. `vendors` is the list
+# of vendors this run found. A row's vendor is the target's only owner, or
+# `shared` for the ~/.agents/skills root that four vendors read: it is placed
+# once, so no one vendor owns it, and the reader accepts `shared` on a row
+# without it being a selectable vendor. A row's install_kind is $MODE, except
+# an OpenCode agent, which is a derived copy in both modes. It is called after
+# each placed target, so a stop at any point leaves every target placed so far
+# recorded; install_manifest_write renames a temp file into place and skips the
+# rename when the bytes are unchanged. Files found only in vendor destinations
 # (including personal local-* extensions) are deliberately excluded.
 record_manifest() {
-  local i p
+  local i p kind name install_kind
   install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
+  for p in ${VENDORS_FOUND[@]+"${VENDORS_FOUND[@]}"}; do INSTALL_MANIFEST_VENDORS+=("$p"); done
   if [[ "$STAGED_EXTRAS_READ" -eq 0 ]]; then
     install_manifest_record_staged "$PLANAR_HOME" "$REPO_ROOT"
     STAGED_EXTRAS=("${INSTALL_MANIFEST_EXTRAS[@]}")
@@ -1136,6 +1139,10 @@ record_manifest() {
   for ((i = 0; i < ${#PLAN_DST[@]}; i++)); do
     [[ -n "${PLAN_STATE[$i]:-}" ]] || continue
     while IFS= read -r p; do install_manifest_add_extra "$p"; done <<< "${PLAN_PATHS[$i]}"
+    kind="${PLAN_KIND[$i]}"; name="${PLAN_NAME[$i]}"
+    install_kind="$MODE"
+    [[ "${PLAN_FMT[$i]}" == opencode ]] && install_kind=copy
+    install_manifest_add "${PLAN_OWNER[$i]}" "$kind" "$name" "${PLAN_SRC[$i]}" "${PLAN_DST[$i]}" "$install_kind"
   done
   install_manifest_write "$PLANAR_HOME/install-manifest.json" \
     || err "could not write $PLANAR_HOME/install-manifest.json; the previous manifest is intact (placed targets are still on disk; re-run to finish)"
@@ -1178,25 +1185,38 @@ if [[ -n "$VENDORS" ]]; then
       [[ " ${VENDORS_FOUND[*]:-} " == *" $_o "* ]] && _active=1
     done
     [[ "$_active" -eq 1 ]] || continue
+    _owner="$_owners"
+    [[ "${#_owner_list[@]}" -gt 1 ]] && _owner=shared
     case "$_fmt" in
       skill)
-        PLAN_SRC+=("$PLANAR_HOME/skills/planar"); PLAN_DST+=("$_dir/planar"); PLAN_FMT+=(skill)
+        PLAN_SRC+=("$PLANAR_HOME/skills/planar"); PLAN_DST+=("$_dir/planar"); PLAN_FMT+=(skill); PLAN_OWNER+=("$_owner")
         ;;
       md|copilot|opencode)
         for _f in "$PLANAR_HOME"/agents/planar-*.md; do
           [[ -f "$_f" ]] || continue
           _name="$(basename "$_f")"
           [[ "$_fmt" == copilot ]] && _name="${_name%.md}.agent.md"
-          PLAN_SRC+=("$_f"); PLAN_DST+=("$_dir/$_name"); PLAN_FMT+=("$_fmt")
+          PLAN_SRC+=("$_f"); PLAN_DST+=("$_dir/$_name"); PLAN_FMT+=("$_fmt"); PLAN_OWNER+=("$_owner")
         done
         ;;
       toml)
         for _f in "$PLANAR_HOME"/codex-agents/planar-*.toml; do
           [[ -f "$_f" ]] || continue
-          PLAN_SRC+=("$_f"); PLAN_DST+=("$_dir/$(basename "$_f")"); PLAN_FMT+=(toml)
+          PLAN_SRC+=("$_f"); PLAN_DST+=("$_dir/$(basename "$_f")"); PLAN_FMT+=(toml); PLAN_OWNER+=("$_owner")
         done
         ;;
     esac
+  done
+
+  # The manifest row identity of each target, computed once: record_manifest
+  # runs after every target and must not fork per row.
+  for ((_i = 0; _i < ${#PLAN_DST[@]}; _i++)); do
+    _base="${PLAN_DST[$_i]##*/}"
+    if [[ "${PLAN_FMT[$_i]}" == skill ]]; then
+      PLAN_KIND+=(skill); PLAN_NAME+=("$_base")
+    else
+      PLAN_KIND+=(agent); _base="${_base%.agent.md}"; _base="${_base%.toml}"; PLAN_NAME+=("${_base%.md}")
+    fi
   done
 
   load_prev_manifest

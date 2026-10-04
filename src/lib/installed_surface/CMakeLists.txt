@@ -24,3 +24,10 @@ planar_module(installed_surface
   INTERFACE installed_surface.cppm
   SOURCES installed_surface.cpp
   DEPENDS json_dom)
+
+if(TARGET planar_installed_surface_tests)
+  # The OpenCode derivation parity test runs install.sh's awk over the
+  # checkout's agents/ directory.
+  target_compile_definitions(planar_installed_surface_tests PRIVATE
+    "PLANAR_TARGET_SOURCE_ROOT=\"${CMAKE_SOURCE_DIR}\"")
+endif()
