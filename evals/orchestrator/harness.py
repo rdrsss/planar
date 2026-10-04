@@ -1245,6 +1245,67 @@ def grade_contract(case_path: Path, case: dict[str, Any], root: Path = ROOT) -> 
         pass_line(f"{case_id}/{assertion_id}")
 
 
+SKILL_RELS = ["skills/planar/SKILL.md"] + [
+    f"skills/planar/references/{name}.md"
+    for name in (
+        "claim-ritual",
+        "external-sync",
+        "feedback-contract",
+        "knowledge",
+        "local",
+        "recovery",
+        "resume-handoff",
+        "spec-pipeline",
+        "status",
+    )
+]
+
+# The retired slash-command prefix, split so this file does not itself carry it.
+LEGACY_COMMAND_PREFIX = "/" + "pl-"
+
+SKILL_INVARIANT_LEADS = [
+    "Claim, heartbeat, one terminal verb.",
+    "Never split the terminal verb.",
+    "Write through the owning binary.",
+    "Cross-scope guard: ten verbs.",
+    "`--scope` means four things.",
+    "Read back every mutation.",
+    "Planning verbs refuse in worktrees.",
+    "Next work is claim-aware.",
+    "Plan status follows its tasks.",
+    "Operator gates are never automatic.",
+    "Sync pull writes no planning entity.",
+    "Announce cross-scope writes exactly.",
+    "Isolate from-source binaries.",
+]
+
+_SPLIT_NEGATION = re.compile(
+    r"\b(do not|don't|never|must not|forbidden|refuse[sd]?|not)\b", re.IGNORECASE
+)
+
+
+def split_terminal_verb_instructions(text: str) -> list[str]:
+    """Return each `planar task done` mention not governed by a prohibition.
+
+    The skill legitimately NAMES the split in order to forbid it ("Do not run
+    `planar task done` and then `planar-agent release`"). A mention is exempt
+    only when a negation appears in the same list item or paragraph before it
+    (the preceding text up to a blank line or list-item start); a mention that
+    instructs the split has no such negation and is returned.
+    """
+    hits: list[str] = []
+    for match in re.finditer(r"planar task done", text):
+        before = text[max(0, match.start() - 240) : match.start()]
+        for boundary in ("\n\n", "\n- ", "\n1. ", "\n2. ", "\n3. "):
+            index = before.rfind(boundary)
+            if index != -1:
+                before = before[index + len(boundary) :]
+        if not _SPLIT_NEGATION.search(before):
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            hits.append(text[line_start : text.find("\n", match.end())])
+    return hits
+
+
 def grade_coherence(root: Path = ROOT) -> None:
     core_rel = [
         "skills/src/pl-orchestrator.md",
@@ -1258,7 +1319,7 @@ def grade_coherence(root: Path = ROOT) -> None:
         "skills/src/pl-test-coder.md",
         "agents/test-coder.md",
         "agents/janitor.md",
-    ]
+    ] + SKILL_RELS
     for relative in core_rel:
         if not (root / relative).is_file():
             raise EvalFailure(f"orchestrator-coherence: missing core contract: {relative}")
@@ -1363,6 +1424,27 @@ def grade_coherence(root: Path = ROOT) -> None:
         r"coder.*(narrative )?report|coder's report",
         ["skills/src/pl-reviewer.md", "agents/reviewer.md", "agents/methodology.md"],
     )
+    # The unified `planar` skill and its nine references (plan 1104 M1): no
+    # legacy pl-* command, no scriptorium, no instruction to split the
+    # terminal verb, and the thirteen invariants present in SKILL.md.
+    forbid(re.escape(LEGACY_COMMAND_PREFIX), SKILL_RELS, ignore_case=False)
+    forbid(r"scriptorium", SKILL_RELS)
+    split_hits = [
+        f"{relative}:{line}"
+        for relative in SKILL_RELS
+        for line in split_terminal_verb_instructions(
+            (root / relative).read_text(encoding="utf-8")
+        )
+    ]
+    if split_hits:
+        raise EvalFailure(
+            "orchestrator-coherence: forbidden contract text found: "
+            "instruction to run `planar task done` then release:\n"
+            + "\n".join(split_hits)
+        )
+    for lead in SKILL_INVARIANT_LEADS:
+        must(re.escape(lead), ["skills/planar/SKILL.md"])
+    must(re.escape("references/feedback-contract.md"), ["skills/planar/SKILL.md"])
     must(r"Self-contained output contract", ["skills/src/pl-research.md"])
     must(r"fork_turns=none", ["evals/orchestrator/harness.py"])
     must(r"complete final response verbatim", ["evals/orchestrator/harness.py"])
@@ -1385,6 +1467,67 @@ def grade_coherence_negative_control() -> None:
         except EvalFailure:
             return
         raise EvalFailure("coherence negative control was not detected")
+
+
+def grade_skill_coherence_negative_control() -> None:
+    """Seeded-violation self-tests for the `planar` skill coherence checks.
+
+    Every skill file gets each forbidden text injected (a legacy slash command, a
+    scriptorium reference, an instruction to run `planar task done` then
+    `planar-agent release`) and must be rejected with the phrase named; the
+    SKILL.md copy additionally loses each invariant lead in turn, and the
+    feedback-contract citation, and must be rejected naming it. The seeded
+    split instruction is a fresh paragraph, so the prohibition-sentence
+    exemption cannot absorb it.
+    """
+    seeds = {
+        LEGACY_COMMAND_PREFIX: f"Use {LEGACY_COMMAND_PREFIX}task to finish.",
+        "scriptorium": "Then run scriptorium render.",
+        "planar task done": (
+            "Run `planar task done` then `planar-agent release` to finish."
+        ),
+    }
+    runs = 0
+
+    def expect_rejection(relative: str, mutate: Callable[[str], str], phrase: str) -> None:
+        nonlocal runs
+        with tempfile.TemporaryDirectory(prefix="planar-skill-coherence.") as raw_tmp:
+            temp_root = Path(raw_tmp)
+            for directory in ("skills", "agents"):
+                shutil.copytree(ROOT / directory, temp_root / directory)
+            harness_target = temp_root / "evals" / "orchestrator" / "harness.py"
+            harness_target.parent.mkdir(parents=True)
+            shutil.copy2(Path(__file__), harness_target)
+            target = temp_root / relative
+            target.write_text(mutate(target.read_text(encoding="utf-8")), encoding="utf-8")
+            try:
+                grade_coherence(temp_root)
+            except EvalFailure as exc:
+                if phrase not in str(exc) and re.escape(phrase) not in str(exc):
+                    raise EvalFailure(
+                        f"skill coherence self-test for {relative}: rejected "
+                        f"without naming {phrase!r}: {exc}"
+                    ) from exc
+                runs += 1
+                return
+            raise EvalFailure(
+                f"skill coherence self-test for {relative}: seeded {phrase!r} "
+                "was not detected"
+            )
+
+    for relative in SKILL_RELS:
+        for phrase, seed in seeds.items():
+            expect_rejection(relative, lambda text, seed=seed: text + f"\n\n{seed}\n", phrase)
+    for lead in SKILL_INVARIANT_LEADS:
+        expect_rejection(
+            "skills/planar/SKILL.md", lambda text, lead=lead: text.replace(lead, ""), lead
+        )
+    expect_rejection(
+        "skills/planar/SKILL.md",
+        lambda text: text.replace("references/feedback-contract.md", ""),
+        "references/feedback-contract.md",
+    )
+    pass_line(f"orchestrator-coherence/skill-planar: {runs} seeded-violation self-tests")
 
 
 def grade_contract_negative_control() -> None:
@@ -5210,6 +5353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         grade_coherence()
         pass_line("orchestrator cross-role coherence")
         grade_coherence_negative_control()
+        grade_skill_coherence_negative_control()
         pass_line("coherence grader negative control")
         grade_contract_negative_control()
         pass_line("contract grader negative control")
