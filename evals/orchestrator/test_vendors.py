@@ -173,10 +173,7 @@ class NoLegacyDispatchTests(unittest.TestCase):
             if path.resolve() == this_file:
                 continue
             for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                # `skills/src/` contract paths contain the slash form but are
-                # authored-source assertions, not dispatch; they carry a
-                # `.md` suffix.
-                if any(p in line for p in patterns) and "skills/src/pl-" not in line:
+                if any(p in line for p in patterns):
                     offenders.append(f"{path.relative_to(evals_dir)}:{number}: {line.strip()}")
         self.assertEqual(offenders, [])
 

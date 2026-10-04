@@ -1308,15 +1308,11 @@ def split_terminal_verb_instructions(text: str) -> list[str]:
 
 def grade_coherence(root: Path = ROOT) -> None:
     core_rel = [
-        "skills/src/pl-orchestrator.md",
         "agents/planar-orchestrator.md",
         "agents/methodology.md",
         "agents/doctrine.md",
-        "skills/src/pl-coder.md",
         "agents/planar-coder.md",
-        "skills/src/pl-reviewer.md",
         "agents/planar-reviewer.md",
-        "skills/src/pl-test-coder.md",
         "agents/planar-test-coder.md",
         "agents/planar-janitor.md",
     ] + SKILL_RELS
@@ -1369,50 +1365,41 @@ def grade_coherence(root: Path = ROOT) -> None:
     )
     forbid(
         r"recommended for:.*(mechanical|docs-polish|single-verb)",
-        ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md", "agents/methodology.md"],
+        ["agents/planar-orchestrator.md", "agents/methodology.md"],
     )
-    forbid(r"planar task done", ["skills/src/pl-coder.md", "agents/planar-coder.md"])
+    forbid(r"planar task done", ["agents/planar-coder.md"])
 
     must(
         r"Planar-managed Git repositor",
-        ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md", "agents/planar-janitor.md"],
+        ["agents/planar-orchestrator.md", "agents/planar-janitor.md"],
     )
     must(
         r"validation profile",
         [
-            "skills/src/pl-orchestrator.md",
             "agents/planar-orchestrator.md",
             "agents/methodology.md",
-            "skills/src/pl-coder.md",
             "agents/planar-coder.md",
-            "skills/src/pl-reviewer.md",
             "agents/planar-reviewer.md",
-            "skills/src/pl-test-coder.md",
             "agents/planar-test-coder.md",
         ],
     )
     must(
         r"structured.*evidence|evidence row",
         [
-            "skills/src/pl-coder.md",
             "agents/planar-coder.md",
-            "skills/src/pl-reviewer.md",
             "agents/planar-reviewer.md",
-            "skills/src/pl-test-coder.md",
             "agents/planar-test-coder.md",
         ],
     )
-    must(r"pl-spec-review|planar-spec-reviewer", ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"])
+    must(r"pl-spec-review|planar-spec-reviewer", ["agents/planar-orchestrator.md"])
     must(
         r"never recommended",
-        ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md", "agents/methodology.md"],
+        ["agents/planar-orchestrator.md", "agents/methodology.md"],
     )
     must(
         r"in-pwd.*barrel-bypass|barrel-bypass.*in-pwd",
         [
-            "skills/src/pl-coder.md",
             "agents/planar-coder.md",
-            "skills/src/pl-orchestrator.md",
             "agents/planar-orchestrator.md",
         ],
     )
@@ -1422,7 +1409,7 @@ def grade_coherence(root: Path = ROOT) -> None:
     )
     must(
         r"coder.*(narrative )?report|coder's report",
-        ["skills/src/pl-reviewer.md", "agents/planar-reviewer.md", "agents/methodology.md"],
+        ["agents/planar-reviewer.md", "agents/methodology.md"],
     )
     # The unified `planar` skill and its nine references (plan 1104 M1): no
     # legacy pl-* command, no scriptorium, no instruction to split the
@@ -1445,7 +1432,7 @@ def grade_coherence(root: Path = ROOT) -> None:
     for lead in SKILL_INVARIANT_LEADS:
         must(re.escape(lead), ["skills/planar/SKILL.md"])
     must(re.escape("references/feedback-contract.md"), ["skills/planar/SKILL.md"])
-    must(r"Self-contained output contract", ["skills/src/pl-research.md"])
+    must(r"Output contract — the findings brief", ["agents/planar-research.md"])
     must(r"fork_turns=none", ["evals/orchestrator/harness.py"])
     must(r"complete final response verbatim", ["evals/orchestrator/harness.py"])
 
@@ -1458,7 +1445,7 @@ def grade_coherence_negative_control() -> None:
         harness_target = temp_root / "evals" / "orchestrator" / "harness.py"
         harness_target.parent.mkdir(parents=True)
         shutil.copy2(Path(__file__), harness_target)
-        with (temp_root / "skills" / "src" / "pl-orchestrator.md").open(
+        with (temp_root / "agents" / "planar-orchestrator.md").open(
             "a", encoding="utf-8"
         ) as stream:
             stream.write("\nDefault Zig gates: make test\n")

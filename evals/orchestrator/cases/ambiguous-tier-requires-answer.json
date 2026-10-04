@@ -10,14 +10,14 @@
       "id": "tier-question-stops-dispatch",
       "description": "Both orchestrator surfaces require an explicit answer for a tier-question row.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
+      "paths": ["agents/planar-orchestrator.md"],
       "pattern": "`tier: \\?`"
     },
     {
       "id": "no-round-up",
       "description": "No surface's ambiguity handling ever outputs an auto-escalation to large (US-10: grade the absence of the silent-escalation behavior, not the sentence that disclaims it).",
       "mode": "none",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md", "agents/models.md"],
+      "paths": ["agents/planar-orchestrator.md", "agents/models.md"],
       "pattern": "default to `large`"
     }
   ],

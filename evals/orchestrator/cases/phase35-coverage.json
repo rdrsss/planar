@@ -10,14 +10,14 @@
       "id": "coverage-oracle",
       "description": "Both orchestrator surfaces consult Planar's uncovered-task oracle.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
+      "paths": ["agents/planar-orchestrator.md"],
       "pattern": "uncovered_task_slugs|uncovered slugs"
     },
     {
       "id": "no-configurable-cadence",
       "description": "Strategy configuration cannot disable test-coder coverage.",
       "mode": "none",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/methodology.md"],
+      "paths": ["agents/planar-orchestrator.md", "agents/methodology.md"],
       "pattern": "test_coder_cadence|test-coder-cadence"
     }
   ],
