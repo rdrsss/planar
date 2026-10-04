@@ -31,7 +31,12 @@ namespace planar::cmd::agent {
 export auto root_app() -> std::unique_ptr<CLI::App> {
   // Every description below is transcribed from the Zig node. The four
   // Declaration order matches the oracle's `handlers/cmd.zig` registry.
-  auto app = std::make_unique<CLI::App>("Agent-callable coordination binary (pull / claim / complete / heartbeat / reconcile).",
+  auto app = std::make_unique<CLI::App>("Agent-callable coordination binary (pull / claim / complete / heartbeat / reconcile).\n"
+                                        "\n"
+                                        "  This binary writes agent_actions, agent_work_claims, the routing_dispatch_*\n"
+                                        "  tables, and the host-queue tables (queue_entries, queue_history,\n"
+                                        "  queue_schema). It changes tasks.status only as part of a coordinated\n"
+                                        "  claim operation; planning entities are written by planar.",
                                         "planar-agent");
   app->require_subcommand(0);
 

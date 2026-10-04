@@ -6,6 +6,7 @@ import std;
 import cli11;
 import planar.cliapp.surface;
 import planar.cmd.planar.handlers.explore.command;
+import planar.cmd.planar.handlers.help.command;
 import planar.cmd.planar.handlers.annotate;
 import planar.cmd.planar.handlers.artifact;
 import planar.cmd.planar.handlers.document;
@@ -59,7 +60,18 @@ namespace planar::cmd {
 export auto root_app() -> std::unique_ptr<CLI::App>;
 
 auto root_app() -> std::unique_ptr<CLI::App> {
-  auto app = std::make_unique<CLI::App>("Planning + agent operations CLI.", "planar");
+  // The write surface is stated on the root page, as `planar-ext`'s is: this
+  // binary writes the planning entities and the manual `tasks.status`
+  // transitions, and every agent-coordination table is `planar-agent`'s.
+  auto app = std::make_unique<CLI::App>("Planning + agent operations CLI.\n"
+                                        "\n"
+                                        "  This binary writes planning entities (plans, tasks, decisions,\n"
+                                        "  questions, artifacts, annotations) and makes manual tasks.status\n"
+                                        "  transitions. The agent-coordination tables (agent_actions,\n"
+                                        "  agent_work_claims, routing_dispatch_*, and the host-queue tables) are\n"
+                                        "  written by planar-agent; the external-link tables are written by\n"
+                                        "  planar-ext.",
+                                        "planar");
   // A bare `planar` must render root help rather than fail.
   app->require_subcommand(0);
 
@@ -111,6 +123,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_explore(*app);    // 44
   handlers::declare_workflow(*app);   // 45
   handlers::declare_feedback(*app);   // 46
+  handlers::declare_help(*app);       // 47
 
   // Help renders the same page it rendered before every bool flag gained
   // its `--no-X` negation — see `planar.cliapp.surface::hide_negations_in_help`.

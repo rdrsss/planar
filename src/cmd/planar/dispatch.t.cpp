@@ -210,6 +210,35 @@ TEST_CASE("a missing required positional writes stderr ONLY and exits 2", "[cmd]
   CHECK(got.err == "error: name is required\n");
 }
 
+TEST_CASE("planar --help states what the binary writes", "[cmd][dispatch][help]") {
+  auto const got = dispatch({"--help"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  // The write surface, stated the way planar-ext and planar-watch state
+  // theirs: what this binary writes, and who writes the rest.
+  CHECK(got.out.contains("writes planning entities"));
+  CHECK(got.out.contains("tasks.status"));
+  CHECK(got.out.contains("agent_work_claims"));
+  CHECK(got.out.contains("planar-agent"));
+}
+
+TEST_CASE("planar help prints exactly what planar --help prints and exits 0", "[cmd][dispatch][help]") {
+  auto const flag = dispatch({"--help"});
+  auto const verb = dispatch({"help"});
+  REQUIRE(flag.code == 0);
+  CHECK(verb.code == 0);
+  CHECK(verb.err.empty());
+  CHECK_FALSE(verb.out.empty());
+  CHECK(verb.out == flag.out);
+}
+
+TEST_CASE("planar help is a leaf in the schema catalog", "[cmd][dispatch][help]") {
+  auto const got = dispatch({"schema"});
+  REQUIRE(got.code == 0);
+  CHECK(got.out.contains(R"("command":"planar help")"));
+  CHECK(got.out.contains(R"("path":["help"])"));
+}
+
 TEST_CASE("--help renders the leaf's page to stdout and exits 0", "[cmd][dispatch]") {
   auto const got = dispatch({"workflow", "show", "--help"});
   CHECK(got.code == 0);
@@ -1495,7 +1524,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Task 6939 adds the two `document` leaves. The parent is a group node,
   // so only `project` and `validate-range` change this leaf census.
   auto const leaves = planar::cliapp::leaf_keys(*tree);
-  CHECK(leaves.size() == 218);
+  // Task 7205 adds the `help` leaf (218 -> 219).
+  CHECK(leaves.size() == 219);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));

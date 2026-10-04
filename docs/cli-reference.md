@@ -5136,13 +5136,23 @@ in the binary.
 
 ## Domain: `help`
 
-**Retirement notice.** There is no `planar help` verb: `planar help` fails at parse time with
-`error: planar: The following argument was not expected: help`, exit 2.
-Help is reached only through the `--help` / `-h` flag on any node —
-`planar --help` for the top-level command list, `planar <subcommand> --help`
-for a group or leaf. The text is rendered by Planar's own help renderer in
-`src/lib/cliapp/` (decision 948: CLI11 handles tokenization and value
-coercion only, because the help text is an oracle-pinned parity surface).
+### `planar help`
+
+**Synopsis:**
+```
+planar help
+```
+
+**Description:** Print the root help page and exit 0. The output is byte-identical to `planar --help`: the same
+`CLI::App::help()` rendering of the root node, so the two cannot drift apart. The root page leads with the
+binary's write surface (the planning entities and manual `tasks.status` transitions `planar` writes, and the
+tables `planar-agent` and `planar-ext` write) and then lists every top-level command.
+
+`planar help` takes no arguments. Per-node help stays on the flag: `planar <subcommand> [<sub-subcommand>] --help`
+for a group or leaf. Trailing words are not interpreted: `planar help task` prints the root page, not `task`'s.
+`help` is a leaf in the `planar schema`
+catalog. The text is rendered by Planar's own help renderer in `src/lib/cliapp/` (decision 948: CLI11 handles
+tokenization and value coercion only, because the help text is a pinned surface).
 
 **Output:** Plain text to stdout, exit 0. Not affected by `--json`.
 

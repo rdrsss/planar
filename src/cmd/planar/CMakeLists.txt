@@ -449,6 +449,7 @@ planar_binary(planar
     scope.cppm
     main.cppm
     handlers/explore/command.cppm
+    handlers/help/command.cppm
     declare.cppm
     surface.cppm
     handlers/version/command.cppm

@@ -300,6 +300,12 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   CHECK(explicit_help.out.starts_with("Agent-callable coordination binary (pull / claim / complete / heartbeat /\n"
                                       "reconcile).\n"));
   CHECK(explicit_help.out.contains("SUBCOMMANDS:"));
+  // The write surface is stated on the root page, as planar-ext's is.
+  CHECK(explicit_help.out.contains("agent_actions"));
+  CHECK(explicit_help.out.contains("agent_work_claims"));
+  CHECK(explicit_help.out.contains("routing_dispatch_"));
+  CHECK(explicit_help.out.contains("queue_entries"));
+  CHECK(explicit_help.out.contains("tasks.status"));
   // Matched as a LISTING LINE (`"\n  <verb>"`), not as a bare substring.
   // CLI11 indents a subcommand entry by exactly two spaces and wraps its
   // description to a deeper column, so this form matches an entry and

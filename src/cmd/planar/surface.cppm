@@ -408,6 +408,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar feedback triage list", "List triaged findings."},
       {"planar feedback triage show", "Show a triaged finding."},
       {"planar feedback triage set", "Set operator-confirmed triage fields."},
+      {"planar help", "Print the root help page (same as `planar --help`)."},
   };
   return k_summaries;
 }
