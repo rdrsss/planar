@@ -708,7 +708,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //     first caller that needed one.
   //   - `groups recommend --solver mtkahypar` was on the blocked list and is
   //     NOT in this inventory at all: it has been wired since task 6189, and
-  //     its degradation is reported rather than refused.
+  //     its degradation is reported rather than refused (decision 1293).
   //   - The worktree gate's "needs a git-subprocess seam that does not
   //     exist" note in src/cmd/planar/CMakeLists.txt outlived the seam by
   //     two tasks. Corrected there.

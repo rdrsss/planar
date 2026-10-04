@@ -300,23 +300,18 @@
 #   groups recommend   The whole `groups` family, read-only. `--solver
 #                      mtkahypar` is ACCEPTED rather than refused, because
 #                      the degradation is REPORTED (`solver:"greedy"`,
-#                      `optimal_available:false`) and is byte-identical to
-#                      what the oracle produces on a host with no solver
-#                      binary. An unknown `--solver` value is still exit 2,
+#                      `optimal_available:false`); master ships no solver arm
+#                      (decision 1293). An unknown `--solver` value is still exit 2,
 #                      so the flag is validated rather than ignored.
 #
 # The three DEPENDS added here -- engine_local, engine_closure,
 # engine_grouping -- are all layer-2 and none of the three handlers composes
 # two buckets, so no leaf in this batch needed the D20 shape.
 #
-# ORACLE PARITY NOTE, recorded because it is host-dependent and will mislead
-# whoever runs the differential next: `groups recommend --solver mtkahypar`
-# is DELIBERATELY absent from parity.t.cpp. MtKaHyPar is installed on the
-# machine this port was derived on, and there the oracle really does run it
-# and return a different partition (one slice of three tasks versus greedy's
-# two). Pinning either side would make the case pass or fail on what happens
-# to be on the host. The degradation itself is pinned against this binary
-# alone in closure_groups_leaves.t.cpp.
+# `groups recommend --solver mtkahypar` is absent from parity.t.cpp. The
+# accept-and-degrade behavior is pinned against this binary alone in
+# closure_groups_leaves.t.cpp; the solver arm lives on branch
+# `dev/grouping-solvers` (decision 1293).
 
 # --- task 6258: the adapter factory, and ONE leaf ------------------------
 #

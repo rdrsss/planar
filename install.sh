@@ -73,7 +73,6 @@
 #   ./install.sh --ignore-live-queue  # retire agent.db despite live old queue entries
 #   ./install.sh --uninstall          # tear down everything install.sh created
 #   ./install.sh --preset debug       # CMake preset (default release)
-#   ./install.sh --with-solver        # link the Mt-KaHyPar solver (needs tbb)
 #   ./install.sh --dry-run            # preview planned actions without changing anything
 #   ./install.sh --verbose            # per-file detail (default prints a summary)
 #   ./install.sh --version            # print installer version and exit
@@ -99,12 +98,9 @@ NO_PRUNE=0                    # set with --no-prune to skip stale-vendor-file re
 BUILD_PRESET="release"        # CMake preset
 # The installer builds in its OWN directory, never the developer's
 # build/<preset> (task 6537). Reusing it meant the install inherited whatever
-# flags the cache happened to hold -- a `make test-parity-cpp` run leaves
-# PLANAR_WITH_MTKAHYPAR=ON there, which silently produced a solver-linked
-# install -- and left PLANAR_VERSION_META=ON behind afterwards, invalidating
-# the whole build graph on every subsequent commit.
+# flags the cache happened to hold, and left PLANAR_VERSION_META=ON behind
+# afterwards, invalidating the whole build graph on every subsequent commit.
 BUILD_DIR=""                  # resolved below; override with --build-dir
-WITH_SOLVER=0                 # set with --with-solver (Mt-KaHyPar; needs tbb)
 VERBOSE=0                     # set with --verbose/-v for per-file detail
 DRY_RUN=0                     # set with --dry-run/-n to preview without changes
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
@@ -143,9 +139,6 @@ Options:
   --build-dir DIR    Where to configure and build (default:
                      build/install-<preset>). The installer never builds in
                      the developer's build/<preset>.
-  --with-solver      Link the Mt-KaHyPar solver (needs tbb). Off by default;
-                     without it `groups recommend --solver mtkahypar`
-                     degrades to greedy and reports optimal_available:false.
   --dry-run, -n      Show what would happen without making any changes
   --verbose, -v      Per-file detail (default prints a summary)
   --uninstall        Tear down everything install.sh created
@@ -170,7 +163,6 @@ while [[ $# -gt 0 ]]; do
     --no-prune)   NO_PRUNE=1; shift ;;
     --preset)     BUILD_PRESET="$2"; shift 2 ;;
     --build-dir)  BUILD_DIR="$2"; shift 2 ;;
-    --with-solver) WITH_SOLVER=1; shift ;;
     --verbose|-v) VERBOSE=1; shift ;;
     --dry-run|-n) DRY_RUN=1; shift ;;
     --version)
@@ -185,7 +177,7 @@ done
 
 # The installer's own build directory. Deliberately NOT build/<preset>: that
 # one belongs to the developer, and sharing it is how an install picked up a
-# parity lane's solver flag and left version-metadata stamping switched on
+# parity lane's build flags and left version-metadata stamping switched on
 # behind it (task 6537). `--build-dir` overrides for callers that need to
 # place it elsewhere (the installer integration tests do).
 [[ -n "$BUILD_DIR" ]] || BUILD_DIR="$REPO_ROOT/build/install-$BUILD_PRESET"
@@ -537,7 +529,7 @@ BUILD_DEPS=(
   "rm||replace prior-install artifacts"
   "mv||atomically replace the install manifest"
   "find||walk vendor + template source trees"
-  "head||take the first Mt-KaHyPar smoke result"
+  "head||take the first match in scripts/install-manifest.sh and scripts/install-lib/queue-retire.sh"
   "rmdir||remove emptied vendor skill directories"
   "awk||read the build id from 'planar version'"
   "grep||validate the Planar package manifest"
@@ -558,24 +550,6 @@ RUN_DEPS=(
 )
 
 check_deps "build" 1 "${BUILD_DEPS[@]}"
-
-# TBB (decision 1006, task 6459) — cmake/dependencies.cmake now vendors
-# Mt-KaHyPar unconditionally, and Mt-KaHyPar's own CMakeLists.txt
-# find_package(TBB)s the Homebrew `tbb` formula (TBB does not support static
-# linking; decision 1006 accepts this as the one dynamic runtime dependency
-# the vendored solver needs). CMake configure FATAL_ERRORs without it, so
-# this fails the install here too rather than deep into the CMake build.
-# check_deps() above only probes command-line tools (`command -v`); TBB
-# ships no CLI binary of its own, so it is checked directly the same way
-# cmake/dependencies.cmake's own probe resolves it.
-if command -v brew >/dev/null 2>&1 && [[ -d "$(brew --prefix tbb 2>/dev/null)" ]]; then
-  vlog "dep ok: tbb ($(brew --prefix tbb))"
-else
-  printf '\n%sinstall.sh: missing required build tool(s):%s\n' "$C_RED$C_BOLD" "$C_RESET" >&2
-  printf '  %s✗%s tbb — Mt-KaHyPar (`groups recommend --solver mtkahypar`) TBB runtime dependency\n' "$C_RED" "$C_RESET" >&2
-  printf '  macOS: brew install tbb\n' >&2
-  exit 1
-fi
 
 # Check that we are in a CMake Planar source checkout.
 [[ -f "$REPO_ROOT/CMakeLists.txt" ]] || err "CMakeLists.txt not found in $REPO_ROOT (run install.sh from the Planar source repo)"
@@ -606,7 +580,6 @@ log "mode        = $MODE"
 log "vendors     = ${VENDORS:-(none)}"
 log "preset      = $BUILD_PRESET"
 log "build dir   = $BUILD_DIR"
-log "solver      = $( ((WITH_SOLVER)) && echo "mtkahypar (linked)" || echo "off (greedy only)" )"
 [[ "$DRY_RUN" -eq 1 ]] && log "dry-run     = yes (no changes will be made)"
 
 # Writability — the install writes into $PLANAR_HOME (or creates it). Fail with
@@ -685,13 +658,11 @@ mkdir -p "$PLANAR_HOME/bin"
 #
 # EVERY option this build depends on is pinned explicitly. A configure that
 # omits a flag does NOT reset it -- the cache wins -- so an unpinned
-# PLANAR_WITH_MTKAHYPAR was inherited from whatever last configured the
-# directory (task 6537). `--with-solver` is the only way to turn it on here,
-# and it requires the tbb preflight above.
+# option was inherited from whatever last configured the directory (task
+# 6537).
 ( cd "$REPO_ROOT" \
   && cmake --preset "$BUILD_PRESET" -B "$BUILD_DIR" \
        -DPLANAR_VERSION_META=ON \
-       -DPLANAR_WITH_MTKAHYPAR="$( ((WITH_SOLVER)) && echo ON || echo OFF )" \
   && cmake --build "$BUILD_DIR" \
   && cmake --install "$BUILD_DIR" --prefix "$PLANAR_HOME" )
 vlog "wrote $PLANAR_HOME/bin/planar"

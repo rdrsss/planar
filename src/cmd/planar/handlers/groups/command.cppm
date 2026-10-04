@@ -10,11 +10,9 @@
 ///
 /// ## `--solver mtkahypar` is ACCEPTED, and that is not a silent degradation
 ///
-/// The optional external hypergraph solver is not ported (1776 lines of
-/// `std.process.run` probing, shelling and partition-file readback, with no
-/// process-spawn seam in this tree). The flag is still accepted, because on a
-/// machine WITHOUT the solver binary installed the oracle does exactly what
-/// this build does: it runs greedy and reports `solver:"greedy"` with
+/// Master ships greedy only; the Mt-KaHyPar solver arm lives on branch
+/// `dev/grouping-solvers` (decision 1293). The flag is still accepted and the
+/// verb runs greedy and reports `solver:"greedy"` with
 /// `optimal_available:false`. The reporting fields carry that fact into both
 /// output forms, so a caller can tell the optimal arm did not run — which is
 /// what separates this from the inert-filter defect the brief warns about. A
@@ -24,10 +22,8 @@
 /// An UNKNOWN `--solver` value is still a refusal at exit 2, so the flag is
 /// validated rather than ignored.
 ///
-/// This is also why `--solver mtkahypar` is deliberately absent from the
-/// oracle parity list: on a machine where the solver IS installed the oracle
-/// produces a genuinely different partition, so a case pinning either outcome
-/// would pass or fail based on what happens to be on the host.
+/// The accept-and-degrade behavior is a contract invariant (decision 1006,
+/// kept by decision 1293): `--solver mtkahypar` never errors.
 module;
 
 export module planar.cmd.planar.handlers.groups;

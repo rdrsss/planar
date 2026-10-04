@@ -165,10 +165,6 @@ linux-gate: ## Build and run the whole ctest suite on Linux in Docker (arm64): m
 linux-gate-prune: ## Reclaim the Docker build cache the Linux gate leaves behind (docker builder prune -f)
 	docker builder prune -f
 
-.PHONY: test-vendor-mtkahypar-offline
-test-vendor-mtkahypar-offline: ## Recurrence guard (task 6461): -DPLANAR_WITH_MTKAHYPAR=ON must configure offline from the committed vendor cache. macOS/sandbox-exec only; not part of test-all (slow, platform-specific) -- run after touching cmake/dependencies.cmake's mtkahypar block, or wire into make test-cpp-solver, the lane that configures with the solver ON (task 6532).
-	bash scripts/vendor-mtkahypar-offline-test.sh
-
 # THE ZIG-HARNESS TARGETS ARE GONE (plan 996, task 6045; decisions 963/982,
 # 1035). `oracle-retirement-gate`, `test-integration`,
 # `test-integration-files` and `test-parity-cpp` all shelled `zig build`
@@ -349,23 +345,6 @@ ctest-registry-check: ## Prove ctest runs every case the test binaries contain (
 # every test that DID run passed. This compares each binary's own
 # --list-tests count against the add_test lines registered for it, so it
 # needs no baseline to drift and catches both directions.
-
-.PHONY: test-cpp-solver
-test-cpp-solver: ## Run the ctest suite against a solver-ON build (decision 1032)
-	cmake --preset debug -DPLANAR_WITH_MTKAHYPAR=ON
-	cmake --build $(CPP_BUILD_DIR) --target all planar_tests
-	ctest --test-dir $(CPP_BUILD_DIR) --output-on-failure $(ARGS)
-
-# This lane builds WITH the solver (decision 1032): groups_recommend's
-# task-4247 test hard-asserts optimal_available, and the developer default
-# keeps PLANAR_WITH_MTKAHYPAR OFF so nobody builds the 330MB library. It
-# inherited the solver-ON posture from the retired `test-parity-cpp` target,
-# which was the only lane that configured it. The ON build is hermetic since
-# task 6461 pinned CPM's cache key; verify with
-# `make test-vendor-mtkahypar-offline`. Task 6536: a solver-ON build can
-# produce binaries that pass every in-process test and still fail to launch
-# (`Library not loaded: @rpath/libmtkahypar.dylib`), so the install smoke in
-# `install.sh` — not this target — is what catches that class.
 
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts

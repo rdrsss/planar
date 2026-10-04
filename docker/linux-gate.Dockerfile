@@ -13,8 +13,7 @@
 #   toolchain  debian:trixie-slim + apt.llvm.org LLVM ${LLVM_MAJOR} (clang,
 #              libc++ with modules manifest, libc++abi) + Kitware CMake
 #              ${CMAKE_VERSION} (pinned by SHA-256) + ninja, git, python3,
-#              sqlite3, libtbb-dev, libssl-dev (vendored libcurl's TLS on Linux),
-#              patch (CPM's PATCHES keyword for Mt-KaHyPar).
+#              sqlite3, libssl-dev (vendored libcurl's TLS on Linux).
 #   run        copies the source, builds and tests. It NEVER fails the image
 #              build: it writes its logs and exit status under /out so a
 #              failure is reported with its evidence instead of vanishing
@@ -47,7 +46,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg git ninja-build make pkg-config \
-      python3 python3-venv sqlite3 libtbb-dev libssl-dev zlib1g-dev patch procps xz-utils \
+      python3 python3-venv sqlite3 libssl-dev zlib1g-dev procps xz-utils \
  && rm -rf /var/lib/apt/lists/*
 
 # CMake >= 4.3 is not in Debian; take Kitware's release tarball, verified.

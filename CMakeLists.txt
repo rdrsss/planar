@@ -100,17 +100,6 @@ if(PLANAR_TEST_BINARY)
   add_compile_definitions(PLANAR_TEST_BINARY)
 endif()
 
-# `groups recommend --solver mtkahypar` linkage seam (plan 1006, task 6460).
-# OFF by default — the `mtkahypar` CPM target it links against is
-# EXCLUDE_FROM_ALL and its debug .dylib is ~330MB, so a default
-# `cmake --build` must not force every developer to build it. When OFF,
-# `engine_grouping` compiles its mtkahypar seam as a graceful stub
-# (`available() == false`, matching the pre-existing "solver genuinely
-# unavailable" degrade path byte-for-byte) and links nothing extra. Turn it
-# ON explicitly (`-DPLANAR_WITH_MTKAHYPAR=ON`) to build and link the real
-# seam against the vendored library.
-option(PLANAR_WITH_MTKAHYPAR "Link the vendored Mt-KaHyPar solver into engine_grouping" OFF)
-
 enable_testing()
 
 # D15 guard standing tests (plan 996 task 6050, M2 pre-work;

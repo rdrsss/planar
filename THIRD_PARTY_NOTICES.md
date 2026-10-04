@@ -12,14 +12,11 @@ notice is given here or in the source header noted.
 | CLI11 | BSD-3-Clause | `vendor/cli11/*/LICENSE` |
 | curl | curl license | `vendor/curl/*/COPYING` |
 | Glaze | MIT | `vendor/glaze/*/LICENSE` |
-| KaHyPar shared resources | MIT | `vendor/kahypar_shared_resources/*/LICENSE` |
 | Lua | MIT | header of `vendor/lua/*/src/lua.h` (reproduced below) |
-| Mt-KaHyPar | MIT | `vendor/mtkahypar/*/LICENSE` |
 | spdlog | MIT | `vendor/spdlog/*/LICENSE` |
 | SQLite | Public domain | none required (see below) |
 | Tree-sitter | MIT | `vendor/tree_sitter/*/LICENSE` |
 | tree-sitter-zig | MIT | `vendor/tree_sitter_zig/*/LICENSE` |
-| WHFC | MIT | `vendor/whfc/*/LICENSE` |
 
 ## Lua
 

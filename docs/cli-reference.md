@@ -6604,7 +6604,7 @@ planar groups recommend <plan-id> [--json] [--budget <n>] [--solver <name>]
 | Flag | Description |
 |------|-------------|
 | `--budget <n>` | Per-slice window budget, an unsigned 32-bit integer (default `128000`). An unparseable or out-of-range value is refused as invalid input. |
-| `--solver <name>` | Requested solver (`greedy` default, or `mtkahypar`). The recommendation's `solver` field reports the one that actually ran; `mtkahypar` degrades to `greedy` with `optimal_available:false` when the build lacks it. An unknown value is refused. |
+| `--solver <name>` | Requested solver (`greedy` default, or `mtkahypar`). The recommendation's `solver` field reports the one that actually ran; `--solver mtkahypar` is accepted and degrades to `greedy` with `optimal_available:false` on this build, which ships greedy only. The solver arm lives on branch `dev/grouping-solvers` (decision 1293). An unknown value is refused. |
 
 **Description:** Recommend closure-minimizing task slices for a plan —
 groupings that keep each slice's touched surface as small as possible.

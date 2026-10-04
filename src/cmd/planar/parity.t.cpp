@@ -2112,17 +2112,10 @@ TEST_CASE("closure show and groups recommend over seeded rows are pinned", "[cmd
   // this commit. Pinned against the C++ binary alone from here; see `the
   // CLI surface is CLI11's now, and pinned` for the pattern.
   //
-  // CONFIGURE NOTE (decision 1032): captured under a build with the
-  // mtkahypar solver ON, per the parity lane's standing configure. It does
-  // not matter here -- `groups.cpp` defaults `requested_solver` to
-  // `greedy` unless `--solver mtkahypar` is passed explicitly (see that
-  // file's own comment), and NO step below passes it. Every step either
-  // omits `--solver` or names `greedy`/`bogus` explicitly, so every
-  // expectation pinned here holds on EITHER arm of that configure -- unlike
-  // task 6543's bug in a different test today, this case never reaches the
-  // solver-dependent path at all. The solver-degradation behavior itself is
-  // pinned separately, against this binary alone, in
-  // closure_groups_leaves.t.cpp.
+  // No step below passes `--solver mtkahypar`. Every step either omits
+  // `--solver` or names `greedy`/`bogus` explicitly. The solver-degradation
+  // behavior is pinned separately, against this binary alone, in
+  // closure_groups_leaves.t.cpp (decision 1293).
   auto const space = make_arena("clogrp");
   auto const seed  = std::to_array<std::vector<std::string>>({
       {"init", "--name", "demo", "--slug", "demo", "--allow-no-repo"},
@@ -2326,9 +2319,7 @@ TEST_CASE("closure show and groups recommend over seeded rows are pinned", "[cmd
        "false,\"slices\":[{\"task_ids\":[1,2],\"union_symbols\":[\"a.aaa\",\"b.bbb\",\"m.mmm\",\"z.zzz\"],\"cost\":65},{\"task_"
        "ids\":[3],\"union_symbols\":[\"c.ccc\"],\"cost\":40}],\"summary\":{\"slices\":2,\"total_cost\":105}}\n",
        ""},
-      // `--solver mtkahypar` is DELIBERATELY ABSENT (see the configure note
-      // above): every step here already runs on the greedy path regardless
-      // of whether the solver is compiled in.
+      // `--solver mtkahypar` is absent (see the note above).
   };
 
   for (auto const& step : steps) {
