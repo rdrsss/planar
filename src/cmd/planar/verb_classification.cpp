@@ -41,7 +41,7 @@ auto classify(std::span<const std::string> path) -> verb_class {
   std::string_view const top = path[0];
 
   // Top-level verbs with no subverbs to inspect, or whose every subverb is
-  // read-only. `explore` is the read-only cockpit alias; `bench` is the
+  // read-only. `explore` is the read-only launcher alias; `bench` is the
   // measurement rig, which the harness drives from inside worktrees by
   // design (the protected-instrument invariant) and would be defeated by a
   // refusal.

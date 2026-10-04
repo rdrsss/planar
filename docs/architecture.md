@@ -27,7 +27,7 @@ flowchart TD
 
     subgraph Binaries["Planar CLI (four planning-state surfaces + one DB-handle-free engine)"]
         direction LR
-        B1["<b>planar</b><br/>operator RW<br/>planning entities + cockpit TUI"]
+        B1["<b>planar</b><br/>operator RW<br/>planning entities"]
         B2["<b>planar-agent</b><br/>agent RW<br/>agent_actions + claims"]
         B3["<b>planar-watch</b><br/>read-only viewer<br/>file:?mode=ro"]
         B4["<b>planar-execute</b><br/>spawn-free Lua engine<br/>no DB handle · shells planar"]
@@ -258,38 +258,6 @@ The `planar-agent run start/end` verbs and the `planar-agent context add/list/re
 
 The shared engine module lives at `src/engine/runtime/agentactivity.cpp`/`.cppm`; per-binary handlers live under `src/cmd/<binary>/handlers/`. `planar-agent` carries the full coordination surface; `planar-watch` carries the read-only viewer surface (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `version`, `completion`, `schema`) with a Tier-2 event-driven `--follow` loop.
 
-### Interactive cockpit — specified, not implemented
-
-> **NOT IMPLEMENTED, AND NO LONGER IMPLEMENTED ANYWHERE.** `explore` is registered as a leaf in the `planar` binary's surface, but its handler prints the leaf's own help page and exits 0 (`explore_fallback` in `src/cmd/planar/dispatch.cpp`, decision 1003 / task 6444 — the oracle's cockpit gate always refused in a non-TTY environment and every refusal path printed exactly that) — it is still the sole entry in that binary's `unported_paths()` inventory, pinned by `src/cmd/planar/unported_inventory.t.cpp`. Decision 980 records the cockpit as a **rewrite candidate, not a port** (it is ~4x the rest of the remaining port combined, and the characterization pins / state differential / break-probes the port's verification relied on do not apply to a TUI's screen output). Decision 982 excluded it from decision 963's zig-deletion gate for exactly that reason, so the Zig implementation that provided it was deleted with `zig/` at the M10 cutover without a replacement.
->
-> **Everything below is a SPECIFICATION** — the design record for the eventual rewrite, describing the cockpit the Zig tree used to ship. It does not describe anything you can run today, and its Zig file names are historical.
-
-The `planar` binary was to embed an interactive TUI cockpit (plan 591). Bare `planar` on a TTY launches it (landing on the Scope Explorer); `planar explore` is the explicit alias. Non-TTY contexts, `TERM=dumb`, `PLANAR_NO_TUI`, and `--plain` all fall back to the existing help/usage output — the cockpit never activates in automated pipelines.
-
-**Why `planar`, not `planar-watch`:** the cockpit offers three editing tiers (entity-field editing, claim-aware task lifecycle transitions, external/workbench actions). Editing requires a read-write DB handle, which is structurally incompatible with `planar-watch`'s `SQLITE_OPEN_READONLY` driver. `planar-watch` is **unchanged** — it remains the scriptable, zero-write, NDJSON-streaming viewer whose capability-boundary invariants stand. The cockpit's placement in `planar` preserves the (now five-binary) capability model.
-
-**No schema change.** The cockpit's views are read-only projections of existing tables (see the data-source table in the tech spec). Editing reuses the existing engine write paths and guards — no new tables, columns, or write code.
-
-Cockpit startup loads only the selected initial view. Other views load when the operator switches to them, so an unrelated projection cannot delay or abort startup and refresh failures are reported at the triggering action rather than silently clearing state. Text rendering iterates grapheme clusters and uses Vaxis display widths for wide and combining characters.
-
-**Cockpit source layout under `src/cmd/planar/cockpit/`:**
-
-| Path | Role |
-|------|------|
-| `gate.zig` | Terminal-capability gate: checks TTY, `TERM`, `PLANAR_NO_TUI`, `--plain`; returns `launch_cockpit` or `fallback_help`. Called from `main.zig` (bare-invocation path) and from `handlers/explore.zig` (explicit alias). |
-| `app.zig` | Top-level cockpit shell: libvaxis `Loop(Event)`, wake-thread integration, view-switcher chrome, minimum-size guard. Entry points: `run(io, alloc, env_map, environ, db_path, db_handle)`. |
-| `view_model.zig` | Stable compatibility facade that re-exports the cockpit data-layer API and holds cross-domain regression tests. |
-| `view_model/` | Pure domain query modules and owned row/tree/detail structs (`agent_monitor`, `scope_explorer`, `task_board`, `decision_log`, `open_questions`, `coverage`, `entity_link_graph`, `external_ops`, `sessions`, `audit`, `cli_history`, `topology`, `utility`). Shared dependency-free contracts live in `common.zig`; shared entity-title lookup lives in `entity_title.zig`. Unit-testable without a real TTY. |
-| `views/` | Per-view modules (`scope_explorer.zig`, `agent_monitor.zig`, `task_board.zig`, `decision_log.zig`, `open_questions.zig`, `coverage_view.zig`, `entity_link_graph.zig`, `external_ops_plane.zig`, `sessions_handoff.zig`, `audit_log.zig`, `cli_history.zig`, `topology.zig`, `utility_view.zig`). |
-| `widgets/` | Spine widgets: tree-navigator, markdown detail pane, split layout, view-switcher. |
-| `edit/` | Edit-action modules: `actions.zig` (entity-field tier), `task_lifecycle.zig` (claim-aware task tier), `external_actions.zig` (sync/workbench tier). |
-
-**TUI framework (as built in the Zig tree):** libvaxis, MIT-licensed, Zig 0.16-compatible — nothing equivalent is vendored today, so a C++ rewrite must re-choose here. The cockpit used the `vxfw` app runtime for the main loop and built-in widgets, and the low-level cell surface for custom spine widgets.
-
-**Wake integration:** a dedicated wake thread owns the `Wake` (`follow.zig`'s kqueue/inotify on the SQLite `-wal` file) and posts `loop.postEvent(.db_changed)` on each WAL change and on a ≤1 second heartbeat tick (the coalesced/missed-wake backstop). The main event loop drains `nextEvent()` and re-queries the active view's view-model slice on `.db_changed`. No polling.
-
-See [docs/concepts.md § Interactive cockpit](concepts.md#interactive-cockpit) for the operator-facing model and [docs/cli-reference.md § Domain: explore](cli-reference.md#domain-explore) for the full flag reference.
-
 ### `planar-execute` — no DB handle
 
 Revived in plan 633, `planar-execute` is a deterministic, spawn-free Lua workflow engine. A caller invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`), runs the named phase, and prints `flow.result(table)` as JSON. The CLI boundary is an exact `(binary, command path)` allowlist, and each Planar binary is resolved beside the running `planar-execute` rather than through `PATH`. `git.*` is confined with `-C <worktree>` plus validated refs. `fs.*` walks from an opened sandbox-root handle, opens every parent and final entry with no-follow semantics, and rejects absolute paths, dot segments, alternate separators, and symlink components. The sandbox exposes no model-spawning primitive and nils `os`/`io`/`load`/`loadfile`/`loadstring`/`require`/`dofile`/`math.random`. The engine holds no SQLite handle and does not participate in the claim ritual; the caller owns transitions between deterministic phases and any LLM work.
@@ -366,7 +334,7 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `src/cmd/parity_harness.hpp` | The cross-process (black-box) test harness — `run_pinned()` execs a built binary over fixed argv in a scratch environment with its own `PLANAR_DB` and `HOME`. Cases live in `src/cmd/*/parity.t.cpp` and `src/cmd/planar/cross_process.t.cpp` |
 | `migrations/` | SQLite migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`) — single authoritative source |
 | `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `github-projects/`, `jira/`); embedded at build time |
-| `templates/doc-prompts/`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install (alongside `templates/defaults/`) |
+| `templates/doc-prompts/agents.md`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install (alongside `templates/defaults/`) |
 | `skills/src/` | Unified authored skill sources (`pl-*.md`) |
 | `$PLANAR_HOME/commands/claude/` | Generated Claude staging tree (install output, not checked in) |
 | `$PLANAR_HOME/codex-skills/` | Generated Codex staging tree (install output, not checked in) |
@@ -422,7 +390,7 @@ flowchart LR
 | Path | Role |
 |------|------|
 | `src/cmd/internal/` | Shared command invocation context, environment and config-path resolution, and an injected lazy database holder. The binary supplies the database open policy; the context only holds values and the database object. `planar-execute` does not link this target. |
-| `src/cmd/planar/` | Operator binary entry and command families under `handlers/<family>/`. `planar` also registers an `explore` leaf for the interactive cockpit, but that leaf's handler only prints the leaf's help (exit 0) — the cockpit is not implemented (decision 980; see [Interactive cockpit](#interactive-cockpit--specified-not-implemented) above). |
+| `src/cmd/planar/` | Operator binary entry and command families under `handlers/<family>/`. `planar` also registers an `explore` leaf, reserved for launching Planar Explorer; it currently prints its help and exits 0 (see [`planar explore`](cli-reference.md#domain-explore)). |
 | `src/cmd/planar-agent/` | Agent-callable coordination binary — its claim, action, run, context, recovery, and terminal-operation handlers, and the `queue` domain (`handlers/queue/`): `queue run -- <command>` is the foreground host-wide build and test queue verb, and `queue status <seq>` (`handlers/queue/status.cppm`) is its read-only companion: it opens `planar.db` read-only, asks the engine's `query_status` and prints the answer as text or `--json`. It reads `[queue]` configuration and the queue tables, hands the engine (`src/engine/hostqueue/`) plain values, and returns the command's exit status through dispatch's pass-through outcome. |
 | `src/cmd/planar-watch/` | Read-only viewer binary — root command families under `handlers/<family>/` (including the `--follow` wake loop). |
 | `src/cmd/planar-execute/` | Manual CLI parser and per-command handlers for the legacy Lua `run` path and Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host`), which this build refuses (they require a Centurion-enabled build). Links the vendored Lua runtime, but no Centurion target, no `src/lib/db/` and no SQLite. |

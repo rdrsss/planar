@@ -36,3 +36,12 @@ opt/mtkahypar/
 # no longer builds, links or installs it (the solver arm lives on branch
 # `dev/grouping-solvers`), so a re-install removes it.
 lib/libmtkahypar.dylib
+
+# Doc-synthesis prompts that earlier installs copied into templates/. Nothing
+# reads them any more; templates/doc-prompts/agents.md is still live.
+templates/doc-prompts/adr_index.md
+templates/doc-prompts/changelog.md
+templates/doc-prompts/feature.md
+templates/doc-prompts/getting_started.md
+templates/doc-prompts/glossary.md
+templates/doc-prompts/research.md

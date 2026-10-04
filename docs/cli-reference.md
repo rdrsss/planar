@@ -161,7 +161,7 @@ Vendor identity for auto-created sessions is taken from the `PLANAR_VENDOR` envi
 planar [GLOBAL FLAGS] <subcommand> [subcommand args]
 ```
 
-**Bare invocation.** When `planar` is called with no subcommand it prints the root help/usage text and exits 0, on a TTY or otherwise. There is no interactive cockpit in this tree (decisions 980/982): `planar explore` is a declared leaf that prints its own help page and exits 0 — see [Domain: `explore`](#domain-explore).
+**Bare invocation.** When `planar` is called with no subcommand it prints the root help/usage text and exits 0, on a TTY or otherwise. There is no interactive terminal interface: `planar explore` is a reserved leaf that currently prints its own help page and exits 0 — see [Domain: `explore`](#domain-explore).
 
 ### Global Flags
 
@@ -7310,7 +7310,7 @@ security boundary.
 
 ## Binary: `planar-watch`
 
-`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third of Planar's now-five binaries to be added (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; the interactive operator cockpit `planar explore` is registered but NOT implemented (bare `planar` prints the root help) — decision 980 records it as a rewrite candidate rather than a port, and the Zig implementation that used to provide it was deleted with `zig/` at the M10 cutover (decision 982; see [docs/architecture.md § Interactive cockpit](architecture.md#interactive-cockpit--specified-not-implemented)) — see [Domain: `explore`](#domain-explore).
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. Third of Planar's now-five binaries to be added (plan 85 M8). See `docs/architecture.md` § "Five-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; `planar explore` is reserved for launching Planar Explorer and is not yet implemented (bare `planar` prints the root help) — see [Domain: `explore`](#domain-explore).
 
 Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
 
@@ -8176,90 +8176,20 @@ planar report --days 14 --json
 
 ## Domain: `explore`
 
-> **NOT IMPLEMENTED — and no longer implemented anywhere.** `explore` is
-> registered in the `planar` binary's command surface, but its handler
-> prints the leaf's own help page and exits 0 (`explore_fallback` in
-> `src/cmd/planar/dispatch.cpp`, decision 1003 / task 6444 — the oracle's
-> cockpit gate always refused in a non-TTY environment and every refusal
-> path printed exactly that); it is the only entry in that binary's
-> `unported_paths()` inventory, pinned by
-> `src/cmd/planar/unported_inventory.t.cpp`. Decision 980 records the cockpit
-> as a rewrite candidate rather than a straight port (its screen output has
-> no byte-level contract for the pins, state differential, or break-probes
-> the port's verification relied on), and decision 982 excluded it from the
-> zig-deletion gate for that reason — so the Zig implementation that
-> provided it was deleted with `zig/` at the M10 cutover without a
-> replacement.
->
-> **The section below is therefore a SPECIFICATION, not a description of
-> anything you can run.** It documents the cockpit the Zig tree used to
-> ship, retained as the design record for the eventual rewrite.
-
 ### `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`
 
-**Description:** Launch the interactive operator cockpit. Equivalent to bare `planar` on a TTY.
-
-The cockpit provides a live, multi-view TUI over the full planning graph: agent activity, tasks, decisions, questions, sessions, audit log, CLI history, external systems, topology, and utility inspectors. Views are read-only projections of existing tables; no schema changes are required.
-
-**Bare-invocation shortcut (specified, not shipped).** The Zig cockpit launched automatically when `planar` was invoked with no verb on a TTY (landing on the Scope Explorer), with `planar explore` as the named alias. The current binary prints the root help on bare invocation regardless of TTY; see [Top-Level Usage](#top-level-usage).
-
-**Terminal-capability gate.** Before entering the alt-screen, both the bare-invocation path and `planar explore` run the same gate. The gate refuses and falls back to help/usage when any of the following are true:
-
-| Condition | Fallback trigger |
-|-----------|-----------------|
-| stdout is not a TTY (pipe, redirect, CI, test harness) | always |
-| `TERM=dumb` | env var check |
-| `PLANAR_NO_TUI` env var is set (any value, including empty) | env var check |
-| `--plain` flag | explicit override |
-
-In all fallback cases the command exits 0. Skills and agents always invoke explicit verbs and run in non-TTY contexts — the cockpit never activates in automated pipelines.
+**Description:** Reserved for launching Planar Explorer, a separate project that presents a read-only view of the planning graph. Not yet implemented: the command prints its own help page and exits 0. It does not open the database.
 
 **Flags:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--plan <id>` | Seed initial focus on the given plan ID. | unset |
-| `--task <id>` | Seed initial focus on the given task ID. | unset |
-| `--scope <s>` | Seed the scope filter. | cwd-derived |
-| `--plain` | Fall back to help/usage unconditionally (useful in scripts that cannot set env vars). | off |
+| `--plan <id>` | Reserved: seed initial focus on the given plan ID. | unset |
+| `--task <id>` | Reserved: seed initial focus on the given task ID. | unset |
+| `--scope <s>` | Reserved: seed the scope filter. | cwd-derived |
+| `--plain` | Print the help page. This is currently the only behavior. | off |
 
-**Views and navigation.**
-
-Tab / Shift-Tab cycle through views; `1`–`9` jump to the first nine by position. From anywhere, `q` or Ctrl-C exits the cockpit cleanly (restores the terminal, exits 0).
-
-| Key | View |
-|-----|------|
-| `1` | Scope Explorer (default landing) |
-| `2` | Agent Monitor |
-| `3` | Task Board |
-| `4` | Decision Log |
-| `5` | Open Questions |
-| `6` | Test Scenario & Coverage |
-| `7` | Entity-Link Graph |
-| `8` | External / Ops Plane |
-| `9` | Sessions & Handoff |
-| Tab (after 9) | Audit Log, CLI Invocation History, Scope/Association Topology, Utility |
-
-**Editing keys** (all edits route through `planar`'s existing write paths and scope guards):
-
-| Key | Tier | What it does |
-|-----|------|--------------|
-| `e` | Entity-field editing | Edit a planning entity's title, body, or status field. Scope-guarded; confirm-on-overwrite for destructive changes. |
-| `L` | Task lifecycle editing | Move a task through its status lifecycle. Claim-aware: refuses or safely routes any transition that would strand an active agent claim. |
-| `S` | External / workbench actions | Trigger `sync`/`ext propagate` or workbench push/pull/status. Confirmation-gated. |
-
-**DB open / schema errors.** The cockpit opens the DB before entering the alt-screen so schema errors surface as clean text messages (never a half-rendered TUI):
-
-| Condition | Message | Exit |
-|-----------|---------|------|
-| DB file not found | `database not found — run 'planar init' first` | non-zero |
-| DB locked by another process | `database is locked by another process` | non-zero |
-| DB schema ahead of binary | `database schema is newer than this binary — rebuild/reinstall planar` | non-zero |
-| Other open failure | `failed to open database` | non-zero |
-
-**`planar-watch` is unchanged.** `planar-watch` remains the scriptable, read-only NDJSON streaming viewer (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`). It is not the cockpit. See [Binary: `planar-watch`](#binary-planar-watch).
-
-**Schema effects:** No writes. No new tables or columns. Reads project existing tables (`plans`, `tasks`, `decisions`, `questions`, `test_scenarios`, `artifacts`, `entity_links`, `agent_work_claims`, `agent_actions`, `sessions`, `session_entries`, `context_snapshots`, `handoffs`, `session_commits`, `external_systems`, `external_links`, `sync_events`, `audit_log`, `cli_invocations`, `config`, `annotations`, `annotation_tags`, `workbench_sync_state`, `associations`, `projects`, `project_associations`). Edits write through the same paths as the corresponding `planar` verbs.
+**Schema effects:** None.
 
 ---
 
