@@ -41,7 +41,7 @@ auto groups_recommend(context& ctx, const cliapp::parsed_args& args) -> handler_
   }
 
   // Forwarded to `load::recommend_with` with this branch's Mt-KaHyPar arm
-  // (decision 1293; master passes `optimal::none()`). The recommendation's
+  // (decision 1293; master passes its always-unavailable arm). The recommendation's
   // `solver` field reports the solver that ACTUALLY ran: a `--solver
   // mtkahypar` run degrades to `greedy` with `optimal_available:false` when
   // the build is not linked with `-DPLANAR_WITH_MTKAHYPAR=ON` or the arm's
