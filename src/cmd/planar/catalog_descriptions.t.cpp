@@ -126,6 +126,62 @@ auto walk_binary(binary_under_test const& bin) -> walk_result {
   return *walked;
 }
 
+// A summary or description that names a retired implementation tree.
+struct retired_mention {
+  std::string where; // e.g. "planar task done summary" or "planar task done flag --force description".
+  std::string token; // The retired word that matched.
+};
+
+// Words that name the earlier Go and Zig trees and the oracle comparison.
+// "Go " carries its trailing space so identifiers such as "Google" and
+// "Gopher" do not match.
+constexpr std::array<std::string_view, 3> k_retired_words = {"Go ", "Zig", "oracle"};
+
+auto first_retired_word(std::string_view text) -> std::optional<std::string> {
+  for (auto const word : k_retired_words) {
+    if (text.contains(word)) {
+      return std::string{word};
+    }
+  }
+  return std::nullopt;
+}
+
+// Scan the summary and description of every command, and the description of
+// every flag and positional, for a retired word.
+auto scan_retired(std::string const& text) -> std::optional<std::vector<retired_mention>> {
+  auto parsed = glz::read_json<glz::generic>(text);
+  if (!parsed || !parsed->contains("commands")) {
+    return std::nullopt;
+  }
+  std::vector<retired_mention> out;
+  auto const                   check = [&](glz::generic const& node, char const* key, std::string const& where) {
+    if (!node.contains(key) || !node.at(key).is_string()) {
+      return;
+    }
+    if (auto const hit = first_retired_word(node.at(key).get<std::string>())) {
+      out.push_back({where, *hit});
+    }
+  };
+  for (auto const& entry : parsed->at("commands").get<glz::generic::array_t>()) {
+    if (!entry.contains("command")) {
+      continue;
+    }
+    auto const command = entry.at("command").get<std::string>();
+    check(entry, "summary", std::format("{} summary", command));
+    check(entry, "description", std::format("{} description", command));
+    for (auto const& [list, name_key] : {std::pair{"flags", "long"}, std::pair{"positionals", "name"}}) {
+      if (!entry.contains(list)) {
+        continue;
+      }
+      for (auto const& item : entry.at(list).get<glz::generic::array_t>()) {
+        auto const name = item.contains(name_key) ? item.at(name_key).get<std::string>() : std::string{"<unnamed>"};
+        check(item, "description", std::format("{} {} {} description", command, list, name));
+      }
+    }
+  }
+  return out;
+}
+
 } // namespace
 
 TEST_CASE("a catalog with one empty description is caught by name", "[catalog][descriptions]") {
@@ -187,4 +243,38 @@ TEST_CASE("the catalog walk allows only the binaries still pending", "[catalog][
   }
   // planar-execute's sweep landed with its helpers, so it must never be allowed.
   CHECK_FALSE(is_allowed("planar-execute"));
+}
+
+TEST_CASE("the retired-word scan names the command and the word it found", "[catalog][descriptions][retired]") {
+  std::string const fixture = R"({"schemaVersion":1,"commands":[
+    {"command":"tool","summary":"Fine.","description":"Fine.","flags":[{"long":"--json","description":"Emit JSON."}],"positionals":[]},
+    {"command":"tool done","summary":"Mark done (Go supports variadic).","description":"Done.",
+     "flags":[{"long":"--x","description":"Matches the Zig tree."}],
+     "positionals":[{"name":"id","description":"Compare with the oracle."}]},
+    {"command":"tool google","summary":"Open Google Docs.","description":"","flags":[],"positionals":[]}]})";
+
+  auto const found = scan_retired(fixture);
+  REQUIRE(found.has_value());
+  REQUIRE(found->size() == 3);
+  CHECK((*found)[0].where == "tool done summary");
+  CHECK((*found)[0].token == "Go ");
+  CHECK((*found)[1].where == "tool done flags --x description");
+  CHECK((*found)[1].token == "Zig");
+  CHECK((*found)[2].where == "tool done positionals id description");
+  CHECK((*found)[2].token == "oracle");
+  CHECK_FALSE(scan_retired("not json").has_value());
+}
+
+TEST_CASE("no catalog text names the Go tree, the Zig tree or the oracle", "[catalog][descriptions][retired]") {
+  for (auto const& bin : binaries()) {
+    auto const arena = make_arena(std::format("catretired_{}", bin.name));
+    auto const ran   = run_pinned(bin.path, std::vector<std::string>{"schema"}, arena.cpp_root, "schema");
+    INFO(bin.name << " schema stderr: " << ran.err);
+    REQUIRE(ran.code == 0);
+    auto const found = scan_retired(ran.out);
+    REQUIRE(found.has_value());
+    for (auto const& m : *found) {
+      FAIL_CHECK(std::format("{}: {} names retired word \"{}\"", bin.name, m.where, m.token));
+    }
+  }
 }

@@ -336,7 +336,7 @@ auto run(const std::filesystem::path& root, const std::filesystem::path& planar_
   out.mode_   = outcome::mode::pending;
   out.message = std::format("Awaiting LLM interpretation. The vendor skill should:\n  1. read  {}\n  2. run the LLM at "
                             "temperature 0\n  3. write the Result to {}\n  4. re-invoke `planar import <repo> --interpret`\nSee "
-                            "`commands/claude/pl-import.md` for the full contract.",
+                            "`planar import --help` for the full contract.",
                             out.pending_path.string(), out.cache_path.string());
   return out;
 }

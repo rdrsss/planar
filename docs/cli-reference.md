@@ -5544,6 +5544,8 @@ Writes (only with `--apply`):
 - `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
 - `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
 
+**Legacy source schemes.** Artifacts created by `synthesize` (and by `import` for forward-spec seeds) carry a stored `source` of `pl-synthesize://<kind>` or `pl-forward-spec://<kind>`. These are provenance identifiers kept for compatibility with existing databases; they name no skill and are not command references. The synthesize handler branches on the `pl-synthesize://` prefix when it decides which artifacts survive `--apply-removals`, so the literals must not be renamed. The generated artifact bodies and the operator messages name `planar synthesize` instead.
+
 **Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/importer/importer.cpp`). Both verbs converge on the same downstream pipeline.
 
 **Exit codes:**

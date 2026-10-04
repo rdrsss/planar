@@ -11,7 +11,7 @@ namespace planar::cmd::handlers::task_cli {
 /// @param task Input task.
 /// @return Registered CLI node.
 export auto attach_done(CLI::App& task) -> CLI::App* {
-  CLI::App* done = task.add_subcommand("done", "Mark a task as done (single-arg form; Go supports variadic).");
+  CLI::App* done = task.add_subcommand("done", "Mark a task as done.");
   add_string(*done, "--scope", k_undocumented);
   add_bool(*done, "--force", "Override active-claim guard and flip status anyway.");
   add_json(*done, k_undocumented);
