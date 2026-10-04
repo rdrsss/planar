@@ -99,8 +99,15 @@ claimable again, and whatever it captured remains in the store.
 
 Planar is harness-agnostic. A harness needs only to run commands and read their
 output; read commands accept `--json` for machine-readable results. The
-installer additionally renders Planar's bundled skills for Claude Code (slash
-commands), Codex, Copilot, and Gemini, and the role specifications under
+installer additionally places the `planar` skill and the role agents into each
+of six vendors it finds on the host, by presence marker: Claude Code
+(`~/.claude/`), Codex (`$CODEX_HOME` or `~/.codex/`), Copilot (`~/.copilot/`),
+Gemini CLI (`~/.gemini/settings.json`), Antigravity
+(`~/.gemini/antigravity-cli/`) and OpenCode (`~/.config/opencode/`). Skills go to
+`~/.claude/skills`, the shared `~/.agents/skills` (Codex, Copilot, Gemini CLI,
+OpenCode) and `~/.gemini/antigravity-cli/skills`; agents go to each vendor's own
+agents directory. The target table is in
+[INSTALL.md](INSTALL.md#install-layout-reference). The role specifications under
 [`agents/`](agents/) are vendor-neutral. For any other harness, the same
 operations are available as plain commands. The role specifications and skills
 are described in the [skill reference](docs/skill-reference.md).

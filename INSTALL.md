@@ -107,7 +107,7 @@ cmake --install build/debug --prefix ~/.local
 
 ## Full install (`install.sh`)
 
-The recommended path. Installs the binary plus the canonical agent specs, vendor surfaces, workflow validation scripts, and migration sources into `~/.planar/`, then installs or symlinks the vendor surfaces into your harness directories (`~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/`). Codex skills are rendered as `~/.planar/skills/codex/<skill>/SKILL.md`; the installer materializes `~/.planar/codex-skills/<skill>/SKILL.md` runtime directories, then installs real Codex skill directories at `~/.codex/skills/<skill>`. Planar-owned agent role specs stay under `~/.planar/agents/`, with rendered per-vendor copies under `~/.planar/agents/<vendor>/` linked into each vendor's agents directory.
+The recommended path. Installs the binary plus the canonical agent specs, the `planar` skill, workflow validation scripts, and migration sources into `~/.planar/`, then places the skill and the agents into each vendor harness found on the host (Claude Code, Codex, Copilot, Gemini CLI, Antigravity, OpenCode; see the vendor table under [Install layout](#install-layout-reference) and the presence rule there).
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
@@ -121,11 +121,10 @@ That's it. The script:
 
 - Builds all five binaries and `scriptorium` from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext,scriptorium}`.
 - Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and renders the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
-- Stages `agents/`, `skills/src/`, `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen), then renders the per-vendor outputs there with `scriptorium render`.
-- Installs the 40 rendered skills, and the rendered agents, into each selected vendor's harness dirs.
-- Atomically writes `~/.planar/install-manifest.json` after the selected vendor
-  wiring succeeds. The versioned file records selected Planar-managed skill
-  and agent projections plus explicitly selected installer extras;
+- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen). It no longer runs `scriptorium render`.
+- Places the staged skill and agents into each vendor whose presence marker exists, and prints the vendors found and skipped.
+- Atomically writes `~/.planar/install-manifest.json` after every placement
+  succeeds. Each placed vendor path is recorded in its `extras` list;
   operator-authored destination files are not claimed.
 
 After the script finishes, add `~/.planar/bin` to your PATH so the `planar` command is available:
@@ -164,8 +163,8 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | Flag | Purpose |
 |------|---------|
 | `--prefix DIR` | Install root (default `~/.planar`). |
-| `--vendors LIST` | Comma-separated subset (e.g. `claude,codex` or just `claude`). Default `claude,codex,copilot,gemini`. |
-| `--no-vendor` | Skip vendor symlinks entirely; install Planar core only. |
+| `--vendors LIST` | Comma-separated filter over the vendors found on the host: `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`. Default is all six. Naming an absent vendor warns. |
+| `--no-vendor` | Skip vendor surfaces entirely; install Planar core only. |
 | `--link` | Symlink artifacts from the source repo into `~/.planar/` instead of copying. **Dev mode** — edits to the repo propagate immediately. |
 | `--force` | Overwrite existing symlinks at the destinations. It does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
 | `--ignore-live-queue` | Retire (or uninstall) the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
@@ -469,42 +468,34 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-planner.md
 │   ├── planar-ingestor.md
 │   ├── planar-ext-sync.md
-│   ├── … (the remaining role specs and shared docs)
-│   └── claude/ codex/ copilot/ gemini/ # rendered per-vendor agent files
+│   └── … (the remaining role specs and shared docs)
 ├── skills/planar/                      # staged planar skill (SKILL.md + references/)
 ├── codex-agents/                       # Codex custom agents (planar-*.toml) rendered from agents/
-├── commands/claude/                    # Claude slash-command sources
-│   ├── pl-orchestrator.md
-│   ├── pl-coder.md
-│   ├── pl-reviewer.md
-│   ├── pl-init.md
-│   ├── pl-scope.md
-│   ├── pl-plan.md
-│   ├── pl-task.md
-│   └── … (40 total per vendor)
 ├── skills/src/                         # unified authored skill sources
-├── skills/codex/                       # rendered Codex skills (pl-*/SKILL.md, same 40 names)
-├── codex-skills/                       # Codex runtime skill directories
-│   ├── pl-orchestrator/
-│   │   └── SKILL.md
-│   └── … (40 total)
-├── skills/copilot/                     # rendered Copilot skills (same 40 file names)
-├── copilot-skills/                     # Copilot runtime skill directories
-├── skills/gemini/                      # rendered Gemini skills (same 40 file names)
-├── gemini-skills/                      # Gemini runtime skill directories
 ├── templates/                          # Operator-editable defaults
 ├── workflows/                          # Lua workflows staged from the repo
 └── scripts/                            # Bash tooling staged from the repo
 ```
 
-Symlinks the installer creates out of `~/.planar/`:
+Vendor targets the installer places into, only for a vendor whose presence
+marker exists (six vendors, nine targets):
 
-```
-~/.claude/commands/pl-*.md       →  ~/.planar/commands/claude/pl-*.md      (40 links)
-~/.codex/skills/pl-*/SKILL.md    real files copied from ~/.planar/codex-skills/pl-*/SKILL.md (40 skills)
-~/.copilot/skills/pl-*/SKILL.md  real files copied from ~/.planar/copilot-skills/pl-*/SKILL.md (40 skills)
-~/.gemini/antigravity-cli/skills/pl-*/SKILL.md  real files copied from ~/.planar/gemini-skills/pl-*/SKILL.md (40 skills)
-```
+| Vendor | Presence marker | Skill | Agents |
+|--------|-----------------|-------|--------|
+| Claude Code | `~/.claude/` | `~/.claude/skills/planar` | `~/.claude/agents/planar-<role>.md` |
+| Codex | `$CODEX_HOME` set, else `~/.codex/` | `~/.agents/skills/planar` (shared) | `$CODEX_HOME/agents/planar-<role>.toml` (default `~/.codex`) |
+| Copilot | `~/.copilot/` | `~/.agents/skills/planar` (shared) | `~/.copilot/agents/planar-<role>.agent.md` |
+| Gemini CLI | `~/.gemini/settings.json` | `~/.agents/skills/planar` (shared) | `~/.gemini/agents/planar-<role>.md` |
+| Antigravity | `~/.gemini/antigravity-cli/` | `~/.gemini/antigravity-cli/skills/planar` | `~/.gemini/antigravity-cli/agents/planar-<role>.md` |
+| OpenCode | `~/.config/opencode/` | none: it reads `~/.agents/skills` and `~/.claude/skills` | `~/.config/opencode/agents/planar-<role>.md`, frontmatter reduced to `description` and `mode: subagent` |
+
+The shared `~/.agents/skills/planar` is placed once when any of Codex, Copilot,
+Gemini CLI or OpenCode is present. Gemini CLI and Antigravity are detected
+independently. Skills and Markdown agents are symlinks into `~/.planar/` with
+`--link` and copies otherwise; the OpenCode agents are derived files, so they are
+always copied. The installer prints the vendors it found and the ones it skipped.
+A destination that exists and that no Planar manifest records stops the install,
+naming the path.
 
 The binary is **not** symlinked anywhere. Add `~/.planar/bin` to your `$PATH` (see [above](#full-install-installsh)).
 

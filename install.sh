@@ -17,7 +17,7 @@
 #                                     # tables, read-write on external_links /
 #                                     # external_systems / sync_events)
 #     bin/scriptorium                 # in-tree skill + agent renderer
-#     install-manifest.json           # managed vendor projections
+#     install-manifest.json           # placed vendor paths (extras) and staged paths
 #     planar.db                       # created on first `planar init` (0600;
 #                                     # the install root is 0700); also holds the
 #                                     # host queue (plan 1089)
@@ -25,35 +25,29 @@
 #     migrations/00001_foundation.up.sql  # canonical migration sources (also
 #                                     # embedded into the binary at configure
 #                                     # time via CMake codegen)
-#     agents/                         # vendor-neutral agent role specs, plus
-#                                     # rendered agents/{claude,codex,copilot,gemini}/
+#     agents/                         # vendor-neutral agent role specs, staged
+#                                     # (planar-*.md roles plus the shared docs)
 #     skills/planar/                  # staged planar skill (SKILL.md + references/)
 #     codex-agents/planar-*.toml      # Codex custom agents rendered from agents/
 #     skills/src/pl-*.md              # unified authored skill sources
-#     commands/claude/pl-*.md         # rendered Claude slash commands
-#     skills/codex/pl-*/SKILL.md      # rendered Codex skills
-#     codex-skills/pl-*/SKILL.md      # Codex runtime skill directories
-#     skills/copilot/pl-*.md          # rendered Copilot skills
-#     copilot-skills/pl-*/SKILL.md    # Copilot runtime skill directories
-#     skills/gemini/pl-*.md           # rendered Gemini skills
-#     gemini-skills/pl-*/SKILL.md     # Gemini runtime skill directories
 #     copilot/                        # Copilot instructions/prompts (only when
 #                                     # the checkout has a copilot/ directory)
 #     templates/                      # operator-editable defaults
 #     workflows/                      # Lua workflows
 #     scripts/validate-{barrel-modes,plan-status}-acceptance
 #
-# Then installs into the vendor harness dirs (only when --vendors selects
-# them; default is all four):
+# Then places the staged skill and agents into each vendor that is present on
+# the host (a presence marker per vendor; --vendors narrows the set):
 #
-#   ~/.claude/commands/pl-*.md   ->   ~/.planar/commands/claude/pl-*.md
-#   ~/.codex/skills/pl-*         # real Codex skill dirs copied from ~/.planar/codex-skills/pl-*
-#   ~/.copilot/skills/pl-*       # real Copilot skill dirs copied from ~/.planar/copilot-skills/pl-*
-#   ~/.gemini/antigravity-cli/skills/pl-*  # real Gemini skill dirs copied from ~/.planar/gemini-skills/pl-*
-#   ~/.claude/agents/<name>.md   ->   ~/.planar/agents/claude/<name>.md
-#   ~/.codex/agents/<name>.toml  ->   ~/.planar/agents/codex/<name>.toml
-#   ~/.copilot/agents/<name>.agent.md -> ~/.planar/agents/copilot/<name>.agent.md
-#   ~/.gemini/antigravity-cli/agents/<name>  ->  ~/.planar/agents/gemini/<name>
+#   skills   ~/.claude/skills/planar                 Claude Code
+#            ~/.agents/skills/planar                 Codex, Copilot, Gemini CLI, OpenCode (once)
+#            ~/.gemini/antigravity-cli/skills/planar Antigravity
+#   agents   ~/.claude/agents/planar-<role>.md
+#            $CODEX_HOME/agents/planar-<role>.toml   (default ~/.codex)
+#            ~/.copilot/agents/planar-<role>.agent.md
+#            ~/.gemini/agents/planar-<role>.md
+#            ~/.gemini/antigravity-cli/agents/planar-<role>.md
+#            ~/.config/opencode/agents/planar-<role>.md  (frontmatter reduced)
 #
 # The binary lives at ~/.planar/bin/planar. Add ~/.planar/bin to your PATH:
 #
@@ -64,9 +58,9 @@
 #   fish_add_path ~/.planar/bin
 #
 # Usage:
-#   ./install.sh                      # full install with all four vendors
-#   ./install.sh --no-vendor          # install Planar core only; skip vendor symlinks
-#   ./install.sh --vendors claude     # install + symlink Claude only
+#   ./install.sh                      # full install, every vendor found on this host
+#   ./install.sh --no-vendor          # install Planar core only; skip vendor surfaces
+#   ./install.sh --vendors claude     # install + place for Claude only (if present)
 #   ./install.sh --vendors claude,codex
 #   ./install.sh --link               # symlink from this repo instead of copying
 #                                     #   (dev mode — edits to repo propagate)
@@ -89,13 +83,16 @@ set -eEuo pipefail
 # ---------- defaults ----------
 
 PLANAR_HOME="${PLANAR_HOME:-$HOME/.planar}"
+CODEX_HOME_EXPLICIT="${CODEX_HOME:-}"   # non-empty when the operator set CODEX_HOME: Codex's presence marker
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-VENDORS="claude,codex,copilot,gemini"
+VENDORS="claude,codex,copilot,gemini,antigravity,opencode"
+VENDORS_EXPLICIT=0            # set with --vendors: naming an absent vendor then warns
 MODE="copy"                   # copy | link
 FORCE=0
 UNINSTALL=0
 IGNORE_LIVE_QUEUE=0           # set with --ignore-live-queue; the ONLY override of
                               # the agent.db live-queue guard (--force is not one)
+# shellcheck disable=SC2034  # accepted for compatibility; stale-file pruning moves to the cleanup task
 NO_PRUNE=0                    # set with --no-prune to skip stale-vendor-file removal
 BUILD_PRESET="release"        # CMake preset
 # The installer builds in its OWN directory, never the developer's
@@ -126,7 +123,9 @@ Usage:
 
 Options:
   --prefix DIR       Install root (default: ~/.planar)
-  --vendors LIST     Comma-separated vendors to wire: claude,codex,copilot,gemini (default: all)
+  --vendors LIST     Comma-separated filter over the vendors found on this host:
+                     claude,codex,copilot,gemini,antigravity,opencode (default: all
+                     of them; a vendor is placed only when its presence marker exists)
   --no-vendor        Install Planar core only; skip vendor surfaces
   --link             Symlink from this repo instead of copying (dev mode)
   --force            Overwrite existing symlinks / adopt a non-Planar prefix.
@@ -156,7 +155,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix)     PLANAR_HOME="$2"; shift 2 ;;
-    --vendors)    VENDORS="$2"; shift 2 ;;
+    --vendors)    VENDORS="$2"; VENDORS_EXPLICIT=1; shift 2 ;;
     --no-vendor)  VENDORS=""; shift ;;
     --link)       MODE="link"; shift ;;
     --force)      FORCE=1; shift ;;
@@ -544,7 +543,7 @@ BUILD_DEPS=(
   "chmod||mark shipped scripts executable"
 )
 RUN_DEPS=(
-  "cmp||checks installed projection bytes in scripts/check-self-installed.sh"
+  "cmp||checks installed projection bytes in scripts/check-self-installed.sh (not run by the installer; the manifest-health task replaces it)"
   "git|git|repo discovery + 'planar import' (required at runtime)"
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
@@ -624,10 +623,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   fi
   log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
   log "stage skills/planar/ and agents/*.md; render the Codex agent TOML into $PLANAR_HOME/codex-agents"
-  log "render per-vendor skill + agent outputs into $PLANAR_HOME"
   log "place templates/ (missing-only; --force overwrites)"
   if [[ -n "$VENDORS" ]]; then
-    log "wire vendor surfaces: $VENDORS → ~/.claude, ~/.codex, ~/.copilot, ~/.gemini/antigravity-cli"
+    log "place the planar skill and agents for each vendor found among: $VENDORS (presence markers decide; see the vendor table in install.sh)"
   else
     log "vendor surfaces: skipped (--no-vendor)"
   fi
@@ -815,30 +813,6 @@ rm -rf "$PLANAR_HOME/codex-agents"
 mv "$_codex_new" "$PLANAR_HOME/codex-agents"
 log "codex-agents/ ← agents/ ($(count_glob "$PLANAR_HOME"/codex-agents/*.toml) TOML files)"
 
-# Retired by the vendor-table task; kept until it lands. The vendor block below
-# still consumes this render's outputs (commands/claude, skills/codex,
-# skills/copilot, skills/gemini, agents/<vendor>).
-# Render the per-vendor outputs (commands/claude, skills/codex,
-# skills/copilot, skills/gemini, agents/{claude,codex,copilot,gemini})
-# directly into $PLANAR_HOME by shelling the CMake-installed in-tree
-# scriptorium binary, driven by the committed scriptorium.yaml (repo root).
-# This replaces Planar's retired in-tree renderer verb (tech-spec.md §
-# Architecture "How Planar shells scriptorium"). Note: `agents/models.md`'s
-# `## Tier Table` is NOT patched by this step, and is not patched anywhere —
-# it is hand-maintained in agents/models.md, so
-# models.md installs as ordinary committed content.
-title "Rendering per-vendor skill outputs (scriptorium)"
-SCRIPTORIUM_CONFIG="$REPO_ROOT/scriptorium.yaml"
-[[ -f "$SCRIPTORIUM_CONFIG" ]] || err "scriptorium.yaml not found at $SCRIPTORIUM_CONFIG (required to render skill/agent sources)"
-# scriptorium lists every file it writes on stdout; that per-file detail is
-# verbose-only. Keep stderr (warnings/errors) so the ERR trap still fires.
-if [[ "$VERBOSE" -eq 1 ]]; then
-  ( cd "$PLANAR_HOME" && "$SCRIPTORIUM_BIN" render --config "$SCRIPTORIUM_CONFIG" )
-else
-  ( cd "$PLANAR_HOME" && "$SCRIPTORIUM_BIN" render --config "$SCRIPTORIUM_CONFIG" ) >/dev/null
-fi
-log "rendered via scriptorium: commands/claude, skills/codex, skills/copilot, skills/gemini, agents/{claude,codex,copilot,gemini}"
-
 # Migrations live at repo root in sqlx-cli format and are read by the CMake
 # build via configure-time codegen. We also stage them under $PLANAR_HOME for
 # ad-hoc tooling (e.g. operators running `sqlx migrate` against scratch DBs).
@@ -885,491 +859,236 @@ if [[ "$MODE" != "link" && -d "$PLANAR_HOME/scripts" ]]; then
   chmod +x "$PLANAR_HOME/scripts/"* 2>/dev/null || true
 fi
 
-# ---------- vendor symlinks ----------
+# ---------- vendor surfaces ----------
+
+# Six vendors, nine targets (plan 1104, M2). A vendor is placed only when its
+# presence marker exists; the sources are the staged trees above:
+#   skill   $PLANAR_HOME/skills/planar/            (a directory)
+#   md      $PLANAR_HOME/agents/planar-<role>.md   (the fifteen role files only,
+#                                                    never the doctrine documents)
+#   toml    $PLANAR_HOME/codex-agents/planar-<role>.toml
+#
+# Presence markers (VENDOR_NAMES order is the order they are reported in):
+#   claude       ~/.claude/ exists
+#   codex        $CODEX_HOME is set, else ~/.codex/ exists
+#   copilot      ~/.copilot/ exists
+#   gemini       ~/.gemini/settings.json exists
+#   antigravity  ~/.gemini/antigravity-cli/ exists
+#   opencode     ~/.config/opencode/ exists
+# Gemini CLI and Antigravity are detected independently. OpenCode has no skill
+# row on purpose: it reads ~/.agents/skills and ~/.claude/skills, and Planar
+# never writes ~/.config/opencode/skills.
+VENDOR_NAMES=(claude codex copilot gemini antigravity opencode)
+
+# The target table: owners|format|destination directory. A row is placed when at
+# least one of its owners is present and selected, so the shared skill is placed
+# once however many of its owners are found. The comment line directly above each
+# row names the vendor documentation the target was checked against and the date;
+# scripts/install-surface-test.sh fails when a row loses it.
+VENDOR_TARGETS=(
+  # https://code.claude.com/docs/en/skills (checked 2026-10-04)
+  "claude|skill|$HOME/.claude/skills"
+  # https://learn.chatgpt.com/docs/build-skills ; https://docs.github.com/en/copilot/concepts/agents/about-agent-skills ; https://geminicli.com/docs/cli/skills/ ; https://opencode.ai/docs/skills (checked 2026-10-04)
+  "codex,copilot,gemini,opencode|skill|$HOME/.agents/skills"
+  # https://antigravity.google/docs/skills (checked 2026-10-04)
+  "antigravity|skill|$HOME/.gemini/antigravity-cli/skills"
+  # https://code.claude.com/docs/en/sub-agents (checked 2026-10-04)
+  "claude|md|$HOME/.claude/agents"
+  # https://learn.chatgpt.com/docs/agent-configuration/subagents (checked 2026-10-04)
+  "codex|toml|$CODEX_HOME/agents"
+  # https://docs.github.com/en/copilot/reference/custom-agents-configuration (checked 2026-10-04)
+  "copilot|copilot|$HOME/.copilot/agents"
+  # https://geminicli.com/docs/core/subagents/ (checked 2026-10-04)
+  "gemini|md|$HOME/.gemini/agents"
+  # https://antigravity.google/docs/skills (checked 2026-10-04)
+  "antigravity|md|$HOME/.gemini/antigravity-cli/agents"
+  # https://opencode.ai/docs/agents (checked 2026-10-04)
+  "opencode|opencode|$HOME/.config/opencode/agents"
+)
+
+# vendor_present <vendor> — the presence marker for one vendor.
+vendor_present() {
+  case "$1" in
+    claude)      [[ -d "$HOME/.claude" ]] ;;
+    codex)       [[ -n "$CODEX_HOME_EXPLICIT" || -d "$HOME/.codex" ]] ;;
+    copilot)     [[ -d "$HOME/.copilot" ]] ;;
+    gemini)      [[ -f "$HOME/.gemini/settings.json" ]] ;;
+    antigravity) [[ -d "$HOME/.gemini/antigravity-cli" ]] ;;
+    opencode)    [[ -d "$HOME/.config/opencode" ]] ;;
+    *)           return 1 ;;
+  esac
+}
+
+# vendor_marker <vendor> — the marker, for the skipped line.
+vendor_marker() {
+  # shellcheck disable=SC2088,SC2016  # a display string: the literal ~ and $CODEX_HOME are intended
+  case "$1" in
+    claude)      printf '~/.claude/' ;;
+    codex)       printf '$CODEX_HOME or ~/.codex/' ;;
+    copilot)     printf '~/.copilot/' ;;
+    gemini)      printf '~/.gemini/settings.json' ;;
+    antigravity) printf '~/.gemini/antigravity-cli/' ;;
+    opencode)    printf '~/.config/opencode/' ;;
+  esac
+}
+
+# prev_manifest_records <path> — true when the previous install manifest (still
+# on disk: it is rewritten after placement) records <path> as a whole JSON string.
+prev_manifest_records() {
+  [[ -f "$PLANAR_HOME/install-manifest.json" ]] || return 1
+  grep -Fq -- "$(install_manifest_json_quote "$1")" "$PLANAR_HOME/install-manifest.json"
+}
+
+# check_destination <path> — refuse a destination that cannot be proven Planar's:
+# absent, a symlink into $PLANAR_HOME, or a path the previous manifest records.
+# Never removes anything. Task 7218 formalizes this against the manifest.
+check_destination() {
+  local dst="$1" target
+  if [[ -L "$dst" ]]; then
+    target="$(readlink "$dst" 2>/dev/null || true)"
+    [[ "$target" == "$PLANAR_HOME"/* ]] && return 0
+  elif [[ ! -e "$dst" ]]; then
+    return 0
+  fi
+  prev_manifest_records "$dst" && return 0
+  err "$dst already exists and no Planar manifest records it, so Planar will not replace it (move or remove it, then re-run)"
+}
+
+# opencode_derive <staged agent .md> — print the OpenCode form of an agent: the
+# frontmatter reduced to `description` and `mode: subagent`, the body unchanged.
+# A description YAML would misread as a mapping or comment is double-quoted.
+opencode_derive() {
+  awk '
+    NR == 1 { if ($0 != "---") exit 2; infm = 1; next }
+    infm && $0 == "---" {
+      if (desc == "") exit 3
+      if (desc !~ /^["\047]/ && (desc ~ /: / || desc ~ / #/ || desc ~ /:$/ || desc ~ /^[-?:,\[\]{}#&*!|>%@`]/)) {
+        gsub(/\\/, "\\\\", desc); gsub(/"/, "\\\"", desc); desc = "\"" desc "\""
+      }
+      print "---"; print "description: " desc; print "mode: subagent"; print "---"
+      infm = 0; next
+    }
+    infm { if ($0 ~ /^description:/) { desc = $0; sub(/^description:[ \t]*/, "", desc) } ; next }
+    { print }
+    END { if (infm) exit 4 }
+  ' "$1"
+}
+
+# place_one <src> <dst> <format> — put one file at <dst>. A Markdown agent and a
+# Copilot agent follow $MODE (link = a symlink to the staged file, which for
+# Copilot carries the .agent.md name; copy = a copy). An OpenCode agent is a
+# derived file: it is always a regular file.
+place_one() {
+  local src="$1" dst="$2" fmt="$3"
+  mkdir -p "$(dirname "$dst")"
+  rm -f "$dst"   # never write through a link into $PLANAR_HOME
+  if [[ "$fmt" == opencode ]]; then
+    opencode_derive "$src" > "$dst" || err "could not derive the OpenCode agent from $src (frontmatter lacks a description?)"
+  elif [[ "$MODE" == "link" ]]; then
+    ln -s "$src" "$dst"
+  else
+    cp -f "$src" "$dst"
+  fi
+}
+
+# Vendors that are selected by --vendors, and of those the ones found.
+VENDORS_FOUND=()
+VENDORS_SKIPPED=()
+PLACED_PATHS=()          # every placed path, recorded in the manifest's extras
+PLAN_SRC=(); PLAN_DST=(); PLAN_FMT=()
 
 if [[ -n "$VENDORS" ]]; then
-  title "Symlinking vendor surfaces"
+  title "Placing vendor surfaces"
 
-  # Map vendor name → (planar source dir, harness target dir).
-  symlink_vendor() {
-    local name="$1" src_dir="$2" dst_dir="$3"
-    if [[ ! -d "$src_dir" ]]; then
-      warn "$name: source $src_dir not found, skipping"
-      return 0
+  IFS=',' read -r -a _requested <<< "$VENDORS"
+  for _v in "${_requested[@]}"; do
+    [[ " ${VENDOR_NAMES[*]} " == *" $_v "* ]] || warn "unknown vendor: $_v (skipping)"
+  done
+  for _v in "${VENDOR_NAMES[@]}"; do
+    if [[ ",$VENDORS," != *",$_v,"* ]]; then
+      VENDORS_SKIPPED+=("$_v (not in --vendors)")
+    elif vendor_present "$_v"; then
+      VENDORS_FOUND+=("$_v")
+      log "found $_v ($(vendor_marker "$_v"))"
+    else
+      VENDORS_SKIPPED+=("$_v (no $(vendor_marker "$_v"))")
+      [[ "$VENDORS_EXPLICIT" -eq 1 ]] && warn "--vendors names $_v but it is not present ($(vendor_marker "$_v") is missing)"
     fi
-    mkdir -p "$dst_dir"
-    local count=0
-    while IFS= read -r -d '' f; do
-      symlink_to "$f" "$dst_dir/$(basename "$f")"
-      count=$((count + 1))
-    done < <(find "$src_dir" -maxdepth 1 -name 'pl-*.md' -print0)
-    log "$name: linked $count file(s) into $dst_dir"
-  }
+  done
+  log "vendors found:   ${VENDORS_FOUND[*]:-none}"
+  _skipped_txt=""
+  for _s in ${VENDORS_SKIPPED[@]+"${VENDORS_SKIPPED[@]}"}; do _skipped_txt+="${_skipped_txt:+, }$_s"; done
+  log "vendors skipped: ${_skipped_txt:-none}"
 
-  # Codex discovers skills as directories that contain SKILL.md. Scriptorium's
-  # built-in Codex profile already stages its render output that way — one
-  # `pl-<slug>/SKILL.md` directory per skill under $src_dir (docs/format.md §
-  # 2.1/2.4's `layout: dir`), unlike Claude/Copilot/Gemini's flat `pl-*.md`
-  # staging — so this reads the STAGED SKILL.md directly rather than a flat
-  # source file. (Deliberately not overridden to `layout: file` in
-  # scriptorium.yaml: that field also gates whether `kind: doc` sources
-  # render for this vendor — docs/format.md § 2.5 — and Codex's TOML agent
-  # surface has no markdown-link consumer, so it should keep skipping them.)
-  # Materialize Planar-owned runtime skill directories, then install real
-  # Codex skill directories into CODEX_HOME so discovery works even when the
-  # loader does not follow symlinked directories.
-  install_codex_vendor() {
-    local src_dir="$1" runtime_dir="$2" dst_dir="$3"
-    if [[ ! -d "$src_dir" ]]; then
-      warn "codex: source $src_dir not found, skipping"
-      return 0
-    fi
-    rm -rf "$runtime_dir"
-    mkdir -p "$runtime_dir"
-    mkdir -p "$dst_dir"
-    local count=0
-    while IFS= read -r -d '' f; do
-      local skill_name legacy runtime_skill_dir dst_skill_dir marker
-      skill_name="$(basename "$(dirname "$f")")"
-      legacy="$dst_dir/${skill_name}.md"
-      runtime_skill_dir="$runtime_dir/$skill_name"
-      dst_skill_dir="$dst_dir/$skill_name"
-      marker="$dst_skill_dir/.planar-source"
-
-      if [[ -L "$legacy" ]]; then
-        local legacy_target
-        legacy_target="$(readlink "$legacy" 2>/dev/null || true)"
-        if [[ "$legacy_target" == "$src_dir/"* || "$legacy_target" == "$PLANAR_HOME/skills/codex/"* ]]; then
-          rm -f "$legacy"
-        fi
-      fi
-
-      if [[ -L "$dst_skill_dir" ]]; then
-        local dir_target
-        dir_target="$(readlink "$dst_skill_dir" 2>/dev/null || true)"
-        if [[ "$dir_target" == "$runtime_dir/"* || "$dir_target" == "$PLANAR_HOME/codex-skills/"* ]]; then
-          rm -f "$dst_skill_dir"
-        elif [[ "$FORCE" -eq 1 ]]; then
-          rm -f "$dst_skill_dir"
-        else
-          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
-        fi
-      fi
-
-      if [[ -d "$dst_skill_dir" && -f "$marker" ]]; then
-        local marker_target
-        marker_target="$(cat "$marker" 2>/dev/null || true)"
-        if [[ "$marker_target" == "$f" || "$marker_target" == "$PLANAR_HOME/skills/codex/"* ]]; then
-          rm -f "$dst_skill_dir/SKILL.md"
-          rm -f "$marker"
-          rmdir "$dst_skill_dir" 2>/dev/null || true
-        fi
-      fi
-
-      if [[ -d "$dst_skill_dir" && ( -e "$dst_skill_dir/SKILL.md" || -L "$dst_skill_dir/SKILL.md" ) ]]; then
-        local skill_target
-        skill_target="$(readlink "$dst_skill_dir/SKILL.md" 2>/dev/null || true)"
-        if [[ "$skill_target" == "$f" || "$skill_target" == "$PLANAR_HOME/skills/codex/"* ]]; then
-          rm -f "$dst_skill_dir/SKILL.md"
-          rmdir "$dst_skill_dir" 2>/dev/null || true
-        elif [[ "$FORCE" -eq 1 ]]; then
-          rm -rf "$dst_skill_dir"
-        else
-          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
-        fi
-      fi
-
-      mkdir -p "$runtime_skill_dir"
-      if [[ "$MODE" == "link" ]]; then
-        symlink_to "$f" "$runtime_skill_dir/SKILL.md"
-      else
-        cp -f "$f" "$runtime_skill_dir/SKILL.md"
-      fi
-      mkdir -p "$dst_skill_dir"
-      cp -f "$runtime_skill_dir/SKILL.md" "$dst_skill_dir/SKILL.md"
-      rm -rf "$runtime_skill_dir/references" "$dst_skill_dir/references"
-      mkdir -p "$runtime_skill_dir/references/agents" "$dst_skill_dir/references/agents"
-      while IFS= read -r -d '' agent_ref; do
-        cp -f "$agent_ref" "$runtime_skill_dir/references/agents/$(basename "$agent_ref")"
-        cp -f "$agent_ref" "$dst_skill_dir/references/agents/$(basename "$agent_ref")"
-      done < <(find -L "$PLANAR_HOME/agents" -maxdepth 1 -type f -name '*.md' -print0)
-      printf '%s\n' "$f" > "$marker"
-      count=$((count + 1))
-    done < <(find "$src_dir" -mindepth 2 -maxdepth 2 -type f -name 'SKILL.md' -print0)
-    log "codex: installed $count skill directories into $dst_dir"
-  }
-
-  # Copilot discovers skills as directories that contain SKILL.md (same layout as
-  # Codex). Keep Planar's source-of-truth files flat, materialize runtime skill
-  # directories, then install into ~/.copilot/skills/ so discovery works.
-  install_copilot_vendor() {
-    local src_dir="$1" runtime_dir="$2" dst_dir="$3"
-    if [[ ! -d "$src_dir" ]]; then
-      warn "copilot: source $src_dir not found, skipping"
-      return 0
-    fi
-    rm -rf "$runtime_dir"
-    mkdir -p "$runtime_dir"
-    mkdir -p "$dst_dir"
-    local count=0
-    while IFS= read -r -d '' f; do
-      local skill_name legacy runtime_skill_dir dst_skill_dir marker
-      skill_name="$(basename "$f" .md)"
-      legacy="$dst_dir/${skill_name}.md"
-      runtime_skill_dir="$runtime_dir/$skill_name"
-      dst_skill_dir="$dst_dir/$skill_name"
-      marker="$dst_skill_dir/.planar-source"
-
-      # Clean up legacy flat symlinks from previous installs.
-      if [[ -L "$legacy" ]]; then
-        local legacy_target
-        legacy_target="$(readlink "$legacy" 2>/dev/null || true)"
-        if [[ "$legacy_target" == "$src_dir/"* || "$legacy_target" == "$PLANAR_HOME/skills/copilot/"* ]]; then
-          rm -f "$legacy"
-        fi
-      fi
-
-      if [[ -L "$dst_skill_dir" ]]; then
-        local dir_target
-        dir_target="$(readlink "$dst_skill_dir" 2>/dev/null || true)"
-        if [[ "$dir_target" == "$runtime_dir/"* || "$dir_target" == "$PLANAR_HOME/copilot-skills/"* ]]; then
-          rm -f "$dst_skill_dir"
-        elif [[ "$FORCE" -eq 1 ]]; then
-          rm -f "$dst_skill_dir"
-        else
-          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
-        fi
-      fi
-
-      if [[ -d "$dst_skill_dir" && -f "$marker" ]]; then
-        local marker_target
-        marker_target="$(cat "$marker" 2>/dev/null || true)"
-        if [[ "$marker_target" == "$f" || "$marker_target" == "$PLANAR_HOME/skills/copilot/"* ]]; then
-          rm -f "$dst_skill_dir/SKILL.md"
-          rm -f "$marker"
-          rmdir "$dst_skill_dir" 2>/dev/null || true
-        fi
-      fi
-
-      if [[ -d "$dst_skill_dir" && ( -e "$dst_skill_dir/SKILL.md" || -L "$dst_skill_dir/SKILL.md" ) ]]; then
-        local skill_target
-        skill_target="$(readlink "$dst_skill_dir/SKILL.md" 2>/dev/null || true)"
-        if [[ "$skill_target" == "$f" || "$skill_target" == "$PLANAR_HOME/skills/copilot/"* ]]; then
-          rm -f "$dst_skill_dir/SKILL.md"
-          rmdir "$dst_skill_dir" 2>/dev/null || true
-        elif [[ "$FORCE" -eq 1 ]]; then
-          rm -rf "$dst_skill_dir"
-        else
-          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
-        fi
-      fi
-
-      mkdir -p "$runtime_skill_dir"
-      if [[ "$MODE" == "link" ]]; then
-        symlink_to "$f" "$runtime_skill_dir/SKILL.md"
-      else
-        cp -f "$f" "$runtime_skill_dir/SKILL.md"
-      fi
-      mkdir -p "$dst_skill_dir"
-      cp -f "$runtime_skill_dir/SKILL.md" "$dst_skill_dir/SKILL.md"
-      printf '%s\n' "$f" > "$marker"
-      count=$((count + 1))
-    done < <(find "$src_dir" -maxdepth 1 -name 'pl-*.md' -print0)
-    log "copilot: installed $count skill directories into $dst_dir"
-  }
-
-
-  # Gemini discovers skills as directories that contain SKILL.md (same layout as
-  # Codex). Keep Planar's source-of-truth files flat, materialize runtime skill
-  # directories, then install into ~/.gemini/antigravity-cli/skills/ so discovery works.
-  install_gemini_vendor() {
-    local src_dir="$1" runtime_dir="$2" dst_dir="$3"
-    if [[ ! -d "$src_dir" ]]; then
-      warn "gemini: source $src_dir not found, skipping"
-      return 0
-    fi
-    rm -rf "$runtime_dir"
-    mkdir -p "$runtime_dir"
-    mkdir -p "$dst_dir"
-    local count=0
-    while IFS= read -r -d '' f; do
-      local skill_name legacy runtime_skill_dir dst_skill_dir marker
-      skill_name="$(basename "$f" .md)"
-      legacy="$dst_dir/${skill_name}.md"
-      runtime_skill_dir="$runtime_dir/$skill_name"
-      dst_skill_dir="$dst_dir/$skill_name"
-      marker="$dst_skill_dir/.planar-source"
-
-      # Clean up legacy flat symlinks from previous installs.
-      if [[ -L "$legacy" ]]; then
-        local legacy_target
-        legacy_target="$(readlink "$legacy" 2>/dev/null || true)"
-        if [[ "$legacy_target" == "$src_dir/"* || "$legacy_target" == "$PLANAR_HOME/skills/gemini/"* ]]; then
-          rm -f "$legacy"
-        fi
-      fi
-
-      if [[ -L "$dst_skill_dir" ]]; then
-        local dir_target
-        dir_target="$(readlink "$dst_skill_dir" 2>/dev/null || true)"
-        if [[ "$dir_target" == "$runtime_dir/"* || "$dir_target" == "$PLANAR_HOME/gemini-skills/"* ]]; then
-          rm -f "$dst_skill_dir"
-        elif [[ "$FORCE" -eq 1 ]]; then
-          rm -f "$dst_skill_dir"
-        else
-          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
-        fi
-      fi
-
-      if [[ -d "$dst_skill_dir" && -f "$marker" ]]; then
-        local marker_target
-        marker_target="$(cat "$marker" 2>/dev/null || true)"
-        if [[ "$marker_target" == "$f" || "$marker_target" == "$PLANAR_HOME/skills/gemini/"* ]]; then
-          rm -f "$dst_skill_dir/SKILL.md"
-          rm -f "$marker"
-          rmdir "$dst_skill_dir" 2>/dev/null || true
-        fi
-      fi
-
-      if [[ -d "$dst_skill_dir" && ( -e "$dst_skill_dir/SKILL.md" || -L "$dst_skill_dir/SKILL.md" ) ]]; then
-        local skill_target
-        skill_target="$(readlink "$dst_skill_dir/SKILL.md" 2>/dev/null || true)"
-        if [[ "$skill_target" == "$f" || "$skill_target" == "$PLANAR_HOME/skills/gemini/"* ]]; then
-          rm -f "$dst_skill_dir/SKILL.md"
-          rmdir "$dst_skill_dir" 2>/dev/null || true
-        elif [[ "$FORCE" -eq 1 ]]; then
-          rm -rf "$dst_skill_dir"
-        else
-          err "$dst_skill_dir already exists and was not installed by Planar (rerun with --force to overwrite)"
-        fi
-      fi
-
-      mkdir -p "$runtime_skill_dir"
-      if [[ "$MODE" == "link" ]]; then
-        symlink_to "$f" "$runtime_skill_dir/SKILL.md"
-      else
-        cp -f "$f" "$runtime_skill_dir/SKILL.md"
-      fi
-      mkdir -p "$dst_skill_dir"
-      cp -f "$runtime_skill_dir/SKILL.md" "$dst_skill_dir/SKILL.md"
-      printf '%s\n' "$f" > "$marker"
-      count=$((count + 1))
-    done < <(find "$src_dir" -maxdepth 1 -name 'pl-*.md' -print0)
-    log "gemini: installed $count skill directories into $dst_dir"
-  }
-
-  # symlink_vendor_agents links every file in the rendered agents/<vendor>/
-  # directory into the vendor's agents/ harness directory. Mirrors symlink_vendor
-  # but uses a wildcard pattern that covers all file extensions (.md, .toml,
-  # .agent.md) rather than the pl-*.md skill pattern.
-  symlink_vendor_agents() {
-    local name="$1" src_dir="$2" dst_dir="$3"
-    if [[ ! -d "$src_dir" ]]; then
-      warn "$name agents: source $src_dir not found, skipping"
-      return 0
-    fi
-    mkdir -p "$dst_dir"
-    local count=0
-    while IFS= read -r -d '' f; do
-      symlink_to "$f" "$dst_dir/$(basename "$f")"
-      count=$((count + 1))
-    done < <(find "$src_dir" -maxdepth 1 -type f -print0)
-    log "$name agents: linked $count file(s) into $dst_dir"
-  }
-
-  symlink_agent_references() {
-    local dst_dir="$1"
-    mkdir -p "$dst_dir"
-    while IFS= read -r -d '' f; do
-      local dst="$dst_dir/$(basename "$f")"
-      [[ -e "$dst" || -L "$dst" ]] && continue
-      symlink_to "$f" "$dst"
-    done < <(find -L "$PLANAR_HOME/agents" -maxdepth 1 -type f -name '*.md' -print0)
-  }
-
-  # prune_stale_vendor_agents removes destination entries that look like
-  # Planar-installed agent symlinks but whose source counterpart no longer
-  # exists. Mirrors prune_stale_vendor but covers all file extensions.
-  prune_stale_vendor_agents() {
-    local name="$1" src_dir="$2" dst_dir="$3"
-    [[ "$NO_PRUNE" -eq 1 ]] && return 0
-    [[ -d "$dst_dir" ]] || return 0
-    local removed=0
-    while IFS= read -r -d '' link; do
-      local target
-      target="$(readlink "$link" 2>/dev/null || true)"
-      [[ -z "$target" ]] && continue                 # not a symlink — operator file
-      [[ "$target" == "$src_dir/"* ]] || continue    # target outside Planar source — leave alone
-      [[ -e "$target" ]] && continue                 # source still exists — keep
-      vlog "$name agents: pruning stale symlink $(basename "$link") (source removed)"
-      rm -f "$link"
-      removed=$((removed + 1))
-    done < <(find "$dst_dir" -maxdepth 1 -type f -print0)
-    if [[ "$removed" -gt 0 ]]; then
-      log "$name agents: pruned $removed stale entr$([[ $removed -eq 1 ]] && echo y || echo ies)"
-    fi
-  }
-
-  # prune_stale_vendor removes destination entries that look like Planar-installed
-  # symlinks but whose source counterpart no longer exists. Catches the rename
-  # case: a previous `make install` created dst/pl-adopt.md → src/pl-adopt.md,
-  # the source was later renamed to pl-import.md, and a fresh install creates
-  # dst/pl-import.md alongside the now-orphaned dst/pl-adopt.md. Without pruning
-  # both files persist; with pruning the orphan goes.
-  #
-  # Safety: only removes entries whose symlink target points into the Planar-
-  # owned source directory ($src_dir/...). Regular files and symlinks pointing
-  # elsewhere (operator-authored skills) are left alone. Pass --no-prune to
-  # skip this pass.
-  prune_stale_vendor() {
-    local name="$1" src_dir="$2" dst_dir="$3"
-    [[ "$NO_PRUNE" -eq 1 ]] && return 0
-    [[ -d "$dst_dir" ]] || return 0
-    local removed=0
-    while IFS= read -r -d '' link; do
-      local target
-      target="$(readlink "$link" 2>/dev/null || true)"
-      [[ -z "$target" ]] && continue                 # not a symlink — operator file
-      [[ "$target" == "$src_dir/"* ]] || continue    # target outside Planar source — leave alone
-      [[ -e "$target" ]] && continue                 # source still exists — keep
-      vlog "$name: pruning stale symlink $(basename "$link") (source removed)"
-      rm -f "$link"
-      removed=$((removed + 1))
-    done < <(find "$dst_dir" -maxdepth 1 -name 'pl-*.md' -print0)
-    if [[ "$removed" -gt 0 ]]; then
-      log "$name: pruned $removed stale entr$([[ $removed -eq 1 ]] && echo y || echo ies)"
-    fi
-  }
-
-  # prune_stale_codex is the codex equivalent: each skill is a directory with
-  # a .planar-source marker file (written by install_codex_vendor) recording
-  # the source path. If the recorded source no longer exists, the directory
-  # is stale and gets removed.
-  prune_stale_codex() {
-    local dst_dir="$1"
-    [[ "$NO_PRUNE" -eq 1 ]] && return 0
-    [[ -d "$dst_dir" ]] || return 0
-    local removed=0
-    while IFS= read -r -d '' skill_dir; do
-      local marker="$skill_dir/.planar-source"
-      [[ -f "$marker" ]] || continue                  # no marker — operator skill
-      local marker_target
-      marker_target="$(cat "$marker" 2>/dev/null || true)"
-      [[ -n "$marker_target" ]] || continue
-      [[ -e "$marker_target" ]] && continue           # source still exists — keep
-      vlog "codex: pruning stale skill dir $(basename "$skill_dir") (source removed)"
-      rm -rf "$skill_dir"
-      removed=$((removed + 1))
-    done < <(find "$dst_dir" -maxdepth 1 -name 'pl-*' -type d -print0)
-    if [[ "$removed" -gt 0 ]]; then
-      log "codex: pruned $removed stale skill director$([[ $removed -eq 1 ]] && echo y || echo ies)"
-    fi
-  }
-
-  # prune_stale_copilot is the copilot equivalent: same directory-based layout
-  # as codex, with .planar-source marker files for ownership tracking.
-  prune_stale_copilot() {
-    local dst_dir="$1"
-    [[ "$NO_PRUNE" -eq 1 ]] && return 0
-    [[ -d "$dst_dir" ]] || return 0
-    local removed=0
-    while IFS= read -r -d '' skill_dir; do
-      local marker="$skill_dir/.planar-source"
-      [[ -f "$marker" ]] || continue                  # no marker — operator skill
-      local marker_target
-      marker_target="$(cat "$marker" 2>/dev/null || true)"
-      [[ -n "$marker_target" ]] || continue
-      [[ -e "$marker_target" ]] && continue           # source still exists — keep
-      vlog "copilot: pruning stale skill dir $(basename "$skill_dir") (source removed)"
-      rm -rf "$skill_dir"
-      removed=$((removed + 1))
-    done < <(find "$dst_dir" -maxdepth 1 -name 'pl-*' -type d -print0)
-    if [[ "$removed" -gt 0 ]]; then
-      log "copilot: pruned $removed stale skill director$([[ $removed -eq 1 ]] && echo y || echo ies)"
-    fi
-  }
-
-  prune_stale_gemini() {
-    local dst_dir="$1"
-    [[ "$NO_PRUNE" -eq 1 ]] && return 0
-    [[ -d "$dst_dir" ]] || return 0
-    local removed=0
-    while IFS= read -r -d '' skill_dir; do
-      local marker="$skill_dir/.planar-source"
-      [[ -f "$marker" ]] || continue                  # no marker — operator skill
-      local marker_target
-      marker_target="$(cat "$marker" 2>/dev/null || true)"
-      [[ -n "$marker_target" ]] || continue
-      [[ -e "$marker_target" ]] && continue           # source still exists — keep
-      vlog "gemini: pruning stale skill dir $(basename "$skill_dir") (source removed)"
-      rm -rf "$skill_dir"
-      removed=$((removed + 1))
-    done < <(find "$dst_dir" -maxdepth 1 -name 'pl-*' -type d -print0)
-    if [[ "$removed" -gt 0 ]]; then
-      log "gemini: pruned $removed stale skill director$([[ $removed -eq 1 ]] && echo y || echo ies)"
-    fi
-  }
-
-  IFS=',' read -r -a vendor_list <<< "$VENDORS"
-  for v in "${vendor_list[@]}"; do
-    case "$v" in
-      claude)
-        symlink_vendor "claude" "$PLANAR_HOME/commands/claude" "$HOME/.claude/commands"
-        prune_stale_vendor "claude" "$PLANAR_HOME/commands/claude" "$HOME/.claude/commands"
-        symlink_vendor_agents "claude" "$PLANAR_HOME/agents/claude" "$HOME/.claude/agents"
-        symlink_agent_references "$HOME/.claude/agents"
-        prune_stale_vendor_agents "claude" "$PLANAR_HOME/agents/claude" "$HOME/.claude/agents"
+  # Plan every placement first, so a foreign destination stops the install before
+  # anything is written.
+  for _row in "${VENDOR_TARGETS[@]}"; do
+    IFS='|' read -r _owners _fmt _dir <<< "$_row"
+    _active=0
+    IFS=',' read -r -a _owner_list <<< "$_owners"
+    for _o in "${_owner_list[@]}"; do
+      [[ " ${VENDORS_FOUND[*]:-} " == *" $_o "* ]] && _active=1
+    done
+    [[ "$_active" -eq 1 ]] || continue
+    case "$_fmt" in
+      skill)
+        PLAN_SRC+=("$PLANAR_HOME/skills/planar"); PLAN_DST+=("$_dir/planar"); PLAN_FMT+=(skill)
         ;;
-      codex)
-        install_codex_vendor "$PLANAR_HOME/skills/codex" "$PLANAR_HOME/codex-skills" "$CODEX_HOME/skills"
-        prune_stale_codex "$CODEX_HOME/skills"
-        symlink_vendor_agents "codex" "$PLANAR_HOME/agents/codex" "$CODEX_HOME/agents"
-        symlink_agent_references "$CODEX_HOME/agents"
-        prune_stale_vendor_agents "codex" "$PLANAR_HOME/agents/codex" "$CODEX_HOME/agents"
+      md|copilot|opencode)
+        for _f in "$PLANAR_HOME"/agents/planar-*.md; do
+          [[ -f "$_f" ]] || continue
+          _name="$(basename "$_f")"
+          [[ "$_fmt" == copilot ]] && _name="${_name%.md}.agent.md"
+          PLAN_SRC+=("$_f"); PLAN_DST+=("$_dir/$_name"); PLAN_FMT+=("$_fmt")
+        done
         ;;
-      copilot)
-        install_copilot_vendor "$PLANAR_HOME/skills/copilot" "$PLANAR_HOME/copilot-skills" "$HOME/.copilot/skills"
-        prune_stale_copilot "$HOME/.copilot/skills"
-        symlink_vendor_agents "copilot" "$PLANAR_HOME/agents/copilot" "$HOME/.copilot/agents"
-        prune_stale_vendor_agents "copilot" "$PLANAR_HOME/agents/copilot" "$HOME/.copilot/agents"
-        # Also link the copilot/ instructions+prompts root if present.
-        if [[ -d "$PLANAR_HOME/copilot" ]]; then
-          while IFS= read -r -d '' f; do
-            symlink_to "$f" "$HOME/.copilot/$(basename "$f")"
-          done < <(find "$PLANAR_HOME/copilot" -maxdepth 1 -type f -print0)
-        fi
+      toml)
+        for _f in "$PLANAR_HOME"/codex-agents/planar-*.toml; do
+          [[ -f "$_f" ]] || continue
+          PLAN_SRC+=("$_f"); PLAN_DST+=("$_dir/$(basename "$_f")"); PLAN_FMT+=(toml)
+        done
         ;;
-      gemini)
-        install_gemini_vendor "$PLANAR_HOME/skills/gemini" "$PLANAR_HOME/gemini-skills" "$HOME/.gemini/antigravity-cli/skills"
-        prune_stale_gemini "$HOME/.gemini/antigravity-cli/skills"
-        symlink_vendor_agents "gemini" "$PLANAR_HOME/agents/gemini" "$HOME/.gemini/antigravity-cli/agents"
-        prune_stale_vendor_agents "gemini" "$PLANAR_HOME/agents/gemini" "$HOME/.gemini/antigravity-cli/agents"
-        ;;
-      *) warn "unknown vendor: $v (skipping)" ;;
     esac
   done
+
+  for ((_i = 0; _i < ${#PLAN_DST[@]}; _i++)); do
+    check_destination "${PLAN_DST[$_i]}"
+  done
+
+  for ((_i = 0; _i < ${#PLAN_DST[@]}; _i++)); do
+    _src="${PLAN_SRC[$_i]}"; _dst="${PLAN_DST[$_i]}"; _fmt="${PLAN_FMT[$_i]}"
+    if [[ "$_fmt" == skill ]]; then
+      # A skill is a directory: a link to the staged directory, or a copy of it.
+      mkdir -p "$(dirname "$_dst")"
+      rm -rf "$_dst"   # proven Planar's by check_destination
+      place "$_src" "$_dst"
+      PLACED_PATHS+=("$_dst")
+      while IFS= read -r -d '' _f; do
+        PLACED_PATHS+=("$_dst/${_f#"$_src"/}")
+      done < <(find -L "$_src" -type f -print0)
+      vlog "skill → $_dst ($MODE)"
+    else
+      place_one "$_src" "$_dst" "$_fmt"
+      PLACED_PATHS+=("$_dst")
+      vlog "agent → $_dst ($([[ "$_fmt" == opencode ]] && echo 'derived copy' || echo "$MODE"))"
+    fi
+  done
+  log "placed ${#PLAN_DST[@]} target path(s): skill dirs and agent files follow $MODE; OpenCode agents are derived regular files"
 fi
 
 # ---------- install authority ----------
 
-# The versioned manifest is written only after every selected vendor has been
-# wired successfully. Its rows are the complete managed-ownership set; files
-# found only in vendor destinations (including personal local-* extensions)
-# are deliberately excluded.
+# The versioned manifest is written only after every placement has succeeded.
+# Placed vendor paths are recorded in `extras` (absolute paths), not as
+# `projections` rows: the installed-surface reader still validates projection
+# rows against the four retired vendors, and the surface-reader task retargets it.
+# `vendors` and `projections` stay empty until then. Files found only in vendor
+# destinations (including personal local-* extensions) are deliberately excluded.
 install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
-if [[ -n "$VENDORS" ]]; then
-  IFS=',' read -r -a vendor_list <<< "$VENDORS"
-  for v in "${vendor_list[@]}"; do
-    case "$v" in
-      claude|codex|copilot|gemini)
-        install_manifest_record_vendor "$v" "$PLANAR_HOME" "$HOME" "$CODEX_HOME"
-        ;;
-    esac
-  done
-fi
 install_manifest_record_staged "$PLANAR_HOME" "$REPO_ROOT"
+for _p in ${PLACED_PATHS[@]+"${PLACED_PATHS[@]}"}; do install_manifest_add_extra "$_p"; done
 install_manifest_write "$PLANAR_HOME/install-manifest.json"
-vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_ROW_VENDOR[@]} managed projections)"
+vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_EXTRAS[@]} recorded paths)"
 
 # ---------- ownership stamp ----------
 
@@ -1384,16 +1103,13 @@ harden_planar_home
 
 title "Install complete"
 
-# Count the rendered role set (agents/claude/), not the top-level agents/ dir —
-# the latter mixes in shared docs (doctrine, methodology, models). Both the
-# rendered skills and agent roles are produced by the scriptorium render step
-# above, so these reflect what actually got installed regardless of --vendors.
-skills_n="$(count_glob "$PLANAR_HOME"/commands/claude/pl-*.md)"
-agents_n="$(count_glob "$PLANAR_HOME"/agents/claude/*.md)"
+# The staged role set (planar-*.md), not the top-level agents/ dir — the latter
+# mixes in shared docs (doctrine, methodology, models).
+agents_n="$(count_glob "$PLANAR_HOME"/agents/planar-*.md)"
 
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
 log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext, scriptorium"
-log "surfaces:   $skills_n skills · $agents_n agents · vendors: ${VENDORS:-none}"
+log "surfaces:   planar skill · $agents_n agents · vendors found: ${VENDORS_FOUND[*]:-none}"
 if [[ "$WARN_COUNT" -gt 0 ]]; then
   printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"
 fi

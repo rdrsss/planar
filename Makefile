@@ -130,7 +130,7 @@ test-install-manifest: ## Run focused installer manifest ownership/atomicity fix
 	bash scripts/install-manifest-test.sh
 
 .PHONY: test-install-stage
-test-install-stage: ## Run focused installer staging-step fixtures (skills/planar, agents, codex-agents)
+test-install-stage: ## Run focused installer staging and vendor-surface fixtures (six vendors, nine targets)
 	bash scripts/install-stage-test.sh
 
 .PHONY: test-install-deps
