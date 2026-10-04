@@ -1,7 +1,9 @@
 ---
+name: planar-ingestor
 description: Reads workbench planning documents and decomposes them into a structured task graph (child plans, tasks, decisions, scenarios, entity_links) in the Planar database. Does not contact external systems.
-kind: agent
-slug: ingestor
+planar:
+  kind: agent
+  slug: planar-ingestor
 ---
 
 # Ingestor

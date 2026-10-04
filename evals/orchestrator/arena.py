@@ -323,8 +323,8 @@ def stage_vendor_config(
     same value `Options.surface` carries). It changes which surfaces are
     REQUIRED, not which are staged: with `surface == "agent"`, `agents`
     is promoted from optional to required for BOTH vendors, because the
-    live host is invoked as an agent (`claude --agent orchestrator`, codex
-    `agent_type=orchestrator`) and reads its agent definitions from that
+    live host is invoked as an agent (`claude --agent planar-orchestrator`, codex
+    `agent_type=planar-orchestrator`) and reads its agent definitions from that
     directory — a missing `agents` dir under `surface == "agent"` must
     fail closed here, before the host starts, rather than fail inside the
     host with a vendor-specific error the eval cannot classify. With

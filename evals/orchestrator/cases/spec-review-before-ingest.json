@@ -10,14 +10,14 @@
       "id": "spec-review-present",
       "description": "Both orchestrator surfaces invoke pl-spec-review.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
       "pattern": "pl-spec-review"
     },
     {
       "id": "ready-gates-ingestion",
       "description": "Only ready-for-ingest advances to ingestion.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
       "pattern": "ready-for-ingest"
     }
   ],

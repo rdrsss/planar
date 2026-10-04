@@ -1,7 +1,9 @@
 ---
+name: planar-importer
 description: Translates an existing repository's planning content into Planar. Runs a deterministic classifier first, then optionally augments with an LLM interpretation pass. A translator, not a generator — imports what is already there rather than drafting new documents from a goal.
-kind: agent
-slug: importer
+planar:
+  kind: agent
+  slug: planar-importer
 ---
 
 # Importer
@@ -10,7 +12,7 @@ Given a repository root, reads the filesystem and git history to produce an Impo
 
 Vendor-neutral. Vendor-specific surfaces are rendered at install time for Claude, Codex, Copilot, and Gemini from `skills/src/pl-import.md`.
 
-See also [`agents/synthesizer.md`](synthesizer.md) for the sibling synthesis path; reach for the synthesizer when the repo is docs-only, mid-evolution, or its docs are contradicted by the source tree.
+See also `planar-synthesizer` for the sibling synthesis path; reach for the synthesizer when the repo is docs-only, mid-evolution, or its docs are contradicted by the source tree.
 
 ## Tier
 
@@ -23,7 +25,7 @@ See also [`agents/synthesizer.md`](synthesizer.md) for the sibling synthesis pat
 - As a one-time bootstrap when adopting Planar on an existing project.
 - Incrementally after new commits, to import newly completed work as a diff against the existing ImportPlan.
 
-Do **not** invoke this agent to draft new planning documents. New features belong to the `planner` agent (`/pl-spec-draft`).
+Do **not** invoke this agent to draft new planning documents. New features belong to the `planar-planner` agent (`/pl-spec-draft`).
 
 ## Inputs
 

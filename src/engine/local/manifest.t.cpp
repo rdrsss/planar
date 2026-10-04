@@ -281,6 +281,24 @@ TEST_CASE("manifest frontmatter ignores unknown keys and colonless lines") {
   REQUIRE(parsed->first.kind == "skill");
 }
 
+TEST_CASE("manifest frontmatter reads kind from the planar map and still accepts a top-level kind") {
+  const auto namespaced = mf::split_frontmatter("---\nname: x\ndescription: d\nplanar:\n  kind: agent\n  slug: x\n---\n");
+  REQUIRE(namespaced.has_value());
+  REQUIRE(namespaced->first.kind == "agent");
+  REQUIRE(namespaced->first.description == "d");
+
+  // Deprecated top-level form: operator-local files are not renamed by Planar.
+  const auto flat = mf::split_frontmatter("---\ndescription: d\nkind: agent\n---\n");
+  REQUIRE(flat.has_value());
+  REQUIRE(flat->first.kind == "agent");
+
+  // A column-0 key closes the planar map: the planar block here has no kind, so kind stays empty.
+  const auto closed = mf::split_frontmatter("---\nplanar:\n  slug: x\ntier: medium\n---\n");
+  REQUIRE(closed.has_value());
+  REQUIRE(closed->first.tier == "medium");
+  REQUIRE(closed->first.kind.empty());
+}
+
 TEST_CASE("manifest frontmatter tolerates CR inside the block but NOT in the fences") {
   // I wrote this test the wrong way round first — assuming that because each
   // line is trimmed of " \t\r", a wholly-CRLF file would parse. It does not,

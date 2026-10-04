@@ -62,7 +62,7 @@ class PreviewCommandTests(unittest.TestCase):
             plan_id="42",
             prompt="do the thing",
         )
-        self.assertIn("agent_type=orchestrator", command[-1])
+        self.assertIn("agent_type=planar-orchestrator", command[-1])
         self.assertIn("do the thing", command[-1])
 
     def test_claude_skill_surface_uses_slash_command(self) -> None:
@@ -85,7 +85,7 @@ class PreviewCommandTests(unittest.TestCase):
             prompt="do the thing",
         )
         self.assertIn("--agent", command)
-        self.assertEqual(command[command.index("--agent") + 1], "orchestrator")
+        self.assertEqual(command[command.index("--agent") + 1], "planar-orchestrator")
         self.assertEqual(command[-1], "do the thing")
 
     def test_host_model_is_threaded_through_as_separate_argv_elements(self) -> None:

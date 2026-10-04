@@ -28,7 +28,7 @@ Tier-to-model resolution: [`agents/models.md`](models.md).
 The orchestrator manages the lifecycle phases below. Phases 1–2 apply only
 when the anchor plan is `draft`; execution and later phases apply to active or
 completed work. Full phase documentation lives in
-[`agents/orchestrator.md`](orchestrator.md#phases).
+[`agents/planar-orchestrator.md`](planar-orchestrator.md#phases).
 
 | Phase | Skill | Trigger | User gate |
 |-------|-------|---------|-----------|
@@ -236,7 +236,7 @@ These tasks follow the same terminal rules as any task — they must reach `done
    id, owned worktrees/branches, reviewer or bypass disposition, structured
    validation evidence, and session context.
 4. **Janitor executes its six-step flow.** See
-   [`agents/janitor.md`](janitor.md): verify evidence → integrate and prove Git
+   [`agents/planar-janitor.md`](planar-janitor.md): verify evidence → integrate and prove Git
    state → post-integration validation → reconcile Planar → clean owned Git
    state → `planar plan closeout`.
 5. **Gate verdict surfaces to operator.** The orchestrator reports the janitor's result:
@@ -1174,7 +1174,7 @@ The `reviewer_disposition` field captures the precedence rule: `barrel-bypass` m
 
 ### Phase 3.5 — Test-coder dispatch
 
-Between the coder's report-done and the reviewer's dispatch, the orchestrator may dispatch a [`test-coder`](test-coder.md) cycle. The gating decision is delegated to `planar test-spec status <plan> --json` — the orchestrator does NOT re-implement coverage calculation.
+Between the coder's report-done and the reviewer's dispatch, the orchestrator may dispatch a [`test-coder`](planar-test-coder.md) cycle. The gating decision is delegated to `planar test-spec status <plan> --json` — the orchestrator does NOT re-implement coverage calculation.
 
 **Gating condition.** Dispatch test-coder when:
 - The cycle's dispatched tasks carry `[slug: …]` annotations, AND
@@ -1217,7 +1217,7 @@ the operator's explicit `barrel-bypass` choice.
 | Docs changes | Reviewer-on unless operator explicitly selects bypass | Documentation can encode contracts and executable examples. |
 
 When the reviewer IS dispatched, see the role spec at
-[`agents/reviewer.md`](reviewer.md) for the focused responsibilities and
+[`agents/planar-reviewer.md`](planar-reviewer.md) for the focused responsibilities and
 the explicit NOT-do list. The blind-read contract below governs how the
 brief is composed.
 
@@ -1268,7 +1268,7 @@ Every coder brief MUST:
   language or framework assumption.
 - **Specify the report shape.** A word ceiling (the work-complete
   report has a cap — keep it tight) and the required sections per
-  [`agents/coder.md` §Work-complete report template](coder.md#work-complete-report-template).
+  [`agents/planar-coder.md` §Work-complete report template](planar-coder.md#work-complete-report-template).
   The dispatcher reads the report; vague shape produces vague reports.
 - **Pose the problem; do not include the solution.** State the
   invariant, the constraint, and the acceptance signal. Let the coder
@@ -1411,7 +1411,7 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 ### Cross-references
 
-- Per-role canonical status strings: see the "Status reporting" sections in [`agents/coder.md`](coder.md#status-reporting), [`agents/orchestrator.md`](orchestrator.md#status-reporting), [`agents/planner.md`](planner.md#status-reporting), [`agents/reviewer.md`](reviewer.md#status-reporting), [`agents/test-coder.md`](test-coder.md#iteration-and-status), and [`agents/ingestor.md`](ingestor.md#status-reporting).
+- Per-role canonical status strings: see the "Status reporting" sections in [`agents/planar-coder.md`](planar-coder.md#status-reporting), [`agents/planar-orchestrator.md`](planar-orchestrator.md#status-reporting), [`agents/planar-planner.md`](planar-planner.md#status-reporting), [`agents/planar-reviewer.md`](planar-reviewer.md#status-reporting), [`agents/planar-test-coder.md`](planar-test-coder.md#iteration-and-status), and [`agents/planar-ingestor.md`](planar-ingestor.md#status-reporting).
 - `agent_actions` schema: see the installed Planar version's authoritative
   schema documentation.
 - Claim ritual: see [Coordination claims](#coordination-claims) above.

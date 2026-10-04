@@ -1,7 +1,9 @@
 ---
+name: planar-sync-reconciler
 description: Reconciles local and external sync conflicts from observable evidence. Recommends exactly one disposition and applies a whole-entity resolution only after explicit operator confirmation.
-kind: agent
-slug: sync-reconciler
+planar:
+  kind: agent
+  slug: planar-sync-reconciler
 ---
 
 # Sync Reconciler

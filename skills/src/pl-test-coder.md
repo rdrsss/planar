@@ -1,6 +1,6 @@
 ---
 description: Adversarial verification author dispatched between coder and reviewer. Adds repository-native verification assets for cited Planar test-spec scenarios and surfaces first-run failures without weakening them.
-origin: agents/test-coder.md
+origin: agents/planar-test-coder.md
 shared_notes:
     - Active scope is read at invocation; Planar remains the coverage and coordination backend.
 slug: pl-test-coder

@@ -1,7 +1,9 @@
 ---
+name: planar-ext-sync
 description: Propagates a feature (anchor plan + descendants) to a registered operational system (Jira or GitHub Issues). Triggered explicitly — never on a watcher.
-kind: agent
-slug: ext-sync
+planar:
+  kind: agent
+  slug: planar-ext-sync
 ---
 
 # Ext-sync

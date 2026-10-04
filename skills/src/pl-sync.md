@@ -153,7 +153,7 @@ baseline, title, earlier event, or likely intent. Recovery is a fresh
 
 For each conflict, dispatch one fresh `sync-reconciler` specialist through the
 host's agent dispatch mechanism with the canonical
-[`agents/sync-reconciler.md`](../../agents/sync-reconciler.md) instructions.
+[`agents/planar-sync-reconciler.md`](../../agents/planar-sync-reconciler.md) instructions.
 Supply a read-only envelope for each conflict:
 
 ```json

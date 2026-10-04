@@ -190,7 +190,7 @@ def build_preview_command(
         if surface == "agent":
             adapter = (
                 "Do not read or invoke any skill. Immediately spawn the installed "
-                "orchestrator subagent with agent_type=orchestrator and "
+                "planar-orchestrator subagent with agent_type=planar-orchestrator and "
                 "fork_turns=none, then delegate this entire task to it. An explicit "
                 "agent type must not use a full-history fork. Do not execute the "
                 "orchestration workflow in the parent agent. After the child returns, "
@@ -216,7 +216,7 @@ def build_preview_command(
             "claude",
             *model_argv(host_model),
             "--agent",
-            "orchestrator",
+            "planar-orchestrator",
             "-p",
             "--output-format",
             "stream-json",
@@ -263,7 +263,7 @@ def build_lifecycle_command(
     return [
         "claude",
         "--agent",
-        "orchestrator",
+        "planar-orchestrator",
         "-p",
         "--output-format",
         "stream-json",

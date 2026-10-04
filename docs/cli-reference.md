@@ -5572,7 +5572,7 @@ Writes (only with `--apply`):
 
 **Related:**
 - [`skills/src/pl-synthesize.md`](../skills/src/pl-synthesize.md) — unified authored skill source and load-bearing LLM contract; vendor projections are generated at install time.
-- [`agents/synthesizer.md`](../agents/synthesizer.md) — vendor-neutral role spec.
+- [`agents/planar-synthesizer.md`](../agents/planar-synthesizer.md) — vendor-neutral role spec.
 - [Domain: `import`](#domain-import) — sibling transcription verb.
 - [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) — conceptual split.
 

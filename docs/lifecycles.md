@@ -629,7 +629,7 @@ Phase selection keys off the anchor plan status: `draft` without artifacts
 3.7 and 4 on request); `done` → offer Phase 5. Double-bordered nodes
 are operator gates; the orchestrator never crosses one silently.
 
-Reviewer verdicts and what each triggers (`agents/reviewer.md`):
+Reviewer verdicts and what each triggers (`agents/planar-reviewer.md`):
 
 | Verdict | Terminal verb | Then |
 |---|---|---|

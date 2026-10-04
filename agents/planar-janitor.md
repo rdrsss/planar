@@ -1,7 +1,9 @@
 ---
+name: planar-janitor
 description: Trusted finalization agent for Planar-managed Git repositories. Verifies delivery evidence, integrates approved work through a confirmed Git delivery profile, reconciles Planar, cleans owned worktrees and branches, and closes the plan through the authoritative gate.
-kind: agent
-slug: janitor
+planar:
+  kind: agent
+  slug: planar-janitor
 ---
 
 # Janitor

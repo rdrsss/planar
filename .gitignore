@@ -90,7 +90,7 @@ scripts/parity-data/parity-gap-report.md
 
 # Per-vendor agent renders — generated at install time by
 # `planar skills render`. Source is agents/*.md role specs.
-# The non-rendered source files (agents/coder.md, etc.) are
+# The non-rendered source files (agents/planar-coder.md, etc.) are
 # checked in; only the vendor subdirs are generated output.
 /agents/claude/
 /agents/codex/

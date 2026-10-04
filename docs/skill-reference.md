@@ -250,7 +250,7 @@ Deliver software in a Planar-managed Git repository: coordinate planning, spec r
 /pl-orchestrator <plan-id> --finalize --archive
 ```
 
-Source: `skills/src/pl-orchestrator.md` · `agents/orchestrator.md`
+Source: `skills/src/pl-orchestrator.md` · `agents/planar-orchestrator.md`
 
 ---
 
@@ -260,7 +260,7 @@ Implements scoped coding tasks. Called by the orchestrator.
 
 **Example:** `/pl-coder <task-id>`
 
-Source: `skills/src/pl-coder.md` · `agents/coder.md`
+Source: `skills/src/pl-coder.md` · `agents/planar-coder.md`
 
 ---
 
@@ -275,7 +275,7 @@ Adversarial verification author dispatched between coder and reviewer. Adds repo
 /pl-test-coder <task-id> --since <commit>
 ```
 
-Source: `skills/src/pl-test-coder.md` · `agents/test-coder.md`
+Source: `skills/src/pl-test-coder.md` · `agents/planar-test-coder.md`
 
 ---
 
@@ -285,7 +285,7 @@ Reviews coder output. Returns one of approve / request-changes / open-question /
 
 **Example:** `/pl-reviewer <task-id> <iteration>`
 
-Source: `skills/src/pl-reviewer.md` · `agents/reviewer.md`
+Source: `skills/src/pl-reviewer.md` · `agents/planar-reviewer.md`
 
 ---
 
@@ -298,7 +298,7 @@ Read-only investigation. Runs a bounded, cited findings-brief investigation for 
 /pl-research "what does the claim ritual actually enforce on a stale lease"
 ```
 
-Source: `skills/src/pl-research.md` · `agents/research.md`
+Source: `skills/src/pl-research.md` · `agents/planar-research.md`
 
 ---
 
@@ -335,7 +335,7 @@ Import an existing repository's planning artefacts (tech specs, roadmaps, ADRs, 
 /pl-import . --dry-run                # emit JSON ImportPlan without writing
 ```
 
-Source: `skills/src/pl-import.md` · `agents/importer.md`
+Source: `skills/src/pl-import.md` · `agents/planar-importer.md`
 
 ---
 
@@ -353,7 +353,7 @@ The LLM runs in the vendor skill, not in the Planar binary. `src/engine/synthesi
 /pl-synthesize . --literal                # delegate to import (transcription)
 ```
 
-Source: `skills/src/pl-synthesize.md` · `agents/synthesizer.md`. See [`concepts.md#transcription-vs-synthesis`](concepts.md#transcription-vs-synthesis) for the decision matrix.
+Source: `skills/src/pl-synthesize.md` · `agents/planar-synthesizer.md`. See [`concepts.md#transcription-vs-synthesis`](concepts.md#transcription-vs-synthesis) for the decision matrix.
 
 ---
 
@@ -363,14 +363,14 @@ These skills cover the planning cycle from goal statement to operational-plane p
 
 ### `/pl-spec-draft`
 
-Draft planning documents (product spec, tech spec, roadmap, test spec) for a new feature from a goal statement. Creates a draft anchor plan, a workbench directory, and four artifact files. The user reviews and edits the documents before the next phase. The planner authors in four sequential phases — see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases). Its final draft-coverage check is the read-only `planar spec ingest <plan> --strict --json` preview; `test-spec status` is reserved for live rows after ingestion. Any `## Open questions` H3 items found in the drafted spec files are auto-registered as question entities via `planar question add` — see the "Reviewing open questions" recipe in `docs/workflows.md`.
+Draft planning documents (product spec, tech spec, roadmap, test spec) for a new feature from a goal statement. Creates a draft anchor plan, a workbench directory, and four artifact files. The user reviews and edits the documents before the next phase. The planner authors in four sequential phases — see [`agents/planar-planner.md` §Authoring phases](../agents/planar-planner.md#authoring-phases). Its final draft-coverage check is the read-only `planar spec ingest <plan> --strict --json` preview; `test-spec status` is reserved for live rows after ingestion. Any `## Open questions` H3 items found in the drafted spec files are auto-registered as question entities via `planar question add` — see the "Reviewing open questions" recipe in `docs/workflows.md`.
 
 **Example:**
 ```
 /pl-spec-draft "add billing export to CSV"
 ```
 
-Source: `skills/src/pl-spec-draft.md` · `agents/planner.md`
+Source: `skills/src/pl-spec-draft.md` · `agents/planar-planner.md`
 
 ---
 
@@ -398,7 +398,7 @@ the reviewer does not manufacture boilerplate findings.
 /pl-spec-review <plan-id> --write
 ```
 
-Source: `skills/src/pl-spec-review.md` · `agents/spec-reviewer.md`
+Source: `skills/src/pl-spec-review.md` · `agents/planar-spec-reviewer.md`
 
 ---
 
@@ -412,7 +412,7 @@ Decompose workbench planning documents (`tech-spec.md`, `roadmap.md`) into a str
 /pl-spec-ingest <plan-id> --apply
 ```
 
-Source: `skills/src/pl-spec-ingest.md` · `agents/ingestor.md`
+Source: `skills/src/pl-spec-ingest.md` · `agents/planar-ingestor.md`
 
 ---
 
@@ -427,7 +427,7 @@ Propagate a feature tree (anchor plan + descendants) to a registered external op
 /pl-ext-propagate <plan-id> --dry-run         # preview without contacting the remote
 ```
 
-Source: `skills/src/pl-ext-propagate.md` · `agents/ext-sync.md`
+Source: `skills/src/pl-ext-propagate.md` · `agents/planar-ext-sync.md`
 
 ---
 
@@ -702,7 +702,7 @@ enough.
 /pl-sync resolve <event-id>
 ```
 
-Source: `skills/src/pl-sync.md` · `agents/sync-reconciler.md`
+Source: `skills/src/pl-sync.md` · `agents/planar-sync-reconciler.md`
 
 ---
 
@@ -922,7 +922,7 @@ returns `partial` with per-finding recovery rather than claiming rollback.
 
 **Privacy:** Transcript text is ephemeral and never persisted. Finding bodies carry only aggregate signal (counts, verb paths, error categories). See [Usage Introspection Privacy Model](concepts.md#usage-introspection-privacy-model).
 
-Source: `skills/src/pl-introspect.md` · `agents/introspector.md`
+Source: `skills/src/pl-introspect.md` · `agents/planar-introspector.md`
 
 ---
 
@@ -948,7 +948,7 @@ with exact inspection or retry commands for failed targets.
 /pl-feedback-triage --finding task:17 --apply
 ```
 
-Source: `skills/src/pl-feedback-triage.md` · `agents/feedback-triager.md`
+Source: `skills/src/pl-feedback-triage.md` · `agents/planar-feedback-triager.md`
 
 ---
 
@@ -976,25 +976,25 @@ The vendor-neutral role specs live under `agents/`. Vendor skill files defer to 
 
 | File | Role |
 |------|------|
-| `agents/orchestrator.md` | Orchestrator role: full-lifecycle software-delivery dispatch, phase gates, strategy/isolation/dispatch-shape selection |
-| `agents/coder.md` | Coder role: implements one task per dispatch, claim-ritual discipline, work-complete report |
-| `agents/reviewer.md` | Reviewer role: blind-read review of coder output, approve/request-changes/open-question/abort |
-| `agents/research.md` | Research role: read-only cited findings-brief investigation |
-| `agents/test-coder.md` | Test-coder role: verification-only coverage expansion between coder and reviewer |
-| `agents/janitor.md` | Janitor role: delivery verification, integration, reconciliation, closeout |
+| `agents/planar-orchestrator.md` | Orchestrator role: full-lifecycle software-delivery dispatch, phase gates, strategy/isolation/dispatch-shape selection |
+| `agents/planar-coder.md` | Coder role: implements one task per dispatch, claim-ritual discipline, work-complete report |
+| `agents/planar-reviewer.md` | Reviewer role: blind-read review of coder output, approve/request-changes/open-question/abort |
+| `agents/planar-research.md` | Research role: read-only cited findings-brief investigation |
+| `agents/planar-test-coder.md` | Test-coder role: verification-only coverage expansion between coder and reviewer |
+| `agents/planar-janitor.md` | Janitor role: delivery verification, integration, reconciliation, closeout |
 | `agents/methodology.md` | Shared coordination contract: claims, strategies, barrel modes, worktrees, heartbeat status |
 | `agents/doctrine.md` | Cross-role doctrine: dispatch-shape selection, common defects, operator feedback contract |
 | `agents/models.md` | Model-tier routing: the hand-maintained Tier Table and routing axes |
 | `agents/cross-scope-writes.md` | Cross-scope write visibility doctrine |
-| `agents/spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis, and evidence-backed classification of the four recurring hazard lenses |
-| `agents/planner.md` | Planner role: input/output contract, document shape, workbench seeding |
-| `agents/ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
-| `agents/ext-sync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
-| `agents/importer.md` | Importer role: translates an existing repository's planning content into Planar; deterministic classifier first, optional LLM interpretation pass |
-| `agents/synthesizer.md` | Synthesizer role: produces fresh planning artifacts from existing docs, git log, and source code via an LLM pass |
-| `agents/introspector.md` | Introspector role: cross-vendor redacted signal adapters, preview/apply gate, finding taxonomy, dedup contract, feedback-plan bootstrap |
-| `agents/feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |
-| `agents/sync-reconciler.md` | Large-tier coordinate role: compares local and remote conflict evidence, recommends one of four dispositions, and coordinates only the exact whole-entity resolution the operator confirms; it is read-and-recommend by default and never performs direct local or remote field mutation |
+| `agents/planar-spec-reviewer.md` | Spec reviewer role: adversarial planning review, open-question reconciliation, feature/test gap analysis, and evidence-backed classification of the four recurring hazard lenses |
+| `agents/planar-planner.md` | Planner role: input/output contract, document shape, workbench seeding |
+| `agents/planar-ingestor.md` | Ingestor role: parsing contract, idempotency invariant, preview-first rule |
+| `agents/planar-ext-sync.md` | Ext-sync role: strategy-selection contract, propagation walk, idempotency |
+| `agents/planar-importer.md` | Importer role: translates an existing repository's planning content into Planar; deterministic classifier first, optional LLM interpretation pass |
+| `agents/planar-synthesizer.md` | Synthesizer role: produces fresh planning artifacts from existing docs, git log, and source code via an LLM pass |
+| `agents/planar-introspector.md` | Introspector role: cross-vendor redacted signal adapters, preview/apply gate, finding taxonomy, dedup contract, feedback-plan bootstrap |
+| `agents/planar-feedback-triager.md` | Feedback triager role: deterministic severity and disposition guidance, reproduction evidence, preview/apply gate, local mutation boundary, and status/result contracts |
+| `agents/planar-sync-reconciler.md` | Large-tier coordinate role: compares local and remote conflict evidence, recommends one of four dispositions, and coordinates only the exact whole-entity resolution the operator confirms; it is read-and-recommend by default and never performs direct local or remote field mutation |
 
 ---
 

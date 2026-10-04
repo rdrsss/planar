@@ -20,10 +20,21 @@ struct vendor_extra {
   std::string model;               ///< Vendor-specific model override.
   std::string name;                ///< Name emitted in Codex frontmatter; empty falls back to the slug.
 };
+/// @brief The `planar` map of the namespaced frontmatter form.
+struct planar_block {
+  std::string kind; ///< `skill`, `agent`, or `doc`.
+  std::string slug; ///< Stable artifact name; equals the top-level `name`.
+};
 /// @brief The frontmatter block of one authored source file.
+///
+/// Two forms load. The namespaced form carries `name` and `description` at the top level and `kind` and
+/// `slug` under a `planar` map; it is what the agent role files use. The flat form carries `slug` and `kind`
+/// at the top level and remains the form for skills and doctrine documents.
 struct frontmatter {
   std::string                         slug;           ///< Stable artifact name; also the output file or directory name.
   std::string                         kind = "skill"; ///< `skill`, `agent`, or `doc`.
+  std::string                         name;           ///< Namespaced form only: must equal `planar.slug`.
+  planar_block                        planar;         ///< Namespaced form only: `kind` and `slug`.
   std::string                         description;    ///< One-line description rendered into every projection.
   std::string                         origin;         ///< Provenance note; the only extra key a `doc` may carry.
   std::string                         model;          ///< Default model for the artifact.
@@ -229,13 +240,25 @@ auto load_source(const fs::path& path) -> source {
   src.path = path;
   if (auto e = glz::read_yaml(src.meta, yaml); e)
     throw std::runtime_error(path.string() + ": " + glz::format_error(e, yaml));
+  const bool namespaced = !src.meta.planar.slug.empty() || !src.meta.planar.kind.empty() || !src.meta.name.empty();
+  if (namespaced) {
+    // Namespaced form: `kind` and `slug` live under `planar`; the flat keys must not appear beside them.
+    if (src.meta.planar.slug.empty() || src.meta.planar.kind.empty())
+      throw std::runtime_error(path.string() + ": planar map needs both kind and slug");
+    if (src.meta.name != src.meta.planar.slug)
+      throw std::runtime_error(path.string() + ": name `" + src.meta.name + "` differs from planar.slug `" +
+                               src.meta.planar.slug + "`");
+    src.meta.slug = src.meta.planar.slug;
+    src.meta.kind = src.meta.planar.kind;
+  }
   if (!valid_slug(src.meta.slug) || src.meta.description.empty())
     throw std::runtime_error(path.string() + ": invalid slug or missing description");
   if (src.meta.kind != "skill" && src.meta.kind != "agent" && src.meta.kind != "doc")
     throw std::runtime_error(path.string() + ": invalid kind " + src.meta.kind);
   // Glaze's default unknown-key handling is permissive; explicitly grade the
   // source schema so a typo cannot silently alter a projection.
-  const std::set<std::string> allowed = {"slug", "kind", "description", "origin", "model", "tools", "shared_notes", "vendor"};
+  const std::set<std::string> allowed = {"slug",  "kind",         "description", "origin", "model",
+                                         "tools", "shared_notes", "vendor",      "name",   "planar"};
   std::istringstream          lines(yaml);
   std::string                 line;
   std::set<std::string>       seen;
@@ -246,6 +269,10 @@ auto load_source(const fs::path& path) -> source {
     if (colon == std::string::npos || !allowed.contains(line.substr(0, colon)))
       throw std::runtime_error(path.string() + ": unknown frontmatter key " + line);
     const auto key = line.substr(0, colon);
+    if (namespaced && (key == "slug" || key == "kind"))
+      throw std::runtime_error(path.string() + ": top-level `" + key + "` beside a planar map; move it under `planar`");
+    if (!namespaced && (key == "name" || key == "planar"))
+      throw std::runtime_error(path.string() + ": `" + key + "` needs the namespaced form with both name and planar");
     if (!seen.insert(key).second)
       throw std::runtime_error(path.string() + ": duplicate frontmatter key " + key);
     if ((src.meta.kind == "doc" && key != "slug" && key != "kind" && key != "description" && key != "origin") ||

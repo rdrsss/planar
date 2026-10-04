@@ -462,12 +462,12 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 ├── agents/                             # vendor-neutral agent role specs
 │   ├── methodology.md
 │   ├── models.md
-│   ├── orchestrator.md
-│   ├── coder.md
-│   ├── reviewer.md
-│   ├── planner.md
-│   ├── ingestor.md
-│   ├── ext-sync.md
+│   ├── planar-orchestrator.md
+│   ├── planar-coder.md
+│   ├── planar-reviewer.md
+│   ├── planar-planner.md
+│   ├── planar-ingestor.md
+│   ├── planar-ext-sync.md
 │   ├── … (the remaining role specs and shared docs)
 │   └── claude/ codex/ copilot/ gemini/ # rendered per-vendor agent files
 ├── commands/claude/                    # Claude slash-command sources

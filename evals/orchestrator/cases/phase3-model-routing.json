@@ -33,7 +33,7 @@
       "mode": "all",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md"
+        "agents/planar-orchestrator.md"
       ],
       "pattern": "confirmed tier|tier confirmed"
     },
@@ -43,7 +43,7 @@
       "mode": "all",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md"
+        "agents/planar-orchestrator.md"
       ],
       "pattern": "one preview row per open task|one row per claim-aware open task"
     },
@@ -53,7 +53,7 @@
       "mode": "none",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
+        "agents/planar-orchestrator.md",
         "agents/models.md"
       ],
       "pattern": "every task defaults to `large`|every task defaults to `small`"
@@ -64,7 +64,7 @@
       "mode": "none",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
+        "agents/planar-orchestrator.md",
         "agents/models.md"
       ],
       "pattern": "Task-title vocabulary is sufficient escalation evidence"
@@ -75,7 +75,7 @@
       "mode": "none",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md"
+        "agents/planar-orchestrator.md"
       ],
       "pattern": "unless global configuration names another provider"
     }

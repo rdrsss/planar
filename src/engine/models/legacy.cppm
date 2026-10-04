@@ -28,7 +28,7 @@
 /// ## The note convention
 ///
 /// The orchestrator writes one `session_entries` note per dispatch cycle
-/// (agents/orchestrator.md step 8a) containing a `dispatch_shape:` marker and a
+/// (agents/planar-orchestrator.md step 8a) containing a `dispatch_shape:` marker and a
 /// `model_choice:` line whose value is a JSON object keyed by TASK ID:
 ///
 ///     dispatch_shape: fan-out

@@ -1,6 +1,6 @@
 ---
 description: Implements scoped coding tasks (called by the orchestrator).
-origin: agents/coder.md
+origin: agents/planar-coder.md
 shared_notes:
     - Active scope is read at the start of every invocation; no vendor-specific state is kept outside the database.
 slug: pl-coder
@@ -13,7 +13,7 @@ vendor:
 
 # Coder ({{ VendorTitle }})
 
-{{ VendorTitle }} skill surface for the vendor-neutral `coder` agent. See [`agents/coder.md`](../../agents/coder.md) for the role spec and [`agents/methodology.md`](../../agents/methodology.md) for the iteration loop.
+{{ VendorTitle }} skill surface for the vendor-neutral `coder` agent. See [`agents/planar-coder.md`](../../agents/planar-coder.md) for the role spec and [`agents/methodology.md`](../../agents/methodology.md) for the iteration loop.
 
 ## What the coder MUST do
 
@@ -115,7 +115,7 @@ commits to its orchestrator-created lane. Under in-pwd barrel-bypass the coder
 owns `planar-agent complete`; under worktree barrel-bypass the orchestrator
 completes only after fan-in. The terminal verb is the final event.
 
-See [`agents/coder.md` § Status reporting](../../agents/coder.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
+See [`agents/planar-coder.md` § Status reporting](../../agents/planar-coder.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
 
 ## Barrel-bypass: validation evidence replaces reviewer dispatch
 
@@ -131,10 +131,10 @@ coverage gate.
 
 ## Test-coder handoff
 
-The coder writes the **minimum** tests to prove the feature compiles and runs. Coverage expansion across the test-spec's four return-path buckets (happy / empty / error / edge) is the [`test-coder`](../../agents/test-coder.md)'s job, dispatched in Phase 3.5 when `planar test-spec status` reports uncovered slugs. The coder should NOT pre-empt the test-coder by writing exhaustive coverage; doing so inflates the diff and wastes a cycle the orchestrator was going to skip via `no-expansion-needed`. Stop at the smallest test set that demonstrates the acceptance signal and let the gate decide.
+The coder writes the **minimum** tests to prove the feature compiles and runs. Coverage expansion across the test-spec's four return-path buckets (happy / empty / error / edge) is the [`test-coder`](../../agents/planar-test-coder.md)'s job, dispatched in Phase 3.5 when `planar test-spec status` reports uncovered slugs. The coder should NOT pre-empt the test-coder by writing exhaustive coverage; doing so inflates the diff and wastes a cycle the orchestrator was going to skip via `no-expansion-needed`. Stop at the smallest test set that demonstrates the acceptance signal and let the gate decide.
 
 The final operator response keeps the canonical six-section work-complete report
-from [`agents/coder.md`](../../agents/coder.md#work-complete-report-template).
+from [`agents/planar-coder.md`](../../agents/planar-coder.md#work-complete-report-template).
 The following feedback fields are an envelope around that report, not a
 replacement for its file list, verbatim gate evidence, claim state, pre-flight
 checklist, residual risk, or reviewer focus.

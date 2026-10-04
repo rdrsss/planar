@@ -1,6 +1,6 @@
 ---
 description: Import an existing repo's planning content into Planar — deterministic classifier plus opt-in LLM interpretation.
-origin: agents/importer.md
+origin: agents/planar-importer.md
 shared_notes:
     - Import state and interpretation cache entries come from the CLI; the skill must not invent direct DB writes or repo-local scaffolding.
 slug: pl-import
@@ -19,7 +19,7 @@ vendor:
 
 # Planar Import ({{ VendorTitle }})
 
-{{ VendorTitle }} skill surface for the vendor-neutral `importer` agent. See [`agents/importer.md`](../../agents/importer.md) for the full role spec, input/output contract, and workflow steps.
+{{ VendorTitle }} skill surface for the vendor-neutral `importer` agent. See [`agents/planar-importer.md`](../../agents/planar-importer.md) for the full role spec, input/output contract, and workflow steps.
 
 Vendor-neutral skill that imports an existing repo's planning content into Planar. Combines the CLI's deterministic classifier with an opt-in LLM interpretation pass.
 
@@ -29,7 +29,7 @@ Scans the repo, classifies its docs, extracts decisions plus deferred items, and
 
 ## Sibling Verb: pl-synthesize
 
-`pl-synthesize` is the synthesis counterpart to pl-import's transcription. Use `pl-import` for clean, structured, current docs that you want transcribed as-is; reach for `pl-synthesize` instead when the repo is docs-only / greenfield, when docs are mid-evolution, when multiple roadmaps of different eras coexist, or when the docs claim done but the code shows incomplete. Both verbs land in the same downstream `pl-spec-ingest` pipeline. See [`docs/concepts.md#transcription-vs-synthesis`](../../docs/concepts.md#transcription-vs-synthesis) for the decision matrix and [`agents/synthesizer.md`](../../agents/synthesizer.md) for the sibling role spec.
+`pl-synthesize` is the synthesis counterpart to pl-import's transcription. Use `pl-import` for clean, structured, current docs that you want transcribed as-is; reach for `pl-synthesize` instead when the repo is docs-only / greenfield, when docs are mid-evolution, when multiple roadmaps of different eras coexist, or when the docs claim done but the code shows incomplete. Both verbs land in the same downstream `pl-spec-ingest` pipeline. See [`docs/concepts.md#transcription-vs-synthesis`](../../docs/concepts.md#transcription-vs-synthesis) for the decision matrix and [`agents/planar-synthesizer.md`](../../agents/planar-synthesizer.md) for the sibling role spec.
 
 ## When To Invoke
 

@@ -10,7 +10,7 @@
       "id": "coverage-oracle",
       "description": "Both orchestrator surfaces consult Planar's uncovered-task oracle.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
       "pattern": "uncovered_task_slugs|uncovered slugs"
     },
     {

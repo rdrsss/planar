@@ -1,7 +1,9 @@
 ---
+name: planar-test-coder
 description: Adversarial verification author dispatched between coder and reviewer. Reads cited test-spec scenarios and the coder diff, adds verification-only assets, and surfaces first-run failures without weakening them.
-kind: agent
-slug: test-coder
+planar:
+  kind: agent
+  slug: planar-test-coder
 ---
 
 # Test-coder

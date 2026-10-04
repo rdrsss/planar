@@ -12,7 +12,7 @@
       "mode": "none",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
+        "agents/planar-orchestrator.md",
         "agents/methodology.md"
       ],
       "pattern": "recommend `barrel-bypass`"

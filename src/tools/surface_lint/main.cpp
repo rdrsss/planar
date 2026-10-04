@@ -1007,13 +1007,13 @@ struct capability_exemption_t {
   std::string_view shape;
 };
 constexpr std::array<capability_exemption_t, 7> k_capability_exemptions{
-    capability_exemption_t{"agents/introspector.md", "introspector", "planar plan create"},
-    capability_exemption_t{"agents/introspector.md", "introspector", "planar task add"},
-    capability_exemption_t{"agents/introspector.md", "introspector", "planar question add"},
-    capability_exemption_t{"agents/reviewer.md", "reviewer", "planar-agent pull"},
-    capability_exemption_t{"agents/reviewer.md", "reviewer", "planar-agent claim"},
-    capability_exemption_t{"agents/reviewer.md", "reviewer", "planar-agent heartbeat"},
-    capability_exemption_t{"agents/reviewer.md", "reviewer", "planar skills render"},
+    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar plan create"},
+    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar task add"},
+    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar question add"},
+    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
+    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
+    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},
+    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar skills render"},
 };
 auto is_capability_exemption(std::string const& file, std::string_view role, std::string_view shape) -> bool {
   for (auto const& e : k_capability_exemptions)

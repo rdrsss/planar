@@ -1,7 +1,9 @@
 ---
+name: planar-introspector
 description: Preview-first usage coordinator. Mines available redacted diagnostic and transcript signal, proposes friction findings, and applies approved findings to a per-association feedback plan.
-kind: agent
-slug: introspector
+planar:
+  kind: agent
+  slug: planar-introspector
 ---
 
 # Introspector
