@@ -35,24 +35,13 @@
 ///
 /// ## What is NOT ported
 ///
-/// - **The `mtkahypar` solver arm.** `zig/src/engine/grouping/mtkahypar.zig`
-///   (1776 lines) probes for an external solver binary with
-///   `std.process.run`, shells it, and reads its partition output back off
-///   disk. No process-spawn seam exists in this tree (same call the
-///   engine/runs bucket made for `bench harvest` and engine/runtime made for
-///   `capture commits`). The `--solver` FLAG is still fully modelled here,
-///   including its refusal message and every reporting field the JSON
-///   envelope carries, so the surface is complete and the gap is one arm
-///   rather than one leaf.
-///
-///   Note this arm is also host-dependent, which makes it a poor parity
-///   subject regardless: on the machine this port was derived on the solver
-///   IS installed, and `--solver mtkahypar` produced a genuinely different
-///   partition (one slice of three tasks at cost 30, versus greedy's three
-///   singletons at total 30) with `"optimal_available":true`. On a machine
-///   without it the same command degrades silently to greedy with
-///   `"optimal_available":false`. A test pinning either outcome would pass or
-///   fail based on what is installed.
+/// - **The `mtkahypar` solver arm.** Master ships greedy only (decision
+///   1293). The `--solver` FLAG is fully modelled here, including its refusal
+///   message and every reporting field of the JSON envelope, and
+///   `recommend_with` runs over the abstract `optimal::arm` seam
+///   (`optimal_arm.cppm`). Master passes `optimal::none()`, so
+///   `--solver mtkahypar` degrades to greedy with `"optimal_available":false`.
+///   The solver implementation lives on branch `dev/grouping-solvers`.
 /// - **`policy.audit` rows** — no such module in the C++ tree, and this leaf
 ///   is read-only.
 
@@ -63,13 +52,14 @@ export module planar.engine.grouping.load;
 import std;
 import planar.db;
 import planar.engine.grouping.greedy;
+import planar.engine.grouping.optimal_arm;
 
 namespace planar::engine::grouping::load {
 
 /// @brief Which partitioner the operator asked for.
 export enum class solver {
   greedy,   ///< The always-available heuristic. The default.
-  mtkahypar ///< The optional external hypergraph solver (not ported — see header).
+  mtkahypar ///< The optional external hypergraph solver (a name for the optimal arm; none ships on master).
 };
 
 /// @brief Parse a `--solver` value.
@@ -96,14 +86,12 @@ export struct recommendation {
   std::size_t      open_tasks = 0;                ///< Open (todo) tasks considered.
   greedy::grouping grouping_;                     ///< The formed slices.
   solver           solver_ = solver::greedy;      ///< The solver that ACTUALLY ran.
-  /// True iff the optimal (mtkahypar) arm ran and produced a partition. Always
-  /// false from this module: the arm is not ported, which is exactly the
-  /// value a machine without the solver binary reports anyway.
+  /// True iff the optimal arm ran and produced a partition. Always false
+  /// from `recommend`; `recommend_with` sets it when the supplied arm ran.
   bool optimal_available = false;
-  /// True iff the mtkahypar arm ran but greedy's lower-cost result shipped.
-  /// Always false here for the same reason — and note it is ALSO false under
-  /// plain degradation, so this flag never distinguishes "not ported" from
-  /// "not installed".
+  /// True iff the optimal arm ran but greedy's lower-cost result shipped. It
+  /// is also false under plain degradation, so this flag never distinguishes
+  /// "no arm" from "the arm failed".
   bool selected_greedy = false;
 };
 
@@ -127,13 +115,13 @@ export auto recommend(db::connection& conn, std::int64_t plan_id, std::uint32_t 
 /// @brief Solver-aware grouping recommendation (task 6460).
 ///
 /// `requested == solver::greedy` is identical to `recommend`. For
-/// `solver::mtkahypar`: when the seam is unavailable (build not linked, or
-/// the solver call itself fails), this degrades SILENTLY to the plain greedy
+/// `solver::mtkahypar`: when the arm is unavailable (master ships none, or
+/// the arm's call itself fails), this degrades SILENTLY to the plain greedy
 /// result with `optimal_available:false` — the exact behavior a genuinely
 /// solver-less machine already produces, so a caller cannot distinguish "not
 /// built" from "not installed".
 ///
-/// When the seam IS available, both arms run on the identical loaded inputs
+/// When the arm IS available, both arms run on the identical loaded inputs
 /// and are scored with the SAME `greedy::grouping::total_cost()`. The lower
 /// (or tied) grouping ships; `solver` reports `mtkahypar` and
 /// `optimal_available` is `true` in both outcomes (the optimal arm ran
@@ -144,10 +132,12 @@ export auto recommend(db::connection& conn, std::int64_t plan_id, std::uint32_t 
 /// @param plan_id The plan to group.
 /// @param budget The per-slice window budget.
 /// @param requested Which solver the caller asked for.
+/// @param optimal_arm The optimal arm to run for `solver::mtkahypar`. Master passes
+/// `optimal::none()`.
 /// @return The recommendation, or `grouping_error::not_found` when the plan
 /// does not exist.
-export auto recommend_with(db::connection& conn, std::int64_t plan_id, std::uint32_t budget, solver requested)
-    -> std::expected<recommendation, grouping_error>;
+export auto recommend_with(db::connection& conn, std::int64_t plan_id, std::uint32_t budget, solver requested,
+                           const optimal::arm& optimal_arm) -> std::expected<recommendation, grouping_error>;
 
 /// @brief The plan's open (todo) task ids, ordered by priority then id.
 /// @param conn An open, migrated database connection.
