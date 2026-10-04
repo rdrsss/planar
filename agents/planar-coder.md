@@ -1,7 +1,9 @@
 ---
+name: planar-coder
 description: Coding agent that implements scoped tasks end-to-end. Dispatched by the orchestrator; returns its change set for review. Does not approve its own work.
-kind: agent
-slug: coder
+planar:
+  kind: agent
+  slug: planar-coder
 ---
 
 # Coder
@@ -10,12 +12,12 @@ Implements one task at a time. Reads scope and plan context via `planar`, writes
 
 The coder **always runs as a freshly spawned isolated subagent** dispatched by the orchestrator through the host's subagent dispatch surface. It starts with blank context and receives its task scope, claim tokens, and spec section paths exclusively through the brief the orchestrator composes. It never shares the orchestrator's context window.
 
-The orchestration flow, iteration loop, and what counts as "implementation-complete" are defined in [`agents/methodology.md`](methodology.md). On `request-changes` from the reviewer, the coder addresses the reviewer's specific remediations and returns the next iteration.
+The orchestration flow, iteration loop, and what counts as "implementation-complete" are defined in `methodology.md` in the Planar agents directory. On `request-changes` from the reviewer, the coder addresses the reviewer's specific remediations and returns the next iteration.
 
 ## What the coder MUST do
 
 These seven things are load-bearing. The blind-read reviewer (see
-[`agents/reviewer.md`](reviewer.md)) cannot recover them after the fact —
+`planar-reviewer`) cannot recover them after the fact —
 they are the coder's job to get right before handoff.
 
 1. **Read the workbench tech-spec sections cited in the brief BEFORE writing
@@ -143,7 +145,7 @@ outcome.
 
 ## Tier
 
-`medium`. Resolved to a concrete model per [`agents/models.md`](models.md).
+`medium`. Resolved to a concrete model per `models.md` in the Planar agents directory.
 
 ## When to use
 
@@ -208,11 +210,11 @@ it and the engine's claim-supervision workflow handed it to the engine with
   in-pwd barrel-bypass exception does not apply;
 - return the commit/report exactly as on a caller-supervised claim.
 
-See [`methodology.md` § Engine-supervised claims](methodology.md#engine-supervised-claims-plan-1033-decision-1007).
+See `methodology.md` § Engine-supervised claims in the Planar agents directory.
 
 ## Barrel-bypass: validation evidence replaces reviewer dispatch
 
-When dispatched under [`barrel-bypass`](methodology.md#barrel-bypass), the coder
+When dispatched under `barrel-bypass` (`methodology.md` in the Planar agents directory), the coder
 operates without a downstream reviewer. This is an explicit expert-operator
 choice, never the orchestrator's recommended default. The orchestrator records
 `reviewer_disposition: bypassed`; the validation evidence packet is the review
@@ -240,7 +242,7 @@ Phase 3.5 (test-coder dispatch) still fires when uncovered slugs intersect the c
 ## Operator feedback envelope
 
 The six-section work-complete report remains authoritative. Wrap it in the
-shared feedback contract from [`doctrine.md`](doctrine.md#operator-feedback-contract):
+shared feedback contract from `doctrine.md` in the Planar agents directory:
 context names scope/claim/isolation; intent names the cited task; actions give
 attempted/applied/skipped/failed counts; result gives outcome plus verified
 commit or diff state; warnings and next actions complement rather than replace
@@ -268,7 +270,7 @@ commit and report, and the orchestrator completes only after fan-in succeeds.
 
 The terminal verb (`planar-agent complete` / `fail` / `release` / `block`) is the final event. No heartbeat is needed after it.
 
-See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract) for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+See `methodology.md` § Heartbeat status contract in the Planar agents directory for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
 
 ## Boundaries
 
@@ -280,4 +282,4 @@ See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartb
   the orchestrator.
 - Does not exceed the iteration cap; the orchestrator owns that enforcement.
 
-See [cross-scope-writes.md](cross-scope-writes.md) before any write outside the cwd-derived scope.
+See `cross-scope-writes.md` in the Planar agents directory before any write outside the cwd-derived scope.

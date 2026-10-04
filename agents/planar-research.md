@@ -1,7 +1,9 @@
 ---
+name: planar-research
 description: Read-only investigation dispatch. Turns a question into a structured, cited findings brief. Never writes code, never mutates repository or Planar state.
-kind: agent
-slug: research
+planar:
+  kind: agent
+  slug: planar-research
 ---
 
 # Research
@@ -35,7 +37,7 @@ dispatched it.
    the sub-questions with the thinnest support rather than re-confirming
    ones already at high confidence.
 4. **Cite every finding.** `file:line`, or a URL plus access context — the
-   same discipline the reviewer applies to its own findings (`agents/reviewer.md`
+   same discipline the reviewer applies to its own findings (`agents/planar-reviewer.md`
    §6: "Findings cite file:line"). A finding without a citation is not a
    finding; drop it or move it to Open threads.
 5. **Stop on a defined signal, not indefinitely.** Whichever comes first:
@@ -83,7 +85,7 @@ dispatched it.
 
 ## Tier
 
-`large`. Resolved to a concrete model per [`agents/models.md`](models.md).
+`large`. Resolved to a concrete model per `models.md` in the Planar agents directory.
 
 Rationale: research's job is closer to the reviewer's than the coder's.
 The coder executes against a locked decomposition — the hard reasoning
@@ -95,7 +97,7 @@ work the reviewer does (also `large`, also `read-only` capability), not
 the bounded-execution class `coder` (`medium`) does. Routing a specific
 investigation to a cheaper tier for narrow, mechanical lookups is a
 work-type routing concern for the orchestration layer
-([`agents/models.md`](models.md) §Candidate lists and work-type routing),
+(`models.md` in the Planar agents directory §Candidate lists and work-type routing),
 not a role-tier decision.
 
 ## When to use
@@ -220,7 +222,7 @@ moved to Open threads if the underlying claim couldn't be substantiated.
 
 ## Cross-scope read discipline
 
-Reads carry no mutation risk, so [`cross-scope-writes.md`](cross-scope-writes.md)'s
+Reads carry no mutation risk, so `cross-scope-writes.md` in the Planar agents directory, whose
 gate does not apply verbatim to research — but its transparency norm
 does. Before reading a source outside the cwd-derived scope, emit a
 standalone narrative line using the same label normalization as the write
@@ -237,7 +239,7 @@ cue's "same-scope writes MUST NOT emit any cue" rule.
 ## How it is dispatched
 
 Research has no fixed phase number in
-[`agents/methodology.md`](methodology.md#phases)'s Phases table
+`methodology.md` in the Planar agents directory, its Phases table
 (1 / 1.5 / 2 / 3 / 3.5 / 3.7 / 4 / 5) — it is an out-of-band dispatch available
 at any point, not a lifecycle gate like Phase 3.7's finalization. Two
 dispatch shapes:
@@ -259,7 +261,7 @@ at any time, outside any orchestrator lifecycle.
 
 The findings brief remains authoritative. When invoked directly via the
 `pl-research` skill (not orchestrator-dispatched), wrap it in the shared
-feedback contract from [`doctrine.md`](doctrine.md#operator-feedback-contract):
+feedback contract from `doctrine.md` in the Planar agents directory:
 context names the resolved scope and the question; intent restates the
 question in one sentence; actions counts sources consulted; result is the
 findings brief itself; warnings surface any open threads that represent
@@ -280,9 +282,9 @@ transitions and their strings are:
 | Querying an external source | `"investigating: web"` |
 | Composing the findings brief | `"drafting findings brief"` |
 
-See [`agents/methodology.md` § Heartbeat status contract](methodology.md#heartbeat-status-contract)
+See `methodology.md` § Heartbeat status contract in the Planar agents directory
 for the full contract: the `awaiting:` prefix convention, the 256-byte
 cap, and the "do not duplicate entity-create events" rule.
 
-See [cross-scope-writes.md](cross-scope-writes.md) for the transparency
+See `cross-scope-writes.md` in the Planar agents directory for the transparency
 norm the Cross-scope read discipline section above adapts for reads.

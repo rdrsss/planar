@@ -134,7 +134,7 @@ make eval-orchestrator-live VENDOR=codex SURFACE=skill
 ```
 
 Lifecycle cases use the real project-scoped orchestrator agent and replace only
-`coder`, `reviewer`, and `test-coder` with fixture agents whose behavior is
+`planar-coder`, `planar-reviewer`, and `planar-test-coder` with fixture agents whose behavior is
 defined under `evals/orchestrator/fixtures/`. First validate the fixture and
 grader without a model, then invoke a configured host:
 

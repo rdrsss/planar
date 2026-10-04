@@ -23,15 +23,9 @@ namespace {
 /// @brief Every authored source that must carry the short form. The janitor has
 /// no skill source.
 constexpr std::array k_sources{
-    "agents/coder.md",
-    "agents/test-coder.md",
-    "agents/reviewer.md",
-    "agents/janitor.md",
-    "agents/orchestrator.md",
-    "skills/src/pl-coder.md",
-    "skills/src/pl-test-coder.md",
-    "skills/src/pl-reviewer.md",
-    "skills/src/pl-orchestrator.md",
+    "agents/planar-coder.md",      "agents/planar-test-coder.md",   "agents/planar-reviewer.md",
+    "agents/planar-janitor.md",    "agents/planar-orchestrator.md", "skills/src/pl-coder.md",
+    "skills/src/pl-test-coder.md", "skills/src/pl-reviewer.md",     "skills/src/pl-orchestrator.md",
 };
 
 auto read_file(std::filesystem::path const& path) -> std::string {
@@ -111,7 +105,7 @@ TEST_CASE("every role file and skill source carries the short form of the queue 
 }
 
 TEST_CASE("the coder's gate instructions use the queued form", "[cmd][agent][queue][roles]") {
-  auto const text = flat(read_file(repo("agents/coder.md")));
+  auto const text = flat(read_file(repo("agents/planar-coder.md")));
   // Long profile commands are submitted detached, short ones run in the
   // foreground, and neither names a make target: the files are installed for
   // every repository and defer to its confirmed validation profile.

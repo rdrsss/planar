@@ -98,4 +98,19 @@ with tempfile.TemporaryDirectory() as tmp:
         "--vendor", "claude", "--output-root", doc_stage,
         "--install-manifest", manifest_file, "--json").stdout)
     assert report["artifacts"][0]["kind"] == "doc" and report["artifacts"][0]["installed"]
+
+    # Namespaced agent form: name + description on top, kind + slug under `planar`.
+    nested = root / "nested-out"
+    (bad / "bad.md").write_text(
+        "---\nname: planar-bad\ndescription: bad\nplanar:\n  kind: agent\n  slug: planar-bad\n---\n\n# Body\n")
+    run("render", "--config", config, "--source", bad, "--vendor", "claude", "--output-root", nested)
+    assert (nested / "agents/claude/planar-bad.md").read_text().startswith('---\nname: "planar-bad"')
+    (bad / "bad.md").write_text(
+        "---\nname: planar-bad\ndescription: bad\nplanar:\n  kind: agent\n  slug: bad\n---\n\nbody\n")
+    err = run("render", "--config", config, "--source", bad, "--output-root", root / "n2", code=2).stderr
+    assert "name `planar-bad` differs from planar.slug `bad`" in err, err
+    (bad / "bad.md").write_text(
+        "---\nname: planar-bad\ndescription: bad\nkind: agent\nplanar:\n  kind: agent\n  slug: planar-bad\n---\n\nbody\n")
+    err = run("render", "--config", config, "--source", bad, "--output-root", root / "n3", code=2).stderr
+    assert "top-level `kind` beside a planar map" in err, err
 print("scriptorium: 232 byte-pinned projections and drift/error cases passed")

@@ -1,6 +1,6 @@
 ---
 description: Adversarially review draft planning specs for completeness, open questions, feature gaps, user-intent fit, roadmap readiness, and test scenario coverage before ingestion.
-origin: agents/spec-reviewer.md
+origin: agents/planar-spec-reviewer.md
 shared_notes:
     - Default mode is read-only. Writes are limited to operator-approved artifact and question updates; the skill never applies spec ingestion.
 slug: pl-spec-review
@@ -15,7 +15,7 @@ vendor:
 # Spec Review ({{ VendorTitle }})
 
 {{ VendorTitle }} skill surface for the vendor-neutral `spec-reviewer` agent.
-See [`agents/spec-reviewer.md`](../../agents/spec-reviewer.md) for the full
+See [`agents/planar-spec-reviewer.md`](../../agents/planar-spec-reviewer.md) for the full
 review contract, verdicts, and write-mode boundary.
 
 ## When to use
@@ -263,7 +263,7 @@ Report whether the verdict changed. Do not run `planar spec ingest --apply`.
 
 ## Status reporting
 
-See [`agents/spec-reviewer.md` § Status reporting](../../agents/spec-reviewer.md#status-reporting)
+See [`agents/planar-spec-reviewer.md` § Status reporting](../../agents/planar-spec-reviewer.md#status-reporting)
 for canonical heartbeat strings such as `"loading specs"`,
 `"reviewing questions"`, `"reviewing feature gaps"`, and
 `"awaiting:operator-answers"`.

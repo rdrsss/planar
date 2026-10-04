@@ -1,7 +1,9 @@
 ---
+name: planar-synthesizer
 description: Produces fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. A generator, not a translator — synthesizes what the repo SHOULD be rather than transcribing what existing docs claim.
-kind: agent
-slug: synthesizer
+planar:
+  kind: agent
+  slug: planar-synthesizer
 ---
 
 # Synthesizer

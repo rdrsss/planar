@@ -1,6 +1,6 @@
 ---
 description: Read-only investigation. Runs a bounded, cited findings-brief investigation for a question and returns it — no code, no repository or Planar writes.
-origin: agents/research.md
+origin: agents/planar-research.md
 shared_notes:
     - Active scope is read at the start of every invocation; research performs no writes of its own, only reads.
 slug: pl-research
@@ -15,7 +15,7 @@ vendor:
 # Research ({{ VendorTitle }})
 
 {{ VendorTitle }} skill surface for the vendor-neutral `research` agent. See
-[`agents/research.md`](../../agents/research.md) for the full role spec, the
+[`agents/planar-research.md`](../../agents/planar-research.md) for the full role spec, the
 findings-brief output contract, and the boundaries. See
 [`agents/methodology.md`](../../agents/methodology.md) for the shared claim
 and heartbeat ritual research reuses from coder/reviewer.
@@ -27,7 +27,7 @@ read-only investigation: `Read`/`Grep`/`Glob` over the resolved scope,
 read-only `git`/`planar` inspection, and `WebSearch`/`WebFetch` for
 external sources. Returns the canonical findings brief — Question, Method,
 Findings (each cited `file:line` or URL), Open threads, Recommended next
-action — defined in [`agents/research.md` §Output contract](../../agents/research.md#output-contract--the-findings-brief).
+action — defined in [`agents/planar-research.md` §Output contract](../../agents/planar-research.md#output-contract--the-findings-brief).
 It never edits files, never runs a mutating command, and never creates or
 closes Planar entities; a defect or follow-up it surfaces becomes a line
 in "Recommended next action," not an implemented fix.
@@ -68,7 +68,7 @@ than a discoverable fact is returned to the operator.
 Invoke it mid-investigation on your own, or let the orchestrator dispatch
 it pre-planning (an unknown blocking a spec) or mid-Phase-3 (a task's
 `next_action` depends on an answer first) — see
-[`agents/research.md` §How it is dispatched](../../agents/research.md#how-it-is-dispatched).
+[`agents/planar-research.md` §How it is dispatched](../../agents/planar-research.md#how-it-is-dispatched).
 
 ## Context
 
@@ -117,5 +117,5 @@ retry.
 
 See [cross-scope-writes.md](../../agents/cross-scope-writes.md) — research
 adapts its transparency norm for reads (no writes occur); see
-[`agents/research.md` §Cross-scope read discipline](../../agents/research.md#cross-scope-read-discipline)
+[`agents/planar-research.md` §Cross-scope read discipline](../../agents/planar-research.md#cross-scope-read-discipline)
 for the exact cue.

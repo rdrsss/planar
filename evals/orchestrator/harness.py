@@ -1309,16 +1309,16 @@ def split_terminal_verb_instructions(text: str) -> list[str]:
 def grade_coherence(root: Path = ROOT) -> None:
     core_rel = [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
+        "agents/planar-orchestrator.md",
         "agents/methodology.md",
         "agents/doctrine.md",
         "skills/src/pl-coder.md",
-        "agents/coder.md",
+        "agents/planar-coder.md",
         "skills/src/pl-reviewer.md",
-        "agents/reviewer.md",
+        "agents/planar-reviewer.md",
         "skills/src/pl-test-coder.md",
-        "agents/test-coder.md",
-        "agents/janitor.md",
+        "agents/planar-test-coder.md",
+        "agents/planar-janitor.md",
     ] + SKILL_RELS
     for relative in core_rel:
         if not (root / relative).is_file():
@@ -1369,60 +1369,60 @@ def grade_coherence(root: Path = ROOT) -> None:
     )
     forbid(
         r"recommended for:.*(mechanical|docs-polish|single-verb)",
-        ["skills/src/pl-orchestrator.md", "agents/orchestrator.md", "agents/methodology.md"],
+        ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md", "agents/methodology.md"],
     )
-    forbid(r"planar task done", ["skills/src/pl-coder.md", "agents/coder.md"])
+    forbid(r"planar task done", ["skills/src/pl-coder.md", "agents/planar-coder.md"])
 
     must(
         r"Planar-managed Git repositor",
-        ["skills/src/pl-orchestrator.md", "agents/orchestrator.md", "agents/janitor.md"],
+        ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md", "agents/planar-janitor.md"],
     )
     must(
         r"validation profile",
         [
             "skills/src/pl-orchestrator.md",
-            "agents/orchestrator.md",
+            "agents/planar-orchestrator.md",
             "agents/methodology.md",
             "skills/src/pl-coder.md",
-            "agents/coder.md",
+            "agents/planar-coder.md",
             "skills/src/pl-reviewer.md",
-            "agents/reviewer.md",
+            "agents/planar-reviewer.md",
             "skills/src/pl-test-coder.md",
-            "agents/test-coder.md",
+            "agents/planar-test-coder.md",
         ],
     )
     must(
         r"structured.*evidence|evidence row",
         [
             "skills/src/pl-coder.md",
-            "agents/coder.md",
+            "agents/planar-coder.md",
             "skills/src/pl-reviewer.md",
-            "agents/reviewer.md",
+            "agents/planar-reviewer.md",
             "skills/src/pl-test-coder.md",
-            "agents/test-coder.md",
+            "agents/planar-test-coder.md",
         ],
     )
-    must(r"pl-spec-review", ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"])
+    must(r"pl-spec-review", ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"])
     must(
         r"never recommended",
-        ["skills/src/pl-orchestrator.md", "agents/orchestrator.md", "agents/methodology.md"],
+        ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md", "agents/methodology.md"],
     )
     must(
         r"in-pwd.*barrel-bypass|barrel-bypass.*in-pwd",
         [
             "skills/src/pl-coder.md",
-            "agents/coder.md",
+            "agents/planar-coder.md",
             "skills/src/pl-orchestrator.md",
-            "agents/orchestrator.md",
+            "agents/planar-orchestrator.md",
         ],
     )
     must(
         r"github-pr.*external-pr.*local-ref.*already-integrated",
-        ["agents/janitor.md"],
+        ["agents/planar-janitor.md"],
     )
     must(
         r"coder.*(narrative )?report|coder's report",
-        ["skills/src/pl-reviewer.md", "agents/reviewer.md", "agents/methodology.md"],
+        ["skills/src/pl-reviewer.md", "agents/planar-reviewer.md", "agents/methodology.md"],
     )
     # The unified `planar` skill and its nine references (plan 1104 M1): no
     # legacy pl-* command, no scriptorium, no instruction to split the
@@ -2761,7 +2761,7 @@ def prepare_lifecycle_fixture(
         instructions = (
             "Lifecycle-eval boundary: execute this orchestrator contract directly.\n\n"
             "Do not read or invoke any installed skill. The project-scoped controlled "
-            "coder, reviewer, and test-coder definitions are the only specialist "
+            "planar-coder, planar-reviewer, and planar-test-coder definitions are the only specialist "
             "contracts for this run.\n\n"
             "Never edit source content in the orchestrator context.\n\n"
             + orchestrator_agent_source()

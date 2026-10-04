@@ -1,6 +1,6 @@
 ---
 description: Deliver software in a Planar-managed Git repository — coordinate planning, spec review, ingestion, implementation, verification, finalization, propagation, and archive with explicit operator gates.
-origin: agents/orchestrator.md
+origin: agents/planar-orchestrator.md
 shared_notes:
     - Planar is the fixed coordination backend; target-repository tooling is discovered and confirmed.
 slug: pl-orchestrator
@@ -172,7 +172,7 @@ shape. Standalone `--barrel-*` flags remain compatibility aliases.
 
 Planar owns readiness, profile derivation, dispatch authorization, and
 evidence — consume those answers, never re-derive them. Rationale and full
-contract: [`agents/orchestrator.md`].
+contract: [`agents/planar-orchestrator.md`].
 
 - `planar task packet <id> --json` — `ready: false` is a **stop**: render its
   `reasons` and hold. Packets compare only within one `policy_version`.

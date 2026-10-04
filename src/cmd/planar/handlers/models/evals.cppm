@@ -21,7 +21,7 @@ export auto attach_evals(CLI::App& models) -> CLI::App* {
       "Without cohort flags this falls back to the LEGACY note-convention\n  scorecard below, which remains inspectable but "
       "is not evidence-backed:\n  it predates the routing evidence plane and carries no cohort or\n  independent-quality "
       "guarantee.\n\n  Legacy: read-only aggregation (plan 898/904, tech-spec 520 D8) over the\n  `dispatch_shape` / "
-      "`model_choice` note convention in `session_entries`\n  (agents/orchestrator.md step 8a), joined with "
+      "`model_choice` note convention in `session_entries`\n  (agents/planar-orchestrator.md step 8a), joined with "
       "`agent_work_claims`\n  (terminal disposition) and `agent_actions` (test-coder expansion\n  outcome). Emits a "
       "per-(work-type, candidate) scorecard and a\n  recommended routing-map change. A pair with no completed-dispatch\n  "
       "history reports insufficient-data rather than a fabricated score.\n  Writes nothing: no routing-map mutation, no "

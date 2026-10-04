@@ -18,7 +18,7 @@
       "mode": "all",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md"
+        "agents/planar-orchestrator.md"
       ],
       "pattern": "strategy.*isolation"
     },

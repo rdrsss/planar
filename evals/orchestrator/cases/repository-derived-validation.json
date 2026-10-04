@@ -12,13 +12,13 @@
       "mode": "all",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
+        "agents/planar-orchestrator.md",
         "skills/src/pl-coder.md",
-        "agents/coder.md",
+        "agents/planar-coder.md",
         "skills/src/pl-reviewer.md",
-        "agents/reviewer.md",
+        "agents/planar-reviewer.md",
         "skills/src/pl-test-coder.md",
-        "agents/test-coder.md"
+        "agents/planar-test-coder.md"
       ],
       "pattern": "validation profile|validation-profile"
     },
@@ -28,7 +28,7 @@
       "mode": "none",
       "paths": [
         "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md",
+        "agents/planar-orchestrator.md",
         "agents/methodology.md",
         "agents/doctrine.md"
       ],

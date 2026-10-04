@@ -1,6 +1,6 @@
 ---
 description: Propagate a feature (anchor plan + descendants) to a registered external operational system (Jira or GitHub Issues).
-origin: agents/ext-sync.md
+origin: agents/planar-ext-sync.md
 shared_notes:
     - Feature propagation runs through the registered external-system adapter; no direct remote writes happen outside the CLI contract.
 slug: pl-ext-propagate
@@ -15,7 +15,7 @@ vendor:
 
 # Ext-sync Propagate ({{ VendorTitle }})
 
-{{ VendorTitle }} skill surface for the vendor-neutral `ext-sync` agent. See [`agents/ext-sync.md`](../../agents/ext-sync.md) for the full role spec, strategy-selection contract, and idempotency invariant.
+{{ VendorTitle }} skill surface for the vendor-neutral `ext-sync` agent. See [`agents/planar-ext-sync.md`](../../agents/planar-ext-sync.md) for the full role spec, strategy-selection contract, and idempotency invariant.
 
 > **Where the verbs live.** `ext` and `sync` are on `planar-ext`, not
 > `planar`. `planar-ext ext propagate <plan>` is the whole-feature walk;

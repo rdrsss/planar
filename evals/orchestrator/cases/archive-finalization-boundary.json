@@ -10,7 +10,7 @@
       "id": "janitor-owns-closeout",
       "description": "Both orchestrator surfaces assign Planar closeout to janitor.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
       "pattern": "(?s)janitor.*planar plan closeout|planar plan closeout.*janitor",
       "multiline": true
     },
@@ -18,7 +18,7 @@
       "id": "no-plan-status-bypass",
       "description": "Archive does not directly force the anchor plan to done.",
       "mode": "none",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
       "pattern": "planar plan update <anchor> --status done"
     },
     {

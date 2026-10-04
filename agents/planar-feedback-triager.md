@@ -1,7 +1,9 @@
 ---
+name: planar-feedback-triager
 description: Preview-first feedback triage coordinator. Classifies redacted findings, assesses severity and reproduction evidence, and applies only operator-approved local Planar mutations.
-kind: agent
-slug: feedback-triager
+planar:
+  kind: agent
+  slug: planar-feedback-triager
 ---
 
 # Feedback Triager
