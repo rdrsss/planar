@@ -858,7 +858,7 @@ After all selected vendor wiring succeeds, `install.sh` atomically replaces
 `$PLANAR_HOME/install-manifest.json` (normally
 `~/.planar/install-manifest.json`). Version 1 records the build id, global
 `copy|link` installation mode, selected managed vendors, selected optional
-installer extras (currently `mtkahypar`), and one row per managed skill or
+installer extras (currently none), and one row per managed skill or
 agent projection. Each row fixes the vendor, projection kind
 and name, staged and installed paths, actual `copy|link` install kind, and the
 two legacy digest fields — populated only when the staged file happens to
@@ -1004,7 +1004,6 @@ make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
                         # cmake --install into PREFIX/bin (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-cpp-report    # the same ctest suite plus its SKIP TALLY (expected: 0)
-make test-cpp-solver    # ctest against a -DPLANAR_WITH_MTKAHYPAR=ON build
 make test-all           # unit (ctest) + ctest-registry-check + coverage +
                         # cli-usage-check + surface-check + exit-code-contract +
                         # eval-contracts + cpp-lint-gate
@@ -1040,7 +1039,7 @@ The black-box lane follows two stylistic conventions documented in [Testing § B
 - **One connection per process.** Passed through explicit context/handler parameters; no global mutable state.
 - **Migrations are append-only.** Never edit a released migration. Add a new file with the next sequence number via `sqlx migrate add -r <name> --source migrations`.
 - **The adapter boundary is interface-typed.** The sync engine and propagation modules dispatch through the `external_adapter` interface; they never branch on adapter kind.
-- **No external (system) C dependencies — only vendored, CPM-cached C/C++ source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, `planar-watch`, `planar-ext`) and `vendor/lua/` (linked into `planar-execute`) are the C the build touches; `vendor/curl/`, `vendor/glaze/`, `vendor/spdlog/`, `vendor/cli11/`, `vendor/catch2/`, `vendor/tree_sitter/`, `vendor/tree_sitter_zig/`, and the optional solver's `vendor/mtkahypar/`, `vendor/kahypar_shared_resources/`, `vendor/whfc/` round out the dependency set.
+- **No external (system) C dependencies — only vendored, CPM-cached C/C++ source.** `vendor/sqlite/` (linked into `planar`, `planar-agent`, `planar-watch`, `planar-ext`) and `vendor/lua/` (linked into `planar-execute`) are the C the build touches; `vendor/curl/`, `vendor/glaze/`, `vendor/spdlog/`, `vendor/cli11/`, `vendor/catch2/`, `vendor/tree_sitter/`, `vendor/tree_sitter_zig/` round out the dependency set. Master has no dynamic runtime library dependency beyond the platform: the Mt-KaHyPar solver arm, and with it TBB, lives on branch `dev/grouping-solvers` (decision 1293).
 - **Skills call the binaries.** Agent skills do not write the database directly. They invoke `planar` / `planar-agent` / `planar-ext` verbs and read stdout. `planar-watch` is read-only and opens the database via `file:?mode=ro`.
 - **Schema is the contract.** Read-side tools must check `schema_migrations.version` before operating against the database. `planar`, `planar-agent`, `planar-watch` and `planar-ext` all enforce this at startup (exit 7 on a version mismatch); see the schema-contract section above for which direction each binary refuses.
 - **The capability split is verb-level.** Each of the four planning-state binaries can only do what its registered verb set (and, for `planar-ext`, its `sqlite3_set_authorizer` allowlist) lets it do; the `src/cmd/*/capability.t.cpp` cases fail the build if a write verb is registered on `planar-watch` or a planning-entity verb on `planar-agent`. `planar-execute` holds no DB handle at all and is bounded by the verb sets of the binaries it shells.
