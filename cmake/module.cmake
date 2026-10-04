@@ -299,18 +299,6 @@ function(planar_binary name)
     OUTPUT_NAME "${_output_name}")
   install(TARGETS ${_target} RUNTIME DESTINATION bin)
 
-  # RELOCATABLE INSTALL RPATH (task 6536). Only `planar` actually links the
-  # solver today, but the rpath is set on every shipped executable so that a
-  # future binary picking up `planar_engine_grouping` does not silently
-  # install a non-starting artifact -- which is exactly how 6536 was found.
-  # A relative rpath keeps `<prefix>/bin/planar` working after the source
-  # checkout it was built from is moved or deleted; CMake strips the
-  # build-tree rpath on install, so without this there is nothing left.
-  if(PLANAR_WITH_MTKAHYPAR)
-    set_target_properties(${_target} PROPERTIES
-      INSTALL_RPATH "@loader_path/../lib;$ORIGIN/../lib")
-  endif()
-
   if(PLANAR_WARNINGS_AS_ERRORS)
     target_compile_options(${_target} PRIVATE
       $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:-Werror>)

@@ -9,7 +9,7 @@ import std;
 import planar.json_text;
 import planar.db;
 import planar.engine.grouping.greedy;
-import planar.engine.grouping.mtkahypar;
+import planar.engine.grouping.optimal_arm;
 
 namespace planar::engine::grouping::load {
 
@@ -247,8 +247,8 @@ auto recommend(db::connection& conn, std::int64_t plan_id, std::uint32_t budget)
   };
 }
 
-auto recommend_with(db::connection& conn, std::int64_t plan_id, std::uint32_t budget, solver requested)
-    -> std::expected<recommendation, grouping_error> {
+auto recommend_with(db::connection& conn, std::int64_t plan_id, std::uint32_t budget, solver requested,
+                    const optimal::arm& optimal_arm) -> std::expected<recommendation, grouping_error> {
   if (requested == solver::greedy) {
     return recommend(conn, plan_id, budget);
   }
@@ -259,8 +259,8 @@ auto recommend_with(db::connection& conn, std::int64_t plan_id, std::uint32_t bu
   }
   const auto open_tasks = loaded->tasks.size();
 
-  if (mtkahypar::available()) {
-    if (auto solver_grouping = mtkahypar::try_partition(loaded->tasks, loaded->deps, budget); solver_grouping.has_value()) {
+  if (optimal_arm.available && optimal_arm.try_partition && optimal_arm.available()) {
+    if (auto solver_grouping = optimal_arm.try_partition(loaded->tasks, loaded->deps, budget); solver_grouping.has_value()) {
       // Both arms run on IDENTICAL inputs, scored with the IDENTICAL cost
       // function (greedy::grouping::total_cost()) -- the task-4247 contract:
       // the shipped result's cost is never higher than greedy's own.
@@ -278,7 +278,7 @@ auto recommend_with(db::connection& conn, std::int64_t plan_id, std::uint32_t bu
             .selected_greedy   = true,
         };
       }
-      // mtkahypar tied or beat greedy -> ship the solver result.
+      // The optimal arm tied or beat greedy -> ship the solver result.
       return recommendation{
           .plan_id           = plan_id,
           .budget            = budget,

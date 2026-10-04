@@ -15,9 +15,9 @@
 //
 // What that shape structurally cannot reach, at any count:
 //
-//   - THE BINARY FAILING TO START. Task 6536: a solver-ON build produced a
-//     `planar` that died at dyld with `Library not loaded:
-//     @rpath/libmtkahypar.dylib`, exit 134. All 3,422 in-process tests
+//   - THE BINARY FAILING TO START. Task 6536: a build that linked a shared
+//     library produced a `planar` that died at dyld with `Library not loaded:
+//     @rpath/...`, exit 134. All 3,422 in-process tests
 //     passed, because an in-process test never links the shipped executable
 //     — it IS the executable. Only a real exec catches this class.
 //   - "THIS VERB OPENS NO DATABASE." An in-process test constructs the

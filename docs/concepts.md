@@ -1291,7 +1291,7 @@ Each entry is a `"<kind>:<id>"` reference parsed into an `entity_ref` struct. Cu
 
 ---
 
-The remaining sections describe Planar's executables and supporting components: the binary set, the host build and test queue, the deterministic workflow engine, an unrelated external workflow harness, and the unimplemented interactive cockpit.
+The remaining sections describe Planar's executables and supporting components: the binary set, the host build and test queue, the deterministic workflow engine, and an unrelated external workflow harness.
 
 ## Binaries
 
@@ -1301,7 +1301,7 @@ The fifth, `planar-execute`, is **not** a planning-state executable: it is the d
 
 | Binary | Audience | Writes to |
 |---|---|---|
-| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. Also registers the `explore` leaf, which prints help (there is no cockpit — see [§ Interactive cockpit](#interactive-cockpit)). |
+| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. Also registers the `explore` leaf, which is reserved for launching Planar Explorer and currently prints its help and exits 0 (see [`planar explore`](cli-reference.md#domain-explore)). |
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`), `workflow_runs` (via `run start`/`end`/`heartbeat`), `context_records` (via `context add`/`capsule`/`resolve`), and the `routing_dispatch_previews` / `routing_dispatch_snapshots` authorization tables (via `dispatch preview`/`confirm`). It also writes `queue_entries` and `queue_history` in `planar.db`, the host-wide build and test queue (via `queue run` and `queue cancel`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
 | `planar-ext` | Operator + ext-sync agent (operational plane) | Exactly `external_links`, `external_systems`, `sync_events`. Planning tables (`plans`, `tasks`, `questions`, `artifacts`, …) are opened read-only, and the allowlist is enforced at the SQLite layer by a `sqlite3_set_authorizer` callback that fires on the parsed table name, not by convention (decisions 995–1001). Owns both operational adapters, Jira and GitHub Issues. |
@@ -1389,30 +1389,3 @@ Inside the harness:
 - A cooperative scheduler drives `ctx.parallel` (N-way barrier) and `ctx.pipeline` (per-item stage chains).
 - A preemptive heartbeat thread fires at TTL/2 cadence independently of the Lua scheduler to keep active claims alive during long-running workflows.
 - The journal (`ctx.phase`, `ctx.log`) records the execution arc as a sequence of timestamped entries; the journal is printed to stdout as the workflow progresses.
-
----
-
-## Interactive cockpit
-
-> **NOT IMPLEMENTED, AND NO LONGER IMPLEMENTED ANYWHERE.** There is no
-> interactive TUI in the `planar` binary. `explore` is registered as a leaf,
-> but its handler prints the leaf's own help page and exits 0
-> (`explore_fallback` in `src/cmd/planar/dispatch.cpp`, decision 1003 /
-> task 6444); it is the sole entry in that binary's `unported_paths()`
-> inventory. Bare `planar` prints the root help regardless of TTY. Decision
-> 980 records the cockpit as a **rewrite candidate, not a port**, and
-> decision 982 excluded it from the zig-deletion gate, so the Zig
-> implementation that provided it (libvaxis-based, under
-> `src/cmd/planar/cockpit/`) was deleted with `zig/` at the M10 cutover
-> without a replacement. There is no `vendor/libvaxis/` in this tree.
-
-What the cockpit was specified to be — thirteen read-only views over the
-planning graph, three editing tiers routed through `planar`'s existing write
-paths, and a terminal-capability gate (`TERM=dumb`, `PLANAR_NO_TUI`,
-`--plain`, non-TTY stdout) that fell back to help — is preserved as the
-design record in
-[`docs/architecture.md § Interactive cockpit`](architecture.md#interactive-cockpit--specified-not-implemented)
-and [`docs/cli-reference.md § Domain: explore`](cli-reference.md#domain-explore).
-One design point survives as doctrine: any future cockpit belongs in the
-read-write `planar` binary, not in `planar-watch`, whose `SQLITE_OPEN_READONLY`
-handle and zero-write verb set are load-bearing capability invariants.

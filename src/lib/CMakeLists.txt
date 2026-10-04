@@ -67,8 +67,9 @@
 # is the closure-replication-minimizing slice recommender behind `groups
 # recommend`; it reads the same `closures` table as `src/engine/closure` through
 # its OWN query rather than depending on that bucket (a layer-2-to-layer-2
-# edge would FATAL), mirroring what the Zig originals do. The optional
-# `mtkahypar` solver arm is deferred with its subprocess dependency.
+# edge would FATAL), mirroring what the Zig originals do. Master ships
+# greedy only; the solver arm lives on branch `dev/grouping-solvers`
+# (decision 1293).
 # `src/engine/models` (plan 996, task 6096) is the opaque candidate registry, the
 # 95%-Wilson-lower-bound cohort ranking behind `models evals`, and the
 # read-only routing-evidence views — thirteen of the fourteen `models` schema
