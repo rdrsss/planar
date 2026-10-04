@@ -35,6 +35,6 @@ export auto add(CLI::App& root) -> void {
   cliapp::add_bool_flag(*reconcile, "--override-supervisor",
                         "Also reconcile engine-supervised claims and centurion runs (skipped by default; logged as "
                         "supervisor_override)");
-  shared::add_json(*reconcile, shared::k_undocumented);
+  shared::add_json(*reconcile, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::reconcile_cli

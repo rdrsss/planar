@@ -21,7 +21,7 @@ export auto add(CLI::App& root) -> void {
       "Text: one line per entry, columns SEQ STATE POS NOTES WAITED RAN VENDOR ROLE LABEL DIRECTORY\n  COMMAND, "
       "the command shell-quoted. --json: an array of objects, one per entry.\n\n  `queue history` lists the entries that "
       "have ended.");
-  shared::add_json(*queue, cliapp::k_undocumented);
+  shared::add_json(*queue, "Emit machine-readable JSON instead of text");
 
   // --- queue history --------------------------------------------------
   CLI::App* history = queue->add_subcommand(
@@ -35,6 +35,6 @@ export auto add(CLI::App& root) -> void {
       "RESULT ENDED WAITED RAN NOTES VENDOR ROLE LABEL DIRECTORY\n  COMMAND. --json: an array of objects, one per row.");
   history->add_option("--since")->description(
       "Only rows that ended within this long: an integer and a unit (ms, s, m, h, d), at most 36500d");
-  shared::add_json(*history, cliapp::k_undocumented);
+  shared::add_json(*history, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::watch::handlers::queue_cli

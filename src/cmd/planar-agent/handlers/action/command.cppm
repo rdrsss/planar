@@ -24,7 +24,7 @@ export auto add(CLI::App& root) -> void {
   shared::add_no_locality_probe(*action_start, "Skip the git locality probe");
   action_start->add_option("--metadata")
       ->description("Opaque text (typically JSON) persisted on the action row; validated as well-formed JSON when supplied");
-  shared::add_json(*action_start, shared::k_undocumented);
+  shared::add_json(*action_start, "Emit machine-readable JSON instead of text");
 
   CLI::App* action_end = action->add_subcommand("end", "Close a nested action started under a claim.");
   action_end->add_option("--action")
@@ -36,6 +36,6 @@ export auto add(CLI::App& root) -> void {
   // value set to the help page and to the schema catalog.
   action_end->add_option("--outcome")->description("ok | error | aborted | timeout (default ok)")->default_str("ok");
   action_end->add_option("--summary")->description("Optional free-text summary recorded on the action");
-  shared::add_json(*action_end, shared::k_undocumented);
+  shared::add_json(*action_end, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::action_cli

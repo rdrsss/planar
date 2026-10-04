@@ -20,6 +20,6 @@ export auto add(CLI::App& root) -> void {
   block->add_option("--reason")->description("Free-text reason recorded on the claim");
   shared::add_no_locality_probe(*block, "Skip the git locality probe and commit collection");
   shared::add_supervision(*block, true);
-  shared::add_json(*block, shared::k_undocumented);
+  shared::add_json(*block, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::block_cli
