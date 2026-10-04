@@ -1402,7 +1402,7 @@ def grade_coherence(root: Path = ROOT) -> None:
             "agents/planar-test-coder.md",
         ],
     )
-    must(r"pl-spec-review", ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"])
+    must(r"pl-spec-review|planar-spec-reviewer", ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"])
     must(
         r"never recommended",
         ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md", "agents/methodology.md"],

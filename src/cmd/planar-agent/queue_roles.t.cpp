@@ -2,9 +2,9 @@
 // (plan 1080, task hq-role-files; tech spec 647 § Codex is reached through
 // role files; test spec 649 "every vendor's role files carry the short rule").
 //
-// Scriptorium does not render `agents/methodology.md` for Codex, so each role
-// file and each skill source carries the short form itself. These cases read
-// the authored sources from the repository and fail when one of them loses an
+// Each skill source carries the short form itself. Each role file carries one
+// sentence citing the host build queue rule in `agents/methodology.md`. These
+// cases read the authored sources from the repository and fail when one of them loses an
 // element the short form needs, or when the coder's own instructions stop
 // using the queued form. That no source tells an agent to run a build or test
 // command directly is not checked here: `surface_lint` owns that rule
@@ -20,12 +20,18 @@ import std;
 
 namespace {
 
-/// @brief Every authored source that must carry the short form. The janitor has
-/// no skill source.
+/// @brief Every skill source that must carry the short form.
 constexpr std::array k_sources{
-    "agents/planar-coder.md",      "agents/planar-test-coder.md",   "agents/planar-reviewer.md",
-    "agents/planar-janitor.md",    "agents/planar-orchestrator.md", "skills/src/pl-coder.md",
-    "skills/src/pl-test-coder.md", "skills/src/pl-reviewer.md",     "skills/src/pl-orchestrator.md",
+    "skills/src/pl-coder.md",
+    "skills/src/pl-test-coder.md",
+    "skills/src/pl-reviewer.md",
+    "skills/src/pl-orchestrator.md",
+};
+
+/// @brief Every role file, which cites the methodology's queue rule.
+constexpr std::array k_role_files{
+    "agents/planar-coder.md",   "agents/planar-test-coder.md",   "agents/planar-reviewer.md",
+    "agents/planar-janitor.md", "agents/planar-orchestrator.md",
 };
 
 auto read_file(std::filesystem::path const& path) -> std::string {
@@ -79,7 +85,7 @@ auto flat(std::string_view text) -> std::string {
 
 } // namespace
 
-TEST_CASE("every role file and skill source carries the short form of the queue rule", "[cmd][agent][queue][roles]") {
+TEST_CASE("every skill source carries the short form of the queue rule", "[cmd][agent][queue][roles]") {
   auto const command = rule_command_line();
   REQUIRE(contains(command, "--vendor <vendor> --role <role> -- <command>"));
 
@@ -104,6 +110,15 @@ TEST_CASE("every role file and skill source carries the short form of the queue 
   }
 }
 
+TEST_CASE("every role file cites the methodology's host build queue rule", "[cmd][agent][queue][roles]") {
+  for (auto const* rel : k_role_files) {
+    DYNAMIC_SECTION(rel) {
+      auto const text = flat(read_file(repo(rel)));
+      CHECK(contains(text, "host build queue rule in `methodology.md` in the Planar agents directory"));
+    }
+  }
+}
+
 TEST_CASE("the coder's gate instructions use the queued form", "[cmd][agent][queue][roles]") {
   auto const text = flat(read_file(repo("agents/planar-coder.md")));
   // Long profile commands are submitted detached, short ones run in the
@@ -114,7 +129,9 @@ TEST_CASE("the coder's gate instructions use the queued form", "[cmd][agent][que
 }
 
 TEST_CASE("no role file or skill source names a make target in a queue line", "[cmd][agent][queue][roles]") {
-  for (auto const* rel : k_sources) {
+  std::vector<std::string_view> all(k_sources.begin(), k_sources.end());
+  all.insert(all.end(), k_role_files.begin(), k_role_files.end());
+  for (auto const rel : all) {
     DYNAMIC_SECTION(rel) {
       std::istringstream in(read_file(repo(rel)));
       for (std::string line; std::getline(in, line);) {

@@ -8,10 +8,10 @@
   "contract_assertions": [
     {
       "id": "spec-review-present",
-      "description": "Both orchestrator surfaces invoke pl-spec-review.",
+      "description": "Both orchestrator surfaces invoke the spec review.",
       "mode": "all",
       "paths": ["skills/src/pl-orchestrator.md", "agents/planar-orchestrator.md"],
-      "pattern": "pl-spec-review"
+      "pattern": "pl-spec-review|planar-spec-reviewer"
     },
     {
       "id": "ready-gates-ingestion",

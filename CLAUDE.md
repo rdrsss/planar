@@ -369,4 +369,4 @@ Test layers, harness, conventions and rationale:
    rendered output.
 2. Use the current CLI and the SQLite-backed model in all workflow text.
 3. Run `make cli-usage-check`.
-4. To check rendering without installing, run `make eval-render`.
+4. To lint the skill tree, run `make surface-lint`.

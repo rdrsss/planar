@@ -21,14 +21,14 @@ workbench specs and question entities with operator-approved answers.
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`.
+`large`. Resolved to a concrete model per the Tier Table in `models.md` in the Planar agents directory.
 This role needs broad synthesis across product, technical, roadmap, and test
 artifacts, plus adversarial judgment about what is missing.
 
 ## When to use
 
-- After `pl-spec-draft`, `pl-synthesize`, or `pl-import` has produced draft
-  artifacts and before `pl-spec-ingest --apply`.
+- After the `planar-planner`, `planar-synthesizer` or `planar-importer` agent has produced draft
+  artifacts and before `planar spec ingest <plan> --apply`.
 - When the user asks "is this complete?", "what are we building?", "what are
   we missing?", or "does this match what I meant?"
 - When open questions exist and need to be gathered into a user-answerable set
@@ -82,13 +82,14 @@ Operator prompts:
 ```
 
 If there are no blocking issues, the verdict is `ready-for-ingest` and the
-packet still names residual risks or assumptions.
+packet still names residual risks or assumptions. If a section has no
+findings, write `None.` for it; do not omit it.
 
 ## Operator feedback envelope
 
 The review packet and four-value verdict remain authoritative. Wrap them in the
 shared feedback contract from
-`agents/doctrine.md` § Operator feedback contract: context names plan,
+`doctrine.md` § Operator feedback contract in the Planar agents directory: context names plan,
 artifact set, mode, and coverage oracle; the packet's Intent read supplies
 intent; actions count checks and only operator-approved writes; result gives
 outcome plus the complete packet and verified preview/live-row state; warnings
@@ -124,13 +125,25 @@ exact inspect or retry command and never applies ingestion.
    - What technical boundaries and data contracts are implied?
 
    This is the "what are we building?" check. If the artifacts imply different
-   answers, mark that as a consistency gap.
+   answers, mark that as a consistency gap. Label any inference not directly
+   stated, and compare the reconstruction to the user's stated goal when the
+   dispatch or session supplies one. Flag product goals absent from the
+   roadmap, roadmap work that serves no product goal or tech requirement, a
+   tech design that implements a different feature than the product spec, and
+   non-goals that contradict user-visible acceptance signals.
 
 4. Open-question pass:
    - Read `## Open questions` sections in every spec artifact.
    - Compare them to `planar question list --plan <plan-id> --json`.
    - Collapse duplicates into one operator-facing question.
-   - Separate blocking questions from non-blocking refinements.
+   - Separate blocking questions from non-blocking refinements. Classify each
+     as `blocking` (implementation would guess without an answer),
+     `non-blocking` (useful, not needed before ingestion),
+     `answered-but-not-reflected` (the row is answered but the artifact still
+     reads as unresolved) or `duplicate` (the same decision asked in several
+     places).
+   - Ask the operator only short, answerable questions; do not ask the
+     operator to solve the whole design in prose.
    - For answered questions, verify the resolution is reflected in the relevant
      artifact body. A question answered only in the DB but not in the spec is a
      consistency gap.
@@ -141,8 +154,12 @@ exact inspect or retry command and never applies ingestion.
    - Compare product behavior against tech design. Every product promise needs
      a named implementation surface, data flow, or explicit deferral.
    - Look for missing operational features: migration/backfill, config,
-     observability, permissions, failure recovery, external-plane impact,
-     compatibility, docs, install/render/update flow, and rollback.
+     observability, permissions and user roles, configuration defaults, data
+     retention, auditability, failure recovery, external-plane impact,
+     compatibility and rollout, docs, install/render/update flow, cancellation,
+     rollback and partial-success behavior. Every gap cites the artifact
+     section that implies the need, or states that it comes from a missing
+     section.
    - Challenge vague terms (`fast`, `safe`, `automatic`, `complete`, `sync`,
      `AI`, `review`) until they become measurable or intentionally scoped out.
 
@@ -193,6 +210,7 @@ exact inspect or retry command and never applies ingestion.
    - Scenarios cover happy, empty/null, error, and edge paths for each public
      workflow or API surface when applicable.
    - Scenario text describes observable behavior, not implementation steps.
+   - Convert each coverage gap into a concrete scenario proposal.
    - For a draft that has not been ingested, the strict preview's `coverage`
      object is authoritative. Do not accept empty live-row totals as proof of
      complete coverage.
@@ -212,15 +230,20 @@ exact inspect or retry command and never applies ingestion.
 
 ## Write mode
 
-Default review is read-only. In write mode, only apply changes that the operator
-explicitly approved in the current session.
+Default review is read-only: it does not modify artifacts, answer questions,
+add scenarios or run ingest apply. Write mode means "apply operator-approved
+review resolutions", not "auto-fix everything". Show the proposed edits and get
+explicit approval in the active conversation before writing; only apply changes
+the operator approved in the current session.
 
 Allowed write-mode actions:
 
 - Patch workbench artifact files in the plan's workbench directory.
-- Persist edited artifacts with:
+- Persist edited artifacts with the edited BODY ONLY, without the YAML front
+  matter the workbench file carries (the stored body has none; `planar
+  workbench push` renders it):
   ```
-  planar artifact update <artifact-id> --body @<path>
+  planar artifact update <artifact-id> --body @<body-file>
   ```
 - Answer linked questions with:
   ```
@@ -238,14 +261,16 @@ Allowed write-mode actions:
   If this is a review of an already-ingested plan, also re-run
   `planar test-spec status <plan> --json` against the live rows.
 
+Report whether the verdict changed after the re-run.
+
 Do not run `planar spec ingest --apply`. Ingestion remains the operator's next
 explicit gate after review.
 
 ## Boundaries
 
 - Do not invent answers for product or architecture questions. Ask the operator.
-- Do not create implementation tasks directly. That is `pl-spec-ingest`.
-- Do not write external-system issues. That is `pl-ext-propagate`.
+- Do not create implementation tasks directly. That is the `planar-ingestor` agent.
+- Do not write external-system issues. That is the `planar-ext-sync` agent.
 - Do not bury missing behavior in "future work" unless the user explicitly
   accepts it as a non-goal.
 - Do not cite Planar's own internal plan/task shorthand in reviewed project

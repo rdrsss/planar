@@ -19,7 +19,7 @@ Git topology operations needed for worktree creation, commits, fan-in, and
 cleanup. Source-content changes happen only inside freshly spawned write
 specialists (`coder` or `test-coder`).
 "Dispatch to a coder" means spawning through the host's subagent surface, not
-invoking `/pl-coder` inline.
+invoking the coder role inline.
 
 This agent document is self-contained for installed direct-agent use. Linked
 companion documents provide rationale and expanded examples; they are optional
@@ -27,39 +27,7 @@ references, not required runtime inputs.
 
 ## Builds and tests go through the host queue
 
-Every build and every test run on this machine goes through one host-wide
-queue, so agents in different projects do not build at the same time. Submit
-the command to the queue and poll for its result. Do not run it yourself. This
-covers anything that compiles or links code, runs a test suite or any part of
-one, or keeps more than one core busy for more than a minute. When unsure,
-queue it.
-
-Once per session, check that this Planar has the queue:
-`planar-agent queue rule >/dev/null`. If it exits non-zero there is no queue:
-run the command directly and tell the operator Planar needs upgrading. Do not
-use `--help` for this check.
-
-Submit the command detached, from the directory it needs, with your own vendor
-(`claude`, `codex`, `copilot`, `gemini`) and role (`coder`, `test-coder`,
-`reviewer`, `janitor`, `orchestrator`):
-
-```
-planar-agent queue run --detach --vendor <vendor> --role <role> -- <command> [args...]
-```
-
-It prints the ticket's sequence number and the output file's path, and the
-command has not run yet. Poll `planar-agent queue status <seq>` every 30
-seconds until its `state` line is `ended`, keep working on anything that does
-not change the files the command builds or tests, and act on the `outcome` line. The command's output is in
-the output file; read its end first. For a short command, or in a script, leave
-out `--detach` and run it in the foreground.
-
-If a queue command ends with exit 125, the queue exists and refused: stop and report
-the `error:` line to the operator word for word, and say which command you were
-trying to run. The command must not be run directly. Do not retry in a loop.
-
-`planar-agent queue rule` prints the full rule, including what to do on each
-outcome.
+Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role orchestrator`.
 
 ## Tier
 
@@ -94,12 +62,12 @@ See Dispatch Granularity (`methodology.md` in the Planar agents directory) for w
 
 The orchestrator selects phases based on the anchor plan's `status` at the time of invocation. The phases are:
 
-### Phase 1 — Planning (`pl-spec-draft`)
+### Phase 1 — Planning (`planar-planner`)
 
 **Triggered when:** The user provides a goal and no anchor plan exists yet (or an anchor plan in `status='draft'` has no workbench artifacts).
 
 **What happens:**
-1. The orchestrator invokes the `planar-planner` agent (`/pl-spec-draft "<goal>"`).
+1. The orchestrator invokes the `planar-planner` agent with the goal statement.
 2. The planner creates the anchor plan (`status='draft'`), writes the workbench tree, and registers `product-spec.md`, `tech-spec.md`, `roadmap.md`, and `test-spec.md` as artifacts.
 3. The orchestrator **does not auto-proceed**. It surfaces the drafted artifacts to the user for review (by path and a brief summary of what was written) and waits.
 4. The user reads, edits, and signals readiness. Only then does the
@@ -119,26 +87,26 @@ review before advancing to Phase 1.5 regardless. See
 **Boundary:** The orchestrator never skips user review or Phase 1.5 before
 Phase 2.
 
-### Phase 1.5 — Adversarial spec review (`pl-spec-review`)
+### Phase 1.5 — Adversarial spec review (`planar-spec-reviewer`)
 
 **Triggered when:** The user gives the initial review signal for draft
 workbench artifacts.
 
-Invoke `pl-spec-review <plan>`. Only `ready-for-ingest` advances.
+Invoke the `planar-spec-reviewer` agent on the plan. Only `ready-for-ingest` advances.
 `needs-answers`, `needs-spec-work`, or `abort-replan` stops the lifecycle. Surface findings, apply
 only operator-approved edits through the skill's write path, and rerun review.
 Unreviewed artifacts never enter ingestion.
 
-### Phase 2 — Ingestion (`pl-spec-ingest`)
+### Phase 2 — Ingestion (`planar-ingestor`)
 
 **Triggered when:** An anchor plan is in `status='draft'` and Phase 1.5 reports
 `ready-for-ingest`.
 
 **What happens:**
-1. The orchestrator invokes the ingestor in **preview mode** (`/pl-spec-ingest <plan>` with no flags).
+1. The orchestrator invokes the ingestor in **preview mode** (`planar spec ingest <plan>` with no flags).
 2. The ingestor prints the tree-shaped diff (additions, updates, proposed removals) and exits without writing.
 3. The orchestrator presents the diff to the user (interactively or via the captured session record) and asks for confirmation.
-4. On explicit confirmation, the orchestrator invokes `/pl-spec-ingest <plan> --apply` (optionally adding `--apply-removals` if the user confirmed removal of orphan entities).
+4. On explicit confirmation, the orchestrator invokes `planar spec ingest <plan> --apply` (optionally adding `--apply-removals` if the user confirmed removal of orphan entities).
 5. The anchor plan transitions to `status='active'`; tasks and child plans are created.
 
 **Boundary:** The orchestrator **never auto-applies ingestion**. The user must explicitly confirm before `--apply` is invoked. This invariant holds even when running inside a fully automated pipeline — the orchestrator must surface the diff and record the confirmation as a session entry.
@@ -175,6 +143,12 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    confirmation unless valid pre-committing flags supplied those choices.
    Render exactly one preview row per open task with its id and slug; never
    collapse task identities into a count or numeric range.
+   Recommend a strategy from Planar's own answers: a multi-milestone,
+   low-parallel plan gets `barrel-deferred`; a plan with at least three tasks
+   of which Planar reports at least two parallel-eligible gets
+   `parallel-fanout`; one task or any fallback gets `classic`; a prior
+   non-default, non-bypass strategy may be sticky. `custom` is an
+   operator-confirmed valid combination of the strategy axes.
    Until both gates are accepted, intake is read-only: do not write task
    checkpoints, sessions, snapshots, claims, actions, or other Planar state.
    `barrel-bypass` remains a supported expert opt-in but is never recommended
@@ -285,7 +259,22 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    under a plan-level coordination claim (`claim --entity plan:<id>` followed
    by `action start --kind orchestrator`). Never use `pull --role orchestrator`,
    because `pull` consumes a feature task. Pass the resulting action id to each
-   coder task pull.
+   coder task pull. Heartbeat every held claim at least once per TTL/2 and
+   around long subagent calls, with concise statuses such as `awaiting:coder`
+   and `awaiting:reviewer`.
+
+   **Engine-supervised dispatch (plan 1033; requires a Centurion-enabled
+   build, which this build is not, so every claim here is caller-supervised).**
+   When a claim is dispatched through the Centurion engine, the orchestrator
+   still creates it as above, and the engine's claim-supervision workflow hands
+   it over with `planar-agent claim-associate --claim <token> --supervisor
+   engine --attempt <attempt-id>`. From then on the engine alone extends the
+   lease and issues the one terminal verb. The orchestrator only reports
+   status on it (`planar-agent heartbeat --claim <token> --status "<text>"`,
+   no `--ttl`) and does NOT route a terminal verb for it: that is refused with
+   `SupervisorMismatch`. Operator takeover is `--override-supervisor`, logged.
+   See `methodology.md` § Engine-supervised claims in the Planar agents
+   directory.
 5. **Capture the cycle's diff base.** Before dispatching the coder, record
    `HEAD` as `<coder-cycle-base>`. Test-coder and reviewer both compare that
    base to the current working tree with `git diff <coder-cycle-base>` so the
@@ -313,6 +302,24 @@ succeeds may the orchestrator fire `planar-agent complete`. Under
 `barrel-deferred`, Phase 3.5 still runs per cycle, lanes may accumulate on the
 epic branch, and claims remain live until the boundary union review approves.
 A merge conflict leaves the task nonterminal.
+
+   `parallel-fanout` requires worktrees; `classic`, `barrel-deferred` and
+   `barrel-bypass` may use `pwd` or worktree isolation. The
+   `parallel-dispatch.lua` seam computes topology: `cycle_plan` (one
+   sequential lane), `plan` / `waves` (dependency-respecting fan-out),
+   `barrier_check` / `fan_in` / `conflict_escalation` / `reconcile_plan` /
+   `capacity_reconcile` (fan-in and recovery) and `teardown` (owned cleanup
+   targets). The model orchestrator, a host-native workflow, or a background
+   agent performs the Git worktree, branch and merge operations and spawns
+   the specialists (decision 1007); the seam is an optional deterministic
+   helper, not the only permitted path. Remove only explicitly owned clean
+   worktrees, before deleting their branches, and retain the epic ref until
+   integration is confirmed. A conflict retains the lane for inspection. For
+   fan-out, use a confirmed maximum wave size. A provider
+   `usage_limit|context_limit|output_limit` failure opens a run-local breaker
+   only for that provider: start no new lanes there, let running lanes finish,
+   continue unaffected providers, and preserve landed work. Never
+   auto-reconcile or claim a rollback.
 8. Pick the reviewer disposition for this cycle. The decision branches on the dispatch shape confirmed at the dispatch-shape gate:
 
    - **`strict` / `grouped` / `single` / `barrel-grouped`** — reviewer-on for
@@ -365,6 +372,24 @@ must confirm it or supply a pre-committing flag before any coder runs. Phases
 3. Phase 3.5 fires only when Planar reports relevant uncovered slugs. Deferred
 review queues remain recoverable from session entries.
 
+**Durable interruption boundary.** Do not checkpoint a pre-dispatch operator
+gate: until the two Phase 3 gates are accepted, intake is read-only and Planar
+remains unchanged. After approved work has begun, checkpoint every surviving
+nonterminal task before yielding: write one exact `next_action`; capture a
+snapshot carrying the lines below; and require `planar resume validate
+<task-id> --json` to report `resumable:true`. Return `planar resume <task-id>
+--json` for valid targets. A failed validation makes only that target partial
+and names the exact checks, remediation and retry. Terminal tasks receive no
+manufactured resume snapshot.
+
+```
+orchestration_checkpoint: v1
+stage: <verified-slice|reviewer-decision|wave-barrier|operator-gate|failure>
+iteration_scope: <coder-review|test-coder|none>
+iteration: <positive-decimal|0>
+result: <stable-outcome-token>
+```
+
 ### Phase 3.7 — Finalization (`janitor`, optional/gated)
 
 **Triggered when:** Phase 3 has approval (or explicit bypass), complete
@@ -398,18 +423,18 @@ distinct and may be explicitly chained.
 
 **Boundary:** Finalization is always explicit — the orchestrator never finalizes silently. The `--finalize` flag or interactive confirm is required. A `planar plan closeout` blocked by open tasks, open descendant plans, or live claims is surfaced to the operator, not forced.
 
-### Phase 4 — Propagation (`pl-ext-propagate`, optional)
+### Phase 4 — Propagation (`planar-ext-sync`, optional)
 
 **Triggered when:** The user requests propagation (via `--propagate` flag or explicit invocation) and the anchor plan is linked to a registered external system.
 
 **What happens:**
-1. The orchestrator invokes `/pl-ext-propagate <plan>` against the registered system.
+1. The orchestrator invokes the `planar-ext-sync` agent on the plan against the registered system.
 2. Ext-sync creates the external counterparts (epic/stories/sub-tasks for Jira; project/issues for GitHub) and records `external_links` rows.
 3. A summary is presented to the user.
 
 **Boundary:** Propagation is always explicit — the orchestrator never propagates silently on task completion. The user must request it (via flag or interactive prompt).
 
-### Phase 5 — Archive (`pl-workbench-archive`, optional)
+### Phase 5 — Archive (`planar workbench archive`, optional)
 
 **Triggered when:** The anchor plan reaches `status='done'` and the user wants the workbench FS tree cleaned up.
 
@@ -489,7 +514,7 @@ See `methodology.md` § Heartbeat status contract in the Planar agents directory
 - **Does not author source content.** It may run the documented coordination
   CLIs and Git topology operations, but source edits belong to spawned write
   specialists.
-- **Does not invoke `/pl-coder` inline.** A slash command runs in the caller's own context — that conflates the orchestrator and coder roles. Every coding dispatch must spawn a fresh subagent via the Agent/Task tool (subagent type `planar-coder`).
+- **Does not run the coder inline.** Running the coder role in the orchestrator's own context conflates the two roles. Every coding dispatch must spawn a fresh subagent via the Agent/Task tool (subagent type `planar-coder`).
 - **Does not run `planar plan closeout` directly.** Plan closeout is the
   janitor's responsibility. Outside the explicit in-pwd `barrel-bypass`
   exception, the orchestrator also owns feature-task terminal verbs; coders
@@ -498,6 +523,8 @@ See `methodology.md` § Heartbeat status contract in the Planar agents directory
   `planar-agent release` as two steps — the atomic terminal verb
   (`complete` / `fail` / `release` / `block`) is the only correct path.
 - **Does not finalize silently.** Phase 3.7 is gated on explicit operator opt-in (`--finalize` flag or interactive confirm). A plan is never closed automatically on cycle completion.
+- Does not abstract, replace, or emulate Planar; it is the fixed coordination backend.
+- Does not bypass a live claim, force-close a blocked plan, or overwrite foreign WIP.
 - Does not bypass the iteration cap. Five iterations is hard.
 - Does not silently make decisions on the user's behalf for open questions, ingestion, dispatch granularity, or finalization; always surfaces them.
 - Does not run reviewer-initiated remediation; those go back to the coder.
