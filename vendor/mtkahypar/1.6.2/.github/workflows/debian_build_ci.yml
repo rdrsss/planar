@@ -1,0 +1,98 @@
+name: Mt-KaHyPar Debian Package
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.*"
+
+jobs:
+  debian_package_x86:
+    name: Debian Package x86
+
+    runs-on: ubuntu-22.04  # use old ubuntu for better backwards compatibility with system libraries
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          echo "deb http://cz.archive.ubuntu.com/ubuntu jammy main universe" | sudo tee -a /etc/apt/sources.list
+          sudo apt-get -y update
+          sudo apt-get -y install libtbb-dev libhwloc-dev gcc-10 g++-10
+
+      - name: Build Mt-KaHyPar Debian Package
+        env:
+          CC: gcc-10
+          CXX: g++-10
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=default -DCMAKE_POSITION_INDEPENDENT_CODE=On -DKAHYPAR_CI_BUILD=ON \
+          -DKAHYPAR_STATIC_LINK_DEPENDENCIES=ON -DKAHYPAR_INSTALL_CLI=ON \
+          -DKAHYPAR_ENABLE_ARCH_COMPILE_OPTIMIZATIONS=OFF -DKAHYPAR_ENABLE_THREAD_PINNING=OFF -DKAHYPAR_BUILD_DEBIAN_PACKAGE=ON
+          make -j4
+          make package-mtkahypar-deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package-x86
+          path: ./build/packages/*.deb
+
+
+  debian_package_arm64:
+    name: Debian Package ARM
+
+    runs-on: ubuntu-22.04-arm  # use old ubuntu for better backwards compatibility with system libraries
+    env:
+      CI_ACTIVE : 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get -y update
+          sudo apt-get -y install libtbb-dev libhwloc-dev gcc-10 g++-10
+
+      - name: Build Mt-KaHyPar Debian Package
+        env:
+          CC: gcc-10
+          CXX: g++-10
+        run: |
+          rm -rf build
+          mkdir build
+          cd build
+          cmake .. --preset=default -DCMAKE_POSITION_INDEPENDENT_CODE=On -DKAHYPAR_CI_BUILD=ON \
+          -DKAHYPAR_STATIC_LINK_DEPENDENCIES=ON -DKAHYPAR_INSTALL_CLI=ON \
+          -DKAHYPAR_ENABLE_ARCH_COMPILE_OPTIMIZATIONS=OFF -DKAHYPAR_ENABLE_THREAD_PINNING=OFF -DKAHYPAR_BUILD_DEBIAN_PACKAGE=ON
+          make -j4
+          make package-mtkahypar-deb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package-arm
+          path: ./build/packages/*.deb
+
+
+  upload_to_release:
+    needs: [debian_package_x86, debian_package_arm64]
+    name: Upload Packages to GitHub Release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect Debian Packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: debian-*
+          path: packages
+          merge-multiple: true
+
+      - name: Upload Packages
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./packages/*.deb
+          append_body: true
+          fail_on_unmatched_files: true

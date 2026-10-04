@@ -97,3 +97,11 @@ scripts/parity-data/parity-gap-report.md
 /agents/copilot/
 /agents/gemini/
 __pycache__/
+
+# Mt-KaHyPar's own upstream CMakeLists.txt (mt-kahypar/io/CMakeLists.txt)
+# writes its version header via `configure_file(... "${CMAKE_CURRENT_SOURCE_DIR}/version.h" ...)`
+# -- an in-source write into the vendored tree at configure time (task 6461).
+# Content is deterministic (fixed project version, no timestamps), so it is
+# not load-bearing for the vendored pin and would otherwise show as an
+# untracked file after every configure with PLANAR_WITH_MTKAHYPAR=ON.
+/vendor/mtkahypar/*/mt-kahypar/io/version.h
