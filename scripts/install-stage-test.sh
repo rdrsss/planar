@@ -820,4 +820,40 @@ for mode in copy link; do
   [[ ! -e "$P/bin" && ! -e "$P/install-manifest.json" && ! -e "$P/skills" ]] || fail "$mode: the prefix contents survived: $(ls -A "$P")"
 done
 
-printf 'install-stage tests: 30 scenarios passed\n'
+# 31. Upgrade from the older top-level agent layout. An older release linked
+# vendor agents straight to $PLANAR_HOME/agents/<role>.md (no <vendor>/ level).
+# The upgrade rebuilds that directory with planar-*.md only, so those links
+# would dangle. The sweep removes every such link, live or already dangling,
+# and leaves a foreign link, a regular file and a link elsewhere under the
+# prefix. A link-mode install followed by a re-run keeps its own planar-*
+# links, so the rule never sweeps the current layout.
+H="$TMP/h31"; P="$H/.planar"
+mk_home h31 claude codex
+mkdir -p "$P/agents" "$H/.codex/agents" "$H/.claude/agents" "$P/scripts"
+touch "$P/.planar-install"
+echo old > "$P/agents/coder.md"; echo old > "$P/agents/methodology.md"
+ln -s "$P/agents/coder.md" "$H/.codex/agents/coder.md"                   # live, retired layout
+ln -s "$P/agents/methodology.md" "$H/.claude/agents/methodology.md"       # live, retired layout
+ln -s "$P/agents/doc-author.md" "$H/.codex/agents/doc-author.md"         # already dangling
+ln -s /somewhere/else/coder.md "$H/.codex/agents/foreign.md"             # foreign link
+echo mine > "$H/.codex/agents/mine.md"                                   # regular file
+echo s > "$P/scripts/x.md"; ln -s "$P/scripts/x.md" "$H/.claude/agents/x.md"   # under the prefix, not agents/
+[[ -L "$H/.codex/agents/doc-author.md" && ! -e "$H/.codex/agents/doc-author.md" ]] || fail "the dangling fixture is not dangling"
+run_install "$REPO" "$H" || fail "upgrade from the top-level agent layout failed: $(cat "$H/err")"
+for gone in "$H/.codex/agents/coder.md" "$H/.claude/agents/methodology.md" "$H/.codex/agents/doc-author.md"; do
+  [[ ! -e "$gone" && ! -L "$gone" ]] || fail "the upgrade left the retired top-level agent link $gone"
+  grep -Fq "removed agent symlink: $gone" "$H/out" || fail "the removal of $gone was not printed: $(grep -i removed "$H/out")"
+done
+[[ -L "$H/.codex/agents/foreign.md" ]] || fail "a foreign agent link was removed"
+[[ -f "$H/.codex/agents/mine.md" ]] || fail "a regular agent file was removed"
+[[ -L "$H/.claude/agents/x.md" ]] || fail "a link elsewhere under the prefix was removed"
+grep -Fq 'retired 3 previous projection(s); left 0' "$H/out" || fail "unexpected sweep summary: $(grep 'previous projection' "$H/out")"
+H="$TMP/h31link"
+mk_home h31link "${ALL6[@]}"
+run_install "$REPO" "$H" --link || fail "link-mode install failed: $(cat "$H/err")"
+[[ -L "$H/.claude/agents/planar-coder.md" ]] || fail "link mode did not place planar-coder.md as a link"
+run_install "$REPO" "$H" --link || fail "link-mode re-run failed: $(cat "$H/err")"
+grep -Fq 'retired 0 previous projection(s); left 0' "$H/out" || fail "the link-mode re-run swept its own links: $(grep -E 'removed|previous projection' "$H/out")"
+[[ -L "$H/.claude/agents/planar-coder.md" ]] || fail "the link-mode re-run lost planar-coder.md"
+
+printf 'install-stage tests: 31 scenarios passed\n'
