@@ -378,8 +378,23 @@ sweep_commands() {
   done < <(find "$dir" -maxdepth 1 -type l \( -name 'pl-*.md' -o -name 'local-*.md' \) -print0)
 }
 
-# sweep_agents <dir> — the unprefixed agent symlinks the old render placed,
-# which point into $PLANAR_HOME/agents/<vendor>/. A symlink to a top-level
+# sweep_retired_toplevel_agent <link> — true when <link> points at a direct
+# child of $PLANAR_HOME/agents/ whose name is not planar-*: the layout an older
+# release linked vendor agents to before roles were prefixed. The current
+# layout links only to agents/planar-<role>.md, so it never matches. Live and
+# dangling links both match (readlink, not -e).
+sweep_retired_toplevel_agent() {
+  local link="$1" target rest
+  [[ -L "$link" ]] || return 1
+  target="$(readlink "$link" 2>/dev/null || true)"
+  [[ "$target" == "$PLANAR_HOME/agents/"* ]] || return 1
+  rest="${target#"$PLANAR_HOME/agents/"}"
+  [[ -n "$rest" && "$rest" != */* && "$rest" != planar-* ]]
+}
+
+# sweep_agents <dir> — the agent symlinks older installs placed: the unprefixed
+# render output under $PLANAR_HOME/agents/<vendor>/, and the still older links
+# to top-level $PLANAR_HOME/agents/<role>.md. A symlink to a top-level
 # agents/planar-<role>.md (link mode, the current layout) is not matched.
 sweep_agents() {
   local dir="$1" link v
@@ -387,7 +402,7 @@ sweep_agents() {
   [[ -d "$dir" ]] || return 0
   for v in claude codex copilot gemini antigravity opencode; do pats+=("$PLANAR_HOME/agents/$v/*"); done
   while IFS= read -r -d '' link; do
-    if sweep_link_into "$link" "${pats[@]}"; then
+    if sweep_link_into "$link" "${pats[@]}" || sweep_retired_toplevel_agent "$link"; then
       sweep_remove "$link" "agent symlink"
     fi
   done < <(find "$dir" -maxdepth 1 -type l -print0)
