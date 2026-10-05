@@ -44,6 +44,29 @@ the checks are on the source.
   the thirteen invariants, names the five binaries and cites the feedback
   contract.
 
+## Task and milestone cadence
+
+Task cycles run focused acceptance and affected-behavior tests, together with
+relevant static/type, formatting, build, artifact parity, and policy checks.
+For methodology or workflow-surface edits, the focused checks are
+`make cli-usage-check`, `make surface-lint` and `make eval-contracts`. Derive other task commands from
+the changed subsystem's guidance; check that filtered tests actually match.
+
+Run `make test-all` and any other required full regression or end-to-end checks
+at the milestone barrier on the exact accumulated candidate after task fan-in,
+including before a pull request. A standalone task's final delivery boundary
+serves as its barrier. Task completion and fan-in use focused evidence and the
+selected review disposition; they do not establish a full pass or final closeout.
+A scheduled barrier gate is not missing task evidence. Failed task checks block
+the task; a failed barrier blocks milestone promotion and final closeout.
+
+After barrier failures, corrective tasks run focused checks. Rerun the full
+milestone profile when re-entering the barrier with the final candidate, rather
+than after each fix. Preserve every run's failures, exact commands, exit status,
+logs, revision, and dirty/diff identity. Default repeat is 1; explicit stability
+requirements remain binding, and retrying until green is not validation.
+Review cadence remains independent, including deferred review at its boundary.
+
 ## Continuous integration
 
 CI is deliberately small, because agents merge often and a per-merge gate

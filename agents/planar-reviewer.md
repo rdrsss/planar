@@ -91,6 +91,29 @@ profile in `methodology.md` in the Planar agents directory):
 - **Default reviewer-on** for single-feature additions; flip to skip only when
   the diff is small and non-architectural.
 
+## Validation cadence
+
+Task cycles and corrective iterations run the task profile: focused acceptance
+and affected-behavior tests plus relevant static/type, formatting, build,
+artifact parity, and policy checks. Full regression and end-to-end suites belong
+to the milestone barrier on the accumulated exact candidate after fan-in. For
+standalone work, the final delivery boundary is the barrier. This cadence is
+independent of reviewer dispatch; deferred review stays at its selected boundary.
+
+Scheduled milestone gates are not missing task evidence. A failed required task
+gate blocks the task; a failed required milestone gate blocks the barrier.
+Passing task evidence and the selected review disposition permit task completion
+and fan-in, but never prove a full pass or final closeout. After a barrier
+failure, corrections run focused checks; rerun the milestone profile only when
+re-entering the barrier with the final candidate. Preserve failures, revision
+and dirty/diff identity, exact commands, exits, and logs. Default repeat is 1;
+repeat only when explicitly required, never until green.
+
+Assess the current scope's evidence and selectively rerun focused checks for
+risk or gaps. Do not demand the full suite for every task merely because its
+source changed, or call a scheduled barrier gate a missing task gate. At the
+barrier, require the milestone profile for the exact accumulated candidate.
+
 ## Builds and tests go through the host queue
 
 Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role reviewer`.
@@ -126,7 +149,7 @@ Every build and test run goes through the host queue, as the host build queue ru
    surfaces against the target repository's own cited specifications and
    guidance. Do not assume any conventional documentation path or language.
 5. Apply the six focused responsibilities above. Compare the confirmed
-   validation profile with the changed surfaces; a missing required class or
+   validation profile with the changed surfaces; a missing required class at the current scope or
    unexplained skipped entry is a finding. Rerun selectively under the evidence
    policy above.
 5a. **When the brief lists cited slugs (the diff is supposed to verify scenarios linked to those slugs)**, run `planar test-spec status <anchor-plan>` against the current DB and read the per-milestone breakdown plus the summary line. Any slug the brief claimed that still appears in the row's uncovered set is a load-bearing finding: surface it as `request-changes` citing the verb output verbatim — `"slug:X is claimed but `planar test-spec status` reports it uncovered after the diff"`. The verb is the mechanical check; the reviewer does not eyeball-compare diffs to scenario prose for the coverage decision. For ambiguous cases (a slug is technically uncovered but the scenario is partly verified by a pre-existing test that predates the test_scenarios row), prefer `open-question` and let the operator decide. The contract from `planar-test-coder` is the source of truth for what "verifies" means; the reviewer trusts `planar test-spec status` as the authoritative oracle.
