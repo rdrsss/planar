@@ -73,9 +73,24 @@ planar health
 
 The `projection freshness` row counts the installed skill and agent
 files as `fresh`, `stale` or `missing`; a degraded result prints the
-reinstall command. [Skill reference](skill-reference.md) describes the
-layout, the vendor targets, drift and uninstall. Come back to this
-tutorial for the CLI path either way.
+reinstall command.
+
+There is no command to type. From inside a project, ask your coding
+agent for the outcome in plain words, and it loads the skill on its own:
+
+```text
+Draft a Planar spec for adding multi-currency checkout.
+What needs my attention in this project?
+Hand off task 42; I'm stopping for today.
+```
+
+In Claude Code, `/planar <request>` loads the skill explicitly. Name a
+role agent to dispatch it: "use the planar-planner agent to draft …".
+[Skill reference § Using it day to day](skill-reference.md#using-it-day-to-day)
+lists more requests and maps each retired `pl-*` skill to its
+replacement; the rest of that page covers the layout, the vendor
+targets, drift and uninstall. Come back to this tutorial for the CLI
+path either way.
 
 ## 4. Initialise the database
 

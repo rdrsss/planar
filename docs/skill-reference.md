@@ -25,6 +25,70 @@ The same works on `planar-agent`, `planar-watch`, `planar-ext` and `planar-execu
 catalog for one command or for the compact tree, never for the whole catalog: for `planar`
 it is about 338 KB. Every verb, flag and exit code is in [cli-reference.md](cli-reference.md).
 
+## Using it day to day
+
+There is no command to type. Ask for the outcome in plain words, from a directory inside
+the project, and the harness loads the `planar` skill because the request matches its
+description. The skill tells the session which reference to read, and role work goes to
+the matching `planar-<role>` agent.
+
+```text
+Draft a Planar spec for adding multi-currency checkout.
+Review the spec for plan 1234.
+Show me the ingest preview for plan 1234.
+Orchestrate plan 1234.
+What needs my attention in this project?
+Hand off task 5678; I'm stopping for today.
+Resume task 5678.
+Sync plan 1234 to GitHub Issues.
+```
+
+### Asking for the skill or an agent by name
+
+- **The skill.** In Claude Code, `/planar <request>` loads the skill explicitly. In the
+  other harnesses, say "use the planar skill" in the request.
+- **An agent.** Name it in the request: "use the planar-planner agent to draft a spec for
+  …", "have planar-reviewer review the diff on this branch". Agents are dispatched as
+  subagents, never typed as commands.
+
+### What stays with you
+
+Three steps never run automatically: `planar spec ingest --apply`, `planar plan closeout`
+and `planar workbench archive`. The session shows the preview, then waits for you to
+confirm that exact invocation. Nothing reaches Jira or GitHub Issues unless you ask:
+propagation runs only on an explicit request and previews with `--dry-run` first, and
+`planar-ext sync push` is never automatic. Say yes, or run the command yourself.
+
+### Coming from the `pl-*` skills
+
+The forty `pl-*` skills were retired in favour of the one skill and the agents. Each one
+maps to a request, an agent or a command:
+
+| Retired skill | Now |
+|---------------|-----|
+| `pl-spec-draft` | "Draft a spec for …": the `planar-planner` agent |
+| `pl-spec-review` | "Review the spec for plan N": the `planar-spec-reviewer` agent |
+| `pl-spec-ingest` | "Preview the ingest for plan N": `planar spec ingest N --strict --json`, then `--apply` on your yes |
+| `pl-orchestrator` | "Orchestrate plan N": the `planar-orchestrator` agent |
+| `pl-coder`, `pl-test-coder`, `pl-reviewer` | the `planar-coder`, `planar-test-coder` and `planar-reviewer` agents, usually dispatched by the orchestrator |
+| `pl-research` | the `planar-research` agent |
+| `pl-import`, `pl-synthesize` | the `planar-importer` and `planar-synthesizer` agents, over `planar import` and `planar synthesize` |
+| `pl-status`, `pl-observe` | "What needs attention?": `references/status.md`, over `planar dashboard`, `planar-watch ps` and `planar-watch plans` |
+| `pl-health`, `pl-doctor` | "Planar health is degraded": `references/recovery.md`, over `planar health` and `planar-agent reconcile`; there is no `doctor` verb |
+| `pl-handoff`, `pl-resume` | "Hand off task N" or "Resume task N": `references/resume-handoff.md`, over `planar handoff create` and `planar resume` |
+| `pl-plan`, `pl-task`, `pl-question`, `pl-scenario` | ask for the change, or run `planar plan`, `planar task`, `planar question` or `planar scenario` directly |
+| `pl-knowledge`, `pl-promote` | `references/knowledge.md`, over `planar decision`, `planar artifact`, `planar annotate`, `planar links`, `planar promote` and `planar demote` |
+| `pl-workbench`, `pl-workbench-sync`, `pl-workbench-archive` | `references/spec-pipeline.md`, over `planar workbench` |
+| `pl-ext-create`, `pl-ext-propagate`, `pl-sync`, `pl-audit-trail`, `pl-templates` | `references/external-sync.md` and the `planar-ext-sync` agent, over `planar-ext`, `planar audit trail` and `planar templates` |
+| `pl-feedback-triage`, `pl-introspect`, `pl-report-issue` | the `planar-feedback-triager` and `planar-introspector` agents, over `planar feedback` and `planar report` |
+| `pl-local`, `pl-local-import`, `pl-workspace-scan` | `references/local.md`, over `planar local` and `planar workspace` |
+| `pl-models-config` | `planar models`; see [concepts.md](concepts.md#model-routing) |
+| `pl-init`, `pl-scope` | `planar init` and `planar scope show` |
+| `pl-help` | `planar --help`, `planar help` and `planar schema --command "<verb>"` |
+
+A request that names a retired skill still works: the session reads the intent, not the
+name.
+
 ## What installs where
 
 `install.sh` stages the skill and the agents under `$PLANAR_HOME` (default `~/.planar/`),

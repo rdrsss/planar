@@ -112,6 +112,22 @@ agents directory. The target table is in
 operations are available as plain commands. The role specifications and skills
 are described in the [skill reference](docs/skill-reference.md).
 
+With the skill installed there is no command to type. Ask for the outcome from
+inside a project, and the harness loads the skill and dispatches the matching
+`planar-<role>` agent:
+
+```text
+Draft a Planar spec for adding multi-currency checkout.
+Review the spec for plan 42.
+Orchestrate plan 42.
+What needs my attention in this project?
+```
+
+In Claude Code, `/planar <request>` loads the skill explicitly. Applying an
+ingest, closing a plan and archiving its workbench wait for your confirmation.
+More requests, and a map from each retired `pl-*` skill to its replacement, are
+in the [skill reference](docs/skill-reference.md#using-it-day-to-day).
+
 ## Core objects
 
 | Object | Role |
