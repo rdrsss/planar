@@ -25,6 +25,30 @@ This agent document is self-contained for installed direct-agent use. Linked
 companion documents provide rationale and expanded examples; they are optional
 references, not required runtime inputs.
 
+## Validation cadence
+
+Task cycles and corrective iterations run the task profile: focused acceptance
+and affected-behavior tests plus relevant static/type, formatting, build,
+artifact parity, and policy checks. Full regression and end-to-end suites belong
+to the milestone barrier on the accumulated exact candidate after fan-in. For
+standalone work, the final delivery boundary is the barrier. This cadence is
+independent of reviewer dispatch; deferred review stays at its selected boundary.
+
+Scheduled milestone gates are not missing task evidence. A failed required task
+gate blocks the task; a failed required milestone gate blocks the barrier.
+Passing task evidence and the selected review disposition permit task completion
+and fan-in, but never prove a full pass or final closeout. After a barrier
+failure, corrections run focused checks; rerun the milestone profile only when
+re-entering the barrier with the final candidate. Preserve failures, revision
+and dirty/diff identity, exact commands, exits, and logs. Default repeat is 1;
+repeat only when explicitly required, never until green.
+
+Assign every applicable gate class to task checks or the milestone barrier in
+the dispatch preview and briefs. Track candidate identity and barrier evidence
+separately from task completion and automatic plan-status promotion. Routine
+focused fixes use existing authorization. Before finalization, require the full
+milestone profile and the review disposition due at that boundary.
+
 ## Builds and tests go through the host queue
 
 Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role orchestrator`.
@@ -129,8 +153,8 @@ Worktree bookkeeping comes from `parallel-dispatch.lua`.
    plan recommend-strategy <plan> --json`. Inspect a domain's `--help` before
    any additional operation; do not probe invented positional arguments,
    flags, or subcommands.
-3. Derive a validation profile from the target repository's contributor
-   guidance, CI, manifests, task runners, package metadata, and changed
+3. Derive task and milestone validation profiles from the target repository's
+   contributor guidance, CI, manifests, task runners, package metadata, and changed
    subsystem instructions. Each entry names an id, exact command, required
    flag, covered surfaces, repeat count, and repository source. Present it in
    the preview for operator confirmation. An unavailable gate class is
@@ -364,7 +388,11 @@ completion:
 11. Enforce the iteration cap before routing: on iteration 5,
     `request-changes` becomes `abort`. Iteration-5 approval caveats become new
     task rows, created with `planar task add` on the same plan.
-12. Wrap-up: produce a summary when all cycles are terminal.
+12. At each milestone barrier, run the full milestone profile on the exact
+    accumulated candidate after fan-in. Corrective cycles use focused task
+    checks; re-enter the barrier with the final candidate. Require the review
+    disposition due there before milestone promotion or final closeout.
+13. Wrap-up: produce a summary when all cycles and required barriers are complete.
 
 **Boundary:** The orchestrator never picks a dispatch shape silently. The user
 must confirm it or supply a pre-committing flag before any coder runs. Phases
@@ -393,7 +421,8 @@ result: <stable-outcome-token>
 ### Phase 3.7 — Finalization (`janitor`, optional/gated)
 
 **Triggered when:** Phase 3 has approval (or explicit bypass), complete
-structured validation evidence, and an operator-confirmed Git delivery
+structured task and milestone-barrier validation evidence on the exact candidate,
+and an operator-confirmed Git delivery
 profile. Finalization is explicitly gated and never runs silently.
 
 **What happens:**

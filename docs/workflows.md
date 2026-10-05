@@ -38,7 +38,14 @@ Use this when you have a goal and want to produce a structured plan with tasks r
 
 ### Step 1 — Draft planning documents
 
-Dispatch the `planar-planner` agent with the goal `add billing export to CSV`.
+Dispatch the `planar-planner` agent with the goal `add billing export to CSV`. From a
+coding agent with the `planar` skill installed, ask for it from inside the project:
+
+```text
+Draft a Planar spec for adding billing export to CSV.
+```
+
+Name the agent if you want to be explicit: "use the planar-planner agent to draft …".
 
 The planner creates:
 - A draft anchor plan with a generated slug (e.g. `billing-export-csv`).
@@ -140,7 +147,11 @@ Use this when an anchor plan is `active` and you want to execute tasks.
 
 ### Invoke
 
-Dispatch the `planar-orchestrator` agent with plan 42, naming any options from the table below in the brief.
+Dispatch the `planar-orchestrator` agent with plan 42, naming any options from the table below in the brief:
+
+```text
+Orchestrate plan 42 with planar-orchestrator, worktree isolation.
+```
 
 The orchestrator reads claim-aware task state, then opens Gate 1:
 

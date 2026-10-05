@@ -44,6 +44,89 @@ the checks are on the source.
   the thirteen invariants, names the five binaries and cites the feedback
   contract.
 
+## Task and milestone cadence
+
+Task cycles run focused acceptance and affected-behavior tests, together with
+relevant static/type, formatting, build, artifact parity, and policy checks.
+For methodology or workflow-surface edits, the focused checks are
+`make cli-usage-check`, `make surface-lint` and `make eval-contracts`. Derive other task commands from
+the changed subsystem's guidance; check that filtered tests actually match.
+
+Run `make test-all` and any other required full regression or end-to-end checks
+at the milestone barrier on the exact accumulated candidate after task fan-in,
+including before a pull request. A standalone task's final delivery boundary
+serves as its barrier. Task completion and fan-in use focused evidence and the
+selected review disposition; they do not establish a full pass or final closeout.
+A scheduled barrier gate is not missing task evidence. Failed task checks block
+the task; a failed barrier blocks milestone promotion and final closeout.
+
+After barrier failures, corrective tasks run focused checks. Rerun the full
+milestone profile when re-entering the barrier with the final candidate, rather
+than after each fix. Preserve every run's failures, exact commands, exit status,
+logs, revision, and dirty/diff identity. Default repeat is 1; explicit stability
+requirements remain binding, and retrying until green is not validation.
+Review cadence remains independent, including deferred review at its boundary.
+
+### The task profile in this repository
+
+Every task runs these, in this order, and reports each exit status:
+
+1. **Build everything, incrementally.**
+   `cmake --build build/debug --target all planar_tests`. It catches a compile
+   break in any module, including ones the task never touched, for the cost of
+   an incremental build. Only the full test run moves to the milestone.
+2. **Run the tests for each module the task touched.** The ctest label is the
+   name in the directory's `planar_module(<name> …)` call, or `cmd_<binary>`
+   under `src/cmd/<binary>/`. For example, `src/engine/hostqueue/` is
+   `engine_hostqueue` and `src/lib/cliapp/` is `cliapp`:
+
+   ```sh
+   ctest --test-dir build/debug -L '^engine_hostqueue$' --output-on-failure
+   ```
+
+   Anchor the label with `^…$`, since `-L` is a regular expression. Report the
+   matched count from ctest's summary line. A filter that matches nothing also
+   exits 0, so zero matched tests is a failure, not a pass.
+3. **Narrow `cmd_planar`.** That label holds about a quarter of the suite.
+   A task that changes one verb family adds a name filter, because each test
+   name starts `planar.cmd_planar.` followed by its Catch2 case name:
+
+   ```sh
+   ctest --test-dir build/debug -L '^cmd_planar$' -R 'task update' --output-on-failure
+   ```
+
+4. **Run the new or changed tests by name** if steps 2 and 3 did not already
+   select them, and confirm they appear in the matched set.
+5. **Run the cheap cross-cutting checks the change can break.** Most failures a
+   milestone run used to find were stale pins, not logic errors.
+   - C++ changed: `make cpp-lint-gate`.
+   - Help text, flags or the catalog changed: `make surface-check`, and the
+     whole-catalog pin,
+     `ctest --test-dir build/debug -L '^cmd_planar$' -R 'catalog is pinned'`.
+     A deliberate change recaptures the baseline with
+     `scripts/surface-snapshot.sh capture` in its own commit.
+   - Authored docs, the skill or an agent changed: `make surface-lint`,
+     `make cli-usage-check` and `make eval-contracts`.
+   - `install.sh` or its scripts changed: `make test-install-stage`. Its health
+     scenarios need the debug `planar` from step 1, and they report SKIPPED
+     without it.
+   - A migration changed: `ctest --test-dir build/debug -L '^db$'`, which
+     includes the up, down, up round trip.
+
+### The milestone profile in this repository
+
+Once per milestone, on the merged candidate, before the milestone closes and
+before any pull request:
+
+- `make test-all`: the whole ctest suite, the registry check that proves the
+  whole suite ran, and the coverage, surface, exit-code, eval and lint gates in
+  the table above.
+- `make cpp-lint` when the milestone changed C++, for the advisory `clang-tidy`
+  pass.
+
+A milestone that changes platform-sensitive code also runs `make linux-gate`.
+Both profiles go through the host queue, below.
+
 ## Continuous integration
 
 CI is deliberately small, because agents merge often and a per-merge gate

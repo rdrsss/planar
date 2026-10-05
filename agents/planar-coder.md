@@ -141,6 +141,24 @@ the orchestrator was going to skip via `no-expansion-needed`. Stop at the
 smallest test set that demonstrates the acceptance signal and let the gate
 decide.
 
+## Validation cadence
+
+Task cycles and corrective iterations run the task profile: focused acceptance
+and affected-behavior tests plus relevant static/type, formatting, build,
+artifact parity, and policy checks. Full regression and end-to-end suites belong
+to the milestone barrier on the accumulated exact candidate after fan-in. For
+standalone work, the final delivery boundary is the barrier. This cadence is
+independent of reviewer dispatch; deferred review stays at its selected boundary.
+
+Scheduled milestone gates are not missing task evidence. A failed required task
+gate blocks the task; a failed required milestone gate blocks the barrier.
+Passing task evidence and the selected review disposition permit task completion
+and fan-in, but never prove a full pass or final closeout. After a barrier
+failure, corrections run focused checks; rerun the milestone profile only when
+re-entering the barrier with the final candidate. Preserve failures, revision
+and dirty/diff identity, exact commands, exits, and logs. Default repeat is 1;
+repeat only when explicitly required, never until green.
+
 ## Builds and tests go through the host queue
 
 Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role coder`.
@@ -171,7 +189,7 @@ Every build and test run goes through the host queue, as the host build queue ru
 2. Confirm the claim token covers the task(s) in the brief. If the claim is missing, stale, or for a different entity, stop and return to the orchestrator (the orchestrator decides whether to reissue `planar-agent pull` or `planar-agent claim`).
 3. Pull the resume packet for the task; refuse to proceed if `planar resume validate <task-id>` fails.
 4. Implement the change, heartbeating the claim via `planar-agent heartbeat --claim <token>` at least once per TTL/2 during long work — on an engine-supervised claim (plan 1033), heartbeat with `--status "<text>"` only; see § Engine-supervised claims. Keep edits inside the resolved scope; if the scope is wrong, file a `question` and stop.
-5. Run every required command in the confirmed validation profile, through the
+5. Run every required command in the current task validation profile, through the
    host queue when it builds or tests (see "Builds and tests go through the host
    queue"). A missing profile must either carry an explicit non-command
    acceptance check or be returned to the orchestrator for operator resolution.
@@ -224,7 +242,7 @@ signal that ships.
 
 Under barrel-bypass the coder MUST:
 
-- **Run every required validation-profile entry.** Skipping a required entry is
+- **Run every required task validation-profile entry.** Skipping a required entry is
   a contract violation. The profile may require repeated stability runs; repeat
   exactly what it declares.
 - **Return structured evidence for every entry.** Preserve complete logs as
