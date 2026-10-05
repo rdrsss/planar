@@ -17,8 +17,7 @@ brew install cmake ninja llvm python git gh jq ripgrep
 ```
 
 - `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries, on every install path. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
-- `python3` — **required to configure**. The configure step registers Python test runners (`src/tools/scriptorium/core.test.py`, `scripts/install-lib/queue_retire.test.py`, `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. `install.sh` also runs it as its old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program), and `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
-- Scriptorium is built from `src/tools/scriptorium/` and installed by CMake; no external Scriptorium executable is required. It needs no dependency beyond Glaze, which the rest of the tree already vendors.
+- `python3` — **required to configure**. The configure step registers Python test runners (`scripts/install-lib/queue_retire.test.py`, `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. `install.sh` also runs it as its old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program), and `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
 - No network access and no token are needed to configure or build: every dependency is committed under `vendor/` as a pinned release archive.
 - `docker` — optional, developer-only. `make linux-gate` builds and tests the tree on Debian trixie in a container (see [docs/testing.md](docs/testing.md#the-linux-gate)). It is not an installer dependency.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. The full install also needs it to clone the source repository.
@@ -44,8 +43,8 @@ cargo install sqlx-cli --no-default-features --features sqlite
 
 ## Quick install (`make install`)
 
-The shortest path. Builds and installs Planar's five executables and the
-in-tree `scriptorium` renderer into `~/.local/bin` and nothing else.
+The shortest path. Builds and installs Planar's five executables into
+`~/.local/bin` and nothing else.
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
@@ -74,7 +73,7 @@ the vendor surfaces (Claude `/pl-*` slash commands, Codex, Copilot, and Gemini
 skills) are wired up by a `make install` or a `cmake --install` alone; for those,
 use the [full install](#full-install-installsh).
 
-The five binaries and the in-tree `scriptorium` renderer are installed. The four
+The five binaries are installed. The four
 that open a database (all but `planar-execute`, which holds no SQLite handle at
 all) statically link the vendored SQLite amalgamation — no system library
 dependency.
@@ -95,7 +94,7 @@ cmake --build build/release
 cmake --install build/release --prefix "$HOME/.planar"
 ```
 
-This puts the five binaries and `scriptorium` in `~/.planar/bin/`; add that
+This puts the five binaries in `~/.planar/bin/`; add that
 directory to your `$PATH` and run `planar health` as above. For a debug build
 instead, configure and build by hand:
 
@@ -119,9 +118,9 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 
 That's it. The script:
 
-- Builds all five binaries and `scriptorium` from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext,scriptorium}`.
+- Builds all five binaries from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`.
 - Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and renders the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
-- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen). It no longer runs `scriptorium render`.
+- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen). It runs no renderer for the skill; the Codex agent TOML is rendered by `scripts/render-codex-agents.py`.
 - Places the staged skill and agents into each vendor whose presence marker exists, and prints the vendors found and skipped.
 - Atomically writes `~/.planar/install-manifest.json` after every placement
   succeeds. Each placed vendor path is recorded in its `extras` list;
@@ -223,8 +222,8 @@ what it can prove Planar made, and prints each removal:
 
 It then removes the retired `~/.planar` paths listed in `install-cleanup.txt`
 (`commands/`, `skills/<vendor>/`, `<vendor>-skills/` including
-`opencode-skills/`, `agents/<vendor>/`). `bin/scriptorium` is listed but kept
-while this tree still builds it.
+`opencode-skills/`, `agents/<vendor>/`). `bin/scriptorium` is listed so an install over an older tree removes the retired
+renderer binary.
 
 <!-- retired-ref: agent.db upgrade note -->
 ### Upgrade note: unlinking `agent.db` under a live queue submitter
@@ -317,7 +316,7 @@ ctest --test-dir build/debug --output-on-failure         # Catch2 unit tests
 The repo also ships a `Makefile` with the common targets:
 
 ```bash
-make build              # cmake --preset release; copies the 5 binaries and scriptorium into ./bin/
+make build              # cmake --preset release; copies the 5 binaries into ./bin/
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-all           # unit (ctest) + registry check + coverage + cli-usage-check + surface/exit-code/eval contracts + cpp-lint-gate
 make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
@@ -474,8 +473,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-agent                    # agent-callable coordination binary
 │   ├── planar-watch                    # human-facing read-only viewer
 │   ├── planar-execute                  # deterministic spawn-free Lua workflow engine
-│   ├── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
-│   └── scriptorium                     # in-tree skill and agent renderer
+│   └── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
 ├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`; mode 0600)
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)

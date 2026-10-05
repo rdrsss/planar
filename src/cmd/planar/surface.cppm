@@ -374,7 +374,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar local unlink", "Remove symlinks from vendor paths."},
       {"planar local import", "Import a skill or agent from an external directory."},
       {"planar local migrate", "Migrate skills/agents to new Planar version."},
-      {"planar skills", "Retired: rendering and drift detection now live in scriptorium."},
+      {"planar skills", "Retired: the skill tree is skills/planar/; planar health reports install drift."},
       {"planar import", "Import an existing repo's state into Planar."},
       {"planar synthesize", "Synthesize fresh planning artifacts from a repo's docs + code + git history."},
       {"planar version", "Print the planar version, commit, and C++ toolchain."},

@@ -57,8 +57,6 @@ it works and how to use it.
 - [Testing](testing.md). Test layers, what each gate proves, and the continuous
   integration tiers.
 - [Toolchain parity](toolchain-parity.md). The pinned compiler and build tools.
-- [Scriptorium](tools/scriptorium-tech-spec.md). The renderer that produces the
-  per-harness skill and agent files.
 
 ## Project history and research
 

@@ -151,7 +151,7 @@ TEST_CASE("status classifies managed copy and unmanaged extension", "[installed_
   // Manifest schema still carries source_digest/projection_digest, but
   // classification no longer reads or compares them against file content —
   // freshness is plain byte equality now (plan 918 M5). Empty digests are
-  // also a valid shape (scriptorium-rendered projections carry none).
+  // also a valid shape (projections from older installs carry none).
   constexpr std::string_view digest            = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   constexpr std::string_view projection_digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
   constexpr std::string_view body              = "---\n---\nbody\n";

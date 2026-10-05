@@ -898,7 +898,7 @@ endif()
 # AUTOINCREMENT counter. A plain `add_test`, not a Catch2 case: the helper is
 # a Python script, and its runner builds every fixture in a scratch
 # directory with Python's own `sqlite3` module. Python is already a build
-# dependency (src/tools/scriptorium's test runner; INSTALL.md § Prerequisites).
+# dependency (the Python test runners registered at configure; INSTALL.md § Prerequisites).
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME queue_logs_after_reset_helper
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/queue-logs-after-reset.test.py"
