@@ -44,7 +44,8 @@ auto add_bool_flag(CLI::App& app, std::string_view canonical, std::string_view d
 
 namespace {
 
-/// @brief CLI11's stock formatter, minus the negation names.
+/// @brief CLI11's stock formatter, minus the negation names, listing each
+/// subcommand by its summary.
 ///
 /// `make_option_name` is the ONE hook that decides the left column of an
 /// option's help row, so overriding it alone leaves column widths,
@@ -93,6 +94,90 @@ struct negation_hiding_formatter : CLI::Formatter {
         out += ", ";
       }
       out += name;
+    }
+    return out;
+  }
+
+  /// @brief Render one row of a parent's subcommand list from the child's
+  /// summary, not its whole description.
+  ///
+  /// The summary is the description's first paragraph with its whitespace
+  /// collapsed, so a group's long prose stays on the group's own `--help`
+  /// page and the parent's list stays one entry per line or two. The row is
+  /// wrapped to the formatter's right column, as CLI11's own rows are.
+  /// @param sub The child command.
+  /// @return The rendered row, ending in a newline.
+  [[nodiscard]] auto make_subcommand(const CLI::App* sub) const -> std::string override {
+    std::string const name =
+        "  " + sub->get_display_name(true) + (sub->get_required() ? " " + get_label("REQUIRED") : std::string{});
+    std::string       out     = name;
+    std::string const summary = first_paragraph(sub->get_description());
+    if (!summary.empty()) {
+      if (name.size() >= column_width_) {
+        out += '\n';
+        out += std::string(column_width_, ' ');
+      } else {
+        out += std::string(column_width_ - name.size(), ' ');
+      }
+      out += wrap(summary, right_column_width_, std::string(column_width_, ' '));
+    }
+    out += '\n';
+    return out;
+  }
+
+private:
+  /// @brief The text before the first blank line, as one space-separated line.
+  /// @param text A command description.
+  /// @return The first paragraph, trimmed, with every whitespace run collapsed.
+  [[nodiscard]] static auto first_paragraph(std::string_view text) -> std::string {
+    std::string out;
+    bool        pending_space   = false;
+    std::size_t newlines_in_gap = 0;
+    for (char const ch : text) {
+      bool const space = ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+      if (!space) {
+        if (newlines_in_gap >= 2 && !out.empty()) {
+          break;
+        }
+        if (pending_space && !out.empty()) {
+          out += ' ';
+        }
+        out += ch;
+        pending_space   = false;
+        newlines_in_gap = 0;
+        continue;
+      }
+      pending_space = true;
+      if (ch == '\n') {
+        ++newlines_in_gap;
+      }
+    }
+    return out;
+  }
+
+  /// @brief Greedy word wrap for the right column.
+  /// @param text One line of space-separated words.
+  /// @param width The widest a line may be; a longer single word stands alone.
+  /// @param indent The prefix of every line after the first.
+  /// @return The wrapped text, without a trailing newline.
+  [[nodiscard]] static auto wrap(std::string_view text, std::size_t width, std::string const& indent) -> std::string {
+    std::string out;
+    std::size_t line = 0;
+    std::size_t pos  = 0;
+    while (pos < text.size()) {
+      std::size_t const end  = std::min(text.find(' ', pos), text.size());
+      std::string_view  word = text.substr(pos, end - pos);
+      if (line > 0 && line + 1 + word.size() > width) {
+        out += '\n';
+        out += indent;
+        line = 0;
+      } else if (line > 0) {
+        out += ' ';
+        ++line;
+      }
+      out += word;
+      line += word.size();
+      pos = end + 1;
     }
     return out;
   }

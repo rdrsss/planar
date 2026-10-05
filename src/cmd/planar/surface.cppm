@@ -349,7 +349,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar models registry verify-identity", "Compare requested and actual spawn identity without aliasing."},
       {"planar models registry export", "Export the versioned registry compatibility document."},
       {"planar dashboard", "Operator situational-awareness view of in-flight plans (and, with --agents, live claims)."},
-      {"planar spec", "Spec pipeline commands (draft, ingest)."},
+      {"planar spec", "Spec pipeline commands (ingest)."},
       {"planar spec ingest", "Decompose workbench spec documents into the task graph."},
       {"planar test-spec", "Test-spec coverage inspectors."},
       {"planar test-spec status", "Print per-milestone test-spec coverage for an anchor plan."},
