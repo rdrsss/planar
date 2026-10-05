@@ -353,13 +353,13 @@ cli-usage-check: ## Validate authored surfaces and catalog docs.examples against
 	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext planar_cmd_planar_execute
 	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY) $(CPP_BIN_ABS)/$(EXECUTE_BINARY)
 	$(CLI_DOCS_COVERAGE) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY)
-	$(SURFACE_LINT) $(CURDIR)
+	$(SURFACE_LINT) $(CURDIR) --enable-pending-retired
 
 .PHONY: surface-lint
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
 	$(configure_debug)
 	cmake --build $(CPP_BUILD_DIR) --target surface_lint
-	$(SURFACE_LINT) $(CURDIR)
+	$(SURFACE_LINT) $(CURDIR) --enable-pending-retired
 
 .PHONY: surface-check
 # Fast local gate for the CLI colocation refactor (task 6401/6612, decision

@@ -590,19 +590,19 @@ degraded = !db_ok || !integrity_ok || not_resumable_tasks > 0 || stale_handoffs 
 
 ```mermaid
 flowchart TD
-    subgraph P1["Phase 1 · Planning (pl-spec-draft / planner)"]
+    subgraph P1["Phase 1 · Planning (planner agent)"]
         A1[goal] --> A2[product-spec, tech-spec,<br/>test-spec, roadmap artifacts<br/>on a draft anchor plan]
     end
     A2 --> G1{{operator reviews drafts}}
     G1 --> P15
-    subgraph P15["Phase 1.5 · Spec review (pl-spec-review)"]
+    subgraph P15["Phase 1.5 · Spec review (spec-reviewer agent)"]
         B1[adversarial review] --> B2{verdict}
     end
     B2 -->|needs-answers / needs-spec-work| A2
     B2 -->|abort-replan| STOP1[stop]
     B2 -->|ready-for-ingest| G2{{operator confirms preview}}
     G2 --> P2
-    subgraph P2["Phase 2 · Ingestion (pl-spec-ingest)"]
+    subgraph P2["Phase 2 · Ingestion (ingestor agent)"]
         C1[spec ingest, preview] --> C2[spec ingest --apply<br/>anchor draft → active]
     end
     C2 --> G3{{strategy + isolation gate<br/>then dispatch-shape gate}}
@@ -849,8 +849,8 @@ flowchart TD
     H[planar health --json] --> O{overall}
     O -->|ok| DONE[nothing to do]
     O -->|degraded| C{which contributor?}
-    C -->|integrity_ok = false| STOP[stop, pl-doctor, no reconciliation first]
-    C -->|schema_current = false| DOC[pl-doctor, never hand-write migrations]
+    C -->|integrity_ok = false| STOP[stop, recovery path, no reconciliation first]
+    C -->|schema_current = false| DOC[recovery path, never hand-write migrations]
     C -->|expired claims| R1[planar-agent reconcile --dry-run --json] --> R2{{operator approves}} --> R3[planar-agent reconcile]
     C -->|stale_handoffs > 0| H1[handoff list --status pending] --> H2{{operator confirms}} --> H3[handoff abandon --reason]
     C -->|not_resumable_tasks > 0| T1[audit handoff-readiness;<br/>resume validate ID] --> T2{plan state}
@@ -861,7 +861,7 @@ flowchart TD
     R3 & H3 & T3 & T4 --> RE[re-run planar health]
 ```
 
-`pl-health` is read-only; `pl-doctor` is the guided-write companion.
+`planar health` is read-only; the recovery reference (`skills/planar/references/recovery.md`) is the guided-write companion.
 Genuinely active or blocked work can keep `overall = degraded` by design.
 
 ### 5.9 Introspect, triage, report
@@ -871,9 +871,9 @@ flowchart LR
     I1[planar report --json --days N] --> I2[redacted signal:<br/>failure-cluster, retry-pattern,<br/>abandoned-workflow, gap-feature]
     I2 --> I3{{preview, --apply confirm}}
     I3 --> I4[question add / task add on the<br/>association's planar-feedback plan, title-deduped]
-    I4 --> T1{{pl-feedback-triage preview, confirm}}
+    I4 --> T1{{planar-feedback-triager preview, confirm}}
     T1 --> T2["feedback triage set task:N|question:N<br/>--severity --disposition --reproduction"]
-    T2 --> R1{{pl-report-issue preview, confirm}}
+    T2 --> R1{{issue-report preview, confirm}}
     R1 --> R2[gh issue create] --> R3[external_links linkback]
     R3 --> T3[triage set --disposition reported-external]
 ```
@@ -944,9 +944,9 @@ bug, unless noted.
 | Claim | Where | What the code does |
 |---|---|---|
 | Plan status flips write a `session_entries` note beginning `plan_status: <id>`, recoverable with `audit trail --grep "^plan_status:"` | `docs/concepts.md` § Plan (**fixed at task 6825** — now describes the `audit_log` row), `agents/methodology.md` § Plan-status invariant (since fixed) | The C++ roll-up writes an `audit_log` `status_change` row with a free-text summary; no `plan_status:` sentinel is produced anywhere in `src/` |
-| `planar health` `overall` is one of `ok`, `degraded`, `critical` | `skills/src/pl-health.md` (since fixed — now names `ok` and `degraded`) | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
-| Whole-tree `ext propagate <plan>` is not yet implemented | `skills/src/pl-ext-propagate.md` (since fixed); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
-| `planar models list\|refresh\|routing\|apply\|candidates` exist, and `models evals` takes only `--json` | `docs/cli-reference.md` § Domain `models`, `docs/concepts.md` § Model routing, `docs/workflows.md` Recipe 25, `docs/skill-reference.md` § `/pl-models-config` (**all fixed at task 6825**) | The `models` group's subcommands are exactly `evals`, `resolve`, `experiments`, `outcomes`, `registry`; `evals` declares ten cohort flags (`src/cmd/planar/handlers/models/evals.cppm`). The binary's own `planar models --help` group description still narrates the removed family — a binary-side drift, not fixed here |
+| `planar health` `overall` is one of `ok`, `degraded`, `critical` | the retired health skill (since removed; fixed — now names `ok` and `degraded`) | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
+| Whole-tree `ext propagate <plan>` is not yet implemented | the retired propagate skill (since removed); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
+| `planar models list\|refresh\|routing\|apply\|candidates` exist, and `models evals` takes only `--json` | `docs/cli-reference.md` § Domain `models`, `docs/concepts.md` § Model routing, `docs/workflows.md` Recipe 25, `docs/skill-reference.md` § Role values on flags (**all fixed at task 6825**) | The `models` group's subcommands are exactly `evals`, `resolve`, `experiments`, `outcomes`, `registry`; `evals` declares ten cohort flags (`src/cmd/planar/handlers/models/evals.cppm`). The binary's own `planar models --help` group description still narrates the removed family — a binary-side drift, not fixed here |
 | Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench (**fixed at task 6926** — now cites `src/engine/workbench/terminal.cppm`) | `src/engine/workbench/terminal.cppm` |
 | `closure compute` is deferred with its dependencies | header comment in `src/engine/closure/store.cppm` | `compute.cpp` implements the tree-sitter extraction and is wired to `planar closure compute` |
 | `derive_from_cwd` redirects a git-worktree cwd to its parent repo | Zig-era behaviour | Not ported; the module header names it as a residual gap |

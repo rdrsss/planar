@@ -206,8 +206,7 @@ what it can prove Planar made, and prints each removal:
 
 It then removes the retired `~/.planar` paths listed in `install-cleanup.txt`
 (`commands/`, `skills/<vendor>/`, `<vendor>-skills/` including
-`opencode-skills/`, `agents/<vendor>/`). `bin/scriptorium` is listed so an install over an older tree removes the retired
-renderer binary.
+`opencode-skills/`, `agents/<vendor>/`). The retired renderer binary under `bin/` is listed too, so an install over an older tree removes it.
 
 <!-- retired-ref: agent.db upgrade note -->
 ### Upgrade note: unlinking `agent.db` under a live queue submitter

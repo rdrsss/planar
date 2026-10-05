@@ -33,32 +33,32 @@ operator-gated; the anchor plan does not become `active` until ingest applies.
 flowchart TD
     OP(["Operator states goal"]) --> LT{"Known feature shape?"}
     LT -->|"no, exploring"| LTB["Light-touch capture<br/>1 active plan plus direct<br/>artifact / decision / question / task rows"]
-    LTB -.->|"graduates via /pl-spec-draft"| DR
-    LT -->|"yes"| DR["Planner / pl-spec-draft<br/>draft plan + workbench tree<br/>product, tech, roadmap, test specs"]
+    LTB -.->|"graduates via the planner agent"| DR
+    LT -->|"yes"| DR["Planner agent<br/>draft plan + workbench tree<br/>product, tech, roadmap, test specs"]
     DR --> SC["self-check<br/>spec ingest --strict preview"]
-    SC --> RV["Spec-reviewer / pl-spec-review<br/>adversarial pass"]
+    SC --> RV["Spec reviewer agent<br/>adversarial pass"]
     RV --> VD{"Verdict"}
     VD -->|"needs-answers / needs-spec-work"| ED["operator edits workbench<br/>or answers questions"]
     ED --> RV
     VD -->|"abort-replan"| DR
-    VD -->|"ready-for-ingest"| IP["Ingestor / pl-spec-ingest<br/>read-only tree diff"]
+    VD -->|"ready-for-ingest"| IP["Ingestor agent<br/>read-only tree diff"]
     IP --> IG{{"Gate: operator confirms"}}
     IG -->|"--apply"| AP["atomic per anchor plan:<br/>child plans, tasks, decisions,<br/>scenarios, questions, links,<br/>anchor draft -> active"]
     AP --> DONE(["task graph in DB<br/>ready for orchestration"])
 ```
 
-**Draft.** `/pl-spec-draft` creates the anchor plan in `draft`, lays down the
+**Draft.** The `planar-planner` agent creates the anchor plan in `draft`, lays down the
 workbench tree, and authors `product-spec.md`, `tech-spec.md`, `roadmap.md`,
 and `test-spec.md`. Each file is registered as an artifact and mirrored to the
 workbench. The planner also extracts `## Open questions` into first-class
 question rows and runs a read-only strict ingest self-check before handing back.
 
-**Review.** `/pl-spec-review` runs between planner and ingestor. It checks
+**Review.** The `planar-spec-reviewer` agent runs between planner and ingestor. It checks
 intent fit, feature gaps, hazards, open questions, roadmap readiness, and
 test coverage. Its verdict is one of `ready-for-ingest`, `needs-answers`,
 `needs-spec-work`, or `abort-replan`. It never runs `spec ingest --apply`.
 
-**Ingest.** `/pl-spec-ingest` without `--apply` is a read-only preview. It
+**Ingest.** `planar spec ingest` without `--apply`, which the `planar-ingestor` agent drives, is a read-only preview. It
 reads `roadmap.md`, `tech-spec.md`, and `test-spec.md`, computes additions,
 updates, proposed removals, slug coverage, and orphan scenarios, then prints a
 tree-shaped diff. `--apply` commits atomically per anchor plan: derived rows
@@ -96,7 +96,7 @@ Two annotations are load-bearing:
 
 **Light-touch bypass.** When the feature shape is not ready for specs, start
 with one `active` plan and direct `artifact`, `decision`, `question`, and
-`task add` rows. When the work matures, `/pl-spec-draft` can read that captured
+`task add` rows. When the work matures, the `planar-planner` agent can read that captured
 material and graduate it into the spec pipeline. See
 [`light-touch.md`](light-touch.md).
 
