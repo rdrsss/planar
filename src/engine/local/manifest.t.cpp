@@ -196,7 +196,7 @@ TEST_CASE("manifest split_frontmatter reads the recognised keys") {
   REQUIRE(fm.tier == "medium");
   REQUIRE(fm.model == "claude-opus-5");
   REQUIRE(fm.kind == "skill");
-  REQUIRE(fm.shadow);
+  REQUIRE(fm.shadow_set);
   REQUIRE(body == "body text\n");
 }
 
@@ -234,13 +234,13 @@ TEST_CASE("manifest frontmatter strips one matching quote pair") {
   REQUIRE(mf::split_frontmatter("---\ndescription: 'quoted\"\n---\n")->first.description == "'quoted\"");
 }
 
-TEST_CASE("manifest frontmatter shadow is the exact string true") {
-  REQUIRE(mf::split_frontmatter("---\nshadow: true\n---\n")->first.shadow);
-  // Every near-miss is FALSE. shadow:true removes the `local-` prefix and can
-  // replace a canonical install, so a typo must fail closed.
-  REQUIRE_FALSE(mf::split_frontmatter("---\nshadow: True\n---\n")->first.shadow);
-  REQUIRE_FALSE(mf::split_frontmatter("---\nshadow: yes\n---\n")->first.shadow);
-  REQUIRE_FALSE(mf::split_frontmatter("---\nshadow: 1\n---\n")->first.shadow);
+TEST_CASE("manifest frontmatter shadow is recorded by presence, whatever its value") {
+  // The key is retired: it is parsed only so a source that sets it can be refused.
+  REQUIRE(mf::split_frontmatter("---\nshadow: true\n---\n")->first.shadow_set);
+  REQUIRE(mf::split_frontmatter("---\nshadow: false\n---\n")->first.shadow_set);
+  REQUIRE(mf::split_frontmatter("---\nshadow: yes\n---\n")->first.shadow_set);
+  REQUIRE(mf::split_frontmatter("---\nshadow:\n---\n")->first.shadow_set);
+  REQUIRE_FALSE(mf::split_frontmatter("---\ndescription: x\n---\n")->first.shadow_set);
 }
 
 TEST_CASE("manifest frontmatter reads all three vendors forms") {
@@ -338,33 +338,35 @@ TEST_CASE("manifest resolved_vendors sorts what the author wrote") {
 }
 
 TEST_CASE("manifest lint warns about an empty description") {
-  const auto issues = mf::lint({}, "alpha");
+  const auto issues = mf::lint({});
   REQUIRE(issues.size() == 1);
   REQUIRE(issues[0].field == "description");
   REQUIRE(issues[0].message == "description is empty; vendors surface this as the skill summary");
 }
 
-TEST_CASE("manifest lint warns about shadow, naming the exact filename") {
-  // Oracle capture from `local import`'s warnings array; the em dash is U+2014.
+TEST_CASE("manifest lint no longer warns about shadow") {
+  // The key is refused by the callers; lint reports only the description.
   mf::frontmatter fm;
-  fm.description    = "present";
-  fm.shadow         = true;
-  const auto issues = mf::lint(fm, "shad");
+  fm.shadow_set     = true;
+  const auto issues = mf::lint(fm);
   REQUIRE(issues.size() == 1);
-  REQUIRE(issues[0].field == "shadow");
-  REQUIRE(issues[0].message == "shadow:true — install will land as \"shad.md\" (no local- prefix) and may replace a canonical "
-                               "install of the same name");
+  REQUIRE(issues[0].field == "description");
 }
 
-TEST_CASE("manifest lint reports description before shadow") {
-  // The ORDER is observable: `local import` renders warnings in this sequence
-  // and the oracle capture shows description first.
-  mf::frontmatter fm;
-  fm.shadow         = true;
-  const auto issues = mf::lint(fm, "shad");
-  REQUIRE(issues.size() == 2);
-  REQUIRE(issues[0].field == "description");
-  REQUIRE(issues[1].field == "shadow");
+TEST_CASE("manifest local_name_violation enforces the projection-name rule") {
+  for (const std::string_view good : {"a", "my-skill", "a1-b2-c3", "0"}) {
+    REQUIRE_FALSE(mf::local_name_violation(good).has_value());
+  }
+  REQUIRE_FALSE(mf::local_name_violation(std::string(51, 'a')).has_value());
+  for (const std::string bad :
+       {std::string{}, std::string(52, 'a'), std::string{"My_Skill"}, std::string{"Upper"}, std::string{"-x"}, std::string{"x-"},
+        std::string{"a--b"}, std::string{"a b"}, std::string{"a_b"}, std::string{"dot.name"}}) {
+    const auto message = mf::local_name_violation(bad);
+    REQUIRE(message.has_value());
+    REQUIRE(message->contains("^[a-z0-9]+(-[a-z0-9]+)*$"));
+    REQUIRE(message->contains("51"));
+    REQUIRE(message->contains(std::format("\"{}\"", bad)));
+  }
 }
 
 // --- parse_file -------------------------------------------------------------

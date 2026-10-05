@@ -1033,6 +1033,11 @@ auto reconcile(const reconcile_options& options) -> std::expected<std::vector<re
       if (file.kind != row_kind) {
         continue;
       }
+      // A source `link` would refuse (bad name, retired `shadow` key) is not
+      // projected here either; `list` and `unlink` still see what was recorded.
+      if (manifest::local_name_violation(file.name).has_value() || file.frontmatter.shadow_set) {
+        continue;
+      }
       const manifest::manifest_entry* old_entry = nullptr;
       if (const auto idx = find_manifest_entry(old_manifest, file.name)) {
         old_entry = &old_manifest.entries[*idx];

@@ -940,3 +940,165 @@ TEST_CASE("local unlink --purge on an unknown name reports BOTH targeted paths",
   CHECK(plain.code == 0);
   CHECK(plain.out == "no installs found for \"ghost\" (already unlinked, or no such name)\n");
 }
+
+namespace {
+
+/// @brief The refusal text `local import` and `local link` print for a bad name.
+/// @param name The offending name.
+/// @return The full stderr line.
+auto invalid_name_line(std::string_view name) -> std::string {
+  return std::format("error: invalid local name \"{}\": a name must match ^[a-z0-9]+(-[a-z0-9]+)*$ "
+                     "(lowercase letters, digits and single hyphens) and be at most 51 characters; names are never "
+                     "normalized, so rename the source\n",
+                     name);
+}
+
+/// @brief Names the rule refuses, as skill and agent file stems.
+/// @return The bad names.
+auto bad_names() -> std::vector<std::string> {
+  return {"My_Skill", std::string(52, 'a'), "-x", "x-", "a--b", "Upper", "dot.name"};
+}
+
+} // namespace
+
+TEST_CASE("local import refuses a bad local name at exit 2 and writes nothing", "[cmd][local][import][name]") {
+  auto const fx = make_fixture("importname");
+  mark(fx, {".claude"});
+  for (auto const& bad : bad_names()) {
+    auto const flat = fx.root / "flat" / (bad + ".md");
+    write_file(flat, "---\ndescription: d\n---\n\nBody.\n");
+    auto const got = dispatch(fx, {"local", "import", flat.string()});
+    INFO(bad);
+    CHECK(got.code == 2);
+    CHECK(got.out.empty());
+    CHECK(got.err.starts_with("error: invalid local name \"" + bad + "\": a name must match ^[a-z0-9]+(-[a-z0-9]+)*$"));
+    CHECK(got.err.contains("at most 51 characters"));
+
+    // Directory shape names the skill for the directory.
+    auto const dir = fx.root / "dirs" / bad;
+    write_file(dir / "SKILL.md", "---\ndescription: d\n---\n\nBody.\n");
+    auto const dir_got = dispatch(fx, {"local", "import", dir.string()});
+    CHECK(dir_got.code == 2);
+    CHECK(dir_got.err.contains("invalid local name \"" + bad + "\""));
+
+    // Agents follow the same rule.
+    auto const agent = dispatch(fx, {"local", "import", flat.string(), "--kind", "agent"});
+    CHECK(agent.code == 2);
+
+    // Nothing was created: no sandbox entry, no manifest, no projection.
+    CHECK(manifest_rows(fx, "skills") == "<NO-MANIFEST>");
+    CHECK(manifest_rows(fx, "agents") == "<NO-MANIFEST>");
+    CHECK(install_state(sandbox(fx) / "skills" / bad) == "absent");
+    CHECK(install_state(sandbox(fx) / "agents" / (bad + ".md")) == "absent");
+    CHECK(install_state(claude_skill(fx, bad)) == "absent");
+  }
+  // The 52-character name is exactly one over the limit; 51 is accepted.
+  auto const ok51 = fx.root / "flat" / (std::string(51, 'a') + ".md");
+  write_file(ok51, "---\ndescription: d\n---\n\nBody.\n");
+  CHECK(dispatch(fx, {"local", "import", ok51.string()}).code == 0);
+
+  // An empty stem (`.md`) is refused with the empty name quoted.
+  auto const empty = fx.root / "flat" / ".md";
+  write_file(empty, "---\ndescription: d\n---\n\nBody.\n");
+  auto const got = dispatch(fx, {"local", "import", empty.string()});
+  CHECK(got.code == 2);
+  CHECK(got.err == invalid_name_line(""));
+
+  // Discrimination: a valid name imports and links.
+  auto const good = fx.root / "flat" / "my-skill.md";
+  write_file(good, "---\ndescription: d\n---\n\nBody.\n");
+  auto const ok = dispatch(fx, {"local", "import", good.string()});
+  CHECK(ok.code == 0);
+  CHECK(install_state(claude_skill(fx, "my-skill")) == "dir");
+}
+
+TEST_CASE("local import refuses the whole batch when one entry has a bad name", "[cmd][local][import][name]") {
+  auto const fx  = make_fixture("importbatch");
+  auto const src = fx.root / "src";
+  write_file(src / "good.md", "---\ndescription: d\n---\n\nBody.\n");
+  write_file(src / "Bad_One.md", "---\ndescription: d\n---\n\nBody.\n");
+  auto const got = dispatch(fx, {"local", "import", src.string(), "--no-link"});
+  CHECK(got.code == 2);
+  CHECK(got.err == invalid_name_line("Bad_One"));
+  CHECK(install_state(sandbox(fx) / "skills" / "good" / "SKILL.md") == "absent");
+}
+
+TEST_CASE("local link refuses a bad local name at exit 2 and writes nothing", "[cmd][local][link][name]") {
+  auto const fx = make_fixture("linkname");
+  mark(fx, {".claude"});
+
+  // The positional is validated before the sandbox is read.
+  for (auto const& bad : bad_names()) {
+    // A leading hyphen needs `--` or the parser reads the name as a flag.
+    auto const got = bad.starts_with('-') ? dispatch(fx, {"local", "link", "--", bad}) : dispatch(fx, {"local", "link", bad});
+    INFO(bad);
+    CHECK(got.code == 2);
+    CHECK(got.out.empty());
+    CHECK(got.err == invalid_name_line(bad));
+  }
+  auto const empty = dispatch(fx, {"local", "link", ""});
+  CHECK(empty.code == 2);
+  CHECK(empty.err == invalid_name_line(""));
+
+  // A sandbox source with a bad directory name stops `link` (no name given)
+  // before anything is written, even beside a valid source.
+  seed_three_vendor_skill(fx, "my-skill");
+  write_file(sandbox(fx) / "skills" / "My_Skill" / "SKILL.md", "---\ndescription: d\n---\n\nBody.\n");
+  auto const all = dispatch(fx, {"local", "link"});
+  CHECK(all.code == 2);
+  CHECK(all.err == invalid_name_line("My_Skill"));
+  CHECK(install_state(claude_skill(fx, "my-skill")) == "absent");
+  CHECK(manifest_rows(fx, "skills") == "<NO-MANIFEST>");
+
+  // Discrimination: naming the valid source links it.
+  auto const ok = dispatch(fx, {"local", "link", "my-skill"});
+  CHECK(ok.code == 0);
+  CHECK(install_state(claude_skill(fx, "my-skill")) == "dir");
+
+  // `--reconcile`, `list` and `unlink` do not crash on the bad source, and
+  // reconcile does not project it.
+  CHECK(dispatch(fx, {"local", "link", "--reconcile"}).code == 0);
+  CHECK(install_state(claude_skill(fx, "My_Skill")) == "absent");
+  CHECK(dispatch(fx, {"local", "list"}).code == 0);
+  CHECK(dispatch(fx, {"local", "unlink", "My_Skill"}).code == 0);
+}
+
+TEST_CASE("local import and link refuse the retired shadow key", "[cmd][local][import][link][shadow]") {
+  auto const fx = make_fixture("shadow");
+  mark(fx, {".claude"});
+  for (std::string_view const value : {"true", "false", "\"\""}) {
+    auto const text = std::format("---\ndescription: d\nshadow: {}\n---\n\nBody.\n", value);
+    INFO(value);
+
+    auto const src = fx.root / "src" / "shad.md";
+    write_file(src, text);
+    auto const imported = dispatch(fx, {"local", "import", src.string()});
+    CHECK(imported.code == 2);
+    CHECK(imported.err.contains("retired frontmatter key \"shadow\""));
+    CHECK(imported.err.contains("\"shad\""));
+    CHECK(install_state(sandbox(fx) / "skills" / "shad" / "SKILL.md") == "absent");
+
+    write_file(sandbox(fx) / "skills" / "shad" / "SKILL.md", text);
+    auto const linked = dispatch(fx, {"local", "link", "shad"});
+    CHECK(linked.code == 2);
+    CHECK(linked.out.empty());
+    CHECK(linked.err.contains("retired frontmatter key \"shadow\""));
+    auto const all = dispatch(fx, {"local", "link"});
+    CHECK(all.code == 2);
+    CHECK(install_state(claude_skill(fx, "shad")) == "absent");
+    CHECK(install_state(fx.root / "localhome" / ".claude" / "skills" / "shad") == "absent");
+    CHECK(manifest_rows(fx, "skills") == "<NO-MANIFEST>");
+    std::filesystem::remove_all(sandbox(fx) / "skills" / "shad");
+  }
+}
+
+TEST_CASE("local link --json emits no Shadow key", "[cmd][local][link][shadow]") {
+  auto const fx = make_fixture("noshadowjson");
+  mark(fx, {".claude"});
+  seed_three_vendor_skill(fx, "alpha");
+  auto const got = dispatch(fx, {"local", "link", "alpha", "--json"});
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("\"Frontmatter\":{"));
+  CHECK_FALSE(got.out.contains("Shadow"));
+  CHECK_FALSE(dispatch(fx, {"local", "list", "--json"}).out.contains("Shadow"));
+}

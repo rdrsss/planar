@@ -15,7 +15,7 @@
 // Fixture: an external directory /tmp/pb/ext holding
 //   one.md   valid, `description: Ext one.`
 //   bad.md   the single line `garbage` — no frontmatter
-//   shad.md  `description:` empty and `shadow: true`
+//   shad.md  `description:` empty and `shadow: true`  (now refused; see the refusal case)
 //
 //   $Z local import /tmp/pb/ext --json --no-link
 //     {"Imported":[
@@ -184,13 +184,15 @@ TEST_CASE("import ignores subdirectories entirely for agents") {
 
 TEST_CASE("import shape 1 does NOT apply under --kind agent") {
   // The SKILL.md probe is guarded on kind, so the same directory falls through
-  // to the collection path and yields the entry `SKILL`. Surprising, and
-  // exactly what the oracle does.
+  // to the collection path and yields the entry `SKILL`, which the local-name
+  // rule then refuses (uppercase).
   const scratch_home home;
   home.write(home.ext() / "mine" / "SKILL.md", "---\ndescription: d\n---\nx\n");
 
   const auto result = im::import_sources(home.opts(home.ext() / "mine", mf::kind::agent));
-  REQUIRE(names(result->imported) == std::vector<std::string>{"SKILL"});
+  REQUIRE_FALSE(result.has_value());
+  REQUIRE(result.error() == im::import_error::invalid_name);
+  REQUIRE(result.error().detail.contains("\"SKILL\""));
 }
 
 TEST_CASE("import skips dotted entries and the link manifest") {
@@ -328,27 +330,45 @@ TEST_CASE("import --dry-run does not even create the destination directory") {
 
 TEST_CASE("import collects lint warnings, name-then-emission ordered") {
   const scratch_home home;
-  home.write(home.ext() / "shad.md", "---\ndescription: \nshadow: true\n---\ny\n");
+  home.write(home.ext() / "empty.md", "---\ndescription: \n---\ny\n");
 
   const auto result = im::import_sources(home.opts(home.ext()));
-  REQUIRE(result->warnings.size() == 2);
-  REQUIRE(result->warnings[0].name == "shad");
+  REQUIRE(result->warnings.size() == 1);
+  REQUIRE(result->warnings[0].name == "empty");
   REQUIRE(result->warnings[0].field == "description");
-  REQUIRE(result->warnings[1].field == "shadow");
-  REQUIRE(result->warnings[1].message.starts_with("shadow:true — install will land as \"shad.md\""));
 }
 
 TEST_CASE("import keeps warnings for an entry it SKIPPED for a collision") {
   // The operator still wants to know the source they tried to import has an
   // empty description, even though nothing was copied. Oracle-captured.
   const scratch_home home;
-  home.write(home.ext() / "shad.md", "---\ndescription: \nshadow: true\n---\ny\n");
-  home.write(home.sandbox() / "skills" / "shad" / "SKILL.md", "---\ndescription: existing\n---\n");
+  home.write(home.ext() / "empty.md", "---\ndescription: \n---\ny\n");
+  home.write(home.sandbox() / "skills" / "empty" / "SKILL.md", "---\ndescription: existing\n---\n");
 
   const auto result = im::import_sources(home.opts(home.ext()));
   REQUIRE(result->imported.empty());
   REQUIRE(result->skipped.size() == 1);
-  REQUIRE(result->warnings.size() == 2);
+  REQUIRE(result->warnings.size() == 1);
+}
+
+TEST_CASE("import refuses a bad name or the retired shadow key before writing anything") {
+  const scratch_home home;
+  home.write(home.ext() / "good.md", "---\ndescription: d\n---\ny\n");
+  home.write(home.ext() / "Bad_Name.md", "---\ndescription: d\n---\ny\n");
+  auto bad = im::import_sources(home.opts(home.ext()));
+  REQUIRE_FALSE(bad.has_value());
+  REQUIRE(bad.error() == im::import_error::invalid_name);
+  REQUIRE(bad.error().detail.contains("\"Bad_Name\""));
+  REQUIRE_FALSE(std::filesystem::exists(home.sandbox() / "skills" / "good"));
+
+  const scratch_home other;
+  other.write(other.ext() / "good.md", "---\ndescription: d\n---\ny\n");
+  other.write(other.ext() / "shad.md", "---\ndescription: d\nshadow: true\n---\ny\n");
+  auto shadow = im::import_sources(other.opts(other.ext()));
+  REQUIRE_FALSE(shadow.has_value());
+  REQUIRE(shadow.error() == im::import_error::retired_key);
+  REQUIRE(shadow.error().detail.contains("\"shadow\""));
+  REQUIRE_FALSE(std::filesystem::exists(other.sandbox() / "skills" / "good"));
 }
 
 TEST_CASE("import produces NO warnings for an entry that failed to parse") {

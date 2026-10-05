@@ -308,7 +308,7 @@ TEST_CASE("render link_json reproduces the oracle's envelope") {
   REQUIRE(rd::link_json(alpha_file(), result) ==
           "{\"Source\":{\"SourcePath\":\"/tmp/pb/h/.planar/local/skills/alpha/SKILL.md\",\"Name\":"
           "\"alpha\",\"Kind\":\"skill\",\"Frontmatter\":{\"Description\":\"Alpha skill.\","
-          "\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Shadow\":false,\"Vendors\":[],\"Kind\":"
+          "\"ArgumentHint\":\"\",\"Tier\":\"\",\"Model\":\"\",\"Vendors\":[],\"Kind\":"
           "\"skill\"},\"Body\":\"alpha body\\n\"},\"Records\":["
           "{\"vendor\":\"claude\",\"target_path\":\"/tmp/pb/h/.claude/commands/local-alpha.md\","
           "\"source_path\":\"/tmp/pb/h/.planar/local/skills/alpha/SKILL.md\",\"mode\":\"\",\"action\":"
@@ -330,10 +330,10 @@ TEST_CASE("render link_json shows the AUTHORED vendors, not the resolved three")
   REQUIRE(rd::link_json(file, {"alpha", mf::kind::skill, {}}).find("\"Vendors\":[\"claude\",\"codex\"]") != std::string::npos);
 }
 
-TEST_CASE("render link_json emits Shadow as a JSON boolean, not a string") {
-  auto file               = alpha_file();
-  file.frontmatter.shadow = true;
-  REQUIRE(rd::link_json(file, {"alpha", mf::kind::skill, {}}).find("\"Shadow\":true") != std::string::npos);
+TEST_CASE("render link_json emits no Shadow key") {
+  auto file                   = alpha_file();
+  file.frontmatter.shadow_set = true;
+  REQUIRE(rd::link_json(file, {"alpha", mf::kind::skill, {}}).find("Shadow") == std::string::npos);
 }
 
 TEST_CASE("render link_json escapes the body's newlines") {

@@ -123,7 +123,6 @@ auto link_json(const manifest::sandbox_file& file, const link::link_result& resu
   append_kv(out, fm_first, "ArgumentHint", file.frontmatter.argument_hint);
   append_kv(out, fm_first, "Tier", file.frontmatter.tier);
   append_kv(out, fm_first, "Model", file.frontmatter.model);
-  out.append(std::format(",\"Shadow\":{}", file.frontmatter.shadow ? "true" : "false"));
   // The AUTHORED vendor list, not the resolved one: an author who named none
   // gets `[]` here even though all three were installed into.
   out.append(",\"Vendors\":[");

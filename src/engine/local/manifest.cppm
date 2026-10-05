@@ -52,7 +52,8 @@
 /// `\n---\n` (or a trailing `\n---` at EOF). Inside it is a deliberately
 /// minimal `key: value` reader, not a YAML parser:
 ///
-///   - Recognised keys: description, argument-hint, tier, model, kind, shadow,
+///   - Recognised keys: description, argument-hint, tier, model, kind, shadow
+///     (retired: parsed only so a source that sets it can be refused),
 ///     vendors. Everything else is silently ignored, as is any line with no
 ///     colon at all.
 ///   - `kind` is read from the `planar:` map (`planar:\n  kind: agent`), the form
@@ -62,8 +63,8 @@
 ///   - A later duplicate key WINS; the earlier value is discarded.
 ///   - Values are trimmed of spaces/tabs, then ONE matching pair of surrounding
 ///     single or double quotes is stripped.
-///   - `shadow` is true only for the exact string `true` after that trimming.
-///     `True`, `yes` and `1` are all false.
+///   - `shadow` is recorded by PRESENCE (`shadow_set`), whatever its value: the key
+///     is retired and any use of it is refused by `local import` and `local link`.
 ///   - `vendors` accepts three forms: an inline flow list `[a, b]`, a bare
 ///     scalar `vendors: claude`, and a block list of following `-` lines.
 ///     Inline comments (`# ...`) are stripped from list items but NOT from
@@ -133,13 +134,13 @@ export inline constexpr std::string_view manifest_filename = ".link-manifest.jso
 /// contract is "an empty field is an empty string", and `std.json.Stringify`
 /// emits `""` for them, so there is no unset state to represent.
 export struct frontmatter {
-  std::string              description;    ///< `description:`; surfaced by vendors as the summary.
-  std::string              argument_hint;  ///< `argument-hint:`; note the HYPHEN in the key.
-  std::string              tier;           ///< `tier:`; free text, not validated here.
-  std::string              model;          ///< `model:`; free text, not validated here.
-  std::string              kind;           ///< `kind:`; must agree with the directory when non-empty.
-  bool                     shadow = false; ///< `shadow: true` exactly; drops the `local-` install prefix.
-  std::vector<std::string> vendors;        ///< `vendors:`; EMPTY means "all three", not "none".
+  std::string              description;        ///< `description:`; surfaced by vendors as the summary.
+  std::string              argument_hint;      ///< `argument-hint:`; note the HYPHEN in the key.
+  std::string              tier;               ///< `tier:`; free text, not validated here.
+  std::string              model;              ///< `model:`; free text, not validated here.
+  std::string              kind;               ///< `kind:`; must agree with the directory when non-empty.
+  bool                     shadow_set = false; ///< The retired `shadow:` key is present, with any value.
+  std::vector<std::string> vendors;            ///< `vendors:`; EMPTY means "all three", not "none".
 };
 
 /// @brief The vendors a source actually installs into.
@@ -172,15 +173,33 @@ export struct lint_issue {
 
 /// @brief Lint one source's frontmatter.
 ///
-/// Two findings, in this fixed order:
-///   1. `description` empty — vendors surface it as the skill summary.
-///   2. `shadow` true — the install lands as `<name>.md` with NO `local-`
-///      prefix and may REPLACE a canonical install of the same name. This is
-///      the destructive one, and the message names the exact filename.
+/// One finding:
+///   `description` empty — vendors surface it as the skill summary.
 /// @param value The parsed frontmatter.
-/// @param name The source's name, interpolated into the shadow message.
 /// @return The findings, possibly empty.
-export auto lint(const frontmatter& value, std::string_view name) -> std::vector<lint_issue>;
+export auto lint(const frontmatter& value) -> std::vector<lint_issue>;
+
+/// @brief The longest local name a projection can carry.
+///
+/// A projection is named `planar-local-<name>` and an Agent Skills name allows 64
+/// characters, so 64 minus the 13-character prefix.
+export inline constexpr std::size_t max_local_name_length = 51;
+
+/// @brief Check a local name against the projection-name rule.
+///
+/// A name must match `^[a-z0-9]+(-[a-z0-9]+)*$` and be at most
+/// max_local_name_length characters, so that `planar-local-<name>` is a valid
+/// Agent Skills name. Names are never normalized: nothing is lowercased and `_`
+/// is not turned into `-`, because normalizing would let two sources collide on
+/// one projection.
+/// @param name The candidate name.
+/// @return The refusal message naming the offending name, or nullopt when valid.
+export auto local_name_violation(std::string_view name) -> std::optional<std::string>;
+
+/// @brief The refusal message for a source that sets the retired `shadow` key.
+/// @param name The source's name.
+/// @return The message, naming the key and the source.
+export auto retired_shadow_message(std::string_view name) -> std::string;
 
 /// @brief One parsed sandbox source.
 export struct sandbox_file {

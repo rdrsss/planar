@@ -6096,6 +6096,10 @@ User-local sandbox for personal skills and agents. Skills live as dir-shape sour
 
 A skill copy is the whole skill directory with the frontmatter `name` rewritten to `planar-local-<name>`. A Markdown agent copy is the source with `name` rewritten (or added). The OpenCode copy keeps only `description` and `mode: subagent`. The Codex file is TOML with `name`, `description` and `developer_instructions`, byte-identical to what `scripts/render-codex-agents.py` writes. An agent without a `description` cannot take the OpenCode or Codex form and is skipped for those vendors. A skill's `vendors:` list narrows its copies (`claude` gates the Claude copy; `codex` and `copilot` gate the shared and Antigravity copies); agents ignore it.
 
+**Local names.** A local name is the source's directory name (skills) or file stem (agents), and it becomes part of an Agent Skills name, `planar-local-<name>`. A name must match `^[a-z0-9]+(-[a-z0-9]+)*$` (lowercase letters, digits and single hyphens, none leading, trailing or doubled) and be at most 51 characters, so the projected name stays within 64. `planar local import` and `planar local link` refuse any other name at exit 2 (`invalid_input`) with a message that states the pattern and the limit and names the offending name; nothing is written. Names are never normalized: `My_Skill` is refused, not linked as `my-skill`, because normalizing would let two sources collide on one projection. `link --reconcile` does not project a source whose name breaks the rule, and `list` and `unlink` still act on what was already recorded.
+
+**Retired `shadow` key.** A local source whose frontmatter sets `shadow` (any value) is refused by `planar local import` and `planar local link` at exit 2, naming the retired key. A local source can no longer take the name of a bundled skill; every projection carries the `planar-local-` prefix. `local link --json` no longer emits a `Shadow` field.
+
 **Ownership.** A destination that exists and differs from a fresh projection is replaced only when it is a prior Planar projection: recorded in a `.link-manifest.json`, or a symlink into `~/.planar/local/`. Anything else is refused at exit 6 (`already_exists`) naming the path, before any destination is written. A byte-identical destination is left alone.
 
 ### `planar local link [<name>]`
@@ -6110,7 +6114,7 @@ Walk `~/.planar/local/{skills,agents}/`, parse each source file's YAML frontmatt
 | `--json` | Emit JSON instead of human text. |
 
 **Behavior:**
-- Without `<name>`, links every source file under both `skills/` and `agents/`.
+- Without `<name>`, links every source file under both `skills/` and `agents/`. A source with an invalid name or the retired `shadow` key stops the whole run at exit 2 before anything is written.
 - With `<name>`, links only the matching source (errors if not found).
 - Idempotent: a re-link of an unchanged source produces `unchanged` actions and writes nothing.
 - Atomic: each copy is written to a sibling temp path and renamed into place.
@@ -6152,6 +6156,7 @@ Import operator-authored skill or agent files from an external location into the
 
 **Behavior:**
 - A single flat `.md` file source imports that file (wrapped into `<name>/SKILL.md` for skills). A single dir-shape source (a directory whose top-level contains `SKILL.md`) imports that whole tree. A directory source containing a mix of `*.md` files and `<name>/SKILL.md` subdirs imports each top-level entry — other subdirectories and non-`.md` files are ignored.
+- Every entry's name is checked against the local-name rule above, and a source that sets `shadow` is refused; either refuses the whole import at exit 2 before anything is copied, a dry run included.
 - Each file's frontmatter is validated by the same parser as `planar local link` (YAML frontmatter required; `vendors:` if present must be a subset of `{claude, codex, copilot}`; `kind:` if present must match `--kind`).
 - After a successful import, the link layer is invoked automatically (suppress with `--no-link`).
 - `.link-manifest.json` files in the source directory are explicitly ignored so pointing the importer at the sandbox itself does not corrupt it.

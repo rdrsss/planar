@@ -13,7 +13,9 @@ namespace planar::cmd::handlers::local_cli {
 /// @param local Input local.
 /// @return Registered CLI node.
 export auto attach_import(CLI::App* local) -> CLI::App* {
-  CLI::App* import_leaf = local->add_subcommand("import", "Import a skill or agent from an external directory.");
+  CLI::App* import_leaf = local->add_subcommand(
+      "import",
+      "Import a skill or agent from an external directory; names must match ^[a-z0-9]+(-[a-z0-9]+)*$, at most 51 characters.");
   add_string(*import_leaf, "--kind", "Target kind: skill, agent (default: skill)");
   add_bool(*import_leaf, "--force", "Overwrite a sandbox file of the same name; otherwise collisions are skipped");
   add_bool(*import_leaf, "--dry-run", "Preview the planned imports and links without writing");

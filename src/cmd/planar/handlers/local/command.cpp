@@ -152,6 +152,13 @@ auto local_link(context& ctx, const cliapp::parsed_args& args) -> handler_result
     return run_reconcile(ctx, dry_run, as_json);
   }
 
+  // A name is validated, never normalized: `My_Skill` is refused, not linked as `my-skill`.
+  if (name.has_value()) {
+    if (auto bad = manifest::local_name_violation(*name); bad.has_value()) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::move(*bad)));
+    }
+  }
+
   auto roots = sandbox_roots(ctx);
   if (!roots) {
     return std::unexpected(roots.error());
@@ -176,6 +183,17 @@ auto local_link(context& ctx, const cliapp::parsed_args& args) -> handler_result
       continue;
     }
     picked.push_back(file);
+  }
+
+  // Refuse before anything is written or printed: a bad name or the retired
+  // `shadow` key in any picked source stops the whole run.
+  for (auto const& file : picked) {
+    if (auto bad = manifest::local_name_violation(file.name); bad.has_value()) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::move(*bad)));
+    }
+    if (file.frontmatter.shadow_set) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, manifest::retired_shadow_message(file.name)));
+    }
   }
 
   if (name.has_value() && picked.empty()) {
@@ -209,7 +227,7 @@ auto local_link(context& ctx, const cliapp::parsed_args& args) -> handler_result
   results.reserve(picked.size());
   for (auto const& file : picked) {
     if (!as_json) {
-      for (auto const& issue : manifest::lint(file.frontmatter, file.name)) {
+      for (auto const& issue : manifest::lint(file.frontmatter)) {
         ctx.out() << render::lint_text(issue, file.kind, file.name);
       }
     }
@@ -302,6 +320,9 @@ auto local_import(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     // `exit.die` mapping does: `InvalidInput` is exit 2, `NotFound` exit 1.
     // Collapsing them would make "you pointed at a .txt" and "that directory
     // held no importable files" indistinguishable to a script.
+    if (outcome.error() == import_::import_error::invalid_name || outcome.error() == import_::import_error::retired_key) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, outcome.error().detail));
+    }
     auto const [bucket, tag] = outcome.error() == import_::import_error::invalid_input
                                    ? std::pair{domain_error_kind::invalid_input, "InvalidInput"}
                                    : std::pair{domain_error_kind::generic_failure, "NotFound"};
