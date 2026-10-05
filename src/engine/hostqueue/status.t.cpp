@@ -211,6 +211,123 @@ TEST_CASE("query_status: a store whose successors form a cycle ends the chain in
   CHECK((*answer)->state == hq::status_state::ended);
 }
 
+TEST_CASE("wait observer follows the logical ticket to authoritative history on a read-only store",
+          "[engine][hostqueue][hq-wait-observer]") {
+  scratch_dir scratch;
+  auto        conn   = open_scratch_store(scratch);
+  auto const  first  = enqueue_ok(conn, request_for("first"));
+  auto const  middle = enqueue_ok(conn, request_for("middle"));
+  auto const  next   = enqueue_ok(conn, request_for("next"));
+  end_abandoned(conn, first);
+  end_abandoned(conn, middle);
+  REQUIRE(hq::record_successor(conn, first, middle).has_value());
+  REQUIRE(hq::record_successor(conn, middle, next).has_value());
+  REQUIRE(
+      hq::end_entry(conn, next, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 125, .ended_at = k_now_wall})
+          .has_value());
+  auto ro = open_main_store_read_only_at(scratch.path_ / "planar.db");
+  REQUIRE(ro.has_value());
+
+  int  checks = 0;
+  auto snapshot =
+      hq::query_wait_status(*ro, first, status_request(fixed_probe(true)), [&checks]() -> std::expected<void, hq::status_error> {
+        ++checks;
+        return {};
+      });
+  REQUIRE(snapshot.has_value());
+  REQUIRE(snapshot->status.has_value());
+  CHECK(snapshot->issue == hq::wait_lookup_issue::none);
+  CHECK(snapshot->observed_seq == next);
+  CHECK(snapshot->status->seq == first);
+  CHECK(snapshot->status->superseded_by == next);
+  CHECK(snapshot->status->outcome == hq::history_outcome::exited);
+  CHECK(checks >= 3);
+  hq::wait_observer observer;
+  auto const        decision = observer.step(*snapshot, k_now_mono);
+  CHECK(decision.reason == hq::wait_reason::completed);
+  CHECK(decision.result_exit_code == 125);
+  CHECK_FALSE(ro->execute("delete from queue_history").has_value());
+}
+
+TEST_CASE("wait observer preserves abandoned and missing-successor uncertainty", "[engine][hostqueue][hq-wait-observer]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+  auto const  old  = enqueue_ok(conn, request_for("old"));
+  end_abandoned(conn, old);
+  hq::wait_observer observer;
+
+  auto pending = hq::query_wait_status(conn, old, status_request(fixed_probe(true)));
+  REQUIRE(pending.has_value());
+  CHECK(observer.step(*pending, k_now_mono).reason == hq::wait_reason::pending);
+
+  REQUIRE(hq::record_successor(conn, old, old + 50).has_value());
+  auto missing = hq::query_wait_status(conn, old, status_request(fixed_probe(true)));
+  REQUIRE(missing.has_value());
+  CHECK(missing->issue == hq::wait_lookup_issue::successor_history_unavailable);
+  auto const unavailable = observer.step(*missing, k_now_mono + 1);
+  CHECK(unavailable.reason == hq::wait_reason::history_unavailable);
+  CHECK(unavailable.result_exit_code == 1);
+  CHECK(unavailable.tag == "successor_history_unavailable");
+
+  auto absent = hq::query_wait_status(conn, old + 100, status_request(fixed_probe(true)));
+  REQUIRE(absent.has_value());
+  CHECK(observer.step(*absent, k_now_mono + 2).tag == "not_found");
+  REQUIRE(hq::record_successor(conn, old, old).has_value());
+  auto cyclic = hq::query_wait_status(conn, old, status_request(fixed_probe(true)));
+  REQUIRE(cyclic.has_value());
+  CHECK(observer.step(*cyclic, k_now_mono + 3).tag == "invalid_successor");
+}
+
+TEST_CASE("wait observer confirms the same dead active sequence after one second", "[engine][hostqueue][hq-wait-observer]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+  auto const  seq  = enqueue_ok(conn, request_for("dead"));
+  auto        dead = hq::query_wait_status(conn, seq, status_request(fixed_probe(false)));
+  REQUIRE(dead.has_value());
+  hq::wait_observer observer;
+  CHECK(observer.step(*dead, k_now_mono).reason == hq::wait_reason::pending);
+  CHECK(observer.step(*dead, k_now_mono + 999).reason == hq::wait_reason::pending);
+  CHECK(observer.step(*dead, k_now_mono + 1'000).reason == hq::wait_reason::stalled);
+
+  auto live = hq::query_wait_status(conn, seq, status_request(fixed_probe(true)));
+  REQUIRE(live.has_value());
+  CHECK(observer.step(*live, k_now_mono + 1'001).reason == hq::wait_reason::pending);
+  CHECK(observer.step(*dead, k_now_mono + 1'002).reason == hq::wait_reason::pending);
+  CHECK(hq::find(conn, seq).value().has_value());
+}
+
+TEST_CASE("wait observer maps every recorded final outcome separately from its stop reason",
+          "[engine][hostqueue][hq-wait-observer]") {
+  struct scenario {
+    hq::history_outcome         outcome;
+    std::optional<std::int64_t> exit_code;
+    std::optional<std::int64_t> signal;
+    hq::wait_reason             reason;
+    std::optional<int>          result_exit_code;
+  };
+  constexpr std::array cases{
+      scenario{hq::history_outcome::exited, 124, {}, hq::wait_reason::completed, 124},
+      scenario{hq::history_outcome::signaled, {}, 15, hq::wait_reason::completed, 143},
+      scenario{hq::history_outcome::timeout, {}, {}, hq::wait_reason::completed, 124},
+      scenario{hq::history_outcome::cancelled, {}, {}, hq::wait_reason::completed, 125},
+      scenario{hq::history_outcome::wait_timeout, {}, {}, hq::wait_reason::completed, 125},
+      scenario{hq::history_outcome::not_started, 127, {}, hq::wait_reason::completed, 127},
+      scenario{hq::history_outcome::abandoned, {}, {}, hq::wait_reason::pending, {}},
+  };
+  for (auto const& item : cases) {
+    INFO(hq::to_string(item.outcome));
+    hq::queue_status status;
+    status.state     = hq::status_state::ended;
+    status.outcome   = item.outcome;
+    status.exit_code = item.exit_code;
+    status.signal    = item.signal;
+    hq::wait_observer observer;
+    auto const        decision = observer.step(hq::wait_status_lookup{.status = status, .observed_seq = 1}, k_now_mono);
+    CHECK(decision.reason == item.reason);
+    CHECK(decision.result_exit_code == item.result_exit_code);
+  }
+}
+
 TEST_CASE("query_status: a read-only connection answers, and refuses every write", "[engine][hostqueue][hq-queue-status]") {
   scratch_dir  scratch;
   std::int64_t seq = 0;

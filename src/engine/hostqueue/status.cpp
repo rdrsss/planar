@@ -183,4 +183,66 @@ auto query_status(db::connection& conn, std::int64_t seq, const status_request& 
   return std::optional<queue_status>{std::move(described)};
 }
 
+auto query_wait_status(db::connection& conn, std::int64_t seq, const status_request& request, const wait_lookup_check& check)
+    -> std::expected<wait_status_lookup, status_error> {
+  std::int64_t                current = seq;
+  std::optional<history_row>  last;
+  std::optional<std::int64_t> superseded_by;
+
+  for (;;) {
+    if (check) {
+      auto checked = check();
+      if (!checked) {
+        return std::unexpected(std::move(checked.error()));
+      }
+    }
+    auto in_queue = find(conn, current);
+    if (!in_queue) {
+      return store_failure(in_queue.error());
+    }
+    if (in_queue->has_value()) {
+      auto described = describe_entry(conn, seq, **in_queue, request);
+      if (!described) {
+        return std::unexpected(std::move(described.error()));
+      }
+      described->superseded_by = superseded_by;
+      return wait_status_lookup{.status = std::move(*described), .observed_seq = current};
+    }
+
+    if (check) {
+      auto checked = check();
+      if (!checked) {
+        return std::unexpected(std::move(checked.error()));
+      }
+    }
+    auto ended = find_history(conn, current);
+    if (!ended) {
+      return store_failure(ended.error());
+    }
+    if (!ended->has_value()) {
+      if (!last) {
+        return wait_status_lookup{};
+      }
+      auto described          = describe_history(seq, *last);
+      described.superseded_by = superseded_by;
+      return wait_status_lookup{
+          .status = std::move(described), .observed_seq = last->seq, .issue = wait_lookup_issue::successor_history_unavailable};
+    }
+    last = **ended;
+    if (!last->successor_seq) {
+      auto described          = describe_history(seq, *last);
+      described.superseded_by = superseded_by;
+      return wait_status_lookup{.status = std::move(described), .observed_seq = current};
+    }
+    if (*last->successor_seq <= current) {
+      auto described          = describe_history(seq, *last);
+      described.superseded_by = superseded_by;
+      return wait_status_lookup{
+          .status = std::move(described), .observed_seq = current, .issue = wait_lookup_issue::invalid_successor};
+    }
+    superseded_by = *last->successor_seq;
+    current       = *last->successor_seq;
+  }
+}
+
 } // namespace planar::engine::hostqueue

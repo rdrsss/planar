@@ -174,6 +174,8 @@ The contract for every later migration:
 
 Only `src/engine/hostqueue/` writes these tables. The `planar-agent queue` verbs open `planar.db` as an existing file (`queue_store` in `src/cmd/planar-agent/`): they never create it and never migrate it, so on a host where `planar init` has not run they refuse at exit 125 and name it. Detached-run logs go to `queue-logs/` beside the database file (`<stem>.queue-logs/` for a database not named `planar.db`), so two databases in one directory never share a log directory, and a log that already exists is never overwritten.
 
+The hostqueue observer reads typed entry/history snapshots through a read-only connection. It keeps the requested ticket distinct from the latest resolved successor, treats an abandoned row without a successor as pending, and reports a missing explicit successor as unavailable history. Recorded command outcomes and confirmation of a dead active entry are separate decisions; neither observation changes queue or claim state.
+
 The sequence floor keeps the first entry's number at 1,000,001, above any number the retired separate queue store handed out. A rollback, a backup restore or a re-init rewinds the counter; detached logs are opened with `O_EXCL`, so a colliding run refuses at 125, and `scripts/queue-logs-after-reset.py` archives the colliding logs (never deletes them). The recipe is in [`migrations/README.md`](../migrations/README.md) § Host-queue rollback recovery.
 
 #### Reading the queue tables from another tool

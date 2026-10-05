@@ -66,6 +66,7 @@ planar_module(engine_hostqueue
     terminate.cppm
     nested.cppm
     status.cppm
+    observer.cppm
     guard.cppm
     rule.cppm
     schema.cppm
@@ -78,6 +79,7 @@ planar_module(engine_hostqueue
     terminate.cpp
     nested.cpp
     status.cpp
+    observer.cpp
     guard.cpp
     rule.cpp
     schema.cpp
