@@ -1,10 +1,13 @@
 # Planar Light Touch
 
 A reference for using Planar to capture research, exploration, and learning
-**without engaging the agent-driven workflow**. Skip `/pl-spec-draft`, skip
-`/pl-spec-ingest`, skip the orchestrator. Use the four base capture verbs
-directly. When the work matures into a real feature, you graduate to the
-full workflow — the captured material drafts the spec for you.
+**without engaging the agent-driven workflow**. The first step is the same as
+in every other mode: run `planar --help` and read the help of each verb before
+you use it. Then skip the spec draft, skip the ingest, skip the orchestrator,
+and use the four base capture verbs directly. No skill is needed. When the
+work matures into a real feature, you graduate to the full workflow — the
+captured material drafts the spec for you. The `planar` skill and the role
+agents for that workflow are described in [skill-reference.md](skill-reference.md).
 
 This is the mode to use when:
 
@@ -18,8 +21,9 @@ This is the mode to use when:
 
 This is **not** the mode to use when:
 
-- The work is a known feature with a clear shape — use `/pl-spec-draft`
-  instead so the proper plan structure exists from day one.
+- The work is a known feature with a clear shape — dispatch the
+  `planar-planner` agent to draft the specs instead, so the proper plan
+  structure exists from day one.
 - The work needs to coordinate with other agents or be propagated to
   external systems (Jira, GitHub Issues) — those workflows assume the
   full plan / task structure exists.
@@ -32,8 +36,8 @@ Capture each insight as an **artifact**, each call you make as a
 next step as a **task**. All four entity types link back to the anchor
 plan. There are no milestones, no child plans, no spec documents, no
 ingest pass. The plan is your journal; the entities are your captured
-thinking. When you're ready to commit to a real feature, run
-`/pl-spec-draft` and the drafter uses your captured material as input.
+thinking. When you're ready to commit to a real feature, dispatch the
+`planar-planner` agent and it uses your captured material as input.
 
 ## The four verbs
 
@@ -287,12 +291,10 @@ planar question list --status open          # what's still unresolved
 
 The signal: you start to know what the actual feature should be. At that
 point, draft a real plan that builds on what you've already captured:
+dispatch the `planar-planner` agent with the goal ("Migrate Planar CLI from
+Go to Zig") and your exploration plan's id.
 
-```
-/pl-spec-draft "Migrate Planar CLI from Go to Zig"
-```
-
-The spec drafter has access to your exploration plan's artifacts,
+The planner has access to your exploration plan's artifacts,
 decisions, and questions. The resulting spec:
 
 - Cites your research artifacts (e.g., "Per the survey at [artifact:42]...")
@@ -311,11 +313,11 @@ so the provenance is queryable.
 
 ## What to NOT do in light-touch mode
 
-- **Don't run `/pl-spec-draft` on the exploration itself.** Specs are
+- **Don't dispatch the planner on the exploration itself.** Specs are
   for committed work; exploration is exploration. The spec ceremony
   is heavy enough that it'll discourage capture if you force it on
   every observation.
-- **Don't run `/pl-spec-ingest`.** No need to decompose what's not yet
+- **Don't run `planar spec ingest`.** No need to decompose what's not yet
   a feature.
 - **Don't worry about milestone hygiene.** The exploration plan stays
   flat (no child plans). It's a working journal, not a deliverable.
@@ -362,8 +364,8 @@ planar question list --status open                      # what's unresolved
 planar decision list --plan <id>                 # all your choices
 planar artifact list --plan <id>                 # all your captures
 
-# Graduate to a real plan when ready
-/pl-spec-draft "<the real feature title>"
+# Graduate to a real plan when ready: dispatch the planar-planner agent with the goal,
+# then link the new plan back to the exploration
 planar plan link <real-id> plan:<explore-id> --relationship derives-from
 ```
 
