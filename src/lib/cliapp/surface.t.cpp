@@ -312,3 +312,59 @@ TEST_CASE("the value of --command is never read as a verb", "[cliapp][surface][h
   CHECK(hoist({"--nothing", "outer", "inner"}) == std::vector<std::string>{"outer", "inner", "--nothing"});
   CHECK(hoist({"outer", "inner", "--json", "other"}) == std::vector<std::string>{"outer", "inner", "--json", "other"});
 }
+
+// ---------------------------------------------------------------------------
+// Subcommand lists show each child's summary, not its whole description.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A root with three groups: one whose short first paragraph is split across
+// two source lines and followed by a second paragraph, one long enough to
+// wrap, and one plain line.
+auto summary_fixture() -> std::unique_ptr<CLI::App> {
+  auto app = std::make_unique<CLI::App>("Root.", "tool");
+  app->add_subcommand("plan", "Manage plans for a\n  body of work.\n\n"
+                              "  Plans may be hierarchical (--parent) and contain ordered steps.");
+  app->add_subcommand("long", "A first paragraph long enough that the right column cannot hold it on one line, so it wraps "
+                              "onto an indented continuation line.\n\nNot shown.");
+  app->add_subcommand("short", "One line.");
+  planar::cliapp::hide_negations_in_help(*app);
+  return app;
+}
+
+auto root_help(CLI::App& app) -> std::string {
+  return app.get_formatter()->make_help(&app, app.get_name(), CLI::AppFormatMode::Normal);
+}
+
+} // namespace
+
+TEST_CASE("a parent's subcommand list shows the child's first paragraph only", "[cliapp][surface][summary]") {
+  auto       app  = summary_fixture();
+  auto const page = root_help(*app);
+  CHECK(page.contains("Manage plans for a body of work."));
+  CHECK_FALSE(page.contains("Plans may be hierarchical"));
+  CHECK_FALSE(page.contains("Not shown."));
+  CHECK(page.contains("One line."));
+}
+
+TEST_CASE("a long summary wraps to the right column under its own indent", "[cliapp][surface][summary]") {
+  auto       app          = summary_fixture();
+  auto const page         = root_help(*app);
+  bool       continuation = false;
+  for (auto const& part : std::views::split(page, '\n')) {
+    std::string_view const line{part};
+    CHECK(line.size() <= 30 + 65);
+    if (line.starts_with(std::string(30, ' ')) && line.contains("continuation")) {
+      continuation = true;
+    }
+  }
+  CHECK(continuation);
+}
+
+TEST_CASE("a group's own help page keeps its full description", "[cliapp][surface][summary]") {
+  auto              app  = summary_fixture();
+  CLI::App* const   plan = app->get_subcommand("plan");
+  std::string const page = plan->get_formatter()->make_help(plan, "plan", CLI::AppFormatMode::Normal);
+  CHECK(page.contains("Plans may be hierarchical"));
+}

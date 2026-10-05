@@ -2,7 +2,8 @@
 /// @brief `planar.cliapp.surface` — the parser-agreement primitives shared
 /// by every binary's hand-written `CLI::App` tree: the `--no-X` negation
 /// synthesis (`add_bool_flag`), the help formatter that keeps it out of
-/// `--help` (`hide_negations_in_help`), and the position-independent-flag
+/// `--help` and lists each subcommand by its one-line summary
+/// (`hide_negations_in_help`), and the position-independent-flag
 /// argv reordering (`hoist_subcommands`).
 ///
 /// ## What used to be here, and where it went
@@ -155,6 +156,13 @@ export auto add_bool_flag(CLI::App& app, std::string_view canonical, std::string
 /// So the negation is accepted, absent from the schema catalog (see
 /// `planar.cliapp.schema::aliases_of`), and absent from help — three
 /// surfaces, one answer, all three matching the oracle.
+///
+/// ## Subcommand lists show summaries
+///
+/// The same formatter lists each child of a command by its summary: the
+/// first paragraph of the child's description, collapsed to one line and
+/// wrapped to the right column. A group's full prose stays on the group's
+/// own `--help` page, so a parent's list stays short.
 ///
 /// Must be called AFTER the tree is fully declared: CLI11 hands each
 /// subcommand the formatter its parent held AT `add_subcommand` TIME, so a
