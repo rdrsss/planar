@@ -89,6 +89,19 @@ is a lapsed claim, not dead work; recover it as in [claim-ritual.md](claim-ritua
 - Planning writes, `task cancel` and `task update` among them, refuse with exit 8 inside a
   git worktree. Run the doctor's writes from the parent checkout.
 
+## Access failures are not schema failures
+
+- `DatabaseUnreadable`, or a `QueryFailed` followed by "the database at <path> is
+  read-only to this process" or "refused the operation", means this process may not
+  open or write the database: a sandbox, or file or folder permissions. Planar needs
+  read and write access to the database file and its folder, because SQLite keeps its
+  `-wal` and `-shm` files beside it.
+- Do not run `planar init` or `planar-agent reconcile` for it; the database is fine.
+  Ask the operator to allow writes under `~/.planar/` (or the folder of `$PLANAR_DB`)
+  for this harness, then retry. A claim whose lease lapsed meanwhile is recovered as in
+  [claim-ritual.md](claim-ritual.md#lapsed-claim-recovery).
+- `SchemaVersionBehind` now always means the database really is older than the binary.
+
 ## What recovery never does
 
 - No direct database writes, migrations or edits to config files.

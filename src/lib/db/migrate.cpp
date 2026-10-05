@@ -11,13 +11,29 @@ import planar.db.migrations;
 
 namespace planar::db {
 
+namespace {
+
+/// @brief True when a failed `prepare` against the version table failed
+/// because the table does not exist, the one failure that means "fresh
+/// database". Any other failure (a file the process cannot open or read, a
+/// lock, corruption) is reported, never read as version 0.
+/// @param err The `prepare` failure.
+/// @return Whether SQLite reported the table missing.
+auto is_missing_table(const db_error& err) -> bool {
+  return err.message_.starts_with("no such table");
+}
+
+} // namespace
+
 auto current_version(connection& conn) -> std::expected<std::uint32_t, db_error> {
   auto stmt = conn.prepare(std::format("select coalesce(max(version), 0) from {}", k_main_version_table));
   if (!stmt) {
     // The version table does not exist yet on a fresh database — treat
-    // that as "nothing applied yet" rather than surfacing the prepare
-    // failure, matching zig/src/db/migrate.zig's applyAll/
-    // assertSchemaCompatible fallback.
+    // that as "nothing applied yet". Any other prepare failure is the
+    // database being unreadable to this process and is surfaced.
+    if (!is_missing_table(stmt.error())) {
+      return std::unexpected(stmt.error());
+    }
     return std::uint32_t{0};
   }
 
@@ -84,7 +100,11 @@ auto assert_schema_compatible(connection& conn, std::span<migration_record const
     // No version table: a fresh database. Version 0, and the
     // verdict falls out of the comparison below (`behind` whenever the
     // binary embeds anything at all) — see this function's declaration
-    // for why that is not reported as a read failure.
+    // for why that is not reported as a read failure. A prepare that
+    // failed for any other reason is an unreadable database, and is.
+    if (!is_missing_table(stmt.error())) {
+      return std::unexpected(stmt.error());
+    }
     state.verdict_ = state.embedded_max_ > 0 ? schema_compatibility::behind : schema_compatibility::current;
     return state;
   }

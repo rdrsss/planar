@@ -1253,8 +1253,8 @@ TEST_CASE("a heartbeat against a database it cannot write names the access probl
   auto const db    = scratch.db_path();
   std::filesystem::permissions(db, std::filesystem::perms::owner_read);
 
-  auto const with_status = run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "1h", "--status", "probe", "--json"});
-  auto const bare        = run_verb(scratch, {"heartbeat", "--claim", token});
+  auto const      with_status = run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "1h", "--status", "probe", "--json"});
+  auto const      bare        = run_verb(scratch, {"heartbeat", "--claim", token});
   std::error_code ec;
   std::filesystem::permissions(db, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write, ec);
 

@@ -1620,7 +1620,7 @@ TEST_CASE("a version table that cannot be read is a failure, not a fresh databas
   // read it. Reporting 0 sends the caller to `planar init`, a write, for
   // what is an access problem.
   unwritable_folder_db fixture;
-  auto conn = planar::db::connection::open_read_only(fixture.path_.string());
+  auto                 conn = planar::db::connection::open_read_only(fixture.path_.string());
   REQUIRE(conn.has_value());
   auto const state = planar::db::assert_schema_compatible(*conn);
   REQUIRE_FALSE(state.has_value());
@@ -1631,7 +1631,7 @@ TEST_CASE("a version table that cannot be read is a failure, not a fresh databas
 
 TEST_CASE("a database with no version table is still a fresh database at version 0", "[db][migrate][guard][access]") {
   scratch_db_path path;
-  auto conn = planar::db::connection::open(path.path_.string());
+  auto            conn = planar::db::connection::open(path.path_.string());
   REQUIRE(conn.has_value());
   auto const state = planar::db::assert_schema_compatible(*conn);
   REQUIRE(state.has_value());

@@ -294,7 +294,7 @@ TEST_CASE("planar-watch: a database it cannot read is an access failure, not sch
   // A sandboxed agent that may not write under ~/.planar cannot create the
   // WAL -shm file, so the version read fails. That used to read as version 0:
   // SchemaVersionBehind, exit 7, and advice to run `planar init`.
-  auto const fx = make_fixture("unreadable");
+  auto const fx  = make_fixture("unreadable");
   auto const dir = fx.root / "db";
   std::filesystem::create_directories(dir);
   auto const db_path = dir / "planar.db";

@@ -7602,7 +7602,7 @@ SEQ  STATE    POS  NOTES     WAITED  RAN    VENDOR  ROLE    LABEL       DIRECTOR
 
 **Exit codes:**
 - `0` — success, an empty queue included.
-- `1` — `planar.db` is missing or cannot be read (`error: OpenFailed`); neither `PLANAR_DB` nor `HOME` is set; a parse failure.
+- `1` — `planar.db` is missing (`error: OpenFailed`) or this process cannot read it (`error: DatabaseUnreadable`, naming the path and SQLite's reason); neither `PLANAR_DB` nor `HOME` is set; a parse failure.
 - `7` — `planar.db` is behind or ahead of this binary's schema; both versions are named. The same rule as every other `planar-watch` verb.
 
 **Main database.** There is no exemption: `queue` and `queue history` need the main database's path like every other verb, and exit `1` with `neither PLANAR_DB nor HOME is set` when neither variable is.
