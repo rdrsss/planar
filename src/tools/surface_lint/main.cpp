@@ -84,11 +84,12 @@ struct result_t {
 
 /// Run-time switches. Defaults are the shipped gate.
 struct options_t {
-  /// Enables the pending retired references (`k_pending_retired_patterns`).
-  /// Off by default; the M3 docs task (plan 1104, milestone 1108) switches it
-  /// on by adding `--enable-pending-retired` to the `surface-lint` Makefile
-  /// target once the docs no longer name the removed `/pl-*` commands and the
-  /// `scriptorium` renderer.
+  /// Enables the pending retired references (`k_pending_retired_patterns`:
+  /// `/pl-` and `scriptorium`). Off when the flag is absent so the fixtures
+  /// can exercise both states; the `surface-lint` Makefile target passes
+  /// `--enable-pending-retired`, so the shipped gate enforces them. The two
+  /// legacy source schemes (`k_pending_retired_exempt_literals`) and
+  /// `docs/changelog.md` stay exempt.
   bool enable_pending_retired = false;
 };
 
@@ -366,9 +367,9 @@ constexpr std::array<scoped_retired_pattern_t, 4> k_scoped_retired_patterns{
 
 /// Retired names that are NOT enforced yet. They fire only under
 /// `options_t::enable_pending_retired` (`--enable-pending-retired`), with the
-/// same scope, exemptions and region mechanism as the patterns above. The M3
-/// docs task (plan 1104, milestone 1108) rewrites the docs that still name
-/// them and then adds the flag to the `surface-lint` Makefile target.
+/// same scope, exemptions and region mechanism as the patterns above. The
+/// `surface-lint` Makefile target passes the flag, so they are enforced in the
+/// shipped gate (plan 1104, milestone 1108).
 constexpr std::array<scoped_retired_pattern_t, 2> k_pending_retired_patterns{{{"/pl-"}, {"scriptorium"}}};
 
 /// Literal strings that contain a pending retired name but are stored

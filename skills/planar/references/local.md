@@ -48,8 +48,21 @@ Flags: see `planar local <verb> --help`.
 
 ### Rules
 
-- Installs carry a visible `local-` prefix. Only a source whose front matter sets
-  `shadow: true` installs under its bare name; never add that on the operator's behalf.
+- Installs are copies, not symlinks, and carry the `planar-local-<name>` prefix: a skill is
+  copied whole to the same skill roots the `planar` skill uses, with its front-matter
+  `name` rewritten in the copy; an agent is copied into each present vendor's agent
+  directory in that vendor's form. The operator's source is never edited.
+- A name must match `^[a-z0-9]+(-[a-z0-9]+)*$` and be at most 51 characters; `import` and
+  `link` refuse anything else at exit 2 and never normalize. A source whose front matter
+  sets the retired `shadow` key is refused at exit 2; nothing may take the `planar`
+  skill's name.
+- `list` recomputes each install from disk: `live` (equals a fresh projection), `stale`
+  (differs), `missing`, `broken` (source gone), or `legacy` (an old symlink projection).
+  `link --reconcile` refreshes stale copies, migrates the legacy projections it owns,
+  removes projections whose source is gone only when still provably its own, and reports
+  no changes on a second run.
+- A destination that exists and is neither a prior Planar projection nor byte-identical
+  is refused at exit 6 naming the path; nothing is written when any destination fails.
 - `import --force` replaces an existing sandbox entry and `unlink --purge` deletes the
   sandbox source. Require clear intent for either, naming the collision or the source.
 - Never delete or modify the external path an import came from.

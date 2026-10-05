@@ -1745,7 +1745,7 @@ Each candidate is classified:
 | `resolved` only (default) | **14 / 46** |
 | `resolved` + `--wide` | 13 / 46 |
 
-Wide expansion bought zero additional eligible tasks and cost one. The mechanism is rule 2's drop-both-on-tie: an *undeclared* task removes only itself from the eligible set, but an *over-declared* one removes its peers too. In one plan, four tasks each mentioned `skills/src/` in prose; expanding it gave all four the same 35 paths, so they mutually overlapped and also dragged down the one task that had seven genuinely distinct real paths — 1 eligible became 0.
+Wide expansion bought zero additional eligible tasks and cost one. The mechanism is rule 2's drop-both-on-tie: an *undeclared* task removes only itself from the eligible set, but an *over-declared* one removes its peers too. In one plan, four tasks each mentioned a skills source directory in prose; expanding it gave all four the same 35 paths, so they mutually overlapped and also dragged down the one task that had seven genuinely distinct real paths — 1 eligible became 0.
 
 So over-declaration is only the safely-recoverable direction while the declaration stays narrow enough not to intersect everything. Pass `--wide` when you have judged a specific expansion to be right; the preview shows each candidate's expansion size for exactly that decision.
 
@@ -3324,7 +3324,7 @@ planar workbench extract-questions <plan-ref> [--json]
 
 **Description:** Scan every artifact in the named anchor plan's workbench directory for `## Open questions` sections. Each H3 heading (`### …`) that is a direct child of an `## Open questions` H2 is treated as one open question item. Returns a JSON array describing which artifact file each question item came from and the text of each heading. Artifact files with no `## Open questions` section are omitted from the output.
 
-This helper is consumed by `/pl-spec-draft` and `/pl-spec-ingest` to auto-register question entities during spec authoring and re-ingestion. Calling it directly is useful for auditing which open questions a spec body currently declares before running the ingest cycle.
+This helper is consumed by the `planar-planner` and `planar-ingestor` agents to auto-register question entities during spec authoring and re-ingestion. Calling it directly is useful for auditing which open questions a spec body currently declares before running the ingest cycle.
 
 **Arguments:**
 
@@ -3494,7 +3494,7 @@ planar workspace routing build [<workspace>] [--enrich]
 
 **Description:** Scan the workspace's member projects and rewrite `<state-dir>/routing-table.json`. Deterministic and in-process by default (no LLM): reads each project's README first paragraph (becomes `summary`), runs manifest detection for capability tags (loaded from `~/.planar/templates/workspace-capabilities.toml` when present), infers cross-repo dependencies from `go.mod` replace directives and `package.json` workspace deps, walks the repo for a language census and entry-point detection, and refreshes the `planar_focus` block via live DB queries (open tasks, open questions, active plans). Operator overrides from `<state-dir>/routing-table-overrides.json` are merged on every build and always win.
 
-With `--enrich`, the builder additionally consults the workspace-enrichment cache at `~/.planar/cache/workspace-enrichment/<org_id>/` and merges any LLM result whose fingerprint matches the project's current content. Cache misses emit a per-project hint to run the `pl-workspace-scan` skill. If the workspace's `config.toml` declares an `enrich_command`, the builder shells out to it on cache miss (stdin = Request JSON, stdout = Result JSON, bounded by `enrich_timeout_seconds`, default 30); validation failures are warnings, never build failures. Merge precedence (highest first): manual overrides → LLM enrichment → static signals.
+With `--enrich`, the builder additionally consults the workspace-enrichment cache at `~/.planar/cache/workspace-enrichment/<org_id>/` and merges any LLM result whose fingerprint matches the project's current content. Cache misses emit a per-project hint to run the workspace-scan flow. If the workspace's `config.toml` declares an `enrich_command`, the builder shells out to it on cache miss (stdin = Request JSON, stdout = Result JSON, bounded by `enrich_timeout_seconds`, default 30); validation failures are warnings, never build failures. Merge precedence (highest first): manual overrides → LLM enrichment → static signals.
 
 **Output (human):**
 ```
@@ -5388,7 +5388,7 @@ Idempotency: items already present in the database (matched by title and source-
 | `--apply-removals` | off | When applying, also remove entities that are gone from the source. |
 | `--scope <slug>` | cwd-derived | Scope for all created entities. Overrides cwd derivation for this invocation. |
 | `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of status inference; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
-| `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `pl-import` skill). |
+| `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `planar-importer` agent). |
 | `--accept-spec <slugs>` | none | Non-interactive forward-spec selection — slug, comma-separated slugs, or `all`. |
 | `--no-forward-specs` | off | Skip forward-spec processing entirely. |
 
@@ -5645,7 +5645,7 @@ list` — that discovery family was removed; `planar models resolve --role
 fallback produced it.) This is the **single authoritative routing source** — the
 skill-render Tier Table (hand-maintained in `agents/models.md`), the
 orchestrator's Phase 3 dispatch-preview routed-model column (`resolve(role,
-work_type)`; see `skills/src/pl-orchestrator.md` § Dispatch preview and model
+work_type)`; see the `planar-orchestrator` agent's Dispatch preview and model
 tiers), and other workflow callers all resolve through
 it; there is no separate `execute-config.toml`.
 
@@ -6306,7 +6306,7 @@ The subcommand set is exactly `evals`, `resolve`, `experiments`, `outcomes`
 and `registry`. The plan-540 discovery family — `models list`, `models
 refresh`, `models routing`, `models apply`, `models candidates` — was
 removed with the curated catalog and the `[models]` / `[roles]` config
-blocks (see `skills/src/pl-models-config.md`); every one of them now fails
+blocks (see `docs/concepts.md` § Model routing); every one of them now fails
 at parse time with exit 2. Tier→model presets live in the orchestration
 layer's `agents/models.md`, hand-maintained, and no `planar` verb writes
 them.
@@ -6585,7 +6585,7 @@ planar skills
 ```
 
 **Description:** **Retired.** Rendering and drift detection moved to the
-external `scriptorium` binary (plan 918 M5). Planar no longer renders
+external renderer binary (plan 918 M5). Planar no longer renders
 vendor projections nor tracks their install-drift in-band. The command
 remains so that an operator running it gets told where the functionality
 went rather than a bare unknown-command error.

@@ -21,8 +21,8 @@ This document describes the system as it stands today — for a new contributor 
 flowchart TD
     subgraph Surface["User / Agent surface"]
         direction LR
-        S1["/pl-orchestrator · /pl-coder · /pl-reviewer"]
-        S2["/pl-spec-draft · /pl-spec-ingest · /pl-ext-propagate · …"]
+        S1["planar skill (rules + references)"]
+        S2["planar-orchestrator · planar-coder · planar-reviewer · …"]
     end
 
     subgraph Binaries["Planar CLI (four planning-state surfaces + one DB-handle-free engine)"]
@@ -49,7 +49,7 @@ flowchart TD
 Two layers are touched by users and agents:
 
 1. **The Planar binaries** — five C++26 executables. Four share the SQLite engine/runtime graph: `planar` is the operator surface, `planar-agent` owns coordination writes, `planar-watch` is a driver-enforced read-only viewer, and `planar-ext` (decisions 995–1001) owns the operational-plane adapters (Jira, GitHub Issues) with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, enforced by a `sqlite3_set_authorizer` allowlist. `planar-execute` links the vendored Lua runtime and reaches state only through an exact allowlist of sibling Planar commands — it holds no SQLite handle at all. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Five-binary architecture](#five-binary-architecture) below. The Zig implementation these binaries were ported from was retained under `zig/` as the port's parity oracle and DELETED at the M10 cutover (decisions 963/982) once its state-differential evidence came back clean; C++26 is now the only implementation.
-2. **The skill and agent layer** — vendor-specific command surfaces (Claude slash commands, Codex skills, Copilot skills, Gemini skills) generated from a single source tree under `skills/src/` at install time. Skills invoke binary verbs; binary verbs operate on SQLite.
+2. **The skill and agent layer** — one skill, `planar` (`skills/planar/`), and fifteen role agents (`agents/planar-<role>.md`), placed unchanged into six vendors' directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references; the agents are dispatched by name. Both invoke binary verbs; binary verbs operate on SQLite. See [skill-reference.md](skill-reference.md).
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
 
@@ -137,7 +137,7 @@ for categorized terminals; its database handle remains strictly read-only.
 
 The `worktree_path TEXT` column on `agent_work_claims` (also migration 0015) is the persistence path for worktree-isolated dispatch. Sequential worktree isolation and `parallel-fanout` are model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam — an optional deterministic helper, not a required exclusive path: `cycle_plan` computes one sequential lane, while `plan`/`waves` compute staged fan-out lanes; the model orchestrator, a host-native workflow, or a background agent (decision 1007) runs the git worktree/branch/merge ops and spawns the coders. `planar-agent pull --worktree <path>` and `claim --entity task:<id> --worktree <path>` write the path; `planar resume <task>` reads it via the active claim row (surfaced as `active_claim.worktree_path` in `--json` and as a `cd:` line in the text packet); `planar-watch claims | log | feed | ps` and `planar dashboard --agents` surface it in their projections. The persistence model is deliberately claim-attached — there is no standalone `worktrees` table — though the forward-compat `validate_worktree_id` hook in `src/engine/runtime/agentactivity.cpp` is the seam should that decision ever be revisited. For the concept overview and canonical path/branch/lifecycle convention see [`docs/concepts.md §Worktree`](concepts.md#worktree).
 
-The `handoffs.worktree_path` / `repo_root` / `branch` columns (migration 00017) close the cold-start recovery loop for plan 297. At handoff-create time the `planar handoff` handler copies the active claim's worktree fields onto the new row; `planar resume` reads them as a fallback when no active claim exists or the active claim row has a NULL `worktree_path`. The fallback surfaces as `from_handoff.{worktree_path,repo_root,branch,handoff_id}` in the `--json` packet and as a `from handoff: <id>` block (with `worktree:` / `cd:` / `branch:` / `repo_root:` lines) in the text packet's audit footer. Both fallback projections lie alongside `active_claim` rather than replacing it — when both are populated, `active_claim` is authoritative. See [`docs/cli-reference.md` § Domain: handoff](cli-reference.md#domain-handoff) for the lifecycle overview and the `planar` skill's [resume and handoff reference](../skills/planar/references/resume-handoff.md) for the operator-facing prose.
+The `handoffs.worktree_path` / `repo_root` / `branch` columns (migration 00017) close the cold-start recovery loop for plan 297. At handoff-create time the `planar handoff` handler copies the active claim's worktree fields onto the new row; `planar resume` reads them as a fallback when no active claim exists or the active claim row has a NULL `worktree_path`. The fallback surfaces as `from_handoff.{worktree_path,repo_root,branch,handoff_id}` in the `--json` packet and as a `from handoff: <id>` block (with `worktree:` / `cd:` / `branch:` / `repo_root:` lines) in the text packet's audit footer. Both fallback projections lie alongside `active_claim` rather than replacing it — when both are populated, `active_claim` is authoritative. See [`docs/cli-reference.md` § Domain: handoff](cli-reference.md#domain-handoff) for the lifecycle overview and [`references/resume-handoff.md`](../skills/planar/references/resume-handoff.md) in the planar skill for the operator-facing prose.
 
 The `task_touch_paths` table (migration 00019) is the path-level touch surface for the parallelizability rules behind `planar plan recommend-strategy` (decision 370, plan 492 M5). Each row declares that a task is expected to modify a specific repo-relative file path: `(task_id → tasks.id, repo_id → projects.id, path)` with a `unique(task_id, repo_id, path)` guard and cascade-delete on both FKs. It is ADDITIVE to — and coexists with — the coarse `entity_links(from_kind='task', to_kind='repo', relationship='touches')` repo-level edge; the two are written together by `planar task touches add <task> <repo> --path <p>` (a path-touch implies the repo-touch). The strategy engine (`src/engine/planning/strategy.cpp`) reads path-level rows where a repo has them and falls back to the coarse repo slug only for repos with no path declaration, so two tasks editing different files in the same repo are parallel-eligible while an under-declared (empty) touch set is treated as "touches everything" → never eligible. Rules 3/4 (migration touched, singleton authoritative file touched) match on the raw repo-relative path. `planar task touches list <task> --json` surfaces both granularities (`repos` + `paths`).
 
@@ -327,7 +327,7 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `src/cmd/` | One directory per binary — `planar/`, `planar-agent/`, `planar-watch/`, `planar-execute/`, `planar-ext/` — each its own CMake target |
 | `src/engine/` | Domain logic and state transitions, bucketed as `identity/`, `planning/`, `external/`, `runtime/`, plus subsystem dirs (`extsync/`, `workbench/`, `templates/`, `routing/`, `config/`, and others) |
 | `src/lib/` | Shared base modules: `db/` (connection + migrations), `cliapp/` (CLI11-backed parser wrapper), `adapter/`, `http/`, `git/`, `process/`, `log/`, and the other leaf libraries |
-| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `cli_docs_coverage/`, `surface_lint/`, `scriptorium/`, `queue_contention_probe/`) |
+| `src/tools/` | Project tooling, one directory per tool (`cli_usage_lint/`, `cli_docs_coverage/`, `surface_lint/`, `queue_contention_probe/`) |
 | `cmake/dependencies.cmake` | Every third-party dependency as a pinned `CPMAddPackage(...)` (release archive + SHA256, cached under `vendor/`) |
 | `cmake/generate_migrations.cmake`, `cmake/generate_templates.cmake` | Configure-time codegen: `#embed`s `migrations/` and `templates/defaults/` into generated modules the runtime embeds |
 | `vendor/` | CPM's committed source cache for third-party dependencies — pinned release archives only, no `git clone`/submodule vendoring |
@@ -335,11 +335,9 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `migrations/` | SQLite migrations in sqlx-cli format (`NNNNN_<name>.up.sql` / `.down.sql`) — single authoritative source |
 | `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `github-projects/`, `jira/`); embedded at build time |
 | `templates/doc-prompts/agents.md`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install (alongside `templates/defaults/`) |
-| `skills/src/` | Unified authored skill sources (`pl-*.md`) |
-| `$PLANAR_HOME/commands/claude/` | Generated Claude staging tree (install output, not checked in) |
-| `$PLANAR_HOME/codex-skills/` | Generated Codex staging tree (install output, not checked in) |
-| `$PLANAR_HOME/copilot-skills/`, `$PLANAR_HOME/gemini-skills/` | Generated Copilot and Gemini staging trees (install output, not checked in) |
-| `agents/` | Vendor-neutral Planar agent role specs |
+| `skills/planar/` | The one authored skill: `SKILL.md` plus `references/` |
+| `$PLANAR_HOME/skills/planar/`, `$PLANAR_HOME/agents/`, `$PLANAR_HOME/codex-agents/` | Staged skill and agents, the authority the placed targets are compared against (install output, not checked in) |
+| `agents/` | The `planar-<role>.md` agent role specs, with the doctrine documents beside them |
 | `workflows/` | Lua workflows run by `planar-execute` (staged into `~/.planar/workflows/` on install) |
 | `docs/` | User-facing reference docs (architecture, CLI, skills, concepts, workflows) |
 | `examples/` | Copy-paste oriented examples for the spec, orchestration, workflow, and propagation flows |
@@ -347,7 +345,6 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of the build |
 | `Makefile` | Thin wrapper around `cmake --preset` / `cmake --build` / `ctest` invocations |
 | `install.sh` | Source-checkout installer; builds and installs the C++ binaries via CMake |
-| `scriptorium.yaml` | Repo-root Scriptorium configuration (vendor profile overrides and additions) |
 
 ---
 
@@ -725,7 +722,7 @@ Merge           → adapts Result to interpretation.Result, merges with determin
 Diff + Apply    → SHARED with import — same Diff/Apply stages
 ```
 
-The LLM never runs in the Planar binary. The binary stays free of provider API keys, retries, and rate limits; the unified `skills/src/pl-synthesize.md` workflow, projected for each selected vendor at install time, is the LLM engine. The cache contract is the handoff: the binary writes a Request, the skill writes a Result, the binary validates and merges.
+The LLM never runs in the Planar binary. The binary stays free of provider API keys, retries, and rate limits; the `planar-synthesizer` agent, installed for each selected vendor, is the LLM engine. The cache contract is the handoff: the binary writes a Request, the skill writes a Result, the binary validates and merges.
 
 ### Merge rules (synthesis)
 
@@ -740,7 +737,7 @@ The LLM never runs in the Planar binary. The binary stays free of provider API k
 
 The Diff/Apply stages are shared between both verbs via the apply helpers in `src/engine/importer/importer.cpp`. After the synthesis-specific merge or the import-specific interpretation merge, both pipelines converge on the same idempotent diff (match by fingerprint; additions / updates / proposed-removals) and the same apply path (soft-cancel removed entities; preserve the audit trail).
 
-The synthesis-vs-transcription split serves the same downstream pipeline: both verbs produce artifacts that flow through `/pl-spec-ingest` for task decomposition, then through the orchestrator's execution + propagation phases. The split is at the entry point only — what counts as the authoritative planning material.
+The synthesis-vs-transcription split serves the same downstream pipeline: both verbs produce artifacts that flow through the `planar-ingestor` agent for task decomposition, then through the orchestrator's execution + propagation phases. The split is at the entry point only — what counts as the authoritative planning material.
 
 See [docs/concepts.md § Transcription vs Synthesis](concepts.md#transcription-vs-synthesis) for the conceptual framing and [docs/cli-reference.md § Domain: synthesize](cli-reference.md#domain-synthesize) for the full CLI surface.
 
@@ -772,55 +769,46 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 
 ### Phases (orchestrator)
 
-| Phase | Skill / Agent | Trigger |
+| Phase | Agent / Verb | Trigger |
 |-------|---------------|---------|
-| 1 — Planning | `pl-spec-draft` | Goal given; no anchor plan or draft with no artifacts |
-| 2 — Ingestion | `pl-spec-ingest` | Anchor plan draft with workbench artifacts present |
+| 1 — Planning | `planar-planner` | Goal given; no anchor plan or draft with no artifacts |
+| 2 — Ingestion | `planar-ingestor` | Anchor plan draft with workbench artifacts present |
 | 3 — Execution | coder + optional test-coder + reviewer | Anchor plan active with todo/doing tasks |
 | 3.5 — Test-coder | `test-coder` | Cycle's tasks intersect uncovered test-spec slugs after coder output |
 | 3.7 — Finalization | `janitor` | Explicit `--finalize` or interactive confirm after Phase 3; merge -> reconcile -> closeout gate |
-| 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` |
-| 5 — Archive | `pl-workbench-archive` | Anchor plan done, user requests `--archive` |
+| 4 — Propagation | `planar-ext-sync` | User requests `--propagate` |
+| 5 — Archive | `planar workbench archive` (the planar skill's `spec-pipeline.md` reference) | Anchor plan done, user requests `--archive` |
 
 The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; The iteration cap is 5 per reviewer dispatch cycle.
 
-### Vendor surfaces
+### Skill and agent install
 
-Unified skill sources live only in `skills/src/`; vendor-neutral agent role
-sources live in `agents/`. `install.sh` builds and shells the in-tree C++ `src/tools/scriptorium/` renderer
-to create the vendor projections at install time, so `commands/claude/`, `skills/codex/`,
-`skills/copilot/`, and `skills/gemini/` are generated output trees rather than authored source
-directories.
+The skill source is `skills/planar/` (one `SKILL.md`, nine `references/` files);
+the agent sources are `agents/planar-<role>.md`. `install.sh` copies both into
+`$PLANAR_HOME` (`skills/planar/`, `agents/`), derives the Codex TOML agents into
+`$PLANAR_HOME/codex-agents/`, and then places the staged skill and agents into
+each vendor whose presence marker exists. No generated projection exists: a
+placed skill is the staged directory and a placed agent is the staged file,
+except the Copilot (`.agent.md` suffix), Codex (TOML) and OpenCode (reduced
+frontmatter) forms, which are derived from the one Markdown source. Review and
+edit `skills/planar/` and `agents/`; never edit a placed or staged copy. The
+vendor table, link and copy mode, and the Gemini subagent switch are in
+[skill-reference.md § What installs where](skill-reference.md#what-installs-where);
+the install layout and the upgrade note for the previous per-vendor projections
+are in [INSTALL.md](../INSTALL.md#install-layout-reference).
 
-This is a source-of-truth boundary, not merely a directory convention. Review
-and edit `skills/src/` and `agents/`; validate projections in an out-of-tree
-render destination. Never repair guidance drift by editing a generated vendor
-projection.
+`planar skills` is a retirement notice with no subcommands.
 
-| Vendor | Staged projection | Installed to |
-|--------|-------------------|-------------|
-| Claude | `$PLANAR_HOME/commands/claude/` | `~/.claude/commands/` |
-| Codex | `$PLANAR_HOME/codex-skills/` | `$CODEX_HOME/skills/` (normally `~/.codex/skills/`) |
-| Copilot | `$PLANAR_HOME/copilot-skills/` | `~/.copilot/skills/` |
-| Gemini | `$PLANAR_HOME/gemini-skills/` | `~/.gemini/antigravity-cli/skills/` |
-
-`planar skills` is a retirement notice with no subcommands, so the unified source is never installed directly. Claude consumes flat command files, while Codex consumes skill directories directly. Copilot and Gemini also consume skill directories: the installer converts their flat rendered files (`$PLANAR_HOME/skills/copilot/pl-*.md`, `$PLANAR_HOME/skills/gemini/pl-*.md`) into `SKILL.md` directories. Installed Codex, Copilot, and Gemini skills are real copies so their loaders can discover them without following directory symlinks; Claude commands are symlinked as flat slash commands. Planar agent sources live in `agents/` and have separate vendor-specific outputs and install targets.
-
-Forty unified `pl-*` skill sources (`skills/src/pl-*.md`) render for each selected vendor. They cover the planning, workbench, external, onboarding, and entity workflows, plus intent-oriented status and help, durable knowledge, operational observation, the complete local lifecycle (with `pl-local-import` retained as a compatibility wrapper), preview/apply introspection and feedback triage, and guarded sync reconciliation. Repo-relative vendor trees are not checked in; canonical edits belong in `skills/src/`, and drift is gated by semantic lint plus the in-tree `scriptorium check` / `scriptorium status` against an out-of-tree staging directory (`planar skills render` no longer exists).
+The skill and the agents are documented in
+[skill-reference.md](skill-reference.md). The skill carries thirteen invariants
+and a routing table over nine references (claim ritual, status, recovery,
+resume and handoff, spec pipeline, knowledge, external sync, local, and the
+feedback contract); it states no verb detail, which comes from each binary's
+`--help` and `schema --command`.
 
 Fifteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, `importer`, `synthesizer`, `introspector`, `feedback-triager`, and `research`) cover orchestration and review, planning and ingestion, external propagation, repo adoption, introspection and feedback triage, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `feedback-triager` and `sync-reconciler` coordinate preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
 
-Agent role specs (vendor-neutral) live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`, `agents/planar-feedback-triager.md`, and `agents/planar-introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
-
-Planar's own in-band `x-planar-source-digest`/`x-planar-projection-digest`
-frontmatter metadata (one lowercase SHA-256 hex value each, versioned,
-fixed-order, byte-length-prefixed encoding) retired along with the in-tree
-renderer (plan 918 D5) — scriptorium-rendered projections carry neither
-header. The in-tree Scriptorium compares current source projections with staged bytes:
-`scriptorium check --config scriptorium.yaml --output-root <planar-home>`
-reports missing, changed, and unexpected staged files. `scriptorium status`
-reports per-source rendering freshness. Planar's install manifest below owns
-installed vendor files; Scriptorium maintains no separate registry.
+Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`, `agents/planar-feedback-triager.md`, and `agents/planar-introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
 
 `install.sh` writes `$PLANAR_HOME/install-manifest.json` (normally
 `~/.planar/install-manifest.json`) before the first vendor target is placed and
@@ -879,7 +867,7 @@ are not duplicated elsewhere. Manifest-owned stale/missing rows and aggregate
 legacy, invalid, or unsupported manifest states degrade overall health and
 carry the exact classifier recovery command. No manifest and no legacy stamp
 is `not_installed`; unmanaged entries and unselected vendors remain visible
-counts but do not degrade. The health path never invokes repair, rendering,
+counts but do not degrade. The health path never invokes repair,
 installation, or any filesystem/database mutation.
 
 There is no more per-name `planar skills repair` verb — it retired alongside
@@ -893,21 +881,24 @@ itself never opens SQLite and has no write path of its own.
 
 <!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ source this tool was ported from, for history -->
 `src/tools/surface_lint/` (ported from the Zig tree's `tools/surface_lint.zig` at task 6402, decision 1000) deterministically scans canonical Markdown under
-`agents/`, `skills/src/`, and `docs/`. Its stable finding codes are
+`agents/`, `skills/`, and `docs/`. Its stable finding codes are
 `surface-link-missing`, `surface-legacy-reference`,
 `surface-artifact-set-drift`, `surface-capability-drift`,
-`surface-command-drift`, `surface-contract-missing` and
+`surface-command-drift`, `surface-skill-spec` and
 `surface-path-missing`; the host-queue rule adds `surface-queue-command` and
 `surface-queue-marker-invalid` (below); the retired-reference rule adds
 `surface-retired-reference` and `surface-retired-ref-marker-invalid`; malformed or unused suppressions use
 `surface-suppression-invalid` and `surface-suppression-unused`. These cover absent repository-relative links,
 pinned retired implementation references, contradictory four-artifact
-contracts, read-only roles containing write commands, invalid semantic command
-shapes, and missing skill feedback/recovery headings. Every unified skill is
-checked by default unless its frontmatter contains the literal boolean
-`internal_only: true`. Generated vendor-projection links are assigned to
-renderer fixtures rather than resolved against output directories that do not
-exist in a source checkout.
+contracts, read-only roles containing write commands, and invalid semantic
+command shapes. `surface-skill-spec` is the Agent Skills format check, applied
+to every `skills/<name>/SKILL.md`: frontmatter present, `name` matching its
+directory and the name format, a description of at most 1024 characters, only
+the allowed frontmatter keys, a body of at most 500 lines, links that resolve,
+and references one level deep. Planar's own tighter budget, 150 lines of body for
+`skills/planar/SKILL.md`, is a Catch2 contract test in the lint's test binary,
+not a lint rule. Link checks verify file existence only; they do not check
+anchors.
 
 Run `make surface-lint` for stable text findings or the built
 `surface_lint <repo-root> --json` binary directly for the versioned envelope
@@ -926,7 +917,7 @@ Unknown, malformed, file-wide, and unused suppressions are errors.
 The two queue codes enforce the host-queue rule on authored agent and skill
 sources (plan 1080, [operations.md](operations.md#5-the-host-build-and-test-queue)).
 `surface-queue-command` is reported for an inline code span, or a line of a
-fenced code block, in `agents/` or `skills/src/` whose first word is a build or
+fenced code block, in `agents/` or `skills/` whose first word is a build or
 test program (`make`, `cmake --build`, `ninja`, `ctest`, `cargo build`/`test`,
 `go build`/`test`, `npm test`, `pytest`, `tox`, `gradle build`) and which is not
 given to the queue; a command given to the queue begins `planar-agent queue
@@ -949,7 +940,7 @@ verbatim section. They have their own markers:
 database from coming back: its file name, its path variable, its migration
 directory and its read-tolerance helper (the `k_scoped_retired_patterns` table in
 `src/tools/surface_lint/main.cpp`) may not appear in `docs/`, `agents/`,
-`skills/src/`, `copilot/` or the root guides (`README.md`, `CLAUDE.md`,
+`skills/`, `copilot/` or the root guides (`README.md`, `CLAUDE.md`,
 `AGENTS.md`, `INSTALL.md`). This is the one check that also reads `README.md`,
 `INSTALL.md` and `copilot/`, and it reads fenced code blocks as well. Two things
 are exempt: `docs/changelog.md`, which records the removal, and the lines of
@@ -979,7 +970,7 @@ The CMake project root IS the repo root: `CMakeLists.txt` and `CMakePresets.json
 ```bash
 # Makefile wrappers
 make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copies
-                        # the five Planar binaries and scriptorium into ./bin/
+                        # the five Planar binaries into ./bin/
 make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
                         # cmake --install into PREFIX/bin (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
@@ -1007,8 +998,8 @@ Planar runs a two-tier test model:
 The binaries produced by `make build` land under `./bin/`. `make install`
 installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
 `~/.local/bin`). `install.sh` / `make install-full` additionally
-stages skills, agents, workflows, and vendor wiring under `~/.planar`, by
-shelling the `scriptorium` binary after the CMake build.
+stages the skill, agents, workflows, and migrations under `~/.planar` and places
+the skill and agents into each present vendor's directories after the CMake build.
 
 The black-box lane follows two stylistic conventions documented in [Testing § Black-box harness](testing.md#black-box-harness): focused per-leaf tests live beside their command family under `src/cmd/planar/handlers/<family>/` and pin that verb's contract; multi-command lifecycle scenarios and their inventory live in [`src/cmd/integration_tests/`](../src/cmd/integration_tests/README.md). `planar`-only scenarios share an injected in-memory SQLite connection across handler invocations; cross-binary tests use a scratch database file and real processes, as in `src/cmd/planar/cross_process.t.cpp`. The `src/cmd/*/parity.t.cpp` cases pin process-level output. `planar_binary()` discovers nested `*.t.cpp` files so colocated tests remain in the binary's test target; `src/cmd/integration_tests/CMakeLists.txt` adds its scenarios to that target explicitly.
 
@@ -1058,11 +1049,11 @@ there is no cross-host answer left for Planar to give wrongly.
 
 A vendor host's native subagent surface remains the final capability
 boundary: Codex-native orchestration binds only Codex agents and Claude-native
-orchestration binds only Claude agents. The rendered orchestrator projection
+orchestration binds only Claude agents. The orchestrator agent
 declares its active host vendor and refuses a candidate the host cannot
 represent rather than silently substituting a provider, tier, model, or agent
 type. Claude supports invocation-level model overrides (subject to its
-environment override); Codex role projections may be fixed to their rendered
+environment override); Codex role agents may be fixed to their
 TOML model and therefore require a visible matching agent type.
 
 ### Routing evidence plane

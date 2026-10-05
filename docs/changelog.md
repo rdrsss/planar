@@ -2,6 +2,21 @@
 
 A changelog of shipped milestones and plans, newest first.
 
+## 2026-10-04
+
+### Plan 1104: one `planar` skill replaces the forty `pl-*` skills and the renderer
+
+Planar now ships one skill and fifteen role agents, installed directly from the authored tree. The CLI carries the detail the skills used to repeat.
+
+- **Skills.** The forty `pl-*` skills under `skills/src/` are replaced by one `skills/planar/` skill in the Agent Skills layout, with nine references. Agents are renamed `planar-<role>`.
+- **Renderer.** The `scriptorium` renderer, `scriptorium.yaml` and the 232 rendered projections are gone. The installer places the authored tree for six vendors (Claude Code, Codex, Copilot, Gemini CLI, Antigravity, OpenCode) from a nine-target table. `planar health` reports each recorded target as `fresh`, `stale` or `missing`.
+- **Removed install paths.** `~/.claude/commands/pl-*`, `~/.codex/skills/pl-*`, `~/.copilot/skills/pl-*`, `~/.gemini/antigravity-cli/skills/pl-*`, and under `$PLANAR_HOME`: `commands`, `skills/codex`, `skills/copilot`, `skills/gemini`, `codex-skills`, `copilot-skills`, `gemini-skills`, `opencode-skills` and `agents/<vendor>`. The installer removes them on upgrade when it can prove Planar made them, and reports what it leaves.
+- **Local skills and agents.** `planar local link` now projects by copy, as `planar-local-<name>`, under a name rule the verb enforces. The `shadow` key is retired.
+- **`planar skills`.** Kept for one release as a pointer to the new layout.
+- **CLI help.** Every flag carries help and every leaf verb ends with `Examples:` and `Exit codes:` sections. `schema --command` and `schema --compact` narrow the catalog, and `planar help` prints the root page.
+
+The first step with or without the skill is `planar --help`. See [skill-reference.md](skill-reference.md) and [getting-started.md](getting-started.md).
+
 ## 2026-10-01
 
 ### Plan 1089: the host queue moves into planar.db; agent.db removed

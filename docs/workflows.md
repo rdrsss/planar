@@ -1,6 +1,6 @@
 # Planar Workflows
 
-End-to-end recipes for common Planar operations. These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
+End-to-end recipes for common Planar operations. Role work (drafting, ingesting, orchestrating, reviewing, syncing) is done by dispatching the named `planar-<role>` agent; everything verb-shaped is a CLI command, and `planar <verb> --help` is the reference for its flags. One skill, `planar`, carries the rules that cross verbs, and the recipes name its references where one applies; see [skill-reference.md](skill-reference.md). These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
 
 ---
 
@@ -9,23 +9,24 @@ End-to-end recipes for common Planar operations. These assume you have run `plan
 The planning loop goes from goal statement through spec drafting, task decomposition, execution, and operational-plane propagation. The five steps below are the whole loop; Recipes 1, 2, 3 and 6 cover each in depth.
 
 ```
-# 1. Draft a feature spec and roadmap into the workbench.
-/pl-spec-draft "migrate billing service to v2 API"
+# 1. Draft a feature spec and roadmap into the workbench: dispatch the
+#    planar-planner agent with the goal "migrate billing service to v2 API".
 
 # 2. Review the Markdown files under ~/.planar/workbench/, edit as needed, then ingest.
-/pl-spec-ingest 7 --apply        # decomposes roadmap bullets into tasks + scenarios
+planar spec ingest 7 --strict --json   # read-only preview
+planar spec ingest 7 --apply           # decomposes roadmap bullets into tasks + scenarios
 
-# 3. Execute through the standard coder/reviewer loop.
-/pl-orchestrator 7
+# 3. Execute through the standard coder/reviewer loop: dispatch the
+#    planar-orchestrator agent for plan 7.
 
 # 4. Propagate the feature to the operational plane (Jira or GitHub Issues).
-/pl-ext-propagate 7
+planar-ext ext propagate 7 --system my-gh
 
 # 5. Archive the workbench tree when done (DB retains all entities).
-/pl-workbench-archive archive plan:7
+planar workbench archive 7
 ```
 
-Each step corresponds to a vendor skill. Claude uses `/pl-*` slash commands; Codex uses `$pl-*` skills such as `$pl-spec-draft`. The `pl-orchestrator` runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch.
+Steps 1 and 3 are agent dispatches; the others are verbs. The `planar-orchestrator` agent runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch. The agents are listed in [skill-reference.md](skill-reference.md#the-role-agents).
 
 ---
 
@@ -37,9 +38,7 @@ Use this when you have a goal and want to produce a structured plan with tasks r
 
 ### Step 1 — Draft planning documents
 
-```
-/pl-spec-draft "add billing export to CSV"
-```
+Dispatch the `planar-planner` agent with the goal `add billing export to CSV`.
 
 The planner creates:
 - A draft anchor plan with a generated slug (e.g. `billing-export-csv`).
@@ -63,10 +62,10 @@ When satisfied, signal readiness to ingest.
 ### Step 3 — Preview ingestion
 
 ```
-/pl-spec-ingest 42
+planar spec ingest 42
 ```
 
-The ingestor reads the workbench documents and prints a tree-shaped diff of proposed additions:
+The `planar-ingestor` agent runs this preview for you; you can run it directly too. It reads the workbench documents and prints a tree-shaped diff of proposed additions:
 
 ```
 project:my-app/billing-export-csv/
@@ -86,7 +85,7 @@ coverage: 5 tasks (5 with slug, 0 without); 0 uncovered
 The `coverage:` line follows the totals. It reports how many of the tasks have a `[slug:]` annotation and how many of those slugs are cited by at least one scenario in `test-spec.md`. Uncovered slugs and orphan scenarios (missing `**Verifies:**` line) are listed inline. To turn the gate into a hard refusal, run with `--strict`:
 
 ```
-/pl-spec-ingest 42 --strict
+planar spec ingest 42 --strict
 ```
 
 For the authoritative pre-ingest check, request the machine-readable preview:
@@ -119,10 +118,10 @@ object is the pre-ingest oracle; `test-spec status` is the post-ingest oracle.
 Review the diff. If it looks correct:
 
 ```
-/pl-spec-ingest 42 --apply
+planar spec ingest 42 --apply
 ```
 
-Add `--strict` to the apply call when the test-spec is meant to be complete — the gate will reject the apply if any slug-bearing task is still uncovered.
+`--apply` is an operator gate: run it only after you have confirmed the previewed diff. Add `--strict` to the apply call when the test-spec is meant to be complete — the gate will reject the apply if any slug-bearing task is still uncovered.
 
 Tasks, child plans, and decisions are now in the database. A successful apply also activates a `draft` anchor plan (the apply summary ends with `(anchor plan activated)`). Confirm before execution:
 
@@ -141,9 +140,7 @@ Use this when an anchor plan is `active` and you want to execute tasks.
 
 ### Invoke
 
-```
-/pl-orchestrator 42
-```
+Dispatch the `planar-orchestrator` agent with plan 42, naming any options from the table below in the brief.
 
 The orchestrator reads claim-aware task state, then opens Gate 1:
 
@@ -188,9 +185,11 @@ Accept this shape, the tier assignments, and the routed candidates?
 
 Confirm (`yes`) or adjust. The orchestrator then dispatches Group A to a freshly spawned coder subagent, routes the output through Phase 3.5 when needed, and either dispatches the reviewer or records the confirmed reviewer disposition. On `approve`, tasks flip to `done` through `planar-agent complete` and Group B is dispatched.
 
-### Flags
+### Brief options
 
-| Flag | Effect |
+These options are named in the brief the orchestrator is dispatched with.
+
+| Option | Effect |
 |------|--------|
 | `--strategy <name>` | Pre-commit an execution strategy (`classic`, `barrel-deferred`, `barrel-bypass`, `parallel-fanout`); skip the strategy gate |
 | `--isolation <pwd|worktree>` | For sequential strategies, run cycles in the current checkout (`pwd`) or an isolated git worktree (`worktree`); defaults to `pwd` |
@@ -216,7 +215,7 @@ Cycle dispatched slugs: [add-migration, wire-rpc, gateway-config]
 planar test-spec status --json:
   uncovered_task_slugs: [add-migration, gateway-config]
 
-Intersection non-empty → dispatching /pl-test-coder for slugs:
+Intersection non-empty → dispatching planar-test-coder for slugs:
   - add-migration
   - gateway-config
 ```
@@ -252,10 +251,7 @@ The orchestrator escalates. The operator decides whether to dispatch a new coder
 
 To backfill coverage on an already-committed change set:
 
-```
-/pl-test-coder <task-id>          # one task's cited scenarios
-/pl-test-coder <plan-id> --plan   # every cited scenario in the plan
-```
+Dispatch the `planar-test-coder` agent with a task id (that task's cited scenarios) or with a plan id (every cited scenario in the plan).
 
 Useful after authoring a new test-spec for an older feature, or for a second-pass coverage check on a PR.
 
@@ -265,9 +261,7 @@ The orchestrator's gate offers six shapes — three classic (`strict`, `grouped`
 
 #### barrel-grouped (alias for grouped, explicit barrel namespace)
 
-```
-/pl-orchestrator 42 --barrel-grouped
-```
+Dispatch `planar-orchestrator` for plan 42 with `--barrel-grouped`.
 
 Equivalent to `--grouped` with the milestone heuristic locked in. Each milestone becomes one coder cycle, then one reviewer dispatch per group per the existing dispatch profile.
 
@@ -283,10 +277,7 @@ tasks: [44, 45, 46]
 
 #### barrel-deferred (per-milestone boundary)
 
-```
-/pl-orchestrator 42 --barrel-deferred                       # default: per-milestone
-/pl-orchestrator 42 --barrel-deferred --barrel-deferred-at plan   # once at end of plan
-```
+Dispatch `planar-orchestrator` for plan 42 with `--barrel-deferred` (the default boundary is per milestone), or with `--barrel-deferred --barrel-deferred-at plan` to review once at the end of the plan.
 
 Coder cycles run back-to-back without reviewer dispatch between them. At the milestone (or plan) boundary, one reviewer fires against the union of all queued diffs.
 
@@ -317,11 +308,9 @@ tasks: [44, 45, 46]
 
 #### barrel-bypass (maximum throughput, gates are the entire signal)
 
-```
-/pl-orchestrator 42 --barrel-bypass
-```
+Dispatch `planar-orchestrator` for plan 42 with `--barrel-bypass`.
 
-No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` **twice** + `make coverage` + `make cli-usage-check` + `scriptorium check` against an out-of-tree staging dir + any remaining relevant validators) are the entire signal.
+No reviewer dispatch at all. Coder cycles run back-to-back; quality gates (`make fmt-check` + `make build` + `make test` **twice** + `make coverage` + `make cli-usage-check` + `make surface-lint` + any remaining relevant validators) are the entire signal.
 
 Audit-trail excerpt:
 ```
@@ -331,9 +320,9 @@ cycle_scope: plan:42 milestone:43
 tasks: [44, 45, 46]
 ```
 
-**Pick when:** you trust the gates completely (large existing test surface, strict typing, render-check/validator coverage in place) and want to ship the plan as fast as possible. Common for docs-only plans, vendor-surface mirror plans, or methodology updates where the diff IS the verification.
+**Pick when:** you trust the gates completely (large existing test surface, strict typing, lint/validator coverage in place) and want to ship the plan as fast as possible. Common for docs-only plans or methodology updates where the diff IS the verification.
 
-**Trade-off:** uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + `/pl-reviewer <task-id>` against a still-active task.
+**Trade-off:** uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + a `planar-reviewer` dispatch against a still-active task.
 
 **Phase 3.5 still fires across all three barrel modes** when uncovered slugs intersect the cycle. Barrel-bypass bypasses the reviewer, not the coverage gate. The test-coder's `failure-surfaced` outcome halts the cycle and escalates to the operator regardless of mode.
 
@@ -345,7 +334,7 @@ For the canonical contract see `agents/methodology.md` § Barrel modes; for the 
 
 Use this after tasks are done (or any time you want external counterparts created).
 
-**What happens:** The ext-sync agent walks the feature tree top-down. It creates external counterparts for every entity not yet linked and records `external_links(link_role='mirror')` rows and `sync_events(outcome='ok')` rows.
+**What happens:** The `planar-ext-sync` agent (or `planar-ext ext propagate` run directly) walks the feature tree top-down. It creates external counterparts for every entity not yet linked and records `external_links(link_role='mirror')` rows and `sync_events(outcome='ok')` rows.
 
 ### Register the external system (once per system)
 
@@ -356,7 +345,7 @@ planar-ext ext register github my-gh --project myorg/myrepo
 ### Propagate
 
 ```
-/pl-ext-propagate 42 --system my-gh
+planar-ext ext propagate 42 --system my-gh
 ```
 
 On first propagation, the strategy is selected automatically:
@@ -372,7 +361,7 @@ strategy is cached and reused on subsequent propagation runs. To force
 re-detection:
 
 ```
-/pl-ext-propagate 42 --system my-gh --restrategize
+planar-ext ext propagate 42 --system my-gh --restrategize
 ```
 
 Expected output:
@@ -387,7 +376,7 @@ propagate plan:42 → my-gh (github-parent-issue): 7 created, 0 skipped, 0 faile
 ### Dry run
 
 ```
-/pl-ext-propagate 42 --system my-gh --dry-run
+planar-ext ext propagate 42 --system my-gh --dry-run
 ```
 
 Prints what would be created without contacting the remote.
@@ -449,14 +438,14 @@ Use this when an agent session is ending and a new session needs to resume the w
 
 ### Capture the handoff
 
-At the end of the current session:
+At the end of the current session, follow the planar skill's `resume-handoff.md` reference. It validates that the current task is resumable, then records the handoff:
 
 ```
-/pl-handoff
+planar handoff 37 --note "implement the CSV writer; see tech-spec.md § Serialisation"
 ```
 
-The handoff skill:
-1. Validates that the current task has a `next_action` set.
+The handoff:
+1. Requires that the current task has a `next_action` set.
 2. Checks for unresolved blocking questions.
 3. Writes a `context_snapshots` row with the full task state, recent session entries, open questions, and decisions made.
 4. Writes a `handoffs` row marking the session as handed-off.
@@ -471,17 +460,17 @@ snapshot: context_snapshots:47
 ### Resume in the new session
 
 ```
-/pl-resume 37
+planar resume 37
 ```
 
-The resume skill reads:
+The resume packet contains:
 - Current task state and body.
 - The most recent `context_snapshots` row for this task.
 - Open questions (unresolved questions blocking progress).
 - Decisions made in prior sessions.
 - The `next_action` field.
 
-It assembles these into a structured prompt that the new agent session reads at startup, providing full context without relying on conversational history.
+The new agent session reads it at startup, providing full context without relying on conversational history.
 
 `planar resume validate 37` checks resume readiness without producing the packet — useful for CI or pre-handoff verification.
 
@@ -560,11 +549,6 @@ Expected output:
 archived: ~/.planar/workbench/project_my-app/p42-billing-export-csv (plan 42)
 ```
 
-Via skill:
-```
-/pl-workbench-archive archive 42
-```
-
 ### Restore when needed
 
 ```
@@ -584,7 +568,7 @@ The restored tree is byte-identical to the pre-archive state. All workbench sync
 
 Use this when you have months or years of accumulated work (specs, ADRs, roadmap files, TODO lists, backlog Markdown, git history) and want to import it into Planar without starting from scratch.
 
-**What happens:** The importer walks the repo filesystem, reads planning artefacts, infers task completion status from checkbox state and git history, and produces an ImportPlan. The user reviews the preview, then applies it. Idempotency ensures re-runs after new commits are safe.
+**What happens:** `planar import` (driven by the `planar-importer` agent) walks the repo filesystem, reads planning artefacts, infers task completion status from checkbox state and git history, and produces an ImportPlan. The user reviews the preview, then applies it. Idempotency ensures re-runs after new commits are safe.
 
 ### Step 1 — Install Planar and initialize
 
@@ -596,10 +580,10 @@ Run once per machine. Creates `~/.planar/planar.db` and applies all migrations.
 
 ### Step 2 — Set scope (optional)
 
-By default `import` resolves scope from cwd: run it from inside the repo you want to adopt and Planar uses the cwd-derived project association. To import directly under the repository's own scope, pass `--scope repo:<that-repo>`. To import under a different association, pass `--scope` on the `/pl-import` invocation:
+By default `import` resolves scope from cwd: run it from inside the repo you want to adopt and Planar uses the cwd-derived project association. To import directly under the repository's own scope, pass `--scope repo:<that-repo>`. To import under a different association, pass `--scope` on the `planar import` invocation:
 
 ```
-/pl-import . --scope assoc:project:my-app
+planar import . --scope assoc:project:my-app
 ```
 
 To import under global scope, run from outside any registered scope and pass `--scope global` explicitly.
@@ -607,7 +591,7 @@ To import under global scope, run from outside any registered scope and pass `--
 ### Step 3 — Preview the import
 
 ```
-/pl-import .
+planar import .
 ```
 
 The importer discovers artefacts from the current directory, infers task statuses, and prints a tree-shaped diff without writing anything:
@@ -635,7 +619,7 @@ Review the tree. Check that:
 If the repo has open GitHub issues you want to import as tasks:
 
 ```
-/pl-import . --from-github
+planar import . --from-github
 ```
 
 Requires the `gh` CLI on PATH and a GitHub remote at `origin`. Previews without writing.
@@ -643,7 +627,7 @@ Requires the `gh` CLI on PATH and a GitHub remote at `origin`. Previews without 
 ### Step 5 — Apply
 
 ```
-/pl-import . --apply
+planar import . --apply
 ```
 
 Commits the import. Expected output:
@@ -656,7 +640,7 @@ anchor plan id: 87
 To include GitHub issues in the same apply run:
 
 ```
-/pl-import . --from-github --apply
+planar import . --from-github --apply
 ```
 
 ### Step 6 — Review the imported tree
@@ -674,7 +658,7 @@ The anchor plan (id 87 in the example above) is the entry point. Child plans cor
 If you want the imported tree mirrored to GitHub Issues or Jira:
 
 ```
-/pl-ext-propagate 87 --system my-gh
+planar-ext ext propagate 87 --system my-gh
 ```
 
 See Recipe 3 for the full propagation walkthrough.
@@ -684,13 +668,13 @@ See Recipe 3 for the full propagation walkthrough.
 After new commits land, re-run the preview to see what new work can be imported:
 
 ```
-/pl-import .
+planar import .
 ```
 
 Items already in the database are reported as **Skipped**. Only new items appear as additions. Apply when satisfied:
 
 ```
-/pl-import . --apply
+planar import . --apply
 ```
 
 ---
@@ -699,12 +683,12 @@ Items already in the database are reported as **Skipped**. Only new items appear
 
 Use this when the repo is docs-only or has no implementation yet — a freshly cut roadmap, a planning sandbox, or a project where the code tree is intentionally empty. `import` would treat every roadmap-adding commit as evidence that the work is done; `synthesize` reads the source tree and refuses to mark anything done when there is no source to back the claim.
 
-**What happens:** the synthesizer's deterministic floor probes the source tree, sees zero meaningful evidence, and sets `greenfield=true` on the staged `request`. The vendor skill's contract forbids `status != "todo"` under greenfield; `validate_result()` in `src/engine/synthesize/synthesize.cpp` enforces it. Every task lands as todo regardless of what the docs claim.
+**What happens:** the synthesizer's deterministic floor probes the source tree, sees zero meaningful evidence, and sets `greenfield=true` on the staged `request`. The synthesizer's contract forbids `status != "todo"` under greenfield; `validate_result()` in `src/engine/synthesize/synthesize.cpp` enforces it. Every task lands as todo regardless of what the docs claim.
 
 ### Step 1 — Run synthesize against the greenfield repo
 
 ```
-/pl-synthesize ~/projects/holdfast
+planar synthesize ~/projects/holdfast
 ```
 
 Auto-detection sets greenfield mode because codeprobe reports no source-file evidence (no `Sources/`, no `src/`, no `internal/`, no `cmd/` — just `docs/` and `README.md`). The preview annotates the mode:
@@ -712,17 +696,17 @@ Auto-detection sets greenfield mode because codeprobe reports no source-file evi
 ```
 greenfield mode: yes (auto-detected — no source-file evidence)
 synthesis-request written to ~/.planar/cache/bootstrap-synthesis/holdfast/_pending.json
-Awaiting LLM synthesis. Re-run `planar synthesize ~/projects/holdfast` after the vendor skill produces the Result.
+Awaiting LLM synthesis. Re-run `planar synthesize ~/projects/holdfast` after the Result is written.
 ```
 
-### Step 2 — The vendor skill produces a Result
+### Step 2 — The synthesizer produces a Result
 
-The Claude / Codex / Copilot / Gemini skill picks up the pending request, runs the LLM at temperature 0, and writes a Result whose every task has `status=todo`. `validate_result()` rejects any Result that violates the greenfield invariant.
+The `planar-synthesizer` agent picks up the pending request, runs the LLM at temperature 0, and writes a Result whose every task has `status=todo`. `validate_result()` rejects any Result that violates the greenfield invariant.
 
 ### Step 3 — Re-run synthesize to merge and preview
 
 ```
-/pl-synthesize ~/projects/holdfast
+planar synthesize ~/projects/holdfast
 ```
 
 Preview shows every roadmap milestone as a child plan with `status=draft` and every extracted task at `status=todo`. Compare to what `import` would have produced: the roadmap-adding commit ("docs: phase 1 roadmap") matches git-log to dozens of phase-1 task titles via fuzzy correlation, so without the >25% auto-done refusal `import` would have marked them done. The greenfield mode of `synthesize` makes the false-done problem structurally impossible.
@@ -730,7 +714,7 @@ Preview shows every roadmap milestone as a child plan with `status=draft` and ev
 ### Step 4 — Apply
 
 ```
-/pl-synthesize ~/projects/holdfast --apply
+planar synthesize ~/projects/holdfast --apply
 ```
 
 Reference artifacts (the original `docs/product-roadmap.md` etc.) are preserved on the anchor plan as `kind=research`; the synthesized `product_spec` / `tech_spec` / `roadmap` are the primary planning material.
@@ -750,7 +734,7 @@ Use this when the repo has both clean planning material and a working source tre
 ### Step 1 — Run synthesize against the repo
 
 ```
-/pl-synthesize ~/projects/lectio
+planar synthesize ~/projects/lectio
 ```
 
 Auto-detection: code is present (`Sources/Lectio/`, `Tests/LectioTests/`), so greenfield mode is OFF. Layout auto-detection picks `swift` from `Package.swift`.
@@ -762,10 +746,10 @@ feature areas: 7 (Reader, Annotations, Sync, ...)
 synthesis-request written to ~/.planar/cache/bootstrap-synthesis/lectio/_pending.json
 ```
 
-### Step 2 — Re-run after the vendor skill produces a Result
+### Step 2 — Re-run after the Result is written
 
 ```
-/pl-synthesize ~/projects/lectio
+planar synthesize ~/projects/lectio
 ```
 
 Preview shows tasks with code-evidence citations annotated:
@@ -785,7 +769,7 @@ For the same fixture, `planar import ~/projects/lectio` would produce a similar 
 ### Step 4 — Apply
 
 ```
-/pl-synthesize ~/projects/lectio --apply
+planar synthesize ~/projects/lectio --apply
 ```
 
 See [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) for the conceptual split.
@@ -799,7 +783,7 @@ The most interesting case: the docs claim more than the code shows. A roadmap de
 ### Step 1 — Run synthesize against the mid-evolution repo
 
 ```
-/pl-synthesize ~/projects/midevo
+planar synthesize ~/projects/midevo
 ```
 
 The deterministic floor probes the tree:
@@ -815,10 +799,10 @@ feature areas: 4 (sessions, transport, auth, telemetry)
 synthesis-request written to ~/.planar/cache/bootstrap-synthesis/midevo/_pending.json
 ```
 
-### Step 2 — Re-run after the vendor skill produces a Result
+### Step 2 — Re-run after the Result is written
 
 ```
-/pl-synthesize ~/projects/midevo
+planar synthesize ~/projects/midevo
 ```
 
 Phase 2 (sessions) lands as `status=active` (or todo) despite the roadmap claiming `done`, because the EvidenceMap shows `source=none, tests=none`. Phase 3 (transport) lands as `done` with a code-evidence citation. The original Phase 2 done-claim survives as a `kind=research` reference artifact on the anchor plan, so the operator can see both narratives:
@@ -833,7 +817,7 @@ For repos where codeprobe under-detects code (non-conventional layouts, code und
 ### Step 4 — Apply
 
 ```
-/pl-synthesize ~/projects/midevo --apply
+planar synthesize ~/projects/midevo --apply
 ```
 
 The audit trail preserves the original doc-claims; operators reviewing the imported tree see the synthesized version as primary and the original docs as research-grade reference.
@@ -846,7 +830,7 @@ See [Recipe 7](#recipe-7--adopt-an-existing-repo-into-planar) for the sibling tr
 
 Use this when a spec has a `## Open questions` section and you want to track those items as first-class question entities, resolve them, and confirm the spec stays in sync.
 
-**What happens:** `/pl-spec-draft` auto-registers each H3 item under `## Open questions` as a `questions` row when it seeds the workbench. `/pl-spec-ingest` reconciles on re-run — it compares the live question entities against the current spec body and surfaces drift warnings for items that were added or removed from the spec without a corresponding entity update.
+**What happens:** The `planar-planner` agent auto-registers each H3 item under `## Open questions` as a `questions` row when it seeds the workbench. The `planar-ingestor` agent (`planar spec ingest`) reconciles on re-run — it compares the live question entities against the current spec body and surfaces drift warnings for items that were added or removed from the spec without a corresponding entity update.
 
 ### Step 1 — Author open questions in a spec
 
@@ -866,15 +850,9 @@ Current thinking: error loudly — silent skips are hard to debug.
 
 The H3 heading text becomes the `title` of the question entity. The body paragraph(s) beneath it become the question's `body`. Each H3 is one entity.
 
-### Step 2 — Register questions automatically via /pl-spec-draft
+### Step 2 — Register questions automatically via planar-planner
 
-When you run the planner skill on a goal statement, it drafts the spec files and calls `planar workbench extract-questions` internally. Any `## Open questions` H3 items found are registered as question entities via `planar question add`:
-
-```
-/pl-spec-draft "add billing export to CSV"
-```
-
-Expected output includes a line like:
+When you dispatch the `planar-planner` agent with a goal statement, it drafts the spec files and calls `planar workbench extract-questions` internally. Any `## Open questions` H3 items found are registered as question entities via `planar question add`. Its report includes a line like:
 
 ```
 questions: 3 registered from tech-spec.md
@@ -913,13 +891,13 @@ Both commands flip the question's `status` out of `open`. An `answered` row also
 
 ### Step 5 — Re-ingest after spec edits
 
-If you edited the spec body after the initial draft — adding, removing, or rewriting H3 question items — run the ingestor again to reconcile:
+If you edited the spec body after the initial draft — adding, removing, or rewriting H3 question items — run the ingest preview again to reconcile:
 
 ```
-/pl-spec-ingest 42
+planar spec ingest 42
 ```
 
-The ingestor reads the current spec body, calls `planar workbench extract-questions 42`, and compares the live H3 items against the existing question entities. Drift surfaces as warnings in the preview output:
+The ingest reads the current spec body, calls `planar workbench extract-questions 42`, and compares the live H3 items against the existing question entities. Drift surfaces as warnings in the preview output:
 
 ```
 project:my-app/billing-export-csv/
@@ -935,7 +913,7 @@ Fix drift by either updating the spec body or updating the entity status, then r
 ### Cross-references
 
 - CLI verbs: `planar workbench extract-questions`, `planar question list`, `planar question answer`, `planar question wontfix` — see `docs/cli-reference.md`.
-- Skills: `/pl-spec-draft` (auto-registers questions on draft), `/pl-spec-ingest` (reconciles on re-ingest) — see `docs/skill-reference.md`.
+- Agents: `planar-planner` (auto-registers questions on draft), `planar-ingestor` (reconciles on re-ingest) — see [skill-reference.md](skill-reference.md).
 
 ---
 
@@ -951,12 +929,11 @@ When a coder is spawned for a task that touches `repo-a`, the dispatcher `cd`s t
 
 ```bash
 cd ~/work/repo-a
-planar task update 142 --status doing
-# … coder works …
-planar task done 142
+planar task update 142 --next-action "rerun make test"
+# … coder works, then returns; the orchestrator owns the terminal verb …
 ```
 
-No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the ten verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. `task done` runs **no** scope guard: it flips the status from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
+No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the ten verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
 
 This is the dominant pattern. Every coder, ingestor, and planner skill that runs against a known repo cwd works without scope plumbing.
 
@@ -1030,29 +1007,19 @@ The `<sha256>` is computed from the project's README excerpt (first
 content has not changed since the last run, the fingerprint is
 identical and the cache hits — no tokens are spent.
 
-### Populating the cache (recommended): `pl-workspace-scan --enrich`
+### Populating the cache: an agent session
 
-The canonical producer is the `pl-workspace-scan` vendor skill (Claude /
-Codex / Copilot / Gemini). The skill runs inside an LLM session, fingerprints
-every project, calls the model with temperature 0, and writes the
-results into the cache before invoking the builder:
+The builder only reads the cache, so something has to write the result files. An agent session with model access can: it fingerprints every project, calls the model at temperature 0, writes each result into the cache in the shape the builder validates, and then runs the builder. The planar skill's `local.md` reference covers the workspace operations (`init`, `routing build`, `routing show`, `regenerate`, `doctor`) and names `--enrich`:
 
 ```
-/pl-workspace-scan --enrich
 planar workspace routing build --enrich
 ```
 
-The skill is responsible for temperature-0 + seed discipline. The
-binary side validates only that each result carries a non-empty
-`provenance` string and that the result's `fingerprint_hash` matches
-the cache filename; a result whose `provenance` contains a non-zero
-temperature hint (e.g. `temperature=0.7`) produces a warning but is
-still applied.
+The producing session is responsible for the temperature-0 + seed discipline. The binary side validates only that each result carries a non-empty `provenance` string and that the result's `fingerprint_hash` matches the cache filename; a result whose `provenance` contains a non-zero temperature hint (e.g. `temperature=0.7`) produces a warning but is still applied.
 
-### Populating the cache (power user): `enrich_command`
+### Populating the cache: `enrich_command`
 
-Operators who do not want to route through a vendor skill can wire a
-shell bridge in the workspace config:
+Operators who do not want to run an agent session for it can wire a shell bridge in the workspace config:
 
 ```toml
 # ~/.planar/workspaces/<org_id>/config.toml
@@ -1101,7 +1068,7 @@ and an RFC3339 `generated_at` timestamp.
 ### Invalidating the cache
 
 Cache invalidation is by deletion. The next build with `--enrich` will
-treat the project as a cache miss and emit a hint to re-run the skill:
+treat the project as a cache miss and emit a hint to re-run the producer:
 
 ```
 rm ~/.planar/cache/workspace-enrichment/1/repo-a-<hash>.json
@@ -1206,13 +1173,13 @@ For meta workspaces, this recovery path still leaves root `AGENTS.md` / `CLAUDE.
 
 ### Step 3 — Optional LLM enrichment
 
-Static signals (README first paragraph, manifest-derived capability tags) produce a useful table on the first scan. For richer per-project summaries and capability inference, run the `pl-workspace-scan` skill with `--enrich`:
+Static signals (README first paragraph, manifest-derived capability tags) produce a useful table on the first scan. For richer per-project summaries and capability inference, populate the enrichment cache (an agent session or the `enrich_command` bridge, see Recipe 11) and merge it into the table:
 
 ```
-/pl-workspace-scan --enrich
+planar workspace routing build --enrich
 ```
 
-The skill fingerprints every project (sha256 of README excerpt + sorted depth-2 dir listing), invokes the LLM at `temperature=0`, writes validated results into `~/.planar/cache/workspace-enrichment/<org_id>/`, then runs `planar workspace routing build --enrich` to merge cached results into the table. Cache invalidation is implicit: a README edit or a new file at depth ≤ 2 changes the fingerprint so the next `--enrich` run treats the project as a cache miss. See [Recipe 11](#recipe-11--enriching-a-workspace-routing-table-with-llm-summaries) for the full enrichment contract.
+The producer fingerprints every project (sha256 of README excerpt + sorted depth-2 dir listing), invokes the LLM at `temperature=0`, and writes validated results into `~/.planar/cache/workspace-enrichment/<org_id>/`; the builder then merges cached results into the table. Cache invalidation is implicit: a README edit or a new file at depth ≤ 2 changes the fingerprint so the next `--enrich` run treats the project as a cache miss. See [Recipe 11](#recipe-11--enriching-a-workspace-routing-table-with-llm-summaries) for the full enrichment contract.
 
 ### Step 4 — Inspect the workspace
 
@@ -1269,7 +1236,7 @@ The `associations` row, the `projects` rows, and their membership links remain i
 - Concept: [docs/concepts.md § Workspace](concepts.md#workspace).
 - Architecture: [docs/architecture.md § Workspace State Directory Model](architecture.md#workspace-state-directory-model).
 - CLI verbs: [docs/cli-reference.md § Domain: `workspace`](cli-reference.md#domain-workspace).
-- Agent procedure: the `planar` skill's [local reference](../skills/planar/references/local.md) § Workspaces.
+- Skill reference: the planar skill's [`references/local.md`](../skills/planar/references/local.md) (workspace operations).
 
 ---
 
@@ -1296,7 +1263,7 @@ planar task list --scope assoc:project:my-app
 ### Review the audit trail for an external ticket
 
 ```
-/pl-audit-trail --link <link-id>
+planar audit trail --link <link-id>
 ```
 
 Shows every local session, decision, commit annotation, and sync event tied to the external link.
@@ -1304,10 +1271,10 @@ Shows every local session, decision, commit annotation, and sync event tied to t
 ### Check system health before a session
 
 ```
-/pl-health
+planar health
 ```
 
-Reports schema version, open sessions, unresolved sync conflicts, and handoff readiness. Fix any reported issues before starting work.
+Reports schema version, open sessions, unresolved sync conflicts, and handoff readiness. Fix any reported issues before starting work; the planar skill's `recovery.md` reference maps each degraded contributor to its route.
 
 ### Sync local changes to the remote
 
@@ -1388,18 +1355,17 @@ For whole-feature propagation (create all operational counterparts for a plan tr
 
 ## Recipe 14 — Author a personal skill in the sandbox
 
-Use the local sandbox at `~/.planar/local/` to author personal, machine-local skills and agents that ship into every vendor's surface without the overhead of repo contribution and parity validation. Promotion to the canonical Planar repo is intentionally a separate, manual operation.
+Use the local sandbox at `~/.planar/local/` to author personal, machine-local skills and agents that are copied into every present vendor's skill and agent directories, without the overhead of repo contribution. The projection rules, name rule, states and ownership are in [skill-reference.md § Operator-local skills and agents](skill-reference.md#operator-local-skills-and-agents); the planar skill's `local.md` reference is the procedure an agent follows for this recipe.
 
 ### Step 1 — Author the source file
 
-Skills live as dir-shape sources (`<name>/SKILL.md`); agents stay flat:
+Skills live as directory sources (`<name>/SKILL.md`); agents stay flat:
 
 ```
 mkdir -p ~/.planar/local/skills/fixup-protos
 cat > ~/.planar/local/skills/fixup-protos/SKILL.md <<'EOF'
 ---
 description: "Rebuild and re-import protobuf bindings in the current repo"
-tier: medium
 ---
 
 # Fixup Protos
@@ -1411,11 +1377,9 @@ Steps:
 EOF
 ```
 
-For agents drop a flat file at `~/.planar/local/agents/<name>.md`.
+For agents drop a flat file at `~/.planar/local/agents/<name>.md`. A name must match `^[a-z0-9]+(-[a-z0-9]+)*$` and be at most 51 characters; `My_Skill` is refused at exit 2, not renamed. Auxiliary files alongside `SKILL.md` (helper scripts, data files, icons) travel with the skill.
 
-The dir-shape for skills is what lets the link layer install Codex / Copilot via directory symlinks — those loaders don't follow symlinked SKILL.md files inside real directories, but they do follow directory symlinks pointing at real source dirs. Auxiliary files alongside SKILL.md (helper scripts, datafiles, icons) travel with the skill via the same directory symlink.
-
-**Importing from an external collection.** If the operator already maintains a personal skill folder elsewhere (a separate git repo, a Dropbox directory, a collection of skills), the entire collection can be imported in one shot:
+**Importing from an external collection.** If the operator already maintains a personal skill folder elsewhere (a separate git repo, a Dropbox directory), the entire collection can be imported in one shot:
 
 ```
 planar local import ~/my-skills/                         # collection of flat and/or dir-shape skills
@@ -1424,47 +1388,35 @@ planar local import ~/my-skills/jira-bulk-edit/          # a single dir-shape sk
 planar local import ~/my-agents/ --kind agent            # agents go flat to the agents/ dir
 ```
 
-`planar local import` validates each input's frontmatter, materializes it into the sandbox in the correct shape (skills become `<name>/SKILL.md`; agents stay flat), and (by default) invokes the link step in the same call. Dir-shape inputs preserve any auxiliary files alongside SKILL.md. Name collisions with existing sandbox entries are skipped unless `--force` is passed. Pass `--no-link` to import without linking, or `--dry-run` to preview.
+`planar local import` validates each input's frontmatter, materializes it into the sandbox in the correct shape, and (by default) runs the link step in the same call. Name collisions with existing sandbox entries are skipped unless `--force` is passed. Pass `--no-link` to import without linking, or `--dry-run` to preview.
 
-**Migrating from the legacy flat sandbox.** A pre-reshape sandbox stored each skill as a flat `~/.planar/local/skills/<name>.md`. Run `planar local migrate` once to convert these to the dir-shape `<name>/SKILL.md` layout. The verb is idempotent and refuses to overwrite operator content (collisions are skipped with a reason). `planar local link` flags any remaining flat skill files with a warning pointing at the migrate verb.
+**Migrating from the legacy flat sandbox.** A pre-reshape sandbox stored each skill as a flat `~/.planar/local/skills/<name>.md`. Run `planar local migrate` once to convert these to the `<name>/SKILL.md` layout. The verb is idempotent and refuses to overwrite operator content (collisions are skipped with a reason).
 
-### Step 2 — Link the source into every vendor surface
+### Step 2 — Link the source into every present vendor
 
 ```
 planar local link
 ```
 
-Walks every source under `~/.planar/local/{skills,agents}/`, parses each one's frontmatter, and creates per-vendor installs:
-
-```
-fixup-protos (skill)
-  claude   created [symlink]  →  /Users/you/.claude/commands/local-fixup-protos.md
-  codex    created [symlink]  →  /Users/you/.codex/skills/local-fixup-protos
-  copilot  created [symlink]  →  /Users/you/.copilot/skills/local-fixup-protos
-
-done: 3 linked, 0 unchanged, 0 skipped across 1 source(s)
-```
-
-The `local-` prefix on the install name makes sandbox skills visibly user-authored in every vendor's listing. Claude installs are flat `.md` files (file symlink → `<src>/SKILL.md`); Codex and Copilot install as directory symlinks pointing at the source dir — that's the shape each vendor's discovery loader expects (see *Per-vendor install layout* in [concepts.md](concepts.md#local-sandbox)).
+Walks every source under `~/.planar/local/{skills,agents}/` and copies each into the vendor roots under the name `planar-local-<name>` (for the example, `planar-local-fixup-protos`), so a local install is visibly user-authored and cannot take a bundled name. A skill copy has its frontmatter `name` rewritten to match its directory; the source is never edited.
 
 Useful flags:
 - `--dry-run` previews without writing.
 - `--vendor claude` (repeatable) restricts the operation to one or more vendors. Composes with the source's `vendors:` frontmatter list (intersection).
-- `--reconcile` walks the manifest, removes entries whose source file has been deleted by hand, and removes the per-vendor installs those entries pointed at.
+- `--reconcile` rewrites stale copies, writes missing ones, migrates legacy projections and drops records whose source is gone.
 
 ### Step 3 — Iterate
 
-Edit the source SKILL.md directly:
+Edit the source `SKILL.md`, then run `planar local link` again: the vendor directories hold copies, so an edit reaches them only when you re-link.
 
 ```
 vim ~/.planar/local/skills/fixup-protos/SKILL.md
+planar local link
 ```
 
-The vendor surface paths resolve to the source through symlinks (file symlink for Claude, directory symlink for Codex / Copilot), so every vendor sees the edit immediately — no re-link required. Exception: if symlink creation failed at link time (filesystems that reject symlinks), the link layer falls back to a file copy (or a directory-tree copy for the dir-symlink layout) and the operator must re-run `planar local link` after every edit. The link layer emits a warning naming this case so it is never silent.
+### Step 4 — Restrict to some vendors (optional)
 
-### Step 4 — Restrict to one vendor (optional)
-
-Set `vendors:` in the source frontmatter to opt out of vendors that do not apply:
+Set `vendors:` in the source frontmatter to opt a skill out of vendors that do not apply (`claude` gates the Claude copy; `codex` and `copilot` gate the shared and Antigravity copies):
 
 ```yaml
 ---
@@ -1473,68 +1425,31 @@ vendors: [claude]
 ---
 ```
 
-### Step 5 — Shadow a canonical install (advanced)
+A source that sets the retired `shadow` key is refused at exit 2; a local source cannot take a bundled name.
 
-Set `shadow: true` in the source frontmatter to drop the `local-` prefix on every linked filename:
-
-```yaml
----
-description: "My override for the canonical fixup-protos"
-shadow: true
----
-```
-
-The sandbox file then shadows whatever canonical install carries the same name. `planar local link` always emits a warning naming the shadowed target so this is never silent.
-
-### Step 6 — Inspect installs
+### Step 5 — Inspect installs
 
 ```
 planar local list
 ```
 
-```
-name          kind     vendor   status   target
-fixup-protos  skill    claude   live     /Users/you/.claude/commands/local-fixup-protos.md
-fixup-protos  skill    codex    live     /Users/you/.codex/skills/local-fixup-protos
-fixup-protos  skill    copilot  live     /Users/you/.copilot/skills/local-fixup-protos
-```
+Each recorded projection is reported with a state recomputed from disk: `live`, `stale` (the source or a copy was edited), `legacy` (an old projection waiting for `planar local migrate`), `missing`, or `broken` (the source is gone). A destination that exists, differs, and is not a prior Planar projection is refused at exit 6 before anything is written.
 
-`live` means the install file exists and (for symlinks) resolves to the source. `broken` means the symlink target is gone or wrong. `missing` means the install file was deleted out from under the manifest. Statuses colorize via the standard palette.
-
-### Step 7 — Remove an install
+### Step 6 — Remove an install
 
 ```
 planar local unlink fixup-protos
 ```
 
-Removes every per-vendor install for `fixup-protos`. The source file in `~/.planar/local/` is preserved. To also delete the source, pass `--purge`.
+Removes every projection for `fixup-protos`. The source in `~/.planar/local/` is preserved; pass `--purge` to delete it too.
 
-### Step 8 — Promote to canonical (manual)
+### Step 7 — Promote (manual)
 
-Once a sandbox skill earns its keep, promote it by copying the unified source
-into the repo by hand:
-
-```
-cp ~/.planar/local/skills/fixup-protos/SKILL.md skills/src/fixup-protos.md
-
-git add skills/src/fixup-protos.md
-git commit -m "skill: fixup-protos"
-git push   # PR through the normal contribution flow
-```
-
-Do not copy into or commit repo-relative `commands/claude/`, `skills/codex/`,
-or `skills/copilot/` trees: those are generated projections and are ignored.
-There is no `planar local promote` shortcut — that is deliberate. Canonical
-skills go through semantic lint, `scriptorium check` against an out-of-tree
-staging dir (when the tier table is
-affected), any remaining relevant validators, and contribution review;
-sandbox skills do not. Keeping the boundary loud preserves the
-difference. After promotion, you can run `planar local unlink fixup-protos
---purge` to retire the sandbox copy.
+There is no `planar local promote` shortcut, deliberately. Making a local skill or agent part of Planar means contributing it to the Planar repository through its normal review, where `make surface-lint` and `make cli-usage-check` gate it. After promotion, `planar local unlink fixup-protos --purge` retires the sandbox copy.
 
 ---
 
-## Recipe 14A — Inspect and reconcile installed canonical projections
+## Recipe 14A — Inspect installed skill and agent placements
 
 `install.sh` stages `skills/planar/` and the agents under `~/.planar` and places
 them into each vendor found on the host. Planar's own `install-manifest.json`
@@ -1550,7 +1465,8 @@ skill as a directory, every file) and reports `projection_freshness`:
 `fresh`, `stale` (drifted) or `missing` rows, and a `legacy` manifest left by an
 older installer. `scripts/check-self-installed.sh` exits non-zero unless the
 manifest is current with no stale or missing row. To repair a managed
-projection, run `./install.sh --prefix ~/.planar`.
+placement, run `./install.sh --prefix ~/.planar`. The nine targets and the
+drift rules are in [skill-reference.md § What installs where](skill-reference.md#what-installs-where).
 Personal `planar local` extensions remain outside this install manifest.
 
 ---
@@ -2137,13 +2053,11 @@ that runs cleanup as part of the next push.
 
 ## Recipe 21 — Pick an orchestration strategy for a plan
 
-Use this when you start `/pl-orchestrator <plan-id>` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); for the canonical contract see `agents/methodology.md` § Orchestration strategies.
+Use this when you dispatch `planar-orchestrator` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); for the canonical contract see `agents/methodology.md` § Orchestration strategies.
 
 ### Step 1 — Invoke the orchestrator
 
-```
-/pl-orchestrator 297
-```
+Dispatch `planar-orchestrator` with plan 297.
 
 The orchestrator reads the plan's task graph, computes the parallel-eligible subset, and surfaces its recommendation:
 
@@ -2184,41 +2098,28 @@ Type the name of the strategy you want. The orchestrator records the choice in t
 
 ### Skip the gate via flag
 
-Operators who already know which strategy fits — typically because they always want the same one for a given plan shape — can pre-commit at invocation:
+Operators who already know which strategy fits — typically because they always want the same one for a given plan shape — can pre-commit it in the dispatch brief. Each line is one brief for plan 297:
 
-```
-/pl-orchestrator 297 --strategy parallel-fanout
-/pl-orchestrator 297 --strategy isolated-sequential
-/pl-orchestrator 297 --strategy classic                # explicit continuity
-/pl-orchestrator 297 --strategy classic --isolation worktree
-/pl-orchestrator 297 --strategy barrel-deferred
-/pl-orchestrator 297 --strategy barrel-deferred --isolation worktree
-/pl-orchestrator 297 --strategy barrel-bypass
-```
+- `--strategy parallel-fanout`
+- `--strategy isolated-sequential`
+- `--strategy classic` (explicit continuity)
+- `--strategy classic --isolation worktree`
+- `--strategy barrel-deferred`
+- `--strategy barrel-deferred --isolation worktree`
+- `--strategy barrel-bypass`
 
 The strategy gate is skipped; for sequential strategies isolation defaults to `pwd` unless `--isolation worktree` is supplied. The dispatch-shape gate still runs (unless it also has a pre-committed answer via `--strict` / `--grouped` / `--batch`, or is forced by the strategy — `parallel-fanout` forces `fan-out`, the barrel strategies force their matching shape).
 
 ### Custom axis escape hatch
 
-For shapes outside the named menu, compose by axis:
-
-```
-/pl-orchestrator 297 --strategy custom \
-    --isolation worktree \
-    --branch-model epic-child \
-    --concurrency sequential \
-    --reviewer-cadence at-boundary \
-    --test-coder-cadence at-boundary
-```
-
-The per-axis flags are hidden from default `--help` and surfaced via `--help-advanced`. The orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs. See `agents/methodology.md` § Invalid combinations for the full list.
+For shapes outside the named menu, name `--strategy custom` in the brief together with the per-axis options: `--isolation worktree`, `--branch-model epic-child`, `--concurrency sequential`, `--reviewer-cadence at-boundary` and `--test-coder-cadence at-boundary`. The orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs. See `agents/methodology.md` § Invalid combinations for the full list.
 
 ### Worked example — a 4-task plan accepts `parallel-fanout`
 
 You have plan 297 with four open tasks (`m1-foundation`, `m2-handlers`, `m3-tests`, `m4-docs`). Tasks 1 and 4 touch disjoint paths; tasks 2 and 3 each touch `src/cmd/planar/handlers/` but not the same file. None touch migrations or singleton files. Run:
 
 ```
-$ /pl-orchestrator 297
+# dispatch planar-orchestrator with plan 297
 Plan 297 "feature-x" — 4 todo tasks, 3 parallel-eligible
 Recommended strategy: parallel-fanout
 Rationale: ≥3 tasks and ≥2 parallel-eligible (rule 3)
@@ -2245,7 +2146,7 @@ The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in 
 ### Step 1 — Strategy gate
 
 ```
-$ /pl-orchestrator 297
+# dispatch planar-orchestrator with plan 297
 Plan 297 "worktree-management" — 4 todo tasks, 3 parallel-eligible
 Recommended strategy: parallel-fanout
 ...
@@ -2415,7 +2316,7 @@ The steps above fan out a **single wave** of mutually-disjoint lanes. When the p
 
 4. **Fan-in retention + resume.** At each wave's `fan_in`, a lane may carry `"outcome":"succeeded"|"failed"`: a succeeded lane's worktree is torn down eagerly (in `teardown_worktrees`); a **failed lane's worktree is RETAINED** for inspection (in `retained_worktrees`). On a mid-wave failure, resume via the `reconcile_plan` phase — a `failed_clean` lane needs no reconcile (available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0` — then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, the `teardown` phase computes the full sweep (every lane worktree + branch removed; the epic branch retained until its PR merges).
 
-For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see `skills/src/pl-orchestrator.md` § Isolation invariant.
+For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see `agents/planar-orchestrator.md` and `agents/methodology.md`.
 
 ---
 
@@ -2541,8 +2442,7 @@ a role to a *tier* from the task's own packet; it never decides which models
 exist. The tier→model presets are hand-maintained in `agents/models.md` (the
 Tier Table); there is no `[models]` / `[roles]` scaffold verb and no
 `planar models apply` — that family (`list`, `refresh`, `routing`,
-`candidates`, `apply`) was removed with the curated catalog. The
-`pl-models-config` skill walks this same sequence.
+`candidates`, `apply`) was removed with the curated catalog.
 
 **1. Inspect the candidate registry.**
 
@@ -2610,20 +2510,19 @@ database or `~/.planar/config.toml`. Guide the operator to edit that file; a
 admissible). Nothing in `planar models` writes.
 
 **6. Confirm the change took.** Re-run step 2 for the affected role; the
-resolved tier is what the preset table is keyed by, and the rendered
-skill/agent `model:` fields come from scriptorium's render step against
-`agents/models.md`.
+resolved tier is what the preset table in `agents/models.md` is keyed by.
 
-See [`docs/concepts.md § Model routing`](./concepts.md#model-routing),
-[`docs/cli-reference.md § Domain: models`](./cli-reference.md#domain-models)
-and the `pl-models-config` skill.
+See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and
+[`docs/cli-reference.md § Domain: models`](./cli-reference.md#domain-models).
 
 ## Recipe 26 — Self-report a usage finding to GitHub Issues
 
-Use `pl-introspect` to identify friction patterns, select a finding, review
-the assembled issue body, and post it to `rdrsss/planar` via the operator's
-existing `gh` auth. The created issue is recorded as a record-only external
-link on the finding so `pl-audit-trail` can surface it later.
+Use the `planar-introspector` agent to identify friction patterns, select a
+finding, review the assembled issue body, and post it to `rdrsss/planar` via
+the operator's existing `gh` auth. The created issue is recorded as a
+record-only external link on the finding so `planar audit trail` can surface it
+later. The report-an-issue procedure is in the planar skill's `external-sync.md`
+reference.
 
 **Prerequisites:** `gh auth status` shows a valid session; `planar report --json`
 is available (requires `[introspection].cli_log = true` in
@@ -2631,10 +2530,8 @@ is available (requires `[introspection].cli_log = true` in
 
 **1. Run the introspection pass to populate the feedback plan.**
 
-```bash
-/pl-introspect
-# → findings filed on the planar-feedback plan as questions/tasks
-```
+Dispatch `planar-introspector`. Its default run is a read-only preview; confirm
+the apply phase to file findings on the planar-feedback plan as questions/tasks.
 
 **2. Review the findings.**
 
@@ -2656,13 +2553,9 @@ planar-ext ext register github planar-upstream --project rdrsss/planar
 This writes a local row only — no network contact, no auth required at
 registration time.
 
-**4. Invoke `pl-report-issue` with the selected finding.**
+**4. Run the report-an-issue procedure with the selected finding.**
 
-```bash
-/pl-report-issue --finding question:42
-```
-
-The skill:
+An agent session follows `external-sync.md` for the finding `question:42`. It:
 
 - Runs `planar report --json` to obtain the structurally-redacted bundle.
 - Reads `question:42` summary and its `planar audit trail` history.
@@ -2677,32 +2570,28 @@ Review every line. The bundle is structurally redacted (counts, verb paths,
 categories — no entity text). The finding section may contain entity names;
 you personally approve what goes public at this step.
 
-- **Confirm** — the skill posts via `gh issue create -R rdrsss/planar`.
+- **Confirm** — the issue is posted via `gh issue create -R rdrsss/planar`.
 - **Decline** — no post, no link, no side effects. Re-run with a different
   finding or refined problem statement at any time.
 
-**6. On success, the skill records the issue as a record-only external link.**
+**6. On success, record the issue as a record-only external link.**
 
 ```bash
-# (Performed by the skill on your behalf after a successful post.)
 planar link question:42 --to planar-upstream:<issue-number> \
   --role reference --sync read-only --json
 ```
 
 No propagation, no sync subscription. The link makes the upstream issue
-visible to `pl-audit-trail`:
+visible to `planar audit trail`:
 
 ```bash
 planar audit trail --kind question 42
 # → shows the create event and the external link row
 ```
 
-**If `gh` fails:** the skill surfaces the error, records no link, and leaves
-local state unchanged. Fix the `gh` auth issue (`gh auth login`) and re-run.
-
-The privacy contract is the one the redacted `planar report` output enforces:
-nothing leaves the machine until the operator has seen the exact issue body in
-the preview above and confirmed it.
+**If `gh` fails:** the procedure surfaces the error, records no link, and
+leaves local state unchanged. Fix the `gh` auth issue (`gh auth login`) and
+re-run.
 
 ---
 
@@ -2750,7 +2639,7 @@ The `epic_merge` section is advisory and never blocks. Absent branches (deleted 
 
 ### Step 3 — Dispatch the janitor (or run manually)
 
-**Via the orchestrator (automated):** Pass `--finalize` to `/pl-orchestrator` or confirm the finalization prompt when the orchestrator offers it. The orchestrator spawns a janitor subagent that executes the six-step finalization flow.
+**Via the orchestrator (automated):** Name `--finalize` in the `planar-orchestrator` brief or confirm the finalization prompt when the orchestrator offers it. The orchestrator dispatches the `planar-janitor` agent, which executes the six-step finalization flow.
 
 **Manually (standalone):**
 
@@ -2901,48 +2790,54 @@ After the next `./install.sh` run, `planar workflow list` will show the workflow
 
 ## Recipe 29 — Orient, diagnose, and choose work
 
-Use the expanded read workflows instead of reconstructing state from unrelated
+Use the skill's references instead of reconstructing state from unrelated
 lists:
 
-```bash
-/pl-status                         # current scope: attention queue + safe next work
-/pl-observe --plan <plan-id>       # one plan: actions, claims, failures, sync, handoffs
-/pl-health                         # global DB, resume, handoff, and projection health
-/pl-help repair my local skills    # route an intent to the supported workflow
-```
+- **Scope status** (what needs attention, and the next work that is safe to
+  claim): the planar skill's `status.md` reference. Its reads are
+  `planar scope show`, `planar dashboard --agents`,
+  `planar task list --status blocked`, `planar question list --status open`,
+  `planar handoff list --status pending,validated` and `planar-ext sync status`.
+- **One plan's live activity** (actions, claims, failures, sync, handoffs): the
+  same reference, using `planar-watch actions --plan <plan-id>`,
+  `planar-watch ps --plan <plan-id> --stale`, `planar-watch feed --plan <plan-id>`
+  and `planar-watch sync-events --plan <plan-id>`.
+- **Global health**: the `recovery.md` reference, starting from
+  `planar health --json`.
 
-`pl-status` suppresses empty sections and orders conflicts, stale coordination
-state, blockers/questions, active claims, and claim-aware next work. It does
-not recommend a claimed, stale, or blocked task. `pl-observe` is read-only and
-distinguishes an empty interval from unavailable telemetry. `pl-health` never
-repairs: it explains each degraded contributor and routes to `pl-doctor`,
-`pl-resume`, reconciliation preview, configuration validation, or the exact
-`scriptorium check` inspection (canonical projection drift
-is now scriptorium's finding, not a Planar `skills repair` verb — that verb
-retired with the in-tree renderer). Use `/pl-plan` and `/pl-task` for the full
-lifecycle once a target is selected; both read post-state after mutations, and
-claimed work still terminates atomically through `planar-agent`.
+Scope status suppresses empty sections and orders conflicts, stale
+coordination state, blockers and questions, active claims, and claim-aware
+next work. It never recommends a claimed, stale, or blocked task. The activity
+views are read-only and distinguish an empty interval from unavailable
+telemetry. Health never repairs: `recovery.md` explains each degraded
+contributor and routes to the doctor flow, `resume-handoff.md`, a reconciliation
+preview (`planar-agent reconcile --dry-run`), configuration validation, or the
+`repair_command` that `projection_freshness` reports for a stale or missing
+skill or agent placement. Use the `planar plan` and `planar task` verbs
+(`planar plan --help`, `planar task --help`) for the full lifecycle once a
+target is selected; read the post-state after every mutation, and let claimed
+work terminate atomically through `planar-agent`.
 
 ---
 
 ## Recipe 30 — Capture a durable knowledge chain
 
-Use `pl-knowledge` when an intent spans decisions, artifacts, annotations, and
-typed relationships:
+Follow the planar skill's `knowledge.md` reference when an intent spans
+decisions, artifacts, annotations, and typed relationships:
 
 ```bash
-/pl-knowledge capture "Adopt SQLite WAL" --plan 42 --artifact 17
-/pl-knowledge annotate --anchor-path src/lib/db/db.cpp --line-start 88 \
-  "Explain the retry boundary"
-/pl-knowledge link decision:9 artifact:17 --relationship cites
+planar decision add "Adopt SQLite WAL" --plan 42 --rationale "Readers do not block the writer"
+planar annotate add --anchor-path src/lib/db/db.cpp --line-start 88 --plan 42 \
+  --title "Retry boundary" --body "Explain the retry boundary"
+planar links add decision:9 artifact:17 --relationship cites
 ```
 
-The workflow resolves every natural-language target to exactly one typed
-entity before writing. If resolution is ambiguous it shows candidates and
-stops with `applied=0`; it never guesses. Each approved mutation uses the
-normal scope-guarded entity verb, then reads the entity and relationship back.
-A multi-target partial result keeps verified independent changes and supplies
-an exact retry or inspection command for each failure.
+Resolve every natural-language target to exactly one typed entity before
+writing. If resolution is ambiguous, show the candidates and stop with
+`applied=0`; never guess. Each approved mutation uses the normal scope-guarded
+entity verb, then reads the entity and relationship back. A multi-target
+partial result keeps verified independent changes and supplies an exact retry
+or inspection command for each failure.
 
 ---
 
@@ -2950,47 +2845,52 @@ an exact retry or inspection command for each failure.
 
 The intake and triage gates are separate:
 
-```bash
-/pl-introspect --days 7
-# Review normalized proposals and signal_coverage; the default writes nothing.
-
-/pl-introspect --days 7 --apply
-# The workflow still pauses for explicit confirmation before filing findings.
-
-/pl-feedback-triage --plan <feedback-plan-id>
-# Review severity, disposition, reproduction, duplicate, and entity/link changes.
-
-/pl-feedback-triage --finding question:42 --apply
-# The initial --apply request still does not bypass the row-level confirmation.
-```
+1. Dispatch `planar-introspector` for a 7-day window. The default run is a
+   read-only preview: review the normalized proposals and `signal_coverage`;
+   nothing is written.
+2. Ask it to apply. It still pauses for explicit confirmation before filing
+   findings on the feedback plan.
+3. Dispatch `planar-feedback-triager` for the feedback plan. Review severity,
+   disposition, reproduction, duplicate, and entity/link changes.
+4. Ask it to apply a finding such as `question:42`. The initial apply request
+   still does not bypass the row-level confirmation.
 
 Introspection recognizes supported Claude, Codex, Copilot, and opt-in CLI-log
 sources and persists only redacted normalized signal. Missing or malformed
 optional adapters degrade `signal_coverage`; they are not observed zeros.
 Triage writes only confirmed local rows through `planar feedback triage set`.
-If external reporting is recommended, invoke `/pl-report-issue` and review the
-complete issue body at a second gate. Declining publication posts nothing and
-does not undo completed local triage. Mixed independent results return
-`outcome=partial` with action counts and idempotent per-target recovery.
+If external reporting is recommended, run the report-an-issue procedure
+(`external-sync.md`) and review the complete issue body at a second gate.
+Declining publication posts nothing and does not undo completed local triage.
+Mixed independent results return `outcome=partial` with action counts and
+idempotent per-target recovery.
 
 ---
 
 ## Recipe 32 — Reconcile a sync conflict safely
 
-Start from current link state and durable audit evidence:
+Start from current link state and durable audit evidence (the planar skill's
+`external-sync.md` reference):
 
 ```bash
-/pl-sync status
-/pl-sync pull task:<task-id>
-/pl-sync resolve <conflict-event-id>
+planar-ext sync status
+planar-ext sync pull task:<task-id>
+planar audit trail --link <link-id> --json
 ```
 
-With no current conflicts, the workflow is a verified no-op: it does not
-dispatch the reconciler or call resolve. For a conflict, the read-and-recommend
-`sync-reconciler` must show both observable values, provenance, observation
-times, and provider version. Missing or stale evidence forces `defer` and a
-fresh guarded pull. `keep-local` and `keep-remote` are whole-entity choices and
-require explicit approval for the displayed event and evidence.
+With no current conflicts, this is a verified no-op: do not dispatch the
+reconciler or call resolve. For a conflict, dispatch `planar-sync-reconciler`;
+it reads and recommends, and must show both observable values, provenance,
+observation times, and provider version. Missing or stale evidence forces
+`defer` and a fresh guarded pull. `keep-local` and `keep-remote` are
+whole-entity choices and require explicit approval for the displayed event and
+evidence, then:
+
+```bash
+planar-ext sync resolve <conflict-event-id> --keep local \
+  --evidence-token <approved-token> \
+  --expected-local-updated-at <reviewed-updated-at> --json
+```
 
 `manual-merge` is two-gated: first edit the local entity through its ordinary
 scope-guarded workflow and review its post-state; then separately approve
@@ -3028,7 +2928,7 @@ after an explicit dispatch decision with a newly confirmed maximum wave size.
 
 ### Review recurring design hazards before ingestion
 
-Invoke `/pl-spec-review <plan-id>` and inspect all four hazard-lens rows:
+Dispatch `planar-spec-reviewer` for the plan and inspect all four hazard-lens rows:
 
 1. resource lifecycle and cleanup;
 2. deterministic ordering and replay;
@@ -3037,8 +2937,8 @@ Invoke `/pl-spec-review <plan-id>` and inspect all four hazard-lens rows:
 
 Each row must be `finding`, `covered`, or `not applicable` with artifact
 evidence. Resolve applicable findings in the draft and rerun the read-only
-review before `/pl-spec-ingest`; use `--write` only for the separately
-operator-approved edits supported by the skill.
+review before ingestion; make draft edits only as separately
+operator-approved changes.
 
 ### Run a shipped deterministic workflow
 
