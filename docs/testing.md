@@ -231,6 +231,9 @@ The build tree lives in a BuildKit cache mount, so a second run is
 incremental, and it costs disk while it stays. Run `make linux-gate-prune`
 when done; a past unpruned run of this kind filled the machine's disk.
 Docker is a developer tool and not one of the installer's `BUILD_DEPS`.
+The container builds as root for compatibility with its build cache, then runs
+ctest as the unprivileged `planar-test` user. File-permission regressions must
+exercise SQLite's access failures rather than root's permission bypass.
 
 **Disk cost.** One full `make linux-gate` run grew Docker's virtual disk by
 about 16 GB, and the cache mount is kept after the run. Have at least 25 GB

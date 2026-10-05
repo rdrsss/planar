@@ -5,6 +5,7 @@ module planar.cmd.planar_agent.dispatch;
 
 import std;
 import cli11;
+import planar.db;
 import planar.cmd.planar_agent.handlers.dispatch;
 import planar.cmd.planar_agent.handlers.context;
 import planar.cliapp.args;
@@ -26,6 +27,42 @@ import planar.cmd.planar_agent.handlers.terminal;
 import planar.cmd.planar_agent.handlers.version;
 
 namespace planar::cmd::agent {
+
+namespace {
+
+/// @brief After a `QueryFailed`, say what the database itself refused, so a
+/// read-only database or a sandbox is recognisable. The pinned
+/// `error: <verb>: QueryFailed` line and the JSON envelope's tag are unchanged;
+/// this adds one line after them. A transaction's rollback clears SQLite's
+/// own message, so a database SQLite opened read-only is detected directly.
+/// @param err The handler failure that was just reported.
+/// @param ctx The invocation context, whose database may be open.
+auto explain_query_failure(const domain_error& err, context& ctx) -> void {
+  if (!err.text.ends_with("QueryFailed")) {
+    return;
+  }
+  auto* const conn = ctx.db().connection_if_open();
+  if (conn == nullptr) {
+    return;
+  }
+  auto const path = ctx.db_path().string();
+  if (conn->is_write_protected()) {
+    ctx.err() << std::format("error: the database at {} is read-only to this process. {}\n", path, db::access_requirement());
+    return;
+  }
+  auto const why = conn->last_error();
+  if (why.code_ == 0) {
+    return;
+  }
+  if (db::is_access_failure(why)) {
+    ctx.err() << std::format("error: the database at {} refused the operation: {}. {}\n", path, why.message_,
+                             db::access_requirement());
+    return;
+  }
+  ctx.err() << std::format("error: the database at {} reported: {}\n", path, why.message_);
+}
+
+} // namespace
 
 namespace {
 
@@ -212,6 +249,7 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   auto const& outcome = std::get<handler_result>(handled);
   if (!outcome) {
     report(outcome.error(), ctx.err());
+    explain_query_failure(outcome.error(), ctx);
     if (want_json_envelope) {
       report_json_envelope(key, outcome.error(), ctx.out());
     }

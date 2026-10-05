@@ -91,6 +91,10 @@ ARG CTEST_ARGS=
 WORKDIR /src
 COPY . /src
 
+# Permissions regressions must run without root's filesystem bypass. Keep
+# compilation privileged for compatibility with existing build cache mounts.
+RUN useradd --create-home planar-test
+
 # The whole gate is one RUN so the build cache mount is visible to every step.
 # It always exits 0 and records the verdict: see the header.
 RUN --mount=type=cache,target=/src/build/debug,id=planar-linux-gate-build \
@@ -104,7 +108,8 @@ RUN --mount=type=cache,target=/src/build/debug,id=planar-linux-gate-build \
     fi; \
     if [ "$rc" = 0 ]; then \
       ctest_rc=0; \
-      ctest --test-dir build/debug -j"${JOBS}" --output-on-failure ${CTEST_ARGS} >/out/ctest.log 2>&1 || ctest_rc=$?; \
+      chown -R planar-test:planar-test build/debug && \
+        runuser -u planar-test -- ctest --test-dir build/debug -j"${JOBS}" --output-on-failure ${CTEST_ARGS} >/out/ctest.log 2>&1 || ctest_rc=$?; \
       echo "ctest_exit=$ctest_rc" >>/out/status.txt; \
       rc=$ctest_rc; \
     fi; \

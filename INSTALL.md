@@ -365,6 +365,16 @@ rm -rf ~/.planar/queue-logs
 
 ## Troubleshooting
 
+**An agent sees `DatabaseUnreadable`, or `QueryFailed` with "read-only to this process".**
+
+Every Planar binary needs read and write access to `~/.planar/planar.db` and to
+the `~/.planar/` folder itself. SQLite keeps its `-wal` and `-shm` files beside
+the database and creates them even for a reader, so a process that may read the
+file but not write in the folder cannot open it. An agent harness that runs
+commands in a sandbox must allow writes under `~/.planar/` (or under the folder
+of `$PLANAR_DB`). The database is not damaged and needs no `planar init`; check
+from an unsandboxed terminal with `planar health`.
+
 **`planar: command not found` after install.**
 
 Check that the binary directory is on your `$PATH`:
