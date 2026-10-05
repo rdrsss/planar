@@ -838,6 +838,8 @@ ln -s "$P/agents/doc-author.md" "$H/.codex/agents/doc-author.md"         # alrea
 ln -s /somewhere/else/coder.md "$H/.codex/agents/foreign.md"             # foreign link
 echo mine > "$H/.codex/agents/mine.md"                                   # regular file
 echo s > "$P/scripts/x.md"; ln -s "$P/scripts/x.md" "$H/.claude/agents/x.md"   # under the prefix, not agents/
+mkdir -p "$P/agents/notes"; echo n > "$P/agents/notes/n.md"
+ln -s "$P/agents/notes/n.md" "$H/.claude/agents/n.md"                    # a subdirectory no release used
 [[ -L "$H/.codex/agents/doc-author.md" && ! -e "$H/.codex/agents/doc-author.md" ]] || fail "the dangling fixture is not dangling"
 run_install "$REPO" "$H" || fail "upgrade from the top-level agent layout failed: $(cat "$H/err")"
 for gone in "$H/.codex/agents/coder.md" "$H/.claude/agents/methodology.md" "$H/.codex/agents/doc-author.md"; do
@@ -847,6 +849,7 @@ done
 [[ -L "$H/.codex/agents/foreign.md" ]] || fail "a foreign agent link was removed"
 [[ -f "$H/.codex/agents/mine.md" ]] || fail "a regular agent file was removed"
 [[ -L "$H/.claude/agents/x.md" ]] || fail "a link elsewhere under the prefix was removed"
+[[ -L "$H/.claude/agents/n.md" ]] || fail "a link into an unknown agents/ subdirectory was removed"
 grep -Fq 'retired 3 previous projection(s); left 0' "$H/out" || fail "unexpected sweep summary: $(grep 'previous projection' "$H/out")"
 H="$TMP/h31link"
 mk_home h31link "${ALL6[@]}"
