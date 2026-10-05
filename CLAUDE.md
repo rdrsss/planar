@@ -247,6 +247,13 @@ ctest --test-dir build/debug --output-on-failure
   install` and `install.sh` pass it. Embedding the live sha and dirty flag by
   default invalidates the whole build graph on every commit.
 - `make test` alone is not the merge gate; `make test-all` is.
+- **Tasks run targeted tests; milestones run the full suite.** A task builds
+  everything incrementally, runs `ctest -L '^<module>$'` for each module it
+  touched (a name filter narrows `cmd_planar`), reports the matched count, and
+  runs the cheap pin and lint checks its change can break. `make test-all` runs
+  once per milestone on the merged candidate and before every pull request,
+  never after each task. The exact profiles are in
+  [docs/testing.md](docs/testing.md#task-and-milestone-cadence).
 - Test binaries are not in the default `all` target. `cmake --build build/<preset>`
   builds the product only; `--target planar_tests` builds every Catch2
   binary (`make test`, `make linux-gate` and the full CI tier do both). A
