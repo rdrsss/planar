@@ -5,7 +5,7 @@
 // port of `zig/tools/surface_lint.zig` (task 6402) enforcing the semantic
 // half of the authored-surface gate — repository-relative links, retired
 // references, artifact-set agreement, read-only capability drift, semantic
-// command shapes, and the seven-heading feedback/recovery contract. Before
+// command shapes, and the Agent Skills format. Before
 // this file it had NO ctest-registered coverage: its sibling
 // `cli_usage_lint` has `schema.t.cpp`'s `[lint-parity]` case; this tool had
 // nothing (task 6402's coder disclosed the gap plainly, task 6415 files it).
@@ -64,12 +64,13 @@
 //                                             AND fenced under agents/, and
 //                                             is proven NOT gated under
 //                                             docs/ in the same run
-//   - internal_only/                       — a skill with none of the
-//                                             seven required headings that
-//                                             is exempt via frontmatter,
-//                                             paired against dirty/'s
-//                                             missing-contract.md (same
-//                                             absence, no exemption, fires)
+//   - skill_*/                             — the Agent Skills rules: one
+//                                             valid skill passes with every
+//                                             rule named, and one fixture per
+//                                             failing rule names that rule
+//   - retired_pending/                     — `/pl-` and `scriptorium` fire
+//                                             only under
+//                                             --enable-pending-retired
 //   - vendor_excluded/                     — a file under agents/claude/
 //                                             carrying three violations
 //                                             that is never scanned at all
@@ -175,21 +176,18 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "<entity-id>`\n"
                  "agents/drift.md:11: surface-capability-drift: read-only role contains coordination or entity write: "
                  "planar artifact add\n"
-                 "skills/src/missing-contract.md:1: surface-contract-missing: user-invocable skill is missing required "
-                 "feedback heading `## Recovery`; add that literal H2 section or declare a genuine helper as "
-                 "`internal_only: true` in frontmatter\n"
-                 "surface-lint: 7 finding(s) across 2 files\n");
+                 "surface-lint: 6 finding(s) across 1 files\n");
   }
 
-  SECTION("dirty corpus --json: envelope carries the same seven findings") {
+  SECTION("dirty corpus --json: envelope carries the same six findings") {
     auto const [out, status] = capture(bin.string(), {(fixtures / "dirty").string(), "--json"});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 1);
-    CHECK(out.starts_with(R"({"version":1,"ok":false,"files_scanned":2,"findings":[)"));
-    CHECK(count_occurrences(out, "\"code\":") == 7);
+    CHECK(out.starts_with(R"({"version":1,"ok":false,"files_scanned":1,"findings":[)"));
+    CHECK(count_occurrences(out, "\"code\":") == 6);
     CHECK(out.contains(R"("code":"surface-link-missing")"));
-    CHECK(out.contains(R"("code":"surface-contract-missing")"));
+    CHECK(!out.contains("surface-contract-missing"));
   }
 
   SECTION("suppressed: a valid suppression consumes the exact finding it targets") {
@@ -257,7 +255,7 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
 
   SECTION("capability_exemption: an exempted mutate shape is silent beside a non-exempted one that still fires") {
     // Paired within one file, one role: `planar plan create` is in
-    // k_capability_exemptions for (agents/introspector.md, introspector);
+    // k_capability_exemptions for (agents/planar-introspector.md, introspector);
     // `planar decision add` is not. If the exemption table match broke to
     // always-exempt or never-exempt, this file's finding count would move
     // to 0 or 2 instead of staying at exactly 1.
@@ -265,7 +263,7 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 1);
-    CHECK(out == "agents/introspector.md:9: surface-capability-drift: read-only role contains coordination or entity "
+    CHECK(out == "agents/planar-introspector.md:9: surface-capability-drift: read-only role contains coordination or entity "
                  "write: planar decision add\n"
                  "surface-lint: 1 finding(s) across 1 files\n");
   }
@@ -286,15 +284,118 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 2 finding(s) across 2 files\n");
   }
 
-  SECTION("internal_only: a skill missing all seven feedback headings is exempt via frontmatter") {
-    // Paired against dirty/skills/src/missing-contract.md above: the same
-    // absence (no `## Recovery` etc.) fires there and is silent here,
-    // solely because of `internal_only: true`.
-    auto const [out, status] = capture(bin.string(), {(fixtures / "internal_only").string()});
+  SECTION("no feedback envelope rule: a skill without the seven headings is clean") {
+    // The seven-section rule is gone (the contract lives in the skill's
+    // references/feedback-contract.md). clean/skills/src/clean.md carries no
+    // such heading and must still pass.
+    auto const [out, status] = capture(bin.string(), {(fixtures / "clean").string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);
-    CHECK(out == "surface-lint: clean (1 files)\n");
+    CHECK(!out.contains("surface-contract-missing"));
+  }
+
+  SECTION("skill_valid: a valid Agent Skill passes and every rule is named on its own line") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "skill_valid").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    for (auto rule : {"frontmatter-present", "name-matches-directory", "name-format", "description-length", "frontmatter-keys",
+                      "body-lines", "links-resolve", "references-one-level"}) {
+      INFO(rule);
+      CHECK(count_occurrences(out, std::format("skills/planar/SKILL.md: skill-rule {}: ok", rule)) == 1);
+    }
+    CHECK(out.ends_with("surface-lint: clean (2 files)\n"));
+  }
+
+  SECTION("skill_name_mismatch: name `planr` in planar/ fails naming the mismatch") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "skill_name_mismatch").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out.contains("skills/planar/SKILL.md:2: surface-skill-spec: name-matches-directory: name `planr` does not equal "
+                       "directory `planar`\n"));
+    CHECK(!out.contains("skill-rule name-matches-directory: ok"));
+  }
+
+  SECTION("skill_long_description: a 1025-character description fails, naming the length") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "skill_long_description").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out.contains("skills/planar/SKILL.md:3: surface-skill-spec: description-length: description is 1025 characters; "
+                       "the limit is 1024\n"));
+  }
+
+  SECTION("skill_deep_reference: references/deep/x.md fails the one-level rule") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "skill_deep_reference").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out.contains("skills/planar/SKILL.md:8: surface-skill-spec: references-one-level: referenced file "
+                       "`references/deep/x.md` is not one level below SKILL.md"));
+    CHECK(out.contains("skill-rule links-resolve: ok"));
+  }
+
+  SECTION("skill_dangling_link: a link to a missing file fails the links rule once") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "skill_dangling_link").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out.contains("skills/planar/SKILL.md:8: surface-skill-spec: links-resolve: link target does not exist: "
+                       "references/missing.md\n"));
+    CHECK(count_occurrences(out, "references/missing.md") == 1);
+  }
+
+  SECTION("skill_bad_key: a frontmatter key outside the Agent Skills set fails") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "skill_bad_key").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out.contains("surface-skill-spec: frontmatter-keys: frontmatter key `slug` is not an Agent Skills key"));
+  }
+
+  SECTION("skill_151_lines: the lint allows 500 body lines, so a 151-line body passes") {
+    auto const [out, status] = capture(bin.string(), {(fixtures / "skill_151_lines").string()});
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(out.contains("skill-rule body-lines: ok (151 of 500 lines)"));
+  }
+
+  SECTION("a 501-line body fails the lint's body-lines rule") {
+    auto const tmp = fs::temp_directory_path() /
+                     std::format("planar_surface_lint_body_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+    fs::create_directories(tmp / "skills" / "planar");
+    {
+      std::ofstream f(tmp / "skills" / "planar" / "SKILL.md", std::ios::binary);
+      f << "---\nname: planar\ndescription: Plan work.\n---\n";
+      for (int i = 0; i < 501; ++i)
+        f << "Line " << i << ".\n";
+    }
+    auto const [out, status] = capture(bin.string(), {tmp.string()});
+    std::error_code ec;
+    fs::remove_all(tmp, ec);
+    INFO(out);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 1);
+    CHECK(out.contains("surface-skill-spec: body-lines: body is 501 lines; the limit is 500"));
+  }
+
+  SECTION("retired_pending: switched off, /pl- and scriptorium pass; switched on they fail with file and line") {
+    auto const [off, off_status] = capture(bin.string(), {(fixtures / "retired_pending").string()});
+    INFO(off);
+    REQUIRE(WIFEXITED(off_status));
+    CHECK(WEXITSTATUS(off_status) == 0);
+    CHECK(off == "surface-lint: clean (1 files)\n");
+
+    auto const [on, on_status] = capture(bin.string(), {(fixtures / "retired_pending").string(), "--enable-pending-retired"});
+    INFO(on);
+    REQUIRE(WIFEXITED(on_status));
+    CHECK(WEXITSTATUS(on_status) == 1);
+    CHECK(on == "docs/pending.md:3: surface-retired-reference: retired reference outside an exempt region: /pl-\n"
+                "docs/pending.md:5: surface-retired-reference: retired reference outside an exempt region: scriptorium\n"
+                "surface-lint: 2 finding(s) across 1 files\n");
   }
 
   SECTION("vendor_excluded: agents/claude/ is never scanned, not merely scanned-and-clean") {
@@ -469,4 +570,47 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
     CHECK(WEXITSTATUS(status) == 2);
     CHECK(out.contains("usage: surface_lint"));
   }
+}
+
+namespace {
+
+/// @brief Body lines of a SKILL.md: the lines after the closing `---` of its
+/// frontmatter, not counting the final newline.
+auto skill_body_lines(fs::path const& file) -> std::size_t {
+  std::ifstream in(file, std::ios::binary);
+  std::string   line;
+  std::size_t   fences = 0;
+  std::size_t   body   = 0;
+  while (std::getline(in, line)) {
+    if (fences >= 2) {
+      ++body;
+    } else if (line == "---") {
+      ++fences;
+    }
+  }
+  return body;
+}
+
+constexpr std::size_t k_planar_skill_body_budget = 150;
+
+} // namespace
+
+// Planar's own budget for the entry skill is tighter than the Agent Skills
+// limit of 500, so it is a repository contract and not a lint rule.
+TEST_CASE("the body line counter counts a padded fixture past the Planar budget", "[surface_lint][skill-budget]") {
+  fs::path const fixtures{PLANAR_SURFACE_LINT_FIXTURES_DIR};
+  auto const     count = skill_body_lines(fixtures / "skill_151_lines" / "skills" / "planar" / "SKILL.md");
+  CHECK(count == 151);
+  CHECK(count > k_planar_skill_body_budget);
+  CHECK(skill_body_lines(fixtures / "skill_valid" / "skills" / "planar" / "SKILL.md") <= k_planar_skill_body_budget);
+}
+
+TEST_CASE("skills/planar/SKILL.md body stays within 150 lines", "[surface_lint][skill-budget]") {
+  fs::path const skill = fs::path{PLANAR_REPO_ROOT} / "skills" / "planar" / "SKILL.md";
+  if (!fs::exists(skill)) {
+    SKIP("skills/planar/SKILL.md does not exist in this checkout yet; the 150-line budget is checked once it lands");
+  }
+  auto const count = skill_body_lines(skill);
+  INFO("skills/planar/SKILL.md body is " << count << " lines; the Planar budget is " << k_planar_skill_body_budget);
+  CHECK(count <= k_planar_skill_body_budget);
 }

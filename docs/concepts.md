@@ -992,7 +992,7 @@ A single **shared resolver** (`src/engine/config/effective.cppm` plus `src/engin
 - **`planar models`** — `resolve --role <role> [--task <id>|--plan <id>]` (the tier a role gets from its packet, or the static fallback with its reason), `registry list|add|update|remove|bind|unbind|observe|eligibility|verify-identity|export` (the opaque candidate registry), `experiments` and `outcomes` (routing evidence), and `evals` (below). The plan-540 discovery family — `list`, `routing`, `candidates`, `refresh`, `apply` — was removed with the curated catalog; `planar config show --effective` is where the resolved `models.*` / `routing.*` / `roles.*` keys are inspected.
 - **The Tier Table** (hand-maintained in `agents/models.md`; Planar does not generate it) + rendered skill/agent `model:` fields — rendered skill/agent `model:` fields come from scriptorium's render step, which always renders `list[0]` for a candidate-list tier (static surfaces show the tier default; per-task routing is runtime-only).
 - **External workflow harnesses** — shell `planar models resolve --role <role> --json` per role (no engine handle), falling back to compiled defaults when `planar` is unreachable.
-- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see `agents/orchestrator.md` dispatch step 8a and `skills/src/pl-orchestrator.md` § Dispatch preview and model tiers).
+- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see `agents/planar-orchestrator.md` dispatch step 8a and `skills/src/pl-orchestrator.md` § Dispatch preview and model tiers).
 - **`planar models evals`** — read-only routing evaluation. With `--vendor` and the cohort flags it ranks candidates in one exact cohort by the 95% Wilson lower bound over declared-experiment evidence; without them it falls back to the legacy scorecard mined from dispatch notes (`dispatch_shape:` / `model_choice:`), terminal claim status, and test-coder action outcomes. Quality-gate pass/fail is not persisted today, so the legacy path reports that signal as unsourced rather than guessing. It writes nothing; applying a recommendation is a separate operator-gated edit to `agents/models.md`.
 
 Planar does not discover or validate provider model lists: candidate ids are opaque strings recorded as agents report them, and spawn verification belongs to the host adapter. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the `pl-models-config` skill.
@@ -1156,7 +1156,7 @@ after apply. Before apply, its legitimate zero totals do not prove draft
 coverage. After apply it provides the per-milestone four-bucket breakdown
 (happy / empty / error / edge) used by test-coder cycles and reviewers.
 
-**Planning loop integration.** The planner authors the test-spec in Phase 4 of its authoring pipeline (see [`agents/planner.md` §Authoring phases](../agents/planner.md#authoring-phases)). Phase 4 is purely adversarial: what could go wrong, what scenarios prove this works, what scenarios prove it doesn't. The planner explicitly does NOT propose implementations of the tests — that's the [test-coder](#test-coder)'s job (see below).
+**Planning loop integration.** The planner authors the test-spec in Phase 4 of its authoring pipeline (see [`agents/planar-planner.md` §Authoring phases](../agents/planar-planner.md#authoring-phases)). Phase 4 is purely adversarial: what could go wrong, what scenarios prove this works, what scenarios prove it doesn't. The planner explicitly does NOT propose implementations of the tests — that's the [test-coder](#test-coder)'s job (see below).
 
 **Orchestrator integration.** When dispatched tasks have `[slug:]` annotations on their roadmap bullets and the test-spec cites those slugs via `task:<slug>`, the orchestrator's Phase 3.5 dispatches the test-coder agent. The gating oracle is `planar test-spec status <plan> --json` — the orchestrator does not re-implement coverage calculation. The reviewer then runs `planar test-spec status` against the post-diff DB; any slug claimed by the brief that still appears in the uncovered set is a `request-changes` finding citing the verb output verbatim.
 
@@ -1186,7 +1186,7 @@ pass — surfaces failures with a classification (`test-wrong-author-error` /
 
 **Manual invocation.** Operators can invoke `/pl-test-coder <task-id>` directly to backfill coverage on an already-committed change set, or `/pl-test-coder <plan-id> --plan` to run against every cited scenario in a plan. Useful after authoring a new test-spec for an older feature.
 
-**SQLite tables:** none. **Primary entry points:** `agents/test-coder.md` and `skills/src/pl-test-coder.md`, `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate). Vendor projections are generated at install time.
+**SQLite tables:** none. **Primary entry points:** `agents/planar-test-coder.md` and `skills/src/pl-test-coder.md`, `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate). Vendor projections are generated at install time.
 
 ## Usage Introspection Privacy Model
 
@@ -1225,7 +1225,7 @@ for the failures.
 
 `[introspection].cli_log = false` by default. No `cli_invocations` rows are written until the operator sets `cli_log = true` in `~/.planar/config.toml`. The report verb distinguishes "logging disabled" from "no activity in the window" — the operator is never shown fabricated zeros. The always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) render normally regardless of the `cli_log` setting.
 
-**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs` (always-on, read by `report`). **Primary entry points:** `planar report [--json]` (diagnostic bundle), `skills/src/pl-introspect.md` (introspection skill), `agents/introspector.md` (agent role spec).
+**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs` (always-on, read by `report`). **Primary entry points:** `planar report [--json]` (diagnostic bundle), `skills/src/pl-introspect.md` (introspection skill), `agents/planar-introspector.md` (agent role spec).
 
 ## Feedback triage
 
@@ -1255,7 +1255,7 @@ for each failure.
 **SQLite tables:** `feedback_triage`, plus existing finding entities and
 `external_links`. **Primary entry points:** `planar feedback triage
 list|show|set`, [`skills/src/pl-feedback-triage.md`](../skills/src/pl-feedback-triage.md),
-and [`agents/feedback-triager.md`](../agents/feedback-triager.md).
+and [`agents/planar-feedback-triager.md`](../agents/planar-feedback-triager.md).
 
 ---
 

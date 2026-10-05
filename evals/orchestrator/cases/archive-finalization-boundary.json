@@ -10,7 +10,7 @@
       "id": "janitor-owns-closeout",
       "description": "Both orchestrator surfaces assign Planar closeout to janitor.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "paths": ["agents/planar-orchestrator.md"],
       "pattern": "(?s)janitor.*planar plan closeout|planar plan closeout.*janitor",
       "multiline": true
     },
@@ -18,15 +18,15 @@
       "id": "no-plan-status-bypass",
       "description": "Archive does not directly force the anchor plan to done.",
       "mode": "none",
-      "paths": ["skills/src/pl-orchestrator.md", "agents/orchestrator.md"],
+      "paths": ["agents/planar-orchestrator.md"],
       "pattern": "planar plan update <anchor> --status done"
     },
     {
       "id": "archive-requires-done",
-      "description": "The skill states that archive requires a done plan.",
+      "description": "The orchestrator agent states that archive requires a done plan.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md"],
-      "pattern": "requires the anchor plan to already be[[:space:]]+`done`",
+      "paths": ["agents/planar-orchestrator.md"],
+      "pattern": "require[[:space:]]+`status='done'`",
       "multiline": true
     }
   ],

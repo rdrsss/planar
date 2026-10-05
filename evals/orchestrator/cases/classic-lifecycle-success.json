@@ -16,7 +16,7 @@
       "id": "review-before-complete",
       "description": "The orchestrator applies the reviewer decision before terminal completion.",
       "mode": "all",
-      "paths": ["agents/orchestrator.md"],
+      "paths": ["agents/planar-orchestrator.md"],
       "pattern": "Apply the reviewer's decision"
     }
   ],

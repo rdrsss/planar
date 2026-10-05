@@ -16,12 +16,16 @@ lifecycle run calls before the host process starts (decision D2, tech spec
 under the arena root, or the run refuses with the offending key named.
 
 `stage_vendor_config()` (Planar question 983) then STAGES the vendor's
-read surfaces — slash commands, skills, agents, auth — into the scratch
-`CLAUDE_CONFIG_DIR` / `CODEX_HOME` as symlinks back to the operator's real
-install, so a live run's reads (e.g. `/pl-orchestrator` resolving from
-`$CLAUDE_CONFIG_DIR/commands`, or the codex CLI reading `~/.codex/auth.json`)
-resolve to the real, installed surface while every WRITE the host makes to a
-NEW path (session state, history) lands in the scratch dir untouched. It is
+auth and settings surfaces into the scratch `CLAUDE_CONFIG_DIR` /
+`CODEX_HOME` as symlinks back to the operator's real install (the codex CLI
+reads `~/.codex/auth.json`), while every WRITE the host makes to a NEW path
+(session state, history) lands in the scratch dir untouched. The Planar
+surface itself is NOT taken from the operator's install: when given a
+`repo_root` it copies the checkout's single `skills/planar/` directory into
+`<claude-config>/skills/planar` and `<home>/.agents/skills/planar`, and each
+`agents/planar-<role>.md` into `<claude-config>/agents/` (Claude) or as a
+generated `<codex-home>/agents/planar-<role>.toml` (Codex), so a run
+exercises the checkout under test and never a stale install. It is
 a fail-closed, allowlisted STAGING step, not a broadening of the arena: it
 never grants read/write access to anything outside the named surfaces below,
 and `assert_isolated()` continues to validate the arena env var VALUES
@@ -38,9 +42,9 @@ four steps in order — `make_arena()` -> `assert_isolated()` ->
 process starts. The planning harness (`evals/planning/harness.py`, task
 hh-planning-grader-split) runs the same four steps for its live
 `draft-quality` trial loop: its drafter now invokes the installed
-`pl-spec-draft` slash command (`/pl-spec-draft "<goal>"`) rather than bare
-prose, so it needs `commands/` staged into the scratch `CLAUDE_CONFIG_DIR`
-the same way an orchestrator skill run does. Its `--dry-run` path (every
+`planar-planner` agent by name, so it needs that agent and the `planar`
+skill staged into the scratch `CLAUDE_CONFIG_DIR` the same way an
+orchestrator run does. Its `--dry-run` path (every
 kind) and its grader call (plain prose, no slash command) never need
 `stage_vendor_config()`, so only the live drafter call site pairs it with
 `assert_vendor_auth()`.
@@ -52,7 +56,9 @@ every trial arena under it) is retained or removed as a unit.
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 from pathlib import Path
 from typing import Mapping
 
@@ -131,16 +137,13 @@ class VendorAuthError(RuntimeError):
 # it stays exactly where the arena already puts it (scratch, empty, never
 # touching the operator's real state).
 #
-# `commands` is required for claude: the live phase3-preview prompt is
-# `/pl-orchestrator <plan-id> ...`, which the CLI resolves as a file under
-# `$CLAUDE_CONFIG_DIR/commands` — an empty scratch dir makes that literal
-# text rather than a command. `auth.json` is required for codex: this is
-# how the installed codex CLI authenticates on this machine (there is no
-# OS-keychain fallback the way there is for claude).
+# Skills, agents and commands are deliberately absent: the Planar surface is
+# staged from the repository checkout by `stage_planar_surface()`, never
+# from the operator's install. Claude has no required real-install surface.
+# `auth.json` is required for codex: this is how the installed codex CLI
+# authenticates on this machine (there is no OS-keychain fallback the way
+# there is for claude).
 CLAUDE_STAGED_SURFACES: dict[str, bool] = {
-    "commands": True,
-    "skills": False,
-    "agents": False,
     "settings.json": False,
     "CLAUDE.md": False,
     # Present on some installs, absent on others depending on auth method
@@ -158,8 +161,6 @@ CLAUDE_STAGED_SURFACES: dict[str, bool] = {
 CODEX_STAGED_SURFACES: dict[str, bool] = {
     "auth.json": True,
     "config.toml": False,
-    "skills": False,
-    "agents": False,
     "AGENTS.md": False,
     "rules": False,
     # `plugins/` is deliberately EXCLUDED, not just optional: the codex CLI
@@ -310,8 +311,11 @@ def stage_vendor_config(
     *,
     surface: str = "skill",
     base_env: Mapping[str, str] | None = None,
+    repo_root: Path | None = None,
+    required_agents: tuple[str, ...] = (),
 ) -> None:
-    """Symlink `vendor`'s read surfaces from the real install into the arena.
+    """Stage `vendor`'s auth/settings from the real install and, when
+    `repo_root` is given, the Planar surface from that checkout.
 
     Call after `make_arena()` (and, per the fail-closed contract, before
     any vendor host process starts — every call site pairs this with
@@ -319,39 +323,24 @@ def stage_vendor_config(
     environment `make_arena()` returned; `env[VENDOR_ARENA_ENV_VAR[vendor]]`
     (`CLAUDE_CONFIG_DIR` or `CODEX_HOME`) is the staging target.
 
-    `surface` is the eval surface being run (`"skill"` or `"agent"`, the
-    same value `Options.surface` carries). It changes which surfaces are
-    REQUIRED, not which are staged: with `surface == "agent"`, `agents`
-    is promoted from optional to required for BOTH vendors, because the
-    live host is invoked as an agent (`claude --agent orchestrator`, codex
-    `agent_type=orchestrator`) and reads its agent definitions from that
-    directory — a missing `agents` dir under `surface == "agent"` must
-    fail closed here, before the host starts, rather than fail inside the
-    host with a vendor-specific error the eval cannot classify. With
-    `surface == "skill"` (the default), `agents` stays optional, matching
-    `CLAUDE_STAGED_SURFACES` / `CODEX_STAGED_SURFACES` unchanged.
+    `surface` is the eval surface being run (`"skill"` or `"agent"`); it is
+    validated and otherwise unused here. Which agents a run needs is
+    stated by `required_agents` (e.g. `("planar-orchestrator",)`).
 
     For each surface in `CLAUDE_STAGED_SURFACES` / `CODEX_STAGED_SURFACES`:
     a missing OPTIONAL surface is skipped silently; a missing REQUIRED one
     raises `VendorStagingError` naming the absolute path that was expected,
-    BEFORE the host starts. An existing target (a previous call already
-    staged it, or `make_arena()`'s own directory creation collided with a
-    surface name) is left alone rather than re-linked.
+    BEFORE the host starts. An existing target is left alone.
 
-    Symlinks a DIRECTORY or FILE as a symlink, never a copy: the host's
-    reads resolve through the link to the real install, while any WRITE it
-    makes to a path that does not already exist creates a new, real file
-    under the scratch directory rather than touching the operator's real
-    install. A write to a path that already exists resolves THROUGH the
-    symlink and lands on the real file — this is not a gap to fix, it is
-    the intended behavior for `auth.json` / `.credentials.json`: a host
-    that refreshes an expiring token is supposed to write the refreshed
-    token back to the real credential file, and a COPY would silently
-    diverge from it on the very next call. It is exactly why a surface
-    whose ordinary-use writes are NOT wanted write-through — `plugins/`,
-    which Claude and codex both rewrite on ordinary session start — is
-    excluded from staging entirely rather than merely marked optional; see
-    `CLAUDE_STAGED_SURFACES` / `CODEX_STAGED_SURFACES`.
+    Those surfaces are SYMLINKED, never copied: a host write to a path that
+    does not already exist creates a real file under the scratch directory,
+    while a refreshed token written to an existing `auth.json` /
+    `.credentials.json` intentionally lands on the real credential file.
+    `plugins/` is excluded outright because both vendors rewrite it on
+    ordinary session start; see `CLAUDE_STAGED_SURFACES`.
+
+    With `repo_root`, `stage_planar_surface()` then copies the checkout's
+    Planar skill and agents into the arena.
     """
     if vendor not in VENDOR_STAGED_SURFACES:
         raise ValueError(f"unknown vendor: {vendor}")
@@ -360,8 +349,6 @@ def stage_vendor_config(
     real_root = real_vendor_root(vendor, base_env)
     scratch_root = Path(env[VENDOR_ARENA_ENV_VAR[vendor]])
     for name, required in VENDOR_STAGED_SURFACES[vendor].items():
-        if surface == "agent" and name == "agents":
-            required = True
         source = real_root / name
         if not source.exists():
             if required:
@@ -374,6 +361,105 @@ def stage_vendor_config(
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.symlink_to(source, target_is_directory=source.is_dir())
+    if repo_root is not None:
+        stage_planar_surface(env, vendor, repo_root, required_agents=required_agents)
+
+
+def _frontmatter_description(text: str) -> tuple[str, str]:
+    """Split an agent markdown file into (description, body).
+
+    The frontmatter is the leading `---` block; only its `description:`
+    line is read (a JSON- or bare-string scalar). Absent frontmatter yields
+    an empty description and the whole text as the body.
+    """
+    if not text.startswith("---\n"):
+        return "", text
+    end = text.find("\n---", 4)
+    if end < 0:
+        return "", text
+    description = ""
+    for line in text[4:end].splitlines():
+        if line.startswith("description:"):
+            value = line[len("description:"):].strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            description = value
+    return description, text[end + 4:].lstrip("\n")
+
+
+def _toml_basic_string(value: str) -> str:
+    return json.dumps(value)
+
+
+def stage_planar_surface(
+    env: Mapping[str, str],
+    vendor: str,
+    repo_root: Path,
+    *,
+    required_agents: tuple[str, ...] = (),
+) -> None:
+    """Copy the checkout's Planar skill and agents into the arena.
+
+    Layout under the arena (`home` is `env["HOME"]`):
+
+    - `<home>/.agents/skills/planar/` — a copy of `<repo_root>/skills/planar/`
+      (SKILL.md plus `references/`), the cross-vendor skill location;
+    - Claude: `<CLAUDE_CONFIG_DIR>/skills/planar/` (same copy) and
+      `<CLAUDE_CONFIG_DIR>/agents/planar-<role>.md` for each
+      `<repo_root>/agents/planar-*.md`;
+    - Codex: `<CODEX_HOME>/agents/planar-<role>.toml` with `name`,
+      `description` and `developer_instructions`, generated from the same
+      markdown files;
+    - `<home>/.claude` and `<home>/.codex` are symlinks to the scratch
+      config directories so both spellings resolve inside the arena.
+
+    No `commands/` directory is ever created. Raises `VendorStagingError`
+    naming the expected path when `skills/planar/SKILL.md` or any of
+    `required_agents` is absent from `repo_root`.
+    """
+    if vendor not in VENDOR_STAGED_SURFACES:
+        raise ValueError(f"unknown vendor: {vendor}")
+    skill_src = repo_root / "skills" / "planar"
+    if not (skill_src / "SKILL.md").is_file():
+        raise VendorStagingError(
+            f"{vendor}: required Planar skill is missing: {skill_src / 'SKILL.md'}"
+        )
+    agents_src = repo_root / "agents"
+    for name in required_agents:
+        if not (agents_src / f"{name}.md").is_file():
+            raise VendorStagingError(
+                f"{vendor}: required Planar agent is missing: {agents_src / (name + '.md')}"
+            )
+    home = Path(env["HOME"])
+    config_dir = Path(env[VENDOR_ARENA_ENV_VAR[vendor]])
+    alias = home / (".claude" if vendor == "claude" else ".codex")
+    if not (alias.exists() or alias.is_symlink()):
+        alias.symlink_to(config_dir, target_is_directory=True)
+
+    skill_targets = [home / ".agents" / "skills" / "planar"]
+    if vendor == "claude":
+        skill_targets.append(config_dir / "skills" / "planar")
+    for target in skill_targets:
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(skill_src, target)
+
+    agent_dir = config_dir / "agents"
+    for source in sorted(agents_src.glob("planar-*.md")):
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        if vendor == "claude":
+            shutil.copy2(source, agent_dir / source.name)
+            continue
+        text = source.read_text(encoding="utf-8")
+        description, body = _frontmatter_description(text)
+        name = source.stem
+        (agent_dir / f"{name}.toml").write_text(
+            f"name = {_toml_basic_string(name)}\n"
+            f"description = {_toml_basic_string(description)}\n"
+            f"developer_instructions = {_toml_basic_string(body)}\n",
+            encoding="utf-8",
+        )
 
 
 def assert_vendor_auth(env: Mapping[str, str], vendor: str) -> None:

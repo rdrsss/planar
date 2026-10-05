@@ -144,6 +144,7 @@ auto to_absolute(const std::filesystem::path& path) -> std::filesystem::path {
 auto parse_frontmatter_block(std::string_view raw) -> frontmatter {
   frontmatter out;
   bool        mode_vendors = false;
+  bool        mode_planar  = false; // inside the `planar:` map of the namespaced form
 
   std::size_t pos = 0;
   while (pos <= raw.size()) {
@@ -171,12 +172,31 @@ auto parse_frontmatter_block(std::string_view raw) -> frontmatter {
     }
     mode_vendors = false;
 
+    // An indented line belongs to the block opened above it; a column-0 line closes it.
+    const bool indented = !seg.empty() && (seg.front() == ' ' || seg.front() == '\t');
+    if (!indented) {
+      mode_planar = false;
+    }
+
     const auto colon = line.find(':');
     if (colon == std::string_view::npos) {
       continue;
     }
     const auto key = trim(line.substr(0, colon), k_trim_chars);
     const auto val = trim(line.substr(colon + 1), k_trim_chars);
+
+    if (mode_planar && indented) {
+      // Namespaced form: only `planar.kind` is read; `planar.slug` is not used because a local
+      // source's name comes from its filename.
+      if (key == "kind") {
+        out.kind = trim_quotes(val);
+      }
+      continue;
+    }
+    if (!indented && key == "planar" && val.empty()) {
+      mode_planar = true;
+      continue;
+    }
 
     if (key == "description") {
       out.description = trim_quotes(val);
@@ -187,6 +207,8 @@ auto parse_frontmatter_block(std::string_view raw) -> frontmatter {
     } else if (key == "model") {
       out.model = trim_quotes(val);
     } else if (key == "kind") {
+      // Deprecated: a top-level `kind:` is the pre-namespacing form. It is still accepted because
+      // operator-local files are not ours to rename; Planar's own agents use `planar.kind`.
       out.kind = trim_quotes(val);
     } else if (key == "shadow") {
       out.shadow = trim_quotes(val) == "true";

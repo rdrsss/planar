@@ -28,24 +28,24 @@ Tier-to-model resolution: [`agents/models.md`](models.md).
 The orchestrator manages the lifecycle phases below. Phases 1–2 apply only
 when the anchor plan is `draft`; execution and later phases apply to active or
 completed work. Full phase documentation lives in
-[`agents/orchestrator.md`](orchestrator.md#phases).
+[`agents/planar-orchestrator.md`](planar-orchestrator.md#phases).
 
-| Phase | Skill | Trigger | User gate |
+| Phase | Agent or verb | Trigger | User gate |
 |-------|-------|---------|-----------|
-| 1 — Planning | `pl-spec-draft` | Goal given; no anchor plan or `draft` with no artifacts | After artifacts are drafted — user reviews before Phase 1.5 |
-| 1.5 — Spec review | `pl-spec-review` | Draft artifacts have received the user's initial review signal | Findings are resolved or explicitly accepted before ingestion preview |
-| 2 — Ingestion | `pl-spec-ingest` | Anchor plan `draft` with reviewed, ready-for-ingest workbench artifacts present | After preview diff — user confirms before `--apply` |
+| 1 — Planning | `planar-planner` | Goal given; no anchor plan or `draft` with no artifacts | After artifacts are drafted — user reviews before Phase 1.5 |
+| 1.5 — Spec review | `planar-spec-reviewer` | Draft artifacts have received the user's initial review signal | Findings are resolved or explicitly accepted before ingestion preview |
+| 2 — Ingestion | `planar-ingestor` | Anchor plan `draft` with reviewed, ready-for-ingest workbench artifacts present | After preview diff — user confirms before `--apply` |
 | 3 — Execution | coder + (optional test-coder) + reviewer | Anchor plan `active` or `paused` with `todo`/`doing` tasks | Strategy/isolation/model/wave preview, then nested dispatch shape; Phase 3.5 is coverage-driven per cycle; reviewer loop capped at 5 |
 | 3.7 — Finalization | `janitor` (spawned subagent) | Phase 3 cycles complete with approval, validation evidence, and a confirmed Git delivery profile; user requests `--finalize` or confirms interactively | Explicit per invocation; integration must be proven and `planar plan closeout --dry-run` must pass before apply |
-| 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` | Explicit per invocation |
-| 5 — Archive | `pl-workbench-archive` | Anchor plan `done`, user requests `--archive` | Explicit per invocation |
+| 4 — Propagation | `planar-ext-sync` | User requests `--propagate` | Explicit per invocation |
+| 5 — Archive | `planar workbench archive` | Anchor plan `done`, user requests `--archive` | Explicit per invocation |
 
 **Key invariants:**
 - The orchestrator never auto-applies ingestion. The ingestor always runs in preview mode first; `--apply` is gated on explicit user confirmation.
 - The orchestrator never ingests unreviewed planning artifacts. Phase 1.5 runs
-  `pl-spec-review` after the user's initial artifact review. `needs-answers`,
+  `planar-spec-reviewer` after the user's initial artifact review. `needs-answers`,
   `needs-spec-work`, or `abort-replan` stops the lifecycle; operator-approved edits are applied
-  through that skill's write path and the adversarial review is rerun.
+  through that agent's write path and the adversarial review is rerun.
 - The orchestrator never auto-archives. Archive is always an explicit user action.
 - The orchestrator never finalizes silently. Phase 3.7 is gated on explicit operator opt-in (`--finalize` flag or interactive confirm). Coders never close plans; the janitor is the only agent role that runs `planar plan closeout`.
 - The orchestrator never picks dispatch granularity silently. Phase 3 begins with a strict/grouped/single proposal that the user must confirm (unless an explicit `--strict`/`--grouped`/`--batch` flag was supplied at invocation).
@@ -236,7 +236,7 @@ These tasks follow the same terminal rules as any task — they must reach `done
    id, owned worktrees/branches, reviewer or bypass disposition, structured
    validation evidence, and session context.
 4. **Janitor executes its six-step flow.** See
-   [`agents/janitor.md`](janitor.md): verify evidence → integrate and prove Git
+   [`agents/planar-janitor.md`](planar-janitor.md): verify evidence → integrate and prove Git
    state → post-integration validation → reconcile Planar → clean owned Git
    state → `planar plan closeout`.
 5. **Gate verdict surfaces to operator.** The orchestrator reports the janitor's result:
@@ -580,7 +580,7 @@ triviality, and model tier.
 The orchestrator never authors source content. It may run coordination CLIs and
 the documented Git topology operations for worktrees, commits, fan-in, and
 cleanup. "Dispatch" means spawning through the host's subagent surface, never
-invoking `/pl-coder` inline in the orchestrator's context.
+invoking the `planar-coder` role inline in the orchestrator's context.
 
 Isolation is always-on for source authoring. Coordination and Git topology
 operations remain the orchestrator's responsibility.
@@ -1108,7 +1108,7 @@ iteration 5 operates under different rules than iterations 1–4:
 
 The three `barrel-*` shapes formalize what was previously an emergent shortcut: barrel through milestones back-to-back, accept the gates as the entire signal, and defer (or skip) the reviewer. Naming them turns the shortcut into a contract — the operator picks at the gate, the audit trail records the choice, and the reviewer-skip decision is explicit rather than emergent.
 
-Each barrel mode picks a distinct point on the *grouping* × *reviewer disposition* matrix. They are **not** mutually exclusive with `strict`, `grouped`, or `single` — they are siblings on the same gate. The operator picks one shape per `/pl-orchestrator` invocation against one anchor plan.
+Each barrel mode picks a distinct point on the *grouping* × *reviewer disposition* matrix. They are **not** mutually exclusive with `strict`, `grouped`, or `single` — they are siblings on the same gate. The operator picks one shape per `planar-orchestrator` invocation against one anchor plan.
 
 ### `barrel-grouped`
 
@@ -1144,7 +1144,7 @@ count is implied; repetition is required only when the confirmed profile says
 so. A coder dispatched under `barrel-bypass` must be told that the operator
 selected this risk profile explicitly.
 
-Operators picking `barrel-bypass` accept that uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + `/pl-reviewer <task-id> <iteration>` against a still-active task; there is no orchestrator-driven "review this old cycle" workflow.
+Operators picking `barrel-bypass` accept that uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + a `planar-reviewer` dispatch for `<task-id>` and `<iteration>` against a still-active task; there is no orchestrator-driven "review this old cycle" workflow.
 
 ### Phase 3.5 composition (all barrel modes)
 
@@ -1174,7 +1174,7 @@ The `reviewer_disposition` field captures the precedence rule: `barrel-bypass` m
 
 ### Phase 3.5 — Test-coder dispatch
 
-Between the coder's report-done and the reviewer's dispatch, the orchestrator may dispatch a [`test-coder`](test-coder.md) cycle. The gating decision is delegated to `planar test-spec status <plan> --json` — the orchestrator does NOT re-implement coverage calculation.
+Between the coder's report-done and the reviewer's dispatch, the orchestrator may dispatch a [`test-coder`](planar-test-coder.md) cycle. The gating decision is delegated to `planar test-spec status <plan> --json` — the orchestrator does NOT re-implement coverage calculation.
 
 **Gating condition.** Dispatch test-coder when:
 - The cycle's dispatched tasks carry `[slug: …]` annotations, AND
@@ -1217,7 +1217,7 @@ the operator's explicit `barrel-bypass` choice.
 | Docs changes | Reviewer-on unless operator explicitly selects bypass | Documentation can encode contracts and executable examples. |
 
 When the reviewer IS dispatched, see the role spec at
-[`agents/reviewer.md`](reviewer.md) for the focused responsibilities and
+[`agents/planar-reviewer.md`](planar-reviewer.md) for the focused responsibilities and
 the explicit NOT-do list. The blind-read contract below governs how the
 brief is composed.
 
@@ -1268,7 +1268,7 @@ Every coder brief MUST:
   language or framework assumption.
 - **Specify the report shape.** A word ceiling (the work-complete
   report has a cap — keep it tight) and the required sections per
-  [`agents/coder.md` §Work-complete report template](coder.md#work-complete-report-template).
+  [`agents/planar-coder.md` §Work-complete report template](planar-coder.md#work-complete-report-template).
   The dispatcher reads the report; vague shape produces vague reports.
 - **Pose the problem; do not include the solution.** State the
   invariant, the constraint, and the acceptance signal. Let the coder
@@ -1411,7 +1411,7 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 ### Cross-references
 
-- Per-role canonical status strings: see the "Status reporting" sections in [`agents/coder.md`](coder.md#status-reporting), [`agents/orchestrator.md`](orchestrator.md#status-reporting), [`agents/planner.md`](planner.md#status-reporting), [`agents/reviewer.md`](reviewer.md#status-reporting), [`agents/test-coder.md`](test-coder.md#iteration-and-status), and [`agents/ingestor.md`](ingestor.md#status-reporting).
+- Per-role canonical status strings: see the "Status reporting" sections in [`agents/planar-coder.md`](planar-coder.md#status-reporting), [`agents/planar-orchestrator.md`](planar-orchestrator.md#status-reporting), [`agents/planar-planner.md`](planar-planner.md#status-reporting), [`agents/planar-reviewer.md`](planar-reviewer.md#status-reporting), [`agents/planar-test-coder.md`](planar-test-coder.md#iteration-and-status), and [`agents/planar-ingestor.md`](planar-ingestor.md#status-reporting).
 - `agent_actions` schema: see the installed Planar version's authoritative
   schema documentation.
 - Claim ritual: see [Coordination claims](#coordination-claims) above.

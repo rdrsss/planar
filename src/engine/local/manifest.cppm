@@ -55,6 +55,10 @@
 ///   - Recognised keys: description, argument-hint, tier, model, kind, shadow,
 ///     vendors. Everything else is silently ignored, as is any line with no
 ///     colon at all.
+///   - `kind` is read from the `planar:` map (`planar:\n  kind: agent`), the form
+///     Planar's own agents use, and still from a top-level `kind:`, the
+///     deprecated pre-namespacing form kept so operator-local files keep
+///     importing. Only `planar.kind` is read from the map.
 ///   - A later duplicate key WINS; the earlier value is discarded.
 ///   - Values are trimmed of spaces/tabs, then ONE matching pair of surrounding
 ///     single or double quotes is stripped.

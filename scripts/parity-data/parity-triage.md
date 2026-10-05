@@ -292,7 +292,7 @@ Each cluster is a single triage decision applied to one or more rows. Member row
 
 **Bucket:** **1** (rec; gated by Q236)  **Rows:** 1  **Gate:** Q236
 
-**Summary.** The agents/orchestrator.md role spec and pl-orchestrator skill surfaces all reference `planar plan next <plan>` as the claim-aware next-task verb. Go has it; zig dropped it. This dispatch session itself hit the gap.
+**Summary.** The agents/planar-orchestrator.md role spec and pl-orchestrator skill surfaces all reference `planar plan next <plan>` as the claim-aware next-task verb. Go has it; zig dropped it. This dispatch session itself hit the gap.
 
 **Intended behavior / action.** Port the Go `plan next` handler to zig. Phase 3 writes a failing test asserting `plan next <id>` returns the highest-priority `todo`/`paused` task (claim-awareness layer optional pending the separate `planar agent claim` decision).
 

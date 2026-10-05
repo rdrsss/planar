@@ -17,8 +17,7 @@
       "description": "Both orchestrator surfaces expose strategy and isolation together.",
       "mode": "all",
       "paths": [
-        "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md"
+        "agents/planar-orchestrator.md"
       ],
       "pattern": "strategy.*isolation"
     },
@@ -27,7 +26,7 @@
       "description": "The parent orchestrator action cannot consume a feature task through plan pull.",
       "mode": "none",
       "paths": [
-        "skills/src/pl-orchestrator.md",
+        "agents/planar-orchestrator.md",
         "agents/methodology.md"
       ],
       "pattern": "pull \\$PLAN_ID --role orchestrator"

@@ -8,16 +8,16 @@
   "contract_assertions": [
     {
       "id": "iteration-five-no-request-changes",
-      "description": "Orchestrator and reviewer skill surfaces reject request-changes on iteration five.",
+      "description": "Orchestrator and reviewer agent surfaces reject request-changes on iteration five.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "skills/src/pl-reviewer.md"],
-      "pattern": "iteration 5.*request-changes"
+      "paths": ["agents/planar-orchestrator.md", "agents/planar-reviewer.md"],
+      "pattern": "(?i)iteration[- ]5(\\W+only)?\\W+request-changes"
     },
     {
       "id": "caveats-become-tasks",
       "description": "Iteration-five caveats become Planar task rows.",
       "mode": "all",
-      "paths": ["skills/src/pl-orchestrator.md", "skills/src/pl-reviewer.md"],
+      "paths": ["agents/planar-orchestrator.md", "agents/planar-reviewer.md"],
       "pattern": "planar task add"
     }
   ],

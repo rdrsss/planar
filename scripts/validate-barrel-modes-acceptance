@@ -26,7 +26,7 @@ FOUR_FLAGS=("--barrel-grouped" "--barrel-deferred" "--barrel-bypass" "--barrel-d
 # Files that must mention every shape.
 SHAPE_FILES=(
   "agents/methodology.md"
-  "agents/orchestrator.md"
+  "agents/planar-orchestrator.md"
   "commands/claude/pl-orchestrator.md"
   "skills/codex/pl-orchestrator.md"
   "skills/copilot/pl-orchestrator.md"

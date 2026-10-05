@@ -26,7 +26,7 @@ This repository has no automated continuous-build configuration (no
 `.github/` directory or equivalent). The gates above are what actually runs,
 and when: `make test-all` composes `eval-contracts` (= `eval-orchestrator-unit`
 + `eval-orchestrator-fast` + `eval-orchestrator-fixtures`), and `make eval` runs
-`eval-render eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures`.
+`eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures`.
 Live and lifecycle host modes (`eval-orchestrator-live`,
 `eval-orchestrator-lifecycle`, `eval-planning`, `eval-candidate-spawn`) are
 operator-invoked only; no result of one is retained in this repository today.
@@ -134,7 +134,7 @@ make eval-orchestrator-live VENDOR=codex SURFACE=skill
 ```
 
 Lifecycle cases use the real project-scoped orchestrator agent and replace only
-`coder`, `reviewer`, and `test-coder` with fixture agents whose behavior is
+`planar-coder`, `planar-reviewer`, and `planar-test-coder` with fixture agents whose behavior is
 defined under `evals/orchestrator/fixtures/`. First validate the fixture and
 grader without a model, then invoke a configured host:
 

@@ -50,7 +50,6 @@ constexpr std::string_view legacy              = "surface-legacy-reference";
 constexpr std::string_view artifacts           = "surface-artifact-set-drift";
 constexpr std::string_view capability          = "surface-capability-drift";
 constexpr std::string_view command             = "surface-command-drift";
-constexpr std::string_view contract            = "surface-contract-missing";
 constexpr std::string_view path                = "surface-path-missing";
 constexpr std::string_view suppression_invalid = "surface-suppression-invalid";
 constexpr std::string_view suppression_unused  = "surface-suppression-unused";
@@ -58,11 +57,12 @@ constexpr std::string_view queue_command       = "surface-queue-command";
 constexpr std::string_view queue_marker        = "surface-queue-marker-invalid";
 constexpr std::string_view retired             = "surface-retired-reference";
 constexpr std::string_view retired_marker      = "surface-retired-ref-marker-invalid";
+constexpr std::string_view skill_spec          = "surface-skill-spec";
 } // namespace code
 
-constexpr std::array<std::string_view, 7> k_suppressible_codes{code::link,    code::legacy,   code::artifacts, code::capability,
-                                                               code::command, code::contract, code::path};
-constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills/src", "docs"};
+constexpr std::array<std::string_view, 6> k_suppressible_codes{code::link,       code::legacy,  code::artifacts,
+                                                               code::capability, code::command, code::path};
+constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills", "docs"};
 
 struct finding_t {
   std::string_view code;
@@ -77,8 +77,19 @@ struct suppression_t {
   bool        used             = false;
 };
 struct result_t {
-  std::vector<finding_t> findings;
-  std::size_t            files_scanned = 0;
+  std::vector<finding_t>   findings;
+  std::vector<std::string> rules_passed; ///< One line per Agent Skills rule that held, in scan order.
+  std::size_t              files_scanned = 0;
+};
+
+/// Run-time switches. Defaults are the shipped gate.
+struct options_t {
+  /// Enables the pending retired references (`k_pending_retired_patterns`).
+  /// Off by default; the M3 docs task (plan 1104, milestone 1108) switches it
+  /// on by adding `--enable-pending-retired` to the `surface-lint` Makefile
+  /// target once the docs no longer name the removed `/pl-*` commands and the
+  /// `scriptorium` renderer.
+  bool enable_pending_retired = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -353,7 +364,19 @@ struct scoped_retired_pattern_t {
 constexpr std::array<scoped_retired_pattern_t, 4> k_scoped_retired_patterns{
     {{"agent.db"}, {"PLANAR_AGENT_DB"}, {"migrations-agent"}, {"limit_columns_select"}}};
 
-constexpr std::array<std::string_view, 4> k_retired_scope_dirs{"docs/", "agents/", "skills/src/", "copilot/"};
+/// Retired names that are NOT enforced yet. They fire only under
+/// `options_t::enable_pending_retired` (`--enable-pending-retired`), with the
+/// same scope, exemptions and region mechanism as the patterns above. The M3
+/// docs task (plan 1104, milestone 1108) rewrites the docs that still name
+/// them and then adds the flag to the `surface-lint` Makefile target.
+constexpr std::array<scoped_retired_pattern_t, 2> k_pending_retired_patterns{{{"/pl-"}, {"scriptorium"}}};
+
+/// Literal strings that contain a pending retired name but are stored
+/// artifact source identifiers, not command or tool references. They are
+/// blanked from a line before the pending patterns are matched.
+constexpr std::array<std::string_view, 2> k_pending_retired_exempt_literals{"pl-forward-spec://", "pl-synthesize://"};
+
+constexpr std::array<std::string_view, 4> k_retired_scope_dirs{"docs/", "agents/", "skills/", "copilot/"};
 constexpr std::array<std::string_view, 4> k_retired_scope_files{"README.md", "CLAUDE.md", "AGENTS.md", "INSTALL.md"};
 constexpr std::array<std::string_view, 1> k_retired_exempt_files{"docs/changelog.md"};
 constexpr std::string_view                k_retired_region_marker = "<!-- retired-ref: agent.db upgrade note -->";
@@ -368,7 +391,7 @@ auto in_retired_scope(std::string_view rel_file) -> bool {
 }
 
 auto check_retired_references(std::string const& rel_file, std::vector<std::string_view> const& lines,
-                              std::vector<finding_t>& findings) -> void {
+                              std::vector<finding_t>& findings, options_t const& opts) -> void {
   if (!in_retired_scope(rel_file))
     return;
   bool const                 honours_region = rel_file == k_retired_region_file;
@@ -397,6 +420,20 @@ auto check_retired_references(std::string const& rel_file, std::vector<std::stri
                             .file    = rel_file,
                             .line    = line_no,
                             .message = std::format("retired reference outside an exempt region: {}", pattern.text)});
+    }
+    if (opts.enable_pending_retired) {
+      std::string pending_line{line};
+      for (auto literal : k_pending_retired_exempt_literals) {
+        for (auto at = pending_line.find(literal); at != std::string::npos; at = pending_line.find(literal, at))
+          pending_line.replace(at, literal.size(), literal.size(), ' ');
+      }
+      for (auto const& pattern : k_pending_retired_patterns) {
+        if (pending_line.find(pattern.text) != std::string::npos)
+          findings.push_back({.code    = code::retired,
+                              .file    = rel_file,
+                              .line    = line_no,
+                              .message = std::format("retired reference outside an exempt region: {}", pattern.text)});
+      }
     }
   }
   if (region_line.has_value())
@@ -1007,13 +1044,13 @@ struct capability_exemption_t {
   std::string_view shape;
 };
 constexpr std::array<capability_exemption_t, 7> k_capability_exemptions{
-    capability_exemption_t{"agents/introspector.md", "introspector", "planar plan create"},
-    capability_exemption_t{"agents/introspector.md", "introspector", "planar task add"},
-    capability_exemption_t{"agents/introspector.md", "introspector", "planar question add"},
-    capability_exemption_t{"agents/reviewer.md", "reviewer", "planar-agent pull"},
-    capability_exemption_t{"agents/reviewer.md", "reviewer", "planar-agent claim"},
-    capability_exemption_t{"agents/reviewer.md", "reviewer", "planar-agent heartbeat"},
-    capability_exemption_t{"agents/reviewer.md", "reviewer", "planar skills render"},
+    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar plan create"},
+    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar task add"},
+    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar question add"},
+    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
+    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
+    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},
+    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar skills render"},
 };
 auto is_capability_exemption(std::string const& file, std::string_view role, std::string_view shape) -> bool {
   for (auto const& e : k_capability_exemptions)
@@ -1246,77 +1283,225 @@ auto frontmatter_value(std::string_view content, std::string_view key) -> std::o
   }
   return std::nullopt;
 }
-auto frontmatter_literal_true(std::string_view content, std::string_view key) -> bool {
-  if (!content.starts_with("---\n"))
+
+// ---------------------------------------------------------------------------
+// checkAgentSkill (plan 1104, task ask-skill-lint) — the Agent Skills
+// format rules, applied to every `skills/<name>/SKILL.md`. The legacy flat
+// `skills/src/*.md` files are not skills in this sense and are not checked
+// here; M2 deletes them.
+//
+// Rules, each reported by id: `frontmatter-present`, `name-matches-
+// directory`, `name-format`, `description-length` (<= 1024 characters),
+// `frontmatter-keys` (only name, description, license, compatibility,
+// metadata, allowed-tools), `body-lines` (<= 500 lines after the
+// frontmatter), `links-resolve` and `references-one-level`. A rule that
+// holds is recorded in `result_t::rules_passed` and printed, one line per
+// rule; a rule that fails is a `surface-skill-spec` finding naming the rule,
+// the file and the value. Planar's own tighter 150-line budget for
+// `skills/planar/SKILL.md` is a repository contract test, not a rule here.
+// ---------------------------------------------------------------------------
+
+constexpr std::size_t                     k_skill_description_max = 1024;
+constexpr std::size_t                     k_skill_body_max_lines  = 500;
+constexpr std::size_t                     k_skill_name_max        = 64;
+constexpr std::array<std::string_view, 6> k_skill_allowed_keys{"name",          "description", "license",
+                                                               "compatibility", "metadata",    "allowed-tools"};
+
+struct frontmatter_field_t {
+  std::string key;
+  std::string value;
+  std::size_t line = 0;
+};
+
+/// True when `rel_file` is exactly `skills/<name>/SKILL.md`.
+auto is_agent_skill_file(std::string_view rel_file) -> bool {
+  if (!rel_file.starts_with("skills/") || !rel_file.ends_with("/SKILL.md"))
     return false;
-  for (auto line : split_lines(content.substr(4))) {
-    if (trim(line, " \t\r") == "---")
-      break;
-    auto const colon = line.find(':');
-    if (colon == std::string_view::npos)
-      continue;
-    if (trim(line.substr(0, colon), " \t") == key)
-      return trim(line.substr(colon + 1), " \t\r") == "true";
+  std::string_view const middle = rel_file.substr(7, rel_file.size() - 7 - std::string_view{"/SKILL.md"}.size());
+  return !middle.empty() && middle.find('/') == std::string_view::npos;
+}
+
+auto utf8_length(std::string_view text) -> std::size_t {
+  return static_cast<std::size_t>(
+      std::ranges::count_if(text, [](char c) { return (static_cast<unsigned char>(c) & 0xC0U) != 0x80U; }));
+}
+
+auto is_valid_skill_name(std::string_view name) -> bool {
+  if (name.empty() || name.size() > k_skill_name_max || name.front() == '-' || name.back() == '-')
+    return false;
+  char prev = 0;
+  for (char c : name) {
+    bool const ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+    if (!ok || (c == '-' && prev == '-'))
+      return false;
+    prev = c;
   }
-  return false;
+  return true;
 }
 
-// ---------------------------------------------------------------------------
-// checkFeedbackContract.
-// ---------------------------------------------------------------------------
-
-auto heading_label(std::string_view line) -> std::optional<std::string_view> {
-  if (line.size() < 3 || line[0] != '#')
-    return std::nullopt;
-  std::size_t hash_count = 1;
-  while (hash_count < line.size() && line[hash_count] == '#')
-    ++hash_count;
-  if (hash_count == line.size() || line[hash_count] != ' ')
-    return std::nullopt;
-  return trim(line.substr(hash_count + 1), " \t\r");
-}
-
-auto check_feedback_contract(std::string const& file, std::string_view content, std::vector<finding_t>& findings,
-                             std::vector<suppression_t>& suppressions) -> void {
-  constexpr std::array<std::string_view, 7> required{"Context",  "Intent",       "Actions", "Result",
-                                                     "Warnings", "Next actions", "Recovery"};
-  std::array<std::size_t, 7>                counts{};
-  std::array<std::optional<std::size_t>, 7> malformed_lines{};
-  std::optional<fence_t>                    fence;
-  std::size_t                               line_no = 0;
-  for (auto raw : split_lines(content)) {
-    ++line_no;
-    std::string_view const line = trim(raw, " \t\r");
-    if (advance_fence(line, fence) || fence.has_value())
+/// Parses the top-level keys of a frontmatter block. Indented or `-` lines
+/// continue the previous key's value; block scalars (`>`, `|`) fold into one
+/// string; a plain or quoted scalar loses its surrounding quotes.
+auto parse_frontmatter_fields(std::vector<std::string_view> const& lines, std::size_t first, std::size_t last)
+    -> std::vector<frontmatter_field_t> {
+  std::vector<frontmatter_field_t> fields;
+  std::vector<std::string>         raw_values;
+  for (std::size_t idx = first; idx < last; ++idx) {
+    std::string_view const raw = trim(lines[idx], "\r");
+    if (trim(raw, " \t").empty() || trim(raw, " \t").starts_with('#'))
       continue;
-    for (std::size_t idx = 0; idx < required.size(); ++idx) {
-      std::string const literal = std::format("## {}", required[idx]);
-      if (line == literal) {
-        ++counts[idx];
-        if (counts[idx] > 1)
-          emit(findings, suppressions, code::contract, file, line_no,
-               std::format("duplicate required feedback heading `{}`; keep exactly one literal H2 section", literal));
-      } else if (!malformed_lines[idx].has_value()) {
-        if (auto candidate = heading_label(line); candidate.has_value() && *candidate == required[idx])
-          malformed_lines[idx] = line_no;
+    bool const continuation = raw.front() == ' ' || raw.front() == '\t' || raw.front() == '-';
+    auto const colon        = raw.find(':');
+    if (!continuation && colon != std::string_view::npos) {
+      fields.push_back({.key = std::string{trim(raw.substr(0, colon), " \t")}, .value = {}, .line = idx + 1});
+      raw_values.emplace_back(trim(raw.substr(colon + 1), " \t"));
+    } else if (!fields.empty()) {
+      std::string& value = raw_values.back();
+      if (!value.empty() && value != ">" && value != "|" && value != ">-" && value != "|-" && value != ">+" && value != "|+")
+        value += ' ';
+      else if (value == ">" || value == "|" || value == ">-" || value == "|-" || value == ">+" || value == "|+")
+        value.clear();
+      value += std::string{trim(raw, " \t")};
+    }
+  }
+  for (std::size_t idx = 0; idx < fields.size(); ++idx) {
+    std::string_view value = raw_values[idx];
+    if (value.size() >= 2 && ((value.front() == '"' && value.back() == '"') || (value.front() == '\'' && value.back() == '\'')))
+      value = value.substr(1, value.size() - 2);
+    fields[idx].value = std::string{value};
+  }
+  return fields;
+}
+
+auto check_agent_skill(fs::path const& root, std::string const& rel_file, fs::path const& abs_file, std::string_view content,
+                       result_t& result) -> void {
+  auto skill_fail = [&](std::size_t line, std::string_view rule, std::string detail) {
+    result.findings.push_back(
+        {.code = code::skill_spec, .file = rel_file, .line = line, .message = std::format("{}: {}", rule, detail)});
+  };
+  auto skill_pass = [&](std::string_view rule, std::string detail) {
+    result.rules_passed.push_back(std::format("{}: skill-rule {}: ok ({})", rel_file, rule, detail));
+  };
+
+  std::string const dir_name = abs_file.parent_path().filename().string();
+  auto const        lines    = split_lines(content);
+  std::size_t       close    = 0;
+  if (!lines.empty() && trim(lines[0], " \t\r") == "---") {
+    for (std::size_t idx = 1; idx < lines.size(); ++idx) {
+      if (trim(lines[idx], " \t\r") == "---") {
+        close = idx;
+        break;
       }
     }
   }
-  for (std::size_t idx = 0; idx < required.size(); ++idx) {
-    if (counts[idx] != 0)
-      continue;
-    std::string const literal = std::format("## {}", required[idx]);
-    if (malformed_lines[idx].has_value()) {
-      emit(findings, suppressions, code::contract, file, *malformed_lines[idx],
-           std::format("required feedback section must be the literal H2 heading `{}`", literal));
-    } else {
-      emit(findings, suppressions, code::contract, file, 1,
-           std::format(
-               "user-invocable skill is missing required feedback heading `{}`; add that literal H2 section or declare a genuine "
-               "helper as `internal_only: true` in frontmatter",
-               literal));
+  if (close == 0) {
+    skill_fail(1, "frontmatter-present", "SKILL.md must open with a `---` frontmatter block that is closed by a second `---`");
+    return;
+  }
+  skill_pass("frontmatter-present", "closed at line " + std::to_string(close + 1));
+
+  auto const fields = parse_frontmatter_fields(lines, 1, close);
+  auto       find   = [&](std::string_view key) -> frontmatter_field_t const* {
+    for (auto const& f : fields)
+      if (f.key == key)
+        return &f;
+    return nullptr;
+  };
+
+  if (auto const* name = find("name"); name == nullptr) {
+    skill_fail(1, "name-matches-directory", std::format("frontmatter has no `name`; the directory is `{}`", dir_name));
+  } else if (name->value != dir_name) {
+    skill_fail(name->line, "name-matches-directory",
+               std::format("name `{}` does not equal directory `{}`", name->value, dir_name));
+  } else {
+    skill_pass("name-matches-directory", name->value);
+  }
+  if (auto const* name = find("name"); name != nullptr) {
+    if (!is_valid_skill_name(name->value))
+      skill_fail(name->line, "name-format",
+                 std::format("name `{}` must be 1-64 lowercase letters, digits and single hyphens, with no leading or trailing "
+                             "hyphen",
+                             name->value));
+    else
+      skill_pass("name-format", name->value);
+  }
+
+  if (auto const* desc = find("description"); desc == nullptr || desc->value.empty()) {
+    skill_fail(desc != nullptr ? desc->line : 1, "description-length", "frontmatter has no non-empty `description`");
+  } else if (std::size_t const len = utf8_length(desc->value); len > k_skill_description_max) {
+    skill_fail(desc->line, "description-length",
+               std::format("description is {} characters; the limit is {}", len, k_skill_description_max));
+  } else {
+    skill_pass("description-length", std::format("{} of {} characters", len, k_skill_description_max));
+  }
+
+  bool keys_ok = true;
+  for (auto const& f : fields) {
+    if (std::ranges::find(k_skill_allowed_keys, std::string_view{f.key}) == k_skill_allowed_keys.end()) {
+      skill_fail(f.line, "frontmatter-keys", std::format("frontmatter key `{}` is not an Agent Skills key", f.key));
+      keys_ok = false;
     }
   }
+  if (keys_ok)
+    skill_pass("frontmatter-keys", std::format("{} keys", fields.size()));
+
+  std::size_t body_lines = lines.size() - (close + 1);
+  if (body_lines > 0 && lines.back().empty())
+    --body_lines;
+  if (body_lines > k_skill_body_max_lines)
+    skill_fail(close + 2, "body-lines", std::format("body is {} lines; the limit is {}", body_lines, k_skill_body_max_lines));
+  else
+    skill_pass("body-lines", std::format("{} of {} lines", body_lines, k_skill_body_max_lines));
+
+  bool                   links_ok = true;
+  bool                   depth_ok = true;
+  std::optional<fence_t> fence;
+  for (std::size_t idx = close + 1; idx < lines.size(); ++idx) {
+    std::string_view const line = lines[idx];
+    if (advance_fence(trim(line, " \t\r"), fence) || fence.has_value())
+      continue;
+    std::size_t cursor = 0;
+    while (true) {
+      auto const open = line.find("](", cursor);
+      if (open == std::string_view::npos)
+        break;
+      auto const end = line.find(')', open + 2);
+      if (end == std::string_view::npos)
+        break;
+      std::string_view target = trim(line.substr(open + 2, end - open - 2), " \t");
+      cursor                  = end + 1;
+      if (target.empty() || target[0] == '#' || target.find("://") != std::string_view::npos || target.starts_with("mailto:"))
+        continue;
+      if (auto space = target.find_first_of(" \t"); space != std::string_view::npos)
+        target = target.substr(0, space);
+      if (auto hash = target.find_first_of("#?"); hash != std::string_view::npos)
+        target = target.substr(0, hash);
+      if (target.empty())
+        continue;
+      fs::path const resolved =
+          target.starts_with('/') ? root / std::string{target.substr(1)} : abs_file.parent_path() / std::string{target};
+      std::error_code ec;
+      if (!fs::exists(resolved, ec)) {
+        skill_fail(idx + 1, "links-resolve", std::format("link target does not exist: {}", target));
+        links_ok = false;
+        continue;
+      }
+      fs::path const rel   = fs::path{std::string{target}}.lexically_normal();
+      std::size_t    depth = 0;
+      for (auto const& part : rel)
+        if (!part.empty() && part != ".")
+          ++depth;
+      if (target.starts_with('/') || rel.string().starts_with("..") || depth > 2) {
+        skill_fail(idx + 1, "references-one-level",
+                   std::format("referenced file `{}` is not one level below SKILL.md (use `references/<file>.md`)", target));
+        depth_ok = false;
+      }
+    }
+  }
+  if (links_ok)
+    skill_pass("links-resolve", "every relative link exists");
+  if (depth_ok)
+    skill_pass("references-one-level", "every referenced file is one level below SKILL.md");
 }
 
 // ---------------------------------------------------------------------------
@@ -1506,7 +1691,7 @@ auto relative_path(std::string const& path, std::string const& root) -> std::str
 }
 
 auto scan_file_impl(fs::path const& root, std::string const& rel_file, fs::path const& abs_file, std::string const& content,
-                    result_t& result) -> void {
+                    result_t& result, options_t const& opts) -> void {
   auto const                 lines = split_lines(content);
   std::vector<suppression_t> suppressions;
   parse_suppressions(rel_file, lines, result.findings, suppressions);
@@ -1519,7 +1704,8 @@ auto scan_file_impl(fs::path const& root, std::string const& rel_file, fs::path 
     std::string_view const trimmed = trim(line, " \t\r");
     if (advance_fence(trimmed, fence))
       continue;
-    check_links(root, rel_file, abs_file, line_no, line, result.findings, suppressions);
+    if (!is_agent_skill_file(rel_file)) // the Agent Skills check owns SKILL.md link rules
+      check_links(root, rel_file, abs_file, line_no, line, result.findings, suppressions);
     check_legacy(rel_file, line_no, line, result.findings, suppressions);
     check_artifact_set(rel_file, line_no, line, result.findings, suppressions);
     check_path_citations(root, rel_file, line_no, line, result.findings, suppressions);
@@ -1528,11 +1714,11 @@ auto scan_file_impl(fs::path const& root, std::string const& rel_file, fs::path 
     check_command(rel_file, line_no, line, result.findings, suppressions);
     check_deferred_command(rel_file, line_no, line, fence.has_value(), result.findings, suppressions);
   }
-  check_retired_references(rel_file, lines, result.findings);
-  if (rel_file.starts_with("agents/") || rel_file.starts_with("skills/src/"))
+  check_retired_references(rel_file, lines, result.findings, opts);
+  if (rel_file.starts_with("agents/") || rel_file.starts_with("skills/"))
     check_queue_commands(rel_file, lines, result.findings);
-  if (rel_file.starts_with("skills/src/") && !frontmatter_literal_true(content, "internal_only"))
-    check_feedback_contract(rel_file, content, result.findings, suppressions);
+  if (is_agent_skill_file(rel_file))
+    check_agent_skill(root, rel_file, abs_file, content, result);
   for (auto const& s : suppressions) {
     if (!s.used)
       result.findings.push_back(
@@ -1562,7 +1748,7 @@ auto collect_markdown(fs::path const& dir, std::vector<fs::path>& paths) -> void
 /// written for `agents/`, `skills/src/` and `docs/` and are not asked of a
 /// root guide. `AGENTS.md` is skipped when it is a symlink, because the
 /// general scan already read its target as `CLAUDE.md`.
-auto scan_retired_only_files(fs::path const& root, result_t& result) -> void {
+auto scan_retired_only_files(fs::path const& root, result_t& result, options_t const& opts) -> void {
   std::vector<fs::path> paths;
   for (auto name : {"README.md", "INSTALL.md", "AGENTS.md"}) {
     std::error_code ec;
@@ -1576,12 +1762,12 @@ auto scan_retired_only_files(fs::path const& root, result_t& result) -> void {
     std::string const rel_path = relative_path(path.string(), root.string());
     std::ifstream     in(path, std::ios::binary);
     std::string       content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    check_retired_references(rel_path, split_lines(content), result.findings);
+    check_retired_references(rel_path, split_lines(content), result.findings, opts);
     ++result.files_scanned;
   }
 }
 
-auto scan_repository(fs::path const& root) -> result_t {
+auto scan_repository(fs::path const& root, options_t const& opts) -> result_t {
   result_t              result;
   std::vector<fs::path> paths;
   for (auto rel : k_scan_dirs)
@@ -1596,16 +1782,17 @@ auto scan_repository(fs::path const& root) -> result_t {
   if (std::error_code ec; fs::exists(root / "CLAUDE.md", ec) && fs::is_regular_file(root / "CLAUDE.md", ec))
     paths.push_back(root / "CLAUDE.md");
   std::ranges::sort(paths);
+  paths.erase(std::ranges::unique(paths).begin(), paths.end());
   for (auto const& path : paths) {
     std::string const rel_path = relative_path(path.string(), root.string());
     if (!is_authored_surface(rel_path))
       continue;
     std::ifstream in(path, std::ios::binary);
     std::string   content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    scan_file_impl(root, rel_path, path, content, result);
+    scan_file_impl(root, rel_path, path, content, result, opts);
     ++result.files_scanned;
   }
-  scan_retired_only_files(root, result);
+  scan_retired_only_files(root, result, opts);
   return result;
 }
 
@@ -1659,6 +1846,8 @@ auto write_text(result_t const& result) -> std::string {
   std::string out;
   for (auto const& f : result.findings)
     out += std::format("{}:{}: {}: {}\n", f.file, f.line, f.code, f.message);
+  for (auto const& rule : result.rules_passed)
+    out += rule + "\n";
   if (result.findings.empty()) {
     out += std::format("surface-lint: clean ({} files)\n", result.files_scanned);
   } else {
@@ -1703,7 +1892,8 @@ auto write_command_inventory() -> std::string {
 }
 
 [[noreturn]] auto usage() -> void {
-  std::println(stderr, "usage: surface_lint <repo-root> [--json]\n       surface_lint --command-inventory-json");
+  std::println(stderr, "usage: surface_lint <repo-root> [--json] [--enable-pending-retired]\n"
+                       "       surface_lint --command-inventory-json");
   std::exit(2);
 }
 
@@ -1727,10 +1917,13 @@ auto main(int argc, char** argv) -> int {
     usage();
   std::optional<std::string> root;
   bool                       json = false;
+  options_t                  opts;
   for (std::size_t i = 1; i < args.size(); ++i) {
     std::string const& arg = args[i];
     if (arg == "--json") {
       json = true;
+    } else if (arg == "--enable-pending-retired") {
+      opts.enable_pending_retired = true;
     } else if (arg.starts_with('-') || root.has_value()) {
       usage();
     } else {
@@ -1742,7 +1935,7 @@ auto main(int argc, char** argv) -> int {
 
   result_t result;
   try {
-    result = scan_repository(fs::path{*root});
+    result = scan_repository(fs::path{*root}, opts);
   } catch (std::exception const& e) {
     std::println(stderr, "surface-lint: internal error: {}", e.what());
     return 2;

@@ -1,6 +1,6 @@
 ---
 description: Reviews coder output. Returns one of approve / request-changes / open-question / abort.
-origin: agents/reviewer.md
+origin: agents/planar-reviewer.md
 shared_notes:
     - Review decisions and caveats are written through the CLI, not in out-of-band notes.
 slug: pl-reviewer
@@ -13,7 +13,7 @@ vendor:
 
 # Reviewer ({{ VendorTitle }})
 
-{{ VendorTitle }} skill surface for the vendor-neutral `reviewer` agent. See [`agents/reviewer.md`](../../agents/reviewer.md) for the role spec and [`agents/methodology.md`](../../agents/methodology.md) for decision semantics and the iteration-5 rule.
+{{ VendorTitle }} skill surface for the vendor-neutral `reviewer` agent. See [`agents/planar-reviewer.md`](../../agents/planar-reviewer.md) for the role spec and [`agents/methodology.md`](../../agents/methodology.md) for decision semantics and the iteration-5 rule.
 
 ## What the reviewer does
 
@@ -63,13 +63,13 @@ orchestrator preserves this contract when dispatching.
 
 ## Coverage check via `planar test-spec status`
 
-When the brief lists cited slugs, the reviewer runs `planar test-spec status <plan>` against the current DB and uses the verb output as the authoritative coverage oracle. Any slug the brief claimed that still appears in the uncovered set is a `request-changes` finding citing the verb output verbatim. The reviewer does not eyeball-compare diffs to scenario prose for the coverage decision. See [`agents/reviewer.md`](../../agents/reviewer.md) §Behavior step 5a.
+When the brief lists cited slugs, the reviewer runs `planar test-spec status <plan>` against the current DB and uses the verb output as the authoritative coverage oracle. Any slug the brief claimed that still appears in the uncovered set is a `request-changes` finding citing the verb output verbatim. The reviewer does not eyeball-compare diffs to scenario prose for the coverage decision. See [`agents/planar-reviewer.md`](../../agents/planar-reviewer.md) §Behavior step 5a.
 
-When Phase 3.5 ran successfully, the reviewer reads the union of the coder's diff and the [test-coder](../../agents/test-coder.md)'s diff.
+When Phase 3.5 ran successfully, the reviewer reads the union of the coder's diff and the [test-coder](../../agents/planar-test-coder.md)'s diff.
 
 ## Union-diff briefs under barrel-deferred
 
-Under [`barrel-deferred`](../../agents/methodology.md#barrel-deferred), the brief may carry the union of multiple coder cycles' diffs queued since the last review boundary. The reviewer's contract is unchanged — read the diffs blind, run `planar test-spec status` post-diff, apply the six focused responsibilities. Scope is larger: the brief lists every slug and claim token across every cycle in the union, and the reviewer verifies intent↔implementation match against the full claimed list. `request-changes` returns the union to the coder; `abort` halts every cycle in the queue. The blind-read contract still excludes the narrative reports from the queued coder/pl-test-coder cycles. See [`agents/reviewer.md`](../../agents/reviewer.md) §Union-diff briefs under barrel-deferred.
+Under [`barrel-deferred`](../../agents/methodology.md#barrel-deferred), the brief may carry the union of multiple coder cycles' diffs queued since the last review boundary. The reviewer's contract is unchanged — read the diffs blind, run `planar test-spec status` post-diff, apply the six focused responsibilities. Scope is larger: the brief lists every slug and claim token across every cycle in the union, and the reviewer verifies intent↔implementation match against the full claimed list. `request-changes` returns the union to the coder; `abort` halts every cycle in the queue. The blind-read contract still excludes the narrative reports from the queued coder/pl-test-coder cycles. See [`agents/planar-reviewer.md`](../../agents/planar-reviewer.md) §Union-diff briefs under barrel-deferred.
 
 ## Builds and tests go through the host queue
 
@@ -121,7 +121,7 @@ The reviewer emits a status string at each meaningful phase boundary using `plan
 
 The reviewer's final output IS the return to the orchestrator — there is no separate heartbeat after the verdict is written. Status strings use the `awaiting:` prefix when blocked on an external event. The cap on `--status` payload is 256 bytes.
 
-See [`agents/reviewer.md` § Status reporting](../../agents/reviewer.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
+See [`agents/planar-reviewer.md` § Status reporting](../../agents/planar-reviewer.md#status-reporting) and [`agents/methodology.md` § Heartbeat status contract](../../agents/methodology.md#heartbeat-status-contract) for the full contract.
 
 The final response keeps the canonical `approve | request-changes |
 open-question | abort` verdict and file:line findings. The shared fields below

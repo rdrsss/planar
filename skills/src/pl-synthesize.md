@@ -1,6 +1,6 @@
 ---
 description: Synthesize fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Use for messy / docs-only / mid-evolution repos.
-origin: agents/synthesizer.md
+origin: agents/planar-synthesizer.md
 shared_notes:
     - Synthesis cache state and deterministic baselines come from the CLI; the skill must not write planning rows directly.
 slug: pl-synthesize
@@ -18,7 +18,7 @@ vendor:
 
 # Planar Synthesize ({{ VendorTitle }})
 
-{{ VendorTitle }} skill surface for the vendor-neutral `synthesizer` agent. See [`agents/synthesizer.md`](../../agents/synthesizer.md) for the full role spec, input/output contract, and sequencing.
+{{ VendorTitle }} skill surface for the vendor-neutral `synthesizer` agent. See [`agents/planar-synthesizer.md`](../../agents/planar-synthesizer.md) for the full role spec, input/output contract, and sequencing.
 
 Vendor-neutral skill that imports an existing repo by SYNTHESIZING fresh planning artifacts from the repo's docs + git log + source code, rather than transcribing the existing docs verbatim.
 
