@@ -120,6 +120,13 @@ migration cycle use the freshly built `planar-agent` for that renewal. An instal
 `planar-agent` older than the queue has no `queue` verb at all; say so in the report and
 run the gates directly.
 
+Size the gates to the scope. A task runs focused tests for its acceptance signal and the
+modules it touched, plus the format, build, parity and policy checks its change can
+break; a filtered run that matches no tests is a failure, so report the matched count.
+The full regression suite runs once at the milestone barrier on the merged candidate,
+not after every task, and a task pass is never reported as a full pass. The repository's
+own contributor guide names the exact commands for each scope.
+
 ## Operator-side claim recovery
 
 - `planar-agent reconcile --dry-run` previews expired claims and orphaned actions; the
