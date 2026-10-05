@@ -87,6 +87,28 @@ Phase 3.5 fires whenever uncovered slugs intersect the cycle, regardless of
 review cadence. `barrel-bypass` bypasses only the reviewer; it does not bypass
 this coverage gate. A `failure-surfaced` result always halts and escalates.
 
+## Validation cadence
+
+Task cycles and corrective iterations run the task profile: focused acceptance
+and affected-behavior tests plus relevant static/type, formatting, build,
+artifact parity, and policy checks. Full regression and end-to-end suites belong
+to the milestone barrier on the accumulated exact candidate after fan-in. For
+standalone work, the final delivery boundary is the barrier. This cadence is
+independent of reviewer dispatch; deferred review stays at its selected boundary.
+
+Scheduled milestone gates are not missing task evidence. A failed required task
+gate blocks the task; a failed required milestone gate blocks the barrier.
+Passing task evidence and the selected review disposition permit task completion
+and fan-in, but never prove a full pass or final closeout. After a barrier
+failure, corrections run focused checks; rerun the milestone profile only when
+re-entering the barrier with the final candidate. Preserve failures, revision
+and dirty/diff identity, exact commands, exits, and logs. Default repeat is 1;
+repeat only when explicitly required, never until green.
+
+Verification expansion validates its changed tests with applicable task checks.
+Report first-run failures and do not move the full milestone suite into every
+coverage or remediation cycle.
+
 ## Builds and tests go through the host queue
 
 Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role test-coder`.

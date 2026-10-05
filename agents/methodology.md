@@ -613,22 +613,59 @@ group is partitioned by tier or dispatched per task. Classification ambiguity
 is surfaced at the gate as `tier: ?`, never rounded up silently. See
 [`agents/models.md` §Coder tier policy](models.md#coder-tier-policy).
 
+## Validation cadence: task checks and milestone barrier
+
+Validation cadence is independent of review cadence and dispatch isolation.
+Every task, including a corrective iteration, runs focused tests for its
+acceptance signal and affected behavior, plus relevant formatting, static,
+type, build/packaging, generated/rendered parity, and repository policy checks.
+The full regression and end-to-end suite runs at the milestone barrier against
+the accumulated exact candidate after task fan-in. For standalone work, the
+final delivery boundary serves as that barrier. Deferred review keeps its
+selected milestone or plan boundary; focused testing does not add a reviewer
+per task.
+
+The orchestrator derives task and milestone validation profiles from the target
+repository's contributor guidance, manifests, CI, task runners, package metadata,
+and subsystem instructions. Preserve every applicable required gate class at
+its appropriate scope; mark a class `not-configured` only when the repository
+has none. Present both profiles with the strategy preview, using existing
+operator authorization rather than adding an approval loop for routine fixes.
+Record scope, commands, source guidance, and candidate identity in workflow
+briefs and evidence; these are workflow metadata, not new CLI flags or executable
+profile fields. The default repeat count is 1. Additional stability runs need an
+explicit repository or confirmed-profile requirement; never retry until green.
+
+Task completion and epic fan-in require passing task checks and the selected
+review disposition (approval, explicit bypass, or recorded deferred review).
+Future milestone gates are scheduled evidence, not missing task checks. A failed
+required task gate blocks that task; a failed required milestone gate blocks
+the barrier. Task passes never prove a milestone/full-suite pass or authorize
+final closeout. Automatic child-plan status promotion is not barrier evidence.
+Milestone promotion and final closeout require all required barrier evidence
+and the review disposition due at that boundary.
+
+A failed milestone gate enters corrective task cycles. Run focused checks for
+each correction; do not rerun the full suite after every fix. Re-enter the
+barrier once corrections are accumulated on the final candidate, and rerun the
+required milestone profile there. Preserve historical failures and each run's
+source identity (revision and dirty/diff state); a later pass does not erase
+an earlier failure or transfer evidence to a different candidate. A change
+following a barrier pass invalidates that pass for the new candidate.
+
 ## Common defects pre-flight checklist
 
-Run this checklist before every work-complete declaration. The orchestrator
-first derives a validation profile from the target repository's own documented
-surfaces: contributor guidance, manifest or task-runner definitions, CI
-workflow, package metadata, and changed subsystem instructions. It presents the
-profile at the strategy gate and the operator confirms or edits it. Global
-orchestration definitions name gate classes, never programming languages or
-target-specific commands.
+Run this checklist before every work-complete declaration, at its stated scope.
+Global orchestration definitions name gate classes, never programming languages
+or target-specific commands.
 
-- [ ] Every required validation-profile entry ran with its exact confirmed
-      command and returned a recorded exit status.
-- [ ] The profile covers formatting/static analysis, build or packaging,
-      focused verification, broader regression verification, generated/rendered
-      artifact parity, and repository-specific policy checks when those classes
-      exist for the changed surfaces.
+- [ ] Every required entry in the current task or milestone profile ran with
+      its exact confirmed command and recorded exit status and source identity.
+- [ ] Task checks cover focused verification and all relevant static/type,
+      format, build, artifact parity, and policy checks; full regression and
+      end-to-end checks are assigned to the milestone barrier.
+- [ ] Scheduled barrier checks are identified separately from task evidence;
+      the report makes no full-pass or final-closeout claim from task passes.
 - [ ] Bulk or mechanical edits were followed by the relevant format, search,
       and completeness validators from the confirmed profile.
 - [ ] For any reference to a schema value, confirm it in the target
@@ -1132,14 +1169,16 @@ The orchestrator's queue of pending cycles is recoverable from `session_entries`
 ### `barrel-bypass`
 
 No reviewer dispatch occurs. Coder cycles run back-to-back; every required
-entry in the target repository's confirmed validation profile is the entire
-signal. The iteration cap is undefined because there is no reviewer loop.
+entry in the current task profile is the task signal; the milestone profile
+still gates the accumulated candidate at the barrier. The iteration cap is
+undefined because there is no reviewer loop.
 
 This mode is supported only as an explicit expert choice and is never the
 orchestrator's recommendation. The coder returns a structured evidence row for
 each profile entry: validation id, exact command, required flag, exit status,
 result, and artifact or bounded citation. A missing, skipped, flaky, or failed
-required entry blocks completion. No universal command, language, or repeat
+required entry at the current scope blocks that scope. Scheduled milestone
+entries do not block task completion. No universal command, language, or repeat
 count is implied; repetition is required only when the confirmed profile says
 so. A coder dispatched under `barrel-bypass` must be told that the operator
 selected this risk profile explicitly.
@@ -1261,7 +1300,9 @@ Every coder brief MUST:
   so the coder does not re-litigate them. A decision restated in the
   brief is faster to honor than one buried in an ADR the coder may not
   reach.
-- **Specify the confirmed validation profile.** List an id, exact command,
+- **Specify task and milestone validation profiles.** Identify the current
+  scope and candidate, and separately list scheduled barrier gates. List an id,
+  exact command,
   required/optional status, changed surfaces covered, and any required repeat
   count for every entry. The profile comes from the target repository's own
   guidance and automation; the orchestrator does not invent commands from a
