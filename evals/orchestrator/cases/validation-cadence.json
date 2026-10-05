@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "id": "validation-cadence",
+  "skill": "orchestrator",
+  "description": "Tasks run focused validation; the full regression suite runs once at the milestone barrier, and every role and the skill say so.",
+  "tags": ["validation", "cadence", "cross-role"],
+  "tiers": ["contract"],
+  "contract_assertions": [
+    {
+      "id": "cadence-section-every-role",
+      "description": "The methodology and every execution role carry a validation-cadence section.",
+      "mode": "all",
+      "paths": [
+        "agents/methodology.md",
+        "agents/planar-orchestrator.md",
+        "agents/planar-coder.md",
+        "agents/planar-test-coder.md",
+        "agents/planar-reviewer.md"
+      ],
+      "pattern": "^## Validation cadence"
+    },
+    {
+      "id": "full-suite-at-milestone-barrier",
+      "description": "The methodology and every execution role assign the full regression suite to the milestone barrier.",
+      "mode": "all",
+      "paths": [
+        "agents/methodology.md",
+        "agents/planar-orchestrator.md",
+        "agents/planar-coder.md",
+        "agents/planar-test-coder.md",
+        "agents/planar-reviewer.md"
+      ],
+      "pattern": "[Ff]ull regression and end-to-end suites?\\s+(belong\\s+to|runs\\s+at)\\s+the\\s+milestone\\s+barrier"
+    },
+    {
+      "id": "no-per-task-broad-regression",
+      "description": "No role or the methodology requires broader regression verification before every work-complete declaration.",
+      "mode": "none",
+      "paths": [
+        "agents/methodology.md",
+        "agents/planar-orchestrator.md",
+        "agents/planar-coder.md",
+        "agents/planar-test-coder.md",
+        "agents/planar-reviewer.md"
+      ],
+      "pattern": "broader regression verification"
+    },
+    {
+      "id": "fix-cycles-stay-focused",
+      "description": "After a failed barrier, fixes run focused checks instead of the full suite.",
+      "mode": "all",
+      "paths": ["agents/methodology.md"],
+      "pattern": "do not rerun the full suite after every fix"
+    },
+    {
+      "id": "reviewer-no-full-suite-demand",
+      "description": "The reviewer does not demand the full suite for every task.",
+      "mode": "all",
+      "paths": ["agents/planar-reviewer.md"],
+      "pattern": "Do not demand the full suite for every task"
+    },
+    {
+      "id": "skill-full-suite-once",
+      "description": "The planar skill's claim ritual puts the full suite at the milestone barrier.",
+      "mode": "all",
+      "paths": ["skills/planar/references/claim-ritual.md"],
+      "pattern": "full regression suite runs once at the milestone barrier"
+    },
+    {
+      "id": "skill-empty-filter-fails",
+      "description": "The planar skill treats a filtered run that matches no tests as a failure.",
+      "mode": "all",
+      "paths": ["skills/planar/references/claim-ritual.md"],
+      "pattern": "matches no tests is a failure"
+    },
+    {
+      "id": "repo-guide-states-cadence",
+      "description": "This repository's agent guide states targeted tests per task and the full suite per milestone.",
+      "mode": "all",
+      "paths": ["CLAUDE.md"],
+      "pattern": "Tasks run targeted tests; milestones run the full suite"
+    },
+    {
+      "id": "repo-task-profile",
+      "description": "This repository's testing guide names the task profile and treats zero matched tests as a failure.",
+      "mode": "all",
+      "paths": ["docs/testing.md"],
+      "pattern": "^### The task profile in this repository[\\s\\S]*zero matched tests is a failure",
+      "multiline": true
+    }
+  ],
+  "expected": {}
+}

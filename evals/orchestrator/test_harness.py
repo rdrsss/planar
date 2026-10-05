@@ -6104,6 +6104,15 @@ RETARGETED_CASE_ROLES: dict[str, list[str]] = {
     "phase35-is-coverage-driven/no-configurable-cadence": ["agents/methodology.md", "orchestrator"],
     "repository-derived-validation-profile/profile-cross-role": ["coder", "orchestrator", "reviewer", "test-coder"],
     "repository-derived-validation-profile/no-language-gates": ["agents/doctrine.md", "agents/methodology.md", "orchestrator"],
+    "validation-cadence/cadence-section-every-role": ["agents/methodology.md", "coder", "orchestrator", "reviewer", "test-coder"],
+    "validation-cadence/full-suite-at-milestone-barrier": ["agents/methodology.md", "coder", "orchestrator", "reviewer", "test-coder"],
+    "validation-cadence/no-per-task-broad-regression": ["agents/methodology.md", "coder", "orchestrator", "reviewer", "test-coder"],
+    "validation-cadence/fix-cycles-stay-focused": ["agents/methodology.md"],
+    "validation-cadence/reviewer-no-full-suite-demand": ["reviewer"],
+    "validation-cadence/skill-full-suite-once": ["skills/planar/references/claim-ritual.md"],
+    "validation-cadence/skill-empty-filter-fails": ["skills/planar/references/claim-ritual.md"],
+    "validation-cadence/repo-guide-states-cadence": ["CLAUDE.md"],
+    "validation-cadence/repo-task-profile": ["docs/testing.md"],
     "reviewer-iteration-five-terminates/iteration-five-no-request-changes": ["orchestrator", "reviewer"],
     "reviewer-iteration-five-terminates/caveats-become-tasks": ["orchestrator", "reviewer"],
     "spec-review-before-ingestion/spec-review-present": ["orchestrator"],
@@ -6212,7 +6221,7 @@ class RoleAssertionRetargetTests(unittest.TestCase):
             sum(1 for k in found if not k.startswith("skill-planar-contract/")),
             len(RETARGETED_CASE_ROLES),
         )
-        self.assertEqual(len(found), 53)  # 53 at bb9e5816 and now
+        self.assertEqual(len(found), 62)  # 53 at bb9e5816; +9 for validation-cadence
 
     def test_coherence_phrase_count_and_roles_are_unchanged(self) -> None:
         source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(
