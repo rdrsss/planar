@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::assoc_cli {
 /// @return Registered CLI node.
 export auto attach_create(CLI::App* assoc) -> CLI::App* {
   CLI::App* create = assoc->add_subcommand("create", "Create a new association.");
-  add_string(*create, "--name");
-  add_string(*create, "--kind");
-  add_json(*create);
-  add_positional(*create, "slug");
+  add_string(*create, "--name", "Human-readable name (default: the slug)");
+  add_string(*create, "--kind", "Association kind: org, project, client, personal, ad-hoc (default: ad-hoc)");
+  add_json(*create, "Emit machine-readable JSON instead of text");
+  add_positional(*create, "slug", "Unique association slug, e.g. org:acme");
   return create;
 }
 } // namespace planar::cmd::handlers::assoc_cli

@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::assoc_cli {
 /// @return Registered CLI node.
 export auto attach_add(CLI::App* assoc) -> CLI::App* {
   CLI::App* add = assoc->add_subcommand("add", "Add a repo to an association.");
-  add_json(*add);
-  add_positional(*add, "slug");
-  add_positional(*add, "repo-path");
+  add_json(*add, "Emit machine-readable JSON instead of text");
+  add_positional(*add, "slug", "Association slug");
+  add_positional(*add, "repo-path", "Registered project root path to add to the association");
   return add;
 }
 } // namespace planar::cmd::handlers::assoc_cli

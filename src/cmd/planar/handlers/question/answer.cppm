@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_answer(CLI::App& question) -> CLI::App* {
   CLI::App* answer = question.add_subcommand("answer", "Record an answer to a question.");
-  add_string(*answer, "--answer");
-  add_json(*answer);
-  add_positional(*answer, "question-id");
+  add_string(*answer, "--answer", "Answer text, taken literally");
+  add_json(*answer, "Emit machine-readable JSON instead of text");
+  add_positional(*answer, "question-id", "Question id");
   return answer;
 }
 } // namespace planar::cmd::handlers::question_cli

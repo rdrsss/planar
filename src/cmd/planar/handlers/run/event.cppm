@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::run_cli {
 /// @return Registered CLI node.
 export auto attach_event(CLI::App* run) -> CLI::App* {
   CLI::App* event = run->add_subcommand("event", "Append a journal event to a run (seq auto-incremented).");
-  add_string_required(*event, "--kind");
-  add_string(*event, "--payload");
-  add_json(*event);
-  add_positional(*event, "run-uid");
+  add_string_required(*event, "--kind", "Event kind, a free-form label (e.g. step, note, error)");
+  add_string(*event, "--payload", "Event payload body");
+  add_json(*event, "Emit machine-readable JSON instead of text");
+  add_positional(*event, "run-uid", "Run uid returned by run start");
   return event;
 }
 } // namespace planar::cmd::handlers::run_cli

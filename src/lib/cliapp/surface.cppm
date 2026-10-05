@@ -54,6 +54,15 @@ import cli11;
 
 namespace planar::cliapp {
 
+/// @brief The explicit marker for a flag or positional whose help text has
+/// not been written yet.
+///
+/// Every flag-declaration helper requires a description. Passing this
+/// empty view says "undocumented" at the call site, where a defaulted
+/// parameter said nothing, and `grep -rn k_undocumented src` lists the
+/// sweep that remains.
+export constexpr std::string_view k_undocumented{};
+
 /// @brief Declare a boolean flag together with the `--no-<name>` negation
 /// the oracle's parser SYNTHESIZES for it (plan 996, task 6138).
 ///
@@ -121,9 +130,10 @@ namespace planar::cliapp {
 /// So the rule is unconditional and needs no exception list.
 /// @param app The node to declare it on.
 /// @param canonical The canonical long name, `--` included.
-/// @param description The help line, or empty to leave it unset.
+/// @param description The help line. Required: a call without one does not
+/// compile. Pass `k_undocumented` only where no text has been authored yet.
 /// @return The created option.
-export auto add_bool_flag(CLI::App& app, std::string_view canonical, std::string_view description = {}) -> CLI::Option*;
+export auto add_bool_flag(CLI::App& app, std::string_view canonical, std::string_view description) -> CLI::Option*;
 
 /// @brief Install, on `root` and every node beneath it, the help formatter
 /// that keeps synthesized negations OUT of the rendered help page.

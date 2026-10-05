@@ -169,8 +169,7 @@ auto declare_report(CLI::App& root) -> void {
       "agent_work_claims, handoffs) and\nrenders a diagnostic bundle.\n\nInvocation and failure sections render \"logging "
       "disabled\" when\n[introspection].cli_log is off; the always-on sections (actions, sync,\nclaims, claim failure "
       "categories, handoffs, health) render normally in\neither case.\n\nThe bundle is structurally redacted: queries select "
-      "only counts,\ncategories, verb paths, statuses, and timestamps — never entity text.\n\nExit codes:\n  0   bundle rendered "
-      "successfully.\n  2   invalid flag value (--days or --tail must be a positive integer).\n  1   database error.");
+      "only counts,\ncategories, verb paths, statuses, and timestamps — never entity text.");
   add_int_default(*report, "--days", "30", "Window in days (must be > 0, default 30).");
   add_int_default(*report, "--tail", "20", "Number of failure-tail rows (must be > 0, default 20).");
   add_bool(*report, "--json", "Emit stable machine-readable JSON.");

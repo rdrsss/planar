@@ -14,10 +14,11 @@ namespace planar::cmd::handlers::scenario_cli {
 /// @return Registered CLI node.
 export auto attach_review(CLI::App& scenario) -> CLI::App* {
   CLI::App* review = scenario.add_subcommand("review", "Reviewer entry point for scenario diff.");
-  add_bool(*review, "--approve");
-  add_bool(*review, "--request-changes");
-  add_json(*review);
-  add_positional(*review, "scenario-id");
+  add_bool(*review, "--approve", "Report an approve verdict on the pending workbench diff (not persisted)");
+  add_bool(*review, "--request-changes",
+           "Report a request-changes verdict on the pending workbench diff (not persisted); excludes --approve");
+  add_json(*review, "Emit machine-readable JSON instead of text");
+  add_positional(*review, "scenario-id", "Scenario id");
   return review;
 }
 } // namespace planar::cmd::handlers::scenario_cli

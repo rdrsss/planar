@@ -4,7 +4,9 @@ module;
 export module planar.cmd.planar_watch.main;
 import std;
 import cli11;
+import planar.cliapp.schema;
 import planar.cliapp.surface;
+import planar.cmd.planar_watch.docs;
 import planar.cmd.planar_watch.handlers.feed.command;
 import planar.cmd.planar_watch.handlers.ps.command;
 import planar.cmd.planar_watch.handlers.claims.command;
@@ -99,6 +101,7 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   // its `--no-X` negation — see `planar.cliapp.surface::hide_negations_in_help`.
   // Must come AFTER the whole tree exists.
   cliapp::hide_negations_in_help(*app);
+  cliapp::install_docs_footers(*app, surface_docs());
   return app;
 }
 

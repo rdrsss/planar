@@ -35,14 +35,14 @@ constexpr std::string_view k_schema = R"({"commands":[)"
 struct repo_root {
   fs::path root;
 
-  explicit repo_root(std::string_view tag) {
+  explicit repo_root(std::string_view tag, std::string_view schema = k_schema) {
     root = fs::temp_directory_path() /
            std::format("planar_cli_usage_lint_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
     fs::create_directories(root / "bin");
     auto const script = root / "bin" / "planar-agent";
     {
       std::ofstream out(script, std::ios::binary);
-      out << "#!/bin/sh\ncat <<'EOF'\n" << k_schema << "\nEOF\n";
+      out << "#!/bin/sh\ncat <<'EOF'\n" << schema << "\nEOF\n";
     }
     fs::permissions(script, fs::perms::owner_all);
   }
@@ -218,4 +218,69 @@ TEST_CASE("an inline flag span in the queue rule file is checked against the que
     INFO(r.out);
     CHECK(r.code == 0);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Catalog mode (plan 1104, task 7203): the lint also reads each binary's own
+// `docs.examples` and validates them like authored prose.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The queue catalog with `examples` as the `docs.examples` of
+/// `planar-agent queue run`.
+/// @param examples The JSON array body, e.g. `"planar-agent queue run --detach -- make test"`.
+auto schema_with_examples(std::string_view examples) -> std::string {
+  return std::format(
+      R"({{"commands":[)"
+      R"({{"command":"planar-agent","subcommands":["queue"],"flags":[]}},)"
+      R"({{"command":"planar-agent queue","subcommands":["run","status"],"flags":[]}},)"
+      R"({{"command":"planar-agent queue run","subcommands":[],"flags":[{{"long":"--detach"}},{{"long":"--vendor"}}],)"
+      R"("docs":{{"examples":[{}],"exitCodes":[]}}}},)"
+      R"({{"command":"planar-agent queue status","subcommands":[],"flags":[{{"long":"--json"}}],)"
+      R"("docs":{{"examples":["planar-agent queue status 1000001 --json"],"exitCodes":[]}}}})"
+      R"(]}})",
+      examples);
+}
+
+} // namespace
+
+TEST_CASE("a catalog example with an unknown flag is reported with its command path and the flag",
+          "[cli_usage_lint][cli-usage][catalog]") {
+  REQUIRE(fs::exists(PLANAR_CLI_USAGE_LINT_BIN));
+  repo_root  repo{"catalog_bogus", schema_with_examples(R"("planar-agent queue run --bogus -- make test")")};
+  auto const r = run_lint(repo);
+  INFO(r.out);
+  CHECK(r.code == 1);
+  CHECK(contains(r.out, "docs.examples"));
+  CHECK(contains(r.out, "`planar-agent queue run` has no flag `--bogus`"));
+  CHECK(contains(r.out, "2 catalog examples"));
+}
+
+TEST_CASE("valid catalog examples are counted and pass", "[cli_usage_lint][cli-usage][catalog]") {
+  REQUIRE(fs::exists(PLANAR_CLI_USAGE_LINT_BIN));
+  repo_root  repo{"catalog_clean", schema_with_examples(R"("planar-agent queue run --detach --vendor claude -- make test")")};
+  auto const r = run_lint(repo);
+  INFO(r.out);
+  CHECK(r.code == 0);
+  CHECK(contains(r.out, "cli-usage-lint: clean (0 files"));
+  CHECK(contains(r.out, "2 catalog examples"));
+}
+
+TEST_CASE("a catalog example that invokes another command is reported", "[cli_usage_lint][cli-usage][catalog]") {
+  REQUIRE(fs::exists(PLANAR_CLI_USAGE_LINT_BIN));
+  repo_root  repo{"catalog_other", schema_with_examples(R"("planar-agent queue status 7")")};
+  auto const r = run_lint(repo);
+  INFO(r.out);
+  CHECK(r.code == 1);
+  CHECK(contains(r.out, "`planar-agent queue run` has an example that invokes `planar-agent queue status`"));
+}
+
+TEST_CASE("a catalog example that names no linted binary is reported", "[cli_usage_lint][cli-usage][catalog]") {
+  REQUIRE(fs::exists(PLANAR_CLI_USAGE_LINT_BIN));
+  repo_root  repo{"catalog_nobin", schema_with_examples(R"("make test")")};
+  auto const r = run_lint(repo);
+  INFO(r.out);
+  CHECK(r.code == 1);
+  CHECK(contains(r.out, "has an example that names no linted binary: make test"));
 }

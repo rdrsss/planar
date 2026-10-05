@@ -71,7 +71,7 @@ auto main(int argc, char** argv) -> int {
     break;
 
   case planar::cmd::execute::verb::schema:
-    code = planar::cmd::execute::handlers::schema::execute(std::cout);
+    code = planar::cmd::execute::handlers::schema::execute(std::span{args}.subspan(2), std::cout, std::cerr);
     break;
 
   case planar::cmd::execute::verb::profile:

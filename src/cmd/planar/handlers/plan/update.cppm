@@ -12,14 +12,14 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_update(CLI::App& plan) -> CLI::App* {
   CLI::App* update = plan.add_subcommand("update", "Update mutable fields on a plan.");
-  add_string(*update, "--title");
-  add_string(*update, "--slug");
-  add_string(*update, "--summary");
-  add_string(*update, "--status");
-  add_int(*update, "--parent");
-  add_string(*update, "--scope");
-  add_json(*update);
-  add_positional(*update, "plan-id");
+  add_string(*update, "--title", "New title for the plan");
+  add_string(*update, "--slug", "New slug for the plan");
+  add_string(*update, "--summary", "New summary text; a leading @ reads it from a file");
+  add_string(*update, "--status", "New status: draft, active, paused, done, abandoned");
+  add_int(*update, "--parent", "New parent plan id");
+  add_string(*update, "--scope", "Scope slug to move the plan to");
+  add_json(*update, "Emit machine-readable JSON instead of text");
+  add_positional(*update, "plan-id", "Plan id or slug");
   return update;
 }
 } // namespace planar::cmd::handlers::plan_cli

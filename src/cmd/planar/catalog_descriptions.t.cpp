@@ -1,0 +1,265 @@
+// @file catalog_descriptions.t.cpp
+// @brief Every flag and positional in every binary's `schema` catalog
+// carries a help description (plan 1104, milestone 1105, task 7200).
+//
+// ## What this pins
+//
+// The flag-declaration helpers (`add_bool_flag`, the `planar::cmd::add_*`
+// family, `planar-agent`'s shared helpers) take a REQUIRED description, so
+// a new flag cannot be declared without one by accident. Two gaps stay open
+// and this file is what covers them:
+//
+//   - A call site may still pass the explicit `k_undocumented` marker, and
+//     raw `CLI::App::add_option(...)` calls in `planar-agent` and
+//     `planar-ext` bypass the helpers entirely. Neither is visible to the
+//     compiler. Both surface in the catalog as an empty description.
+//   - The catalog is the one artifact all five binaries share, so it is the
+//     place a single walk can hold them to one rule.
+//
+// ## No allowance
+//
+// All five binaries are held to the rule. The sweeps of `planar-agent`,
+// `planar-ext` and `planar-watch` landed, so no binary may carry an empty
+// description. The last case below pins that `planar-execute` (and the
+// rest) stay outside any allowance.
+//
+// ## Provenance
+//
+// The fixture catalog below is shaped like `planar::cliapp::schema` output
+// (`command`, `flags[*].long`, `positionals[*].name`, `description`); that
+// shape was read from the five built binaries' `schema` output, not typed
+// from the emitter.
+
+#include <catch2/catch_test_macros.hpp>
+
+import std;
+
+#include "parity_harness.hpp"
+#include <glaze/glaze.hpp>
+
+namespace {
+
+using ::planar::cmd::parity::make_arena;
+using ::planar::cmd::parity::run_pinned;
+
+// One flag or positional whose description is empty.
+struct empty_description {
+  std::string command; // The command's full path, e.g. "planar-agent context resolve".
+  std::string kind;    // "flag" or "positional".
+  std::string name;    // "--json" or "finding".
+};
+
+// The result of walking one catalog.
+struct walk_result {
+  std::size_t                    walked = 0; // Flags plus positionals visited.
+  std::vector<empty_description> empties;    // Those with an empty or missing description.
+};
+
+// Walk every command's flags and positionals in a `schema` document.
+// Returns nullopt when the text is not a catalog.
+auto walk_catalog(std::string const& text) -> std::optional<walk_result> {
+  auto parsed = glz::read_json<glz::generic>(text);
+  if (!parsed || !parsed->contains("commands")) {
+    return std::nullopt;
+  }
+  walk_result out;
+  for (auto const& entry : parsed->at("commands").get<glz::generic::array_t>()) {
+    if (!entry.contains("command")) {
+      continue;
+    }
+    auto const command = entry.at("command").get<std::string>();
+    auto const visit   = [&](char const* list, char const* name_key, char const* kind) {
+      if (!entry.contains(list)) {
+        return;
+      }
+      for (auto const& item : entry.at(list).get<glz::generic::array_t>()) {
+        ++out.walked;
+        auto const description = item.contains("description") ? item.at("description").get<std::string>() : std::string{};
+        if (description.empty()) {
+          auto const name = item.contains(name_key) ? item.at(name_key).get<std::string>() : std::string{"<unnamed>"};
+          out.empties.push_back({command, kind, name});
+        }
+      }
+    };
+    visit("flags", "long", "flag");
+    visit("positionals", "name", "positional");
+  }
+  return out;
+}
+
+// The line a maintainer reads when a description is empty.
+auto describe(empty_description const& e) -> std::string {
+  return std::format("{}: {} {} has an empty description", e.command, e.kind, e.name);
+}
+
+struct binary_under_test {
+  std::string           name;
+  std::filesystem::path path;
+};
+
+auto binaries() -> std::vector<binary_under_test> {
+  return {{"planar", PLANAR_CPP_BIN},
+          {"planar-agent", PLANAR_AGENT_CPP_BIN},
+          {"planar-watch", PLANAR_WATCH_CPP_BIN},
+          {"planar-execute", PLANAR_EXECUTE_CPP_BIN},
+          {"planar-ext", PLANAR_EXT_CPP_BIN}};
+}
+
+// Run `<bin> schema` in a fresh arena and walk its output.
+auto walk_binary(binary_under_test const& bin) -> walk_result {
+  auto const arena = make_arena(std::format("catdesc_{}", bin.name));
+  auto const ran   = run_pinned(bin.path, std::vector<std::string>{"schema"}, arena.cpp_root, "schema");
+  INFO(bin.name << " schema stderr: " << ran.err);
+  REQUIRE(ran.code == 0);
+  auto const walked = walk_catalog(ran.out);
+  REQUIRE(walked.has_value());
+  return *walked;
+}
+
+// A summary or description that names a retired implementation tree.
+struct retired_mention {
+  std::string where; // e.g. "planar task done summary" or "planar task done flag --force description".
+  std::string token; // The retired word that matched.
+};
+
+// Words that name the earlier Go and Zig trees and the oracle comparison.
+// "Go " carries its trailing space so identifiers such as "Google" and
+// "Gopher" do not match.
+constexpr std::array<std::string_view, 3> k_retired_words = {"Go ", "Zig", "oracle"};
+
+auto first_retired_word(std::string_view text) -> std::optional<std::string> {
+  for (auto const word : k_retired_words) {
+    if (text.contains(word)) {
+      return std::string{word};
+    }
+  }
+  return std::nullopt;
+}
+
+// Scan the summary and description of every command, and the description of
+// every flag and positional, for a retired word.
+auto scan_retired(std::string const& text) -> std::optional<std::vector<retired_mention>> {
+  auto parsed = glz::read_json<glz::generic>(text);
+  if (!parsed || !parsed->contains("commands")) {
+    return std::nullopt;
+  }
+  std::vector<retired_mention> out;
+  auto const                   check = [&](glz::generic const& node, char const* key, std::string const& where) {
+    if (!node.contains(key) || !node.at(key).is_string()) {
+      return;
+    }
+    if (auto const hit = first_retired_word(node.at(key).get<std::string>())) {
+      out.push_back({where, *hit});
+    }
+  };
+  for (auto const& entry : parsed->at("commands").get<glz::generic::array_t>()) {
+    if (!entry.contains("command")) {
+      continue;
+    }
+    auto const command = entry.at("command").get<std::string>();
+    check(entry, "summary", std::format("{} summary", command));
+    check(entry, "description", std::format("{} description", command));
+    for (auto const& [list, name_key] : {std::pair{"flags", "long"}, std::pair{"positionals", "name"}}) {
+      if (!entry.contains(list)) {
+        continue;
+      }
+      for (auto const& item : entry.at(list).get<glz::generic::array_t>()) {
+        auto const name = item.contains(name_key) ? item.at(name_key).get<std::string>() : std::string{"<unnamed>"};
+        check(item, "description", std::format("{} {} {} description", command, list, name));
+      }
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("a catalog with one empty description is caught by name", "[catalog][descriptions]") {
+  // One command with a documented flag, one subcommand with a documented
+  // positional and exactly one flag whose description is empty.
+  std::string const fixture = R"({"schemaVersion":1,"commands":[
+    {"command":"tool","flags":[{"long":"--json","description":"Emit JSON."}],"positionals":[]},
+    {"command":"tool sub","flags":[{"long":"--quiet","description":""}],
+     "positionals":[{"name":"id","description":"The id."}]}]})";
+
+  auto const walked = walk_catalog(fixture);
+  REQUIRE(walked.has_value());
+  CHECK(walked->walked == 3);
+  REQUIRE(walked->empties.size() == 1);
+  auto const message = describe(walked->empties.front());
+  CAPTURE(message);
+  CHECK(message.contains("tool sub"));
+  CHECK(message.contains("--quiet"));
+  CHECK(message == "tool sub: flag --quiet has an empty description");
+
+  CHECK_FALSE(walk_catalog("not json").has_value());
+  CHECK_FALSE(walk_catalog(R"({"nope":1})").has_value());
+}
+
+TEST_CASE("the catalog walk reaches every binary and fails on an empty description", "[catalog][descriptions]") {
+  std::size_t total = 0;
+  for (auto const& bin : binaries()) {
+    auto const walked = walk_binary(bin);
+    // Printed unconditionally: the scenario requires the remaining count per
+    // binary to be reported, and Catch2 shows INFO/CAPTURE only on failure.
+    std::println("catalog-descriptions: {} walked {} descriptions, {} empty", bin.name, walked.walked, walked.empties.size());
+    CAPTURE(bin.name, walked.walked, walked.empties.size());
+    total += walked.walked;
+    for (auto const& e : walked.empties) {
+      FAIL_CHECK(describe(e));
+    }
+  }
+  // The five live catalogs hold about 1,160 flag and positional entries
+  // (measured 2026-10-04). A floor close to that catches a walk that
+  // silently skipped a binary or a field; 630 would have let almost half the
+  // surface vanish unnoticed.
+  CAPTURE(total);
+  REQUIRE(total >= 1100);
+}
+
+TEST_CASE("the catalog walk allows no binary an empty description", "[catalog][descriptions]") {
+  // Every binary, planar-agent, planar-ext and planar-watch included, is held to
+  // the rule; the sweep of each landed, so the allowance is gone.
+  auto const all = binaries();
+  REQUIRE(all.size() == 5);
+  for (auto const& bin : all) {
+    auto const walked = walk_binary(bin);
+    CAPTURE(bin.name);
+    CHECK(walked.empties.empty());
+  }
+  CHECK(std::ranges::any_of(all, [](binary_under_test const& bin) { return bin.name == "planar-execute"; }));
+}
+
+TEST_CASE("the retired-word scan names the command and the word it found", "[catalog][descriptions][retired]") {
+  std::string const fixture = R"({"schemaVersion":1,"commands":[
+    {"command":"tool","summary":"Fine.","description":"Fine.","flags":[{"long":"--json","description":"Emit JSON."}],"positionals":[]},
+    {"command":"tool done","summary":"Mark done (Go supports variadic).","description":"Done.",
+     "flags":[{"long":"--x","description":"Matches the Zig tree."}],
+     "positionals":[{"name":"id","description":"Compare with the oracle."}]},
+    {"command":"tool google","summary":"Open Google Docs.","description":"","flags":[],"positionals":[]}]})";
+
+  auto const found = scan_retired(fixture);
+  REQUIRE(found.has_value());
+  REQUIRE(found->size() == 3);
+  CHECK((*found)[0].where == "tool done summary");
+  CHECK((*found)[0].token == "Go ");
+  CHECK((*found)[1].where == "tool done flags --x description");
+  CHECK((*found)[1].token == "Zig");
+  CHECK((*found)[2].where == "tool done positionals id description");
+  CHECK((*found)[2].token == "oracle");
+  CHECK_FALSE(scan_retired("not json").has_value());
+}
+
+TEST_CASE("no catalog text names the Go tree, the Zig tree or the oracle", "[catalog][descriptions][retired]") {
+  for (auto const& bin : binaries()) {
+    auto const arena = make_arena(std::format("catretired_{}", bin.name));
+    auto const ran   = run_pinned(bin.path, std::vector<std::string>{"schema"}, arena.cpp_root, "schema");
+    INFO(bin.name << " schema stderr: " << ran.err);
+    REQUIRE(ran.code == 0);
+    auto const found = scan_retired(ran.out);
+    REQUIRE(found.has_value());
+    for (auto const& m : *found) {
+      FAIL_CHECK(std::format("{}: {} names retired word \"{}\"", bin.name, m.where, m.token));
+    }
+  }
+}

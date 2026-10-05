@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::workbench_cli {
 /// @return Registered CLI node.
 export auto attach_publish(CLI::App& workbench) -> CLI::App* {
   CLI::App* publish = workbench.add_subcommand("publish", "Render and push workbench files to external system.");
-  add_string_required(*publish, "--system");
-  add_json(*publish);
-  add_positional(*publish, "plan");
+  add_string_required(*publish, "--system", "Slug of the registered external system to publish to");
+  add_json(*publish, "Emit machine-readable JSON instead of text");
+  add_positional(*publish, "plan", "Anchor plan id");
   return publish;
 }
 } // namespace planar::cmd::handlers::workbench_cli

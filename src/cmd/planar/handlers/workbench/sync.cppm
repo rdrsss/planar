@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::workbench_cli {
 /// @return Registered CLI node.
 export auto attach_sync(CLI::App& workbench) -> CLI::App* {
   CLI::App* sync = workbench.add_subcommand("sync", "Atomically apply FS and DB changes via a unified sync.");
-  add_bool(*sync, "--verbose");
-  add_json(*sync);
-  add_positional(*sync, "plan");
+  add_bool(*sync, "--verbose", "Verbose text rendering of the sync result");
+  add_json(*sync, "Emit machine-readable JSON instead of text");
+  add_positional(*sync, "plan", "Plan id or slug");
   return sync;
 }
 } // namespace planar::cmd::handlers::workbench_cli

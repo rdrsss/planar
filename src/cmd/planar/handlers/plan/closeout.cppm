@@ -19,10 +19,10 @@ export auto attach_closeout(CLI::App& plan) -> CLI::App* {
       "preview, and the caller reads ready/blocked_by from the report.\n\n  "
       "--check-merge adds an advisory epic-branch merge roll-up: for each contributing\n  branch from agent_work_claims, reports "
       "how many are merged to the target branch.\n  Never blocks; absent branches are inconclusive.");
-  add_bool(*closeout, "--dry-run", "Evaluate and report only; never writes.");
-  add_bool(*closeout, "--check-merge", "Include advisory epic-branch merge roll-up in the output.");
-  add_json(*closeout);
-  add_positional(*closeout, "plan-id");
+  add_bool(*closeout, "--dry-run", "Evaluate and report only; never writes");
+  add_bool(*closeout, "--check-merge", "Include advisory epic-branch merge roll-up in the output");
+  add_json(*closeout, "Emit machine-readable JSON instead of text");
+  add_positional(*closeout, "plan-id", "Plan id or slug");
   return closeout;
 }
 } // namespace planar::cmd::handlers::plan_cli

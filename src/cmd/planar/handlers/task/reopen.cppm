@@ -12,12 +12,12 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_reopen(CLI::App& task) -> CLI::App* {
   CLI::App* reopen = task.add_subcommand("reopen", "Reopen a done or cancelled task with an audit-trail entry.");
-  add_string(*reopen, "--status");
-  add_string(*reopen, "--reason");
-  add_string(*reopen, "--scope");
-  add_bool(*reopen, "--force", "Override active-claim guard and flip status anyway.");
-  add_json(*reopen);
-  add_positional(*reopen, "task-id");
+  add_string(*reopen, "--status", "Non-terminal status to reopen into: todo, doing, blocked (default: todo)");
+  add_string(*reopen, "--reason", "Rationale recorded on the task_reopens audit row");
+  add_string(*reopen, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_bool(*reopen, "--force", "Override active-claim guard and flip status anyway");
+  add_json(*reopen, "Emit machine-readable JSON instead of text");
+  add_positional(*reopen, "task-id", "Task id");
   return reopen;
 }
 } // namespace planar::cmd::handlers::task_cli

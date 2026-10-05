@@ -246,7 +246,7 @@ auto declare_health(CLI::App& root) -> void {
                 "commands are reported but never run.\n\n  Exit codes:\n    0  all checks pass\n    1  degraded (in-flight tasks "
                 "not resumable, stale handoffs, stale\n       or missing managed projections, integrity errors, etc.)");
   health->require_subcommand(0);
-  add_json(*health);
+  add_json(*health, "Emit machine-readable JSON instead of text");
 
   health_cli::attach_hygiene(health);
 }

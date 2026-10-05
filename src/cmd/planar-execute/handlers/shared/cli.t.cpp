@@ -104,6 +104,24 @@ TEST_CASE("planar-execute advertises no spawn affordance", "[cmd][execute][capab
   // zig/integration_tests/capability_boundary_test.zig's `denied_names`.
   constexpr std::array<std::string_view, 9> denied{"agent", "parallel", "pipeline", "compact", "budget",
                                                    "child", "claude",   "codex",    "headless"};
+  // Task 7204: `schema --compact` is the catalog's own output-size flag, not
+  // the denied `compact` host function. Only that literal flag is excised
+  // before the catalog scan, and only where it sits inside the `schema`
+  // command object: the nearest preceding "command" key must name that node.
+  // A `--compact` anywhere else in the catalog is a real affordance and fails
+  // here instead of being erased.
+  auto                       catalog = planar::cmd::execute::catalog_json();
+  constexpr std::string_view command_key{R"("command":")"};
+  for (auto at = catalog.find("--compact"); at != std::string::npos; at = catalog.find("--compact")) {
+    auto const key = catalog.rfind(command_key, at);
+    REQUIRE(key != std::string::npos);
+    auto const value_start = key + command_key.size();
+    auto const value_end   = catalog.find('"', value_start);
+    REQUIRE(value_end != std::string::npos);
+    INFO("`--compact` found outside the schema node, under command " << catalog.substr(value_start, value_end - value_start));
+    REQUIRE(catalog.substr(value_start, value_end - value_start) == "planar-execute schema");
+    catalog.erase(at, std::string_view{"--compact"}.size());
+  }
   for (auto const& name : denied) {
     INFO("denied name found as a word in the advertised surface: " << name);
     CHECK_FALSE(contains_word(usage_text(), name));
@@ -111,7 +129,7 @@ TEST_CASE("planar-execute advertises no spawn affordance", "[cmd][execute][capab
     // that leaked into a flag description would be as much of an affordance
     // as one in the banner.
     INFO("denied name found as a word in the schema catalog: " << name);
-    CHECK_FALSE(contains_word(planar::cmd::execute::catalog_json(), name));
+    CHECK_FALSE(contains_word(catalog, name));
   }
 }
 
@@ -393,7 +411,8 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
   // `follow`'s `--from` and `--profile`; 6507 `host drain`/`host stop`, one
   // `--profile` each). Repeats are counted, because each declaring verb is a
   // separate promise and every one of them is checked below.
-  REQUIRE(advertised.size() == 19);
+  // Task 7204 added `schema`'s `--command` and `--compact`: 21.
+  REQUIRE(advertised.size() == 21);
   for (auto const& flag : advertised) {
     INFO("advertised flag not accepted by its parser: " << flag);
     if (flag == "--profile") {
@@ -427,6 +446,12 @@ TEST_CASE("planar-execute's schema catalog and its hand-rolled parser name the s
       auto const                     parsed = parse_submit_args(submitted);
       REQUIRE(parsed.has_value());
       CHECK(parsed->input == R"({"task":"t"})");
+      continue;
+    }
+    if (flag == "--command" || flag == "--compact") {
+      // `schema` reads these two itself, not through this module's parsers;
+      // `parity.t.cpp` ("schema --command and --compact select from the
+      // catalog") drives them end to end through the binary.
       continue;
     }
     if (flag == "--json") {

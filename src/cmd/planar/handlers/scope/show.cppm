@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::scope_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App* scope) -> CLI::App* {
   CLI::App* show = scope->add_subcommand("show", "Show the cwd-derived scope (and any --scope override).");
-  add_string(*show, "--scope");
-  add_json(*show);
+  add_string(*show, "--scope", "Scope slug to inspect instead of the cwd-derived scope");
+  add_json(*show, "Emit machine-readable JSON instead of text");
   return show;
 }
 } // namespace planar::cmd::handlers::scope_cli

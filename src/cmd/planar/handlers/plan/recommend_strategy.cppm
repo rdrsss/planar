@@ -24,8 +24,8 @@ export auto attach_recommend_strategy(CLI::App& plan) -> CLI::App* {
       ">= 2 tasks are eligible.");
   add_string_default(*recommend_strategy, "--closure-source", "declared",
                      "Rule-2 overlap signal: 'declared' (default, task_touches) or 'derived' (computed closure).");
-  add_json(*recommend_strategy);
-  add_positional(*recommend_strategy, "plan-id");
+  add_json(*recommend_strategy, "Emit machine-readable JSON instead of text");
+  add_positional(*recommend_strategy, "plan-id", "Plan id or slug");
   return recommend_strategy;
 }
 } // namespace planar::cmd::handlers::plan_cli

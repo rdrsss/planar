@@ -35,12 +35,13 @@ interface.
 Wraps [`help`](../../docs/cli-reference.md#domain-help):
 
 ```
+planar help
 planar --help
 planar <subcommand> [<sub-subcommand>] --help
 ```
 
-There is no `planar help` verb; help is reached only through `--help` / `-h`
-on any node.
+`planar help` prints the same root page as `planar --help`; help for a
+specific node is reached through `--help` / `-h` on that node.
 
 ## When To Invoke
 

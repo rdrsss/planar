@@ -13,13 +13,13 @@ namespace planar::cmd::handlers::models_cli {
 export auto attach_registry_eligibility(CLI::App& registry) -> CLI::App* {
   CLI::App* eligibility =
       registry.add_subcommand("eligibility", "Report every independent eligibility gate and named exclusion reason.");
-  add_int_required(*eligibility, "--candidate");
-  add_string_required(*eligibility, "--host");
-  add_string_required(*eligibility, "--role");
-  add_string_required(*eligibility, "--tier");
-  add_string_required(*eligibility, "--now");
-  add_bool(*eligibility, "--override-supported");
-  add_bool(*eligibility, "--policy-permits");
+  add_int_required(*eligibility, "--candidate", "Registry candidate id");
+  add_string_required(*eligibility, "--host", "Host id");
+  add_string_required(*eligibility, "--role", "Role name");
+  add_string_required(*eligibility, "--tier", "Tier: small, medium, large");
+  add_string_required(*eligibility, "--now", "Evaluation time (timestamp) for observation expiry");
+  add_bool(*eligibility, "--override-supported", "Host supports a role-surface override");
+  add_bool(*eligibility, "--policy-permits", "Host policy permits the candidate");
   return eligibility;
 }
 } // namespace planar::cmd::handlers::models_cli

@@ -15,8 +15,8 @@ namespace planar::cmd::handlers::workbench_cli {
 export auto attach_resolve(CLI::App& workbench) -> CLI::App* {
   CLI::App* resolve = workbench.add_subcommand("resolve", "Settle a sync conflict by choosing FS or DB.");
   add_string_required(*resolve, "--prefer", "Which side to prefer (fs|db)");
-  add_json(*resolve);
-  add_positional(*resolve, "event-id");
+  add_json(*resolve, "Emit machine-readable JSON instead of text");
+  add_positional(*resolve, "event-id", "Conflict event id (sync_events.id)");
   return resolve;
 }
 } // namespace planar::cmd::handlers::workbench_cli

@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_resolve(CLI::App& annotate) -> CLI::App* {
   CLI::App* resolve = annotate.add_subcommand("resolve", "Mark an annotation as resolved.");
-  add_json(*resolve);
-  add_positional(*resolve, "annotation-id");
+  add_json(*resolve, "Emit machine-readable JSON instead of text");
+  add_positional(*resolve, "annotation-id", "Annotation id");
   return resolve;
 }
 } // namespace planar::cmd::handlers::annotate_cli

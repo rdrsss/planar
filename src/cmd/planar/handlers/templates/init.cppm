@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::templates_cli {
 /// @return Registered CLI node.
 export auto attach_init(CLI::App* templates) -> CLI::App* {
   CLI::App* init = templates->add_subcommand("init", "Extract default templates to disk.");
-  add_bool(*init, "--force");
-  add_json(*init);
+  add_bool(*init, "--force", "Overwrite template files that already exist on disk");
+  add_json(*init, "Emit machine-readable JSON instead of text");
   return init;
 }
 } // namespace planar::cmd::handlers::templates_cli

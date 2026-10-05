@@ -94,6 +94,23 @@ policy). Measured, and confirmed live:
 So a script that branches on an exit code must know which binary produced it.
 Do not port a `planar` expectation onto `planar-agent` unchanged.
 
+### Examples and exit codes in `--help` and `schema`
+
+Every leaf verb of `planar`, `planar-agent`, `planar-watch` and `planar-ext` ends its `--help` page with an `Examples:` section (one invocation per line) and an `Exit codes:` section (`<code>  <meaning>` per line). `planar task update --help` is the model:
+
+```text
+Examples:
+  planar task update 42 --status doing
+  planar task update 42 --title "Write the migration" --priority 1
+
+Exit codes:
+  0  Success.
+  1  Generic failure: entity not found, an unmapped error, or a busy source.
+  ...
+```
+
+Both sections come from the same table as the `docs.examples` and `docs.exitCodes` arrays of the `schema` catalog (`docs.exitCodes` holds `{"code":N,"meaning":"..."}` objects), so the page and the catalog cannot disagree; `planar schema --command "planar task update"` prints the data. A group such as `planar task` has no sections and `"examples":[]`. The table lives in each binary's `docs.cppm` (`src/cmd/<binary>/docs.cppm`) beside its summary table, and a leaf lists only the codes its handler can return, in ascending order. `planar` and `planar-agent` leaves other than `schema`, `completion`, `version` and `help` each carry at least one example. `planar-execute` publishes its exit codes and examples in `schema` only, because its usage banner is hand-written. `make cli-usage-check` validates every `docs.examples` entry against the live catalogs the same way it validates the invocations in these documents, and reports how many it checked.
+
 ### Error envelope tags — one vocabulary per binary (task 6902)
 
 Every failing `--json` invocation on `planar` or `planar-agent` writes an
@@ -5136,13 +5153,23 @@ in the binary.
 
 ## Domain: `help`
 
-**Retirement notice.** There is no `planar help` verb: `planar help` fails at parse time with
-`error: planar: The following argument was not expected: help`, exit 2.
-Help is reached only through the `--help` / `-h` flag on any node —
-`planar --help` for the top-level command list, `planar <subcommand> --help`
-for a group or leaf. The text is rendered by Planar's own help renderer in
-`src/lib/cliapp/` (decision 948: CLI11 handles tokenization and value
-coercion only, because the help text is an oracle-pinned parity surface).
+### `planar help`
+
+**Synopsis:**
+```
+planar help
+```
+
+**Description:** Print the root help page and exit 0. The output is byte-identical to `planar --help`: the same
+`CLI::App::help()` rendering of the root node, so the two cannot drift apart. The root page leads with the
+binary's write surface (the planning entities and manual `tasks.status` transitions `planar` writes, and the
+tables `planar-agent` and `planar-ext` write) and then lists every top-level command.
+
+`planar help` takes no arguments. Per-node help stays on the flag: `planar <subcommand> [<sub-subcommand>] --help`
+for a group or leaf. Trailing words are not interpreted: `planar help task` prints the root page, not `task`'s.
+`help` is a leaf in the `planar schema`
+catalog. The text is rendered by Planar's own help renderer in `src/lib/cliapp/` (decision 948: CLI11 handles
+tokenization and value coercion only, because the help text is a pinned surface).
 
 **Output:** Plain text to stdout, exit 0. Not affected by `--json`.
 
@@ -5533,6 +5560,8 @@ Writes (only with `--apply`):
 - `artifacts` — inserts the synthesized `product_spec` / `tech_spec` / `roadmap` as primary artifacts. The existing planning docs are preserved on the same anchor plan as `kind=research` reference artifacts.
 - `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
 - `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
+
+**Legacy source schemes.** Artifacts created by `synthesize` (and by `import` for forward-spec seeds) carry a stored `source` of `pl-synthesize://<kind>` or `pl-forward-spec://<kind>`. These are provenance identifiers kept for compatibility with existing databases; they name no skill and are not command references. The synthesize handler branches on the `pl-synthesize://` prefix when it decides which artifacts survive `--apply-removals`, so the literals must not be renamed. The generated artifact bodies and the operator messages name `planar synthesize` instead.
 
 **Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/importer/importer.cpp`). Both verbs converge on the same downstream pipeline.
 
@@ -7705,6 +7734,25 @@ planar-ext schema
 planar-execute schema
 ```
 
+### Narrowing the catalog: `--command` and `--compact`
+
+The full `planar` catalog is about 350 KB, so every binary's `schema` takes two flags that cut it down. With neither flag the output is the full catalog, unchanged.
+
+| Flag | Effect |
+|------|--------|
+| `--command <path>` | Emit exactly that command's catalog object (the same object that appears in `commands[]`) and nothing else. `<path>` is the full path (`"planar task update"`) or relative to the root (`"task update"`, `task`); runs of whitespace are collapsed. |
+| `--compact` | Emit one row per command with only `command` (the full path) and `summary`, inside the usual envelope with `"layout":"compact"`. The row count equals the full catalog's command count; for `planar` the output is about 24 KB. |
+
+With both flags the output is the compact row for that one command. A path that names no command exits `2`, names the path on stderr (`error: schema: unknown command '<path>'`), and writes nothing to stdout. `--command` is bound to its value, so a bare verb name such as `task` is a lookup and never a subcommand: `planar schema --command task` prints the `planar task` object, wherever the flag sits relative to the verb.
+
+```sh
+planar schema --command "planar task update"
+planar schema --compact
+planar-agent schema --compact --command "queue status"
+```
+
+`planar-execute` reads the same two flags in its own parser (`--command=<path>` is accepted too) and takes the same exit code.
+
 `planar`, `planar-agent`, `planar-watch` and `planar-ext` each also expose a
 `version` verb (`planar version`, `planar-agent version`, `planar-watch version`,
 `planar-ext version`) that prints the binary's version, commit, and compiler;
@@ -7930,6 +7978,9 @@ stdout, exit `0`, nothing on stderr. Added by decision 1030 so
 `cli_usage_lint` polices authored references to `planar-execute` verbs; the
 catalog is a description of the hand-rolled parser, pinned against it by
 test, not a second parser.
+`--command <path>` and `--compact` narrow the output as described under
+[Introspection: `schema`](#introspection-schema-all-planning-state-binaries); an
+unknown path exits `2` with the message on stderr.
 
 ---
 

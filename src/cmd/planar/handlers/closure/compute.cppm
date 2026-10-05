@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::closure_cli {
 /// @return Registered CLI node.
 export auto attach_compute(CLI::App* closure) -> CLI::App* {
   CLI::App* compute = closure->add_subcommand("compute", "Run the extractor over a task's seeds and persist the closure.");
-  add_string(*compute, "--scope");
-  add_json(*compute);
-  add_positional(*compute, "task-id");
+  add_string(*compute, "--scope", "Scope slug to resolve against instead of the cwd-derived scope");
+  add_json(*compute, "Emit machine-readable JSON instead of text");
+  add_positional(*compute, "task-id", "Task id");
   return compute;
 }
 } // namespace planar::cmd::handlers::closure_cli

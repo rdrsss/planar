@@ -8,8 +8,8 @@ import planar.cliapp.args;
 import planar.cliapp.surface;
 namespace planar::cmd::ext::handlers::ext_cli {
 namespace {
-auto add_json(CLI::App& app) -> void {
-  cliapp::add_bool_flag(app, "--json");
+auto add_json(CLI::App& app, std::string_view desc) -> void {
+  cliapp::add_bool_flag(app, "--json", desc);
 }
 } // namespace
 /// @brief Register this CLI declaration.
@@ -24,33 +24,33 @@ export auto add(CLI::App& root) -> void {
   reg->require_subcommand(0);
 
   CLI::App* jira = reg->add_subcommand("jira", "Register a Jira instance as an external system.");
-  jira->add_option("--base-url")->required();
-  jira->add_option("--project")->required();
+  jira->add_option("--base-url")->description("Jira instance base URL")->required();
+  jira->add_option("--project")->description("Jira project key")->required();
   jira->add_option("--auth-env")->description("Env var name holding the API token")->required();
-  add_json(*jira);
-  jira->add_option("slug")->required();
+  add_json(*jira, "Emit machine-readable JSON instead of text");
+  jira->add_option("slug")->description("Slug to register the Jira system under")->required();
 
   CLI::App* github = reg->add_subcommand("github", "Register a GitHub Issues repository as an external system.");
   github->add_option("--project")->description("GitHub repository owner/repo")->required();
   github->add_option("--auth-env")->description("Env var name holding the token (uses gh-cli if omitted)");
-  add_json(*github);
-  github->add_option("slug")->required();
+  add_json(*github, "Emit machine-readable JSON instead of text");
+  github->add_option("slug")->description("Slug to register the GitHub system under")->required();
 
   CLI::App* list = ext->add_subcommand("list", "List registered external systems.");
-  add_json(*list);
+  add_json(*list, "Emit machine-readable JSON instead of text");
 
   CLI::App* test = ext->add_subcommand("test", "Test connection to an external system.");
-  add_json(*test);
-  test->add_option("slug")->required();
+  add_json(*test, "Emit machine-readable JSON instead of text");
+  test->add_option("slug")->description("Slug of the registered external system to test")->required();
 
   CLI::App* create = ext->add_subcommand("create", "Create an external counterpart for a local entity.");
   create->add_option("--from")->description("Source local entity ref (kind:id)")->required();
   create->add_option("--type")->description("External issue type, e.g. Epic, Story");
   create->add_option("--role")->description("Link role (default: mirror)");
   create->add_option("--sync")->description("Sync direction (default: two-way)");
-  create->add_option("--scope");
-  add_json(*create);
-  create->add_option("system-slug")->required();
+  create->add_option("--scope")->description("Accepted but not read by this verb");
+  add_json(*create, "Emit machine-readable JSON instead of text");
+  create->add_option("system-slug")->description("Slug of the registered external system to create in")->required();
 
   CLI::App* propagate_one =
       ext->add_subcommand("propagate-one", "Render one entity's template, POST the counterpart to the external system, and\n"
@@ -63,8 +63,8 @@ export auto add(CLI::App& root) -> void {
   propagate_one->add_option("--strategy")->description("Override GitHub strategy: parent-issue, projects-v2, tracking-issue");
   propagate_one->add_option("--sync")->description("Sync direction for created link: read-only, write-back, two-way");
   cliapp::add_bool_flag(*propagate_one, "--dry-run", "Preview without contacting the remote system");
-  add_json(*propagate_one);
-  propagate_one->add_option("system")->required();
+  add_json(*propagate_one, "Emit machine-readable JSON instead of text");
+  propagate_one->add_option("system")->description("Slug of the registered external system to post to")->required();
 
   // `ext propagate` — the github-parent-issue arm plus the generic
   // per-entity tree walk for every other reachable strategy (plan 996, task
@@ -90,8 +90,8 @@ export auto add(CLI::App& root) -> void {
   cliapp::add_bool_flag(*propagate, "--recreate",
                         "With --verify-counterparts: delete the link row for a missing counterpart so the next "
                         "propagate recreates it");
-  propagate->add_option("--scope");
-  add_json(*propagate);
-  propagate->add_option("plan-id")->required();
+  propagate->add_option("--scope")->description("Accepted and discarded; propagation is unguarded");
+  add_json(*propagate, "Emit machine-readable JSON instead of text");
+  propagate->add_option("plan-id")->description("Id of the anchor plan to propagate with its descendants")->required();
 }
 } // namespace planar::cmd::ext::handlers::ext_cli

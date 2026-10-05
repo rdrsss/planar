@@ -12,7 +12,7 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_diff(CLI::App& plan) -> CLI::App* {
   CLI::App* diff = plan.add_subcommand("diff", "Diff plan against database version.");
-  add_positional(*diff, "plan-id");
+  add_positional(*diff, "plan-id", "Plan id or slug");
   return diff;
 }
 } // namespace planar::cmd::handlers::plan_cli

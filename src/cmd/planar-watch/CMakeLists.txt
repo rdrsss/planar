@@ -118,6 +118,7 @@ planar_binary(planar_watch
     handlers/schema/command.cppm
 
     surface.cppm
+    docs.cppm
     handlers/shared/format.cppm
     handlers/version/version.cppm
     handlers/schema/schema.cppm

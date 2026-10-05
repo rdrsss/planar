@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::capture_cli {
 /// @return Registered CLI node.
 export auto attach_end(CLI::App* capture) -> CLI::App* {
   CLI::App* end = capture->add_subcommand("end", "End the active or specified session.");
-  add_int(*end, "--session");
-  add_string(*end, "--summary");
-  add_json(*end);
-  add_positional_optional(*end, "session-id");
+  add_int(*end, "--session", "Session id to end; the positional wins when both are given");
+  add_string(*end, "--summary", "Session summary text; may be @<file>");
+  add_json(*end, "Emit machine-readable JSON instead of text");
+  add_positional_optional(*end, "session-id", "Session id to end");
   return end;
 }
 } // namespace planar::cmd::handlers::capture_cli

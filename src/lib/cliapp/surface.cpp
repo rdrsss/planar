@@ -56,6 +56,15 @@ namespace {
 /// rendered through this formatter is byte-identical to the page the same
 /// tree rendered before `add_bool_flag` existed.
 struct negation_hiding_formatter : CLI::Formatter {
+  /// @brief Keep a footer's line breaks and indentation.
+  ///
+  /// CLI11 re-flows a footer as a paragraph by default, which drops the
+  /// indentation of the `Examples:` and `Exit codes:` rows. Nothing else in
+  /// the tree sets a footer.
+  negation_hiding_formatter() {
+    enable_footer_formatting(false);
+  }
+
   /// @brief Render an option's name column without its negation names.
   /// @param opt The option.
   /// @param is_positional Whether it is a positional.
@@ -102,6 +111,29 @@ auto hide_negations_in_help(CLI::App& root) -> void {
 }
 
 auto hoist_subcommands(const CLI::App& root, std::span<std::string const> argv) -> std::vector<std::string> {
+  // True when `name` is declared somewhere in the tree and every declaration
+  // takes a value (expected_max != 0, never a bare flag). The token after such
+  // a flag is its value and must not be read as a verb, which is how
+  // `schema --command task` stays a lookup. Resolved against the whole tree
+  // rather than the node reached so far, so the value-before-verb spelling
+  // (`planar --command task schema`) is protected too; a name declared as a
+  // bare flag on any node falls back to the plain rule, because CLI11 would
+  // not consume a value for it there either.
+  auto const takes_value_everywhere = [&root](std::string const& name) -> bool {
+    bool seen = false;
+    for (auto const& node : all_nodes(root)) {
+      const CLI::Option* opt = node.node->get_option_no_throw(name);
+      if (opt == nullptr) {
+        continue;
+      }
+      if (opt->get_expected_max() == 0) {
+        return false;
+      }
+      seen = true;
+    }
+    return seen;
+  };
+
   std::vector<std::string> path;
   std::vector<std::string> tail;
   const CLI::App*          node        = &root;
@@ -121,6 +153,16 @@ auto hoist_subcommands(const CLI::App& root, std::span<std::string const> argv) 
       continue;
     }
     if (!token.empty() && token.front() == '-') {
+      // A long flag that takes a value, written as `--flag value`, keeps its
+      // value beside it in the tail so the verb scan below never sees it:
+      // `schema --command task` looks `task` up instead of hoisting it. The
+      // `--flag=value` form is one flag-shaped token and needs no such care,
+      // and a flag given as the last token has no value to protect.
+      if (token.starts_with("--") && !token.contains('=') && i + 1 < argv.size() && takes_value_everywhere(token)) {
+        tail.push_back(token);
+        tail.push_back(argv[++i]);
+        continue;
+      }
       tail.push_back(token);
       continue;
     }

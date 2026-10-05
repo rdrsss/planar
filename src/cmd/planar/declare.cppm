@@ -72,18 +72,24 @@ export module planar.cmd.planar.declare;
 
 import std;
 import cli11;
+import planar.cliapp.surface;
 
 namespace planar::cmd {
 
+/// @brief The explicit marker for a flag or positional whose help text has
+/// not been authored yet; re-exported from `planar.cliapp.surface`.
+export using cliapp::k_undocumented;
+
 /// @brief The `--json` flag, the single most common declaration in the tree.
 /// @param app The node to declare it on.
-export auto add_json(CLI::App& app) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_json(CLI::App& app, std::string_view desc) -> void;
 
 /// @brief A boolean flag, with the `--no-X` negation attached.
 /// @param app The node to declare it on.
 /// @param name The canonical long name, `--` included.
-/// @param desc The help line, or empty for none.
-export auto add_bool(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_bool(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief A boolean flag whose DECLARED default is true.
 ///
@@ -91,21 +97,21 @@ export auto add_bool(CLI::App& app, std::string_view name, std::string_view desc
 /// makes the catalog report `"default":true` rather than a blanket false.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
-/// @param desc The help line, or empty for none.
-export auto add_bool_default_true(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_bool_default_true(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief A string-valued flag with no declared default.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
-/// @param desc The help line, or empty for none.
-export auto add_string(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_string(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief A string-valued flag carrying a declared default.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
 /// @param default_value The default the catalog reports.
-/// @param desc The help line, or empty for none.
-export auto add_string_default(CLI::App& app, std::string_view name, std::string_view default_value, std::string_view desc = {})
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_string_default(CLI::App& app, std::string_view name, std::string_view default_value, std::string_view desc)
     -> void;
 
 /// @brief A REQUIRED string flag.
@@ -117,8 +123,8 @@ export auto add_string_default(CLI::App& app, std::string_view name, std::string
 /// handler-level check.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
-/// @param desc The help line, or empty for none.
-export auto add_string_required(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_string_required(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief A REPEATABLE string flag.
 ///
@@ -129,28 +135,27 @@ export auto add_string_required(CLI::App& app, std::string_view name, std::strin
 /// deliberately absent rather than defaulted.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
-/// @param desc The help line, or empty for none.
-export auto add_string_list(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_string_list(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief An integer flag.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
-/// @param desc The help line, or empty for none.
-export auto add_int(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_int(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief An integer flag carrying a declared default.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
 /// @param default_value The default the catalog reports.
-/// @param desc The help line, or empty for none.
-export auto add_int_default(CLI::App& app, std::string_view name, std::string_view default_value, std::string_view desc = {})
-    -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_int_default(CLI::App& app, std::string_view name, std::string_view default_value, std::string_view desc) -> void;
 
 /// @brief A REQUIRED integer flag.
 /// @param app The node to declare it on.
 /// @param name The canonical long name.
-/// @param desc The help line, or empty for none.
-export auto add_int_required(CLI::App& app, std::string_view name, std::string_view desc = {}) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_int_required(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief A required positional argument.
 ///
@@ -161,32 +166,16 @@ export auto add_int_required(CLI::App& app, std::string_view name, std::string_v
 /// time where `workbench status` renders the whole workbench.
 /// @param app The node to declare it on.
 /// @param name The positional's name.
-export auto add_positional(CLI::App& app, std::string_view name) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_positional(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief An OPTIONAL positional argument.
 ///
 /// See `add_positional` for why the two are separate primitives.
 /// @param app The node to declare it on.
 /// @param name The positional's name.
-export auto add_positional_optional(CLI::App& app, std::string_view name) -> void;
-
-/// @brief A required positional argument carrying its own DESCRIPTION.
-///
-/// Seven of the surface's positionals declare help text of their own
-/// (`promote`/`demote`/`link`'s `ref`, `unlink`'s `link-id`, `search`'s
-/// `query`, `completion`'s `shell`, `test-spec status`'s `plan`); the
-/// other twenty-odd declare none, and CLI11 renders an empty description
-/// column for them. Split from `add_positional` rather than folded into
-/// it with a defaulted parameter for the same reason `add_positional` and
-/// `add_positional_optional` are separate: the call site should say which
-/// shape it means.
-///
-/// Every described positional in the tree is REQUIRED, so there is no
-/// optional counterpart. Add one only when a spec needs it.
-/// @param app The node to declare it on.
-/// @param name The positional's name.
-/// @param desc The help line.
-export auto add_positional_described(CLI::App& app, std::string_view name, std::string_view desc) -> void;
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_positional_optional(CLI::App& app, std::string_view name, std::string_view desc) -> void;
 
 /// @brief Let a leaf accept ANY unrecognized flag or positional.
 ///

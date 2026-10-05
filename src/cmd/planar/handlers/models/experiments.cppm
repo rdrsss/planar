@@ -16,7 +16,7 @@ export auto attach_experiments(CLI::App& models) -> CLI::App* {
                      "digest, and when an operator approved\n  it) alongside how many terminal samples it has produced and how "
                      "many\n  of those count toward a recommendation. The two counts differ whenever\n  a run was recorded but "
                      "excluded; reporting only the eligible count\n  would understate what actually ran.");
-  add_json(*experiments);
+  add_json(*experiments, "Emit machine-readable JSON instead of text");
   return experiments;
 }
 } // namespace planar::cmd::handlers::models_cli

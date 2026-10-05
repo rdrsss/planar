@@ -11,11 +11,11 @@ namespace planar::cmd::handlers::task_cli {
 /// @param task Input task.
 /// @return Registered CLI node.
 export auto attach_done(CLI::App& task) -> CLI::App* {
-  CLI::App* done = task.add_subcommand("done", "Mark a task as done (single-arg form; Go supports variadic).");
-  add_string(*done, "--scope");
-  add_bool(*done, "--force", "Override active-claim guard and flip status anyway.");
-  add_json(*done);
-  add_positional(*done, "task-id");
+  CLI::App* done = task.add_subcommand("done", "Mark a task as done.");
+  add_string(*done, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_bool(*done, "--force", "Override active-claim guard and flip status anyway");
+  add_json(*done, "Emit machine-readable JSON instead of text");
+  add_positional(*done, "task-id", "Task id");
   return done;
 }
 } // namespace planar::cmd::handlers::task_cli

@@ -58,6 +58,7 @@ import planar.cliapp.surface;
 namespace {
 
 using planar::cliapp::add_bool_flag;
+using planar::cliapp::k_undocumented;
 
 /// @brief Parse `args` against a freshly built one-leaf tree.
 /// @param declare Called with the leaf so a case can shape it.
@@ -83,7 +84,7 @@ auto try_parse(auto&& declare, std::vector<std::string> args) -> std::optional<p
 /// @brief The plain-`--json` leaf every case below starts from.
 /// @param leaf The node to declare it on.
 auto declare_json(CLI::App& leaf) -> void {
-  add_bool_flag(leaf, "--json");
+  add_bool_flag(leaf, "--json", k_undocumented);
 }
 
 } // namespace
@@ -122,7 +123,7 @@ TEST_CASE("a boolean flag DEFAULTING TRUE accepts its negation and goes false", 
   // two real instances. This is the case the old presence-only `flag_bool`
   // could not express at all: `harvest` seeds the key from the declared
   // default, so absent and `--no-editor` looked identical.
-  auto const declare = [](CLI::App& leaf) { add_bool_flag(leaf, "--editor")->default_str("true"); };
+  auto const declare = [](CLI::App& leaf) { add_bool_flag(leaf, "--editor", k_undocumented)->default_str("true"); };
 
   auto const absent = try_parse(declare, {});
   REQUIRE(absent.has_value());
@@ -137,7 +138,7 @@ TEST_CASE("a flag already named no-something gets its own negation too", "[cliap
   // `planar-agent claim --no-transition` is a genuinely DECLARED bool
   // flag, and the oracle synthesizes `--no-no-transition` for it like any
   // other. Verified by running it, not inferred from the parser source.
-  auto const declare = [](CLI::App& leaf) { add_bool_flag(leaf, "--no-transition"); };
+  auto const declare = [](CLI::App& leaf) { add_bool_flag(leaf, "--no-transition", k_undocumented); };
 
   auto const plain = try_parse(declare, {"--no-transition"});
   REQUIRE(plain.has_value());
@@ -180,7 +181,7 @@ TEST_CASE("the negation is invisible to the schema catalog", "[cliapp][surface][
   // name into `lnames_` as well as `fnames_`, so this fails loudly the
   // moment `aliases_of` stops subtracting.
   CLI::App app{"", "tool"};
-  add_bool_flag(app, "--json");
+  add_bool_flag(app, "--json", k_undocumented);
   auto const catalog = planar::cliapp::schema_json(app);
   CHECK(catalog.contains(R"("long":"--json")"));
   CHECK(catalog.contains(R"("aliases":[])"));
@@ -233,9 +234,14 @@ auto build_hoist_tree(CLI::App& app) -> void {
   CLI::App* outer = app.add_subcommand("outer", "Outer");
   outer->require_subcommand(0);
   CLI::App* inner = outer->add_subcommand("inner", "Inner");
-  add_bool_flag(*inner, "--json");
+  add_bool_flag(*inner, "--json", k_undocumented);
   inner->add_option("name");
   outer->add_subcommand("other", "Other");
+  // The real tree declares `--command` as a value-taking option on the
+  // `schema` leaf and nowhere as a bare flag; the hoist protects a flag's
+  // value only under that condition, so the fixture declares it the same way.
+  CLI::App* schema = app.add_subcommand("schema", "Schema");
+  schema->add_option("--command");
 }
 
 /// @brief Hoist `args` (argv[0] excluded) against `build_hoist_tree`.
@@ -289,4 +295,20 @@ TEST_CASE("a token after the terminator is never a verb", "[cliapp][surface][hoi
 TEST_CASE("an already ordered argv is left exactly as it was", "[cliapp][surface][hoist]") {
   CHECK(hoist({"outer", "inner", "--json"}) == std::vector<std::string>{"outer", "inner", "--json"});
   CHECK(hoist({}) == std::vector<std::string>{});
+}
+
+TEST_CASE("the value of --command is never read as a verb", "[cliapp][surface][hoist][7204]") {
+  // `outer` is a child of the root, so a bare `outer` after a flag WOULD be
+  // hoisted into the path; as the value of `--command` it must stay in the tail.
+  CHECK(hoist({"--command", "outer", "outer", "inner"}) == std::vector<std::string>{"outer", "inner", "--command", "outer"});
+  CHECK(hoist({"outer", "--command", "inner", "other"}) == std::vector<std::string>{"outer", "other", "--command", "inner"});
+  // The `=` form is one flag-shaped token and was never at risk.
+  CHECK(hoist({"--command=outer", "outer"}) == std::vector<std::string>{"outer", "--command=outer"});
+  // A trailing `--command` with no value is left for the parser to refuse.
+  CHECK(hoist({"outer", "--command"}) == std::vector<std::string>{"outer", "--command"});
+  // The protection is a property of the declaration, not of the spelling: a
+  // flag the tree never declares, and a flag declared as a bare bool, do not
+  // swallow the token after them, so a verb there is still hoisted.
+  CHECK(hoist({"--nothing", "outer", "inner"}) == std::vector<std::string>{"outer", "inner", "--nothing"});
+  CHECK(hoist({"outer", "inner", "--json", "other"}) == std::vector<std::string>{"outer", "inner", "--json", "other"});
 }

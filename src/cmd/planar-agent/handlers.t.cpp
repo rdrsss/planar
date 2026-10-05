@@ -300,6 +300,12 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   CHECK(explicit_help.out.starts_with("Agent-callable coordination binary (pull / claim / complete / heartbeat /\n"
                                       "reconcile).\n"));
   CHECK(explicit_help.out.contains("SUBCOMMANDS:"));
+  // The write surface is stated on the root page, as planar-ext's is.
+  CHECK(explicit_help.out.contains("agent_actions"));
+  CHECK(explicit_help.out.contains("agent_work_claims"));
+  CHECK(explicit_help.out.contains("routing_dispatch_"));
+  CHECK(explicit_help.out.contains("queue_entries"));
+  CHECK(explicit_help.out.contains("tasks.status"));
   // Matched as a LISTING LINE (`"\n  <verb>"`), not as a bare substring.
   // CLI11 indents a subcommand entry by exactly two spaces and wraps its
   // description to a deeper column, so this form matches an entry and
@@ -338,14 +344,19 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // EXACTLY (trailing spaces included) rather than loosened to a
   // `contains` check. Task 6123 re-baselined these bytes from the oracle's
   // renderer onto CLI11's; the reason to pin them did not change.
-  CHECK(leaf_help.out == "Print the planar-agent version, commit, and C++ toolchain.\n"
-                         "\n"
-                         "\n"
-                         "version [OPTIONS]\n"
-                         "\n"
-                         "\n"
-                         "OPTIONS:\n"
-                         "  -h,     --help              Print this help message and exit\n");
+  CHECK(leaf_help.out ==
+        "Print the planar-agent version, commit, and C++ toolchain.\n"
+        "\n"
+        "\n"
+        "version [OPTIONS]\n"
+        "\n"
+        "\n"
+        "OPTIONS:\n"
+        "  -h,     --help              Print this help message and exit\n"
+        "\n"
+        "Exit codes:\n"
+        "  0  Success.\n"
+        "  1  Failure: entity or claim not found, an unmapped error, or a usage error such as an unknown flag.\n");
 }
 
 TEST_CASE("planar-agent leaf help for schema is pinned exactly", "[cmd][agent][handlers]") {
@@ -359,5 +370,15 @@ TEST_CASE("planar-agent leaf help for schema is pinned exactly", "[cmd][agent][h
                    "\n"
                    "\n"
                    "OPTIONS:\n"
-                   "  -h,     --help              Print this help message and exit\n");
+                   "  -h,     --help              Print this help message and exit\n"
+                   "          --command           Emit only this command's catalog object, by full path (\"planar\n"
+                   "                              task update\") or relative to the root (\"task update\"); an unknown\n"
+                   "                              path exits 2 with nothing on stdout\n"
+                   "          --compact           Emit one {command, summary} row per command instead of the full\n"
+                   "                              catalog; with --command, only that command's row\n"
+                   "\n"
+                   "Exit codes:\n"
+                   "  0  Success.\n"
+                   "  1  Failure: entity or claim not found, an unmapped error, or a usage error such as an unknown flag.\n"
+                   "  2  Bad input: an invalid value or entity ref.\n");
 }

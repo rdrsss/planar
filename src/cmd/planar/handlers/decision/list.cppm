@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& decision) -> CLI::App* {
   CLI::App* list = decision.add_subcommand("list", "List decisions.");
-  add_string(*list, "--scope");
-  add_string(*list, "--status");
-  add_int(*list, "--plan");
-  add_json(*list);
+  add_string(*list, "--scope", "Restrict to this scope slug instead of the cwd-derived scope");
+  add_string(*list, "--status", "Restrict to a status or comma-separated list: proposed, accepted, withdrawn, superseded");
+  add_int(*list, "--plan", "Restrict to decisions attached to this plan id");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::decision_cli

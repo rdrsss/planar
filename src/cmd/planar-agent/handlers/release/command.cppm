@@ -17,6 +17,6 @@ export auto add(CLI::App& root) -> void {
   release->add_option("--reason")->description("Optional reason for releasing");
   shared::add_no_locality_probe(*release, "Skip the git locality probe and commit collection");
   shared::add_supervision(*release, true);
-  shared::add_json(*release);
+  shared::add_json(*release, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::release_cli

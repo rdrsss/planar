@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::bench_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App* bench) -> CLI::App* {
   CLI::App* show = bench->add_subcommand("show", "Show a run's full state (header + events + touches).");
-  add_json(*show);
-  add_positional(*show, "run-uid");
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "run-uid", "Run uid");
   return show;
 }
 } // namespace planar::cmd::handlers::bench_cli

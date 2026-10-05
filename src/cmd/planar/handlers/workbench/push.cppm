@@ -14,11 +14,11 @@ namespace planar::cmd::handlers::workbench_cli {
 /// @return Registered CLI node.
 export auto attach_push(CLI::App& workbench) -> CLI::App* {
   CLI::App* push = workbench.add_subcommand("push", "Apply DB→FS changes atomically; report FS→DB drift.");
-  add_bool(*push, "--verbose");
-  add_json(*push);
+  add_bool(*push, "--verbose", "Verbose text rendering of the push result");
+  add_json(*push, "Emit machine-readable JSON instead of text");
   add_string(*push, "--filter-mode", "Terminal-status filter: 'failures' (default) or 'all'");
   add_bool(*push, "--apply-cleanup", "Remove pre-existing FS files for entities this push would have filtered");
-  add_positional(*push, "plan");
+  add_positional(*push, "plan", "Plan id or slug");
   return push;
 }
 } // namespace planar::cmd::handlers::workbench_cli

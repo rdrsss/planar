@@ -15,8 +15,8 @@ namespace planar::cmd::handlers::annotate_cli {
 export auto attach_request_command(CLI::App& annotate) -> CLI::App* {
   CLI::App* command =
       annotate.add_subcommand("command", "Apply a receipt-backed annotation JSON request from stdin (--request @-).");
-  add_string(*command, "--request");
-  add_json(*command);
+  add_string(*command, "--request", "Request source; only @- (JSON object on stdin) is accepted");
+  add_json(*command, "Emit machine-readable JSON instead of text");
   return command;
 }
 } // namespace planar::cmd::handlers::annotate_cli

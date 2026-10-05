@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::models_cli {
 /// @return Registered CLI node.
 export auto attach_registry_bind(CLI::App& registry) -> CLI::App* {
   CLI::App* bind = registry.add_subcommand("bind", "Allow one role and tier for a candidate.");
-  add_int_required(*bind, "--candidate");
-  add_string_required(*bind, "--role");
-  add_string_required(*bind, "--tier");
+  add_int_required(*bind, "--candidate", "Registry candidate id");
+  add_string_required(*bind, "--role", "Role to allow for the candidate");
+  add_string_required(*bind, "--tier", "Tier: small, medium, large");
   return bind;
 }
 } // namespace planar::cmd::handlers::models_cli

@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::handoff_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App* handoff) -> CLI::App* {
   CLI::App* list = handoff->add_subcommand("list", "List handoffs.");
-  add_string(*list, "--vendor");
-  add_string(*list, "--note");
-  add_json(*list);
-  add_string(*list, "--status");
+  add_string(*list, "--vendor", "Vendor name; accepted but not read by this verb");
+  add_string(*list, "--note", "Free-form note; accepted but not read by this verb");
+  add_json(*list, "Emit machine-readable JSON instead of text");
+  add_string(*list, "--status", "Filter by handoff status: pending, validated, consumed, abandoned");
   return list;
 }
 } // namespace planar::cmd::handlers::handoff_cli

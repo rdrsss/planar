@@ -824,17 +824,26 @@ TEST_CASE("skills renders its own help page and exits 0 without a database", "[c
   // The PROSE is still the oracle's, verbatim — that text is the operator's
   // only pointer to scriptorium, and losing it would silently strand
   // anyone who runs the retired verb.
-  CHECK(got.out == "The unified skill source tree under skills/src/ is rendered by the\n"
-                   "external scriptorium binary (plan 918). Planar no longer renders vendor\n"
-                   "projections nor tracks their install-drift in-band; use `scriptorium\n"
-                   "check`/`scriptorium status` instead. This command has no subcommands.\n"
-                   "\n"
-                   "\n"
-                   "skills [OPTIONS]\n"
-                   "\n"
-                   "\n"
-                   "OPTIONS:\n"
-                   "  -h,     --help              Print this help message and exit\n");
+  CHECK(got.out ==
+        "The unified skill source tree under skills/src/ is rendered by the\n"
+        "external scriptorium binary (plan 918). Planar no longer renders vendor\n"
+        "projections nor tracks their install-drift in-band; use `scriptorium\n"
+        "check`/`scriptorium status` instead. This command has no subcommands.\n"
+        "\n"
+        "\n"
+        "skills [OPTIONS]\n"
+        "\n"
+        "\n"
+        "OPTIONS:\n"
+        "  -h,     --help              Print this help message and exit\n"
+        "\n"
+        "Examples:\n"
+        "  planar skills\n"
+        "\n"
+        "Exit codes:\n"
+        "  0  Success.\n"
+        "  1  Generic failure: entity not found, an unmapped error, or a busy source.\n"
+        "  2  Bad input: an invalid value or entity ref, or a parse failure such as an unknown flag or a missing argument.\n");
 
   // `planar skills --help` renders the SAME page through dispatch's help
   // path rather than the handler. Both routes must agree — if they did not,

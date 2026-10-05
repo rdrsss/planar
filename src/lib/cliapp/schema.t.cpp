@@ -578,3 +578,149 @@ TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11
   std::error_code ec;
   std::filesystem::remove_all(scratch_root, ec);
 }
+
+TEST_CASE("select_schema narrows a flat catalog without re-rendering it", "[cliapp][schema][7204]") {
+  CLI::App app{"", "tool"};
+  app.require_subcommand(0);
+  CLI::App* grp = app.add_subcommand("grp", "A group");
+  grp->require_subcommand(0);
+  grp->add_subcommand("leaf", "A leaf with \"quotes\" and a } brace");
+  auto const catalog = planar::cliapp::schema_json(app);
+
+  using planar::cliapp::schema_request;
+  using planar::cliapp::select_schema;
+  CHECK(select_schema(catalog, {}).value() == catalog);
+
+  auto const one = select_schema(catalog, schema_request{.command = "grp leaf"});
+  REQUIRE(one.has_value());
+  CHECK(one->starts_with(R"({"name":"leaf")"));
+  CHECK(catalog.contains(*one));
+  CHECK(select_schema(catalog, schema_request{.command = "tool  grp   leaf"}).value() == *one);
+
+  auto const row = select_schema(catalog, schema_request{.command = "grp leaf", .compact = true});
+  CHECK(row.value() == R"({"command":"tool grp leaf","summary":"A leaf with \"quotes\" and a } brace"})");
+
+  auto const compact = select_schema(catalog, schema_request{.compact = true});
+  CHECK(compact.value() == R"({"schemaVersion":1,"layout":"compact","root":"tool","commands":[{"command":"tool","summary":""},)"
+                           R"({"command":"tool grp","summary":"A group"},)"
+                           R"({"command":"tool grp leaf","summary":"A leaf with \"quotes\" and a } brace"}]})");
+
+  auto const missing = select_schema(catalog, schema_request{.command = "grp nope"});
+  REQUIRE_FALSE(missing.has_value());
+  CHECK(missing.error().contains("grp nope"));
+  CHECK_FALSE(select_schema(catalog, schema_request{.command = ""}).has_value());
+}
+
+// ---------------------------------------------------------------------------
+// Per-command examples and exit codes (plan 1104, task 7203).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr std::pair<std::string_view, std::string_view> k_doc_examples[] = {
+    {"planar task done", "planar task done 42"},
+    {"planar task done", "planar task done 42 --force"},
+};
+constexpr std::pair<std::string_view, std::string_view> k_doc_exit_codes[] = {
+    {"planar task done", "0 2 5"},
+    {"planar task add", "0 99"},
+};
+constexpr planar::cliapp::exit_code_doc k_doc_meanings[] = {
+    {0, "Success."},
+    {2, "Bad input."},
+    {5, "Cross-scope write refused."},
+};
+constexpr planar::cliapp::exit_meaning_override k_doc_overrides[] = {
+    {"planar task done", 5, "The task belongs to another scope."},
+};
+constexpr planar::cliapp::command_docs k_doc_table{k_doc_examples, k_doc_exit_codes, k_doc_meanings, k_doc_overrides};
+
+/// @brief The `docs` object of `command` in `catalog`, as raw JSON text.
+/// @param catalog A catalog document.
+/// @param command The full command path.
+/// @return The text from `"docs":` to the end of that object, or empty.
+auto docs_of(std::string const& catalog, std::string_view command) -> std::string {
+  auto const at = catalog.find(std::format(R"("command":"{}")", command));
+  if (at == std::string::npos) {
+    return {};
+  }
+  auto const docs = catalog.find(R"("docs":)", at);
+  auto const end  = catalog.find(R"("version":"","sourceUrl":""})", docs);
+  return catalog.substr(docs, end - docs);
+}
+
+} // namespace
+
+TEST_CASE("schema_json fills docs.examples and docs.exitCodes for a leaf and leaves a group empty",
+          "[cliapp][schema][docs][unit]") {
+  CLI::App app{"", "planar"};
+  build_root(app);
+  auto const catalog = planar::cliapp::schema_json(app, {}, {}, k_doc_table);
+
+  auto const leaf = docs_of(catalog, "planar task done");
+  CHECK(leaf.contains(R"("examples":["planar task done 42","planar task done 42 --force"])"));
+  CHECK(leaf.contains(R"("exitCodes":[{"code":0,"meaning":"Success."},{"code":2,"meaning":"Bad input."},)"
+                      R"({"code":5,"meaning":"The task belongs to another scope."}])"));
+
+  auto const group = docs_of(catalog, "planar task");
+  CHECK(group.contains(R"("examples":[],"exitCodes":[])"));
+  auto const root = docs_of(catalog, "planar");
+  CHECK(root.contains(R"("examples":[],"exitCodes":[])"));
+}
+
+TEST_CASE("schema_json without a docs table keeps every docs slot empty", "[cliapp][schema][docs][unit]") {
+  CLI::App app{"", "planar"};
+  build_root(app);
+  auto const with_table = planar::cliapp::schema_json(app, {}, {}, planar::cliapp::command_docs{});
+  CHECK(with_table == planar::cliapp::schema_json(app));
+  CHECK(with_table.contains(R"("docs":{"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],)"));
+}
+
+TEST_CASE("docs_for reads only its own rows and applies an override to one command", "[cliapp][schema][docs][unit]") {
+  auto const done = planar::cliapp::docs_for(k_doc_table, "planar task done");
+  REQUIRE(done.examples.size() == 2);
+  REQUIRE(done.exit_codes.size() == 3);
+  CHECK(done.exit_codes[2].first == 5);
+  CHECK(done.exit_codes[2].second == "The task belongs to another scope.");
+
+  // The override is keyed by command: another command listing code 5 keeps the
+  // binary-wide meaning.
+  auto const add = planar::cliapp::docs_for(k_doc_table, "planar task add");
+  REQUIRE(add.exit_codes.size() == 2);
+  CHECK(add.exit_codes[0].second == "Success.");
+  // A code with no meaning row renders with an empty meaning rather than vanishing.
+  CHECK(add.exit_codes[1].first == 99);
+  CHECK(add.exit_codes[1].second.empty());
+
+  auto const none = planar::cliapp::docs_for(k_doc_table, "planar task");
+  CHECK(none.examples.empty());
+  CHECK(none.exit_codes.empty());
+}
+
+TEST_CASE("render_docs_footer lays out Examples then Exit codes", "[cliapp][schema][docs][unit]") {
+  CHECK(planar::cliapp::render_docs_footer(k_doc_table, "planar task done") == "Examples:\n"
+                                                                               "  planar task done 42\n"
+                                                                               "  planar task done 42 --force\n"
+                                                                               "\n"
+                                                                               "Exit codes:\n"
+                                                                               "  0  Success.\n"
+                                                                               "  2  Bad input.\n"
+                                                                               "  5  The task belongs to another scope.");
+  CHECK(planar::cliapp::render_docs_footer(k_doc_table, "planar task").empty());
+}
+
+TEST_CASE("install_docs_footers sets a footer on leaves with rows and none elsewhere", "[cliapp][schema][docs][unit]") {
+  CLI::App app{"", "planar"};
+  build_root(app);
+  planar::cliapp::install_docs_footers(app, k_doc_table);
+
+  CLI::App* task = app.get_subcommand("task");
+  CLI::App* done = task->get_subcommand("done");
+  CLI::App* add  = task->get_subcommand("add");
+  CHECK(done->get_footer() == planar::cliapp::render_docs_footer(k_doc_table, "planar task done"));
+  CHECK(done->get_footer().starts_with("Examples:\n  planar task done 42"));
+  CHECK(add->get_footer().starts_with("Exit codes:"));
+  CHECK_FALSE(add->get_footer().contains("Examples:"));
+  CHECK(task->get_footer().empty());
+  CHECK(app.get_footer().empty());
+}

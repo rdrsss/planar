@@ -27,7 +27,7 @@ export auto add(CLI::App& root) -> void {
   shared::add_vendor(*ps, "Filter by vendor (claude, codex, copilot, ...)");
   shared::add_int(*ps, "--plan", "Filter by plan id (matches plan-direct, task-on-plan, and plan_step-on-plan claims)");
   cliapp::add_bool_flag(*ps, "--stale", "Include stale + lease-expired claims");
-  shared::add_json(*ps);
+  shared::add_json(*ps, "Emit machine-readable JSON instead of text");
   shared::add_follow(*ps, "Stream snapshots until SIGINT", "Poll interval for --follow (default 1s; e.g. 100ms)");
   ps->add_option("--sort-by")->description("Sort order for active claims: heartbeat (default) or lease");
   ps->add_option("--group-by")->description("Group claims by dimension: role, scope, or vendor");

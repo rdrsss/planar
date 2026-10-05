@@ -226,22 +226,22 @@ auto document_validate_range(context& ctx, const cliapp::parsed_args& args) -> h
 auto declare_document(CLI::App& root) -> void {
   auto* document     = root.add_subcommand("document", "Project and validate authoritative block documents.");
   auto  source_flags = [](CLI::App& app) {
-    add_string_required(app, "--kind");
-    add_int_required(app, "--id");
+    add_string_required(app, "--kind", "Source entity kind: plan or artifact");
+    add_int_required(app, "--id", "Source entity id");
   };
   auto* project = document->add_subcommand("project", "Emit an authoritative block-document-v1 projection.");
   source_flags(*project);
-  add_json(*project);
+  add_json(*project, "Emit machine-readable JSON instead of text");
   auto* validate = document->add_subcommand("validate-range", "Validate an adjacent revision-bound passage range.");
   source_flags(*validate);
-  add_string_required(*validate, "--content-revision");
-  add_string_required(*validate, "--start-key");
-  add_int_required(*validate, "--start-offset");
-  add_string_required(*validate, "--end-key");
-  add_int_required(*validate, "--end-offset");
-  add_string_list(*validate, "--covered-key");
-  add_string_list(*validate, "--segment-quote");
-  add_json(*validate);
+  add_string_required(*validate, "--content-revision", "Revision from the projection being validated against");
+  add_string_required(*validate, "--start-key", "Key of the passage where the range starts");
+  add_int_required(*validate, "--start-offset", "Byte offset within the start passage");
+  add_string_required(*validate, "--end-key", "Key of the passage where the range ends");
+  add_int_required(*validate, "--end-offset", "Byte offset within the end passage");
+  add_string_list(*validate, "--covered-key", "Covered passage key; repeat for each passage from start to end, in order");
+  add_string_list(*validate, "--segment-quote", "Projected text of one covered segment; repeat once per covered key");
+  add_json(*validate, "Emit machine-readable JSON instead of text");
 }
 
 } // namespace planar::cmd::handlers

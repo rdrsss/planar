@@ -11,6 +11,6 @@ namespace planar::cmd::handlers {
 /// @param root Input root.
 export auto declare_completion(CLI::App& root) -> void {
   CLI::App* completion = root.add_subcommand("completion", "Generate the autocompletion script for the specified shell.");
-  add_positional_described(*completion, "shell", "Shell: bash, zsh, or fish");
+  add_positional(*completion, "shell", "Shell: bash, zsh, or fish");
 }
 } // namespace planar::cmd::handlers

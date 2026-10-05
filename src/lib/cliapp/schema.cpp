@@ -5,6 +5,8 @@ module planar.cliapp.schema;
 
 import std;
 import cli11;
+import planar.cliapp.args;
+import planar.cliapp.surface;
 import planar.cliapp.walk;
 import planar.json_text;
 
@@ -38,11 +40,14 @@ auto string_array(std::span<std::string const> values) -> std::string {
 // information, no less.
 constexpr std::string_view k_completion_none = R"({"kind":"none","values":[]})";
 
-// Likewise: no per-node `doc` field existed to source this from, so the
-// Zig `Doc{}` empty-default shape was hardcoded. Reproduced verbatim.
-constexpr std::string_view k_docs_empty = R"({"examples":[],"exitCodes":[],"notes":[],"seeAlso":[],"files":[],)"
-                                          R"("bugs":[],"authors":[],"homepage":"","license":"","copyright":"",)"
-                                          R"("version":"","sourceUrl":""})";
+// Likewise: no per-node `doc` field existed to source the other slots from,
+// so the Zig `Doc{}` empty-default shape is hardcoded around the two slots
+// (`examples`, `exitCodes`) that `command_docs` fills.
+constexpr std::string_view k_docs_head = R"({"examples":)";
+constexpr std::string_view k_docs_mid  = R"(,"exitCodes":)";
+constexpr std::string_view k_docs_tail = R"(,"notes":[],"seeAlso":[],"files":[],)"
+                                         R"("bugs":[],"authors":[],"homepage":"","license":"","copyright":"",)"
+                                         R"("version":"","sourceUrl":""})";
 
 /// @brief The declared value set of `opt`, when it carries one.
 ///
@@ -341,9 +346,38 @@ auto summary_for(std::span<std::pair<std::string_view, std::string_view> const> 
   return description;
 }
 
+/// @brief The `docs` object for `command`.
+/// @param docs The binary's examples and exit codes.
+/// @param command The full command path.
+/// @return The JSON object.
+auto render_docs(const command_docs& docs, std::string_view command) -> std::string {
+  auto const  entry = docs_for(docs, command);
+  std::string out{k_docs_head};
+  out += "[";
+  for (std::size_t i = 0; i < entry.examples.size(); ++i) {
+    if (i > 0) {
+      out += ",";
+    }
+    out += quote(entry.examples[i]);
+  }
+  out += "]";
+  out += k_docs_mid;
+  out += "[";
+  for (std::size_t i = 0; i < entry.exit_codes.size(); ++i) {
+    if (i > 0) {
+      out += ",";
+    }
+    out += std::format(R"({{"code":{},"meaning":{}}})", entry.exit_codes[i].first, quote(entry.exit_codes[i].second));
+  }
+  out += "]";
+  out += k_docs_tail;
+  return out;
+}
+
 auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::string const> path,
                     std::span<std::pair<std::string_view, std::string_view> const> summaries,
-                    std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string {
+                    std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults,
+                    const command_docs&                                            docs) -> std::string {
   std::vector<std::string> const path_vec(path.begin(), path.end());
   auto const                     description = node.get_description();
   auto const                     command     = command_path(root, path);
@@ -364,7 +398,7 @@ auto render_command(const CLI::App& root, const CLI::App& node, std::span<std::s
   out += "\"flags\":" + render_flags(root, node, path, empty_defaults_for(empty_string_defaults, command)) + ",";
   out += "\"flagGroups\":[],";
   out += "\"positionals\":" + render_positionals(node) + ",";
-  out += "\"docs\":" + std::string(k_docs_empty);
+  out += "\"docs\":" + render_docs(docs, command);
   out += "}";
   return out;
 }
@@ -381,17 +415,275 @@ auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std
 
 auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
                  std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string {
+  return schema_json(root, summaries, empty_string_defaults, command_docs{});
+}
+
+auto docs_for(const command_docs& docs, std::string_view command) -> command_doc_entry {
+  command_doc_entry out;
+  for (auto const& [key, invocation] : docs.examples) {
+    if (key == command) {
+      out.examples.push_back(invocation);
+    }
+  }
+  for (auto const& [key, codes] : docs.exit_codes) {
+    if (key != command) {
+      continue;
+    }
+    std::string_view rest = codes;
+    while (!rest.empty()) {
+      auto const space     = rest.find(' ');
+      auto const token     = rest.substr(0, space);
+      rest                 = space == std::string_view::npos ? std::string_view{} : rest.substr(space + 1);
+      int code             = 0;
+      auto const [ptr, ec] = std::from_chars(token.data(), token.data() + token.size(), code);
+      if (ec != std::errc{} || ptr != token.data() + token.size()) {
+        continue;
+      }
+      std::string_view meaning;
+      for (auto const& row : docs.meanings) {
+        if (row.code == code) {
+          meaning = row.meaning;
+          break;
+        }
+      }
+      for (auto const& row : docs.overrides) {
+        if (row.command == command && row.code == code) {
+          meaning = row.meaning;
+          break;
+        }
+      }
+      out.exit_codes.emplace_back(code, meaning);
+    }
+  }
+  return out;
+}
+
+auto render_docs_footer(const command_docs& docs, std::string_view command) -> std::string {
+  auto const  entry = docs_for(docs, command);
+  std::string out;
+  if (!entry.examples.empty()) {
+    out += "Examples:";
+    for (auto const example : entry.examples) {
+      out += std::format("\n  {}", example);
+    }
+  }
+  if (!entry.exit_codes.empty()) {
+    if (!out.empty()) {
+      out += "\n\n";
+    }
+    out += "Exit codes:";
+    for (auto const& [code, meaning] : entry.exit_codes) {
+      out += std::format("\n  {}  {}", code, meaning);
+    }
+  }
+  return out;
+}
+
+auto install_docs_footers(CLI::App& root, const command_docs& docs) -> void {
+  for (auto const& node : all_nodes(root)) {
+    auto text = render_docs_footer(docs, command_path(root, node.path));
+    if (text.empty()) {
+      continue;
+    }
+    // `all_nodes` hands back const views of a tree the caller owns mutably;
+    // installing a footer mutates nothing an invocation reads. The text is
+    // set as a string: CLI11 appends a newline to a callback's result, which
+    // would leave a blank line at the end of the page.
+    const_cast<CLI::App*>(node.node)->footer(std::move(text)); // NOLINT(cppcoreguidelines-pro-type-const-cast)
+  }
+}
+
+auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
+                 std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults, const command_docs& docs)
+    -> std::string {
   std::string out = "{";
   out += "\"schemaVersion\":1,";
   out += "\"layout\":\"flat\",";
   out += "\"root\":" + quote(root.get_name()) + ",";
   out += "\"commands\":[";
-  out += render_command(root, root, {}, summaries, empty_string_defaults);
+  out += render_command(root, root, {}, summaries, empty_string_defaults, docs);
   for (auto const& node : all_nodes(root)) {
-    out += "," + render_command(root, *node.node, node.path, summaries, empty_string_defaults);
+    out += "," + render_command(root, *node.node, node.path, summaries, empty_string_defaults, docs);
   }
   out += "]";
   out += "}";
+  return out;
+}
+
+namespace {
+
+/// @brief Advance past one JSON string whose opening quote is at `pos`.
+/// @return The index one past the closing quote.
+auto skip_string(std::string_view text, std::size_t pos) -> std::size_t {
+  ++pos;
+  while (pos < text.size() && text[pos] != '"') {
+    pos += text[pos] == '\\' ? 2 : 1;
+  }
+  return pos + 1;
+}
+
+/// @brief Advance past one JSON value (string, object, array or scalar).
+/// @return The index one past the value.
+auto skip_value(std::string_view text, std::size_t pos) -> std::size_t {
+  if (pos < text.size() && text[pos] == '"') {
+    return skip_string(text, pos);
+  }
+  int depth = 0;
+  while (pos < text.size()) {
+    char const c = text[pos];
+    if (c == '"') {
+      pos = skip_string(text, pos);
+      continue;
+    }
+    if (c == '{' || c == '[') {
+      ++depth;
+    } else if (c == '}' || c == ']') {
+      if (depth == 0) {
+        return pos;
+      }
+      --depth;
+      if (depth == 0) {
+        return pos + 1;
+      }
+    } else if (c == ',' && depth == 0) {
+      return pos;
+    }
+    ++pos;
+  }
+  return pos;
+}
+
+/// @brief The raw JSON text of the string value under top-level `key` of `object`.
+/// @return The value including its quotes, or empty when absent.
+auto string_member(std::string_view object, std::string_view key) -> std::string_view {
+  std::size_t pos = 1; // past '{'
+  while (pos < object.size() && object[pos] != '}') {
+    if (object[pos] == ',') {
+      ++pos;
+      continue;
+    }
+    auto const key_end   = skip_string(object, pos);
+    auto const name      = object.substr(pos + 1, key_end - pos - 2);
+    pos                  = key_end + 1; // past ':'
+    auto const value_end = skip_value(object, pos);
+    if (name == key) {
+      return object.substr(pos, value_end - pos);
+    }
+    pos = value_end;
+  }
+  return {};
+}
+
+/// @brief Split the `commands` array of a flat catalog into its objects.
+auto command_objects(std::string_view catalog) -> std::vector<std::string_view> {
+  std::vector<std::string_view> out;
+  constexpr std::string_view    marker = "\"commands\":[";
+  auto const                    at     = catalog.find(marker);
+  if (at == std::string_view::npos) {
+    return out;
+  }
+  std::size_t pos = at + marker.size();
+  while (pos < catalog.size() && catalog[pos] == '{') {
+    auto const end = skip_value(catalog, pos);
+    out.push_back(catalog.substr(pos, end - pos));
+    pos = end;
+    if (pos < catalog.size() && catalog[pos] == ',') {
+      ++pos;
+    }
+  }
+  return out;
+}
+
+auto compact_row(std::string_view object) -> std::string {
+  std::string out = "{\"command\":";
+  out += string_member(object, "command");
+  out += ",\"summary\":";
+  out += string_member(object, "summary");
+  out += "}";
+  return out;
+}
+
+auto collapse_whitespace(std::string_view text) -> std::string {
+  std::string out;
+  std::size_t pos = 0;
+  while (pos < text.size()) {
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) != 0) {
+      ++pos;
+    }
+    auto const begin = pos;
+    while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])) == 0) {
+      ++pos;
+    }
+    if (pos > begin) {
+      if (!out.empty()) {
+        out += ' ';
+      }
+      out += text.substr(begin, pos - begin);
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+auto declare_schema_flags(CLI::App& schema_node) -> void {
+  schema_node.add_option("--command")
+      ->description("Emit only this command's catalog object, by full path (\"planar task update\") or relative to the root "
+                    "(\"task update\"); an unknown path exits 2 with nothing on stdout");
+  add_bool_flag(schema_node, "--compact",
+                "Emit one {command, summary} row per command instead of the full catalog; with --command, only that "
+                "command's row");
+}
+
+auto schema_request_of(const parsed_args& args) -> schema_request {
+  return schema_request{.command = flag_string(args, "--command"), .compact = flag_bool(args, "--compact")};
+}
+
+auto select_schema(std::string_view catalog, const schema_request& request) -> std::expected<std::string, std::string> {
+  if (!request.command.has_value() && !request.compact) {
+    return std::string{catalog};
+  }
+  auto const objects = command_objects(catalog);
+
+  if (request.command.has_value()) {
+    constexpr std::string_view root_key = "\"root\":";
+    auto const                 root_at  = catalog.find(root_key);
+    std::string_view const     root_raw =
+        root_at == std::string_view::npos
+            ? std::string_view{}
+            : catalog.substr(root_at + root_key.size(),
+                             skip_string(catalog, root_at + root_key.size()) - root_at - root_key.size());
+    std::string const root_name = root_raw.size() >= 2 ? std::string{root_raw.substr(1, root_raw.size() - 2)} : std::string{};
+    auto const        typed     = collapse_whitespace(*request.command);
+    auto const        wanted = typed.empty()
+                                   ? std::string{}
+                                   : (typed == root_name || typed.starts_with(root_name + " ") ? typed : root_name + " " + typed);
+    auto const        quoted = quote(wanted);
+    for (auto const object : objects) {
+      if (!typed.empty() && string_member(object, "command") == quoted) {
+        return request.compact ? compact_row(object) : std::string{object};
+      }
+    }
+    return std::unexpected(std::format("schema: unknown command '{}'", *request.command));
+  }
+
+  std::string out      = "{\"schemaVersion\":1,\"layout\":\"compact\",\"root\":";
+  auto const  root_key = std::string_view{"\"root\":"};
+  auto const  root_at  = catalog.find(root_key);
+  out += root_at == std::string_view::npos
+             ? std::string{"\"\""}
+             : std::string{catalog.substr(root_at + root_key.size(),
+                                          skip_string(catalog, root_at + root_key.size()) - root_at - root_key.size())};
+  out += ",\"commands\":[";
+  bool first = true;
+  for (auto const object : objects) {
+    if (!first) {
+      out += ",";
+    }
+    first = false;
+    out += compact_row(object);
+  }
+  out += "]}";
   return out;
 }
 

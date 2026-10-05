@@ -190,8 +190,8 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar task view", "View task's workbench file."},
       {"planar task diff", "Diff task against its database-stored version."},
       {"planar task review", "Reviewer entry point for task diff."},
-      {"planar task done", "Mark a task as done (single-arg form; Go supports variadic)."},
-      {"planar task cancel", "Cancel a task (single-arg form; Go supports variadic)."},
+      {"planar task done", "Mark a task as done."},
+      {"planar task cancel", "Cancel a task."},
       {"planar task block", "Mark a task as blocked and record the blocking relationship."},
       {"planar task link", "Create an entity link from a task to another entity."},
       {"planar task reopen", "Reopen a done or cancelled task with an audit-trail entry."},
@@ -408,6 +408,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar feedback triage list", "List triaged findings."},
       {"planar feedback triage show", "Show a triaged finding."},
       {"planar feedback triage set", "Set operator-confirmed triage fields."},
+      {"planar help", "Print the root help page (same as `planar --help`)."},
   };
   return k_summaries;
 }

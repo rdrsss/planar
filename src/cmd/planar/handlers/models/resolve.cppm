@@ -24,7 +24,7 @@ export auto attach_resolve(CLI::App& models) -> CLI::App* {
   add_string(*resolve, "--task", "Task id (required for task-bound roles)");
   add_string(*resolve, "--plan", "Anchor plan id (pre-task roles)");
   add_string(*resolve, "--fallback-tier", "Configured static fallback tier (default medium)");
-  add_json(*resolve);
+  add_json(*resolve, "Emit machine-readable JSON instead of text");
   return resolve;
 }
 } // namespace planar::cmd::handlers::models_cli

@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_diff(CLI::App& question) -> CLI::App* {
   CLI::App* diff = question.add_subcommand("diff", "Diff question against database version.");
-  add_positional(*diff, "question-id");
+  add_positional(*diff, "question-id", "Question id");
   return diff;
 }
 } // namespace planar::cmd::handlers::question_cli

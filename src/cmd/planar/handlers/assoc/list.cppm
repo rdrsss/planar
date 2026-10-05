@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::assoc_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App* assoc) -> CLI::App* {
   CLI::App* list = assoc->add_subcommand("list", "List all known associations.");
-  add_string(*list, "--kind");
-  add_json(*list);
+  add_string(*list, "--kind", "Restrict to one association kind, e.g. org, project, personal, ad-hoc");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::assoc_cli

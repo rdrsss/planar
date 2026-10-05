@@ -23,6 +23,6 @@ export auto add(CLI::App& root) -> void {
   shared::add_vendor(*abort_cmd, "Vendor tag for the aborting session", "Vendor session id for the aborting session");
   cliapp::add_bool_flag(*abort_cmd, "--override-supervisor",
                         "Abort an engine-supervised claim (refused otherwise; logged as supervisor_override)");
-  shared::add_json(*abort_cmd);
+  shared::add_json(*abort_cmd, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::abort_cli
