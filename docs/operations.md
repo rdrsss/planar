@@ -266,8 +266,9 @@ and test-coder action outcomes into a per-`(work_type, candidate)` scorecard.
 It is read-only: recommendations are previews, not config writes.
 
 Detail: [`concepts.md` §Model routing](concepts.md#model-routing),
-[`cli-reference.md` §Domain: models](cli-reference.md#domain-models), and
-the [`pl-models-config`](../skills/src/pl-models-config.md) skill.
+and
+[`cli-reference.md` §Domain: models](cli-reference.md#domain-models); each
+verb's `--help` carries the flags, examples and exit codes.
 
 ---
 

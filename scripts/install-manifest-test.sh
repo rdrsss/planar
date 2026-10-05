@@ -110,12 +110,12 @@ seed_prefix() {
 
 UNINSTALL_HOME="$TMP/uninstall_home"
 UNINSTALL_PREFIX="$UNINSTALL_HOME/.planar"
-mkdir -p "$UNINSTALL_PREFIX/bin" "$UNINSTALL_PREFIX/skills/src"
+mkdir -p "$UNINSTALL_PREFIX/bin" "$UNINSTALL_PREFIX/skills/planar"
 seed_prefix "$UNINSTALL_PREFIX"
 printf '#!/bin/sh\n' > "$UNINSTALL_PREFIX/bin/planar"
 chmod +x "$UNINSTALL_PREFIX/bin/planar"
 printf '{"version": 1}\n' > "$UNINSTALL_PREFIX/install-manifest.json"
-printf 'skill\n' > "$UNINSTALL_PREFIX/skills/src/pl-owned.md"
+printf 'skill\n' > "$UNINSTALL_PREFIX/skills/planar/SKILL.md"
 run_uninstall "$UNINSTALL_HOME" >"$TMP/uninstall-stdout" 2>"$TMP/uninstall-stderr" \
   || fail "uninstall of a full prefix failed: $(cat "$TMP/uninstall-stderr")"
 # Exactly planar.db, its sidecars and queue-logs/ are left; the idle agent.db

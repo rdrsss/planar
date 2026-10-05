@@ -15,14 +15,12 @@ AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
 EXECUTE_BINARY := planar-execute
 EXT_BINARY    := planar-ext
-SCRIPTORIUM_BINARY := scriptorium
 BIN_DIR       := bin
 BIN           := $(BIN_DIR)/$(BINARY)
 AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
-SCRIPTORIUM_BIN := $(BIN_DIR)/$(SCRIPTORIUM_BINARY)
 
 PREFIX      ?= $(HOME)/.local
 
@@ -64,7 +62,7 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the five Planar binaries and Scriptorium into ./bin/
+build: ## Build the five Planar binaries into ./bin/
 	@mkdir -p $(BIN_DIR)
 	cmake --preset release -DPLANAR_VERSION_META=OFF
 	cmake --build build/release $(ARGS)
@@ -73,10 +71,9 @@ build: ## Build the five Planar binaries and Scriptorium into ./bin/
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
-	@cp -f $(CPP_RELEASE_BIN_DIR)/$(SCRIPTORIUM_BINARY) $(SCRIPTORIUM_BIN)
 
 .PHONY: install
-install: ## Build and install the five Planar executables and Scriptorium into PREFIX/bin
+install: ## Build and install the five Planar executables into PREFIX/bin
 	cmake --preset release -DPLANAR_VERSION_META=ON
 	cmake --build build/release $(ARGS)
 	cmake --install build/release --prefix $(PREFIX)
@@ -500,7 +497,7 @@ eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-
 # so they remain a separate fast gate.
 #
 # They are worth gating because they police the AGENT CONTRACTS: the
-# executable prompts under agents/ and skills/src/ that the orchestrator and
+# executable prompts under agents/ and skills/ that the orchestrator and
 # its specialists actually follow. Those had no gate at all until now, and a
 # real violation (a language-specific `.zig-cache` reference in
 # agents/methodology.md, forbidden because the core surfaces must stay

@@ -16,7 +16,6 @@
 #                                     # Issues adapters; read-only on planning
 #                                     # tables, read-write on external_links /
 #                                     # external_systems / sync_events)
-#     bin/scriptorium                 # in-tree skill + agent renderer
 #     install-manifest.json           # placed vendor paths (extras) and staged paths
 #     planar.db                       # created on first `planar init` (0600;
 #                                     # the install root is 0700); also holds the
@@ -29,7 +28,6 @@
 #                                     # (planar-*.md roles plus the shared docs)
 #     skills/planar/                  # staged planar skill (SKILL.md + references/)
 #     codex-agents/planar-*.toml      # Codex custom agents rendered from agents/
-#     skills/src/pl-*.md              # unified authored skill sources
 #     copilot/                        # Copilot instructions/prompts (only when
 #                                     # the checkout has a copilot/ directory)
 #     templates/                      # operator-editable defaults
@@ -703,7 +701,7 @@ queue_live_guard preflight || exit 1
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
 BUILD_DEPS=(
-  "cmake|cmake|configures, builds, and installs the five Planar binaries and Scriptorium"
+  "cmake|cmake|configures, builds, and installs the five Planar binaries"
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
@@ -801,7 +799,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   [[ -f "$REPO_ROOT/install-cleanup.txt" ]] && \
     _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$REPO_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
-  log "build 5 Planar binaries and scriptorium → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
+  log "build 5 Planar binaries → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
   if [[ -e "$PLANAR_HOME/planar.db" ]]; then
     log "probe $PLANAR_HOME/planar.db with the new planar-agent; migrate it with planar init only when behind"
@@ -859,11 +857,6 @@ vlog "wrote $PLANAR_HOME/bin/planar-agent"
 vlog "wrote $PLANAR_HOME/bin/planar-watch"
 vlog "wrote $PLANAR_HOME/bin/planar-execute"
 vlog "wrote $PLANAR_HOME/bin/planar-ext"
-[[ -x "$PLANAR_HOME/bin/scriptorium" ]] || err "the in-tree scriptorium tool was not installed"
-SCRIPTORIUM_BIN="$PLANAR_HOME/bin/scriptorium"
-vlog "wrote $SCRIPTORIUM_BIN"
-[[ "$("$SCRIPTORIUM_BIN" version 2>/dev/null)" == scriptorium\ * ]] || \
-  err "installed $SCRIPTORIUM_BIN but it failed its version smoke check"
 
 # Smoke check — a build can succeed yet produce a binary that won't run. Confirm
 # it executes now (and capture the build id) rather than discovering it broken
@@ -872,7 +865,7 @@ PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
   err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
-ok "built 5 Planar binaries and scriptorium → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+ok "built 5 Planar binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 
 # ---------- retire the previous projections ----------
 
@@ -895,11 +888,9 @@ log "retired $SWEEP_REMOVED previous projection(s); left $SWEEP_LEFT that could 
 # See install-cleanup.txt. This runs after the sweep above (which needs the
 # staged trees listed here) and after the build. An entry the build above just
 # installed again is exempt, so the install stays consistent and a re-run does
-# not flap: bin/scriptorium is still built and installed by this commit, and
-# its cleanup line takes effect when the build stops installing it (the task
-# that removes scriptorium deletes this exemption).
+# not flap; the exemption list is empty today.
 CLEANUP_LIST="$REPO_ROOT/install-cleanup.txt"
-CLEANUP_KEEP_THIS_RUN=" bin/scriptorium "
+CLEANUP_KEEP_THIS_RUN=" "
 if [[ -f "$CLEANUP_LIST" ]]; then
   while IFS= read -r _raw; do
     _line="${_raw%%#*}"                  # strip an inline comment
@@ -972,16 +963,10 @@ if [[ -d "$REPO_ROOT/agents" ]]; then
   log "agents/ → $PLANAR_HOME/agents (canonical sources: $MODE; rendered outputs: copy)"
 fi
 
-# Stage skills/src — the unified renderer input — and prepare a real
-# $PLANAR_HOME/skills/ directory the renderer can write into without
-# touching the repo. Wipe the whole skills/ subtree first so previous-
-# install rendered files don't linger.
+# Wipe the whole skills/ subtree first so a previous install's staged files
+# (including the retired skills/src/ copy) do not linger.
 rm -rf "$PLANAR_HOME/skills" "$PLANAR_HOME/commands"
 mkdir -p "$PLANAR_HOME/skills"
-if [[ -d "$REPO_ROOT/skills/src" ]]; then
-  place "$REPO_ROOT/skills/src" "$PLANAR_HOME/skills/src"
-  log "skills/src/ → $PLANAR_HOME/skills/src ($MODE)"
-fi
 
 # ---------- stage the planar skill and agents ----------
 
@@ -1480,7 +1465,7 @@ title "Install complete"
 agents_n="$(count_glob "$PLANAR_HOME"/agents/planar-*.md)"
 
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
-log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext, scriptorium"
+log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
 log "surfaces:   planar skill · $agents_n agents · vendors found: ${VENDORS_FOUND[*]:-none}"
 if [[ "$WARN_COUNT" -gt 0 ]]; then
   printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"

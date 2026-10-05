@@ -14,8 +14,8 @@ is read-and-recommend by default. The only mutation it may coordinate is the
 existing whole-entity `planar-ext sync resolve` operation after the operator
 explicitly confirms the exact event and side.
 
-Vendor-neutral. Scriptorium projects this canonical role into the
-Claude, Codex, Copilot, and Gemini agent formats.
+Vendor-neutral. The installer places this canonical role into each vendor's
+agent directory, rendering the Codex TOML with `scripts/render-codex-agents.py`.
 
 ## Tier
 

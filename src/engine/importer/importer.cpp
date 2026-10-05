@@ -171,7 +171,7 @@ auto cache_anchor(std::string_view body, const request& req) -> std::optional<st
   }
 
   // Decisions carry PROVENANCE the apply pass records as fact. The contract
-  // is `skills/src/pl-import.md` § "Hard contract rules", which requires a
+  // is `agents/planar-importer.md` § "Sequencing" (the Result rules), which requires a
   // citation only of an `llm-inferred` decision -- `source` itself is
   // OPTIONAL. The sibling `synthesize` validator demands both unconditionally
   // and is NOT the contract here: transcribing it verbatim rejected the

@@ -56,9 +56,11 @@ every trial arena under it) is retained or removed as a unit.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Mapping
 
@@ -365,30 +367,32 @@ def stage_vendor_config(
         stage_planar_surface(env, vendor, repo_root, required_agents=required_agents)
 
 
-def _frontmatter_description(text: str) -> tuple[str, str]:
-    """Split an agent markdown file into (description, body).
+def _render_codex_agents(repo_root: Path, agents_src: Path, agent_dir: Path) -> None:
+    """Write the Codex agent TOML files with the checkout's one renderer.
 
-    The frontmatter is the leading `---` block; only its `description:`
-    line is read (a JSON- or bare-string scalar). Absent frontmatter yields
-    an empty description and the whole text as the body.
+    Runs `<repo_root>/scripts/render-codex-agents.py` over `agents_src`, the
+    same script the installer and the lifecycle fixture run, so there is one
+    TOML emitter. Only the `planar-*.toml` outputs are copied into
+    `agent_dir`. Raises `VendorStagingError` when the script is absent or
+    exits non-zero.
     """
-    if not text.startswith("---\n"):
-        return "", text
-    end = text.find("\n---", 4)
-    if end < 0:
-        return "", text
-    description = ""
-    for line in text[4:end].splitlines():
-        if line.startswith("description:"):
-            value = line[len("description:"):].strip()
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-                value = value[1:-1]
-            description = value
-    return description, text[end + 4:].lstrip("\n")
-
-
-def _toml_basic_string(value: str) -> str:
-    return json.dumps(value)
+    script = repo_root / "scripts" / "render-codex-agents.py"
+    if not script.is_file():
+        raise VendorStagingError(f"codex: required Codex agent renderer is missing: {script}")
+    with tempfile.TemporaryDirectory(prefix="planar-codex-agents-") as tmp:
+        out = Path(tmp) / "out"
+        result = subprocess.run(
+            [sys.executable, str(script), str(agents_src), str(out)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise VendorStagingError(
+                f"codex: {script.name} exited {result.returncode}: {result.stderr.strip()}"
+            )
+        for rendered in sorted(out.glob("planar-*.toml")):
+            shutil.copyfile(rendered, agent_dir / rendered.name)
 
 
 def stage_planar_surface(
@@ -408,8 +412,8 @@ def stage_planar_surface(
       `<CLAUDE_CONFIG_DIR>/agents/planar-<role>.md` for each
       `<repo_root>/agents/planar-*.md`;
     - Codex: `<CODEX_HOME>/agents/planar-<role>.toml` with `name`,
-      `description` and `developer_instructions`, generated from the same
-      markdown files;
+      `description` and `developer_instructions`, rendered from the same
+      markdown files by `<repo_root>/scripts/render-codex-agents.py`;
     - `<home>/.claude` and `<home>/.codex` are symlinks to the scratch
       config directories so both spellings resolve inside the arena.
 
@@ -446,20 +450,14 @@ def stage_planar_surface(
         shutil.copytree(skill_src, target)
 
     agent_dir = config_dir / "agents"
-    for source in sorted(agents_src.glob("planar-*.md")):
+    sources = sorted(agents_src.glob("planar-*.md"))
+    if sources:
         agent_dir.mkdir(parents=True, exist_ok=True)
-        if vendor == "claude":
+    if vendor == "claude":
+        for source in sources:
             shutil.copy2(source, agent_dir / source.name)
-            continue
-        text = source.read_text(encoding="utf-8")
-        description, body = _frontmatter_description(text)
-        name = source.stem
-        (agent_dir / f"{name}.toml").write_text(
-            f"name = {_toml_basic_string(name)}\n"
-            f"description = {_toml_basic_string(description)}\n"
-            f"developer_instructions = {_toml_basic_string(body)}\n",
-            encoding="utf-8",
-        )
+    elif sources:
+        _render_codex_agents(repo_root, agents_src, agent_dir)
 
 
 def assert_vendor_auth(env: Mapping[str, str], vendor: str) -> None:
