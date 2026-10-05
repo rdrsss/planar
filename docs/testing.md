@@ -13,7 +13,7 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make test-cpp-report` | The same suite, plus its skip tally. The expected tally is zero. |
 | `make ctest-registry-check` | ctest runs exactly the cases the test binaries contain. Needs `build/debug` built. |
 | `make coverage` | The `(verb, subcommand)` leaf-coverage ratio has not dropped below `scripts/coverage-baseline.txt`. |
-| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/src/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)). |
+| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)). |
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
 | `make eval-contracts` | The provider-free eval lanes. |
@@ -21,6 +21,28 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make test-all` | All of the above, composed. This is the gate to run before a pull request. |
 | `make cpp-lint` | `cpp-lint-gate` plus `clang-tidy`. Not part of `test-all`. |
 | `make linux-gate` | The `debug` build and the whole ctest suite on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
+
+## How the skill tree is tested
+
+The `planar` skill (`skills/planar/`) and the agents (`agents/planar-*.md`) are
+authored files that install unchanged, so there is no render step to test;
+the checks are on the source.
+
+- **Format.** `make surface-lint` applies the Agent Skills rules to every
+  `skills/<name>/SKILL.md` (frontmatter, name, description length, allowed
+  keys, body of at most 500 lines, links that resolve, references one level
+  deep) and prints one line per rule that holds. Link checks verify file
+  existence only.
+- **Budget.** `skills/planar/SKILL.md` has a tighter limit than the format's:
+  150 lines of body. A Catch2 case in the surface-lint test binary enforces it.
+- **Commands.** `make cli-usage-check` runs `cli_usage_lint` over `agents/`,
+  `skills/`, `docs/` and `CLAUDE.md`, so every command and flag a reference
+  or agent names must exist in a binary's `schema` catalog; its catalog mode
+  checks the `docs.examples` the binaries publish the same way.
+- **Contract.** The eval contract tier (`make eval-contracts`) asserts, through
+  `evals/orchestrator/cases/skill-planar.json`, that `SKILL.md` states each of
+  the thirteen invariants, names the five binaries and cites the feedback
+  contract.
 
 ## Continuous integration
 

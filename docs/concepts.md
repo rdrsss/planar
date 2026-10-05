@@ -34,7 +34,7 @@ The context plane is the durable working-memory layer that lets one workflow sta
 
 ### Lifecycle: active → consumed | superseded, never deletion
 
-Raw records start life as `active`. Stage close marks them `consumed` (records incorporated into the capsule) or `superseded` (records overridden by a later record in the same stage) and writes one compiled `capsule` record whose `compiled_from` column points back to the raw record ids (decision 446). Raw records are retained permanently — the audit trail is preserved for `pl-introspect` and journal-based resume. The three-value status is the machine-readable lifecycle signal; `compiled_from` is the provenance trace.
+Raw records start life as `active`. Stage close marks them `consumed` (records incorporated into the capsule) or `superseded` (records overridden by a later record in the same stage) and writes one compiled `capsule` record whose `compiled_from` column points back to the raw record ids (decision 446). Raw records are retained permanently — the audit trail is preserved for the `planar-introspector` agent and journal-based resume. The three-value status is the machine-readable lifecycle signal; `compiled_from` is the provenance trace.
 
 ### Observability
 
@@ -321,7 +321,7 @@ For meta workspaces, the root is itself a versioned repository. Planar still wri
 
 ### Two-pass routing
 
-The routing table is built in two passes. The static pass is always-on and deterministic: README first paragraph, manifest detection for capability tags, dependency inference from `go.mod` replace / `package.json` workspace deps, language census, and live Planar focus queries (open tasks, open questions, active plans). The LLM enrichment pass is opt-in via `pl-workspace-scan --enrich` or `planar workspace routing build --enrich`; it merges cached LLM results into the table, keyed by a content fingerprint so unchanged repos do not re-spend tokens. Manual overrides always win over enrichment, which always wins over static signals.
+The routing table is built in two passes. The static pass is always-on and deterministic: README first paragraph, manifest detection for capability tags, dependency inference from `go.mod` replace / `package.json` workspace deps, language census, and live Planar focus queries (open tasks, open questions, active plans). The LLM enrichment pass is opt-in via `planar workspace routing build --enrich` (or `planar workspace init --enrich`); it merges cached LLM results into the table, keyed by a content fingerprint so unchanged repos do not re-spend tokens. Manual overrides always win over enrichment, which always wins over static signals.
 
 ### Bare-init guardrail
 
@@ -335,7 +335,7 @@ See [docs/architecture.md § Workspace State Directory Model](architecture.md#wo
 
 ## Transcription vs Synthesis
 
-Two verbs onboard an existing repo into Planar. They share the downstream `/pl-spec-ingest` pipeline but enter from different contracts; the choice is load-bearing.
+Two verbs onboard an existing repo into Planar. They share the downstream `planar-ingestor` pipeline but enter from different contracts; the choice is load-bearing.
 
 - `import` is a **transcription** verb. It reads the repo's existing planning docs and emits them as Planar artifacts as-is. Bullets in a roadmap become tasks verbatim, frontmatter dictates classification, and status inference is bounded by an explicit confidence floor. Reach for it when the repo's planning material is clean, structured, current, and largely correlates with shipped code.
 
@@ -352,7 +352,7 @@ The load-bearing rule for `synthesize` is that **code presence beats text claims
 | Docs-only, no source code yet (greenfield) | `synthesize` |
 | `docs/` + complete code + tests with reliable status correlation | `import` (consider `--interpret` for LLM polish) |
 
-Both verbs land in the same downstream pipeline: artifacts in the workbench, review by the operator, then `/pl-spec-ingest` to decompose into the plan / task graph. The only divergence is at the entry point — what counts as the authoritative planning material.
+Both verbs land in the same downstream pipeline: artifacts in the workbench, review by the operator, then the `planar-ingestor` agent to decompose into the plan / task graph. The only divergence is at the entry point — what counts as the authoritative planning material.
 
 ### Concrete examples
 
@@ -540,7 +540,7 @@ transaction. Always preview a sweep with `planar-agent reconcile --dry-run
 
 ## Dispatch shapes
 
-The orchestrator's Phase 3 dispatch gate offers six named **dispatch shapes** — each a distinct point on the *grouping* × *reviewer disposition* matrix. The shape picks how many tasks land in one coder cycle AND when (or whether) the reviewer is dispatched. The operator picks one shape per `/pl-orchestrator` invocation at the gate; the choice is recorded as a `session_entries` row (with `prefix='note'` + the sentinel body line `dispatch_shape: <shape>`) for the audit trail.
+The orchestrator's Phase 3 dispatch gate offers six named **dispatch shapes** — each a distinct point on the *grouping* × *reviewer disposition* matrix. The shape picks how many tasks land in one coder cycle AND when (or whether) the reviewer is dispatched. The operator picks one shape per `planar-orchestrator` dispatch at the gate; the choice is recorded as a `session_entries` row (with `prefix='note'` + the sentinel body line `dispatch_shape: <shape>`) for the audit trail.
 
 | Shape              | Grouping                     | Reviewer disposition  | Pick when |
 |--------------------|------------------------------|-----------------------|-----------|
@@ -573,9 +573,9 @@ Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id>
 
 **Pick-when summary:** when in doubt, pick `strict`. Move up the table (toward throughput) when you have high confidence in the gates and the spec, or when the diff cadence makes per-cycle reviewer dispatch wasteful. The orchestrator never picks a barrel mode silently — every shape change is an explicit operator choice at the gate.
 
-For the canonical contract see [`agents/methodology.md` §Barrel modes](../agents/methodology.md#barrel-modes). For the skill-flag surface see [`skills/src/pl-orchestrator.md`](../skills/src/pl-orchestrator.md).
+For the canonical contract see [`agents/methodology.md` §Barrel modes](../agents/methodology.md#barrel-modes). For the agent's own contract see [`agents/planar-orchestrator.md`](../agents/planar-orchestrator.md).
 
-**SQLite tables:** none beyond `session_entries`. **Primary entry points:** `/pl-orchestrator` (the gate), its barrel-modes contract, `planar audit trail --kind plan <plan-id>` (the forensic surface).
+**SQLite tables:** none beyond `session_entries`. **Primary entry points:** the `planar-orchestrator` agent (the gate), its barrel-modes contract, `planar audit trail --kind plan <plan-id>` (the forensic surface).
 
 ---
 
@@ -591,9 +591,9 @@ An orchestration strategy is the operator-facing dispatch frame for a plan. It b
 | `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; staged into dependency-respecting waves; one consolidated reviewer pass at fan-in. **Model-runnable** via the spawn-free `workflows/parallel-dispatch.lua` seam (plan 760), an optional deterministic helper — the model orchestrator, a host-native workflow, or a background agent may run this path (decision 1007). |
 | `isolated-sequential` | Descriptive alias for `classic` + `worktree` isolation: one cycle worktree per task, reviewer per cycle. |
 | `barrel-deferred` | Coder cycles run back-to-back; reviewer fires once at a milestone or plan boundary on the union diff. Supports both `pwd` and `worktree` isolation. |
-| `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` twice + `make coverage` + `make cli-usage-check` + render check + remaining validators) are the entire signal. Supports both `pwd` and `worktree` isolation. |
+| `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` twice + `make coverage` + `make cli-usage-check` + `make surface-lint` + remaining validators) are the entire signal. Supports both `pwd` and `worktree` isolation. |
 
-The model-driven `/pl-orchestrator` skill runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The seam only computes and hands back — it is an optional deterministic helper, not the only permitted path. The runner that acts on the hand-back, running the git worktree/branch/merge ops and spawning the coders, may be the model orchestrator, a host-native workflow, or a background agent (decision 1007, plan 1033). In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
+The model-driven `planar-orchestrator` agent runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The seam only computes and hands back — it is an optional deterministic helper, not the only permitted path. The runner that acts on the hand-back, running the git worktree/branch/merge ops and spawning the coders, may be the model orchestrator, a host-native workflow, or a background agent (decision 1007, plan 1033). In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
 
 ### Declaring what a task touches
 
@@ -620,7 +620,7 @@ Inference cannot tell which of the two it produced. The operator can, which is w
 | Exact matches only | **14** |
 | Exact + wide expansions | 13 |
 
-The over-declare row above is understated for wide sets. Rule 2 drops **both** sides of an overlap, so an over-declared task removes its *peers* from the eligible set as well as itself — while an undeclared task removes only itself. In one plan, four tasks each mentioned `skills/src/` in prose; expanding it gave all four the same 35 paths, and they mutually overlapped *and* dragged down the one task with seven genuinely distinct real paths. One eligible task became zero.
+The over-declare row above is understated for wide sets. Rule 2 drops **both** sides of an overlap, so an over-declared task removes its *peers* from the eligible set as well as itself — while an undeclared task removes only itself. In one plan, four tasks each mentioned one top-level source directory in prose; expanding it gave all four the same 35 paths, and they mutually overlapped *and* dragged down the one task with seven genuinely distinct real paths. One eligible task became zero.
 
 So over-declaration is recoverable only while it stays narrow enough not to intersect everything. Past that point the cost propagates across the plan rather than staying with the declaring task.
 
@@ -674,7 +674,7 @@ No new schema beyond the existing `agent_actions.metadata` JSON column from migr
 
 For the canonical axis table, named bundles, invalid-combination list, and recommendation algorithm see `agents/methodology.md` § Orchestration strategies. For the "pick a strategy" recipe and a worked `parallel-fanout` example see [`docs/workflows.md` §Recipe 21](workflows.md#recipe-21--pick-an-orchestration-strategy-for-a-plan) and [§Recipe 22](workflows.md#recipe-22--orchestrate-a-multi-task-plan-with-parallel-coders).
 
-**SQLite tables:** none — strategy is metadata on the dispatch row. **Primary entry points:** `/pl-orchestrator` (the gate), its orchestration-strategies contract.
+**SQLite tables:** none — strategy is metadata on the dispatch row. **Primary entry points:** the `planar-orchestrator` agent (the gate), its orchestration-strategies contract.
 
 ---
 
@@ -745,7 +745,7 @@ Legal transitions: `open → {answered, wontfix}` only. Both `answered` and `won
 
 ### Sources
 
-A question entity can be created through two equivalent paths: (1) interactively with `planar question add "…" --plan <id>` at any time during a session, or (2) automatically by `/pl-spec-draft` when it seeds a workbench — the planner scans every drafted artifact for `## Open questions` sections and registers each H3 child heading as a question entity. Both paths produce an identical `questions` row; the two sources are interchangeable and resolve through the same lifecycle. `/pl-spec-ingest` reconciles spec-body question items against existing entities on every run, surfacing drift warnings when the spec and the entity table diverge. See the "Reviewing open questions" recipe in `docs/workflows.md` for a full walkthrough.
+A question entity can be created through two equivalent paths: (1) interactively with `planar question add "…" --plan <id>` at any time during a session, or (2) automatically by the `planar-planner` agent when it seeds a workbench — the planner scans every drafted artifact for `## Open questions` sections and registers each H3 child heading as a question entity. Both paths produce an identical `questions` row; the two sources are interchangeable and resolve through the same lifecycle. The `planar-ingestor` agent reconciles spec-body question items against existing entities on every run, surfacing drift warnings when the spec and the entity table diverge. See the "Reviewing open questions" recipe in `docs/workflows.md` for a full walkthrough.
 
 **SQLite table:** `questions`. **Primary verbs:** `planar question add`, `planar question list`, `planar question answer`, `planar question wontfix`. **Related verb:** `planar workbench extract-questions` (reads spec bodies; used internally by the planning skills).
 
@@ -990,12 +990,12 @@ Which model an agent role spawns is **config-driven and unified** (plan 540, ext
 A single **shared resolver** (`src/engine/config/effective.cppm` plus `src/engine/models/`) composes these into a concrete `(vendor, model)`. The tier-only path (`resolveTier`, `resolveRole`, `resolveRoleAuto`) is unchanged and always returns the tier default (`list[0]`). A parallel `resolve(role, work_type)` entry point (`resolveTierWorkType` / `resolveRoleWorkType` / `resolveRoleAutoWorkType`) additionally consults the routing map: a hit returns the named candidate, a miss (or a stale routing target absent from the candidate list) falls back to the tier default. Every consumer resolves through one of these — there are no parallel per-tool model tables:
 
 - **`planar models`** — `resolve --role <role> [--task <id>|--plan <id>]` (the tier a role gets from its packet, or the static fallback with its reason), `registry list|add|update|remove|bind|unbind|observe|eligibility|verify-identity|export` (the opaque candidate registry), `experiments` and `outcomes` (routing evidence), and `evals` (below). The plan-540 discovery family — `list`, `routing`, `candidates`, `refresh`, `apply` — was removed with the curated catalog; `planar config show --effective` is where the resolved `models.*` / `routing.*` / `roles.*` keys are inspected.
-- **The Tier Table** (hand-maintained in `agents/models.md`; Planar does not generate it) + rendered skill/agent `model:` fields — rendered skill/agent `model:` fields come from scriptorium's render step, which always renders `list[0]` for a candidate-list tier (static surfaces show the tier default; per-task routing is runtime-only).
+- **The Tier Table** (hand-maintained in `agents/models.md`; Planar does not generate it) — the agent files carry no `model:` field; the tier resolves at dispatch through `planar models resolve --role <role>`, and per-task routing is runtime-only.
 - **External workflow harnesses** — shell `planar models resolve --role <role> --json` per role (no engine handle), falling back to compiled defaults when `planar` is unreachable.
-- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see `agents/planar-orchestrator.md` dispatch step 8a and `skills/src/pl-orchestrator.md` § Dispatch preview and model tiers).
+- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see `agents/planar-orchestrator.md` dispatch step 8a and the planar skill's `spec-pipeline.md` reference).
 - **`planar models evals`** — read-only routing evaluation. With `--vendor` and the cohort flags it ranks candidates in one exact cohort by the 95% Wilson lower bound over declared-experiment evidence; without them it falls back to the legacy scorecard mined from dispatch notes (`dispatch_shape:` / `model_choice:`), terminal claim status, and test-coder action outcomes. Quality-gate pass/fail is not persisted today, so the legacy path reports that signal as unsourced rather than guessing. It writes nothing; applying a recommendation is a separate operator-gated edit to `agents/models.md`.
 
-Planar does not discover or validate provider model lists: candidate ids are opaque strings recorded as agents report them, and spawn verification belongs to the host adapter. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the `pl-models-config` skill.
+Planar does not discover or validate provider model lists: candidate ids are opaque strings recorded as agents report them, and spawn verification belongs to the host adapter. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the planar skill's discovery rule (`planar models --help`).
 
 ## Color output
 
@@ -1056,7 +1056,7 @@ adds a status cannot silently ship uncolored.
 
 ## Local sandbox
 
-A user-local authoring surface for personal skills and agents under `~/.planar/local/`. The sandbox is one-way: the operator drops a single skill (as a `<name>/SKILL.md` directory) or agent (as a flat `<name>.md` file), then `planar local link` fans installs out to each vendor's surface (`~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`). Edits to the source SKILL.md are instantly live in every vendor — see *Per-vendor install layout* below.
+A user-local authoring surface for personal skills and agents under `~/.planar/local/`. The sandbox is one-way: the operator drops a single skill (as a `<name>/SKILL.md` directory) or agent (as a flat `<name>.md` file), then `planar local link` projects a copy into every present vendor's skill and agent directories, the same roots the bundled `planar` skill and `planar-<role>` agents use. Edit the source and run `planar local link` again to refresh the copies.
 
 **Directory layout.**
 
@@ -1068,54 +1068,18 @@ A user-local authoring surface for personal skills and agents under `~/.planar/l
 │   │   └── helper.sh             # optional auxiliary files travel with the skill
 │   └── .link-manifest.json       # written by `planar local link`
 └── agents/
-    └── pedantic-reviewer.md      # agents stay flat — no vendor loader for agents
+    └── pedantic-reviewer.md      # agents stay flat
 ```
 
-Skills are dir-shape because the dir-symlink installs into Codex / Copilot need a real directory to symlink. Auxiliary files inside the skill directory (helper scripts, data files, icons) travel with the skill — they appear inside the vendor install directory via the same directory symlink. Agents stay flat: they install into `~/.planar/agents/` which has no vendor loader, so the directory wrapping buys nothing.
+A file's parent directory tree is authoritative for its kind: a `<name>/SKILL.md` under `skills/` is a skill regardless of what its frontmatter says. The `kind:` field in frontmatter (when present) must match the directory, or the file is rejected as malformed. A pre-reshape sandbox stored each skill as a flat `skills/<name>.md`; `planar local migrate` converts those.
 
-A file's parent directory tree is authoritative for its kind: a `<name>/SKILL.md` under `skills/` is a skill regardless of what its frontmatter says. The `kind:` field in frontmatter (when present) must match the directory, or the file is rejected as malformed.
+**Projection.** Each source is copied, never symlinked, into the vendor roots under the name `planar-local-<name>`, so a local install is visibly user-authored and never collides with a bundled name. The source is never edited. A skill copy has its frontmatter `name` rewritten to match its directory, and agent copies take the same per-vendor forms as the bundled agents (Copilot `.agent.md`, Codex TOML, OpenCode reduced frontmatter). A skill's optional `vendors:` list narrows which vendors get a skill copy; an agent ignores it. A local name must match `^[a-z0-9]+(-[a-z0-9]+)*$` and be at most 51 characters, and is never normalized: `My_Skill` is refused at exit 2. A source that sets the retired `shadow` key is refused at exit 2.
 
-**Migrating from the legacy flat layout.** A pre-reshape sandbox stored each skill as a flat `~/.planar/local/skills/<name>.md`. Run `planar local migrate` to convert these to the dir-shape `<name>/SKILL.md` layout. `planar local link` flags any remaining flat skill files with a warning pointing at the migrate verb.
+**States and ownership.** `planar local list` recomputes each record's state from disk: `live`, `stale`, `legacy` (an old projection waiting to be migrated), `missing`, or `broken` (the source is gone). `planar local link --reconcile` rewrites stale copies, writes missing ones, migrates legacy projections and drops records whose source is gone; there is no separate repair verb. A destination that exists, differs, and is not a prior Planar projection is refused at exit 6 before anything is written. `planar local unlink` removes the projections and leaves the source; `--purge` also deletes it. The full rules are in [skill-reference.md § Operator-local skills and agents](skill-reference.md#operator-local-skills-and-agents).
 
-**Frontmatter schema.** The frontmatter mirrors the unified canonical skill
-convention authored under the repo's `skills/src/`. Vendor projections are
-generated at install time and are not an authoring surface. Sandbox-specific
-keys are `shadow:` and `vendors:`; vendors ignore them.
+**Promotion is manual.** No `planar local promote` shortcut. A skill or agent earning a place in Planar means contributing it to the repository through normal review, where `make surface-lint` and `make cli-usage-check` gate it. The absence of a shortcut is deliberate — canonical and sandbox have different bars.
 
-```yaml
----
-description: "Rebuild and re-import protobuf bindings in the current repo"
-argument-hint: "<optional usage hint>"
-tier: medium                    # small | medium | large; maps to model
-model: claude-opus-5-5          # optional explicit model override
-shadow: false                   # true → link without the local- prefix (shadows canonical)
-vendors:                        # subset of {claude, codex, copilot};
-  - claude                      #   defaults to all three if omitted
-  - codex
----
-
-# Body content
-The agent should...
-```
-
-**Link semantics.** Linked filenames default to `local-<source-name>` so sandbox installs are visibly user-authored and never collide with canonical skills. With `shadow: true`, the prefix is dropped and the install replaces the same-named canonical install (with a warning at link time naming what's being shadowed). The link package writes a `.link-manifest.json` per `<kind>/` directory recording the per-vendor targets so unlinking is fast and self-documenting.
-
-**Per-vendor install layout.** Each vendor's discovery loader is shape-specific, so the link layer installs three different shapes:
-
-| Vendor  | Install entry                                       | Shape | Edit-and-live |
-|---------|-----------------------------------------------------|-------|---------------|
-| claude  | `~/.claude/commands/local-<name>.md`                | file symlink → `<src>/<name>/SKILL.md` | yes |
-| codex   | `~/.codex/skills/local-<name>`                      | **directory symlink** → `<src>/<name>/` | yes |
-| copilot | `~/.copilot/skills/local-<name>`                    | **directory symlink** → `<src>/<name>/` | yes |
-| agents  | `~/.planar/agents/local-<name>.md`                  | file symlink → `<src>/<name>.md` | yes |
-
-The dir-symlink shape for Codex and Copilot is load-bearing. Empirically their discovery loaders stat each entry in the skills directory and read the SKILL.md inside — a symlinked SKILL.md *inside* a real directory is treated as missing, while a symlinked *directory* pointing at a real source dir is followed correctly. The sandbox keeps skills as `<name>/SKILL.md` source dirs so the dir-symlink resolves to a real file.
-
-`planar local unlink` removes the symlink itself; the underlying source directory at `~/.planar/local/skills/<name>/` is left untouched. Use `unlink --purge` to also delete the source.
-
-**Promotion is manual.** No `planar local promote` shortcut. A skill earning a place in the canonical repo means going through the normal git contribution flow: copy the file into `skills/src/`, run `make install-full` (which shells the scriptorium binary — `scriptorium render --config scriptorium.yaml` — at install time), commit, push, and let `scriptorium check` (run against an out-of-tree staging dir) plus any remaining relevant validators gate it. The absence of a shortcut is deliberate — canonical and sandbox have different bars.
-
-**SQLite tables:** none — the sandbox is filesystem state. **Primary entry points** (under `src/engine/local/`): `walk_sandbox` and `migrate` in `manifest.cppm`, `link`, `unlink`, `list` and `reconcile` in `link.cppm`, `import_sources` in `importer.cppm`. CLI surface: `planar local {list, link, unlink, import, migrate}`; the `pl-local repair` workflow uses `planar local link --reconcile`, not a separate repair verb.
+**SQLite tables:** none — the sandbox is filesystem state. **Primary entry points** (under `src/engine/local/`): `walk_sandbox` and `migrate` in `manifest.cppm`, `link`, `unlink`, `list` and `reconcile` in `link.cppm`, `import_sources` in `importer.cppm`. CLI surface: `planar local {list, link, unlink, import, migrate}`; repair is `planar local link --reconcile`.
 
 ## Test spec
 
@@ -1184,9 +1148,9 @@ pass — surfaces failures with a classification (`test-wrong-author-error` /
 
 **Iteration cap.** The test-coder cycle has its own cap (default 2; the work shape is "expand or don't" rather than "iterate to convergence"). Independent of the coder/reviewer's 5-iteration cap.
 
-**Manual invocation.** Operators can invoke `/pl-test-coder <task-id>` directly to backfill coverage on an already-committed change set, or `/pl-test-coder <plan-id> --plan` to run against every cited scenario in a plan. Useful after authoring a new test-spec for an older feature.
+**Manual invocation.** Operators can dispatch the `planar-test-coder` agent directly with a task id to backfill coverage on an already-committed change set, or with a plan id to run against every cited scenario in a plan. Useful after authoring a new test-spec for an older feature.
 
-**SQLite tables:** none. **Primary entry points:** `agents/planar-test-coder.md` and `skills/src/pl-test-coder.md`, `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate). Vendor projections are generated at install time.
+**SQLite tables:** none. **Primary entry points:** `agents/planar-test-coder.md`, `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate).
 
 ## Usage Introspection Privacy Model
 
@@ -1200,7 +1164,7 @@ The `cli_invocations` table enforces the same guarantee at the write site: the c
 
 ### Tier 2: Preview-gated finding text
 
-Findings filed by the introspector (`planar question add` / `planar task add` on the feedback plan) may legitimately reference verb paths and error categories in their body. Their only guarantee is the **mandatory preview gate** in `pl-report-issue` — the operator personally reviews every byte of issue body text before it posts to GitHub. Skills and docs must present the bundle as machine-safe and the finding embed as operator-reviewed, never the reverse.
+Findings filed by the introspector (`planar question add` / `planar task add` on the feedback plan) may legitimately reference verb paths and error categories in their body. Their only guarantee is the **mandatory preview gate** in the report-an-issue procedure (the planar skill's `external-sync.md` reference) — the operator personally reviews every byte of issue body text before it posts to GitHub. Skills and docs must present the bundle as machine-safe and the finding embed as operator-reviewed, never the reverse.
 
 ### Transcript mining: cross-vendor and ephemeral by design
 
@@ -1215,7 +1179,7 @@ versions and malformed records are skipped with counted warnings. A missing or
 disabled source is reported in `signal_coverage`, not conflated with an
 observed zero.
 
-The default `pl-introspect` run is a read-only preview. Only a separately
+The default `planar-introspector` run is a read-only preview. Only a separately
 confirmed apply phase creates or reuses the feedback plan and files approved,
 deduplicated findings. Cancellation before the gate writes nothing; mixed
 apply results retain successful independent findings and return exact recovery
@@ -1225,7 +1189,7 @@ for the failures.
 
 `[introspection].cli_log = false` by default. No `cli_invocations` rows are written until the operator sets `cli_log = true` in `~/.planar/config.toml`. The report verb distinguishes "logging disabled" from "no activity in the window" — the operator is never shown fabricated zeros. The always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) render normally regardless of the `cli_log` setting.
 
-**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs` (always-on, read by `report`). **Primary entry points:** `planar report [--json]` (diagnostic bundle), `skills/src/pl-introspect.md` (introspection skill), `agents/planar-introspector.md` (agent role spec).
+**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs` (always-on, read by `report`). **Primary entry points:** `planar report [--json]` (diagnostic bundle), `agents/planar-introspector.md` (agent role spec).
 
 ## Feedback triage
 
@@ -1237,13 +1201,13 @@ same-plan duplicate target, and redacted evidence. External issue identity
 continues to live in `external_links`, so local triage never predicts or
 duplicates publication state.
 
-`pl-feedback-triage` is preview-first. Its `feedback-triager` specialist may
+The `planar-feedback-triager` agent is preview-first. It may
 recommend `duplicate`, `accepted`, `needs-reproduction`,
 `retained-question`, `dismissed`, or—only after verified publication—
 `reported-external`. The caller shows the proposed entity, relationship, and
 `planar feedback triage set` changes and waits for explicit row-level approval.
 An initial `--apply` request is not confirmation. Optional external reporting
-then enters `pl-report-issue`, which shows the complete issue body and requires
+then enters the report-an-issue procedure, which shows the complete issue body and requires
 a second approval. Declining that gate posts nothing and leaves completed
 local triage intact.
 
@@ -1254,8 +1218,8 @@ for each failure.
 
 **SQLite tables:** `feedback_triage`, plus existing finding entities and
 `external_links`. **Primary entry points:** `planar feedback triage
-list|show|set`, [`skills/src/pl-feedback-triage.md`](../skills/src/pl-feedback-triage.md),
-and [`agents/planar-feedback-triager.md`](../agents/planar-feedback-triager.md).
+list|show|set`, and
+[`agents/planar-feedback-triager.md`](../agents/planar-feedback-triager.md).
 
 ---
 

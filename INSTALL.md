@@ -3,7 +3,7 @@
 This guide covers three install paths, ordered from simplest to most flexible:
 
 1. [Quick install (`make install`)](#quick-install-make-install) — just the executables, no vendor surfaces.
-2. [Full install (`install.sh`)](#full-install-installsh) — binary + agent specs + vendor surfaces (Claude / Codex / Copilot / Gemini).
+2. [Full install (`install.sh`)](#full-install-installsh) — binary + the `planar` skill + the `planar-<role>` agents, placed into each vendor harness found (Claude Code / Codex / Copilot / Gemini CLI / Antigravity / OpenCode).
 3. [Build from source](#build-from-source) — for contributors.
 
 Plus [uninstall](#uninstall), [troubleshooting](#troubleshooting), and the [install layout reference](#install-layout-reference).
@@ -17,13 +17,12 @@ brew install cmake ninja llvm python git gh jq ripgrep
 ```
 
 - `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries, on every install path. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
-- `python3` — **required to configure**. The configure step registers Python test runners (`src/tools/scriptorium/core.test.py`, `scripts/install-lib/queue_retire.test.py`, `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. `install.sh` also runs it as its old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program), and `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
-- Scriptorium is built from `src/tools/scriptorium/` and installed by CMake; no external Scriptorium executable is required. It needs no dependency beyond Glaze, which the rest of the tree already vendors.
+- `python3` — **required to configure**. The configure step registers Python test runners (`scripts/install-lib/queue_retire.test.py`, `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. `install.sh` also runs it as its old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program), and `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
 - No network access and no token are needed to configure or build: every dependency is committed under `vendor/` as a pinned release archive.
 - `docker` — optional, developer-only. `make linux-gate` builds and tests the tree on Debian trixie in a container (see [docs/testing.md](docs/testing.md#the-linux-gate)). It is not an installer dependency.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. The full install also needs it to clone the source repository.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
-- `jq` — required by the bundled agent skills (`pl-spec-draft`, `pl-spec-ingest`, `pl-orchestrator`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
+- `jq` — used by the bundled agent specs (`planar-planner`, and the procedures in `agents/methodology.md`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session in [docs/getting-started.md](docs/getting-started.md#8-capture-hand-off-and-resume) (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
 
 The full source-checkout installer also uses the base-system utilities declared
@@ -44,8 +43,8 @@ cargo install sqlx-cli --no-default-features --features sqlite
 
 ## Quick install (`make install`)
 
-The shortest path. Builds and installs Planar's five executables and the
-in-tree `scriptorium` renderer into `~/.local/bin` and nothing else.
+The shortest path. Builds and installs Planar's five executables into
+`~/.local/bin` and nothing else.
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
@@ -68,14 +67,12 @@ planar health
 
 This installs only the executables. Runtime migrations and default propagation
 templates are *embedded* at build time, so the CLI works standalone against a
-local database. Agent specs, slash commands, and skills are **not** embedded —
-they are separate source files rendered and staged by `install.sh` — so none of
-the vendor surfaces (Claude `/pl-*` slash commands, Codex, Copilot, and Gemini
-skills) are wired up by a `make install` or a `cmake --install` alone; for those,
-use the [full install](#full-install-installsh).
+local database. The `planar` skill and the role agents are **not** embedded —
+they are source files that `install.sh` stages and places — so neither is wired
+into any vendor harness by a `make install` or a `cmake --install` alone; for
+those, use the [full install](#full-install-installsh).
 
-The five binaries and the in-tree `scriptorium` renderer are installed. The four
-that open a database (all but `planar-execute`, which holds no SQLite handle at
+The four of the five binaries that open a database (all but `planar-execute`, which holds no SQLite handle at
 all) statically link the vendored SQLite amalgamation — no system library
 dependency.
 
@@ -95,7 +92,7 @@ cmake --build build/release
 cmake --install build/release --prefix "$HOME/.planar"
 ```
 
-This puts the five binaries and `scriptorium` in `~/.planar/bin/`; add that
+This puts the five binaries in `~/.planar/bin/`; add that
 directory to your `$PATH` and run `planar health` as above. For a debug build
 instead, configure and build by hand:
 
@@ -119,10 +116,10 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 
 That's it. The script:
 
-- Builds all five binaries and `scriptorium` from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext,scriptorium}`.
-- Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and renders the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
-- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen). It no longer runs `scriptorium render`.
-- Places the staged skill and agents into each vendor whose presence marker exists, and prints the vendors found and skipped.
+- Builds all five binaries from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`.
+- Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and derives the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
+- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen).
+- Places the staged skill and agents into each vendor whose presence marker exists (the nine targets in the [layout reference](#install-layout-reference)), and prints the vendors found and skipped.
 - Atomically writes `~/.planar/install-manifest.json` after every placement
   succeeds. Each placed vendor path is recorded in its `extras` list;
   operator-authored destination files are not claimed.
@@ -143,20 +140,7 @@ Verify:
 planar health
 ```
 
-And in Claude Code, the slash commands should now resolve:
-
-- `/pl-orchestrator <task-id> [<task-id>...]` — drive a goal, plan, or task list end-to-end through the phased lifecycle (planning / spec review / ingestion / execution / finalization / propagation / archive).
-- `/pl-coder <task-id>` — implement one task.
-- `/pl-reviewer <task-id> <iteration>` — review coder output.
-- `/pl-init`, `/pl-scope`, `/pl-plan`, `/pl-task`, `/pl-question`, `/pl-scenario`, `/pl-promote`, `/pl-workbench`, `/pl-sync`, `/pl-ext-create`, `/pl-audit-trail`, `/pl-resume`, `/pl-handoff`, `/pl-help`, `/pl-health` — the core reference workflows wrapping `planar` subcommands.
-- `/pl-spec-draft` — draft a feature spec and roadmap into the workbench from a goal statement.
-- `/pl-spec-ingest` — decompose workbench Markdown into a fleshed-out task graph (preview by default; `--apply` commits).
-- `/pl-workbench-sync` — bidirectional workbench sync (pull, push, status, resolve).
-- `/pl-workbench-archive` — archive the workbench tree for a completed feature.
-- `/pl-ext-propagate` — propagate a feature plan to a registered operational system (Jira or GitHub Issues).
-- `/pl-templates` — list, show, render, and validate operational-plane templates.
-
-In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` or `$pl-orchestrator`. Slash syntax is for Claude commands.
+The skill and the agents are now in place. Check the skill in any vendor that reads it by asking the harness to list its skills: `planar` appears once, and the `planar-<role>` agents appear in the harness's agent list. No slash commands are installed; role work goes to agents dispatched by name, for example `planar-orchestrator` or `planar-coder`. The first step in any session is `planar --help`; the [skill and agent reference](docs/skill-reference.md) describes what each piece does.
 
 ### Install flags
 
@@ -165,7 +149,7 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | `--prefix DIR` | Install root (default `~/.planar`). |
 | `--vendors LIST` | Comma-separated filter over the vendors found on the host: `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`. Default is all six. Naming an absent vendor warns. |
 | `--no-vendor` | Skip vendor surfaces entirely; install Planar core only. |
-| `--link` | Symlink artifacts from the source repo into `~/.planar/` instead of copying. **Dev mode** — edits to the repo propagate immediately. |
+| `--link` | Symlink the staged skill and the Markdown, Copilot and Codex agent files from the source repo instead of copying. **Dev mode** — edits to the repo propagate immediately. The OpenCode agents are always derived regular files. |
 | `--force` | Overwrite existing symlinks at the destinations. It does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
 | `--ignore-live-queue` | Retire (or uninstall) the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
 | `--no-prune` | Skip removal of stale vendor files. |
@@ -178,14 +162,11 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 
 ### Copy mode vs link mode
 
-- **Copy mode (default).** `install.sh` *copies* the source artifacts into `~/.planar/`. After install, the source checkout can be deleted; `~/.planar/` is self-contained. Updates to the source require re-running `install.sh`.
-- **Link mode (`--link`).** `install.sh` *symlinks* the artifacts from the source repo into `~/.planar/`. Edits to the source propagate immediately. Useful for development on Planar itself or for any contributor iterating on the surfaces. Requires the source repo to stay on disk at its original path.
+- **Copy mode (default).** `install.sh` *copies* the source artifacts into `~/.planar/`, then copies the staged skill into each skill root as a real directory and each agent into each agent directory as a regular file. After install, the source checkout can be deleted; `~/.planar/` and the vendor directories are self-contained. Updates to the source require re-running `install.sh`.
+- **Link mode (`--link`).** The skill directories and the Markdown, Copilot and Codex agent files placed into the vendor directories are *symlinks* into the staged tree under `~/.planar/`, which in turn is linked to the source repo, so source edits show up without reinstalling. Requires the source repo to stay on disk at its original path.
+- **OpenCode agents** are derived from the Markdown source (frontmatter reduced to `description` and `mode: subagent`), so they are regular files in both modes.
 
-The global mode describes how source artifacts are staged. The install
-manifest also records each projection's actual install kind: Claude skills and
-all vendor agent files are links, while Codex, Copilot, and Gemini
-directory-shaped skills are copied from their staged `SKILL.md` files so runtimes that do not
-follow directory links can discover them.
+The install manifest records each placed target's kind (link or copy), so health and uninstall know which one they are looking at. An existing destination that no Planar manifest records stops the install, naming the path.
 
 ### Initialize the database
 
@@ -210,21 +191,21 @@ skill and agent projections" it removes what the old layout left, before it
 deletes the staged trees that prove the copies are Planar's. It removes only
 what it can prove Planar made, and prints each removal:
 
-- `~/.claude/commands/pl-*.md` and `local-*.md` symlinks into `~/.planar/` or
-  `~/.planar/local/`.
+- The slash-command symlinks in `~/.claude/commands/` that point into
+  `~/.planar/` or `~/.planar/local/`.
 - The unprefixed agent symlinks into `~/.planar/agents/<vendor>/`, in every
   vendor agent directory, dangling ones under `~/.config/opencode/agents/`
   included.
-- `pl-*` skill directories under `~/.codex/skills`, `~/.copilot/skills`,
+- The old per-skill directories (named with the retired skill prefix) under
+  `~/.codex/skills`, `~/.copilot/skills`,
   `~/.gemini/antigravity-cli/skills` and `~/.config/opencode/skills` that are
   symlinks into `~/.planar/` or byte-identical to the staged
-  `~/.planar/<vendor>-skills/<name>/`. A `pl-*` directory with no such proof is
+  `~/.planar/<vendor>-skills/<name>/`. A directory with no such proof is
   left and reported as "could not prove ownership".
 
 It then removes the retired `~/.planar` paths listed in `install-cleanup.txt`
 (`commands/`, `skills/<vendor>/`, `<vendor>-skills/` including
-`opencode-skills/`, `agents/<vendor>/`). `bin/scriptorium` is listed but kept
-while this tree still builds it.
+`opencode-skills/`, `agents/<vendor>/`).
 
 <!-- retired-ref: agent.db upgrade note -->
 ### Upgrade note: unlinking `agent.db` under a live queue submitter
@@ -317,7 +298,7 @@ ctest --test-dir build/debug --output-on-failure         # Catch2 unit tests
 The repo also ships a `Makefile` with the common targets:
 
 ```bash
-make build              # cmake --preset release; copies the 5 binaries and scriptorium into ./bin/
+make build              # cmake --preset release; copies the 5 binaries into ./bin/
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-all           # unit (ctest) + registry check + coverage + cli-usage-check + surface/exit-code/eval contracts + cpp-lint-gate
 make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
@@ -327,7 +308,7 @@ On a machine where several agents build at once, send builds and tests through
 the host queue instead of running them directly, for example `planar-agent
 queue run --detach -- make test` (see [docs/testing.md](docs/testing.md)).
 
-For dev-mode install where edits to the source repo are picked up live by the binary's siblings (skills, agents, commands) and vendor surfaces, use `./install.sh --link`. Note that binary edits still require a rebuild (`make build` or re-running `install.sh`).
+For dev-mode install where edits to the source repo are picked up live by the installed skill and agents, use `./install.sh --link`. Note that binary edits still require a rebuild (`make build` or re-running `install.sh`).
 
 **Developer-only note.** The Zig implementation this project ported from is GONE. It lived under `zig/` as the port's parity oracle and was deleted at the M10 cutover (task 6045) once decision 963/982's evidence conditions were met. Nothing here builds, tests, installs, or lints against it; its history is in `git log`.
 
@@ -360,7 +341,6 @@ make uninstall-full
 
 This removes:
 - Every target `install.sh` placed and recorded in `~/.planar/install-manifest.json` (the `planar` skill under `~/.claude/skills`, `~/.agents/skills` and `~/.gemini/antigravity-cli/skills`, and the `planar-<role>` agents under the six agent directories), while it is still what Planar placed: a symlink into `~/.planar/` or the staged bytes. A recorded path someone replaced, and any other `planar` or `planar-*` entry there, is left and reported. No vendor directory and not `~/.agents/skills` itself is removed.
-- All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
 - Everything in `~/.planar/` *except* your data: `planar.db` (with its SQLite sidecars, `-wal` and `-shm`) and the `queue-logs/` directory of detached queue-run output. A retired old queue database left from before the upgrade is removed too; the upgrade note above covers the guard that protects a live old queue.
 
 A prefix that holds only a preserved `planar.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
@@ -413,35 +393,27 @@ cmake --version   # must be >= 4.3
 
 On a non-Homebrew-ARM-macOS host, see `docs/toolchain-parity.md`'s "Platform prefixes" table for the equivalent path and pass it as `-DPLANAR_LLVM_PREFIX=<path>`.
 
-**Slash commands not appearing in Claude Code.**
+**The `planar` skill or the agents do not appear in a harness.**
 
-Verify the symlinks exist:
-
-```bash
-ls -la ~/.claude/commands/pl-*.md
-```
-
-Each one should point at `~/.planar/commands/claude/pl-*.md`. If they're missing, rerun:
+Check the manifest and the placed targets. `planar health` compares every recorded target with the staged copy and names a missing one; a vendor whose presence marker was absent at install time was skipped, and the installer's summary named it. Install the vendor's harness, then rerun for just that vendor:
 
 ```bash
-./install.sh --force --vendors claude
+planar health
+ls -la ~/.claude/skills/planar ~/.claude/agents/planar-*.md
+./install.sh --vendors claude
 ```
 
-Claude Code picks up new slash commands the next time you start a session or invoke any command.
+Harnesses read skills and agents when a session starts, so start a new session after installing. The nine targets are in the [layout reference](#install-layout-reference).
 
-**`install.sh` says a vendor surface already exists.**
+**`install.sh` says a destination already exists.**
 
-By default, install.sh refuses to overwrite a destination symlink that points somewhere unexpected. Inspect:
+By default, install.sh refuses to overwrite a destination that no Planar install manifest records, and names the path. Inspect it:
 
 ```bash
-readlink ~/.claude/commands/pl-orchestrator.md
+ls -la ~/.claude/skills/planar
 ```
 
-If it's not what you want, rerun with `--force`:
-
-```bash
-./install.sh --force
-```
+If it is yours and you want it gone, move it aside and rerun `./install.sh`. `--uninstall` likewise leaves a recorded path that someone replaced, and reports it.
 
 **Database operations fail with "no such table".**
 
@@ -474,8 +446,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-agent                    # agent-callable coordination binary
 │   ├── planar-watch                    # human-facing read-only viewer
 │   ├── planar-execute                  # deterministic spawn-free Lua workflow engine
-│   ├── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
-│   └── scriptorium                     # in-tree skill and agent renderer
+│   └── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
 ├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`; mode 0600)
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
@@ -496,8 +467,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-ext-sync.md
 │   └── … (the remaining role specs and shared docs)
 ├── skills/planar/                      # staged planar skill (SKILL.md + references/)
-├── codex-agents/                       # Codex custom agents (planar-*.toml) rendered from agents/
-├── skills/src/                         # unified authored skill sources
+├── codex-agents/                       # Codex custom agents (planar-*.toml) derived from agents/
 ├── templates/                          # Operator-editable defaults
 ├── workflows/                          # Lua workflows staged from the repo
 └── scripts/                            # Bash tooling staged from the repo
@@ -532,7 +502,7 @@ Planar respects these env vars when set:
 | Variable | Purpose |
 |----------|---------|
 | `PLANAR_HOME` | Override the install root used by `install.sh` (defaults to `~/.planar`). The runtime binary does not consult this variable. |
-| `CODEX_HOME` | Override the Codex home used by `install.sh` for Codex skills (defaults to `~/.codex`; skills install into `$CODEX_HOME/skills`). |
+| `CODEX_HOME` | Override the Codex home used by `install.sh`: its presence marker, and the Codex agent directory `$CODEX_HOME/agents` (defaults to `~/.codex`). Codex skills go to the shared `~/.agents/skills`, not under `$CODEX_HOME`. |
 | `PLANAR_VENDOR` | Vendor identity recorded on every session and snapshot (e.g. `claude-code`, `codex`, `copilot`). Falls back to `cli` if unset. |
 | `PLANAR_VENDOR_SESSION_ID` | Vendor's session id, recorded alongside the vendor name. Falls back to NULL if unset. |
 | `PLANAR_WORKBENCH_ROOT` | Override the workbench drafting filesystem root (default `~/.planar/workbench/`). Useful for pointing multiple Planar instances at the same workbench directory. |

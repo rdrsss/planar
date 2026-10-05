@@ -169,6 +169,7 @@ The [documentation index](docs/README.md) gives a reading order. In brief:
 | Install and try it | [INSTALL.md](INSTALL.md), [Getting started](docs/getting-started.md) |
 | See how work flows | [Operations](docs/operations.md), [Lifecycles](docs/lifecycles.md), [Workflows](docs/workflows.md) |
 | Look up a command | [CLI reference](docs/cli-reference.md) |
+| Use the skill and role agents | [Skill and agent reference](docs/skill-reference.md) |
 | Understand the internals | [Architecture](docs/architecture.md), [Testing](docs/testing.md) |
 | Contribute | [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) |
 
