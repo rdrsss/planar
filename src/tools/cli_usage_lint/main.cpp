@@ -56,9 +56,7 @@ constexpr std::array<std::string_view, 2> k_global_ok_flags{"--help", "-h"};
 
 /// Directories under the repo root that hold authored CLI prose. `skills` is
 /// the whole skills tree (plan 1104, task ask-skill-lint): the Agent Skills
-/// layout `skills/<name>/SKILL.md` plus `references/`, and the legacy flat
-/// `skills/src/` until M2 deletes it. One root covers both, so no file is
-/// walked twice.
+/// layout `skills/<name>/SKILL.md` plus `references/`.
 constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills", "docs"};
 
 /// Single authored files, outside those directories, that carry commands

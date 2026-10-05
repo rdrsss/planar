@@ -9,90 +9,49 @@ trap 'rm -rf "$TMP"' EXIT
 HOME="$TMP/home"
 PREFIX="$HOME/.planar"
 CODEX_HOME="$HOME/.codex"
-mkdir -p \
-  "$PREFIX/skills/codex/pl-owned" "$PREFIX/codex-skills/pl-owned" \
-  "$PREFIX/agents/codex" "$CODEX_HOME/skills/pl-owned" \
-  "$CODEX_HOME/skills/local-personal" "$CODEX_HOME/agents"
+mkdir -p "$PREFIX/skills/planar" "$PREFIX/codex-agents" "$CODEX_HOME/agents" "$HOME/.agents/skills"
+printf 'skill\n' > "$PREFIX/skills/planar/SKILL.md"
+printf 'name = "coder"\n' > "$PREFIX/codex-agents/planar-coder.toml"
 
-SOURCE_DIGEST="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-PROJECTION_DIGEST="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-write_projection() {
-  local path="$1"
-  mkdir -p "$(dirname "$path")"
-  printf '%s\n' \
-    "# x-planar-source-digest: $SOURCE_DIGEST" \
-    "# x-planar-projection-digest: $PROJECTION_DIGEST" \
-    "fixture = true" > "$path"
-}
-
-# Scriptorium's built-in Codex profile stages skill render output as
-# pl-<slug>/SKILL.md (docs/format.md § 2.1's `layout: dir`), not a flat
-# pl-<slug>.md file — see install-manifest.sh's codex case.
-write_projection "$PREFIX/skills/codex/pl-owned/SKILL.md"
-write_projection "$PREFIX/codex-skills/pl-owned/SKILL.md"
-write_projection "$PREFIX/agents/codex/coder.toml"
-cp "$PREFIX/codex-skills/pl-owned/SKILL.md" "$CODEX_HOME/skills/pl-owned/SKILL.md"
-printf 'operator-owned\n' > "$CODEX_HOME/skills/local-personal/SKILL.md"
-ln -s "$PREFIX/agents/codex/coder.toml" "$CODEX_HOME/agents/coder.toml"
-
+# The version 2 shape: `vendors` is what the run found, `projections` holds one
+# row per placed target with the new vendor vocabulary (`shared` for the root
+# several vendors read), `extras` holds the staged and placed paths, and the
+# digest fields are empty (health compares bytes against the staged authority).
 MANIFEST="$PREFIX/install-manifest.json"
 printf '{"old":true}\n' > "$MANIFEST"
 install_manifest_begin "build-fixture" copy
 install_manifest_add_extra fixture-extra
-install_manifest_record_vendor codex "$PREFIX" "$HOME" "$CODEX_HOME"
+INSTALL_MANIFEST_VENDORS=(claude codex)
+install_manifest_add shared skill planar "$PREFIX/skills/planar" "$HOME/.agents/skills/planar" copy
+install_manifest_add codex agent planar-coder "$PREFIX/codex-agents/planar-coder.toml" "$CODEX_HOME/agents/planar-coder.toml" link
 install_manifest_write "$MANIFEST"
 
-grep -q '"version": 1' "$MANIFEST"
+grep -q '"version": 2' "$MANIFEST"
 grep -q '"build_id": "build-fixture"' "$MANIFEST"
 grep -q '"install_mode": "copy"' "$MANIFEST"
-grep -q '"vendors": \["codex"\]' "$MANIFEST"
+grep -q '"vendors": \["claude", "codex"\]' "$MANIFEST"
 grep -q '"extras": \["fixture-extra"\]' "$MANIFEST"
-[[ "$(grep -o '"vendor": "codex"' "$MANIFEST" | wc -l | tr -d ' ')" -eq 2 ]]
-grep -q '"kind": "skill".*"install_kind": "copy"' "$MANIFEST"
-grep -q '"kind": "agent".*"install_kind": "link"' "$MANIFEST"
-grep -q "\"source_digest\": \"$SOURCE_DIGEST\"" "$MANIFEST"
-grep -q "\"projection_digest\": \"$PROJECTION_DIGEST\"" "$MANIFEST"
-! grep -q 'claude\|copilot\|local-personal' "$MANIFEST"
+grep -q '"vendor": "shared", "kind": "skill", "name": "planar".*"install_kind": "copy"' "$MANIFEST"
+grep -q '"vendor": "codex", "kind": "agent", "name": "planar-coder".*"install_kind": "link"' "$MANIFEST"
+grep -q "\"staged_path\": \"$PREFIX/skills/planar\", \"installed_path\": \"$HOME/.agents/skills/planar\"" "$MANIFEST"
+[[ "$(grep -c '"source_digest": "", "projection_digest": ""' "$MANIFEST")" -eq 2 ]]
 [[ ! -e "$MANIFEST.tmp.$$" ]]
 
-# A second successful write atomically replaces the authority and preserves
-# the actual per-row copy/link kinds independently of the global install mode.
+# A second successful write atomically replaces the authority: the new build
+# and mode, no leftover rows or extras of the first.
 install_manifest_begin "build-replacement" link
-install_manifest_record_vendor codex "$PREFIX" "$HOME" "$CODEX_HOME"
 install_manifest_write "$MANIFEST"
 grep -q '"build_id": "build-replacement"' "$MANIFEST"
 grep -q '"install_mode": "link"' "$MANIFEST"
+grep -q '"vendors": \[\]' "$MANIFEST"
 grep -q '"extras": \[\]' "$MANIFEST"
-! grep -q 'build-fixture' "$MANIFEST"
-grep -q '"kind": "skill".*"install_kind": "copy"' "$MANIFEST"
-grep -q '"kind": "agent".*"install_kind": "link"' "$MANIFEST"
+! grep -q 'build-fixture\|"vendor":' "$MANIFEST"
 [[ ! -e "$MANIFEST.tmp.$$" ]]
 
-# Digest-less path: what scriptorium actually writes — a SKILL.md with no
-# x-planar-source-digest/x-planar-projection-digest headers at all (the
-# legacy in-band scheme retired; the in-tree renderer checks staged bytes).
-# Confirms install_manifest_add records the row with both digest fields
-# empty rather than erroring, and — the actual drift-comparison behavior —
-# that the legacy mismatch guard never fires for this case even when the
-# staged and installed bytes literally differ, since a digest is compared
-# only when the STAGED side has one. A false-positive mismatch here would
-# mean scriptorium-rendered installs spuriously fail install.sh.
-NODIGEST_PREFIX="$TMP/nodigest_home/.planar"
-NODIGEST_CODEX_HOME="$TMP/nodigest_home/.codex"
-mkdir -p "$NODIGEST_PREFIX/codex-skills/pl-nodigest" "$NODIGEST_CODEX_HOME/skills/pl-nodigest"
-printf 'body = "staged"\n' > "$NODIGEST_PREFIX/codex-skills/pl-nodigest/SKILL.md"
-printf 'body = "installed-drifted"\n' > "$NODIGEST_CODEX_HOME/skills/pl-nodigest/SKILL.md"
-
-install_manifest_begin "build-nodigest" copy
-install_manifest_add codex skill pl-nodigest \
-  "$NODIGEST_PREFIX/codex-skills/pl-nodigest/SKILL.md" \
-  "$NODIGEST_CODEX_HOME/skills/pl-nodigest/SKILL.md" \
-  copy
-NODIGEST_MANIFEST="$TMP/nodigest-manifest.json"
-install_manifest_write "$NODIGEST_MANIFEST"
-grep -q '"name": "pl-nodigest"' "$NODIGEST_MANIFEST"
-grep -q '"source_digest": ""' "$NODIGEST_MANIFEST"
-grep -q '"projection_digest": ""' "$NODIGEST_MANIFEST"
+# install_manifest_agent_name strips every agent suffix the nine targets use.
+[[ "$(install_manifest_agent_name /x/planar-coder.agent.md)" == planar-coder ]]
+[[ "$(install_manifest_agent_name /x/planar-coder.toml)" == planar-coder ]]
+[[ "$(install_manifest_agent_name /x/planar-coder.md)" == planar-coder ]]
 
 # Uninstall preserves the operator's data: `planar.db`, its SQLite sidecars
 # and the detached-run output directory `queue-logs/` survive a non-force
@@ -151,12 +110,12 @@ seed_prefix() {
 
 UNINSTALL_HOME="$TMP/uninstall_home"
 UNINSTALL_PREFIX="$UNINSTALL_HOME/.planar"
-mkdir -p "$UNINSTALL_PREFIX/bin" "$UNINSTALL_PREFIX/skills/src"
+mkdir -p "$UNINSTALL_PREFIX/bin" "$UNINSTALL_PREFIX/skills/planar"
 seed_prefix "$UNINSTALL_PREFIX"
 printf '#!/bin/sh\n' > "$UNINSTALL_PREFIX/bin/planar"
 chmod +x "$UNINSTALL_PREFIX/bin/planar"
 printf '{"version": 1}\n' > "$UNINSTALL_PREFIX/install-manifest.json"
-printf 'skill\n' > "$UNINSTALL_PREFIX/skills/src/pl-owned.md"
+printf 'skill\n' > "$UNINSTALL_PREFIX/skills/planar/SKILL.md"
 run_uninstall "$UNINSTALL_HOME" >"$TMP/uninstall-stdout" 2>"$TMP/uninstall-stderr" \
   || fail "uninstall of a full prefix failed: $(cat "$TMP/uninstall-stderr")"
 # Exactly planar.db, its sidecars and queue-logs/ are left; the idle agent.db
@@ -909,6 +868,57 @@ PYCRASH
 grep -Fq 'unexpected failure: judge exploded' "$QR_CASE/err" || fail "the crash refusal does not carry the reader's failure: $(cat "$QR_CASE/err")"
 [[ -e "$QR_P/agent.db" ]] || fail "a crashed reader let agent.db go"
 
+# The manifest is written after every placed target, so the writer must be
+# atomic: a crash between the write and the rename leaves the previous complete
+# manifest, never a truncated one (task 7218). check_atomic_writer sources a
+# writer, writes build-v1, then writes build-v2 with `mv` failing (the rename
+# that "crashes"): the destination must still be byte-for-byte version 1, still
+# parse as JSON, no temp file may be left beside it, and the failed write must
+# report failure. A writer that opens the destination in place fails it. A
+# no-change write must not touch the file.
+check_atomic_writer() {
+  local writer="$1" dir="$TMP/atomic" dest rc=0
+  rm -rf "$dir"; mkdir -p "$dir"; dest="$dir/manifest.json"
+  ( source "$writer"
+    install_manifest_begin build-v1 copy
+    install_manifest_add_extra first
+    install_manifest_write "$dest" ) >/dev/null 2>&1 || return 1
+  cp "$dest" "$dir/v1.json"
+  ( source "$writer"
+    mv() { return 1; }
+    install_manifest_begin build-v2 link
+    install_manifest_add_extra second
+    install_manifest_write "$dest" ) >/dev/null 2>&1 && rc=0 || rc=$?
+  [[ "$rc" -ne 0 ]] || return 1
+  cmp -s "$dir/v1.json" "$dest" || return 1
+  python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "$dest" || return 1
+  [[ "$(find "$dir" -name 'manifest.json.*' | wc -l | tr -d ' ')" == 0 ]] || return 1
+  ( source "$writer"
+    install_manifest_begin build-v2 link
+    install_manifest_add_extra second
+    install_manifest_write "$dest" ) >/dev/null 2>&1 || return 1
+  grep -Fq 'build-v2' "$dest" || return 1
+}
+check_atomic_writer "$ROOT/scripts/install-manifest.sh" || fail "install_manifest_write is not an atomic temp-file-and-rename writer"
+cat > "$TMP/inplace-writer.sh" <<'FIXTURE'
+# A deliberately wrong writer: it opens the destination in place.
+install_manifest_begin() { FX_BUILD="$1"; FX_MODE="$2"; FX_EXTRAS=(); }
+install_manifest_add_extra() { FX_EXTRAS+=("$1"); }
+install_manifest_write() {
+  printf '{"build_id": "%s", "install_mode": "%s", "extras": ["%s"]}\n' "$FX_BUILD" "$FX_MODE" "${FX_EXTRAS[0]}" > "$1"
+}
+FIXTURE
+if check_atomic_writer "$TMP/inplace-writer.sh"; then fail "an in-place manifest writer passed the atomic-writer check"; fi
+# A write whose bytes equal the manifest on disk leaves the file alone.
+unchanged_dest="$TMP/atomic/unchanged.json"
+install_manifest_begin build-same copy
+install_manifest_add_extra same
+install_manifest_write "$unchanged_dest"
+touch -t 200001010000 "$unchanged_dest"
+install_manifest_write "$unchanged_dest"
+[[ "$(find "$unchanged_dest" -newer "$TMP/inplace-writer.sh" | wc -l | tr -d ' ')" == 0 ]] || fail "an unchanged manifest was rewritten"
+[[ ! -e "$unchanged_dest.tmp.$$" ]] || fail "a no-change write left its temp file"
+
 qr_kill_sleepers
-printf 'install-manifest tests: 13 passed\n'
+printf 'install-manifest tests: 14 passed\n'
 

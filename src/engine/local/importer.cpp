@@ -203,18 +203,30 @@ auto dest_path(const std::filesystem::path& dest_root, std::string_view name, ma
   return dest_root / std::format("{}.md", name);
 }
 
-auto import_sources(const options& opts) -> std::expected<result, import_error> {
+auto import_sources(const options& opts) -> std::expected<result, import_failure> {
   if (opts.home_dir.empty() || opts.source_path.empty()) {
-    return std::unexpected(import_error::invalid_input);
+    return std::unexpected(import_failure{import_error::invalid_input, {}});
   }
   auto entries = collect_entries(opts.source_path, opts.kind);
   if (!entries) {
-    return std::unexpected(entries.error());
+    return std::unexpected(import_failure{entries.error(), {}});
   }
   if (entries->empty()) {
     // Zero importable entries is an ERROR here, unlike `local link`'s cheerful
     // exit 0 on an empty sandbox. The two leaves genuinely disagree.
-    return std::unexpected(import_error::not_found);
+    return std::unexpected(import_failure{import_error::not_found, {}});
+  }
+
+  // Refuse before anything is written: a bad name or a retired key anywhere in
+  // the batch stops the whole pass, so nothing is half-imported.
+  for (const auto& entry : *entries) {
+    if (auto bad = manifest::local_name_violation(entry.name); bad.has_value()) {
+      return std::unexpected(import_failure{import_error::invalid_name, std::move(*bad)});
+    }
+    if (const auto probe = manifest::parse_file(std::filesystem::path{entry.file_source_path}, opts.kind);
+        probe.has_value() && probe->frontmatter.shadow_set) {
+      return std::unexpected(import_failure{import_error::retired_key, manifest::retired_shadow_message(entry.name)});
+    }
   }
 
   const auto dest_root = opts.home_dir / ".planar" / "local" / std::string{manifest::kind_dir(opts.kind)};
@@ -232,7 +244,7 @@ auto import_sources(const options& opts) -> std::expected<result, import_error> 
       continue;
     }
 
-    for (const auto& issue : manifest::lint(parsed->frontmatter, entry.name)) {
+    for (const auto& issue : manifest::lint(parsed->frontmatter)) {
       if (issue.severity != manifest::lint_severity::warning) {
         continue;
       }

@@ -271,7 +271,7 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
   SECTION("deferred_command: `planar links update` fires inline AND fenced under agents/, and is not gated "
           "under docs/") {
     // files_scanned == 2 (agents/deferred.md, docs/not-gated.md) but only
-    // the agents/ file produces findings — proves the agents/+skills/src/
+    // the agents/ file produces findings — proves the agents/+skills/
     // path gate in check_deferred_command, not just the check itself.
     auto const [out, status] = capture(bin.string(), {(fixtures / "deferred_command").string()});
     INFO(out);
@@ -286,7 +286,7 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
 
   SECTION("no feedback envelope rule: a skill without the seven headings is clean") {
     // The seven-section rule is gone (the contract lives in the skill's
-    // references/feedback-contract.md). clean/skills/src/clean.md carries no
+    // references/feedback-contract.md). clean/docs/clean.md carries no
     // such heading and must still pass.
     auto const [out, status] = capture(bin.string(), {(fixtures / "clean").string()});
     INFO(out);
@@ -469,7 +469,7 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
     // `cmake --preset` / `make:` / `go vet` / `npm install` spans (silent), a
     // line carrying `queue-lint-ignore` (silent), a begin/end region holding a
     // span, a span line and a fenced line (silent), and a span right after the
-    // region (fires again). docs/ is not gated; skills/src/ is.
+    // region (fires again). docs/ is not gated; skills/ is.
     auto const [out, status] = capture(bin.string(), {(fixtures / "queue_command").string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));
@@ -486,8 +486,17 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "run`: `ninja`\n"
                  "agents/direct.md:35: surface-queue-command: build or test command is not given to `planar-agent queue "
                  "run`: `gradle build`\n"
-                 "skills/src/skill.md:6: surface-queue-command: build or test command is not given to `planar-agent "
+                 "skills/skill/SKILL.md:6: surface-queue-command: build or test command is not given to `planar-agent "
                  "queue run`: `pytest -q`\n"
+                 "skills/skill/SKILL.md: skill-rule frontmatter-present: ok (closed at line 4)\n"
+                 "skills/skill/SKILL.md: skill-rule name-matches-directory: ok (skill)\n"
+                 "skills/skill/SKILL.md: skill-rule name-format: ok (skill)\n"
+                 "skills/skill/SKILL.md: skill-rule description-length: ok (49 of 1024 characters)\n"
+                 "skills/skill/SKILL.md: skill-rule frontmatter-keys: ok (2 keys)\n"
+                 "skills/skill/SKILL.md: skill-rule body-lines: ok (2 of 500 lines)\n"
+                 "skills/skill/SKILL.md: skill-rule links-resolve: ok (every relative link exists)\n"
+                 "skills/skill/SKILL.md: skill-rule references-one-level: ok (every referenced file is one level "
+                 "below SKILL.md)\n"
                  "surface-lint: 7 finding(s) across 3 files\n");
   }
 

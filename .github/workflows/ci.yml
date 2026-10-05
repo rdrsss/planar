@@ -96,7 +96,7 @@ jobs:
         run: make fmt-check LLVM_PREFIX=/usr/lib/llvm-23
       - name: Installer fixtures
         if: steps.changes.outputs.code == 'true'
-        run: make test-install-manifest test-install-deps
+        run: make test-install-manifest test-install-stage test-install-deps
       - name: Planning eval harness unit tests
         if: steps.changes.outputs.code == 'true'
         run: make eval-planning-unit

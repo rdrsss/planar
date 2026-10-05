@@ -487,7 +487,7 @@ TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11
       std::filesystem::temp_directory_path() /
       std::format("planar_cliapp_lint_scratch_{}", std::chrono::steady_clock::now().time_since_epoch().count());
   std::filesystem::create_directories(scratch_root / "agents");
-  std::filesystem::create_directories(scratch_root / "skills" / "src");
+  std::filesystem::create_directories(scratch_root / "skills");
   std::filesystem::create_directories(scratch_root / "docs");
 
   auto write_doc = [&](std::string_view text) {
@@ -518,7 +518,7 @@ TEST_CASE("lint-parity: the ported cli_usage_lint accepts and enforces the CLI11
   }
 
   SECTION("CLAUDE.md is scanned, and its AGENTS.md symlink is not scanned a second time") {
-    // Task 6932: `k_scan_dirs` covered agents/, skills/src/ and docs/ only,
+    // Task 6932: `k_scan_dirs` covered agents/, skills/ and docs/ only,
     // so CLAUDE.md -- the file every agent in this repository reads first,
     // and the densest source of claim-ritual and verb examples -- had never
     // had a single command example checked against a live catalog. Task

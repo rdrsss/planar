@@ -821,14 +821,12 @@ TEST_CASE("skills renders its own help page and exits 0 without a database", "[c
   CHECK(got.err.empty());
   CHECK_FALSE(got.db_open);
   // Re-baselined onto CLI11's formatter by task 6123 and pinned exactly.
-  // The PROSE is still the oracle's, verbatim — that text is the operator's
-  // only pointer to scriptorium, and losing it would silently strand
-  // anyone who runs the retired verb.
+  // The prose is the operator's only pointer to where the skill lives now
+  // and to `planar health`, and losing it would silently strand anyone who
+  // runs the retired verb.
   CHECK(got.out ==
-        "The unified skill source tree under skills/src/ is rendered by the\n"
-        "external scriptorium binary (plan 918). Planar no longer renders vendor\n"
-        "projections nor tracks their install-drift in-band; use `scriptorium\n"
-        "check`/`scriptorium status` instead. This command has no subcommands.\n"
+        "The skill tree is skills/planar/, installed by install.sh. `planar health`\n"
+        "reports install drift. This verb is retired and will be removed next release.\n"
         "\n"
         "\n"
         "skills [OPTIONS]\n"

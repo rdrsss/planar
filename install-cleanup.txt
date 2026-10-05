@@ -10,9 +10,10 @@
 # (removed with `rm -f`). Paths must not contain spaces.
 #
 # When you remove something Planar used to install under $PLANAR_HOME, add it
-# here with a short why/when note. (Vendor-surface orphans rendered OUTSIDE
-# $PLANAR_HOME — e.g. ~/.claude/commands/ — are the `planar skills render`
-# step's domain, not this manifest.)
+# here with a short why/when note. (Old copies and symlinks that earlier
+# installs put OUTSIDE $PLANAR_HOME, such as ~/.claude/commands/ links, unprefixed
+# agent links and pl-* skill directories, are removed by install.sh's sweep
+# "Retiring the previous skill and agent projections", not by this manifest.)
 #
 # (No active entries. `bin/planar-execute` was listed here when the Lua harness
 # was extracted to a separate external project (2026-06); plan 633 revived
@@ -45,3 +46,26 @@ templates/doc-prompts/feature.md
 templates/doc-prompts/getting_started.md
 templates/doc-prompts/glossary.md
 templates/doc-prompts/research.md
+
+# Retired per-vendor skill and agent projections (plan 1104, M2: agent skills).
+# Planar now stages one `planar` skill and the planar-<role> agents and places
+# them straight into each vendor's skill and agent directories, so the in-tree
+# renderer's outputs, the staged per-vendor skill trees and the OpenCode skill
+# tree are dead weight from any prior install. The staged <vendor>-skills/ trees
+# are also the evidence install.sh's sweep uses to prove an old copy in a vendor
+# directory is Planar's, so the sweep runs BEFORE these lines take effect.
+# bin/scriptorium: the renderer is gone; a re-install removes the stale binary.
+bin/scriptorium
+commands/
+skills/codex/
+skills/copilot/
+skills/gemini/
+codex-skills/
+copilot-skills/
+gemini-skills/
+opencode-skills/
+agents/claude/
+agents/codex/
+agents/copilot/
+agents/gemini/
+agents/opencode/

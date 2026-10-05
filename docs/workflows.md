@@ -1269,7 +1269,7 @@ The `associations` row, the `projects` rows, and their membership links remain i
 - Concept: [docs/concepts.md § Workspace](concepts.md#workspace).
 - Architecture: [docs/architecture.md § Workspace State Directory Model](architecture.md#workspace-state-directory-model).
 - CLI verbs: [docs/cli-reference.md § Domain: `workspace`](cli-reference.md#domain-workspace).
-- Unified skill source: [`skills/src/pl-workspace-scan.md`](../skills/src/pl-workspace-scan.md). Vendor projections are generated at install time.
+- Agent procedure: the `planar` skill's [local reference](../skills/planar/references/local.md) § Workspaces.
 
 ---
 
@@ -1536,20 +1536,21 @@ difference. After promotion, you can run `planar local unlink fixup-protos
 
 ## Recipe 14A — Inspect and reconcile installed canonical projections
 
-Canonical sources are rendered by the in-tree Scriptorium tool during
-`install.sh`. Planar's own `install-manifest.json` records installed projections.
-Run these inspections from the repository root:
+`install.sh` stages `skills/planar/` and the agents under `~/.planar` and places
+them into each vendor found on the host. Planar's own `install-manifest.json`
+records every placement. Run these inspections from the repository root:
 
 ```bash
-~/.planar/bin/scriptorium check --config scriptorium.yaml --output-root ~/.planar
-~/.planar/bin/scriptorium status --config scriptorium.yaml --output-root ~/.planar --json
+planar health
 scripts/check-self-installed.sh
 ```
 
-`check` compares current sources with staged bytes and reports missing, changed,
-and unexpected projections. `status` reports rendering freshness per source.
-The self-installed check also verifies installed paths against the Planar
-manifest. To repair a managed projection, run `./install.sh --prefix ~/.planar`.
+`planar health` compares each recorded placement with the staged copy (a
+skill as a directory, every file) and reports `projection_freshness`:
+`fresh`, `stale` (drifted) or `missing` rows, and a `legacy` manifest left by an
+older installer. `scripts/check-self-installed.sh` exits non-zero unless the
+manifest is current with no stale or missing row. To repair a managed
+projection, run `./install.sh --prefix ~/.planar`.
 Personal `planar local` extensions remain outside this install manifest.
 
 ---
@@ -2699,8 +2700,9 @@ planar audit trail --kind question 42
 **If `gh` fails:** the skill surfaces the error, records no link, and leaves
 local state unchanged. Fix the `gh` auth issue (`gh auth login`) and re-run.
 
-See [`skills/src/pl-report-issue.md`](../skills/src/pl-report-issue.md) for
-the full skill spec, privacy contract, and mandatory-preview-gate rationale.
+The privacy contract is the one the redacted `planar report` output enforces:
+nothing leaves the machine until the operator has seen the exact issue body in
+the preview above and confirmed it.
 
 ---
 

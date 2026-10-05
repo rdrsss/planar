@@ -137,7 +137,7 @@ for categorized terminals; its database handle remains strictly read-only.
 
 The `worktree_path TEXT` column on `agent_work_claims` (also migration 0015) is the persistence path for worktree-isolated dispatch. Sequential worktree isolation and `parallel-fanout` are model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam — an optional deterministic helper, not a required exclusive path: `cycle_plan` computes one sequential lane, while `plan`/`waves` compute staged fan-out lanes; the model orchestrator, a host-native workflow, or a background agent (decision 1007) runs the git worktree/branch/merge ops and spawns the coders. `planar-agent pull --worktree <path>` and `claim --entity task:<id> --worktree <path>` write the path; `planar resume <task>` reads it via the active claim row (surfaced as `active_claim.worktree_path` in `--json` and as a `cd:` line in the text packet); `planar-watch claims | log | feed | ps` and `planar dashboard --agents` surface it in their projections. The persistence model is deliberately claim-attached — there is no standalone `worktrees` table — though the forward-compat `validate_worktree_id` hook in `src/engine/runtime/agentactivity.cpp` is the seam should that decision ever be revisited. For the concept overview and canonical path/branch/lifecycle convention see [`docs/concepts.md §Worktree`](concepts.md#worktree).
 
-The `handoffs.worktree_path` / `repo_root` / `branch` columns (migration 00017) close the cold-start recovery loop for plan 297. At handoff-create time the `planar handoff` handler copies the active claim's worktree fields onto the new row; `planar resume` reads them as a fallback when no active claim exists or the active claim row has a NULL `worktree_path`. The fallback surfaces as `from_handoff.{worktree_path,repo_root,branch,handoff_id}` in the `--json` packet and as a `from handoff: <id>` block (with `worktree:` / `cd:` / `branch:` / `repo_root:` lines) in the text packet's audit footer. Both fallback projections lie alongside `active_claim` rather than replacing it — when both are populated, `active_claim` is authoritative. See [`docs/cli-reference.md` § Domain: handoff](cli-reference.md#domain-handoff) for the lifecycle overview and [`skills/src/pl-handoff.md`](../skills/src/pl-handoff.md) for the operator-facing prose.
+The `handoffs.worktree_path` / `repo_root` / `branch` columns (migration 00017) close the cold-start recovery loop for plan 297. At handoff-create time the `planar handoff` handler copies the active claim's worktree fields onto the new row; `planar resume` reads them as a fallback when no active claim exists or the active claim row has a NULL `worktree_path`. The fallback surfaces as `from_handoff.{worktree_path,repo_root,branch,handoff_id}` in the `--json` packet and as a `from handoff: <id>` block (with `worktree:` / `cd:` / `branch:` / `repo_root:` lines) in the text packet's audit footer. Both fallback projections lie alongside `active_claim` rather than replacing it — when both are populated, `active_claim` is authoritative. See [`docs/cli-reference.md` § Domain: handoff](cli-reference.md#domain-handoff) for the lifecycle overview and the `planar` skill's [resume and handoff reference](../skills/planar/references/resume-handoff.md) for the operator-facing prose.
 
 The `task_touch_paths` table (migration 00019) is the path-level touch surface for the parallelizability rules behind `planar plan recommend-strategy` (decision 370, plan 492 M5). Each row declares that a task is expected to modify a specific repo-relative file path: `(task_id → tasks.id, repo_id → projects.id, path)` with a `unique(task_id, repo_id, path)` guard and cascade-delete on both FKs. It is ADDITIVE to — and coexists with — the coarse `entity_links(from_kind='task', to_kind='repo', relationship='touches')` repo-level edge; the two are written together by `planar task touches add <task> <repo> --path <p>` (a path-touch implies the repo-touch). The strategy engine (`src/engine/planning/strategy.cpp`) reads path-level rows where a repo has them and falls back to the coarse repo slug only for repos with no path declaration, so two tasks editing different files in the same repo are parallel-eligible while an under-declared (empty) touch set is treated as "touches everything" → never eligible. Rules 3/4 (migration touched, singleton authoritative file touched) match on the raw repo-relative path. `planar task touches list <task> --json` surfaces both granularities (`repos` + `paths`).
 
@@ -822,44 +822,56 @@ reports missing, changed, and unexpected staged files. `scriptorium status`
 reports per-source rendering freshness. Planar's install manifest below owns
 installed vendor files; Scriptorium maintains no separate registry.
 
-After all selected vendor wiring succeeds, `install.sh` atomically replaces
-`$PLANAR_HOME/install-manifest.json` (normally
-`~/.planar/install-manifest.json`). Version 1 records the build id, global
-`copy|link` installation mode, selected managed vendors, selected optional
-installer extras (currently none), and one row per managed skill or
-agent projection. Each row fixes the vendor, projection kind
-and name, staged and installed paths, actual `copy|link` install kind, and the
-two legacy digest fields — populated only when the staged file happens to
-carry the retired `x-planar-*` headers (nothing does, post plan-918 migration
-to scriptorium as renderer); empty otherwise, and never treated as a mismatch
-when empty. Codex and Copilot directory-shaped skills use their staged
-`codex-skills/` or `copilot-skills/` `SKILL.md` as the staged authority; their
-vendor installs are copies even during a global link-mode install. Claude
-skills and vendor agent files are links.
+`install.sh` writes `$PLANAR_HOME/install-manifest.json` (normally
+`~/.planar/install-manifest.json`) before the first vendor target is placed and
+again after every target, through a same-directory temp file and an atomic
+rename, so an interrupted run leaves the previous complete manifest
+authoritative. Version 2 records the build id, the global `copy|link` mode, the
+vendors the run found (`claude`, `codex`, `copilot`, `gemini`, `antigravity`,
+`opencode`), `extras` (the staged `skills/planar/**`, `agents/*.md` and
+`codex-agents/*.toml` paths, and every placed file) and one `projections` row
+per placed target: the skill directory, or one agent file. A row fixes the
+vendor, kind (`skill|agent`), name, staged source, installed path and the
+actual `copy|link` install kind; its two digest fields are always empty. The
+vendor is the target's only owner, or `shared` for `~/.agents/skills`, which
+codex, copilot, gemini and opencode all read: it is placed once, so no one
+vendor owns it. An OpenCode agent is a derived copy (frontmatter reduced to
+`description` and `mode: subagent`) in both modes, so its row is always
+`copy`.
+
+The staged authority the rows compare against is `$PLANAR_HOME/skills/planar/`
+(the skill, compared as a directory, every file), `$PLANAR_HOME/agents/planar-<role>.md`
+(Markdown and Copilot agents; OpenCode's derivation of it) and
+`$PLANAR_HOME/codex-agents/planar-<role>.toml`. The nine roots, each tagged with
+the vendors that read it, are: `~/.claude/skills` (claude), `~/.agents/skills`
+(codex, copilot, gemini, opencode), `~/.gemini/antigravity-cli/skills`
+(antigravity), `~/.claude/agents`, `$CODEX_HOME/agents` (default
+`~/.codex/agents`), `~/.copilot/agents`, `~/.gemini/agents`,
+`~/.gemini/antigravity-cli/agents` and `~/.config/opencode/agents`. A root
+takes part only while one of its vendors is present (the installer's markers:
+`~/.claude/`, `$CODEX_HOME` set or `~/.codex/`, `~/.copilot/`,
+`~/.gemini/settings.json`, `~/.gemini/antigravity-cli/`, `~/.config/opencode/`).
 
 The manifest is the ownership boundary: only its rows are Planar-managed.
-Unselected vendors and destination-only operator extensions are never added.
-The installer writes a temporary file in `$PLANAR_HOME`, closes it, then uses
-a same-directory atomic rename, so an interrupted write cannot make partial
-JSON authoritative. The older `.planar-install` prefix stamp remains for
-legacy-install detection and the prefix adoption guard; an install without the
-versioned manifest remains compatible and can be upgraded by reinstalling.
+Destination-only entries are discovered only under Planar's own names (the
+skill `planar`, agents `planar-*`) so a shared root's other tools are never
+reported. The older `.planar-install` prefix stamp remains for legacy-install
+detection and the prefix adoption guard.
 
 `src/lib/installed_surface/installed_surface.cpp`'s `status()` classifier is the read-only
-consumer of this contract. There is no more standalone `planar skills status`
-CLI verb to expose it directly — plan 918 D5 retired it along with the
-projection-digest path it used to read; `planar skills` is now a placeholder
-verb with no subcommands. The classifier reports selected versus unselected
-vendors and classifies managed rows as `fresh`, `stale`, or `missing` by
-plain existence + byte/symlink comparison against the staged authority (not a
-semantic digest match — that scheme retired with it), and may enumerate
-destination-only `unmanaged` entries without treating discovery as ownership.
-Missing, malformed, future-version, and stamped legacy manifests remain
-aggregate manifest states with a source-checkout `./install.sh --prefix
-<resolved-prefix>` bootstrap command; they are never guessed into managed
-rows. Canonical staged projection drift is reported by `scriptorium check`; installed
-file drift is checked against `install-manifest.json` by
-`scripts/check-self-installed.sh` (Recipe 14A).
+consumer of this contract. There is no standalone `planar skills status`
+CLI verb to expose it directly. The classifier reports selected versus unselected
+vendors and classifies managed rows as `fresh`, `stale` (drifted), or `missing`
+by plain existence + byte/symlink comparison against the staged authority: a
+link to the staged source is `fresh` by construction, a copy is `fresh` only
+when every byte matches. Missing, malformed, unsupported-version and stamped
+legacy manifests remain aggregate manifest states with a source-checkout
+`./install.sh --prefix <resolved-prefix>` bootstrap command; they are never
+guessed into managed rows. A version 1 manifest (the retired four-vendor,
+per-file layout, or the interim one that kept placements only in `extras`) is
+the `legacy` state: one degraded `planar health` contributor naming the
+reinstall, no rows. `scripts/check-self-installed.sh` reads `planar health
+--json`'s `projection_freshness` for the installed host (Recipe 14A).
 
 `planar health` calls this same classifier and folds its summary into the
 `projection_freshness` contributor; classification and ownership decisions

@@ -17,8 +17,7 @@ brew install cmake ninja llvm python git gh jq ripgrep
 ```
 
 - `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries, on every install path. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
-- `python3` — **required to configure**. The configure step registers Python test runners (`src/tools/scriptorium/core.test.py`, `scripts/install-lib/queue_retire.test.py`, `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. `install.sh` also runs it as its old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program), and `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
-- Scriptorium is built from `src/tools/scriptorium/` and installed by CMake; no external Scriptorium executable is required. It needs no dependency beyond Glaze, which the rest of the tree already vendors.
+- `python3` — **required to configure**. The configure step registers Python test runners (`scripts/install-lib/queue_retire.test.py`, `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. `install.sh` also runs it as its old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program), and `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
 - No network access and no token are needed to configure or build: every dependency is committed under `vendor/` as a pinned release archive.
 - `docker` — optional, developer-only. `make linux-gate` builds and tests the tree on Debian trixie in a container (see [docs/testing.md](docs/testing.md#the-linux-gate)). It is not an installer dependency.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. The full install also needs it to clone the source repository.
@@ -27,9 +26,9 @@ brew install cmake ninja llvm python git gh jq ripgrep
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session in [docs/getting-started.md](docs/getting-started.md#8-capture-hand-off-and-resume) (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
 
 The full source-checkout installer also uses the base-system utilities declared
-in `install.sh`'s `BUILD_DEPS` / `RUN_DEPS` manifests (`awk`, `basename`, `cat`, `chmod`, `cmp`,
+in `install.sh`'s `BUILD_DEPS` / `RUN_DEPS` manifests (`awk`, `basename`, `cat`, `chmod`, `cmp`, `diff`,
 `cp`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`,
-`readlink`, `rm`, `rmdir`, and `tr`) alongside CMake, Ninja, and the exact pinned LLVM compiler paths above. These ship with supported Unix-like systems;
+`readlink`, `rm`, `rmdir`, `sort`, and `tr`) alongside CMake, Ninja, and the exact pinned LLVM compiler paths above. These ship with supported Unix-like systems;
 the installer preflights them before making changes.
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
@@ -44,8 +43,8 @@ cargo install sqlx-cli --no-default-features --features sqlite
 
 ## Quick install (`make install`)
 
-The shortest path. Builds and installs Planar's five executables and the
-in-tree `scriptorium` renderer into `~/.local/bin` and nothing else.
+The shortest path. Builds and installs Planar's five executables into
+`~/.local/bin` and nothing else.
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
@@ -74,7 +73,7 @@ the vendor surfaces (Claude `/pl-*` slash commands, Codex, Copilot, and Gemini
 skills) are wired up by a `make install` or a `cmake --install` alone; for those,
 use the [full install](#full-install-installsh).
 
-The five binaries and the in-tree `scriptorium` renderer are installed. The four
+The five binaries are installed. The four
 that open a database (all but `planar-execute`, which holds no SQLite handle at
 all) statically link the vendored SQLite amalgamation — no system library
 dependency.
@@ -95,7 +94,7 @@ cmake --build build/release
 cmake --install build/release --prefix "$HOME/.planar"
 ```
 
-This puts the five binaries and `scriptorium` in `~/.planar/bin/`; add that
+This puts the five binaries in `~/.planar/bin/`; add that
 directory to your `$PATH` and run `planar health` as above. For a debug build
 instead, configure and build by hand:
 
@@ -107,7 +106,7 @@ cmake --install build/debug --prefix ~/.local
 
 ## Full install (`install.sh`)
 
-The recommended path. Installs the binary plus the canonical agent specs, vendor surfaces, workflow validation scripts, and migration sources into `~/.planar/`, then installs or symlinks the vendor surfaces into your harness directories (`~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/`). Codex skills are rendered as `~/.planar/skills/codex/<skill>/SKILL.md`; the installer materializes `~/.planar/codex-skills/<skill>/SKILL.md` runtime directories, then installs real Codex skill directories at `~/.codex/skills/<skill>`. Planar-owned agent role specs stay under `~/.planar/agents/`, with rendered per-vendor copies under `~/.planar/agents/<vendor>/` linked into each vendor's agents directory.
+The recommended path. Installs the binary plus the canonical agent specs, the `planar` skill, workflow validation scripts, and migration sources into `~/.planar/`, then places the skill and the agents into each vendor harness found on the host (Claude Code, Codex, Copilot, Gemini CLI, Antigravity, OpenCode; see the vendor table under [Install layout](#install-layout-reference) and the presence rule there).
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
@@ -119,12 +118,12 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 
 That's it. The script:
 
-- Builds all five binaries and `scriptorium` from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext,scriptorium}`.
-- Stages `agents/`, `skills/src/`, `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen), then renders the per-vendor outputs there with `scriptorium render`.
-- Installs the 40 rendered skills, and the rendered agents, into each selected vendor's harness dirs.
-- Atomically writes `~/.planar/install-manifest.json` after the selected vendor
-  wiring succeeds. The versioned file records selected Planar-managed skill
-  and agent projections plus explicitly selected installer extras;
+- Builds all five binaries from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`.
+- Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and renders the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
+- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen). It runs no renderer for the skill; the Codex agent TOML is rendered by `scripts/render-codex-agents.py`.
+- Places the staged skill and agents into each vendor whose presence marker exists, and prints the vendors found and skipped.
+- Atomically writes `~/.planar/install-manifest.json` after every placement
+  succeeds. Each placed vendor path is recorded in its `extras` list;
   operator-authored destination files are not claimed.
 
 After the script finishes, add `~/.planar/bin` to your PATH so the `planar` command is available:
@@ -163,8 +162,8 @@ In Codex, invoke the same Planar skills with `$` syntax, for example `$pl-task` 
 | Flag | Purpose |
 |------|---------|
 | `--prefix DIR` | Install root (default `~/.planar`). |
-| `--vendors LIST` | Comma-separated subset (e.g. `claude,codex` or just `claude`). Default `claude,codex,copilot,gemini`. |
-| `--no-vendor` | Skip vendor symlinks entirely; install Planar core only. |
+| `--vendors LIST` | Comma-separated filter over the vendors found on the host: `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`. Default is all six. Naming an absent vendor warns. |
+| `--no-vendor` | Skip vendor surfaces entirely; install Planar core only. |
 | `--link` | Symlink artifacts from the source repo into `~/.planar/` instead of copying. **Dev mode** — edits to the repo propagate immediately. |
 | `--force` | Overwrite existing symlinks at the destinations. It does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
 | `--ignore-live-queue` | Retire (or uninstall) the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
@@ -200,6 +199,31 @@ The default database lives at `~/.planar/planar.db`. Override it with the `PLANA
 The host build and test queue lives in the same database: `queue_entries`, `queue_history` and `queue_schema` are tables of `planar.db`, so there is no second database to create or move. The `planar-agent queue` verbs open `planar.db` as an existing file and never create or migrate it, so run `planar init` first. Detached queue runs write their output files under `queue-logs/` beside the database file.
 
 `planar.db` holds task claim tokens, which authorise heartbeats and terminal verbs on a claim, and the queue stores a submitter's token while its entry is live, so the database is private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` (with its `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `queue-logs/` is created `0700` with `0600` logs. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
+
+### Upgrade note: the previous skill and agent projections
+
+Earlier installs rendered a per-vendor skill and command set and linked or
+copied it into the vendors' directories. `install.sh` now places one `planar`
+skill and the `planar-<role>` agents instead, and under "Retiring the previous
+skill and agent projections" it removes what the old layout left, before it
+deletes the staged trees that prove the copies are Planar's. It removes only
+what it can prove Planar made, and prints each removal:
+
+- `~/.claude/commands/pl-*.md` and `local-*.md` symlinks into `~/.planar/` or
+  `~/.planar/local/`.
+- The unprefixed agent symlinks into `~/.planar/agents/<vendor>/`, in every
+  vendor agent directory, dangling ones under `~/.config/opencode/agents/`
+  included.
+- `pl-*` skill directories under `~/.codex/skills`, `~/.copilot/skills`,
+  `~/.gemini/antigravity-cli/skills` and `~/.config/opencode/skills` that are
+  symlinks into `~/.planar/` or byte-identical to the staged
+  `~/.planar/<vendor>-skills/<name>/`. A `pl-*` directory with no such proof is
+  left and reported as "could not prove ownership".
+
+It then removes the retired `~/.planar` paths listed in `install-cleanup.txt`
+(`commands/`, `skills/<vendor>/`, `<vendor>-skills/` including
+`opencode-skills/`, `agents/<vendor>/`). `bin/scriptorium` is listed so an install over an older tree removes the retired
+renderer binary.
 
 <!-- retired-ref: agent.db upgrade note -->
 ### Upgrade note: unlinking `agent.db` under a live queue submitter
@@ -292,7 +316,7 @@ ctest --test-dir build/debug --output-on-failure         # Catch2 unit tests
 The repo also ships a `Makefile` with the common targets:
 
 ```bash
-make build              # cmake --preset release; copies the 5 binaries and scriptorium into ./bin/
+make build              # cmake --preset release; copies the 5 binaries into ./bin/
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-all           # unit (ctest) + registry check + coverage + cli-usage-check + surface/exit-code/eval contracts + cpp-lint-gate
 make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
@@ -334,6 +358,7 @@ make uninstall-full
 ```
 
 This removes:
+- Every target `install.sh` placed and recorded in `~/.planar/install-manifest.json` (the `planar` skill under `~/.claude/skills`, `~/.agents/skills` and `~/.gemini/antigravity-cli/skills`, and the `planar-<role>` agents under the six agent directories), while it is still what Planar placed: a symlink into `~/.planar/` or the staged bytes. A recorded path someone replaced, and any other `planar` or `planar-*` entry there, is left and reported. No vendor directory and not `~/.agents/skills` itself is removed.
 - All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
 - Everything in `~/.planar/` *except* your data: `planar.db` (with its SQLite sidecars, `-wal` and `-shm`) and the `queue-logs/` directory of detached queue-run output. A retired old queue database left from before the upgrade is removed too; the upgrade note above covers the guard that protects a live old queue.
 
@@ -448,8 +473,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-agent                    # agent-callable coordination binary
 │   ├── planar-watch                    # human-facing read-only viewer
 │   ├── planar-execute                  # deterministic spawn-free Lua workflow engine
-│   ├── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
-│   └── scriptorium                     # in-tree skill and agent renderer
+│   └── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
 ├── install-manifest.json               # versioned managed-projection authority
 ├── planar.db                           # SQLite database (after `planar init`; mode 0600)
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
@@ -468,40 +492,34 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-planner.md
 │   ├── planar-ingestor.md
 │   ├── planar-ext-sync.md
-│   ├── … (the remaining role specs and shared docs)
-│   └── claude/ codex/ copilot/ gemini/ # rendered per-vendor agent files
-├── commands/claude/                    # Claude slash-command sources
-│   ├── pl-orchestrator.md
-│   ├── pl-coder.md
-│   ├── pl-reviewer.md
-│   ├── pl-init.md
-│   ├── pl-scope.md
-│   ├── pl-plan.md
-│   ├── pl-task.md
-│   └── … (40 total per vendor)
+│   └── … (the remaining role specs and shared docs)
+├── skills/planar/                      # staged planar skill (SKILL.md + references/)
+├── codex-agents/                       # Codex custom agents (planar-*.toml) rendered from agents/
 ├── skills/src/                         # unified authored skill sources
-├── skills/codex/                       # rendered Codex skills (pl-*/SKILL.md, same 40 names)
-├── codex-skills/                       # Codex runtime skill directories
-│   ├── pl-orchestrator/
-│   │   └── SKILL.md
-│   └── … (40 total)
-├── skills/copilot/                     # rendered Copilot skills (same 40 file names)
-├── copilot-skills/                     # Copilot runtime skill directories
-├── skills/gemini/                      # rendered Gemini skills (same 40 file names)
-├── gemini-skills/                      # Gemini runtime skill directories
 ├── templates/                          # Operator-editable defaults
 ├── workflows/                          # Lua workflows staged from the repo
 └── scripts/                            # Bash tooling staged from the repo
 ```
 
-Symlinks the installer creates out of `~/.planar/`:
+Vendor targets the installer places into, only for a vendor whose presence
+marker exists (six vendors, nine targets):
 
-```
-~/.claude/commands/pl-*.md       →  ~/.planar/commands/claude/pl-*.md      (40 links)
-~/.codex/skills/pl-*/SKILL.md    real files copied from ~/.planar/codex-skills/pl-*/SKILL.md (40 skills)
-~/.copilot/skills/pl-*/SKILL.md  real files copied from ~/.planar/copilot-skills/pl-*/SKILL.md (40 skills)
-~/.gemini/antigravity-cli/skills/pl-*/SKILL.md  real files copied from ~/.planar/gemini-skills/pl-*/SKILL.md (40 skills)
-```
+| Vendor | Presence marker | Skill | Agents |
+|--------|-----------------|-------|--------|
+| Claude Code | `~/.claude/` | `~/.claude/skills/planar` | `~/.claude/agents/planar-<role>.md` |
+| Codex | `$CODEX_HOME` set, else `~/.codex/` | `~/.agents/skills/planar` (shared) | `$CODEX_HOME/agents/planar-<role>.toml` (default `~/.codex`) |
+| Copilot | `~/.copilot/` | `~/.agents/skills/planar` (shared) | `~/.copilot/agents/planar-<role>.agent.md` |
+| Gemini CLI | `~/.gemini/settings.json` | `~/.agents/skills/planar` (shared) | `~/.gemini/agents/planar-<role>.md` |
+| Antigravity | `~/.gemini/antigravity-cli/` | `~/.gemini/antigravity-cli/skills/planar` | `~/.gemini/antigravity-cli/agents/planar-<role>.md` |
+| OpenCode | `~/.config/opencode/` | none: it reads `~/.agents/skills` and `~/.claude/skills` | `~/.config/opencode/agents/planar-<role>.md`, frontmatter reduced to `description` and `mode: subagent` |
+
+The shared `~/.agents/skills/planar` is placed once when any of Codex, Copilot,
+Gemini CLI or OpenCode is present. Gemini CLI and Antigravity are detected
+independently. Skills and Markdown agents are symlinks into `~/.planar/` with
+`--link` and copies otherwise; the OpenCode agents are derived files, so they are
+always copied. The installer prints the vendors it found and the ones it skipped.
+A destination that exists and that no Planar manifest records stops the install,
+naming the path.
 
 The binary is **not** symlinked anywhere. Add `~/.planar/bin` to your `$PATH` (see [above](#full-install-installsh)).
 

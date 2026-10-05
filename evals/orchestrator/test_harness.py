@@ -539,24 +539,134 @@ class LifecycleFixtureAgentTests(unittest.TestCase):
             with mock.patch.object(harness, "ROOT", Path(tmp)):
                 self.assertEqual(harness.orchestrator_agent_source(), "from the checkout\n")
 
+    def stage(self, root: Path, checkout: Path | None = None) -> Path:
+        repo = root / "repo"
+        harness.write_lifecycle_agents(
+            repo,
+            harness.FIXTURES_DIR / "controlled-classic",
+            checkout,
+        )
+        return repo
+
+    def render_checkout_orchestrator(self, root: Path) -> str:
+        agents = root / "one"
+        agents.mkdir()
+        shutil.copyfile(
+            harness.ROOT / "agents" / "planar-orchestrator.md",
+            agents / "planar-orchestrator.md",
+        )
+        out = root / "rendered"
+        subprocess.run(
+            [
+                sys.executable,
+                str(harness.ROOT / "scripts" / "render-codex-agents.py"),
+                str(agents),
+                str(out),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return (out / "planar-orchestrator.toml").read_text(encoding="utf-8")
+
     def test_lifecycle_agents_are_written_with_the_planar_prefix(self) -> None:
         with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
-            root = Path(tmp)
-            fixture = root / "fixture"
-            fixture.mkdir()
-            for role in ("coder", "reviewer", "test-coder"):
-                (fixture / f"{role}.instructions.md").write_text(f"{role} text\n")
-            instructions = root / "orch.md"
-            instructions.write_text("orch text\n")
-            repo = root / "repo"
-            harness.write_lifecycle_agents(repo, instructions, fixture)
+            repo = self.stage(Path(tmp))
             for role in ("orchestrator", "coder", "reviewer", "test-coder"):
                 self.assertTrue((repo / ".claude" / "agents" / f"planar-{role}.md").is_file(), role)
                 self.assertTrue((repo / ".codex" / "agents" / f"planar-{role}.toml").is_file(), role)
                 self.assertFalse((repo / ".claude" / "agents" / f"{role}.md").exists(), role)
                 self.assertFalse((repo / ".codex" / "agents" / f"{role}.toml").exists(), role)
-            claude = (repo / ".claude" / "agents" / "planar-orchestrator.md").read_text()
-            self.assertIn('name: "planar-orchestrator"', claude)
+
+    def test_staged_skill_bytes_equal_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            repo = self.stage(Path(tmp))
+            source = harness.ROOT / "skills" / "planar"
+            staged = repo / ".claude" / "skills" / "planar"
+            names = sorted(p.relative_to(source) for p in source.rglob("*") if p.is_file())
+            self.assertIn(Path("SKILL.md"), names)
+            self.assertEqual(
+                names,
+                sorted(p.relative_to(staged) for p in staged.rglob("*") if p.is_file()),
+            )
+            for rel in names:
+                self.assertEqual((staged / rel).read_bytes(), (source / rel).read_bytes(), str(rel))
+
+    def test_staged_claude_orchestrator_equals_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            repo = self.stage(Path(tmp))
+            self.assertEqual(
+                (repo / ".claude" / "agents" / "planar-orchestrator.md").read_bytes(),
+                (harness.ROOT / "agents" / "planar-orchestrator.md").read_bytes(),
+            )
+
+    def test_staged_codex_orchestrator_equals_the_script_output(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            root = Path(tmp)
+            repo = self.stage(root)
+            self.assertEqual(
+                (repo / ".codex" / "agents" / "planar-orchestrator.toml").read_text(encoding="utf-8"),
+                self.render_checkout_orchestrator(root),
+            )
+
+    def test_controlled_agents_parse_with_the_fixture_instructions(self) -> None:
+        import tomllib
+
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            repo = self.stage(Path(tmp))
+            fixture = harness.FIXTURES_DIR / "controlled-classic"
+            for role in ("coder", "reviewer", "test-coder"):
+                parsed = tomllib.loads(
+                    (repo / ".codex" / "agents" / f"planar-{role}.toml").read_text(encoding="utf-8")
+                )
+                self.assertEqual(list(parsed), ["name", "description", "developer_instructions"])
+                self.assertEqual(parsed["name"], f"planar-{role}")
+                self.assertEqual(
+                    parsed["developer_instructions"],
+                    (fixture / f"{role}.instructions.md").read_text(encoding="utf-8"),
+                )
+                claude = (repo / ".claude" / "agents" / f"planar-{role}.md").read_text(encoding="utf-8")
+                self.assertIn(f"name: planar-{role}\n", claude)
+                self.assertIn(f"  slug: planar-{role}\n", claude)
+
+    def test_fixture_and_arena_stage_without_skills_src(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-no-skills-src-") as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            (checkout / "scripts").mkdir(parents=True)
+            shutil.copytree(harness.ROOT / "skills" / "planar", checkout / "skills" / "planar")
+            shutil.copytree(
+                harness.ROOT / "agents", checkout / "agents",
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            shutil.copyfile(
+                harness.ROOT / "scripts" / "render-codex-agents.py",
+                checkout / "scripts" / "render-codex-agents.py",
+            )
+            self.assertFalse((checkout / "skills" / "src").exists())
+            repo = self.stage(root, checkout)
+            self.assertTrue((repo / ".claude" / "skills" / "planar" / "SKILL.md").is_file())
+            self.assertTrue((repo / ".codex" / "agents" / "planar-orchestrator.toml").is_file())
+            env = arena.make_arena(root / "arena")
+            arena.stage_planar_surface(env, "claude", checkout)
+            arena.stage_planar_surface(env, "codex", checkout)
+
+    def test_missing_checkout_orchestrator_falls_back_to_the_inline_fixture(self) -> None:
+        import tomllib
+
+        with tempfile.TemporaryDirectory(prefix="planar-eval-fallback-") as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            (checkout / "scripts").mkdir(parents=True)
+            shutil.copyfile(
+                harness.ROOT / "scripts" / "render-codex-agents.py",
+                checkout / "scripts" / "render-codex-agents.py",
+            )
+            repo = self.stage(root, checkout)
+            parsed = tomllib.loads(
+                (repo / ".codex" / "agents" / "planar-orchestrator.toml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(parsed["developer_instructions"], harness.INLINE_ORCHESTRATOR_FIXTURE)
+            self.assertFalse((repo / ".claude" / "skills").exists())
 
 
 class VendorAuthBeforeHostStartTests(unittest.TestCase):

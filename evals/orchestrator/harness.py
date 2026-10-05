@@ -1925,7 +1925,7 @@ def git_state(repo: Path, env: dict[str, str]) -> str:
 
 
 def require_current_installed_projection() -> None:
-    require_commands(["scriptorium"])
+    require_commands(["planar", "jq"])
     run_passthrough([str(ROOT / "scripts" / "check-self-installed.sh")], cwd=ROOT)
 
 
@@ -2411,75 +2411,99 @@ INLINE_ORCHESTRATOR_FIXTURE = (
 )
 
 
-def orchestrator_agent_source() -> str:
+def orchestrator_agent_source(root: Path | None = None) -> str:
     """The orchestrator contract text for the controlled lifecycle fixture.
 
     Read from `agents/planar-orchestrator.md` in the checkout when it exists;
     otherwise `INLINE_ORCHESTRATOR_FIXTURE`.
     """
-    path = ROOT / "agents" / f"{vendors.ORCHESTRATOR_AGENT}.md"
+    path = (root or ROOT) / "agents" / f"{vendors.ORCHESTRATOR_AGENT}.md"
     if path.is_file():
         return path.read_text(encoding="utf-8")
     return INLINE_ORCHESTRATOR_FIXTURE
 
 
+def controlled_agent_markdown(name: str, description: str, instructions: str) -> str:
+    """Markdown for a controlled agent in the shipped frontmatter contract
+    (`name`, `description`, `planar: {kind: agent, slug}`); the body is
+    `instructions` exactly."""
+    return (
+        f"---\nname: {name}\ndescription: {description}\n"
+        f"planar:\n  kind: agent\n  slug: {name}\n---\n\n{instructions}"
+    )
+
+
+def render_codex_agents(root: Path, agents_dir: Path, out_dir: Path) -> None:
+    """Run the checkout's `scripts/render-codex-agents.py`, the one renderer
+    the installer and `planar local link` use, over `agents_dir`."""
+    script = root / "scripts" / "render-codex-agents.py"
+    result = subprocess.run(
+        [sys.executable, str(script), str(agents_dir), str(out_dir)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise EvalFailure(
+            f"{script.name} exited {result.returncode}: {result.stderr.strip()}"
+        )
+
+
 def write_lifecycle_agents(
-    repo: Path, instructions_path: Path, fixture_root: Path
+    repo: Path, fixture_root: Path, root: Path | None = None
 ) -> None:
-    """Write the project-scoped controlled agents, `planar-` prefixed, for
-    both vendors (`.claude/agents/*.md`, `.codex/agents/*.toml`)."""
-    role_data = [
-        (
-            vendors.ORCHESTRATOR_AGENT,
-            "Runs the Planar orchestration lifecycle without authoring source changes.",
-            instructions_path,
-        ),
-        (
-            "planar-coder",
-            "Controlled lifecycle-eval coder.",
-            fixture_root / "coder.instructions.md",
-        ),
-        (
-            "planar-reviewer",
-            "Controlled lifecycle-eval reviewer.",
-            fixture_root / "reviewer.instructions.md",
-        ),
-        (
-            "planar-test-coder",
-            "Controlled lifecycle-eval test-coder.",
-            fixture_root / "test-coder.instructions.md",
-        ),
+    """Stage the lifecycle fixture's Planar surface and controlled agents.
+
+    - `.claude/skills/planar/`: the checkout's `skills/planar/` tree;
+    - `.claude/agents/planar-orchestrator.md`: the checkout file verbatim
+      (`INLINE_ORCHESTRATOR_FIXTURE` wrapped in the shipped frontmatter only
+      when the checkout has no such file);
+    - `.claude/agents/planar-{coder,reviewer,test-coder}.md`: the fixture
+      instructions in the shipped frontmatter contract;
+    - `.codex/agents/planar-*.toml`: `scripts/render-codex-agents.py` run
+      over exactly those Markdown files, so the fixture cannot drift from
+      the shipped renderer.
+    """
+    root = root or ROOT
+    skill_src = root / "skills" / "planar"
+    if skill_src.is_dir():
+        skill_dst = repo / ".claude" / "skills" / "planar"
+        if skill_dst.exists():
+            shutil.rmtree(skill_dst)
+        shutil.copytree(skill_src, skill_dst)
+    claude_dir = repo / ".claude" / "agents"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    orchestrator = root / "agents" / f"{vendors.ORCHESTRATOR_AGENT}.md"
+    if orchestrator.is_file():
+        shutil.copyfile(orchestrator, claude_dir / orchestrator.name)
+    else:
+        write_text(
+            claude_dir / orchestrator.name,
+            controlled_agent_markdown(
+                vendors.ORCHESTRATOR_AGENT,
+                "Runs the Planar orchestration lifecycle without authoring source changes.",
+                INLINE_ORCHESTRATOR_FIXTURE,
+            ),
+        )
+    controlled = [
+        ("planar-coder", "Controlled lifecycle-eval coder.", "coder"),
+        ("planar-reviewer", "Controlled lifecycle-eval reviewer.", "reviewer"),
+        ("planar-test-coder", "Controlled lifecycle-eval test-coder.", "test-coder"),
     ]
-    for name, description, source in role_data:
-        write_codex_agent(repo, name, description, source)
-        write_claude_agent(repo, name, description, source)
-
-
-def toml_string(value: str) -> str:
-    return json.dumps(value)
-
-
-def write_codex_agent(
-    repo: Path, name: str, description: str, instructions_path: Path
-) -> None:
-    instructions = instructions_path.read_text(encoding="utf-8")
-    write_text(
-        repo / ".codex" / "agents" / f"{name}.toml",
-        f"name = {toml_string(name)}\n"
-        f"description = {toml_string(description)}\n"
-        f"developer_instructions = {toml_string(instructions)}\n",
-    )
-
-
-def write_claude_agent(
-    repo: Path, name: str, description: str, instructions_path: Path
-) -> None:
-    instructions = instructions_path.read_text(encoding="utf-8")
-    write_text(
-        repo / ".claude" / "agents" / f"{name}.md",
-        f"---\nname: {json.dumps(name)}\n"
-        f"description: {json.dumps(description)}\n---\n\n{instructions}\n",
-    )
+    for name, description, role in controlled:
+        instructions = (fixture_root / f"{role}.instructions.md").read_text(
+            encoding="utf-8"
+        )
+        write_text(
+            claude_dir / f"{name}.md",
+            controlled_agent_markdown(name, description, instructions),
+        )
+    with tempfile.TemporaryDirectory(prefix="planar-eval-codex-agents-") as tmp:
+        agents_tmp = Path(tmp) / "agents"
+        agents_tmp.mkdir()
+        for name in [vendors.ORCHESTRATOR_AGENT] + [c[0] for c in controlled]:
+            shutil.copyfile(claude_dir / f"{name}.md", agents_tmp / f"{name}.md")
+        render_codex_agents(root, agents_tmp, repo / ".codex" / "agents")
 
 
 def load_fixture_manifest(fixture_root: Path) -> dict[str, Any]:
@@ -2759,7 +2783,7 @@ def prepare_lifecycle_fixture(
             repo / ".codex" / "config.toml",
             "[agents]\nmax_concurrent_threads_per_session = 4\n",
         )
-        write_lifecycle_agents(repo, instructions_path, fixture_root)
+        write_lifecycle_agents(repo, fixture_root)
         for support in ("cross-scope-writes", "doctrine", "methodology", "models"):
             for vendor in ("codex", "claude"):
                 shutil.copy2(

@@ -22,20 +22,33 @@
 /// Directory discovery exists solely to label destination-only entries
 /// `unmanaged`; it never promotes such an entry into the managed repair set.
 ///
-/// Plan 918 M5: the in-band `x-planar-source-digest`/
-/// `x-planar-projection-digest` projection-digest scheme is retired —
-/// scriptorium now owns install-drift detection out-of-band via its own
-/// merkle manifest. This module keeps its non-digest duties: manifest
-/// presence/validity classification, vendor selection, and unmanaged-entry
-/// discovery. Freshness is a plain existence + byte/symlink comparison
-/// against the staged authority, not a semantic digest match.
+/// Freshness is a plain existence + byte/symlink comparison against the
+/// staged authority, not a semantic digest match. The staged authority is
+/// `$PLANAR_HOME/skills/planar/` (the skill, a directory),
+/// `$PLANAR_HOME/agents/planar-<role>.md` (Markdown, Copilot and OpenCode
+/// agents; OpenCode's installed form is derived from it by `derive_opencode`)
+/// and `$PLANAR_HOME/codex-agents/planar-<role>.toml` (Codex agents).
 ///
-/// Caveat inherited from the oracle (Zig question 880): this byte/symlink
-/// freshness signal depends on the staged projection tree
-/// (`$PLANAR_HOME/{codex-skills,agents/<vendor>,...}`) being retained on
-/// disk post-install as the comparison authority. If the staged tree is ever
-/// pruned after install, freshness classification loses its comparison
-/// baseline for every managed row.
+/// ## The nine roots
+///
+/// Planar places into nine vendor roots (`installed_roots`), each tagged with
+/// the vendors that read it. A root takes part only when at least one of its
+/// vendors is present on the host, with the same presence markers
+/// `install.sh`'s `vendor_present` uses. The shared `~/.agents/skills` root is
+/// recorded in the manifest under the vendor name `shared`: it is placed once
+/// however many of its four owners are present, so no single vendor owns it.
+///
+/// ## Manifest versions
+///
+/// Version 2 is current. A version 1 manifest (the retired four-vendor,
+/// per-file layout, including the interim one that recorded placements only
+/// in `extras`) reads as `manifest_state::legacy` with a reinstall repair
+/// command; it never yields rows and never fails `planar health`.
+///
+/// Caveat inherited from the oracle (Zig question 880): freshness depends on
+/// the staged tree under `$PLANAR_HOME` being retained on disk post-install
+/// as the comparison authority. If it is pruned, every managed row reads
+/// `stale` ("staged projection is unavailable").
 module;
 
 export module planar.installed_surface;
@@ -44,12 +57,18 @@ import std;
 
 namespace planar::installed_surface {
 
-/// @brief The four vendors this tree knows how to classify, in the oracle's
-/// declared order — that order is the JSON/text wire order for `vendors`.
-export inline constexpr std::array<std::string_view, 4> supported_vendors{"claude", "codex", "copilot", "gemini"};
+/// @brief The six vendors this tree knows how to classify, in the installer's
+/// `VENDOR_NAMES` order — that order is the JSON/text wire order for `vendors`.
+export inline constexpr std::array<std::string_view, 6> supported_vendors{"claude", "codex",       "copilot",
+                                                                          "gemini", "antigravity", "opencode"};
 
-/// @brief The only install-manifest schema version this module accepts.
-export inline constexpr std::uint32_t manifest_version = 1;
+/// @brief The manifest row vendor naming a root that several vendors read
+/// (`~/.agents/skills`). It is valid on a row but is not a selectable vendor.
+export inline constexpr std::string_view shared_vendor = "shared";
+
+/// @brief The install-manifest schema version this module accepts. Version 1
+/// reads as `manifest_state::legacy`; any other value is `unsupported`.
+export inline constexpr std::uint32_t manifest_version = 2;
 
 /// @brief Per-projection freshness classification.
 export enum class state : std::uint8_t {
@@ -107,10 +126,35 @@ export struct summary {
 /// @brief Inputs to `status`.
 export struct options {
   std::string                planar_home; ///< `$PLANAR_HOME`; hosts `install-manifest.json`.
-  std::string                home;        ///< `$HOME`; hosts the claude/copilot/gemini vendor roots.
-  std::string                codex_home;  ///< `$CODEX_HOME`; hosts the codex vendor root.
-  std::optional<std::string> vendor;      ///< Restrict to one vendor when set.
+  std::string                home;        ///< `$HOME`; hosts every vendor root except the Codex agents root.
+  std::string                codex_home;  ///< `$CODEX_HOME` (default `$HOME/.codex`); hosts the Codex agents root.
+  std::optional<std::string> vendor;      ///< Restrict to one vendor (or `shared`-root readers) when set.
+  bool codex_home_set = false;            ///< `$CODEX_HOME` was set in the environment; with `~/.codex/` it marks Codex present.
 };
+
+/// @brief One of the nine vendor roots Planar places into, resolved against
+/// the homes in `options`.
+export struct installed_root {
+  std::string              path;            ///< Absolute directory.
+  std::string              kind;            ///< `skill` or `agent`.
+  bool                     directory_shape; ///< Skill roots hold a directory per skill; agent roots hold files.
+  bool                     derived;         ///< Installed bytes are derived from the staged file (OpenCode).
+  std::vector<std::string> vendors;         ///< Vendors that read this root, in `supported_vendors` order.
+  bool                     present;         ///< At least one tagged vendor is present on this host.
+};
+
+/// @brief The nine vendor roots, in the installer's placement order.
+/// @param opts The home directories; `codex_home_set` feeds Codex presence.
+/// @return Exactly nine entries, each tagged with its vendors and presence.
+export auto installed_roots(const options& opts) -> std::vector<installed_root>;
+
+/// @brief Derive the OpenCode form of a staged agent: the frontmatter reduced
+/// to `description` and `mode: subagent`, the body unchanged. Byte-equal to
+/// `install.sh`'s `opencode_derive`.
+/// @param staged The staged `.md` bytes.
+/// @return The derived bytes, or `std::nullopt` when the file does not open
+/// with `---`, has no description, or its frontmatter never closes.
+export auto derive_opencode(std::string_view staged) -> std::optional<std::string>;
 
 /// @brief The whole classification result.
 export struct status_result {
