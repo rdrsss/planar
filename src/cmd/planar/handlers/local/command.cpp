@@ -45,6 +45,32 @@ auto sandbox_roots(context& ctx) -> std::expected<manifest::home_and_root, domai
   return *resolved;
 }
 
+/// @brief The explicit `CODEX_HOME`, honoured only when the sandbox is the real home.
+///
+/// A redirected `PLANAR_LOCAL_HOME` means a test or a scratch run; following a
+/// real `CODEX_HOME` from there would write outside the scratch root.
+/// @param ctx The invocation context.
+/// @return The directory, or nullopt.
+auto codex_home_of(context& ctx) -> std::optional<std::filesystem::path> {
+  if (ctx.env()("PLANAR_LOCAL_HOME").has_value()) {
+    return std::nullopt;
+  }
+  if (auto value = ctx.env()("CODEX_HOME"); value.has_value() && !value->empty()) {
+    return std::filesystem::path{*value};
+  }
+  return std::nullopt;
+}
+
+/// @brief The refusal for a destination Planar does not own.
+/// @param path The foreign destination.
+/// @return The exit-6 error.
+auto foreign_destination_error(const std::string& path) -> domain_error {
+  return error_from_body(domain_error_kind::already_exists,
+                         std::format("refusing to overwrite {}: it exists and is not a Planar projection (move or remove it, "
+                                     "then re-run)",
+                                     path));
+}
+
 /// @brief Emit one source's `local link` block in whichever mode was asked for.
 /// @param ctx The invocation context.
 /// @param file The parsed source.
@@ -69,11 +95,19 @@ auto run_reconcile(context& ctx, bool dry_run, bool as_json) -> handler_result {
   if (!roots) {
     return std::unexpected(roots.error());
   }
-  auto actions = link_ns::reconcile({.home_dir = roots->home_dir, .dry_run = dry_run, .now = link_ns::utc_now_stamp()});
+  auto actions = link_ns::reconcile(
+      {.home_dir = roots->home_dir, .dry_run = dry_run, .now = link_ns::utc_now_stamp(), .codex_home = codex_home_of(ctx)});
   if (!actions.has_value()) {
+    if (actions.error().why == link_ns::reconcile_error::cause::conflict) {
+      return std::unexpected(foreign_destination_error(actions.error().path));
+    }
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reconcile failed: ManifestUnreadable"));
   }
   ctx.out() << (as_json ? render::reconcile_json(*actions) : render::reconcile_text(*actions, dry_run));
+  if (std::ranges::any_of(*actions, [](const link_ns::reconcile_action& action) { return action.reason == "write-failed"; })) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "reconcile: some projections could not be written"));
+  }
   return {};
 }
 
@@ -118,6 +152,13 @@ auto local_link(context& ctx, const cliapp::parsed_args& args) -> handler_result
     return run_reconcile(ctx, dry_run, as_json);
   }
 
+  // A name is validated, never normalized: `My_Skill` is refused, not linked as `my-skill`.
+  if (name.has_value()) {
+    if (auto bad = manifest::local_name_violation(*name); bad.has_value()) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::move(*bad)));
+    }
+  }
+
   auto roots = sandbox_roots(ctx);
   if (!roots) {
     return std::unexpected(roots.error());
@@ -144,6 +185,17 @@ auto local_link(context& ctx, const cliapp::parsed_args& args) -> handler_result
     picked.push_back(file);
   }
 
+  // Refuse before anything is written or printed: a bad name or the retired
+  // `shadow` key in any picked source stops the whole run.
+  for (auto const& file : picked) {
+    if (auto bad = manifest::local_name_violation(file.name); bad.has_value()) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::move(*bad)));
+    }
+    if (file.frontmatter.shadow_set) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, manifest::retired_shadow_message(file.name)));
+    }
+  }
+
   if (name.has_value() && picked.empty()) {
     return std::unexpected(error_from_rendered(domain_error_kind::generic_failure,
                                                render::no_such_source_error(*name, roots->sandbox_root.string())));
@@ -161,16 +213,29 @@ auto local_link(context& ctx, const cliapp::parsed_args& args) -> handler_result
   auto const stamp  = link_ns::utc_now_stamp();
   auto const vendor = cliapp::flag_string(args, "--vendor");
 
+  // Every destination is checked before ANY is written, so a foreign file
+  // stops the whole run with nothing half-linked.
+  if (!dry_run) {
+    if (auto const foreign = link_ns::find_conflict(
+            picked, {.home_dir = roots->home_dir, .vendor_filter = vendor, .codex_home = codex_home_of(ctx)});
+        foreign.has_value()) {
+      return std::unexpected(foreign_destination_error(*foreign));
+    }
+  }
+
   std::vector<link_ns::link_result> results;
   results.reserve(picked.size());
   for (auto const& file : picked) {
     if (!as_json) {
-      for (auto const& issue : manifest::lint(file.frontmatter, file.name)) {
+      for (auto const& issue : manifest::lint(file.frontmatter)) {
         ctx.out() << render::lint_text(issue, file.kind, file.name);
       }
     }
-    auto result = link_ns::link(
-        file, {.home_dir = roots->home_dir, .dry_run = dry_run, .vendor_filter = vendor, .force_copy = false, .now = stamp});
+    auto result = link_ns::link(file, {.home_dir      = roots->home_dir,
+                                       .dry_run       = dry_run,
+                                       .vendor_filter = vendor,
+                                       .now           = stamp,
+                                       .codex_home    = codex_home_of(ctx)});
     emit_link_block(ctx, file, result, as_json);
     results.push_back(std::move(result));
   }
@@ -211,11 +276,11 @@ auto local_unlink(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     // A pass that removed nothing AND purged nothing prints nothing at all —
     // not an empty block. That is what lets the both-kinds fallback stay
     // quiet about the kind that did not match.
-    if (result->removed.empty() && result->purged_file.empty()) {
+    if (result->removed.empty() && result->skipped.empty() && result->purged_file.empty()) {
       continue;
     }
     ctx.out() << (as_json ? render::unlink_json(*result) : render::unlink_text(*result));
-    total += result->removed.size();
+    total += result->removed.size() + result->skipped.size();
   }
 
   if (!as_json && total == 0) {
@@ -255,6 +320,9 @@ auto local_import(context& ctx, const cliapp::parsed_args& args) -> handler_resu
     // `exit.die` mapping does: `InvalidInput` is exit 2, `NotFound` exit 1.
     // Collapsing them would make "you pointed at a .txt" and "that directory
     // held no importable files" indistinguishable to a script.
+    if (outcome.error() == import_::import_error::invalid_name || outcome.error() == import_::import_error::retired_key) {
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, outcome.error().detail));
+    }
     auto const [bucket, tag] = outcome.error() == import_::import_error::invalid_input
                                    ? std::pair{domain_error_kind::invalid_input, "InvalidInput"}
                                    : std::pair{domain_error_kind::generic_failure, "NotFound"};
@@ -275,16 +343,24 @@ auto local_import(context& ctx, const cliapp::parsed_args& args) -> handler_resu
   if (!as_json) {
     ctx.out() << "\nLinking imported files into vendor surfaces:\n";
   }
-  auto const stamp = link_ns::utc_now_stamp();
+  auto const                          stamp = link_ns::utc_now_stamp();
+  std::vector<manifest::sandbox_file> parsed_files;
   for (auto const& record : outcome->imported) {
-    auto const parsed = manifest::parse_file(record.target_path, *kind);
+    auto parsed = manifest::parse_file(record.target_path, *kind);
     if (!parsed) {
       return std::unexpected(error_from_body(
           domain_error_kind::generic_failure,
           std::format("re-parsing imported file {} failed: {}", record.target_path, manifest::parse_error_name(parsed.error()))));
     }
-    auto const result = link_ns::link(*parsed, {.home_dir = roots->home_dir, .now = stamp});
-    emit_link_block(ctx, *parsed, result, as_json);
+    parsed_files.push_back(std::move(*parsed));
+  }
+  if (auto const foreign = link_ns::find_conflict(parsed_files, {.home_dir = roots->home_dir, .codex_home = codex_home_of(ctx)});
+      foreign.has_value()) {
+    return std::unexpected(foreign_destination_error(*foreign));
+  }
+  for (auto const& parsed : parsed_files) {
+    auto const result = link_ns::link(parsed, {.home_dir = roots->home_dir, .now = stamp, .codex_home = codex_home_of(ctx)});
+    emit_link_block(ctx, parsed, result, as_json);
   }
   return {};
 }
@@ -306,9 +382,10 @@ auto local_migrate(context& ctx, const cliapp::parsed_args& args) -> handler_res
 
 auto declare_local(CLI::App& root) -> void {
   CLI::App* local = root.add_subcommand(
-      "local", "Manage the operator's local sandbox for personal skills and agents.\n\n  Authors a single source file per skill "
-               "or agent under\n  ~/.planar/local/ and creates per-vendor symlinks (with copy\n  fallback) into each vendor's "
-               "install directory.\n  Edits to the source file propagate immediately to every vendor.");
+      "local",
+      "Manage the operator's local sandbox for personal skills and agents.\n\n  Authors a single source per skill or agent "
+      "under\n  ~/.planar/local/ and projects a copy, named planar-local-<name>,\n  into each present vendor's skill and "
+      "agent directories.\n  Re-run `local link` (or `local link --reconcile`) after editing a source.");
   local->require_subcommand(0);
 
   local_cli::attach_list(local);

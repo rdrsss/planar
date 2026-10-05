@@ -22,7 +22,7 @@
 # ---------------------------------------------------------------------------
 # HOME SAFETY. This bucket is the most dangerous one ported so far, because its
 # whole job is writing symlinks into the operator's REAL vendor directories:
-# `~/.claude/commands`, `~/.codex/skills`, `~/.copilot/skills`. A test that
+# `~/.claude/skills`, `~/.agents/skills` and the vendor agent directories. A test that
 # resolves the wrong root does not fail — it edits the developer's machine.
 #
 # The Zig original resolves that root as PLANAR_LOCAL_HOME, else HOME
@@ -95,4 +95,11 @@ planar_module(engine_local
 target_link_libraries(planar_engine_local PRIVATE glaze::glaze)
 if(TARGET planar_engine_local_tests)
   target_link_libraries(planar_engine_local_tests PRIVATE glaze::glaze)
+  # link.t.cpp renders the shipped agents through scripts/render-codex-agents.py
+  # and compares the engine's own Codex TOML with it byte for byte.
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  target_compile_definitions(planar_engine_local_tests PRIVATE
+    "PLANAR_AGENTS_DIR=\"${PROJECT_SOURCE_DIR}/agents\""
+    "PLANAR_RENDER_CODEX_SCRIPT=\"${PROJECT_SOURCE_DIR}/scripts/render-codex-agents.py\""
+    "PLANAR_PYTHON=\"${Python3_EXECUTABLE}\"")
 endif()

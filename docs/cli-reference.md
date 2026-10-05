@@ -6078,29 +6078,59 @@ no positionals — a `<set> <system> <kind>` triple is refused at parse time
 
 ## Domain: `local`
 
-User-local sandbox for personal skills and agents. Skills live as dir-shape sources at `~/.planar/local/skills/<name>/SKILL.md`; agents are flat at `~/.planar/local/agents/<name>.md`. Both are installed (symlink with copy fallback) into each vendor's install directory. See `docs/concepts.md § Local sandbox` for the design — including why Codex / Copilot install via directory symlinks rather than file symlinks.
+User-local sandbox for personal skills and agents. Skills live as dir-shape sources at `~/.planar/local/skills/<name>/SKILL.md`; agents are flat at `~/.planar/local/agents/<name>.md`. Each is **projected by copy** into the vendors' directories under the name `planar-local-<name>`; the source is never edited. See `docs/concepts.md § Local sandbox` for the design.
+
+**Projection targets.** A vendor directory is written only when its presence marker exists, the same markers `install.sh` uses (`~/.claude/`; `~/.codex/` or an explicit `$CODEX_HOME`; `~/.copilot/`; `~/.gemini/settings.json`; `~/.gemini/antigravity-cli/`; `~/.config/opencode/`).
+
+| Source | Destination | Present when |
+|---|---|---|
+| skill | `~/.claude/skills/planar-local-<name>/` | `~/.claude/` exists |
+| skill | `~/.agents/skills/planar-local-<name>/` (shared root) | Codex, Copilot, Gemini CLI or OpenCode is present |
+| skill | `~/.gemini/antigravity-cli/skills/planar-local-<name>/` | `~/.gemini/antigravity-cli/` exists |
+| agent | `~/.claude/agents/planar-local-<name>.md` | Claude present |
+| agent | `$CODEX_HOME` or `~/.codex` `/agents/planar-local-<name>.toml` | Codex present |
+| agent | `~/.copilot/agents/planar-local-<name>.agent.md` | Copilot present |
+| agent | `~/.gemini/agents/planar-local-<name>.md` | Gemini CLI present |
+| agent | `~/.gemini/antigravity-cli/agents/planar-local-<name>.md` | Antigravity present |
+| agent | `~/.config/opencode/agents/planar-local-<name>.md` | OpenCode present |
+
+A skill copy is the whole skill directory with the frontmatter `name` rewritten to `planar-local-<name>`. A Markdown agent copy is the source with `name` rewritten (or added). The OpenCode copy keeps only `description` and `mode: subagent`. The Codex file is TOML with `name`, `description` and `developer_instructions`, byte-identical to what `scripts/render-codex-agents.py` writes. An agent without a `description` cannot take the OpenCode or Codex form and is skipped for those vendors. A skill's `vendors:` list narrows its copies (`claude` gates the Claude copy; `codex` and `copilot` gate the shared and Antigravity copies); agents ignore it.
+
+**Local names.** A local name is the source's directory name (skills) or file stem (agents), and it becomes part of an Agent Skills name, `planar-local-<name>`. A name must match `^[a-z0-9]+(-[a-z0-9]+)*$` (lowercase letters, digits and single hyphens, none leading, trailing or doubled) and be at most 51 characters, so the projected name stays within 64. `planar local import` and `planar local link` refuse any other name at exit 2 (`invalid_input`) with a message that states the pattern and the limit and names the offending name; nothing is written. Names are never normalized: `My_Skill` is refused, not linked as `my-skill`, because normalizing would let two sources collide on one projection. `link --reconcile` does not project a source whose name breaks the rule, and `list` and `unlink` still act on what was already recorded.
+
+**Retired `shadow` key.** A local source whose frontmatter sets `shadow` (any value) is refused by `planar local import` and `planar local link` at exit 2, naming the retired key. A local source can no longer take the name of a bundled skill; every projection carries the `planar-local-` prefix. `local link --json` no longer emits a `Shadow` field.
+
+**Ownership.** A destination that exists and differs from a fresh projection is replaced only when it is a prior Planar projection: recorded in a `.link-manifest.json`, or a symlink into `~/.planar/local/`. Anything else is refused at exit 6 (`already_exists`) naming the path, before any destination is written. A byte-identical destination is left alone.
 
 ### `planar local link [<name>]`
 
-Walk `~/.planar/local/{skills,agents}/`, parse each source file's YAML frontmatter, and install per-vendor symlinks pointing at the source.
+Walk `~/.planar/local/{skills,agents}/`, parse each source file's YAML frontmatter, and project a copy into every present vendor directory (table above).
 
 | Flag | Description |
 |---|---|
-| `--dry-run` | Preview the planned installs without touching the filesystem. |
-| `--vendor <v>` | Restrict to one or more vendors (`claude`, `codex`, `copilot`). Repeatable; can be combined with the per-file `vendors:` frontmatter list (intersection). |
+| `--dry-run` | Preview the planned projections without touching the filesystem. |
+| `--vendor <v>` | Restrict to one vendor (`claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`). `codex`, `copilot`, `gemini` and `opencode` also select the shared `~/.agents/skills` copy. `shared` selects it directly. |
 | `--reconcile` | Run the reconcile pass instead of linking. Takes no `<name>`; combining the two is refused as invalid input. Honours `--dry-run` and `--json`. |
 | `--json` | Emit JSON instead of human text. |
 
 **Behavior:**
-- Without `<name>`, links every source file under both `skills/` and `agents/`.
+- Without `<name>`, links every source file under both `skills/` and `agents/`. A source with an invalid name or the retired `shadow` key stops the whole run at exit 2 before anything is written.
 - With `<name>`, links only the matching source (errors if not found).
-- Idempotent: a re-link of an unchanged source produces `unchanged` actions.
-- Atomic: writes via temp-path + rename so the install file is never observed missing.
-- Copy fallback fires automatically when creating the symlink fails (e.g. Windows without developer mode); a warning calls out that future edits require re-linking.
+- Idempotent: a re-link of an unchanged source produces `unchanged` actions and writes nothing.
+- Atomic: each copy is written to a sibling temp path and renamed into place.
+- Edits to a source reach the copies only when `local link` (or `--reconcile`) runs again; `local list` reports the lag as `stale`.
+
+**`--reconcile`.** Makes the disk match the sources it already tracks (a manifest entry, or an old projection to migrate), in one pass that checks every destination before writing any:
+- `stale`: a prior projection differs from a fresh one; it is rewritten.
+- `target-missing`: a tracked projection is absent; it is written.
+- `legacy`: an old projection (`~/.claude/commands/local-<name>.md`, `~/.codex/skills/local-<name>`, `~/.copilot/skills/local-<name>`, `~/.planar/agents/local-<name>.md`) is removed when it is a symlink into `~/.planar/local/` or a copy equal to its recorded source; the new projections are written in its place. A foreign file at an old path is left alone.
+- `source-missing`: the source is gone; its recorded projections are removed and the manifest entry dropped.
+
+Text output prints `done: N change(s)` (`dry-run: N change(s) would be made`). A second run with nothing to change prints `reconcile: manifest already consistent with the filesystem` and modifies nothing: it compares bytes before writing.
 
 ### `planar local migrate [--dry-run]`
 
-Convert legacy flat sandbox skills (`~/.planar/local/skills/<name>.md`) into the dir-shape layout (`<name>/SKILL.md`) required by the dir-symlink installs.
+Convert legacy flat sandbox skills (`~/.planar/local/skills/<name>.md`) into the dir-shape layout (`<name>/SKILL.md`) that skill projection requires.
 
 | Flag | Description |
 |---|---|
@@ -6114,7 +6144,7 @@ Convert legacy flat sandbox skills (`~/.planar/local/skills/<name>.md`) into the
 
 ### `planar local import <path>`
 
-Import operator-authored skill or agent files from an external location into the sandbox and link them into every vendor surface. The operator points at a single flat `.md` file, a single dir-shape skill source (`foo/` containing `SKILL.md`), or a directory containing a mix of both. Each valid input is materialized in the sandbox in the correct shape — skills as `~/.planar/local/skills/<name>/SKILL.md` (auxiliary files inside dir-shape inputs travel along); agents as `~/.planar/local/agents/<name>.md`. Linking then runs via the same path as `planar local link`.
+Import operator-authored skill or agent files from an external location into the sandbox and project them into every present vendor directory. The operator points at a single flat `.md` file, a single dir-shape skill source (`foo/` containing `SKILL.md`), or a directory containing a mix of both. Each valid input is materialized in the sandbox in the correct shape — skills as `~/.planar/local/skills/<name>/SKILL.md` (auxiliary files inside dir-shape inputs travel along); agents as `~/.planar/local/agents/<name>.md`. Linking then runs via the same path as `planar local link`.
 
 | Flag | Description |
 |---|---|
@@ -6126,27 +6156,30 @@ Import operator-authored skill or agent files from an external location into the
 
 **Behavior:**
 - A single flat `.md` file source imports that file (wrapped into `<name>/SKILL.md` for skills). A single dir-shape source (a directory whose top-level contains `SKILL.md`) imports that whole tree. A directory source containing a mix of `*.md` files and `<name>/SKILL.md` subdirs imports each top-level entry — other subdirectories and non-`.md` files are ignored.
+- Every entry's name is checked against the local-name rule above, and a source that sets `shadow` is refused; either refuses the whole import at exit 2 before anything is copied, a dry run included.
 - Each file's frontmatter is validated by the same parser as `planar local link` (YAML frontmatter required; `vendors:` if present must be a subset of `{claude, codex, copilot}`; `kind:` if present must match `--kind`).
 - After a successful import, the link layer is invoked automatically (suppress with `--no-link`).
 - `.link-manifest.json` files in the source directory are explicitly ignored so pointing the importer at the sandbox itself does not corrupt it.
 
 ### `planar local unlink <name> [--purge]`
 
-Remove every per-vendor install recorded for `<name>` in the per-kind `.link-manifest.json`. With `--purge`, also delete the source file from `~/.planar/local/`. Accepts `--json`.
+Remove every projection recorded for `<name>` in the per-kind `.link-manifest.json`. With `--purge`, also delete the source file from `~/.planar/local/`. Accepts `--json`.
 
 ### `planar local list [--vendor <v>] [--json]`
 
-List every recorded install across both kinds and all vendors. Status column:
+List every recorded projection across both kinds and all vendors. The vendor column is `claude`, `shared` (the shared skills root), `antigravity`, `codex`, `copilot`, `gemini` or `opencode`. Status column, recomputed from disk:
 
-- `live` — install file exists and symlink (if any) resolves to the source.
-- `broken` — install is a symlink but the source is gone, or the symlink points elsewhere.
-- `missing` — install file is gone entirely.
+- `live` — the installed copy equals a fresh projection of the source.
+- `stale` — the copy exists and differs: the source (or the copy) was edited since the last link.
+- `missing` — nothing is at the destination.
+- `broken` — the recorded source is gone.
+- `legacy` — an old symlink or copy projection (see `--reconcile`); `local link --reconcile` migrates it.
 
-`live`/`broken`/`missing` colorize via the standard palette (green/red/gray) when colors are enabled. The status text comes from the recorded manifest plus live filesystem checks; the manifest itself is not authoritative.
+`live`/`stale`/`missing`/`broken`/`legacy` colorize via the standard palette when colors are enabled. The manifest is not authoritative: each state comes from comparing bytes on disk.
 
 ### `PLANAR_LOCAL_HOME` env var
 
-Test hook: when set, `planar local` uses this directory as the operator's `$HOME` for resolving `~/.planar/local/` and the per-vendor install targets. Production use never sets this.
+Test hook: when set, `planar local` uses this directory as the operator's `$HOME` for resolving `~/.planar/local/` and the per-vendor projection targets, and ignores `$CODEX_HOME`. Production use never sets this.
 
 ## The editflow quartet: `edit` / `view` / `diff` / `review`
 
