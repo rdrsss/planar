@@ -343,6 +343,180 @@ symlink_to() {
   ln -s "$src" "$dst"
 }
 
+# ---------- shared helpers: previous-projection sweep and OpenCode form ----------
+
+SWEEP_REMOVED=0
+SWEEP_LEFT=0
+
+# sweep_remove <path> <what> — remove one proven entry and say so.
+sweep_remove() {
+  local path="$1" what="$2"
+  if [[ -L "$path" ]]; then rm -f "$path"; else rm -rf "$path"; fi
+  log "removed $what: $path"
+  SWEEP_REMOVED=$((SWEEP_REMOVED + 1))
+}
+
+# sweep_link_into <link> <glob-prefix...> — true when <link> is a symlink (live
+# or dangling: readlink, not -e) whose target matches one of the prefixes.
+sweep_link_into() {
+  local link="$1" target pat; shift
+  [[ -L "$link" ]] || return 1
+  target="$(readlink "$link" 2>/dev/null || true)"
+  for pat in "$@"; do
+    # shellcheck disable=SC2053  # the prefix is a glob on purpose
+    [[ "$target" == $pat ]] && return 0
+  done
+  return 1
+}
+
+# sweep_commands <dir> — the retired ~/.claude/commands symlinks.
+sweep_commands() {
+  local dir="$1" link
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r -d '' link; do
+    if sweep_link_into "$link" "$PLANAR_HOME/*" "$HOME/.planar/local/*"; then
+      sweep_remove "$link" "command symlink"
+    fi
+  done < <(find "$dir" -maxdepth 1 -type l \( -name 'pl-*.md' -o -name 'local-*.md' \) -print0)
+}
+
+# sweep_agents <dir> — the unprefixed agent symlinks the old render placed,
+# which point into $PLANAR_HOME/agents/<vendor>/. A symlink to a top-level
+# agents/planar-<role>.md (link mode, the current layout) is not matched.
+sweep_agents() {
+  local dir="$1" link v
+  local -a pats=()
+  [[ -d "$dir" ]] || return 0
+  for v in claude codex copilot gemini antigravity opencode; do pats+=("$PLANAR_HOME/agents/$v/*"); done
+  while IFS= read -r -d '' link; do
+    if sweep_link_into "$link" "${pats[@]}"; then
+      sweep_remove "$link" "agent symlink"
+    fi
+  done < <(find "$dir" -maxdepth 1 -type l -print0)
+}
+
+# sweep_skills <dir> <staged-dir> — the pl-* skill directories an older install
+# copied or linked into <dir>. Removed when a symlink into $PLANAR_HOME, or when
+# the bytes equal <staged-dir>/<same name> (the old runtime marker file
+# .planar-source is Planar's own and ignored in the comparison). A pl-* directory
+# with neither proof is left and reported. Other entries are ignored.
+sweep_skills() {
+  local dir="$1" staged="$2" entry name
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r -d '' entry; do
+    name="$(basename "$entry")"
+    if [[ -L "$entry" ]]; then
+      if sweep_link_into "$entry" "$PLANAR_HOME/*"; then sweep_remove "$entry" "skill symlink"; fi
+    elif [[ -d "$entry" ]]; then
+      if [[ -d "$staged/$name" ]] && diff -r -x .planar-source "$staged/$name/" "$entry/" >/dev/null 2>&1; then
+        sweep_remove "$entry" "skill copy"
+      else
+        warn "left $entry: could not prove ownership (no byte-identical staged copy at $staged/$name)"
+        SWEEP_LEFT=$((SWEEP_LEFT + 1))
+      fi
+    fi
+  done < <(find "$dir" -maxdepth 1 -name 'pl-*' -print0)
+}
+
+# run_sweep — the sweep over every vendor directory that exists.
+run_sweep() {
+  local _d
+  sweep_commands "$HOME/.claude/commands"
+  for _d in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/agents" \
+            "$HOME/.gemini/antigravity-cli/agents" "$HOME/.config/opencode/agents"; do
+    sweep_agents "$_d"
+  done
+  sweep_skills "$CODEX_HOME/skills" "$PLANAR_HOME/codex-skills"
+  sweep_skills "$HOME/.copilot/skills" "$PLANAR_HOME/copilot-skills"
+  sweep_skills "$HOME/.gemini/antigravity-cli/skills" "$PLANAR_HOME/gemini-skills"
+  sweep_skills "$HOME/.config/opencode/skills" "$PLANAR_HOME/opencode-skills"
+}
+
+# opencode_derive <staged agent .md> — print the OpenCode form of an agent: the
+# frontmatter reduced to `description` and `mode: subagent`, the body unchanged.
+# A description YAML would misread as a mapping or comment is double-quoted.
+opencode_derive() {
+  awk '
+    NR == 1 { if ($0 != "---") exit 2; infm = 1; next }
+    infm && $0 == "---" {
+      if (desc == "") exit 3
+      if (desc !~ /^["\047]/ && (desc ~ /: / || desc ~ / #/ || desc ~ /:$/ || desc ~ /^[-?:,\[\]{}#&*!|>%@`]/)) {
+        gsub(/\\/, "\\\\", desc); gsub(/"/, "\\\"", desc); desc = "\"" desc "\""
+      }
+      print "---"; print "description: " desc; print "mode: subagent"; print "---"
+      infm = 0; next
+    }
+    infm { if ($0 ~ /^description:/) { desc = $0; sub(/^description:[ \t]*/, "", desc) } ; next }
+    { print }
+    END { if (infm) exit 4 }
+  ' "$1"
+}
+
+# uninstall_owned <staged> <installed> <vendor> <kind> — <installed> is still
+# what Planar placed: a symlink into $PLANAR_HOME, or content equal to <staged>
+# (an OpenCode agent is compared with its derived form).
+uninstall_owned() {
+  local staged="$1" installed="$2" vendor="$3" kind="$4" tmp rc=0
+  if [[ -L "$installed" ]]; then
+    [[ "$(readlink "$installed" 2>/dev/null || true)" == "$PLANAR_HOME"/* ]]
+    return
+  fi
+  if [[ "$kind" == skill ]]; then
+    [[ -d "$installed" && -d "$staged" ]] && diff -r "$staged/" "$installed/" >/dev/null 2>&1
+    return
+  fi
+  [[ -f "$installed" && -f "$staged" ]] || return 1
+  if [[ "$vendor" == opencode ]]; then
+    tmp="$(mktemp)"
+    if opencode_derive "$staged" > "$tmp" 2>/dev/null; then cmp -s "$tmp" "$installed" || rc=1; else rc=1; fi
+    rm -f "$tmp"
+    return "$rc"
+  fi
+  cmp -s "$staged" "$installed"
+}
+
+# uninstall_recorded_targets — remove each projection the manifest records that
+# is still Planar's, then report what is left under a planar name.
+uninstall_recorded_targets() {
+  local manifest="$PLANAR_HOME/install-manifest.json" staged installed vendor kind d e
+  local removed=0 listing
+  if [[ -f "$manifest" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+      listing="$(python3 - "$manifest" <<'PY' || true
+import json, sys
+try:
+    m = json.load(open(sys.argv[1], encoding='utf-8'))
+except Exception:
+    sys.exit(0)
+for r in m.get('projections', []):
+    if all(isinstance(r.get(k), str) for k in ('staged_path', 'installed_path', 'vendor', 'kind')):
+        sys.stdout.write('\t'.join((r['staged_path'], r['installed_path'], r['vendor'], r['kind'])) + '\n')
+PY
+)"
+      while IFS=$'\t' read -r staged installed vendor kind; do
+        [[ -n "$installed" ]] || continue
+        [[ -e "$installed" || -L "$installed" ]] || continue
+        if uninstall_owned "$staged" "$installed" "$vendor" "$kind"; then
+          if [[ -L "$installed" ]]; then rm -f "$installed"; else rm -rf "$installed"; fi
+          log "removed recorded target: $installed"
+          removed=$((removed + 1))
+        fi
+      done <<< "$listing"
+    else
+      warn "python3 not found: cannot read $manifest, so the placed vendor targets are not removed"
+    fi
+  fi
+  log "removed $removed recorded vendor target(s)"
+  for d in "$HOME/.claude/skills" "$HOME/.agents/skills" "$HOME/.gemini/antigravity-cli/skills" \
+           "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/agents" \
+           "$HOME/.gemini/antigravity-cli/agents" "$HOME/.config/opencode/agents"; do
+    [[ -d "$d" ]] || continue
+    while IFS= read -r -d '' e; do
+      warn "left $e: Planar did not place it as recorded"
+    done < <(find "$d" -maxdepth 1 \( -name 'planar' -o -name 'planar-*' \) -print0)
+  done
+}
+
 # ---------- uninstall path ----------
 
 if [[ "$UNINSTALL" -eq 1 ]]; then
@@ -354,6 +528,17 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   # the dependency preflight, so the guard checks for python3 itself, and
   # only when agent.db exists. --ignore-live-queue is the only override.
   queue_live_guard uninstall || exit 1
+
+  # The targets this installer places (plan 1104, M2): every `installed_path`
+  # the manifest's projection rows record, removed only while it is still what
+  # Planar placed (a symlink into $PLANAR_HOME, or bytes equal to the staged
+  # source). Only the `planar` entries go: no vendor directory and not
+  # ~/.agents/skills is removed. Anything else named planar or planar-* in those
+  # directories is left and reported. The previous skill and agent projections
+  # an older install made are swept the same way as on install.
+  uninstall_recorded_targets
+  run_sweep
+  log "retired $SWEEP_REMOVED previous projection(s); left $SWEEP_LEFT that could not be proven Planar's"
 
   for vendor_root in "$HOME/.claude/commands" "$HOME/.codex/skills" "$HOME/.copilot/skills" "$HOME/.gemini/antigravity-cli/skills"; do
     [[ -d "$vendor_root" ]] || continue
@@ -689,17 +874,41 @@ PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
 ok "built 5 Planar binaries and scriptorium → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 
+# ---------- retire the previous projections ----------
+
+# Order matters (plan 1104, M2): this sweep runs BEFORE the $PLANAR_HOME cleanup
+# below and before the artifacts are re-staged. The staged <vendor>-skills/
+# trees an older install left under $PLANAR_HOME are the only evidence that a
+# pl-* directory in a vendor's skills directory is a copy Planar made, and the
+# cleanup deletes those trees. Nothing is removed that cannot be proven
+# Planar's: a symlink whose target is under $PLANAR_HOME (or the operator's
+# ~/.planar/local/ for local-*), or a directory whose bytes equal the staged
+# entry. A pl-* directory with no such proof is left and reported.
+title "Retiring the previous skill and agent projections"
+run_sweep
+log "retired $SWEEP_REMOVED previous projection(s); left $SWEEP_LEFT that could not be proven Planar's"
+
 # CMake install only writes the targets it builds — it never removes files a
 # PRIOR install left behind. Iterate the cleanup manifest and delete
 # any $PLANAR_HOME-relative artifact current Planar no longer ships (e.g. a
 # binary dropped in a refactor) so a re-install over an older tree is clean.
-# See install-cleanup.txt.
+# See install-cleanup.txt. This runs after the sweep above (which needs the
+# staged trees listed here) and after the build. An entry the build above just
+# installed again is exempt, so the install stays consistent and a re-run does
+# not flap: bin/scriptorium is still built and installed by this commit, and
+# its cleanup line takes effect when the build stops installing it (the task
+# that removes scriptorium deletes this exemption).
 CLEANUP_LIST="$REPO_ROOT/install-cleanup.txt"
+CLEANUP_KEEP_THIS_RUN=" bin/scriptorium "
 if [[ -f "$CLEANUP_LIST" ]]; then
   while IFS= read -r _raw; do
     _line="${_raw%%#*}"                  # strip an inline comment
     read -r _relpath _ <<< "$_line"      # trim whitespace; first token = path
     [[ -z "$_relpath" ]] && continue
+    if [[ "$CLEANUP_KEEP_THIS_RUN" == *" $_relpath "* ]]; then
+      vlog "kept $PLANAR_HOME/$_relpath (installed by this run)"
+      continue
+    fi
     _target="$PLANAR_HOME/$_relpath"
     if [[ "$_relpath" == */ ]]; then
       [[ -d "$_target" ]] && { rm -rf "$_target"; log "removed stale dir  $_target"; }
@@ -950,26 +1159,6 @@ load_prev_manifest() {
 prev_manifest_records() {
   [[ -n "$PREV_MANIFEST_TEXT" ]] || return 1
   [[ "$PREV_MANIFEST_TEXT" == *"$(install_manifest_json_quote "$1")"* ]]
-}
-
-# opencode_derive <staged agent .md> — print the OpenCode form of an agent: the
-# frontmatter reduced to `description` and `mode: subagent`, the body unchanged.
-# A description YAML would misread as a mapping or comment is double-quoted.
-opencode_derive() {
-  awk '
-    NR == 1 { if ($0 != "---") exit 2; infm = 1; next }
-    infm && $0 == "---" {
-      if (desc == "") exit 3
-      if (desc !~ /^["\047]/ && (desc ~ /: / || desc ~ / #/ || desc ~ /:$/ || desc ~ /^[-?:,\[\]{}#&*!|>%@`]/)) {
-        gsub(/\\/, "\\\\", desc); gsub(/"/, "\\\"", desc); desc = "\"" desc "\""
-      }
-      print "---"; print "description: " desc; print "mode: subagent"; print "---"
-      infm = 0; next
-    }
-    infm { if ($0 ~ /^description:/) { desc = $0; sub(/^description:[ \t]*/, "", desc) } ; next }
-    { print }
-    END { if (infm) exit 4 }
-  ' "$1"
 }
 
 # derive_to <staged agent .md> <out> — opencode_derive into a file.

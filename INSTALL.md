@@ -201,6 +201,31 @@ The host build and test queue lives in the same database: `queue_entries`, `queu
 
 `planar.db` holds task claim tokens, which authorise heartbeats and terminal verbs on a claim, and the queue stores a submitter's token while its entry is live, so the database is private to your user. `install.sh` makes `~/.planar` mode `0700` and, on an existing install, tightens `planar.db` (with its `-wal`/`-shm` sidecars) to `0600`; re-running it is how an install that predates this is tightened. `queue-logs/` is created `0700` with `0600` logs. An install root shared by several users (a `--prefix` such as `/opt/planar`) is unsupported under the `0700` rule; use one install per user. If `install.sh` cannot change a mode it warns and continues. See [operations.md](docs/operations.md#5-the-host-build-and-test-queue) for the full rule.
 
+### Upgrade note: the previous skill and agent projections
+
+Earlier installs rendered a per-vendor skill and command set and linked or
+copied it into the vendors' directories. `install.sh` now places one `planar`
+skill and the `planar-<role>` agents instead, and under "Retiring the previous
+skill and agent projections" it removes what the old layout left, before it
+deletes the staged trees that prove the copies are Planar's. It removes only
+what it can prove Planar made, and prints each removal:
+
+- `~/.claude/commands/pl-*.md` and `local-*.md` symlinks into `~/.planar/` or
+  `~/.planar/local/`.
+- The unprefixed agent symlinks into `~/.planar/agents/<vendor>/`, in every
+  vendor agent directory, dangling ones under `~/.config/opencode/agents/`
+  included.
+- `pl-*` skill directories under `~/.codex/skills`, `~/.copilot/skills`,
+  `~/.gemini/antigravity-cli/skills` and `~/.config/opencode/skills` that are
+  symlinks into `~/.planar/` or byte-identical to the staged
+  `~/.planar/<vendor>-skills/<name>/`. A `pl-*` directory with no such proof is
+  left and reported as "could not prove ownership".
+
+It then removes the retired `~/.planar` paths listed in `install-cleanup.txt`
+(`commands/`, `skills/<vendor>/`, `<vendor>-skills/` including
+`opencode-skills/`, `agents/<vendor>/`). `bin/scriptorium` is listed but kept
+while this tree still builds it.
+
 <!-- retired-ref: agent.db upgrade note -->
 ### Upgrade note: unlinking `agent.db` under a live queue submitter
 
@@ -334,6 +359,7 @@ make uninstall-full
 ```
 
 This removes:
+- Every target `install.sh` placed and recorded in `~/.planar/install-manifest.json` (the `planar` skill under `~/.claude/skills`, `~/.agents/skills` and `~/.gemini/antigravity-cli/skills`, and the `planar-<role>` agents under the six agent directories), while it is still what Planar placed: a symlink into `~/.planar/` or the staged bytes. A recorded path someone replaced, and any other `planar` or `planar-*` entry there, is left and reported. No vendor directory and not `~/.agents/skills` itself is removed.
 - All vendor symlinks under `~/.claude/commands/`, `~/.codex/skills/`, `~/.copilot/skills/`, `~/.gemini/antigravity-cli/skills/` that point into `~/.planar/`.
 - Everything in `~/.planar/` *except* your data: `planar.db` (with its SQLite sidecars, `-wal` and `-shm`) and the `queue-logs/` directory of detached queue-run output. A retired old queue database left from before the upgrade is removed too; the upgrade note above covers the guard that protects a live old queue.
 

@@ -24,6 +24,7 @@ make_repo() {
   cp -R "$ROOT/scripts" "$repo/scripts"
   cp -R "$ROOT/agents" "$repo/agents"
   cp -R "$ROOT/skills/planar" "$repo/skills/planar"
+  cp "$ROOT/install-cleanup.txt" "$repo/install-cleanup.txt"
   : > "$repo/CMakeLists.txt"
   : > "$repo/CMakePresets.json"
   : > "$repo/scriptorium.yaml"
@@ -712,4 +713,127 @@ printf '{"version": 1, "build_id": "old", "install_mode": "copy", "vendors": ["c
   > "$TMP/hold/.planar/install-manifest.json"
 [[ "$(freshness "$TMP/hold")" == "legacy degraded 0 0 0 0" ]] || fail "a version 1 manifest with old rows is not legacy: $(freshness "$TMP/hold")"
 
-printf 'install-stage tests: 25 scenarios passed\n'
+# ---------------------------------------------------------------------------
+# Retiring the previous projections (task 7223): the sweep removes only what it
+# can prove Planar made, before the $PLANAR_HOME cleanup deletes the staged
+# trees that are the proof; the cleanup list names every retired prefix path;
+# --uninstall removes the new targets and nothing else.
+# ---------------------------------------------------------------------------
+
+# 26. Upgrade from the previous layout: seven artifacts, all retired and
+# reported; the sweep title comes before the cleanup output; the staged
+# *-skills/ trees are gone afterwards; codex-agents/ is the fresh render.
+H="$TMP/h26"; P="$H/.planar"
+mk_home h26 "${ALL6[@]}"
+mkdir -p "$P/commands/claude" "$P/codex-skills/pl-task/references" "$P/opencode-skills/pl-task" \
+  "$P/copilot-skills/pl-task" "$P/gemini-skills/pl-task" "$P/agents/claude" "$P/agents/opencode" "$P/agents/codex" "$P/bin"
+touch "$P/.planar-install"
+echo cmd > "$P/commands/claude/pl-task.md"
+echo skill > "$P/codex-skills/pl-task/SKILL.md"; echo ref > "$P/codex-skills/pl-task/references/r.md"
+echo oskill > "$P/opencode-skills/pl-task/SKILL.md"
+echo c > "$P/copilot-skills/pl-task/SKILL.md"; echo g > "$P/gemini-skills/pl-task/SKILL.md"
+echo agent > "$P/agents/claude/coder.md"; echo toml > "$P/agents/codex/coder.toml"
+printf '#!/bin/sh\necho old\n' > "$P/bin/scriptorium"; chmod +x "$P/bin/scriptorium"
+mkdir -p "$H/.claude/commands" "$H/.codex/skills" "$H/.copilot/skills" "$H/.gemini/antigravity-cli/skills" \
+  "$H/.config/opencode/skills" "$H/.claude/agents" "$H/.gemini/agents" "$H/.gemini/antigravity-cli/agents" "$H/.codex/agents"
+ln -s "$P/commands/claude/pl-task.md" "$H/.claude/commands/pl-task.md"
+cp -R "$P/codex-skills/pl-task" "$H/.codex/skills/pl-task"
+cp -R "$P/opencode-skills/pl-task" "$H/.config/opencode/skills/pl-task"
+cp -R "$P/copilot-skills/pl-task" "$H/.copilot/skills/pl-task"
+cp -R "$P/gemini-skills/pl-task" "$H/.gemini/antigravity-cli/skills/pl-task"
+ln -s "$P/agents/claude/coder.md" "$H/.claude/agents/coder.md"
+mkdir -p "$H/.config/opencode/agents"
+ln -s "$P/agents/opencode/coder.md" "$H/.config/opencode/agents/coder.md"   # dangling: no such file is staged
+ln -s "$P/agents/codex/coder.toml" "$H/.codex/agents/coder.toml"
+[[ -L "$H/.config/opencode/agents/coder.md" && ! -e "$H/.config/opencode/agents/coder.md" ]] || fail "the dangling fixture is not dangling"
+run_install "$REPO" "$H" || fail "upgrade install failed: $(cat "$H/err")"
+for gone in "$H/.claude/commands/pl-task.md" "$H/.codex/skills/pl-task" "$H/.claude/agents/coder.md" \
+            "$H/.config/opencode/skills/pl-task" "$H/.config/opencode/agents/coder.md" "$H/.codex/agents/coder.toml" \
+            "$H/.copilot/skills/pl-task" "$H/.gemini/antigravity-cli/skills/pl-task"; do
+  [[ ! -e "$gone" && ! -L "$gone" ]] || fail "the upgrade left $gone"
+  grep -Fq "$gone" "$H/out" || fail "the removal of $gone was not printed: $(cat "$H/out")"
+done
+[[ ! -e "$P/agents/codex" && ! -e "$P/agents/claude" && ! -e "$P/agents/opencode" ]] || fail "agents/<vendor>/ survived the upgrade"
+grep -Fq "removed stale dir  $P/agents/codex/" "$H/out" || grep -Fq "removed stale dir  $P/agents/codex" "$H/out" || fail "the cleanup did not report agents/codex/"
+for t in commands codex-skills copilot-skills gemini-skills opencode-skills; do
+  [[ ! -e "$P/$t" ]] || fail "the staged $t survived the cleanup"
+done
+# bin/scriptorium is still built by this tree, so the cleanup line is exempt: the
+# run replaces the seeded binary with the fresh one and does not remove it.
+[[ "$("$P/bin/scriptorium" version)" == "scriptorium stage-test" ]] || fail "bin/scriptorium is not the freshly installed one"
+! grep -Fq "removed stale file $P/bin/scriptorium" "$H/out" || fail "the cleanup removed the binary the run just installed"
+sweep_line="$(grep -n 'Retiring the previous skill and agent projections' "$H/out" | head -1 | cut -d: -f1)"
+clean_line="$(grep -n 'removed stale' "$H/out" | head -1 | cut -d: -f1)"
+[[ -n "$sweep_line" && -n "$clean_line" && "$sweep_line" -lt "$clean_line" ]] || fail "the sweep does not precede the cleanup output ($sweep_line, $clean_line)"
+for t in commands/ skills/codex/ skills/copilot/ skills/gemini/ codex-skills/ copilot-skills/ gemini-skills/ opencode-skills/ \
+         agents/claude/ agents/codex/ agents/copilot/ agents/gemini/ agents/opencode/ bin/scriptorium; do
+  grep -Eq "^$t([[:space:]]|\$)" "$ROOT/install-cleanup.txt" || fail "install-cleanup.txt does not list $t"
+done
+check_staged "$REPO" "$H"
+grep -Fq 'retired 8 previous projection(s); left 0' "$H/out" || fail "unexpected sweep summary: $(grep 'previous projection' "$H/out")"
+
+# 30. A second run after the upgrade removes nothing and reports nothing left.
+run_install "$REPO" "$H" || fail "re-run after the upgrade failed: $(cat "$H/err")"
+! grep -Eq 'removed (stale|command|agent|skill)' "$H/out" || fail "the re-run removed something: $(grep removed "$H/out")"
+grep -Fq 'retired 0 previous projection(s); left 0' "$H/out" || fail "the re-run sweep summary: $(grep 'previous projection' "$H/out")"
+grep -Fq 'no changes: all' "$H/out" || fail "the re-run changed vendor targets: $(grep -E 'vendor target|no changes' "$H/out")"
+
+# 27. Missing or differing evidence: the candidate stays, with its path and why.
+H="$TMP/h27"; P="$H/.planar"
+mk_home h27 codex opencode
+mkdir -p "$H/.config/opencode/skills/pl-task" "$H/.codex/skills/pl-task" "$P/codex-skills/pl-task"
+echo mine > "$H/.config/opencode/skills/pl-task/SKILL.md"
+echo staged > "$P/codex-skills/pl-task/SKILL.md"; echo different > "$H/.codex/skills/pl-task/SKILL.md"
+touch "$P/.planar-install"
+run_install "$REPO" "$H" || fail "install with unprovable candidates failed: $(cat "$H/err")"
+[[ -f "$H/.config/opencode/skills/pl-task/SKILL.md" && -f "$H/.codex/skills/pl-task/SKILL.md" ]] || fail "an unprovable candidate was removed"
+[[ "$(grep -c 'could not prove ownership' "$H/err")" == 2 ]] || fail "expected two could-not-prove lines: $(cat "$H/err")"
+grep -Fq "$H/.config/opencode/skills/pl-task: could not prove ownership" "$H/err" || fail "the opencode candidate is not reported with its path"
+grep -Fq "$H/.codex/skills/pl-task: could not prove ownership" "$H/err" || fail "the codex candidate is not reported with its path"
+grep -Fq 'retired 0 previous projection(s); left 2' "$H/out" || fail "the sweep summary does not count the two left"
+
+# 28. Foreign entries are never touched and never removed.
+H="$TMP/h28"
+mk_home h28 claude codex opencode
+mkdir -p "$H/.claude/commands" "$H/.codex/skills/pl-other" "$H/.config/opencode/agents"
+echo mine > "$H/.claude/commands/pl-mine.md"; echo other > "$H/.codex/skills/pl-other/SKILL.md"
+echo mine > "$H/.config/opencode/agents/mine.md"
+echo local > "$H/.claude/commands/local-mine.md"
+ln -s /somewhere/else "$H/.claude/commands/pl-elsewhere.md"
+run_install "$REPO" "$H" || fail "install with foreign entries failed: $(cat "$H/err")"
+for keep in "$H/.claude/commands/pl-mine.md" "$H/.codex/skills/pl-other/SKILL.md" "$H/.config/opencode/agents/mine.md" \
+            "$H/.claude/commands/local-mine.md"; do
+  [[ -f "$keep" ]] || fail "a foreign entry was removed: $keep"
+done
+[[ -L "$H/.claude/commands/pl-elsewhere.md" ]] || fail "a symlink outside the prefix was removed"
+! grep -Eq 'removed (command|agent|skill)' "$H/out" || fail "the installer printed a removal for a foreign entry: $(grep removed "$H/out")"
+
+# 29. --uninstall: every recorded target and the prefix contents go; the vendor
+# directories, an unrecorded foreign file and a recorded target that was
+# replaced by someone else stay, and the leftovers are reported.
+for mode in copy link; do
+  flag=(); [[ "$mode" == link ]] && flag=(--link)
+  H="$TMP/h29$mode"; P="$H/.planar"
+  mk_home "h29$mode" "${ALL6[@]}"
+  run_install "$REPO" "$H" ${flag[@]+"${flag[@]}"} || fail "$mode: install before uninstall failed: $(cat "$H/err")"
+  manifest_abs "$H" > "$TMP/recorded29$mode"
+  [[ -s "$TMP/recorded29$mode" ]] || fail "$mode: nothing recorded"
+  echo mine > "$H/.claude/agents/planar-mine.md"
+  rm -f "$H/.gemini/agents/planar-coder.md"; echo replaced > "$H/.gemini/agents/planar-coder.md"
+  run_install "$REPO" "$H" --uninstall || fail "$mode: uninstall failed: $(cat "$H/err")"
+  while IFS= read -r p; do
+    case "$p" in "$H/.gemini/agents/planar-coder.md") continue ;; esac
+    [[ ! -e "$p" && ! -L "$p" ]] || fail "$mode: uninstall left the recorded target $p"
+  done < "$TMP/recorded29$mode"
+  [[ "$(cat "$H/.gemini/agents/planar-coder.md")" == replaced ]] || fail "$mode: a replaced target was removed"
+  grep -Fq "$H/.gemini/agents/planar-coder.md" "$H/err" || fail "$mode: the replaced target was not reported"
+  [[ -f "$H/.claude/agents/planar-mine.md" ]] || fail "$mode: the foreign file was removed"
+  grep -Fq "$H/.claude/agents/planar-mine.md" "$H/err" || fail "$mode: the foreign file was not reported"
+  for d in .claude/skills .claude/agents .agents/skills .codex/agents .copilot/agents .gemini/agents \
+           .gemini/antigravity-cli/skills .gemini/antigravity-cli/agents .config/opencode/agents; do
+    [[ -d "$H/$d" ]] || fail "$mode: uninstall removed the vendor directory $d"
+  done
+  [[ ! -e "$P/bin" && ! -e "$P/install-manifest.json" && ! -e "$P/skills" ]] || fail "$mode: the prefix contents survived: $(ls -A "$P")"
+done
+
+printf 'install-stage tests: 30 scenarios passed\n'

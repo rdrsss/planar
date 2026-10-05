@@ -27,16 +27,13 @@ FOUR_FLAGS=("--barrel-grouped" "--barrel-deferred" "--barrel-bypass" "--barrel-d
 SHAPE_FILES=(
   "agents/methodology.md"
   "agents/planar-orchestrator.md"
-  "commands/claude/pl-orchestrator.md"
-  "skills/codex/pl-orchestrator.md"
-  "skills/copilot/pl-orchestrator.md"
 )
 
-# Files that must mention every flag.
+# Files that must mention every flag. The per-vendor orchestrator surfaces
+# (commands/claude/, skills/codex/, skills/copilot/) are retired: the flags are
+# defined once, in the methodology.
 FLAG_FILES=(
-  "commands/claude/pl-orchestrator.md"
-  "skills/codex/pl-orchestrator.md"
-  "skills/copilot/pl-orchestrator.md"
+  "agents/methodology.md"
 )
 
 # Files that must mention the barrel-modes documentation surface.
@@ -62,7 +59,7 @@ for f in "${SHAPE_FILES[@]}"; do
   done
 done
 
-# Check flag presence in vendor surfaces only.
+# Check flag presence in the methodology.
 for f in "${FLAG_FILES[@]}"; do
   for flag in "${FOUR_FLAGS[@]}"; do
     if ! grep -qF -- "${flag}" "${f}"; then
