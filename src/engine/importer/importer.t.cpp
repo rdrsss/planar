@@ -201,7 +201,7 @@ TEST_CASE("the untrusted cache envelope is rejected outside its documented bound
 // contract allows -- at both preview (cache-hit) and apply time, on a verb
 // that writes planning entities.
 //
-// The contract is `skills/src/pl-import.md` § "Hard contract rules", NOT the
+// The contract is `agents/planar-importer.md` § "Sequencing" (the Result rules), NOT the
 // sibling `synthesize` validator. Transcribing synthesize verbatim demanded a
 // `source` and `citation` on EVERY decision and rejected the vendor skill's
 // own documented output; the fixtures below pin the documented rule instead.

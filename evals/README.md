@@ -249,11 +249,8 @@ Each new artifact directory includes `run.json`, which binds the case, mode,
 vendor, surface, repository, and Planar identifiers needed for deterministic
 regrading.
 
-`make eval` also renders the current checkout. Live and lifecycle host modes
-run the repo-scoped installed-projection check and refuse stale Planar
-artifacts, preventing a green result against an older global install. The
-helper filters Scriptorium status to artifacts defined by this config so
-separately installed artifacts are not misreported as Planar orphans.
+Live and lifecycle host modes stage the checkout's Planar skill and agents into
+an isolated arena, so a run never reads an older global install.
 
 ## Artifacts
 

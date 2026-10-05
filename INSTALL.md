@@ -72,7 +72,8 @@ they are source files that `install.sh` stages and places — so neither is wire
 into any vendor harness by a `make install` or a `cmake --install` alone; for
 those, use the [full install](#full-install-installsh).
 
-The four of the five binaries that open a database (all but `planar-execute`, which holds no SQLite handle at
+The five binaries are installed. The four
+that open a database (all but `planar-execute`, which holds no SQLite handle at
 all) statically link the vendored SQLite amalgamation — no system library
 dependency.
 
@@ -118,7 +119,7 @@ That's it. The script:
 
 - Builds all five binaries from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`.
 - Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and derives the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
-- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen).
+- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen). It runs no renderer for the skill; the Codex agent TOML is derived by `scripts/render-codex-agents.py`.
 - Places the staged skill and agents into each vendor whose presence marker exists (the nine targets in the [layout reference](#install-layout-reference)), and prints the vendors found and skipped.
 - Atomically writes `~/.planar/install-manifest.json` after every placement
   succeeds. Each placed vendor path is recorded in its `extras` list;
@@ -205,7 +206,8 @@ what it can prove Planar made, and prints each removal:
 
 It then removes the retired `~/.planar` paths listed in `install-cleanup.txt`
 (`commands/`, `skills/<vendor>/`, `<vendor>-skills/` including
-`opencode-skills/`, `agents/<vendor>/`).
+`opencode-skills/`, `agents/<vendor>/`). `bin/scriptorium` is listed so an install over an older tree removes the retired
+renderer binary.
 
 <!-- retired-ref: agent.db upgrade note -->
 ### Upgrade note: unlinking `agent.db` under a live queue submitter

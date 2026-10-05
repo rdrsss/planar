@@ -285,8 +285,7 @@ TEST_CASE("a catalog example that names no linted binary is reported", "[cli_usa
   CHECK(contains(r.out, "has an example that names no linted binary: make test"));
 }
 
-TEST_CASE("the skills tree is a scan root, and skills/src and skills/<name> are each walked once",
-          "[cli_usage_lint][cli-usage][skills]") {
+TEST_CASE("the skills tree is a scan root, and skills/<name> is walked once", "[cli_usage_lint][cli-usage][skills]") {
   REQUIRE(fs::exists(PLANAR_CLI_USAGE_LINT_BIN));
   repo_root repo{"skillsroot"};
 
@@ -300,17 +299,6 @@ TEST_CASE("the skills tree is a scan root, and skills/src and skills/<name> are 
     CHECK(
         contains(r.out, repo.path("skills/planar/references/queue.md") + ":4: `planar-agent queue status` has no flag `--nope`"));
     CHECK(contains(r.out, "across 2 files"));
-  }
-
-  SECTION("legacy skills/src coexists with the new tree and is counted once") {
-    repo.write("skills/src/old.md", "# Old\n\n```\nplanar-agent queue run --bogus -- make\n```\n");
-    repo.write("skills/planar/SKILL.md", "---\nname: planar\n---\n\n```\nplanar-agent queue run --detach -- make\n```\n");
-    auto const r = run_lint(repo);
-    INFO(r.out);
-    CHECK(r.code == 1);
-    CHECK(contains(r.out, "across 2 files"));
-    CHECK(contains(r.out, repo.path("skills/src/old.md") + ":4: `planar-agent queue run` has no flag `--bogus`"));
-    CHECK(!contains(r.out, "SKILL.md"));
   }
 
   SECTION("clean skills trees pass and are counted") {

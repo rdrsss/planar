@@ -8,14 +8,14 @@
 /// capability drift, command shapes, path existence, the skill
 /// feedback/recovery headings, and (plan 1080, task hq-rule-lint) the
 /// host-queue rule: `surface-queue-command` flags a build or test command in
-/// `agents/` or `skills/src/` that is not given to `planar-agent queue run`,
+/// `agents/` or `skills/` that is not given to `planar-agent queue run`,
 /// and `surface-queue-marker-invalid` flags an unbalanced
 /// `queue-lint-ignore-begin`/`-end` region. `surface-lint-ignore` suppresses
 /// the first set of codes; the queue codes have their own `queue-lint-ignore`
 /// line and region markers (see the checkQueueCommands comment below).
 ///
 /// Plan 1089 adds `surface-retired-reference`: the names of the removed agent
-/// database may not appear in `docs/`, `agents/`, `skills/src/`, `copilot/` or
+/// database may not appear in `docs/`, `agents/`, `skills/`, `copilot/` or
 /// the root guides, except in `docs/changelog.md` and in the marked upgrade
 /// note of `INSTALL.md`. `surface-retired-ref-marker-invalid` flags an unclosed
 /// or misplaced marker (see the checkRetiredReferences comment below).
@@ -337,7 +337,7 @@ auto check_legacy(std::string const& file, std::size_t line_no, std::string_view
 // surfaces. Unlike `k_retired_patterns` above, which fires on every scanned
 // file, these patterns carry a PATH SCOPE and an EXEMPTION LIST:
 //
-//   - SCOPE: `docs/`, `agents/`, `skills/src/`, `copilot/`, and the root
+//   - SCOPE: `docs/`, `agents/`, `skills/`, `copilot/`, and the root
 //     files `README.md`, `CLAUDE.md`, `AGENTS.md`, `INSTALL.md`. A path outside
 //     the scope (`install.sh`, `scripts/`, `src/`, `migrations/README.md`) is
 //     never read for these patterns: the installer legitimately names the
@@ -1233,7 +1233,7 @@ auto check_deferred_executable(std::string const& file, std::size_t line_no, std
 
 auto check_deferred_command(std::string const& file, std::size_t line_no, std::string_view line, bool in_fence,
                             std::vector<finding_t>& findings, std::vector<suppression_t>& suppressions) -> void {
-  if (!file.starts_with("agents/") && !file.starts_with("skills/src/"))
+  if (!file.starts_with("agents/") && !file.starts_with("skills/"))
     return;
   if (in_fence) {
     check_deferred_executable(file, line_no, line, findings, suppressions);
@@ -1286,9 +1286,7 @@ auto frontmatter_value(std::string_view content, std::string_view key) -> std::o
 
 // ---------------------------------------------------------------------------
 // checkAgentSkill (plan 1104, task ask-skill-lint) — the Agent Skills
-// format rules, applied to every `skills/<name>/SKILL.md`. The legacy flat
-// `skills/src/*.md` files are not skills in this sense and are not checked
-// here; M2 deletes them.
+// format rules, applied to every `skills/<name>/SKILL.md`.
 //
 // Rules, each reported by id: `frontmatter-present`, `name-matches-
 // directory`, `name-format`, `description-length` (<= 1024 characters),
@@ -1524,7 +1522,7 @@ auto check_agent_skill(fs::path const& root, std::string const& rel_file, fs::pa
 // listed. A program word is matched whole: `make:` and `makefile` are not
 // `make`.
 //
-// SCOPE: agents/ and skills/src/ only. docs/ describes the tools and is not
+// SCOPE: agents/ and skills/ only. docs/ describes the tools and is not
 // an instruction to an agent. Prose outside a span or block is never read.
 //
 // Escape hatches, deliberately separate from `surface-lint-ignore` (which
@@ -1745,7 +1743,7 @@ auto collect_markdown(fs::path const& dir, std::vector<fs::path>& paths) -> void
 /// Reads the files the retired-reference scope names that the general scan does
 /// not (`README.md`, `INSTALL.md`, a regular-file `AGENTS.md`, `copilot/`) and
 /// runs ONLY `check_retired_references` over them: the other checks were
-/// written for `agents/`, `skills/src/` and `docs/` and are not asked of a
+/// written for `agents/`, `skills/` and `docs/` and are not asked of a
 /// root guide. `AGENTS.md` is skipped when it is a symlink, because the
 /// general scan already read its target as `CLAUDE.md`.
 auto scan_retired_only_files(fs::path const& root, result_t& result, options_t const& opts) -> void {
@@ -1900,7 +1898,7 @@ auto write_command_inventory() -> std::string {
 } // namespace
 
 /// @brief Entry point: semantic-validate authored Markdown under
-/// `<repo-root>/{agents,skills/src,docs}`, or dump the pinned
+/// `<repo-root>/{agents,skills,docs}`, or dump the pinned
 /// `command_classes` inventory as JSON.
 /// @param argc Argument count.
 /// @param argv Argument vector: either `<repo-root> [--json]`, or the single

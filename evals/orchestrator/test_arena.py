@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,6 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import arena  # noqa: E402
+
+_RENDERER = Path(__file__).resolve().parents[2] / "scripts" / "render-codex-agents.py"
 
 
 class MakeArenaTests(unittest.TestCase):
@@ -286,11 +290,16 @@ class StageVendorConfigTests(unittest.TestCase):
         (repo / "agents").mkdir()
         for name in agents:
             (repo / "agents" / f"{name}.md").write_text(
-                f"---\nname: {name}\ndescription: Does {name} work.\n---\n\nBody of {name}.\n",
+                f"---\nname: {name}\ndescription: Does {name} work.\n"
+                f"planar:\n  kind: agent\n  slug: {name}\n---\n\nBody of {name}.\n",
                 encoding="utf-8",
             )
+        (repo / "scripts").mkdir()
+        shutil.copyfile(_RENDERER, repo / "scripts" / "render-codex-agents.py")
         # Legacy unprefixed agent must never be staged.
-        (repo / "agents" / "coder.md").write_text("legacy\n", encoding="utf-8")
+        (repo / "agents" / "coder.md").write_text(
+            "---\nname: coder\ndescription: legacy\n---\n\nlegacy\n", encoding="utf-8"
+        )
         (repo / "commands").mkdir()
         (repo / "commands" / "pl-x.md").write_text("legacy\n", encoding="utf-8")
         return repo
@@ -355,6 +364,54 @@ class StageVendorConfigTests(unittest.TestCase):
             self.assertTrue((home / ".agents" / "skills" / "planar" / "SKILL.md").is_file())
             self.assertFalse((home / ".codex" / "agents" / "coder.toml").exists())
             self.assertFalse((home / ".codex" / "commands").exists())
+
+    def test_codex_toml_bytes_equal_the_renderer_script_output(self) -> None:
+        # One TOML emitter: the arena stages exactly what the script writes.
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            root = Path(tmp)
+            real_root = self._fake_real_root(root, "codex", {"auth.json": "{}"})
+            repo = self._fake_repo(root, ("planar-orchestrator", "planar-coder"))
+            env = arena.make_arena(root)
+            arena.stage_vendor_config(
+                env,
+                "codex",
+                surface="agent",
+                base_env={"CODEX_HOME": str(real_root)},
+                repo_root=repo,
+                required_agents=("planar-orchestrator",),
+            )
+            out = root / "script-out"
+            subprocess.run(
+                [sys.executable, str(_RENDERER), str(repo / "agents"), str(out)],
+                check=True,
+                capture_output=True,
+            )
+            expected = sorted(out.glob("planar-*.toml"))
+            self.assertEqual([p.name for p in expected], ["planar-coder.toml", "planar-orchestrator.toml"])
+            staged_dir = Path(env["HOME"]) / ".codex" / "agents"
+            self.assertEqual(
+                sorted(p.name for p in staged_dir.glob("*.toml")), [p.name for p in expected]
+            )
+            for rendered in expected:
+                self.assertEqual((staged_dir / rendered.name).read_bytes(), rendered.read_bytes())
+
+    def test_missing_codex_renderer_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:
+            root = Path(tmp)
+            real_root = self._fake_real_root(root, "codex", {"auth.json": "{}"})
+            repo = self._fake_repo(root)
+            (repo / "scripts" / "render-codex-agents.py").unlink()
+            env = arena.make_arena(root)
+            with self.assertRaises(arena.VendorStagingError) as ctx:
+                arena.stage_vendor_config(
+                    env,
+                    "codex",
+                    surface="agent",
+                    base_env={"CODEX_HOME": str(real_root)},
+                    repo_root=repo,
+                    required_agents=("planar-orchestrator",),
+                )
+            self.assertIn("render-codex-agents.py", str(ctx.exception))
 
     def test_missing_required_agent_in_the_checkout_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(prefix="planar-eval-arena-test-") as tmp:

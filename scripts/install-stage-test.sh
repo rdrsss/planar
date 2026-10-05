@@ -19,7 +19,7 @@ fail() { printf 'install-stage-test: %s\n' "$*" >&2; exit 1; }
 # at a missing one.
 make_repo() {
   local repo="$1"
-  mkdir -p "$repo/skills/src" "$repo/skills"
+  mkdir -p "$repo/skills"
   cp "$ROOT/install.sh" "$repo/install.sh"
   cp -R "$ROOT/scripts" "$repo/scripts"
   cp -R "$ROOT/agents" "$repo/agents"
@@ -27,15 +27,13 @@ make_repo() {
   cp "$ROOT/install-cleanup.txt" "$repo/install-cleanup.txt"
   : > "$repo/CMakeLists.txt"
   : > "$repo/CMakePresets.json"
-  : > "$repo/scriptorium.yaml"
-  printf 'x\n' > "$repo/skills/src/pl-x.md"
   perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang(\+\+)?#/bin/sh#g' "$repo/install.sh"
 }
 
 # Stub cmake and binaries. `cmake --install D --prefix P` puts the stubs in
-# P/bin. The stub scriptorium stands in for the retired render: if the installer
-# still ran `scriptorium render` it would write agents/codex/legacy.toml and
-# commands/claude/pl-x.md, which the scenarios assert are absent.
+# P/bin. Only the five binaries are stubbed: the installer builds and installs
+# no other executable, and bin/scriptorium from an older install is removed by
+# the cleanup manifest.
 STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
 cat > "$STUBS/cmake" <<'STUB'
@@ -47,20 +45,6 @@ if [[ "$1" == "--install" ]]; then
     printf '#!/bin/sh\n[ "$1" = version ] && echo "planar stage-test"\nexit 0\n' > "$prefix/bin/$b"
     chmod +x "$prefix/bin/$b"
   done
-  cat > "$prefix/bin/scriptorium" <<'SCRIPTORIUM'
-#!/bin/sh
-case "$1" in
-  version) echo "scriptorium stage-test" ;;
-  render)
-    mkdir -p agents/claude agents/codex commands/claude
-    echo legacy > agents/codex/legacy.toml
-    echo cmd > commands/claude/pl-x.md
-    echo agent > agents/claude/x.md
-    ;;
-esac
-exit 0
-SCRIPTORIUM
-  chmod +x "$prefix/bin/scriptorium"
 fi
 exit 0
 STUB
@@ -120,6 +104,7 @@ PY
   # Nothing renders into agents/<vendor>/ any more, and the TOML never lands
   # under agents/codex/.
   [[ ! -e "$prefix/agents/codex" && ! -e "$prefix/agents/claude" ]] || fail "agents/<vendor>/ exists: $(ls "$prefix/agents")"
+  [[ ! -e "$prefix/skills/src" ]] || fail "the retired skills/src/ tree was staged"
   # The manifest records each staged path.
   local m="$prefix/install-manifest.json"
   grep -Fq '"skills/planar/SKILL.md"' "$m" || fail "manifest lacks skills/planar/SKILL.md"
@@ -135,12 +120,11 @@ PY
   return 0
 }
 
-# 1. Copy mode, no vendor: everything is staged, and the scriptorium render no
-# longer runs.
+# 1. Copy mode, no vendor: everything is staged and no renderer runs.
 REPO="$TMP/repo"; make_repo "$REPO"
 run_install "$REPO" "$TMP/h1" --no-vendor || fail "install failed: $(cat "$TMP/h1/err")"
 check_staged "$REPO" "$TMP/h1"
-[[ ! -e "$TMP/h1/.planar/commands" ]] || fail "the installer still runs the scriptorium render"
+[[ ! -e "$TMP/h1/.planar/commands" ]] || fail "the installer still runs a renderer"
 [[ ! -L "$TMP/h1/.planar/skills/planar" && ! -L "$TMP/h1/.planar/agents/planar-coder.md" ]] || fail "copy mode staged symlinks"
 grep -Fq 'Staging the planar skill and agents' "$TMP/h1/out" || fail "the staging step did not run"
 ! grep -Fq 'Rendering per-vendor skill outputs' "$TMP/h1/out" || fail "the render section is still in the installer"
@@ -758,10 +742,10 @@ grep -Fq "removed stale dir  $P/agents/codex/" "$H/out" || grep -Fq "removed sta
 for t in commands codex-skills copilot-skills gemini-skills opencode-skills; do
   [[ ! -e "$P/$t" ]] || fail "the staged $t survived the cleanup"
 done
-# bin/scriptorium is still built by this tree, so the cleanup line is exempt: the
-# run replaces the seeded binary with the fresh one and does not remove it.
-[[ "$("$P/bin/scriptorium" version)" == "scriptorium stage-test" ]] || fail "bin/scriptorium is not the freshly installed one"
-! grep -Fq "removed stale file $P/bin/scriptorium" "$H/out" || fail "the cleanup removed the binary the run just installed"
+# The renderer is no longer built, so the cleanup removes the seeded stale binary.
+[[ ! -e "$P/bin/scriptorium" ]] || fail "the stale bin/scriptorium survived the cleanup"
+grep -Fq "removed stale file $P/bin/scriptorium" "$H/out" || fail "the removal of bin/scriptorium was not printed: $(cat "$H/out")"
+[[ -x "$P/bin/planar" ]] || fail "the cleanup removed the freshly installed bin/planar"
 sweep_line="$(grep -n 'Retiring the previous skill and agent projections' "$H/out" | head -1 | cut -d: -f1)"
 clean_line="$(grep -n 'removed stale' "$H/out" | head -1 | cut -d: -f1)"
 [[ -n "$sweep_line" && -n "$clean_line" && "$sweep_line" -lt "$clean_line" ]] || fail "the sweep does not precede the cleanup output ($sweep_line, $clean_line)"

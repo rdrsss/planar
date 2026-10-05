@@ -54,8 +54,7 @@ templates/doc-prompts/research.md
 # tree are dead weight from any prior install. The staged <vendor>-skills/ trees
 # are also the evidence install.sh's sweep uses to prove an old copy in a vendor
 # directory is Planar's, so the sweep runs BEFORE these lines take effect.
-# bin/scriptorium is still built and installed by the current tree, so install.sh
-# exempts it until the build stops installing it; a re-install must keep it.
+# bin/scriptorium: the renderer is gone; a re-install removes the stale binary.
 bin/scriptorium
 commands/
 skills/codex/

@@ -115,7 +115,7 @@ auto inventory(const fixture& fx) -> std::string {
 /// never reached reconciliation and the rollback path went uncovered while the
 /// case still passed for the wrong reason. A missing decision body is checked
 /// by `reconcile_cache` and deliberately NOT by the envelope (the contract in
-/// `skills/src/pl-import.md` says nothing about it), and decisions reconcile
+/// `agents/planar-importer.md` says nothing about it), and decisions reconcile
 /// AFTER plans and tasks — so there are real prior writes to roll back.
 auto cache_body(std::string_view fingerprint, bool bad_decision = false) -> std::string {
   return std::format(
