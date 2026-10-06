@@ -170,9 +170,11 @@ def observe(
     latest: dict[str, Any] | None = None
     observed_seq: int | None = None
 
-    def finish(reason: str, code: int | None = None, error: str | None = None) -> Observation:
+    def finish(reason: str, code: int | None = None,
+               error: str | dict[str, str] | None = None) -> Observation:
+        detail = error if isinstance(error, dict) else {"message": error} if error else None
         return Observation(seq, observed_seq, reason, code, latest,
-                           {"message": error} if error else None, mode)
+                           detail, mode)
 
     try:
         with _Signals():
@@ -207,20 +209,36 @@ def observe(
 
             dead_since: float | None = None
             dead_seq: int | None = None
+            current_seq = seq
             while True:
                 if deadline - time.monotonic() <= CLEANUP_SECONDS + 0.01:
                     return finish("timed_out", 124)
-                result = _helper([agent, "queue", "status", str(seq), "--json"], cwd, env, deadline)
+                result = _helper([agent, "queue", "status", str(current_seq), "--json"], cwd, env, deadline)
                 value = _json_result(result)
                 if result.returncode != 0:
                     error = value.get("error")
                     if result.returncode == 1 and isinstance(error, dict) and error.get("tag") == "not_found":
-                        return finish("history_unavailable", 1, "ticket history unavailable")
-                    return finish("error", 125, str(error or result.stderr.strip() or "queue status refused"))
+                        successor_missing = current_seq != seq
+                        return finish("history_unavailable", 1, {
+                            "tag": "successor_history_unavailable" if successor_missing else "not_found",
+                            "message": "successor history unavailable" if successor_missing else "ticket history unavailable",
+                        })
+                    return finish("error", 125, error if isinstance(error, dict) else
+                                  str(result.stderr.strip() or "queue status refused"))
+                if type(value.get("seq")) is not int or value["seq"] != current_seq:
+                    return finish("error", 125, "queue status sequence mismatch")
                 if value.get("state") not in {"waiting", "running", "terminating", "ended"}:
                     return finish("error", 125, "invalid queue status state")
                 latest = value
-                observed_seq = value.get("seq") if type(value.get("seq")) is int else None
+                observed_seq = current_seq
+                successor = value.get("superseded_by")
+                if successor is not None:
+                    if type(successor) is not int or not current_seq < successor <= 2**63 - 1:
+                        return finish("error", 125, "invalid queue successor sequence")
+                    current_seq = successor
+                    dead_since = None
+                    dead_seq = None
+                    continue
                 if value["state"] == "ended":
                     if value.get("outcome") != "abandoned":
                         code = _completed(value)

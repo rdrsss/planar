@@ -70,7 +70,10 @@ class QueueObservationTests(unittest.TestCase):
         self.assertEqual(observed.wait_reason, "history_unavailable")
 
     def test_compatibility_follows_successor_to_authoritative_completion(self) -> None:
-        predecessor = {"seq": 9, "state": "ended", "outcome": "abandoned", "superseded_by": 10}
+        # queue status keeps the asked seq even when it has already resolved
+        # the successor's completion.
+        predecessor = {"seq": 9, "state": "ended", "outcome": "exited", "exit_code": 7,
+                       "superseded_by": 10}
         successor = {"seq": 10, "state": "ended", "outcome": "exited", "exit_code": 7,
                      "superseded_by": None}
         queried: list[int] = []
@@ -105,7 +108,18 @@ class QueueObservationTests(unittest.TestCase):
                                      timeout_seconds=2)
         self.assertEqual(queried, [9, 10])
         self.assertEqual((observed.seq, observed.observed_seq, observed.wait_reason,
-                          observed.result_exit_code), (9, 10, "history_unavailable", 1))
+                          observed.result_exit_code), (9, 9, "history_unavailable", 1))
+        self.assertEqual(observed.error["tag"], "successor_history_unavailable")
+
+    def test_invalid_successor_stops_without_a_retry_loop(self) -> None:
+        invalid = {"seq": 9, "state": "ended", "outcome": "abandoned", "superseded_by": 9}
+        with mock.patch.object(queue, "discover", return_value="compatibility"), mock.patch.object(
+            queue, "_helper", return_value=result([], 0, invalid)
+        ) as helper:
+            observed = queue.observe(9, agent="planar-agent", cwd=self.cwd, env=self.env,
+                                     timeout_seconds=2)
+        self.assertEqual(helper.call_count, 1)
+        self.assertEqual((observed.wait_reason, observed.result_exit_code), ("error", 125))
 
     def test_dead_confirmation_resets_when_resolved_entry_changes(self) -> None:
         first = {"seq": 9, "state": "running", "live": False, "superseded_by": None}
