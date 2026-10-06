@@ -147,11 +147,11 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 
 | Flag | Purpose |
 |------|---------|
-| `--prefix DIR` | Install root (default `~/.planar`). |
+| `--prefix DIR` | Install root (default `~/.planar`). See [The install root guard](#the-install-root-guard). |
 | `--vendors LIST` | Comma-separated filter over the vendors found on the host: `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`. Default is all six. Naming an absent vendor warns. |
 | `--no-vendor` | Skip vendor surfaces entirely; install Planar core only. |
 | `--link` | Symlink the staged skill and the Markdown, Copilot and Codex agent files from the source repo instead of copying. **Dev mode** — edits to the repo propagate immediately. The OpenCode agents are always derived regular files. |
-| `--force` | Overwrite existing symlinks at the destinations. It does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
+| `--force` | Overwrite existing symlinks at the destinations, and adopt a non-empty install root that carries no Planar sign. It does **not** override the install root guard for `$HOME`, `/` or an empty root, and does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
 | `--ignore-live-queue` | Retire (or uninstall) the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
 | `--no-prune` | Skip removal of stale vendor files. |
 | `--preset NAME` | CMake build preset: `debug`\|`release` (default `release`). |
@@ -345,6 +345,14 @@ This removes:
 - Everything in `~/.planar/` *except* your data: `planar.db` (with its SQLite sidecars, `-wal` and `-shm`) and the `queue-logs/` directory of detached queue-run output. A retired old queue database left from before the upgrade is removed too; the upgrade note above covers the guard that protects a live old queue.
 
 A prefix that holds only a preserved `planar.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
+
+### The install root guard
+
+`install.sh` and `install.sh --uninstall` run one guard, `scripts/install-lib/prefix-guard.sh`, on the install root (`--prefix`, else `PLANAR_HOME`, else `~/.planar`) before anything is removed, created or built:
+
+- A root that is the empty string (`--prefix ""` or `PLANAR_HOME=`), `/`, or resolves to `$HOME` exits **2**, naming the path and the rule. The path is canonicalised first, so `$HOME/.`, `$HOME/../<user>`, a trailing slash and a symlink to `$HOME` or `/` are all caught. `--force` makes no difference.
+- An existing non-empty root is accepted without `--force` when it carries the install stamp (`.planar-install`), an executable `bin/planar`, `planar.db`, or a valid installer recovery journal (`.planar-journal`, so an interrupted first install is adopted). Installs made before the stamp existed carry `bin/planar` or `planar.db`. A bare `.staging-*` directory or any other marker file is not evidence.
+- Any other non-empty root exits **1** naming the path, unless `--force` adopts it.
 
 Only the default file names directly under `~/.planar/` are preserved. A database relocated with `PLANAR_DB` to a path outside `~/.planar/` is never touched by the uninstall; one relocated to another file name *inside* `~/.planar/` is not preserved, and a non-force uninstall deletes it.
 

@@ -294,3 +294,10 @@ add_test(NAME dist.layout
   COMMAND "${CMAKE_COMMAND}" -E env "PYTHON=${Python3_EXECUTABLE}"
     bash "${PROJECT_SOURCE_DIR}/scripts/dist-test.sh")
 set_tests_properties(dist.layout PROPERTIES LABELS "dist_layout" TIMEOUT 180)
+
+# The install-root guard: install.sh and install.sh --uninstall refuse $HOME, /
+# and the empty string at exit 2 (even with --force) and adopt legacy and
+# journal-owned roots. Scratch HOME, stub cmake, shim rm/mv: nothing real.
+add_test(NAME install.prefix_guard
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-prefix-guard-test.sh")
+set_tests_properties(install.prefix_guard PROPERTIES LABELS "install_prefix_guard" TIMEOUT 300)

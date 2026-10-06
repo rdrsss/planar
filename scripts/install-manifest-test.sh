@@ -154,20 +154,16 @@ run_uninstall "$FORCE_HOME" --force >"$TMP/force-stdout" 2>"$TMP/force-stderr" \
   || fail "forced uninstall failed: $(cat "$TMP/force-stderr")"
 assert_absent "$FORCE_PREFIX"
 
-# The install-side ownership guard mirrors the uninstall-side one. It sits
-# behind the build-dependency preflight, so exercise the exact sourced block
-# (from the PLANAR_STAMP assignment through the guard's closing `fi`) with an
-# err() that exits 1, the way the installer's does. A prefix holding only a
-# foreign file must still be refused, which also proves the extracted block is
-# not empty.
-sed -n '/^PLANAR_STAMP=/,/^fi$/p' "$ROOT/install.sh" > "$TMP/install-guard.sh"
-grep -Fq 'planar.db' "$TMP/install-guard.sh" || fail "install-side ownership guard block not found in install.sh"
+# The install-side ownership guard is the sourced planar_prefix_guard that
+# install.sh and --uninstall share (plan 1122). Exercise the exact function
+# with the way install.sh turns its status into an exit. A prefix holding only
+# a foreign file must still be refused, which also proves the check is not
+# vacuous. (scripts/install-prefix-guard-test.sh drives install.sh end to end.)
 run_install_guard() {
-  PLANAR_HOME="$1" GUARD="$TMP/install-guard.sh" bash -c '
+  PLANAR_HOME="$1" GUARD="$ROOT/scripts/install-lib/prefix-guard.sh" bash -c '
     set -eEuo pipefail
-    FORCE=0
-    err() { printf "%s\n" "$*" >&2; exit 1; }
     source "$GUARD"
+    planar_prefix_guard "$PLANAR_HOME" 0 install
   '
 }
 GUARD_DB_PREFIX="$TMP/guard_db/.planar"

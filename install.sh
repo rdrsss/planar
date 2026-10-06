@@ -80,7 +80,9 @@ set -eEuo pipefail
 
 # ---------- defaults ----------
 
-PLANAR_HOME="${PLANAR_HOME:-$HOME/.planar}"
+# `${VAR-default}`, not `:-`: PLANAR_HOME set to the empty string must reach the
+# prefix guard and be refused, never be silently replaced by the default.
+PLANAR_HOME="${PLANAR_HOME-$HOME/.planar}"
 CODEX_HOME_EXPLICIT="${CODEX_HOME:-}"   # non-empty when the operator set CODEX_HOME: Codex's presence marker
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 VENDORS="claude,codex,copilot,gemini,antigravity,opencode"
@@ -108,6 +110,8 @@ source "$REPO_ROOT/scripts/install-manifest.sh"
 # guard and retire the old agent.db. Sourced so the installer-manifest test
 # and the post-build ctest cases drive the exact functions this script runs.
 source "$REPO_ROOT/scripts/install-lib/queue-retire.sh"
+# The install-root guard shared with the uninstaller (plan 1122).
+source "$REPO_ROOT/scripts/install-lib/prefix-guard.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -530,6 +534,18 @@ PY
   done
 }
 
+# ---------- prefix guard ----------
+
+# Runs before anything is removed, created or built, for install and
+# --uninstall alike (scripts/install-lib/prefix-guard.sh). An install root that
+# is the empty string, /, or $HOME exits 2 even with --force; a non-empty root
+# with no Planar sign exits 1 unless --force adopts it.
+_guard_op="install"
+[[ "$UNINSTALL" -eq 1 ]] && _guard_op="uninstall"
+_guard_rc=0
+planar_prefix_guard "$PLANAR_HOME" "$FORCE" "$_guard_op" || _guard_rc=$?
+[[ "$_guard_rc" -eq 0 ]] || exit "$_guard_rc"
+
 # ---------- uninstall path ----------
 
 if [[ "$UNINSTALL" -eq 1 ]]; then
@@ -637,43 +653,6 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   done
 
   if [[ -d "$PLANAR_HOME" ]]; then
-    # Prefix ownership guard, uninstall side. The --uninstall branch returns
-    # (exit 0) above the INSTALL-side ownership guard further down this file,
-    # so without this check a mistyped --prefix/PLANAR_HOME reaches the
-    # unconditional `rm -rf "$PLANAR_HOME"` below with NO ownership check at
-    # all — `PLANAR_HOME=$HOME ./install.sh --uninstall --force` deletes the
-    # operator's home directory outright, and even without --force the
-    # find-and-delete two lines down removes every top-level entry of
-    # $PLANAR_HOME except the preserved data entries (planar.db, its SQLite
-    # sidecars, queue-logs/).
-    #
-    # Two checks, in order:
-    #   1. $PLANAR_HOME normalized (plain `realpath`, not `-m` — GNU's `-m`
-    #      tolerates a nonexistent path but BSD/macOS realpath has no `-m`
-    #      flag at all and errors out, which silently fell through to the
-    #      raw-string fallback below and defeated the whole normalization on
-    #      macOS when this was first written; `-m` is unneeded here anyway,
-    #      since we are already inside `-d "$PLANAR_HOME"`, so the path is
-    #      guaranteed to exist) so a trailing slash or a symlink cannot
-    #      defeat the comparison — the D13 normalization hazard tasks
-    #      6051/6052/6053 described for a different, now-gone code path,
-    #      applied to the real one — must not equal $HOME itself. $HOME is
-    #      never a valid Planar prefix, so this refuses even under --force:
-    #      there is no legitimate reason to override it.
-    #   2. Absent that, the SAME ownership signals the install-side guard
-    #      uses (stamp / bin/planar / planar.db) must be present, unless
-    #      --force overrides — mirroring the install-side guard exactly
-    #      rather than inventing a second policy. The retired agent.db is no
-    #      longer a signal (plan 1089): a prefix holding only it is refused.
-    _planar_home_real="$(realpath "$PLANAR_HOME" 2>/dev/null || echo "$PLANAR_HOME")"
-    _home_real="$(realpath "$HOME" 2>/dev/null || echo "$HOME")"
-    if [[ "$_planar_home_real" == "$_home_real" ]]; then
-      err "refusing to uninstall: PLANAR_HOME ($PLANAR_HOME) resolves to \$HOME ($HOME) — this would delete your home directory. Set --prefix to the actual Planar install root."
-    fi
-    if [[ ! -e "$PLANAR_HOME/.planar-install" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
-      err "$PLANAR_HOME does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Refusing to remove it. Pass the correct --prefix, or re-run with --force to remove it anyway."
-    fi
-
     log "removing install root: $PLANAR_HOME"
     log "(planar.db, its -wal/-shm sidecars and queue-logs/ are preserved if you have data — re-run with --force or rm manually; the retired agent.db is removed)"
     if [[ "$FORCE" -eq 1 ]]; then
@@ -793,19 +772,7 @@ else
   [[ -d "$_parent" && -w "$_parent" ]] || err "cannot create $PLANAR_HOME — $_parent is not writable (permissions?)"
 fi
 
-# Prefix ownership guard — the install wipes subdirs of $PLANAR_HOME (skills/,
-# commands/, agents/, …). A mis-typed --prefix (say ~/dev or $HOME) would wipe
-# the wrong tree. Refuse unless the prefix is empty, already a Planar install
-# (carries a bin/planar or the .planar-install stamp), or --force overrides.
 PLANAR_STAMP="$PLANAR_HOME/.planar-install"
-if [[ -d "$PLANAR_HOME" && -n "$(ls -A "$PLANAR_HOME" 2>/dev/null)" ]]; then
-  # Ownership signals: the stamp, an existing binary, or a preserved planar.db
-  # (left behind by a non-force uninstall). Any one of them means "our tree".
-  # The retired agent.db is not one (plan 1089).
-  if [[ ! -e "$PLANAR_STAMP" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
-    err "$PLANAR_HOME exists and does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Pass a clean --prefix, remove it, or re-run with --force to adopt it."
-  fi
-fi
 
 # Dry run — everything above is read-only preflight; stop here and print the
 # plan rather than mutating anything.
