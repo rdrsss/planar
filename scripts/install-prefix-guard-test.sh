@@ -307,6 +307,20 @@ run_installer "$(dirname "$F2")" 0 --prefix "$F2" --force --uninstall
 [[ "$RC" == 0 && ! -e "$F2" ]] || fail "--force --uninstall did not remove the foreign root: rc=$RC $(cat "$TMP/err")"
 pass
 
+# A directory that merely holds a name from the data-path list is not a Planar
+# root unless it is $HOME/.planar: a project with models/ or templates/ beside
+# src/ and .git/ is refused, install and uninstall, and left byte for byte as it
+# was (tech spec, "Prefix guard": arbitrary staging names do not qualify).
+for dpname in models templates; do
+  P="$TMP/lookalike-$dpname/proj"
+  mkdir -p "$P/$dpname" "$P/src" "$P/.git"
+  printf 'int main(){}\n' > "$P/src/main.c"
+  printf 'ref: refs/heads/main\n' > "$P/.git/HEAD"
+  printf 'catalog\n' > "$P/$dpname/x"
+  expect_ownership_refusal "lookalike root holding $dpname/" "$P" install
+  expect_ownership_refusal "lookalike root holding $dpname/" "$P" uninstall
+done
+
 # A planar-owned root is uninstalled without --force.
 mkdir -p "$TMP/own/.planar/bin"
 printf '#!/bin/sh\nexit 0\n' > "$TMP/own/.planar/bin/planar"
