@@ -80,7 +80,7 @@ public:
       ::sigprocmask(SIG_SETMASK, &old, nullptr);
   }
 
-  static auto open() -> std::unique_ptr<wait_signal_relay> {
+  static auto open(const std::function<bool()>& after_first_install) -> std::unique_ptr<wait_signal_relay> {
     auto relay = std::unique_ptr<wait_signal_relay>(new wait_signal_relay());
     int  ends[2]{-1, -1};
     if (::pipe(ends) != 0)
@@ -118,6 +118,10 @@ public:
         break;
       }
       relay->_installed[i] = true;
+      if (i == 0 && after_first_install && !after_first_install()) {
+        ok = false;
+        break;
+      }
     }
     ::sigprocmask(SIG_SETMASK, &old, nullptr);
     if (!ok)
@@ -241,7 +245,8 @@ auto monotonic(ident::clock& clock) -> std::optional<std::int64_t> {
 
 } // namespace
 
-auto queue_wait(context& ctx, const cliapp::parsed_args& args) -> handler_outcome {
+auto queue_wait_with_signal_setup_hook(context& ctx, const cliapp::parsed_args& args,
+                                       const std::function<bool()>& after_first_install) -> handler_outcome {
   bool const                  as_json     = cliapp::flag_bool(args, "--json");
   auto const                  raw_seq     = cliapp::positional_string(args, "seq");
   auto const                  seq         = raw_seq ? parse_seq(*raw_seq) : std::nullopt;
@@ -272,7 +277,7 @@ auto queue_wait(context& ctx, const cliapp::parsed_args& args) -> handler_outcom
     hq::wait_result failed{.reason = hq::wait_reason::error, .result_exit_code = 125, .tag = std::string{deadline.error()}};
     return render_result(ctx, as_json, seq, timeout, failed);
   }
-  auto relay = wait_signal_relay::open();
+  auto relay = wait_signal_relay::open(after_first_install);
   if (!relay) {
     hq::wait_result failed{.reason = hq::wait_reason::error, .result_exit_code = 125, .tag = "signal_setup_failed"};
     return render_result(ctx, as_json, seq, timeout, failed);
@@ -350,5 +355,9 @@ auto queue_wait(context& ctx, const cliapp::parsed_args& args) -> handler_outcom
   };
   auto result = hq::observe_wait(*timeout, runtime, *started);
   return render_result(ctx, as_json, seq, timeout, result);
+}
+
+auto queue_wait(context& ctx, const cliapp::parsed_args& args) -> handler_outcome {
+  return queue_wait_with_signal_setup_hook(ctx, args, {});
 }
 } // namespace planar::cmd::agent::handlers

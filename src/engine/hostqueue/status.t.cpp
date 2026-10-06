@@ -479,23 +479,24 @@ TEST_CASE("bounded wait stops on interruption and a busy read that consumes the 
 }
 
 TEST_CASE("bounded wait reports elapsed monotonic time when interrupted after sleep", "[engine][hostqueue][bqw1123-deadlines]") {
-  std::int64_t now = 1'000;
-  bool interrupted = false;
+  std::int64_t     now         = 1'000;
+  bool             interrupted = false;
   hq::wait_runtime runtime{
-      .now_ms = [&] { return std::optional{now}; },
+      .now_ms             = [&] { return std::optional{now}; },
       .interrupted_signal = [&] { return interrupted ? std::optional<int>{SIGTERM} : std::nullopt; },
-      .read = [](const std::function<std::expected<int, hq::status_error>()>& budget)
+      .read               = [](const std::function<std::expected<int, hq::status_error>()>& budget)
           -> std::expected<hq::wait_status_lookup, hq::status_error> {
         REQUIRE(budget().has_value());
         hq::queue_status status;
         status.state = hq::status_state::waiting;
-        status.live = true;
+        status.live  = true;
         return hq::wait_status_lookup{.status = status, .observed_seq = 4};
       },
-      .sleep = [&](std::chrono::milliseconds) {
-        now += 500;
-        interrupted = true;
-      },
+      .sleep =
+          [&](std::chrono::milliseconds) {
+            now += 500;
+            interrupted = true;
+          },
   };
   auto result = hq::observe_wait(5'000, runtime, 1'000);
   CHECK(result.reason == hq::wait_reason::interrupted);

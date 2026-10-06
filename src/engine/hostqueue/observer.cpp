@@ -118,14 +118,14 @@ auto observe_wait(std::int64_t timeout_ms, const wait_runtime& runtime, std::int
     return now;
   };
   auto const check = [&]() -> std::expected<int, status_error> {
+    auto now = clock();
+    if (!now) {
+      return std::unexpected(status_error{.kind = status_error_kind::store, .message = "monotonic clock failed"});
+    }
     if (auto signal = runtime.interrupted_signal()) {
       result.reason           = wait_reason::interrupted;
       result.result_exit_code = 128 + *signal;
       return std::unexpected(status_error{.kind = status_error_kind::store, .message = "observation interrupted"});
-    }
-    auto now = clock();
-    if (!now) {
-      return std::unexpected(status_error{.kind = status_error_kind::store, .message = "monotonic clock failed"});
     }
     if (*now >= deadline) {
       result.reason           = wait_reason::timed_out;
