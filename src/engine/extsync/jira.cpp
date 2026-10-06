@@ -192,7 +192,9 @@ auto jira_adapter::pull(std::string_view external_id) const -> std::expected<ada
       .headers = {{.name = "Accept", .value = "application/json"}, {.name = "Authorization", .value = *auth}},
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status == 404) {
     return std::unexpected(adapter_error::not_found);
@@ -260,7 +262,9 @@ auto jira_adapter::push(std::string_view external_id, const adapter::field_chang
       .body    = body,
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status != 204) {
     return std::unexpected(adapter_error::unexpected_status);
@@ -291,7 +295,9 @@ auto jira_adapter::post_comment(std::string_view external_id, std::string_view c
       .body    = body,
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status != 201 && sent->status != 200) {
     return std::unexpected(adapter_error::unexpected_status);

@@ -518,11 +518,9 @@ TEST_CASE("jira adapter works over a real loopback HTTP round trip", "[extsync][
 
 TEST_CASE("jira preserves certificate verification failure in the operator diagnostic", "[extsync][jira]") {
   dead_transport wire;
-  // The certificate failure discriminator follows send_failed. The red test
-  // can exercise the adapter contract before the transport adds its name.
-  wire.failure = static_cast<planar::http::transport_error>(1);
+  wire.failure = planar::http::transport_error::certificate_verification_failed;
   jira_adapter adapter{"https://jira.invalid", bearer("fixture-token"), wire};
-  auto const pulled = adapter.pull("PROJ-1");
+  auto const   pulled = adapter.pull("PROJ-1");
   REQUIRE_FALSE(pulled.has_value());
   CHECK(planar::adapter::adapter_error_name(pulled.error()) == "CertificateVerificationFailed");
   auto const commented = adapter.post_comment("PROJ-1", "fixture comment");

@@ -268,13 +268,24 @@ scoped normal variable, while curl removes only the cache entry). It also
 loads `/etc/pki/tls/certs/ca-bundle.crt` when present: curl's OpenSSL fallback
 does not run when a CA directory is configured. Certificate and hostname
 verification remain enabled. Ordinary Linux builds
-retain curl's defaults, and macOS continues to use SecureTransport. Because
-OpenSSL is frozen into a portable Linux binary, TLS fixes reach operators
+retain curl's defaults, and macOS continues to use SecureTransport.
+Certificate verification failures report `CertificateVerificationFailed` in
+external sync results and event detail; other transport failures retain
+`TransportFailed`. Removing a trusted host CA must produce that certificate
+diagnostic as well as reject the request.
+
+Because OpenSSL is frozen into a portable Linux binary, TLS fixes reach operators
 through a new Planar release. When the system OpenSSL's static pkg-config
 dependencies include zstd (as on Trixie with OpenSSL 3.5), configure requires
 `libzstd.a` and resolves that dependency to the archive as well. Binary
 dependency and clean-host trust checks
-remain required release gates.
+remain required release gates. `scripts/test-portable-tls.py` exercises the
+Debian CA directory, removed CA, and Red Hat bundle against prebuilt Linux
+binaries and existing Docker images. Its required arguments select the binary
+directory, evidence directory, toolchain image (Python and OpenSSL), and bare
+runtime image; run it through the host queue. The removed-CA case requires
+`outcome=error` and `detail=CertificateVerificationFailed`, with no remote title.
+The sync result remains exit 0, as for other per-link adapter errors.
 
 The `portable.binaries` ctest case is registered only with `PLANAR_PORTABLE`.
 It logs each of the five product binaries, inspects macOS dependencies and load

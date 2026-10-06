@@ -176,7 +176,11 @@ auto curl_transport::send(const request& req) -> std::expected<response, transpo
     curl_easy_setopt(handle, CURLOPT_HTTPHEADER, header_list);
   }
 
-  if (curl_easy_perform(handle) != CURLE_OK) {
+  auto const result = curl_easy_perform(handle);
+  if (result == CURLE_PEER_FAILED_VERIFICATION) {
+    return std::unexpected(transport_error::certificate_verification_failed);
+  }
+  if (result != CURLE_OK) {
     return std::unexpected(transport_error::send_failed);
   }
   long status = 0;
