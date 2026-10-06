@@ -162,6 +162,47 @@ unset RUN_PLANAR_HOME
 [[ "$before" == "$(snapshot "$H")" && ! -s "$SHIMLOG" ]] || fail "PLANAR_HOME=\$HOME --uninstall --force touched the arena"
 pass
 
+# A case variant of $HOME names the same directory on a case-insensitive volume
+# (the macOS default). The canonical string differs, so only identity (-ef)
+# catches it. Skipped, with the reason printed, when the scratch volume is
+# case-sensitive.
+HV="$(dirname "$H")/$(basename "$H" | tr '[:lower:]' '[:upper:]')"
+if [[ "$HV" != "$H" && -d "$HV" ]]; then
+  for op in install uninstall; do
+    for force in 0 1; do
+      expect_hard_refusal "home case variant" "$H" "$HV" "$force" "$op" "$HV"
+    done
+  done
+else
+  printf 'install-prefix-guard-test: skipping case-variant HOME fixtures: the scratch filesystem is case-sensitive\n'
+fi
+
+# An alias the canonical string cannot see: the same directory under a second
+# spelling. Drives the guard function with a resolver that does not normalise
+# the alias, so only the device+inode comparison can refuse it.
+(
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/install-lib/prefix-guard.sh"
+  # shellcheck disable=SC2329  # called by planar_prefix_guard
+  planar_canonical_path() {
+    case "$1" in
+      alias-of-home) printf '%s\n' "$H/." ;;
+      alias-of-root) printf '%s\n' "//" ;;
+      *) printf '%s\n' "$1" ;;
+    esac
+  }
+  HOME="$H"
+  for force in 0 1; do
+    rc=0; planar_prefix_guard alias-of-home "$force" install 2>/dev/null || rc=$?
+    [[ "$rc" == 2 ]] || exit 21
+    rc=0; planar_prefix_guard alias-of-home "$force" uninstall 2>/dev/null || rc=$?
+    [[ "$rc" == 2 ]] || exit 22
+    rc=0; planar_prefix_guard alias-of-root "$force" uninstall 2>/dev/null || rc=$?
+    [[ "$rc" == 2 ]] || exit 23
+  done
+) || fail "identity (-ef) alias check $? failed"
+pass
+
 # --- legacy installs are adopted without --force ------------------------------
 
 stamp_of() { cat "$1/.planar-install" 2>/dev/null || true; }
