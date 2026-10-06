@@ -306,6 +306,8 @@ private:
   /// invalidates the address SQLite's authorizer callback was registered
   /// against — only the pointer moves, the pointee's heap address does not.
   std::unique_ptr<std::vector<std::string>> _write_allowlist;
+  /// @brief Heap-stable callback storage while SQLite owns its userdata pointer.
+  std::unique_ptr<std::function<bool()>> _busy_retry;
 
   /// @brief Takes ownership of an already-open handle.
   /// @param handle A live, non-null `sqlite3*` returned by `sqlite3_open_v2`.
@@ -361,6 +363,23 @@ public:
   /// @return The open read-only connection, or the SQLite failure as a
   /// `db_error`.
   static auto open_read_only(std::string_view path) -> std::expected<connection, db_error>;
+
+  /// @brief Opens read-only with a caller-supplied bound for all initial reads.
+  /// @param path Existing database path.
+  /// @param busy_timeout_ms Maximum SQLite lock wait in milliseconds.
+  /// @return The connection or SQLite failure.
+  static auto open_read_only(std::string_view path, int busy_timeout_ms) -> std::expected<connection, db_error>;
+
+  /// @brief Changes the SQLite lock-wait bound before a later read.
+  /// @param busy_timeout_ms Maximum SQLite lock wait in milliseconds.
+  void set_busy_timeout(int busy_timeout_ms) noexcept;
+
+  /// @brief Installs a caller-owned retry decision for SQLite lock contention.
+  /// The callback runs on the connection's calling thread and may sleep briefly;
+  /// return false to stop the current statement with SQLITE_BUSY. Replacing it
+  /// or destroying the connection unregisters the callback before freeing it.
+  /// @param retry Invoked on each SQLite busy event.
+  void set_busy_retry(std::function<bool()> retry);
 
   /// @brief True if this connection was opened via `open_read_only`.
   /// @return `true` if this connection is read-only.

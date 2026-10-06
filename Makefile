@@ -140,7 +140,7 @@ test: test-install-manifest test-install-stage test-install-deps ## Run unit tes
 	cmake --build build/debug --target all planar_tests $(ARGS)
 	ctest --test-dir build/debug --output-on-failure -j $(TEST_JOBS) $(ARGS)
 
-# Linux gate (task 7094): build + ctest on Debian trixie in Docker. See
+# Linux gate: build, ctest and queue observer Python checks on Debian trixie in Docker. See
 # docker/linux-gate.Dockerfile and docs/testing.md. Docker is a developer
 # tool, not a build dependency. Every dependency is committed under vendor/,
 # so the image needs no token and no extra build context.
@@ -150,13 +150,13 @@ LINUX_GATE_OUT      ?= build/linux-gate
 LINUX_GATE_CTEST_ARGS ?=
 
 .PHONY: linux-gate
-linux-gate: ## Build and run the whole ctest suite on Linux in Docker (arm64): make linux-gate [LINUX_GATE_JOBS=4 LINUX_GATE_CTEST_ARGS="-L process"]
+linux-gate: ## Build and run ctest plus queue observer Python checks on Linux in Docker (arm64): make linux-gate [LINUX_GATE_JOBS=4 LINUX_GATE_CTEST_ARGS="-L process"]
 	rm -rf $(LINUX_GATE_OUT)
 	DOCKER_BUILDKIT=1 docker build --platform $(LINUX_GATE_PLATFORM) \
 	  --target gate -f docker/linux-gate.Dockerfile \
 	  --build-arg JOBS=$(LINUX_GATE_JOBS) --build-arg CTEST_ARGS="$(LINUX_GATE_CTEST_ARGS)" \
 	  --progress=plain --output type=local,dest=$(LINUX_GATE_OUT) .
-	@echo "--- linux-gate: $(LINUX_GATE_OUT)/{configure,build,ctest}.log ---"
+	@echo "--- linux-gate: logs and status in $(LINUX_GATE_OUT)/ ---"
 	@cat $(LINUX_GATE_OUT)/status.txt
 	@grep -E "tests passed|tests failed|Total Test time" $(LINUX_GATE_OUT)/ctest.log || true
 	@grep -qx "status=0" $(LINUX_GATE_OUT)/status.txt || { \
@@ -428,7 +428,7 @@ coverage-update: ## Re-seed scripts/coverage-baseline.txt with the current cover
 # discipline. Tidy drift still does, as does everything else, because this
 # repo has no .github/workflows at all today.
 .PHONY: test-all
-test-all: test ctest-registry-check coverage cli-usage-check surface-check exit-code-contract eval-contracts cpp-lint-gate ## Run the unit suite, coverage, the authored-surface and agent-contract gates, and the gating half of cpp-lint
+test-all: test ctest-registry-check coverage cli-usage-check surface-check exit-code-contract eval-contracts eval-queue-observation-integration cpp-lint-gate ## Run the unit suite, coverage, the authored-surface and agent-contract gates, and the gating half of cpp-lint
 
 # RE-POINTED AT clang-format (plan 996, task 6045). These ran `zig fmt` over
 # `zig/`. With that tree deleted the formatter of record is the PINNED LLVM's
@@ -486,6 +486,10 @@ exit-code-contract: ## Prove the DOCUMENTED exit codes are the ones the binaries
 # Every other gate stayed green: cli_usage_lint checks flag EXISTENCE,
 # surface_lint checks links and shapes, the parity pins cover specific leaves.
 # None compares a documented CONVENTION against observed behaviour.
+
+.PHONY: eval-queue-observation-integration
+eval-queue-observation-integration: ## Exercise one live scratch queue ticket through native wait and older-queue fallback
+	PYTHONDONTWRITEBYTECODE=1 python3 evals/orchestrator/integration_queue_observation.py
 
 .PHONY: eval-contracts
 eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-fixtures ## The PROVIDER-FREE eval lanes, composed into test-all

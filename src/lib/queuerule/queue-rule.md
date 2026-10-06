@@ -2,8 +2,8 @@
 
 Every build and every test run on this machine goes through one host-wide
 queue, so that agents in different projects do not build at the same time.
-Submit the command to the queue and poll for its result. Do not run it
-yourself.
+Submit the command to the queue and collect its recorded outcome. Do not run
+it yourself.
 
 ### What counts as a build or test command
 
@@ -29,24 +29,30 @@ Check once per session that the installed Planar has the queue:
 planar-agent queue rule >/dev/null
 ```
 
-If it exits 0, use the queue as described below. If it exits with any other
-status, follow "If Planar has no queue" below. Do not use `--help` for this
-check: an older Planar answers an unknown command's `--help` with its general
-help and exits 0, so the check would pass when there is no queue.
+Exit 0 establishes that the queue exists. For a nonzero exit, inspect the
+diagnostic and installed command catalog; only a verified absence of the
+`queue` verb permits the no-queue path below. A queue that exists but cannot
+be read has refused. Do not use general `--help` alone as an absence test:
+older Planar versions can answer unknown-command help with general help and
+exit 0. If the queue exists, discover the `wait` leaf once using the compact
+schema or leaf help. A queue-capable older install can lack `wait`; use the
+finite compatibility path below. A failed queue command is not proof that
+the leaf is unsupported.
 
-### Submit, then poll
+### Submit, then observe one ticket
 
 Submit the command detached. Agent harnesses stop long foreground commands,
 and a wait behind other builds can be long.
 
 ```
-planar-agent queue run --detach --vendor <vendor> --role <role> -- <command> [args...]
+planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> --claim <token> -- <command> [args...]
 ```
 
 Run it from the directory the command needs. The command runs there, with
 your environment.
 
-Always pass `--vendor` and `--role`. Give your own vendor (`claude`,
+Pass `--claim` only when holding a caller-supervised claim. Always pass
+`--vendor` and `--role`. Give your own vendor (`claude`,
 `codex`, `copilot`, `gemini`) and your own role (`coder`, `test-coder`,
 `reviewer`, `janitor`, `orchestrator`). The operator reads them in the
 queue's listing and history to see which agents use the queue. Planar does
@@ -62,28 +68,36 @@ fix the command line. With 1 or 2 the invocation is wrong, the program is a
 model launcher, or a duration is invalid: fix the invocation. With 125 the
 queue failed: stop and report, as in "If the queue refuses" below.
 
-Then ask for the ticket's state every 30 seconds:
+Wait for the issued ticket with a finite observation budget covering expected
+queue backlog plus command runtime. For example, three hours covers an
+expected hour of backlog and a two-hour run limit:
 
 ```
-planar-agent queue status <seq>
+planar-agent queue wait <seq> --timeout 3h --json
 ```
 
-Use 30 seconds. The waiting entry advances on its own every second, so a
-faster poll finishes nothing sooner. It only spends your turns. A longer
-interval makes you notice a finished build late. Keep doing any work that
-does not need the build's result between polls. If you hold a task claim,
-add `--claim <token>` to the submit: the queue renews that claim while the
-entry waits and while the command runs, so you do not renew it between polls.
-A renewal that fails is reported in the output file and does not stop the
-command.
+The observer defaults to 30 minutes; an explicit duration must be positive
+and at most 24 hours. `queue run --timeout` limits runtime after the command
+starts, and `queue run --wait-timeout` separately limits its time in backlog.
+Neither is the observer budget. If an agent needs a shorter turn, use one
+finite slice such as `queue wait <seq> --timeout 10m --json`. Record the
+result and explicitly decide whether to do independent work, hand off the
+same ticket, or wait again. Do not wrap slices in an unbounded retry loop.
+A suspended agent session will not be woken by the queued command; a later
+session must resume from the saved ticket.
 
-Read the `state` line:
-
-- `waiting`: the `position` line gives its place. Poll again.
-- `running`: the command is running. Poll again.
-- `ended`: read the `outcome` line and act as below.
-
-Add `--json` to `queue status` to read the same answer as one JSON object.
+Read `wait_reason` and `status.outcome` together. `completed` means the
+logical ticket has a recorded final outcome. `timed_out` or `interrupted`
+stops only the observation: the command can remain queued or running. Inspect
+or wait again on the **same sequence number** after an explicit decision.
+Never duplicate submission or start a conflicting build merely because
+observation stopped. `stalled`, `history_unavailable`, and `error` leave the
+job outcome unknown; inspect the ticket and queue health and report the gap.
+An empty log, absent `status`, or empty active queue proves no result.
+`queue wait` is read-only and never renews a claim. `queue run --claim`
+renews a caller-supervised claim while the submitter waits and runs; a failed
+renewal appears in the output file without stopping the command. Heartbeat
+separately when that renewal is unavailable.
 
 The command's output, standard output and standard error together, is in the
 output file from the ticket. Read the end of it first. It is kept for a
@@ -91,8 +105,9 @@ limited time after the command ends.
 
 ### What to do on each outcome
 
-The `outcome` line of `queue status` is the record of how the command ended.
-Use it, not a guess from other output.
+Only `wait_reason: completed` with `status.outcome: exited` and
+`status.exit_code: 0` proves a passing command. Use the recorded outcome,
+not a guess from the process exit or other output.
 
 | Outcome | What happened | What to do |
 |---|---|---|
@@ -103,13 +118,13 @@ Use it, not a guess from other output.
 | `cancelled` | Someone cancelled the entry; `cancelled_by` says who | Do not resubmit unless told to. Report it |
 | `wait_timeout` | The `--wait-timeout` you set ran out before the command's turn | Report it, or submit again with a longer limit |
 | `not_started` | The command could not be started at its turn: not found (127) or not executable (126) | Fix the command line and submit again |
-| `abandoned` | The entry was removed before it finished: its submitter died, or another process removed it. The command may not have run | Read the output file to see whether it ran, then submit again once. If it is abandoned again, report it |
+| `abandoned` | The entry has no recorded final logical-job result | Await a successor within the finite budget, or report uncertainty; never assume completion or resubmit automatically |
 
-An entry that has not ended and shows `live: false` has lost its submitter.
-Poll again. If it is still there after two polls, report it.
-
-`queue status` exits 1 when no such ticket exists, and 125 when the queue's
-store cannot be read; for 125, follow "If the queue refuses" below.
+A child can itself exit 124 or 125. An observer timeout can exit 124; queue
+refusal, stalled observation, or another observer error can exit 125. The
+structured reason and recorded outcome distinguish them. An abandoned row
+without a successor remains pending to the finite deadline; missing
+successor history is uncertainty, never success.
 
 Do not queue a model launcher (`claude`, `codex`, `gemini` and similar). The
 queue refuses one at exit 2 and runs nothing.
@@ -129,16 +144,52 @@ was stopped at its run limit; 125, the queue failed; 126, the command could
 not be executed; 127, the command was not found; 128 plus N, a signal N
 terminated it. A command can exit with any of those itself, so when the code
 matters, add `--notices`. The last line on standard error then names the
-sequence number and the outcome, and `queue status <seq>` gives the record.
+sequence number and the outcome, and `queue status <seq> --json` gives the
+authoritative record.
+
+### Older queue-capable installs without native wait
+
+Use foreground `queue run` only for short commands or scripts that can wait
+through backlog and runtime. For a long command under an agent harness, keep
+the detached ticket and use a bounded, error-checking JSON status observer.
+An already-issued ticket uses the same observer without resubmission.
+
+The fallback has one fixed overall deadline covering backlog, runtime,
+status-helper calls, and cleanup. Its read is:
+
+```
+planar-agent queue status <seq> --json
+```
+
+Give each status helper a finite timeout. Reserve a finite cleanup allowance
+*before* launching it;
+do not launch another helper if the remaining budget cannot cover its timeout
+and cleanup. Check its exit and parse its JSON. Stop on status errors instead
+of retrying an unreadable store. `state: ended` is terminal only with a
+recorded logical-job outcome; never infer completion from a missing `live`
+line. Follow explicit successors. An abandoned row without a successor stays
+uncertain until the deadline, and missing successor history is an error.
+Active `live: null` is unknown. Confirm active `live: false` on the same
+sequence at least one second later before reporting stalled, never completed.
+Do not add an unbounded outer retry. On expiry or interruption, return
+control and preserve the same ticket for later observation.
+
+The fallback owns only its status subprocesses and pipes. On success, error,
+timeout, interruption, or partial startup, close its pipes, stop a still
+running status helper, and reap it within the reserved cleanup allowance.
+Address only its own helper identity or process group. Never signal, cancel,
+or reap the detached submitter, queued command, or their process group; never
+release the claim or delete logs. No helper or background poller survives the
+observation episode.
 
 ### If the queue refuses (exit 125): stop and report
 
-A queue command that exits 125 means the queue exists and failed: its store
-cannot be opened, the wait limit was reached, the entry was cancelled, or the
-queue failed inside. Usually the command did not run. It may have, if a
-running entry was cancelled, and a command can itself exit 125. If you passed
-`--notices`, the last line on standard error says whether the queue or the
-command produced the 125. `queue status <seq>` gives the record.
+A submit that exits 125 means the queue exists and failed. A wait that exits
+125 can instead report a recorded child exit 125, cancellation, pre-run wait
+timeout, stalled observation, or observer error. Inspect `wait_reason` and
+`status.outcome`; process exit alone is ambiguous. For a foreground run,
+`--notices` gives the sequence number and outcome. Its record is available
+with `queue status <seq> --json`.
 
 When a submit exits 125, or the queue cannot be used (its store cannot be
 opened, or it failed inside), stop. Report the `error:` line to the operator,
@@ -153,9 +204,9 @@ command is still never run directly.
 
 ### If Planar has no queue: run directly and say so
 
-Use this only when `planar-agent queue rule >/dev/null` exits with a non-zero
-status. That means the installed Planar is older than the queue, or
-`planar-agent` is not installed, and there is no queue to use.
+Use this only after verifying the installed Planar lacks the `queue` verb.
+Nonzero `queue rule` alone does not establish absence. An older install with
+`queue` but without `wait` uses the finite compatibility path above.
 
 Run the build or test command directly. Then tell the operator that Planar
 needs upgrading so that builds and tests can go through the queue.
@@ -164,9 +215,8 @@ needs upgrading so that builds and tests can go through the queue.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `planar-agent queue rule >/dev/null` exits with a non-zero status | There is no queue | Run the command directly and tell the operator Planar needs upgrading |
-| Any queue command exits 125 | The queue exists and refused | Stop and report. Do not run the command directly |
+| Installed catalog confirms no `queue` verb | No queue exists | Run the command directly and tell the operator Planar needs upgrading |
+| Queue exists but `wait` is unsupported | Older queue-capable install | Use foreground for short/script work or finite JSON status observation of a detached ticket |
+| Queue refuses or its store is unreadable | No valid gate result | Stop and report. Do not run the command directly |
 
-The first row is a fact about the installed Planar, checked once with `queue rule`.
-The second is an answer from a queue that is there. Never treat the second as
-the first.
+Discover the capability once; never treat a refused queue as an absent one.

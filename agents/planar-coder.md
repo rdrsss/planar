@@ -65,7 +65,15 @@ they are the coder's job to get right before handoff.
    - **Submit the long gates detached** rather than blocking a whole turn on
      one command. Each long command from the confirmed validation profile:
      `planar-agent queue run --detach --vendor <vendor> --role coder -- <profile command>`.
-     Poll each ticket with `planar-agent queue status <seq>` every 30 seconds.
+     Observe each ticket with `planar-agent queue wait <seq> --timeout
+     <budget> --json`, choosing a finite budget for expected backlog plus
+     runtime. For a short agent turn, use one finite slice, save the ticket
+     and structured result, then explicitly resume the same ticket later.
+     `timed_out` or `interrupted` stops only observation; inspect or wait on
+     that ticket again without resubmitting. `stalled`, missing history or
+     read errors give no gate verdict. Older queue-capable installs without
+     `wait` use the finite JSON-status fallback in the host queue rule;
+     queue refusal never permits a direct build.
      A short profile command may run in the foreground instead:
      `planar-agent queue run --vendor <vendor> --role coder -- <profile command>`.
    - **A detached gate builds when its turn comes, not when you submit it.**

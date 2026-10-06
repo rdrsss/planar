@@ -7010,6 +7010,7 @@ planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now
 planar-agent queue run  [--detach] [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] [--vendor <name>] [--role <name>] [--claim <token>] [--notices] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
 planar-agent queue cancel [--vendor <name>] [--role <name>] <seq>
 planar-agent queue status <seq> [--json]
+planar-agent queue wait <seq> [--timeout <duration>] [--json]
 planar-agent queue rule
 
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
@@ -7060,7 +7061,7 @@ A command that passes both checks can still fail to start at its turn: the progr
 
 The exit code passes the command's status through, so it is ambiguous by design (a command may exit `125` itself); `queue_history` records how each entry ended. The queue's own failure is exit **125** with one `error: queue: ...` line on standard error. `queue run` has no `--json`: standard output belongs to the command, so no envelope is written on any path.
 
-**Detached runs (`--detach`).** `queue run --detach` (with the flags above, then the argument terminator and the command) returns a ticket at once and leaves the waiting, the run and the history to a detached submitter, so a harness that stops long foreground commands can submit a build and poll for it. The refusals of step 1 (the command guard at exit **2**, resolution at **127** and **126**, and an invalid `--timeout` or `--wait-timeout` at **2**) still happen in the invoked process, before anything is forked, so a refused command detaches nothing, creates no log file and prints no ticket. Everything after that is done in a child, in this order:
+**Detached runs (`--detach`).** `queue run --detach` (with the flags above, then the argument terminator and the command) returns a ticket at once and leaves the waiting, the run and the history to a detached submitter, so a harness that stops long foreground commands can submit a build and observe it with a finite `queue wait` budget. The refusals of step 1 (the command guard at exit **2**, resolution at **127** and **126**, and an invalid `--timeout` or `--wait-timeout` at **2**) still happen in the invoked process, before anything is forked, so a refused command detaches nothing, creates no log file and prints no ticket. Everything after that is done in a child, in this order:
 
 1. The invoked process creates a pipe and forks, before it reads the configuration or opens the database. The fork is made only while the process has a single thread; a second thread aborts the process (an internal invariant) rather than risk a deadlocked child.
 2. The child starts a new session (`setsid`), so it survives its caller's process group being killed, closes every descriptor it inherited except the pipe (all of them, however high their number: `close_range` on Linux, a listing of the open descriptors on macOS), and reads standard input from `/dev/null`.
@@ -7119,6 +7120,31 @@ Without `--json` the same answer is printed as `key: value` lines, one per field
 
 A refusal writes `error: queue status: <message>` on standard error. With `--json` it also writes one object on standard output, `{"error":{"verb":"queue status","tag":"<tag>","message":"<message>"}}` (plus `"seq"` for exit 1), so a script reads the reason without parsing prose. The tags are `not_found` (exit 1), `invalid_input` (exit 2), and, all at exit 125, `store_unreachable` (no path, a missing file, an unopenable path or a file that is not a database), `store_unreadable` (a query failed or a lock outlasted the bound), `internal`, `schema_version_behind` (`planar.db` is older than this binary: run `planar init`), `queue_schema_incompatible` (`planar.db` is ahead and its queue tables are not usable by this binary) and `queue_schema_foreign` (the version is equal but the queue tables or a column differ: two branches shipped different migrations under one number). Neither of the last two is `schema_version_ahead`, which means exit 7 elsewhere, because their remedies differ: a newer build fixes the first and not the second.
 
+#### Waiting for a logical ticket (`queue wait`)
+
+`planar-agent queue wait <seq> [--timeout <duration>] [--json]` observes the logical job named by a detached ticket. `<seq>` is a positive integer within signed 64-bit range, normally the first line printed by `queue run --detach`. The observer follows recorded successors and stops at a final history outcome or an observation reason. Its `--timeout` is a **separate observation budget**: a positive integer followed by `ms`, `s`, `m` or `h`, default `30m`, maximum `24h`. Zero, negative, fractional, missing-unit and overflowing values exit 2. The monotonic budget starts before the read-only store open and covers lock waits, queue backlog, command runtime, reads, successor traversal and sleeps. It never resets when a successor appears. For a long gate, allow for both backlog and runtime, for example `queue wait <seq> --timeout 3h` after a submission with `queue run --timeout 2h` when backlog may take an hour.
+
+The three time limits have different owners: `queue run --wait-timeout` bounds how long a submitted entry waits for a slot; `queue run --timeout` bounds the command after it starts (default `30m`); `queue wait --timeout` bounds only this observer. `queue wait` does not renew a task claim. The detached submitter can renew a caller-supervised claim when `queue run --claim <token>` was supplied; an agent whose observer stops must still honor its claim ritual. Waiting is read-only: it cannot reap, cancel, rejoin, signal, refresh, migrate, alter history or logs, or stop the submitted command. Interruption by SIGINT/SIGTERM stops only the observer. A timeout or interruption is safe to follow with another `queue wait` on the **same original sequence number**; neither is reason to resubmit the build.
+
+The JSON result is one object with `seq` (requested), `observed_seq` (latest resolved successor or `null`), `wait_reason`, `elapsed_ms`, `timeout_ms`, `result_exit_code`, `status` (the existing [`queue status`](#queue-verbs) object or `null`) and `error` (a tagged `queue wait` error or `null`). Unavailable fields are `null`, including on invalid input. Text prints stable `key: value` lines with the reason, recorded status and error tag when present; errors also go to standard error. Neither form includes job log contents. `result_exit_code` is the process exit code, not proof of a command outcome. Interpret it together with `wait_reason`, `status.state`, `status.outcome`, `status.exit_code` and `status.signal`:
+
+| `wait_reason` / recorded outcome | Exit | Meaning |
+|---|---:|---|
+| `completed` / `exited` | recorded child exit, including 124 or 125 | The command ran and exited with that code. |
+| `completed` / `signaled` | 128 + recorded signal | The command ended by signal. |
+| `completed` / `timeout` | 124 | The queue stopped the command at its run limit. |
+| `completed` / `cancelled` or `wait_timeout` | 125 | The queue recorded cancellation or expiry of the slot wait. |
+| `completed` / `not_started` | recorded 126 or 127 | The command could not start. |
+| `timed_out` | 124 | This observer reached its budget; the job's final outcome is unknown. |
+| `interrupted` | 130 (SIGINT) or 143 (SIGTERM) | Only this observer stopped. |
+| `stalled` | 125 | The same active sequence was observed `live: false` twice at least one second apart; the job's outcome is unknown. |
+| `history_unavailable` | 1 | The requested ticket is missing, a previously observed ticket vanished, or an explicit successor has no entry or history row. |
+| `error` | 2 for invalid input; 125 for store, schema, read, clock or internal errors | Inspect `error.tag` and `error.message`; a refused observation gives no command verdict. |
+
+An active `waiting` or `running` entry remains pending while `live` is true **or null**, including when its `terminating` marker is set. `terminating` alone is not a final history outcome. A confirmed `live: false` result is `stalled`, not a reap or completion; a later observation of the same ticket is safe. An ended `abandoned` row with no successor can acquire one in a later rejoin transaction, so observation continues until its deadline and then returns `timed_out` with the latest abandoned status. If an explicit successor is missing or its history was pruned, the result is `history_unavailable`, not success. A broken `[queue]` configuration warns once and uses the default staleness window; slots and grace remain unknown. A behind, incompatible or foreign queue schema and an unreadable store fail with a tagged error. Unlike `queue status`, `queue wait` distinguishes a missing explicit successor from an abandoned row that has not acquired one.
+
+Exit 124 can mean an observer deadline, recorded run timeout, or child exit 124. Exit 125 can mean an observer failure or stall, recorded cancellation or wait timeout, or child exit 125. Never infer refusal or success from either exit code alone. An empty log, absent active row or `live: false` is also not completion evidence; use the recorded history outcome. A queue read refusal or missing history calls for diagnosis, not an unqueued build or automatic duplicate submission.
+
 #### Printing the agent rule (`queue rule`)
 
 ```
@@ -7130,7 +7156,7 @@ planar-agent queue rule
 The text is one authored file, `src/lib/queuerule/queue-rule.md`, embedded into `planar-agent` at build time. It holds:
 
 - what counts as a build or test command, with examples, and what does not;
-- the detached submit and poll procedure: submit with `queue run --detach`, then read `queue status <seq>` every 30 seconds until the entry has ended;
+- the detached submit and status polling procedure; the bounded `queue wait` recipe is being adopted in the agent guidance alongside this reference contract;
 - the instruction to pass `--vendor` and `--role`;
 - the instruction, for an agent that holds a task claim, to pass `--claim <token>` to `queue run` (detached and foreground) so the queue renews the claim while the entry waits and runs, in place of renewing it by hand between polls;
 - what to do on each outcome `queue status` reports;

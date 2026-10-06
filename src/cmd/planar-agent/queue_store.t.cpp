@@ -85,6 +85,76 @@ TEST_CASE("queue_store's status open is read-only at the SQLite layer", "[cmd][a
   CHECK((written.error().code_ & 0xff) == k_sqlite_readonly);
 }
 
+TEST_CASE("bounded queue store opens and failed partial opens release their connection in process",
+          "[cmd][agent][queue][bqw1123-deadlines]") {
+  remover const cleanup{scratch("bounded")};
+  auto const    db = cleanup.root / "planar.db";
+  qfix::head_store(db);
+  auto writer = open_queue_store(env_of(db), store_access::read_write);
+  REQUIRE(writer.has_value());
+
+  for (int repeat = 0; repeat < 24; ++repeat) {
+    int  checks = 0;
+    auto budget = [&]() -> std::expected<int, planar::cmd::agent::store_refusal> {
+      ++checks;
+      if ((repeat % 2) == 0 && checks == 4) {
+        return std::unexpected(planar::cmd::agent::store_refusal{.tag = "timed_out", .message = "deadline expired"});
+      }
+      return 2;
+    };
+    auto opened = planar::cmd::agent::open_queue_store_for_wait(env_of(db), budget);
+    if ((repeat % 2) == 0) {
+      REQUIRE_FALSE(opened.has_value());
+      CHECK(opened.error().tag == "timed_out");
+    } else {
+      REQUIRE(opened.has_value());
+      CHECK(opened->conn.is_read_only());
+      CHECK_FALSE(opened->conn.in_transaction());
+    }
+    CHECK(checks >= 4);
+    CHECK(writer->conn.execute("update queue_schema set description = 'probe' where version = 1").has_value());
+  }
+  // No read snapshot or statement from a prior invocation may pin the WAL.
+  auto checkpoint = writer->conn.prepare("pragma wal_checkpoint(truncate)");
+  REQUIRE(checkpoint.has_value());
+  auto row = checkpoint->step();
+  REQUIRE(row.has_value());
+  REQUIRE(*row == planar::db::step_result::row);
+  CHECK(checkpoint->column_int64(0) == 0);
+}
+
+TEST_CASE("bounded store read stops promptly when interrupted under an exclusive lock",
+          "[cmd][agent][queue][bqw1123-deadlines]") {
+  remover const cleanup{scratch("interrupted")};
+  auto const    db = cleanup.root / "planar.db";
+  qfix::head_store(db);
+  auto writer = open_queue_store(env_of(db), store_access::read_write);
+  REQUIRE(writer.has_value());
+  REQUIRE(writer->conn.execute("pragma journal_mode = delete").has_value());
+  REQUIRE(writer->conn.execute("begin exclusive").has_value());
+
+  int  checks = 0;
+  auto budget = [&]() -> std::expected<int, planar::cmd::agent::store_refusal> {
+    if (++checks >= 5) {
+      return std::unexpected(planar::cmd::agent::store_refusal{.tag = "interrupted", .message = "observer signaled"});
+    }
+    return 10'000;
+  };
+  auto const start   = std::chrono::steady_clock::now();
+  auto       blocked = planar::cmd::agent::open_queue_store_for_wait(env_of(db), budget);
+  auto const elapsed = std::chrono::steady_clock::now() - start;
+  REQUIRE_FALSE(blocked.has_value());
+  CHECK(blocked.error().tag == "interrupted");
+  CHECK(elapsed < std::chrono::seconds{1});
+  REQUIRE(writer->conn.execute("rollback").has_value());
+
+  auto resumed = planar::cmd::agent::open_queue_store_for_wait(
+      env_of(db), []() -> std::expected<int, planar::cmd::agent::store_refusal> { return 1'000; });
+  REQUIRE(resumed.has_value());
+  CHECK(resumed->conn.is_read_only());
+  CHECK_FALSE(resumed->conn.in_transaction());
+}
+
 TEST_CASE("queue_store refuses a missing file and an unset path without creating anything", "[cmd][agent][queue][queue-store]") {
   remover const cleanup{scratch("missing")};
   auto const    db = cleanup.root / "nested" / "planar.db";

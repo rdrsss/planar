@@ -17,10 +17,11 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
 | `make eval-contracts` | The provider-free eval lanes. |
+| `make eval-queue-observation-integration` | A live scratch-database detached ticket observed through native wait and the older-queue compatibility path. Needs the debug binaries built first. |
 | `make cpp-lint-gate` | `clang-format --Werror` and the Doxygen doc-comment pass. |
 | `make test-all` | All of the above, composed. This is the gate to run before a pull request. |
 | `make cpp-lint` | `cpp-lint-gate` plus `clang-tidy`. Not part of `test-all`. |
-| `make linux-gate` | The `debug` build and the whole ctest suite on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
+| `make linux-gate` | The `debug` build, whole ctest suite and queue observer Python checks on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
 
 ## How the skill tree is tested
 
@@ -43,6 +44,27 @@ the checks are on the source.
   `evals/orchestrator/cases/skill-planar.json`, that `SKILL.md` states each of
   the thirteen invariants, names the five binaries and cites the feedback
   contract.
+
+The orchestrator lifecycle fixture's final repository test uses a detached
+queue ticket in its isolated arena. The harness records the ticket and log
+path, then takes one 20-second observation slice. Native `queue wait --json`
+is preferred; an installed queue without `wait` uses bounded `queue status
+--json` observations. Only recorded `ended`/`exited`/exit-code-zero proves
+the fixture test passed. A slice that expires retains the ticket under
+`fixture-test-ticket.json`; resume its observation and grading with
+`python3 evals/orchestrator/harness.py --resume-queue-ticket <artifact-dir>`.
+This command never resubmits the fixture test. The fixture arena has its own
+`PLANAR_DB` and queue logs; the outer host queue still serializes the eval
+gate itself.
+
+`make eval-queue-observation-integration` is the focused check for a live
+ticket. It submits one scratch-database command per observer mode, lets a
+short observation slice expire while the command is still active, and then
+observes the original ticket through completion. It is part of
+`make test-all`, which builds the debug binaries first. The full Linux CI
+tier runs both `make eval-orchestrator-unit` and this integration check in its
+pinned toolchain container. `make linux-gate` runs the same two Python checks
+after ctest and exports their logs with the gate result.
 
 ## Task and milestone cadence
 
@@ -136,7 +158,7 @@ the gate to run before a pull request; CI is the independent backstop.
 | Workflow | Runs | What |
 |---|---|---|
 | `ci.yml` (fast tier) | Pull requests into `master`, and pushes to `master` | `make fmt-check`, the installer fixtures, and the planning eval harness unit tests. It does not build the C++ tree. A newer push cancels the older run. |
-| `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, and the orchestrator eval harness unit tests (which need the built binaries on `PATH`), on Linux, in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
+| `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, the orchestrator eval harness unit tests and the scratch queue observer integration test, on Linux in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
 
 The fast tier does nothing for a change that touches only `agents/`, `skills/`,
 `docs/`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`, or a
@@ -172,8 +194,8 @@ planar-agent queue run --vendor <vendor> --role <role> -- make fmt-check     # c
 planar-agent queue run --vendor <vendor> --role <role> -- make cli-usage-check     # cli-lint-ignore: `--` is the argument terminator
 
 # Long gate, detached: prints a sequence number and a log path, then returns at once.
-planar-agent queue run --detach --vendor <vendor> --role <role> -- make test     # cli-lint-ignore: `--` is the argument terminator
-planar-agent queue status <seq>                                                  # poll every 30 seconds until state is ended
+planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> --claim <token> -- make test     # cli-lint-ignore: `--` is the argument terminator
+planar-agent queue wait <seq> --timeout 3h --json
 ```
 
 `make test-all`, `make cpp-lint` and `make linux-gate` run long enough to
@@ -181,14 +203,30 @@ reach the queue's default run limit of 30 minutes, at which the command is
 stopped and its entry ends as `timeout`. Pass `--timeout <duration>` for a
 gate that legitimately takes longer (for example `--timeout 2h`), and
 `--claim <token>` when the caller holds a task claim, so the queue renews it
-while the command waits and runs.
+while the command waits and runs. Omit `--claim` only when there is no claim or
+the claim is renewed separately. The observer's `--timeout` is independent:
+allow for expected queue backlog plus runtime, as the three-hour wait above
+does for an expected hour of backlog and a two-hour run limit. A submitted
+`--wait-timeout` separately limits how long an entry may wait for its turn.
 
 A detached gate builds when its turn comes, not when it is submitted. Submit
 it only once the tree is final for that gate, and do not edit the tree until
-its ticket has ended. Read the outcome from `queue status`, which is the
-record of how the command ended, not from the log. A probe rebuild and a gate
+its ticket has ended. Read `queue wait`'s `wait_reason` and authoritative
+`status.outcome` together; a child can itself exit 124 or 125, and a wait
+deadline or interruption is no gate verdict. An empty log or missing active
+entry is no gate verdict either. A probe rebuild and a gate
 write the same build directory, so submit both through the queue and never
 run one beside the other.
+
+For a short agent turn, `queue wait <seq> --timeout 10m --json` returns control
+within a finite slice. If it reports `timed_out` or `interrupted`, do other
+work or hand off the same sequence number for another finite wait. Neither
+result stops the queued command, and neither calls for a second submission.
+Do not hide an unbounded retry loop around finite slices. A `stalled`,
+`history_unavailable` or `error` result needs inspection; a queue refusal
+never authorizes a direct build. `queue wait` only reads state and never
+renews a claim. See [the wait contract](cli-reference.md#waiting-for-a-logical-ticket-queue-wait)
+and [operations](operations.md#5-the-host-build-and-test-queue).
 
 The queue is for builds and tests that would otherwise run side by side. It
 does not replace the gates: a queued `make test` is the same `make test`.
@@ -202,7 +240,8 @@ fail a run. It enables one check, `readability-identifier-naming`.
 
 ## The Linux gate
 
-`make linux-gate` builds the `debug` preset and runs the whole ctest suite in
+`make linux-gate` builds the `debug` preset, runs the whole ctest suite and
+the queue observer Python checks in
 a `debian:trixie-slim` container, so code with a Linux-only branch
 (`close_range` and `/proc/self/fd` in `src/lib/process`, `pipe2` in the
 runner, `/proc/<pid>/fd` in the queue tests) is compiled and run somewhere
@@ -219,8 +258,9 @@ make linux-gate-prune                            # docker builder prune -f
 libc++ with its modules manifest, libc++abi), Kitware CMake pinned by version
 and SHA-256, ninja, git, python3, `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
 build never fails on a red suite. It records `configure.log`, `build.log`,
-`ctest.log` and `status.txt`, and the Makefile exports them to
-`build/linux-gate/`, prints the ctest verdict and exits nonzero unless
+`ctest.log`, `eval-unit.log`, `eval-queue-observation.log` and `status.txt`,
+and the Makefile exports them to
+`build/linux-gate/`, prints the gate verdict and exits nonzero unless
 `status=0`. Read `ctest.log` there rather than the build output: BuildKit
 clips a step's log at 2 MiB.
 

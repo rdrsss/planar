@@ -1090,6 +1090,13 @@ class SemanticGraderNegativeControlTests(unittest.TestCase):
                 [{"event": event} for event in events],
             )
 
+        def false_queue_success(root: Path) -> None:
+            harness.write_json(root / "fixture-test-ticket.json", {"seq": 7})
+            harness.write_json(root / "fixture-test-observation.json", {
+                "seq": 7, "wait_reason": "timed_out", "result_exit_code": 124,
+                "status": {"state": "running", "outcome": None},
+            })
+
         controls = [
             (
                 "missing-artifact",
@@ -1164,6 +1171,11 @@ class SemanticGraderNegativeControlTests(unittest.TestCase):
                     root / "fixture-test.json", {"returncode": 1}
                 ),
                 "fixture test exit code was 1",
+            ),
+            (
+                "fixture-ticket-not-finished",
+                false_queue_success,
+                "fixture ticket lacks an authoritative passing queue outcome",
             ),
         ]
         for name, mutator, reason in controls:
@@ -2555,7 +2567,16 @@ class CollectLifecycleArtifactsWiringTest(unittest.TestCase):
             raise AssertionError(f"unexpected run_json call: {args}")
 
         context = make_collect_context(repo, artifacts)
-        with mock.patch.object(harness, "run_json", side_effect=fake_run_json):
+        log_path = artifacts / "fixture-queue.log"
+        log_path.write_text("PASS\n", encoding="utf-8")
+        passing = harness.queue_observation.Observation(
+            7, 7, "completed", 0,
+            {"seq": 7, "state": "ended", "outcome": "exited", "exit_code": 0},
+            None, "compatibility",
+        )
+        with mock.patch.object(harness, "run_json", side_effect=fake_run_json), mock.patch.object(
+            harness.queue_observation, "submit", return_value=(7, log_path)
+        ), mock.patch.object(harness.queue_observation, "observe", return_value=passing):
             harness.collect_lifecycle_artifacts(context, collect_options())
 
     def test_empty_observed_dir_with_audit_claims_raises_wrapper_bypassed(
@@ -2652,10 +2673,21 @@ class CollectLifecycleArtifactsWiringTest(unittest.TestCase):
                 raise AssertionError(f"unexpected run_command call: {args}")
 
             context = make_collect_context(repo, artifacts)
+            log_path = artifacts / "fixture-queue.log"
+            log_path.write_text("PASS\n", encoding="utf-8")
+            passing = harness.queue_observation.Observation(
+                7, 7, "completed", 0,
+                {"seq": 7, "state": "ended", "outcome": "exited", "exit_code": 0},
+                None, "compatibility",
+            )
             with mock.patch.object(
                 harness, "run_json", side_effect=fake_run_json
             ), mock.patch.object(
                 harness, "run_command", side_effect=fake_run_command
+            ), mock.patch.object(
+                harness.queue_observation, "submit", return_value=(7, log_path)
+            ), mock.patch.object(
+                harness.queue_observation, "observe", return_value=passing
             ):
                 harness.collect_lifecycle_artifacts(context, collect_options())
             warnings = harness.read_json(artifacts / "warnings.json")
@@ -2745,10 +2777,21 @@ class CollectLifecycleArtifactsWiringTest(unittest.TestCase):
                 raise AssertionError(f"unexpected run_command call: {args}")
 
             context = make_collect_context(repo, artifacts)
+            log_path = artifacts / "fixture-queue.log"
+            log_path.write_text("PASS\n", encoding="utf-8")
+            passing = harness.queue_observation.Observation(
+                7, 7, "completed", 0,
+                {"seq": 7, "state": "ended", "outcome": "exited", "exit_code": 0},
+                None, "compatibility",
+            )
             with mock.patch.object(
                 harness, "run_json", side_effect=fake_run_json
             ), mock.patch.object(
                 harness, "run_command", side_effect=fake_run_command
+            ), mock.patch.object(
+                harness.queue_observation, "submit", return_value=(7, log_path)
+            ), mock.patch.object(
+                harness.queue_observation, "observe", return_value=passing
             ):
                 harness.collect_lifecycle_artifacts(context, collect_options())
             events = harness.read_json(artifacts / "events.normalized.json")

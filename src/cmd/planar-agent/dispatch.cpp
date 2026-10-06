@@ -20,6 +20,7 @@ import planar.cmd.planar_agent.handlers.claims;
 import planar.cmd.planar_agent.handlers.queue;
 import planar.cmd.planar_agent.handlers.queue.rule;
 import planar.cmd.planar_agent.handlers.queue.status;
+import planar.cmd.planar_agent.handlers.queue.wait;
 import planar.cmd.planar_agent.handlers.recovery;
 import planar.cmd.planar_agent.handlers.runs;
 import planar.cmd.planar_agent.handlers.schema;
@@ -147,6 +148,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("queue cancel", handlers::queue_cancel);
   // Read-only: what became of one entry. Returns its own exit status too.
   table.emplace("queue status", handlers::queue_status);
+  table.emplace("queue wait", handlers::queue_wait);
   // Prints the embedded agent rule text; opens no database.
   table.emplace("queue rule", handlers::queue_rule);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
@@ -205,6 +207,11 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
     // which is exactly the asymmetry this decision closes. Nothing is
     // written to stdout on a parse failure.
     ctx.err() << "error: " << e.what() << '\n';
+    if (argv.size() >= 3 && argv[1] == "queue" && argv[2] == "wait" && std::ranges::find(argv, "--json") != argv.end()) {
+      ctx.out() << "{\"seq\":null,\"observed_seq\":null,\"wait_reason\":\"error\",\"elapsed_ms\":null,"
+                   "\"timeout_ms\":null,\"result_exit_code\":null,\"status\":null,\"error\":{\"verb\":\"queue wait\","
+                   "\"tag\":\"invalid_input\",\"message\":\"invalid command line\"}}\n";
+    }
     // This binary's policy is exit 1, NOT the operator binary's 2.
     return exit_code_for(domain_error_kind::parse_error);
   }

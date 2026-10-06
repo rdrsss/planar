@@ -2,7 +2,8 @@
 #
 # Planar Linux build-and-test gate (task 7094).
 #
-# Builds the `debug` preset and runs the whole ctest suite on Debian trixie,
+# Builds the `debug` preset and runs the whole ctest suite and queue observer
+# Python checks on Debian trixie,
 # so Linux-only code (close_range / /proc/self/fd in src/lib/process,
 # pipe2(O_CLOEXEC) in runner.cpp, /proc/<pid>/fd in queue_run.t.cpp) is
 # compiled and executed somewhere other than macOS.
@@ -112,6 +113,18 @@ RUN --mount=type=cache,target=/src/build/debug,id=planar-linux-gate-build \
         runuser -u planar-test -- ctest --test-dir build/debug -j"${JOBS}" --output-on-failure ${CTEST_ARGS} >/out/ctest.log 2>&1 || ctest_rc=$?; \
       echo "ctest_exit=$ctest_rc" >>/out/status.txt; \
       rc=$ctest_rc; \
+    fi; \
+    if [ "$rc" = 0 ]; then \
+      eval_unit_rc=0; \
+      PATH="/src/build/debug/bin:$PATH" make eval-orchestrator-unit >/out/eval-unit.log 2>&1 || eval_unit_rc=$?; \
+      echo "eval_unit_exit=$eval_unit_rc" >>/out/status.txt; \
+      rc=$eval_unit_rc; \
+    fi; \
+    if [ "$rc" = 0 ]; then \
+      eval_queue_rc=0; \
+      PATH="/src/build/debug/bin:$PATH" make eval-queue-observation-integration >/out/eval-queue-observation.log 2>&1 || eval_queue_rc=$?; \
+      echo "eval_queue_observation_exit=$eval_queue_rc" >>/out/status.txt; \
+      rc=$eval_queue_rc; \
     fi; \
     echo "status=$rc" >>/out/status.txt; \
     exit 0

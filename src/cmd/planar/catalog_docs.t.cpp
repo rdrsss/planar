@@ -20,7 +20,8 @@
 //
 // The allowed code sets below come from each binary's `exit.cppm`
 // (`planar`: 0, 1, 2, 3, 5, 6, 7, 8 and 64; the other three CLI11 binaries
-// the same minus 8, plus `planar-agent queue`'s 124, 125, 126 and 127;
+// the same minus 8, plus `planar-agent queue`'s 124, 125, 126, 127 and
+// observer SIGINT/SIGTERM exits 130/143;
 // `planar-execute`: 0, 1, 2 and 75 from `runflow.cpp`). Each list is a copy
 // because D18 forbids this test target importing another binary's module.
 
@@ -45,7 +46,7 @@ struct binary_under_test {
 
 auto binaries() -> std::vector<binary_under_test> {
   return {{"planar", PLANAR_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 8, 64}, true},
-          {"planar-agent", PLANAR_AGENT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64, 124, 125, 126, 127}, true},
+          {"planar-agent", PLANAR_AGENT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64, 124, 125, 126, 127, 130, 143}, true},
           {"planar-watch", PLANAR_WATCH_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true},
           {"planar-ext", PLANAR_EXT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true},
           {"planar-execute", PLANAR_EXECUTE_CPP_BIN, {0, 1, 2, 75}, false}};

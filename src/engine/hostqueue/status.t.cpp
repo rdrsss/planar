@@ -8,6 +8,7 @@
 //
 // Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
+#include <signal.h>
 
 import std;
 import planar.db;
@@ -211,6 +212,123 @@ TEST_CASE("query_status: a store whose successors form a cycle ends the chain in
   CHECK((*answer)->state == hq::status_state::ended);
 }
 
+TEST_CASE("wait observer follows the logical ticket to authoritative history on a read-only store",
+          "[engine][hostqueue][hq-wait-observer]") {
+  scratch_dir scratch;
+  auto        conn   = open_scratch_store(scratch);
+  auto const  first  = enqueue_ok(conn, request_for("first"));
+  auto const  middle = enqueue_ok(conn, request_for("middle"));
+  auto const  next   = enqueue_ok(conn, request_for("next"));
+  end_abandoned(conn, first);
+  end_abandoned(conn, middle);
+  REQUIRE(hq::record_successor(conn, first, middle).has_value());
+  REQUIRE(hq::record_successor(conn, middle, next).has_value());
+  REQUIRE(
+      hq::end_entry(conn, next, hq::end_request{.outcome = hq::history_outcome::exited, .exit_code = 125, .ended_at = k_now_wall})
+          .has_value());
+  auto ro = open_main_store_read_only_at(scratch.path_ / "planar.db");
+  REQUIRE(ro.has_value());
+
+  int  checks = 0;
+  auto snapshot =
+      hq::query_wait_status(*ro, first, status_request(fixed_probe(true)), [&checks]() -> std::expected<void, hq::status_error> {
+        ++checks;
+        return {};
+      });
+  REQUIRE(snapshot.has_value());
+  REQUIRE(snapshot->status.has_value());
+  CHECK(snapshot->issue == hq::wait_lookup_issue::none);
+  CHECK(snapshot->observed_seq == next);
+  CHECK(snapshot->status->seq == first);
+  CHECK(snapshot->status->superseded_by == next);
+  CHECK(snapshot->status->outcome == hq::history_outcome::exited);
+  CHECK(checks >= 3);
+  hq::wait_observer observer;
+  auto const        decision = observer.step(*snapshot, k_now_mono);
+  CHECK(decision.reason == hq::wait_reason::completed);
+  CHECK(decision.result_exit_code == 125);
+  CHECK_FALSE(ro->execute("delete from queue_history").has_value());
+}
+
+TEST_CASE("wait observer preserves abandoned and missing-successor uncertainty", "[engine][hostqueue][hq-wait-observer]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+  auto const  old  = enqueue_ok(conn, request_for("old"));
+  end_abandoned(conn, old);
+  hq::wait_observer observer;
+
+  auto pending = hq::query_wait_status(conn, old, status_request(fixed_probe(true)));
+  REQUIRE(pending.has_value());
+  CHECK(observer.step(*pending, k_now_mono).reason == hq::wait_reason::pending);
+
+  REQUIRE(hq::record_successor(conn, old, old + 50).has_value());
+  auto missing = hq::query_wait_status(conn, old, status_request(fixed_probe(true)));
+  REQUIRE(missing.has_value());
+  CHECK(missing->issue == hq::wait_lookup_issue::successor_history_unavailable);
+  auto const unavailable = observer.step(*missing, k_now_mono + 1);
+  CHECK(unavailable.reason == hq::wait_reason::history_unavailable);
+  CHECK(unavailable.result_exit_code == 1);
+  CHECK(unavailable.tag == "successor_history_unavailable");
+
+  auto absent = hq::query_wait_status(conn, old + 100, status_request(fixed_probe(true)));
+  REQUIRE(absent.has_value());
+  CHECK(observer.step(*absent, k_now_mono + 2).tag == "not_found");
+  REQUIRE(hq::record_successor(conn, old, old).has_value());
+  auto cyclic = hq::query_wait_status(conn, old, status_request(fixed_probe(true)));
+  REQUIRE(cyclic.has_value());
+  CHECK(observer.step(*cyclic, k_now_mono + 3).tag == "invalid_successor");
+}
+
+TEST_CASE("wait observer confirms the same dead active sequence after one second", "[engine][hostqueue][hq-wait-observer]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+  auto const  seq  = enqueue_ok(conn, request_for("dead"));
+  auto        dead = hq::query_wait_status(conn, seq, status_request(fixed_probe(false)));
+  REQUIRE(dead.has_value());
+  hq::wait_observer observer;
+  CHECK(observer.step(*dead, k_now_mono).reason == hq::wait_reason::pending);
+  CHECK(observer.step(*dead, k_now_mono + 999).reason == hq::wait_reason::pending);
+  CHECK(observer.step(*dead, k_now_mono + 1'000).reason == hq::wait_reason::stalled);
+
+  auto live = hq::query_wait_status(conn, seq, status_request(fixed_probe(true)));
+  REQUIRE(live.has_value());
+  CHECK(observer.step(*live, k_now_mono + 1'001).reason == hq::wait_reason::pending);
+  CHECK(observer.step(*dead, k_now_mono + 1'002).reason == hq::wait_reason::pending);
+  CHECK(hq::find(conn, seq).value().has_value());
+}
+
+TEST_CASE("wait observer maps every recorded final outcome separately from its stop reason",
+          "[engine][hostqueue][hq-wait-observer]") {
+  struct scenario {
+    hq::history_outcome         outcome;
+    std::optional<std::int64_t> exit_code;
+    std::optional<std::int64_t> signal;
+    hq::wait_reason             reason;
+    std::optional<int>          result_exit_code;
+  };
+  constexpr std::array cases{
+      scenario{hq::history_outcome::exited, 124, {}, hq::wait_reason::completed, 124},
+      scenario{hq::history_outcome::signaled, {}, 15, hq::wait_reason::completed, 143},
+      scenario{hq::history_outcome::timeout, {}, {}, hq::wait_reason::completed, 124},
+      scenario{hq::history_outcome::cancelled, {}, {}, hq::wait_reason::completed, 125},
+      scenario{hq::history_outcome::wait_timeout, {}, {}, hq::wait_reason::completed, 125},
+      scenario{hq::history_outcome::not_started, 127, {}, hq::wait_reason::completed, 127},
+      scenario{hq::history_outcome::abandoned, {}, {}, hq::wait_reason::pending, {}},
+  };
+  for (auto const& item : cases) {
+    INFO(hq::to_string(item.outcome));
+    hq::queue_status status;
+    status.state     = hq::status_state::ended;
+    status.outcome   = item.outcome;
+    status.exit_code = item.exit_code;
+    status.signal    = item.signal;
+    hq::wait_observer observer;
+    auto const        decision = observer.step(hq::wait_status_lookup{.status = status, .observed_seq = 1}, k_now_mono);
+    CHECK(decision.reason == item.reason);
+    CHECK(decision.result_exit_code == item.result_exit_code);
+  }
+}
+
 TEST_CASE("query_status: a read-only connection answers, and refuses every write", "[engine][hostqueue][hq-queue-status]") {
   scratch_dir  scratch;
   std::int64_t seq = 0;
@@ -302,4 +420,103 @@ TEST_CASE("query_status: settings without a slot count or grace period report bo
   auto const tighter = hq::query_status(conn, fresh, request);
   REQUIRE((tighter.has_value() && tighter->has_value()));
   CHECK((*tighter)->live == std::optional<bool>{false});
+}
+
+TEST_CASE("bounded wait uses one deadline across repeated reads and preserves the last status",
+          "[engine][hostqueue][bqw1123-deadlines]") {
+  std::int64_t     now   = 100;
+  int              reads = 0;
+  hq::wait_runtime runtime{
+      .now_ms             = [&] { return std::optional{now}; },
+      .interrupted_signal = [] { return std::optional<int>{}; },
+      .read               = [&](const std::function<std::expected<int, hq::status_error>()>& budget)
+          -> std::expected<hq::wait_status_lookup, hq::status_error> {
+        auto remaining = budget();
+        REQUIRE(remaining.has_value());
+        CHECK(*remaining == 2'500 - reads * 1'000);
+        ++reads;
+        hq::queue_status status;
+        status.state = hq::status_state::waiting;
+        status.live  = true;
+        return hq::wait_status_lookup{.status = status, .observed_seq = 4};
+      },
+      .sleep =
+          [&](std::chrono::milliseconds span) {
+            CHECK(span.count() <= 1'000);
+            now += span.count();
+          },
+  };
+  auto result = hq::observe_wait(2'500, runtime, now);
+  CHECK(result.reason == hq::wait_reason::timed_out);
+  CHECK(result.result_exit_code == 124);
+  CHECK(result.elapsed_ms == 2'500);
+  CHECK(result.snapshot->status->state == hq::status_state::waiting);
+  CHECK(reads == 3);
+}
+
+TEST_CASE("bounded wait stops on interruption and a busy read that consumes the deadline",
+          "[engine][hostqueue][bqw1123-deadlines]") {
+  for (bool interrupt : {false, true}) {
+    std::int64_t     now   = 10;
+    int              reads = 0;
+    hq::wait_runtime runtime{
+        .now_ms             = [&] { return std::optional{now}; },
+        .interrupted_signal = [&] { return now >= 20 && interrupt ? std::optional<int>{15} : std::optional<int>{}; },
+        .read               = [&](const std::function<std::expected<int, hq::status_error>()>& budget)
+            -> std::expected<hq::wait_status_lookup, hq::status_error> {
+          ++reads;
+          REQUIRE(budget().has_value());
+          now = 20;
+          return std::unexpected(hq::status_error{.message = "database is locked"});
+        },
+        .sleep = [](std::chrono::milliseconds) { FAIL("a failed read must not sleep"); },
+    };
+    auto result = hq::observe_wait(10, runtime, now);
+    CHECK(result.reason == (interrupt ? hq::wait_reason::interrupted : hq::wait_reason::timed_out));
+    CHECK(result.result_exit_code == (interrupt ? 143 : 124));
+    CHECK(reads == 1);
+  }
+}
+
+TEST_CASE("bounded wait reports elapsed monotonic time when interrupted after sleep", "[engine][hostqueue][bqw1123-deadlines]") {
+  std::int64_t     now         = 1'000;
+  bool             interrupted = false;
+  hq::wait_runtime runtime{
+      .now_ms             = [&] { return std::optional{now}; },
+      .interrupted_signal = [&] { return interrupted ? std::optional<int>{SIGTERM} : std::nullopt; },
+      .read               = [](const std::function<std::expected<int, hq::status_error>()>& budget)
+          -> std::expected<hq::wait_status_lookup, hq::status_error> {
+        REQUIRE(budget().has_value());
+        hq::queue_status status;
+        status.state = hq::status_state::waiting;
+        status.live  = true;
+        return hq::wait_status_lookup{.status = status, .observed_seq = 4};
+      },
+      .sleep =
+          [&](std::chrono::milliseconds) {
+            now += 500;
+            interrupted = true;
+          },
+  };
+  auto result = hq::observe_wait(5'000, runtime, 1'000);
+  CHECK(result.reason == hq::wait_reason::interrupted);
+  CHECK(result.result_exit_code == 128 + SIGTERM);
+  CHECK(result.elapsed_ms == 500);
+}
+
+TEST_CASE("bounded wait rejects an invalid clock before reading", "[engine][hostqueue][bqw1123-deadlines]") {
+  CHECK(hq::checked_wait_deadline(1, std::numeric_limits<std::int64_t>::max()).error() == "clock_overflow");
+  hq::wait_runtime runtime{
+      .now_ms             = [] { return std::optional<std::int64_t>{}; },
+      .interrupted_signal = [] { return std::optional<int>{}; },
+      .read               = [](const std::function<std::expected<int, hq::status_error>()>&)
+          -> std::expected<hq::wait_status_lookup, hq::status_error> {
+        FAIL("an unavailable clock must stop before reading");
+        return {};
+      },
+      .sleep = [](std::chrono::milliseconds) { FAIL("an unavailable clock must not sleep"); },
+  };
+  auto result = hq::observe_wait(100, runtime, 42);
+  CHECK(result.reason == hq::wait_reason::error);
+  CHECK(result.tag == "clock_unavailable");
 }

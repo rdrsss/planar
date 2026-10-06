@@ -73,6 +73,15 @@ export auto add(CLI::App& root) -> void {
       ->description("The sequence number, the first line of the ticket `queue run --detach` prints")
       ->required();
   status->add_flag("--json")->description("Print one JSON object with the documented fields, null where a field does not apply");
+  // --- queue wait ---------------------------------------------------------
+  CLI::App* wait = queue->add_subcommand(
+      "wait", "Observe one logical queue ticket until recorded completion or a finite observer deadline; changes nothing.");
+  wait->add_option("seq")
+      ->description("Positive sequence number printed by `queue run --detach`; successors are followed")
+      ->required();
+  wait->add_option("--timeout")
+      ->description("Observer budget from before store open: positive integer with ms, s, m or h; default 30m, maximum 24h");
+  wait->add_flag("--json")->description("Print one result object with wait_reason, recorded status and error fields");
   // --- queue rule ---------------------------------------------------------
   // Prints the embedded agent rule text; opens no database, takes no flag.
   queue->add_subcommand("rule", "Print the rule text that tells an agent to send builds and tests through the queue, for pasting "

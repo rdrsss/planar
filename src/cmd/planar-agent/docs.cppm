@@ -71,6 +71,7 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar-agent queue cancel", R"(planar-agent queue cancel 1000001)"},
       {"planar-agent queue status", R"(planar-agent queue status 1000001)"},
       {"planar-agent queue status", R"(planar-agent queue status 1000001 --json)"},
+      {"planar-agent queue wait", R"(planar-agent queue wait 1000001 --timeout 3h --json)"},
       {"planar-agent queue rule", R"(planar-agent queue rule)"},
   };
   static constexpr std::pair<std::string_view, std::string_view> k_exit_codes[] = {
@@ -102,6 +103,7 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar-agent queue run", "0 1 2 124 125 126 127"},
       {"planar-agent queue cancel", "0 1 2 6 125"},
       {"planar-agent queue status", "0 1 2 125"},
+      {"planar-agent queue wait", "0 1 2 124 125 126 127 130 143"},
       {"planar-agent queue rule", "0 1"},
   };
   static constexpr cliapp::exit_code_doc k_meanings[] = {
@@ -115,6 +117,8 @@ export auto surface_docs() -> const cliapp::command_docs& {
        R"(The queue failed: planar.db is unreachable or incompatible, the wait limit passed, the entry was cancelled, or an internal error.)"},
       {126, R"(The command was found but could not be executed.)"},
       {127, R"(The command was not found.)"},
+      {130, R"(Observation was interrupted by SIGINT.)"},
+      {143, R"(Observation was interrupted by SIGTERM.)"},
   };
   static constexpr cliapp::exit_meaning_override k_overrides[] = {
       {"planar-agent queue run", 0,
@@ -124,6 +128,12 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar-agent queue cancel", 6, R"(The entry has already ended.)"},
       {"planar-agent queue cancel", 1, R"(No such entry, or a usage error.)"},
       {"planar-agent queue status", 1, R"(No such entry, or a usage error.)"},
+      {"planar-agent queue wait", 1, R"(Ticket history is unavailable, or a usage error.)"},
+      {"planar-agent queue wait", 2, R"(Invalid sequence or observation timeout.)"},
+      {"planar-agent queue wait", 124,
+       R"(Observer deadline expired, or recorded command timeout or exit 124; inspect wait_reason and status.)"},
+      {"planar-agent queue wait", 125,
+       R"(Observation failed or stalled, or recorded command exit 125, cancellation or wait timeout; inspect wait_reason and status.)"},
       {"planar-agent queue rule", 1, R"(A usage error.)"},
   };
   static constexpr cliapp::command_docs k_docs{k_examples, k_exit_codes, k_meanings, k_overrides};

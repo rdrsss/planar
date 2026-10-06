@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import arena
+import queue_observation
 import vendors
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -3336,15 +3337,47 @@ def collect_lifecycle_artifacts(
     # Task 6858: the fixture's own test-runner argv (see
     # `load_fixture_manifest`), not a hardcoded `make test` -- the
     # foreign-flat fixture runs `./run-tests` instead.
-    test_result = run_command(context.test_command, cwd=repo, env=env, check=False)
+    ticket_file = artifacts / "fixture-test-ticket.json"
+    if ticket_file.exists():
+        ticket = read_json(ticket_file)
+        if ticket.get("command") != context.test_command:
+            raise EvalFailure("saved fixture test ticket belongs to a different command")
+    else:
+        try:
+            seq, log_path = queue_observation.submit(
+                context.test_command, agent=env["PATH"].split(os.pathsep)[0]
+                + "/planar-agent", cwd=repo, env=env,
+                vendor=options.vendor or "codex",
+            )
+        except ValueError as exc:
+            raise live_failure(artifacts, case["id"], options_from_run(artifacts), str(exc)) from exc
+        ticket = {"seq": seq, "log_path": str(log_path), "command": context.test_command}
+        write_json(ticket_file, ticket)
+    observation = queue_observation.observe(
+        ticket["seq"], agent=env["PATH"].split(os.pathsep)[0] + "/planar-agent",
+        cwd=repo, env=env, timeout_seconds=20,
+    )
+    write_json(artifacts / "fixture-test-observation.json", {
+        "seq": observation.seq, "observed_seq": observation.observed_seq,
+        "wait_reason": observation.wait_reason, "result_exit_code": observation.result_exit_code,
+        "status": observation.status, "error": observation.error, "mode": observation.mode,
+    })
+    if observation.wait_reason != "completed":
+        raise live_failure(
+            artifacts, case["id"], options_from_run(artifacts),
+            f"fixture test observation {observation.wait_reason} for ticket {ticket['seq']}; "
+            f"resume with --resume-queue-ticket {artifacts}",
+        )
+    log_path = Path(ticket["log_path"])
+    log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
     write_text(
-        artifacts / "fixture-test.txt", test_result.stdout + test_result.stderr
+        artifacts / "fixture-test.txt", log_text
     )
     write_json(
         artifacts / "fixture-test.json",
-        {"returncode": test_result.returncode},
+        {"returncode": observation.result_exit_code},
     )
-    if test_result.returncode != 0:
+    if observation.status is None or observation.status.get("outcome") != "exited" or observation.status.get("exit_code") != 0:
         raise live_failure(
             artifacts, case["id"], options_from_run(artifacts), "fixture tests failed"
         )
@@ -3593,6 +3626,24 @@ def grade_lifecycle_artifacts(
             options,
             f"fixture test exit code was {test_result.get('returncode')}, expected 0",
         )
+    ticket_path = artifact_dir / "fixture-test-ticket.json"
+    if ticket_path.exists():
+        ticket = read_json(ticket_path)
+        observation = read_json(artifact_dir / "fixture-test-observation.json")
+        status = observation.get("status")
+        if (
+            observation.get("seq") != ticket.get("seq")
+            or observation.get("wait_reason") != "completed"
+            or observation.get("result_exit_code") != 0
+            or not isinstance(status, dict)
+            or status.get("state") != "ended"
+            or status.get("outcome") != "exited"
+            or status.get("exit_code") != 0
+        ):
+            raise live_failure(
+                artifact_dir, case_id, options,
+                "fixture ticket lacks an authoritative passing queue outcome",
+            )
 
 
 def _lifecycle_pull(
@@ -5206,7 +5257,8 @@ def parse_args(
     argv: Sequence[str],
 ) -> tuple[Options, bool, Path | None, bool, bool, Path | None]:
     parser = argparse.ArgumentParser(
-        description="Run Planar orchestrator contract, live, and lifecycle evals."
+        description="Run Planar orchestrator contract, live, and lifecycle evals.",
+        epilog="Resume an issued fixture test ticket: --resume-queue-ticket <artifact-dir>",
     )
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--contract-only", action="store_true")
@@ -5330,6 +5382,27 @@ def run_case_trials(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    arguments = list(argv or sys.argv[1:])
+    if arguments and arguments[0] == "--resume-queue-ticket":
+        if len(arguments) != 2:
+            raise EvalFailure("usage: --resume-queue-ticket <retained artifact directory>")
+        artifact_dir = Path(arguments[1]).resolve()
+        if not (artifact_dir / "fixture-test-ticket.json").is_file():
+            raise EvalFailure("retained artifacts have no issued fixture test ticket")
+        run_meta = read_json(artifact_dir / "run.json")
+        cases = load_cases()
+        entry = next((entry for entry in cases if entry[1]["id"] == run_meta["case_id"]), None)
+        if entry is None:
+            raise EvalFailure("retained fixture case is no longer available")
+        case_path, case = entry
+        options = options_from_run(artifact_dir)
+        context = lifecycle_context_from_prepared(artifact_dir, case_path, case, options)
+        collect_lifecycle_artifacts(context, options)
+        grade_lifecycle_artifacts(case, artifact_dir, options)
+        write_grade(artifact_dir, "pass", case["id"], options)
+        pass_line(f"{case['id']}: resumed fixture ticket {read_json(artifact_dir / 'fixture-test-ticket.json')['seq']}")
+        finish_artifacts(artifact_dir, options)
+        return 0
     (
         options,
         list_only,
@@ -5337,7 +5410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         prepare_only,
         ledger_check_only,
         run_prepared_path,
-    ) = parse_args(argv or sys.argv[1:])
+    ) = parse_args(arguments)
     cases = load_cases()
     if ledger_check_only:
         violations = check_ledger_freshness(cases)
