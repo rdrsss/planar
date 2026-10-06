@@ -319,6 +319,40 @@ ended, with the outcome, exit code or signal, and who cancelled or replaced
 them. Both take `--json`. One entry's full record is `planar-agent queue status
 <seq>`.
 
+**Waiting for a detached gate.** Submit with `planar-agent queue run --detach
+--timeout 2h --vendor <vendor> --role <role> --claim <token> -- <command>` and
+save the first output line, its ticket sequence. The command's run limit here
+is two hours after it starts; `--claim` lets the submitter renew a
+caller-supervised task claim while it waits and runs. Then observe that ticket:
+
+```sh
+planar-agent queue wait <seq> --timeout 3h --json
+```
+
+The three-hour observation budget can cover an expected hour of backlog plus
+two hours of runtime. The separate `queue run --wait-timeout`, if supplied,
+limits the entry's time waiting for a slot. The observer's default is `30m`
+and an explicit positive budget may be at most `24h`; it does not change
+either submitted limit or renew the claim. The wait result's `wait_reason`
+describes **why observation stopped**, while `status.outcome` describes a
+**recorded job end**. Read both before judging the gate: `completed` with
+`exited` and exit code 0 is a pass; other completed outcomes need their
+recorded code or signal handled as a gate result. Exit 124 or 125 alone is
+ambiguous because the child can return either code itself. The log path in
+`status.log_path` is for output; a blank log does not prove completion. See
+[`queue wait` in the CLI reference](cli-reference.md#waiting-for-a-logical-ticket-queue-wait)
+for every outcome and error code.
+
+If a harness needs shorter turns, use a finite slice such as `queue wait
+<seq> --timeout 10m --json`, do independent work, and wait again on the **same
+ticket**. `timed_out` and `interrupted` stop only the observer; the detached
+command may still be queued or running. `stalled`, missing history, and read
+errors also give no completion verdict. Inspect the ticket and queue health
+before deciding what to do. Never resubmit or start a conflicting build just
+because observation stopped, and never run a command directly after the queue
+refuses it. Avoid an outer loop with no finite bound: each wait slice must
+return control for an explicit decision.
+
 **Cancelling.** `planar-agent queue cancel <seq>` removes a waiting entry, or
 stops a running one (SIGTERM to its command's process group, SIGKILL after the
 grace period) and returns when the group is empty. Any caller that can open the
@@ -359,8 +393,22 @@ tokens too. So the files are owner-only:
 past its run limit with no submitter polling is stopped by the next poll or by
 `queue cancel`. Both are accepted limits, listed with the others in
 [`cli-reference.md` §Known limits](cli-reference.md#known-limits). Exit 125 from
-a queue verb means the queue refused; agents stop and report it and never run
-the command directly.
+`queue run` before it issues a ticket means the queue refused; agents stop and
+report it and never run the command directly. Exit 125 from `queue wait` may
+instead be a recorded child exit, cancellation, wait timeout, stalled
+observation or observer error; inspect `wait_reason` and `status.outcome`.
+
+On an older queue-capable install without `queue wait`, discover support once
+from the compact schema or leaf help. Short commands, or scripts that can wait
+for the whole job, may use foreground `queue run`. For a long command under an
+agent harness, keep the detached ticket and use a finite, error-checking JSON
+`queue status` observer with a fixed overall deadline and bounded status
+subprocesses. Treat `state: ended` only through its recorded `outcome`; an
+abandoned row without a successor and missing successor history remain
+uncertain. On timeout or interruption, stop only the observer and keep the
+ticket for a later check. The fallback must clean up only its own status
+helpers, never the queued job, submitter, log or claim. Queue present but
+refusing is not an absent-queue fallback.
 
 ---
 

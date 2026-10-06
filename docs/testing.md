@@ -172,8 +172,8 @@ planar-agent queue run --vendor <vendor> --role <role> -- make fmt-check     # c
 planar-agent queue run --vendor <vendor> --role <role> -- make cli-usage-check     # cli-lint-ignore: `--` is the argument terminator
 
 # Long gate, detached: prints a sequence number and a log path, then returns at once.
-planar-agent queue run --detach --vendor <vendor> --role <role> -- make test     # cli-lint-ignore: `--` is the argument terminator
-planar-agent queue status <seq>                                                  # poll every 30 seconds until state is ended
+planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> --claim <token> -- make test     # cli-lint-ignore: `--` is the argument terminator
+planar-agent queue wait <seq> --timeout 3h --json
 ```
 
 `make test-all`, `make cpp-lint` and `make linux-gate` run long enough to
@@ -181,14 +181,30 @@ reach the queue's default run limit of 30 minutes, at which the command is
 stopped and its entry ends as `timeout`. Pass `--timeout <duration>` for a
 gate that legitimately takes longer (for example `--timeout 2h`), and
 `--claim <token>` when the caller holds a task claim, so the queue renews it
-while the command waits and runs.
+while the command waits and runs. Omit `--claim` only when there is no claim or
+the claim is renewed separately. The observer's `--timeout` is independent:
+allow for expected queue backlog plus runtime, as the three-hour wait above
+does for an expected hour of backlog and a two-hour run limit. A submitted
+`--wait-timeout` separately limits how long an entry may wait for its turn.
 
 A detached gate builds when its turn comes, not when it is submitted. Submit
 it only once the tree is final for that gate, and do not edit the tree until
-its ticket has ended. Read the outcome from `queue status`, which is the
-record of how the command ended, not from the log. A probe rebuild and a gate
+its ticket has ended. Read `queue wait`'s `wait_reason` and authoritative
+`status.outcome` together; a child can itself exit 124 or 125, and a wait
+deadline or interruption is no gate verdict. An empty log or missing active
+entry is no gate verdict either. A probe rebuild and a gate
 write the same build directory, so submit both through the queue and never
 run one beside the other.
+
+For a short agent turn, `queue wait <seq> --timeout 10m --json` returns control
+within a finite slice. If it reports `timed_out` or `interrupted`, do other
+work or hand off the same sequence number for another finite wait. Neither
+result stops the queued command, and neither calls for a second submission.
+Do not hide an unbounded retry loop around finite slices. A `stalled`,
+`history_unavailable` or `error` result needs inspection; a queue refusal
+never authorizes a direct build. `queue wait` only reads state and never
+renews a claim. See [the wait contract](cli-reference.md#waiting-for-a-logical-ticket-queue-wait)
+and [operations](operations.md#5-the-host-build-and-test-queue).
 
 The queue is for builds and tests that would otherwise run side by side. It
 does not replace the gates: a queued `make test` is the same `make test`.
