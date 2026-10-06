@@ -300,4 +300,37 @@ run_installer "$H3" "PLANAR_TEMPLATES_DIR=$P3/scripts/mytpl" -- --uninstall
 grep -Fq "kept $P3/scripts (data path 'templates')" "$TMP/out" || fail "uninstall did not name what it kept: $(cat "$TMP/out")"
 pass
 
+# After an uninstall that leaves only preserved data paths (the database lives
+# elsewhere, so no planar.db is in the root), the next install and a second
+# uninstall adopt the root without --force: preserved data is ownership
+# evidence (tech spec, "The uninstaller").
+H4="$TMP/readopt/user"
+P4="$H4/.planar"
+EXT4="$TMP/readopt/ext"
+mkdir -p "$H4" "$EXT4"
+printf 'SQLite format 3\next4\n' > "$EXT4/p.db"
+run_installer "$H4" "PLANAR_DB=$EXT4/p.db" --
+[[ "$RC" == 0 ]] || fail "first install with a relocated database failed ($RC): $(cat "$TMP/err")"
+mkdir -p "$P4/workbench/x" "$P4/local/skills/mine"
+printf 'readme\n' > "$P4/workbench/x/README.md"
+printf '[x]\n' > "$P4/config.toml"
+printf 'skill\n' > "$P4/local/skills/mine/SKILL.md"
+printf 'notes\n' > "$P4/notes.txt"
+run_installer "$H4" "PLANAR_DB=$EXT4/p.db" -- --uninstall
+[[ "$RC" == 0 ]] || fail "uninstall (relocated database) failed ($RC): $(cat "$TMP/err")"
+[[ ! -e "$P4/planar.db" && -f "$P4/config.toml" && ! -e "$P4/.planar-install" ]] \
+  || fail "the fixture is not the intended shape after uninstall: $(ls -A "$P4" | tr '\n' ' ')"
+run_installer "$H4" "PLANAR_DB=$EXT4/p.db" --
+[[ "$RC" == 0 ]] || fail "reinstall after uninstall was refused without --force ($RC): $(cat "$TMP/err")"
+[[ -x "$P4/bin/planar" && "$(cat "$P4/config.toml")" == "[x]" ]] || fail "reinstall after uninstall did not install or touched config.toml"
+run_installer "$H4" "PLANAR_DB=$EXT4/p.db" -- --uninstall
+[[ "$RC" == 0 ]] || fail "second uninstall was refused without --force ($RC): $(cat "$TMP/err")"
+[[ "$(cat "$P4/workbench/x/README.md")" == "readme" && "$(head -1 "$EXT4/p.db")" == "SQLite format 3" ]] \
+  || fail "second uninstall touched preserved data"
+[[ "$(cat "$P4/notes.txt")" == "notes" ]] || fail "uninstall removed an unknown file next to preserved data"
+# Directly after an uninstall the second uninstall is also accepted.
+run_installer "$H4" "PLANAR_DB=$EXT4/p.db" -- --uninstall
+[[ "$RC" == 0 ]] || fail "a repeated uninstall was refused ($RC): $(cat "$TMP/err")"
+pass
+
 printf 'install data paths tests: %s passed\n' "$PASSED"
