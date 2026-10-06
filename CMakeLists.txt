@@ -288,3 +288,9 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 add_test(NAME dist.identity
   COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/dist-identity.test.py")
 set_tests_properties(dist.identity PROPERTIES LABELS "dist_identity")
+
+# Bundle layout exercises the actual assembler with isolated fake executables.
+add_test(NAME dist.layout
+  COMMAND "${CMAKE_COMMAND}" -E env "PYTHON=${Python3_EXECUTABLE}"
+    bash "${PROJECT_SOURCE_DIR}/scripts/dist-test.sh")
+set_tests_properties(dist.layout PROPERTIES LABELS "dist_layout" TIMEOUT 180)

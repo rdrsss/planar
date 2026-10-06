@@ -501,6 +501,30 @@ build commands and binaries to reach refusal paths; they do not establish real
 binary portability. Comprehensive layout/checksum coverage belongs to the
 separate bundle layout test.
 
+The `dist.layout` ctest (label `dist_layout`, entry point
+`scripts/dist-test.sh`) runs five layout scenarios against the actual
+`scripts/dist.sh` assembly path in disposable source copies. Configure, build,
+portable inspection and install commands are controlled fixtures that stage
+exactly five tiny fake executables. The real assembler copies the current
+authored assets, renders Codex agents, collects metadata and emits the archive.
+The test unpacks it and checks exact entries, executable and authored bytes,
+one rendered file per authored agent, flat metadata with the current migration
+maximum, sorted entries with fixed owners, and tagged repeat cuts. It verifies
+the emitted checksum record with both `sha256sum -c` and `shasum -a 256 -c`
+when available, and requires at least one checker.
+
+At M1, root `get-planar.sh` and `uninstall.sh` are included only when present
+in the source. Fixtures pin absence and successive inclusion as byte copies
+without supplying installer or bootstrap behavior. Deliberate mutations prove
+that wrong entry counts, installer bytes and metadata fail; appending a byte
+to the archive must make the shell entry point's checksum assertion fail and
+name the asset. To check a retained fixture manually, use
+`scripts/dist-test.sh --check-checksums <directory> <asset-basename>` through
+the host queue. All fixture tags, output and scratch trees are isolated from
+the checkout's tags and retained `dist/` artifacts. Fake executables establish
+layout and checksum behavior; the real native/Linux portability and smoke
+evidence remains a separate gate.
+
 Task validation also runs real `make dist` and `make linux-dist` through the host
 queue. Assembly requires exactly two portable tests, then inspects the staged
 products. Retain the archive and its checksum-bound `.gates.json`, plus
