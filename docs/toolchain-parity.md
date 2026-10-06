@@ -276,6 +276,23 @@ dependencies include zstd (as on Trixie with OpenSSL 3.5), configure requires
 dependency and clean-host trust checks
 remain required release gates.
 
+The `portable.binaries` ctest case is registered only with `PLANAR_PORTABLE`.
+It logs each of the five product binaries, inspects macOS dependencies and load
+commands with `otool`, or Linux dynamic entries and symbol versions with
+`readelf`, and then runs each CLI's `--help` in a disposable HOME/database.
+This startup check also detects static-runtime initialization failures that
+load-command inspection alone cannot find. macOS permits system frameworks
+and libSystem, requires `LC_BUILD_VERSION minos 26.0`, and refuses `LC_RPATH`.
+Linux permits only glibc and its named companions, refuses both `RPATH` and
+`RUNPATH`, and requires the highest GLIBC symbol version to be at most 2.36.
+Both platforms reject toolchain-prefix references and shared C++/TLS runtimes.
+The companion `portable.inspector` case exercises positive and rejected
+inspection fixtures on either host. Run both with
+`ctest --test-dir build/dist -L '^portable$' --output-on-failure`; verify the
+matched count is two. `debug` and `release` register neither case. A build on
+a newer Linux distribution may correctly fail the GLIBC floor; fixtures do
+not substitute for the release's required Bookworm build and clean-host gate.
+
 ## Derived import-std / embed flag set (macOS, verified)
 
 Configure-time flags, mirroring the pattern in `centurion/CMakeLists.txt`

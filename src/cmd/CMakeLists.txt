@@ -157,3 +157,17 @@ add_test(NAME compile_fail_check
     "-DNEGATIVES=compile_fail_neg_bool_flag:add_bool_flag;compile_fail_neg_declare_string:add_string;compile_fail_neg_declare_int:add_int;compile_fail_neg_declare_positional:add_positional;compile_fail_neg_declare_positional_optional:add_positional_optional;compile_fail_neg_agent_json:add_json"
     -P "${CMAKE_SOURCE_DIR}/cmake/tests/compile_fail_driver.cmake")
 set_tests_properties(compile_fail_check PROPERTIES LABELS "compile_fail" RUN_SERIAL TRUE)
+
+# Distribution checks never appear in developer configurations. Use target
+# locations so the same check covers the exact five products being bundled.
+if(PLANAR_PORTABLE)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME portable.binaries
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/portable-check.py"
+      --bin-dir "$<TARGET_FILE_DIR:planar_cmd_planar>"
+      --platform "${CMAKE_SYSTEM_NAME}"
+      --toolchain-prefix "${PLANAR_LLVM_PREFIX}")
+  add_test(NAME portable.inspector
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/portable-check.test.py")
+  set_tests_properties(portable.binaries portable.inspector PROPERTIES LABELS "portable")
+endif()
