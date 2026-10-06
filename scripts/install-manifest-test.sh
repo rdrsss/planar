@@ -146,13 +146,16 @@ grep -Fq 'does not look like a Planar install' "$TMP/agent-only-stderr" \
 assert_present "$AGENT_ONLY_PREFIX/agent.db"
 assert_present "$AGENT_ONLY_PREFIX/stale"
 
-# --force removes the whole prefix, planar.db and its logs included.
+# --force no longer removes data (plan 1122, rel-data-paths): the database,
+# its sidecars and the queue logs survive, the retired agent.db does not.
 FORCE_HOME="$TMP/force_home"
 FORCE_PREFIX="$FORCE_HOME/.planar"
 seed_prefix "$FORCE_PREFIX"
 run_uninstall "$FORCE_HOME" --force >"$TMP/force-stdout" 2>"$TMP/force-stderr" \
   || fail "forced uninstall failed: $(cat "$TMP/force-stderr")"
-assert_absent "$FORCE_PREFIX"
+[[ "$(ls -A "$FORCE_PREFIX" | tr '\n' ' ')" == "planar.db planar.db-shm planar.db-wal queue-logs " ]] \
+  || fail "forced uninstall left more or less than the data paths: $(ls -A "$FORCE_PREFIX" | tr '\n' ' ')"
+assert_absent "$FORCE_PREFIX/agent.db"
 
 # The install-side ownership guard is the sourced planar_prefix_guard that
 # install.sh and --uninstall share (plan 1122). Exercise the exact function

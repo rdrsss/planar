@@ -112,6 +112,8 @@ source "$REPO_ROOT/scripts/install-manifest.sh"
 source "$REPO_ROOT/scripts/install-lib/queue-retire.sh"
 # The install-root guard shared with the uninstaller (plan 1122).
 source "$REPO_ROOT/scripts/install-lib/prefix-guard.sh"
+# The single list of data paths the installer never removes (plan 1122).
+source "$REPO_ROOT/scripts/install-lib/data-paths.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -144,7 +146,9 @@ Options:
                      the developer's build/<preset>.
   --dry-run, -n      Show what would happen without making any changes
   --verbose, -v      Per-file detail (default prints a summary)
-  --uninstall        Tear down everything install.sh created
+  --uninstall        Tear down everything install.sh created, except data
+                     paths (planar.db, queue-logs/, workbench/, ...); --force
+                     does not remove those either
   --version          Print the installer version and exit
   -h, --help         Show this help and exit
 
@@ -307,6 +311,19 @@ version_ge() {
 
 # count_glob — how many of the given paths exist (a non-matching glob passes its
 # literal pattern, which fails the -e test, so the count is 0).
+# rm_managed <path...> — remove a directory tree the installer owns and re-stages,
+# refusing when it is, lies inside, or holds a data path (a relocated data path
+# can sit inside a managed tree). Data paths are never removed by an install.
+rm_managed() {
+  local p
+  for p in "$@"; do
+    if planar_removal_blocked "$PLANAR_HOME" "$p"; then
+      err "refusing to remove $p: it holds or is the data path '$PLANAR_DATA_PATH_HIT', which an install never removes. Move that data path out of the installer's trees."
+    fi
+    rm -rf "$p"
+  done
+}
+
 count_glob() { local n=0 f; for f in "$@"; do [[ -e "$f" ]] && n=$((n + 1)); done; printf '%s' "$n"; }
 
 # Place a file (or directory) at $2 from $1, either by copy or symlink.
@@ -550,6 +567,7 @@ planar_prefix_guard "$PLANAR_HOME" "$FORCE" "$_guard_op" || _guard_rc=$?
 
 if [[ "$UNINSTALL" -eq 1 ]]; then
   title "Uninstalling Planar"
+  planar_data_paths_report "$PLANAR_HOME" | while IFS= read -r _l; do log "$_l"; done
 
   # The live-queue guard runs before anything is removed, --force or not:
   # uninstall removes agent.db (it is no longer preserved), so it must not
@@ -653,23 +671,22 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   done
 
   if [[ -d "$PLANAR_HOME" ]]; then
-    log "removing install root: $PLANAR_HOME"
-    log "(planar.db, its -wal/-shm sidecars and queue-logs/ are preserved if you have data — re-run with --force or rm manually; the retired agent.db is removed)"
-    if [[ "$FORCE" -eq 1 ]]; then
-      rm -rf "$PLANAR_HOME"
-    else
-      # Preserve the database and the queue's detached-run output; remove
-      # everything else, the retired agent.db and its sidecars included (plan
-      # 1089; the live-queue guard above already ran). planar.db's SQLite
-      # sidecars (-wal / -shm) hold committed data not yet checkpointed into
-      # the main file (it runs in WAL mode, so an unclean exit leaves them
-      # behind), so they stay with it. A PLANAR_DB override lives wherever
-      # the operator put it and is never touched here.
-      find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 \
-        ! -name 'planar.db' ! -name 'planar.db-wal' ! -name 'planar.db-shm' \
-        ! -name 'queue-logs' \
-        -exec rm -rf {} +
-    fi
+    log "removing everything under the install root except data paths: $PLANAR_HOME"
+    log "(data paths are preserved, --force included: $(planar_data_path_names | tr '\n' ' ')the retired agent.db is removed)"
+    # Remove each top-level entry unless it is a data path or holds one (a
+    # relocated data path can sit inside a managed tree). The retired agent.db
+    # and its sidecars are removed (plan 1089; the live-queue guard above
+    # already ran). planar.db's SQLite sidecars hold committed data not yet
+    # checkpointed into the main file, so they stay with it.
+    while IFS= read -r -d '' _entry; do
+      if planar_removal_blocked "$PLANAR_HOME" "$_entry"; then
+        log "kept $_entry (data path '$PLANAR_DATA_PATH_HIT')"
+        continue
+      fi
+      rm -rf "$_entry"
+    done < <(find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 -print0)
+    # An install root left empty (no data path survived) goes too.
+    rmdir "$PLANAR_HOME" 2>/dev/null || true
   fi
 
   title "Uninstall complete."
@@ -679,6 +696,7 @@ fi
 # ---------- preflight ----------
 
 title "Planar — install from $REPO_ROOT"
+planar_data_paths_report "$PLANAR_HOME" | while IFS= read -r _l; do log "$_l"; done
 
 # Live-queue preflight (plan 1089, tech spec 656 step 1). When the prefix
 # still holds the retired agent.db, refuse before anything is built while its
@@ -883,6 +901,10 @@ if [[ -f "$CLEANUP_LIST" ]]; then
       continue
     fi
     _target="$PLANAR_HOME/$_relpath"
+    if planar_removal_blocked "$PLANAR_HOME" "$_target"; then
+      log "kept $_target (data path '$PLANAR_DATA_PATH_HIT': a cleanup entry never removes a data path)"
+      continue
+    fi
     if [[ "$_relpath" == */ ]]; then
       [[ -d "$_target" ]] && { rm -rf "$_target"; log "removed stale dir  $_target"; }
     else
@@ -921,7 +943,7 @@ title "Placing source artifacts into $PLANAR_HOME"
 # checkout.
 for d in scripts workflows; do
   if [[ -d "$REPO_ROOT/$d" ]]; then
-    rm -rf "$PLANAR_HOME/$d"
+    rm_managed "$PLANAR_HOME/$d"
     place "$REPO_ROOT/$d" "$PLANAR_HOME/$d"
     log "$d/ → $PLANAR_HOME/$d ($MODE)"
   fi
@@ -931,7 +953,7 @@ done
 # renderer output and are recreated below. Link mode keeps authored role/docs
 # live, except models.md: the renderer patches its tier table at install time,
 # so that file must be prefix-owned to preserve the canonical checkout.
-rm -rf "$PLANAR_HOME/agents"
+rm_managed "$PLANAR_HOME/agents"
 mkdir -p "$PLANAR_HOME/agents"
 if [[ -d "$REPO_ROOT/agents" ]]; then
   while IFS= read -r -d '' f; do
@@ -947,7 +969,7 @@ fi
 
 # Wipe the whole skills/ subtree first so a previous install's staged files
 # (including the retired skills/src/ copy) do not linger.
-rm -rf "$PLANAR_HOME/skills" "$PLANAR_HOME/commands"
+rm_managed "$PLANAR_HOME/skills" "$PLANAR_HOME/commands"
 mkdir -p "$PLANAR_HOME/skills"
 
 # ---------- stage the planar skill and agents ----------
@@ -963,7 +985,7 @@ title "Staging the planar skill and agents"
 [[ -f "$REPO_ROOT/skills/planar/SKILL.md" ]] || err "skills/planar/SKILL.md not found in $REPO_ROOT (required to stage the planar skill)"
 [[ -d "$REPO_ROOT/agents" ]] || err "agents/ not found in $REPO_ROOT (required to stage the planar agents)"
 
-rm -rf "$PLANAR_HOME/skills/planar"
+rm_managed "$PLANAR_HOME/skills/planar"
 mkdir -p "$PLANAR_HOME/skills"
 place "$REPO_ROOT/skills/planar" "$PLANAR_HOME/skills/planar"
 log "skills/planar/ → $PLANAR_HOME/skills/planar ($MODE)"
@@ -988,7 +1010,7 @@ if ! _codex_out="$(python3 "$REPO_ROOT/scripts/render-codex-agents.py" "$REPO_RO
   rm -rf "$_codex_new"
   err "rendering the Codex agents failed: $_codex_out"
 fi
-rm -rf "$PLANAR_HOME/codex-agents"
+rm_managed "$PLANAR_HOME/codex-agents"
 mv "$_codex_new" "$PLANAR_HOME/codex-agents"
 log "codex-agents/ ← agents/ ($(count_glob "$PLANAR_HOME"/codex-agents/*.toml) TOML files)"
 
@@ -996,14 +1018,14 @@ log "codex-agents/ ← agents/ ($(count_glob "$PLANAR_HOME"/codex-agents/*.toml)
 # build via configure-time codegen. We also stage them under $PLANAR_HOME for
 # ad-hoc tooling (e.g. operators running `sqlx migrate` against scratch DBs).
 if [[ -d "$REPO_ROOT/migrations" ]]; then
-  rm -rf "$PLANAR_HOME/migrations"
+  rm_managed "$PLANAR_HOME/migrations"
   place "$REPO_ROOT/migrations" "$PLANAR_HOME/migrations"
   log "migrations/ → $PLANAR_HOME/migrations ($MODE)"
 fi
 
 # copilot/ is optional and may not exist yet.
 if [[ -d "$REPO_ROOT/copilot" ]]; then
-  rm -rf "$PLANAR_HOME/copilot"
+  rm_managed "$PLANAR_HOME/copilot"
   place "$REPO_ROOT/copilot" "$PLANAR_HOME/copilot"
   log "copilot/ → $PLANAR_HOME/copilot ($MODE)"
 fi
@@ -1011,15 +1033,15 @@ fi
 # templates/ ships operator-editable defaults (workspace-capabilities.toml,
 # doc prompts). Unlike the surfaces above we do NOT rm -rf first: the
 # install drops individual files into place only when missing, so hand
-# edits survive `install.sh` re-runs. Use --force to overwrite.
+# edits survive `install.sh` re-runs, --force included (templates/ is a data path).
 if [[ -d "$REPO_ROOT/templates" ]]; then
   mkdir -p "$PLANAR_HOME/templates"
   while IFS= read -r -d '' f; do
     rel="${f#$REPO_ROOT/templates/}"
     dst="$PLANAR_HOME/templates/$rel"
     mkdir -p "$(dirname "$dst")"
-    if [[ -e "$dst" && "$FORCE" -ne 1 ]]; then
-      vlog "templates/$rel: kept existing (use --force to overwrite)"
+    if [[ -e "$dst" || -L "$dst" ]]; then
+      vlog "templates/$rel: kept existing (templates are placed missing-only, even with --force)"
       continue
     fi
     if [[ "$MODE" == "link" ]]; then

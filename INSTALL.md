@@ -151,7 +151,7 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 | `--vendors LIST` | Comma-separated filter over the vendors found on the host: `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`. Default is all six. Naming an absent vendor warns. |
 | `--no-vendor` | Skip vendor surfaces entirely; install Planar core only. |
 | `--link` | Symlink the staged skill and the Markdown, Copilot and Codex agent files from the source repo instead of copying. **Dev mode** — edits to the repo propagate immediately. The OpenCode agents are always derived regular files. |
-| `--force` | Overwrite existing symlinks at the destinations, and adopt a non-empty install root that carries no Planar sign. It does **not** override the install root guard for `$HOME`, `/` or an empty root, and does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
+| `--force` | Overwrite existing symlinks at the destinations (never a preserved path: shipped `templates/` files are still placed only where missing), and adopt a non-empty install root that carries no Planar sign. It does **not** override the install root guard for `$HOME`, `/` or an empty root, and does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
 | `--ignore-live-queue` | Retire (or uninstall) the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
 | `--no-prune` | Skip removal of stale vendor files. |
 | `--preset NAME` | CMake build preset: `debug`\|`release` (default `release`). |
@@ -159,7 +159,7 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 | `--dry-run`, `-n` | Show the planned actions without changing anything. |
 | `--verbose`, `-v` | Per-file detail (default prints a summary). |
 | `--version` | Print the installer version and exit. |
-| `--uninstall` | Tear down everything install.sh created. Preserves `~/.planar/planar.db` (with its `-wal`/`-shm` sidecars) and `~/.planar/queue-logs/` unless `--force` is also given. Removes the retired old queue database, behind the same live-queue guard as an install. |
+| `--uninstall` | Tear down everything install.sh created except the [preserved paths](#preserved-paths) (`planar.db` with its `-wal`/`-shm` sidecars, `queue-logs/`, `workbench/`, `config.toml`, `local/`, ...); `--force` does not remove them. Removes the retired old queue database, behind the same live-queue guard as an install. |
 
 ### Copy mode vs link mode
 
@@ -342,7 +342,7 @@ make uninstall-full
 
 This removes:
 - Every target `install.sh` placed and recorded in `~/.planar/install-manifest.json` (the `planar` skill under `~/.claude/skills`, `~/.agents/skills` and `~/.gemini/antigravity-cli/skills`, and the `planar-<role>` agents under the six agent directories), while it is still what Planar placed: a symlink into `~/.planar/` or the staged bytes. A recorded path someone replaced, and any other `planar` or `planar-*` entry there, is left and reported. No vendor directory and not `~/.agents/skills` itself is removed.
-- Everything in `~/.planar/` *except* your data: `planar.db` (with its SQLite sidecars, `-wal` and `-shm`) and the `queue-logs/` directory of detached queue-run output. A retired old queue database left from before the upgrade is removed too; the upgrade note above covers the guard that protects a live old queue.
+- Everything in `~/.planar/` *except* the [preserved paths](#preserved-paths): your database (`planar.db` with its `-wal` and `-shm` sidecars), the queue logs, the workbench, your configuration, local skills and agents, workspaces, models, execute profiles and templates. A retired old queue database left from before the upgrade is removed; the upgrade note above covers the guard that protects a live old queue.
 
 A prefix that holds only a preserved `planar.db` still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
 
@@ -354,17 +354,30 @@ A prefix that holds only a preserved `planar.db` still counts as a Planar instal
 - An existing non-empty root is accepted without `--force` when it carries the install stamp (`.planar-install`), an executable `bin/planar`, `planar.db`, or a valid installer recovery journal (`.planar-journal`, so an interrupted first install is adopted). Installs made before the stamp existed carry `bin/planar` or `planar.db`. A bare `.staging-*` directory or any other marker file is not evidence.
 - Any other non-empty root exits **1** naming the path, unless `--force` adopts it.
 
-Only the default file names directly under `~/.planar/` are preserved. A database relocated with `PLANAR_DB` to a path outside `~/.planar/` is never touched by the uninstall; one relocated to another file name *inside* `~/.planar/` is not preserved, and a non-force uninstall deletes it.
+### Preserved paths
 
-To remove the database and the queue logs too:
+The data paths are listed once, in `scripts/install-lib/data-paths.sh`, which `install.sh` sources. The installer never removes one: a re-install, an `install-cleanup.txt` entry and a managed-tree refresh all skip them, and a cleanup entry that names one is skipped with a note. Two writes are allowed: a `planar.db` that is behind the binary is migrated forward, and shipped files are placed into `templates/` only where missing, `--force` included, so an edited template is never overwritten. `install.sh --uninstall` preserves them too, and `--force` does not change that. `install.sh --uninstall` has no `--purge`; to delete data, remove it by hand (below) or use the uninstaller's `--purge`. They live under `~/.planar/` (the install root) unless one of five variables relocates it; the installer and uninstaller then name the relocation and leave the file where it is:
 
-```bash
-./install.sh --uninstall --force
-```
+<!-- data-paths:begin (generated by `bash scripts/install-lib/data-paths.sh --markdown`; checked by scripts/install-data-paths-test.sh) -->
+- `planar.db`: the SQLite database; relocated by `PLANAR_DB`
+- `planar.db-wal`: its write-ahead log, which holds committed data not yet checkpointed; relocated by `PLANAR_DB`
+- `planar.db-shm`: its shared-memory index; relocated by `PLANAR_DB`
+- `queue-logs/`: output of detached queue runs
+- `retired/`: databases and logs retired by an upgrade
+- `workbench/`: the planning workbench; relocated by `PLANAR_WORKBENCH_ROOT`
+- `config.toml`: the operator configuration; relocated by `PLANAR_CONFIG_PATH`
+- `local/`: operator-local skills and agents; relocated by `PLANAR_LOCAL_HOME`
+- `workspaces/`: workspace definitions
+- `models/`: model catalogs
+- `execute/`: execute profiles
+- `templates/`: operator-editable templates; relocated by `PLANAR_TEMPLATES_DIR`
+<!-- data-paths:end -->
+
+A variable that is unset, empty, or points at the default location relocates nothing. `PLANAR_LOCAL_HOME` stands in for `$HOME`, so `local/` is then `$PLANAR_LOCAL_HOME/.planar/local`. A data path inside a tree the installer refreshes (for example a `PLANAR_TEMPLATES_DIR` under `~/.planar/scripts/`) stops the install with a message naming it, rather than being removed.
 
 `make uninstall` is the counterpart of `make install`: it removes only the five Planar executables from `PREFIX/bin` (default `~/.local/bin`).
 
-To remove only the data and keep the install:
+To remove the data by hand:
 
 ```bash
 rm -f ~/.planar/planar.db ~/.planar/planar.db-wal ~/.planar/planar.db-shm

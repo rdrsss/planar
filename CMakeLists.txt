@@ -301,3 +301,10 @@ set_tests_properties(dist.layout PROPERTIES LABELS "dist_layout" TIMEOUT 180)
 add_test(NAME install.prefix_guard
   COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-prefix-guard-test.sh")
 set_tests_properties(install.prefix_guard PROPERTIES LABELS "install_prefix_guard" TIMEOUT 300)
+
+# The data-path list: install.sh and install.sh --uninstall never remove a listed
+# path, relocations are named, and INSTALL.md's preserved-paths section matches
+# scripts/install-lib/data-paths.sh.
+add_test(NAME install.data_paths
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-data-paths-test.sh")
+set_tests_properties(install.data_paths PROPERTIES LABELS "install_data_paths" TIMEOUT 300)

@@ -134,6 +134,10 @@ test-install-stage: ## Run focused installer staging and vendor-surface fixtures
 test-install-prefix-guard: ## Run the install-root guard fixtures (ctest install.prefix_guard runs them under `make test`)
 	bash scripts/install-prefix-guard-test.sh
 
+.PHONY: test-install-data-paths
+test-install-data-paths: ## Run the data-path fixtures (ctest install.data_paths runs them under `make test`)
+	bash scripts/install-data-paths-test.sh
+
 .PHONY: test-install-deps
 test-install-deps: ## Run focused installer compiler-preflight fixture
 	bash scripts/install-deps-test.sh
