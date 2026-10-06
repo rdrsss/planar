@@ -9,6 +9,8 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
+# Fake executables have no native architecture; their assembly target is controlled.
+FIXTURE_PLATFORM = ('Linux', 'x86_64')
 
 
 class IdentityTests(unittest.TestCase):
@@ -176,6 +178,34 @@ else:
             self.refused(self.run_dist(HEALTH_JSON=health), 'invalid bundle metadata')
         self.refused(self.run_dist(BINARY_SHA='0' * 40), 'binary metadata differs')
         self.refused(self.run_dist(BINARY_RELEASE='v9.9.9'), 'binary metadata differs')
+
+    def test_fake_products_use_declared_platform(self):
+        self.prepare_commands()
+        result = self.run_dist()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for flag, expected in zip(('-s', '-m'), FIXTURE_PLATFORM):
+            actual = subprocess.check_output(['uname', flag], env=self.env, text=True).strip()
+            self.assertEqual(actual, expected, 'fake assembly must not depend on host architecture')
+        import tarfile
+        archive = self.root / 'dist/planar-linux-x86_64.tar.gz'
+        with tarfile.open(archive) as tar:
+            metadata = json.load(tar.extractfile('planar-linux-x86_64/release.json'))
+        self.assertEqual((metadata['os'], metadata['arch'], metadata['os_floor']),
+                         ('linux', 'x86_64', '2.36'))
+
+    def test_producer_still_refuses_linux_arm64(self):
+        tools = self.root / 'build/refusal-tools'
+        tools.mkdir(parents=True)
+        uname = tools / 'uname'
+        uname.write_text('#!/bin/bash\ncase "$1" in\n-s) echo Linux ;;\n-m) echo aarch64 ;;\nesac\n')
+        uname.chmod(0o755)
+        marker = self.root / 'build/configure-started'
+        cmake = tools / 'cmake'
+        cmake.write_text(f'#!/bin/bash\ntouch "{marker}"\nexit 99\n')
+        cmake.chmod(0o755)
+        self.env['PATH'] = str(tools) + os.pathsep + self.env['PATH']
+        self.refused(self.run_dist(), 'unsupported bundle platform: Linux-aarch64')
+        self.assertFalse(marker.exists(), 'unsupported shipping platform must refuse before configure')
 
     def test_metadata_cwd_is_outside_source_worktree(self):
         self.prepare_commands()
