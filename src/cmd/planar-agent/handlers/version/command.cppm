@@ -11,6 +11,7 @@ namespace planar::cmd::agent::handlers::version_cli {
 /// @brief Register this CLI declaration.
 /// @param root Input root.
 export auto add(CLI::App& root) -> void {
-  root.add_subcommand("version", "Print the planar-agent version, commit, and C++ toolchain.");
+  root.add_subcommand("version", "Print the planar-agent version, commit, and C++ toolchain.")
+      ->add_flag("--json", "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::version_cli

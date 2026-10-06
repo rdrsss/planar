@@ -132,6 +132,12 @@ if(PLANAR_VERSION_META)
   endif()
 endif()
 
+# A release label is independent of the opt-in git metadata contract.
+set(PLANAR_RELEASE_VERSION "" CACHE STRING "Release tag printed by version (empty prints dev)")
+if(PLANAR_RELEASE_VERSION)
+  target_compile_definitions(planar_cliapp PRIVATE "PLANAR_RELEASE_VERSION=\"${PLANAR_RELEASE_VERSION}\"")
+endif()
+
 # --- schema-catalog lint-parity stub --------------------------------------
 #
 # Relocated from src/lib/cli/CMakeLists.txt and re-pointed at the CLI11
