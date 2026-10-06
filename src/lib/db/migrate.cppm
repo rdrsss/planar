@@ -158,11 +158,12 @@ export auto require_contiguous(std::span<migration_record const> chain) -> std::
 /// decide policy — the caller (each binary's `ensure_db()`) turns the
 /// verdict into a refusal, a warning, or a migrate.
 ///
-/// A missing or unreadable `schema_migrations` table reports live version
-/// 0 rather than a failure: a fresh database never touched by `planar
-/// init` is a normal state whose answer is "run `planar init`", not a
-/// SQLite diagnostic. A genuine step failure on an existing table IS
-/// surfaced.
+/// A missing `schema_migrations` table reports live version 0 rather than
+/// a failure: a fresh database never touched by `planar init` is a normal
+/// state whose answer is "run `planar init`", not a SQLite diagnostic.
+/// Every other failure to read the table, including a database this
+/// process cannot open or read, IS surfaced, so a caller never reads an
+/// access problem as a schema that needs migrating.
 /// @param conn The connection to inspect.
 /// @param chain The chain this binary embeds.
 /// @return The handshake state, or the SQLite failure as a `db_error`.

@@ -1241,3 +1241,28 @@ TEST_CASE("complete, fail and block still refuse a plan claim with ClaimNotOnTas
   }
   CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
 }
+
+TEST_CASE("a heartbeat against a database it cannot write names the access problem", "[cmd][agent][handlers][access]") {
+  // A sandboxed agent saw only `heartbeat: QueryFailed` when the database
+  // file was not writable to it. The tag stays, for scripts; the stderr now
+  // also says what SQLite refused and that Planar needs write access.
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where id = 1");
+  auto const db    = scratch.db_path();
+  std::filesystem::permissions(db, std::filesystem::perms::owner_read);
+
+  auto const      with_status = run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "1h", "--status", "probe", "--json"});
+  auto const      bare        = run_verb(scratch, {"heartbeat", "--claim", token});
+  std::error_code ec;
+  std::filesystem::permissions(db, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write, ec);
+
+  for (auto const& result : {with_status, bare}) {
+    CHECK(result.code == 1);
+    CHECK(result.err.contains("heartbeat: QueryFailed"));
+    CHECK(result.err.contains(db.string()));
+    CHECK(result.err.contains("read and write access"));
+  }
+  CHECK(with_status.out.contains(R"("tag":"QueryFailed")"));
+}

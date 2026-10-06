@@ -289,3 +289,32 @@ TEST_CASE("planar-watch refuses a database migrated past its embedded chain", "[
   CHECK(opened.error().kind == planar::cmd::watch::domain_error_kind::schema_version_ahead);
   CHECK(planar::cmd::watch::exit_code(opened.error()) == 7);
 }
+
+TEST_CASE("planar-watch: a database it cannot read is an access failure, not schema-behind", "[cmd][watch][context][access]") {
+  // A sandboxed agent that may not write under ~/.planar cannot create the
+  // WAL -shm file, so the version read fails. That used to read as version 0:
+  // SchemaVersionBehind, exit 7, and advice to run `planar init`.
+  auto const fx  = make_fixture("unreadable");
+  auto const dir = fx.root / "db";
+  std::filesystem::create_directories(dir);
+  auto const db_path = dir / "planar.db";
+  seed_migrated_db(db_path);
+  std::filesystem::remove(db_path.string() + "-wal");
+  std::filesystem::remove(db_path.string() + "-shm");
+  std::filesystem::permissions(dir, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+
+  std::ostringstream out;
+  std::ostringstream err;
+  auto               ctx    = make_context(fx, db_path, out, err);
+  auto const         opened = ctx.db().ensure_db();
+  std::error_code    ec;
+  std::filesystem::permissions(dir, std::filesystem::perms::owner_all, ec);
+
+  REQUIRE_FALSE(opened.has_value());
+  CHECK(opened.error().kind == planar::cmd::watch::domain_error_kind::generic_failure);
+  CHECK(planar::cmd::watch::exit_code(opened.error()) == 1);
+  CHECK(err.str().contains("cannot read the database"));
+  CHECK(err.str().contains(db_path.string()));
+  CHECK(err.str().contains("read and write access"));
+  CHECK_FALSE(err.str().contains("planar init"));
+}

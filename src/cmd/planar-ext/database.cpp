@@ -42,15 +42,19 @@ auto database_policy::open(const std::filesystem::path& path, std::ostream& erro
   // task 6058); this binary's POLICY (refuse both directions) and its
   // wording stay here, pinned by context.t.cpp.
   //
-  // A read failure degrades to version 0 rather than surfacing a SQLite
-  // diagnostic, which is what the local `live_version` helper this
-  // replaced did: "A missing `schema_migrations` table (fresh DB never
-  // touched by `planar init`) maps to version 0 — which trips
-  // SchemaVersionBehind below as long as the binary's embedded
-  // migrations include anything at all." The answer an operator needs
-  // there is "run `planar init`", not a driver error string.
-  auto const compat  = db::assert_schema_compatible(*connection);
-  auto const stored  = compat ? compat->live_ : std::uint32_t{0};
+  // A missing `schema_migrations` table (fresh DB never touched by
+  // `planar init`) comes back as version 0 and trips SchemaVersionBehind
+  // below, whose answer is "run `planar init`". Any other read failure is
+  // this process being unable to read the file — a sandbox, or file or
+  // folder permissions — and is reported as that, never as a schema that
+  // needs migrating.
+  auto const compat = db::assert_schema_compatible(*connection);
+  if (!compat) {
+    error_stream << std::format("error: cannot read the database at {}: {}. {}\n", path.string(), compat.error().message_,
+                                db::access_requirement());
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "DatabaseUnreadable"));
+  }
+  auto const stored  = compat->live_;
   auto const maximum = db::embedded_max();
 
   if (stored < maximum) {

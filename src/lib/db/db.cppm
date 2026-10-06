@@ -52,6 +52,21 @@ export struct db_error {
 /// @return `true` when `err` is a busy-source failure.
 export auto is_busy(const db_error& err) noexcept -> bool;
 
+/// @brief True when `err` means this process may not open, read or write the
+/// database file or its folder: SQLite's `SQLITE_PERM`, `SQLITE_READONLY`,
+/// `SQLITE_IOERR` or `SQLITE_CANTOPEN` (extended codes compared by their low
+/// byte, as `is_busy` does). A sandbox that denies writes under the database's
+/// folder presents as one of these, so a caller can name the access problem
+/// rather than a generic query failure.
+/// @param err The failure to classify.
+/// @return `true` when `err` is an access failure.
+export auto is_access_failure(const db_error& err) noexcept -> bool;
+
+/// @brief The sentence every binary appends when it cannot open, read or
+/// write the database: what access Planar needs and the usual cause.
+/// @return The sentence, ending in a full stop and no newline.
+export auto access_requirement() noexcept -> std::string_view;
+
 /// @brief Outcome of a single `statement::step()` call.
 export enum class step_result {
   row, ///< A row is available; read columns before stepping again.
@@ -369,6 +384,19 @@ public:
   /// @brief True if this connection was opened via `open_read_only`.
   /// @return `true` if this connection is read-only.
   [[nodiscard]] auto is_read_only() const noexcept -> bool;
+
+  /// @brief True when SQLite opened the main database read-only although a
+  /// writable open was requested, which it does when the file is not writable
+  /// to this process. Also `true` for a connection from `open_read_only`.
+  /// @return `true` when writes to the main database will be refused.
+  [[nodiscard]] auto is_write_protected() const noexcept -> bool;
+
+  /// @brief The most recent SQLite failure on this connection, as SQLite still
+  /// holds it: its extended result code and message. `code_` is 0 when the
+  /// last call succeeded. Read it straight after the failing call; any later
+  /// call on the connection, a rollback included, replaces it.
+  /// @return The last failure, or `{0, ""}`.
+  [[nodiscard]] auto last_error() const -> db_error;
 
   /// @brief True while ANY transaction or savepoint is open on this
   /// connection -- SQLite's own autocommit flag, inverted.

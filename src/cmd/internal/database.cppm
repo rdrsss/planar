@@ -44,6 +44,11 @@ public:
     return _connection.has_value();
   }
 
+  /// @brief The connection if one is already open, without opening one.
+  /// @return Borrowed connection, or `nullptr` when none is open.
+  [[nodiscard]] auto connection_if_open() -> db::connection* {
+    return _connection.has_value() ? &*_connection : nullptr;
+  }
   /// @brief Open through the policy on first use and reuse that connection.
   /// @return Borrowed connection or a policy error.
   auto ensure_db() -> std::expected<db::connection*, error> {

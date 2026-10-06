@@ -1576,3 +1576,68 @@ TEST_CASE("a synthetic migration that alters queue_history without a queue_schem
   chain.back().up_sql_     = marked;
   CHECK(migrations_without_queue_marker(chain).empty());
 }
+
+namespace {
+
+// A migrated WAL database in its own folder, closed so SQLite removed its
+// -wal and -shm side files. Making the folder read-only then leaves a reader
+// unable to create -shm, which is how a sandbox that denies writes under
+// ~/.planar presents to SQLite.
+struct unwritable_folder_db {
+  std::filesystem::path dir_;
+  std::filesystem::path path_;
+
+  unwritable_folder_db()
+      : dir_(std::filesystem::temp_directory_path() / std::format("planar_migrate_ro_{}_{}",
+                                                                  std::chrono::steady_clock::now().time_since_epoch().count(),
+                                                                  reinterpret_cast<std::uintptr_t>(this))),
+        path_(dir_ / "planar.db") {
+    std::filesystem::create_directories(dir_);
+    {
+      auto conn = planar::db::connection::open(path_.string());
+      REQUIRE(conn.has_value());
+      REQUIRE(planar::db::apply_all(*conn).has_value());
+    }
+    std::filesystem::remove(path_.string() + "-wal");
+    std::filesystem::remove(path_.string() + "-shm");
+    std::filesystem::permissions(dir_, std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec);
+  }
+
+  unwritable_folder_db(const unwritable_folder_db&)            = delete;
+  unwritable_folder_db& operator=(const unwritable_folder_db&) = delete;
+
+  ~unwritable_folder_db() {
+    std::error_code ec;
+    std::filesystem::permissions(dir_, std::filesystem::perms::owner_all, ec);
+    std::filesystem::remove_all(dir_, ec);
+  }
+};
+
+} // namespace
+
+TEST_CASE("a version table that cannot be read is a failure, not a fresh database", "[db][migrate][guard][access]") {
+  // A migrated database is NOT version 0 just because this process cannot
+  // read it. Reporting 0 sends the caller to `planar init`, a write, for
+  // what is an access problem.
+  unwritable_folder_db fixture;
+  auto                 conn = planar::db::connection::open_read_only(fixture.path_.string());
+  REQUIRE(conn.has_value());
+  auto const state = planar::db::assert_schema_compatible(*conn);
+  REQUIRE_FALSE(state.has_value());
+  CHECK_FALSE(state.error().message_.empty());
+  auto const version = planar::db::current_version(*conn);
+  CHECK_FALSE(version.has_value());
+}
+
+TEST_CASE("a database with no version table is still a fresh database at version 0", "[db][migrate][guard][access]") {
+  scratch_db_path path;
+  auto            conn = planar::db::connection::open(path.path_.string());
+  REQUIRE(conn.has_value());
+  auto const state = planar::db::assert_schema_compatible(*conn);
+  REQUIRE(state.has_value());
+  CHECK(state->live_ == 0);
+  CHECK(state->verdict_ == planar::db::schema_compatibility::behind);
+  auto const version = planar::db::current_version(*conn);
+  REQUIRE(version.has_value());
+  CHECK(*version == 0);
+}

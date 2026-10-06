@@ -52,6 +52,17 @@ auto is_busy(const db_error& err) noexcept -> bool {
   return (err.code_ & 0xff) == k_sqlite_busy;
 }
 
+auto is_access_failure(const db_error& err) noexcept -> bool {
+  // SQLITE_PERM, SQLITE_READONLY, SQLITE_IOERR, SQLITE_CANTOPEN.
+  constexpr std::array<int, 4> k_access_codes{3, 8, 10, 14};
+  return std::ranges::contains(k_access_codes, err.code_ & 0xff);
+}
+
+auto access_requirement() noexcept -> std::string_view {
+  return "Planar needs read and write access to that file and to the folder holding it, because SQLite keeps "
+         "its -wal and -shm files beside it; a sandbox or file permissions may be blocking it.";
+}
+
 // --- statement --------------------------------------------------------------
 
 statement::statement(sqlite3_stmt* handle) noexcept : _handle(handle) {
@@ -434,6 +445,21 @@ void connection::set_busy_retry(std::function<bool()> retry) {
 
 auto connection::is_read_only() const noexcept -> bool {
   return _read_only;
+}
+
+auto connection::is_write_protected() const noexcept -> bool {
+  return _handle != nullptr && sqlite3_db_readonly(_handle, "main") == 1;
+}
+
+auto connection::last_error() const -> db_error {
+  if (_handle == nullptr) {
+    return {};
+  }
+  int const code = sqlite3_extended_errcode(_handle);
+  if ((code & 0xff) == SQLITE_OK || (code & 0xff) == SQLITE_ROW || (code & 0xff) == SQLITE_DONE) {
+    return {};
+  }
+  return db_error{.code_ = code, .message_ = sqlite3_errmsg(_handle)};
 }
 
 auto connection::in_transaction() const noexcept -> bool {
