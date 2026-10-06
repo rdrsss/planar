@@ -784,7 +784,6 @@ qr_trap_call() {
       on_err() { printf "\n==> install failed during: queue steps (line %s, exit %s)\n" "$2" "$1" >&2; exit "$1"; }
       trap '"'"'on_err $? $LINENO'"'"' ERR
       source "$QR_LIB"
-      if [[ -n "${QR_OVERRIDE_PY:-}" ]]; then QUEUE_RETIRE_PY="$QR_OVERRIDE_PY"; fi
       "$@" || exit $?
     ' qr-trap-call "$@") >"$QR_CASE/out" 2>"$QR_CASE/err"
 }
@@ -827,14 +826,14 @@ printf 'boom' > "$QR_S/planar.err"
 if qr_trap_call queue_probe_migrate; then fail "a failed migration did not abort under the ERR trap"; fi
 grep -Fq 'planar.db migration failed: boom' "$QR_CASE/err" || fail "the migration failure under the ERR trap lost its message: $(cat "$QR_CASE/err")"
 qr_no_install_failed "a failed migration"
-# A classifier that crashes is a failed probe, reported by the seam.
-qr_setup trap_classifier_crash
+# A probe answer the shell classifier cannot place is a failed probe, reported
+# by the seam, with no on_err message from the classifier's own greps.
+qr_setup trap_classifier_garbage
 printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 1 "$(qr_json_error not_found)"
-printf 'raise SystemExit(5)\n' > "$QR_CASE/crash.py"
-if qr_trap_call QR_OVERRIDE_PY="$QR_CASE/crash.py" queue_probe_migrate; then fail "a crashed probe classifier did not abort"; fi
-grep -Fq 'queue store probe: failed' "$QR_CASE/out" || fail "a crashed classifier was not a failed probe: $(cat "$QR_CASE/out")"
-qr_no_install_failed "a crashed probe classifier"
+qr_reply 1 125 "not json at all"
+if qr_trap_call queue_probe_migrate; then fail "an unclassifiable probe answer did not abort"; fi
+grep -Fq 'queue store probe: failed' "$QR_CASE/out" || fail "an unclassifiable answer was not a failed probe: $(cat "$QR_CASE/out")"
+qr_no_install_failed "an unclassifiable probe answer"
 QR_S=""
 qr_retire_setup trap_oldmax_fails
 qr_store "insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) values (3, 'exited', '/', '[]', 1, 2, 0);"

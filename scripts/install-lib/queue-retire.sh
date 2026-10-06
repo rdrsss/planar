@@ -19,8 +19,10 @@
 # through the caller's log/warn helpers when it defines them, so the
 # installer's framing and warning count apply.
 #
-# The store reader is scripts/install-lib/queue_retire.py, run with python3.
-# Paths reach it only through argv.
+# The queue-store probe is classified in shell (_qr_classify_probe), so an
+# install onto a prefix with a planar.db needs no python3 (decision 1333). The
+# reader of the retired agent.db, scripts/install-lib/queue_retire.py, runs
+# with python3 on the source path only. Paths reach it only through argv.
 #
 # install.sh runs under `set -eEuo pipefail` with an ERR trap (on_err), and
 # -E carries that trap into command substitutions. Every substitution here
@@ -58,25 +60,65 @@ _qr_migrate_cmd_text() {
     "$PLANAR_HOME/planar.db" "$PLANAR_HOME/config.toml" "$PLANAR_HOME/bin/planar"
 }
 
+# _qr_classify_probe RC OUT -- classify one `planar-agent queue status 1
+# --json` answer from its exit status RC and its stdout OUT, with grep and sed
+# only. Sets QR_VERDICT (usable|behind|incompatible|foreign|failed) and
+# QR_DETAIL. The mapping is the probe table of tech spec 656, "Steps, in
+# order", step 3: exit 0 with a status object, or exit 1 with the error tag
+# not_found, is usable; exit 125 with schema_version_behind,
+# queue_schema_incompatible or queue_schema_foreign is behind, incompatible or
+# foreign; everything else, a known tag on the wrong exit status included, is
+# failed. The binary prints refusals as {"error":{"verb":..,"tag":"..",
+# "message":..}} on stdout.
+_qr_classify_probe() {
+  local rc="$1" out="$2" flat tag="" shape is_object=0 has_error=0
+  flat="$(printf '%s' "$out" | tr -d '\r\n')"
+  if printf '%s' "$flat" | grep -qE '^[[:space:]]*\{.*\}[[:space:]]*$'; then is_object=1; fi
+  if printf '%s' "$flat" | grep -qE '"error"[[:space:]]*:'; then
+    has_error=1
+    # The first "tag" string after the "error" object opens.
+    tag="$(printf '%s' "$flat" \
+      | sed -n 's/.*"error"[[:space:]]*:[[:space:]]*{\(.*\)$/\1/p' \
+      | grep -oE '"tag"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+      | sed 's/.*:[[:space:]]*"\([^"]*\)"$/\1/' || true)"
+  fi
+
+  QR_VERDICT="failed"
+  if [[ "$rc" == 0 && "$is_object" == 1 && "$has_error" == 0 ]]; then
+    QR_VERDICT="usable"; QR_DETAIL="exit 0 with a status object"; return 0
+  fi
+  if [[ "$rc" == 1 && "$tag" == "not_found" ]]; then
+    QR_VERDICT="usable"; QR_DETAIL="exit 1, tag not_found"; return 0
+  fi
+  if [[ "$rc" == 125 ]]; then
+    case "$tag" in
+      schema_version_behind)     QR_VERDICT="behind";       QR_DETAIL="exit 125, tag $tag"; return 0 ;;
+      queue_schema_incompatible) QR_VERDICT="incompatible"; QR_DETAIL="exit 125, tag $tag"; return 0 ;;
+      queue_schema_foreign)      QR_VERDICT="foreign";      QR_DETAIL="exit 125, tag $tag"; return 0 ;;
+    esac
+  fi
+  if [[ "$is_object" == 0 ]]; then
+    shape="output that is not JSON"
+  elif [[ -z "$tag" ]]; then
+    shape="JSON with no error tag"
+  else
+    shape="tag $tag"
+  fi
+  QR_DETAIL="exit $rc with $shape"
+}
+
 # _qr_probe -- ask the newly installed planar-agent, read-only and from /,
-# whether the prefix planar.db is usable, and classify the answer with
-# python3. Sets QR_VERDICT (usable|behind|incompatible|foreign|failed),
-# QR_DETAIL and QR_PROBE_STDERR. Never fails itself: an unreadable answer is
-# the verdict `failed`.
+# whether the prefix planar.db is usable, and classify the answer in shell.
+# Sets QR_VERDICT (usable|behind|incompatible|foreign|failed), QR_DETAIL and
+# QR_PROBE_STDERR. Never fails itself: an unreadable answer is the verdict
+# `failed`.
 _qr_probe() {
-  local db="$PLANAR_HOME/planar.db" out rc errf line
+  local db="$PLANAR_HOME/planar.db" out rc errf
   errf="$(mktemp)"
   out="$(trap - ERR; cd / && PLANAR_DB="$db" "$PLANAR_HOME/bin/planar-agent" queue status 1 --json 2>"$errf")" && rc=0 || rc=$?
   QR_PROBE_STDERR="$(cat "$errf" 2>/dev/null || true)"
   rm -f "$errf"
-  line="$(trap - ERR; printf '%s' "$out" | python3 "$QUEUE_RETIRE_PY" probe-verdict "$rc" 2>&1)" \
-    || line="failed	the probe classifier failed: $line"
-  QR_VERDICT="${line%%	*}"
-  QR_DETAIL="${line#*	}"
-  case "$QR_VERDICT" in
-    usable|behind|incompatible|foreign) ;;
-    *) QR_VERDICT="failed" ;;
-  esac
+  _qr_classify_probe "$rc" "$out"
   _qr_log "queue store probe: $QR_VERDICT ($QR_DETAIL)"
 }
 
@@ -95,11 +137,6 @@ queue_probe_migrate() {
     _qr_log "no $db yet; skipping the queue store probe (it never creates one)"
     return 0
   fi
-  if ! command -v python3 >/dev/null 2>&1; then
-    _qr_fail "python3 is required to read the queue store probe of $db; agent.db was NOT retired. Install python3, then re-run ./install.sh."
-    return 1
-  fi
-
   _qr_probe
   case "$QR_VERDICT" in
     usable)

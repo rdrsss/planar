@@ -171,3 +171,19 @@ if(PLANAR_PORTABLE)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/portable-check.test.py")
   set_tests_properties(portable.binaries portable.inspector PROPERTIES LABELS "portable")
 endif()
+
+# --- the installer's queue-store probe, with no python3 (plan 1122 M2) -------
+#
+# `scripts/install-lib/queue_probe.test.py` drives install.sh's
+# `queue_probe_migrate` under a PATH holding base utilities only, against the
+# REAL built `planar-agent` and `planar` and scratch databases. A plain
+# add_test (not a Catch2 case) because the seeding harness is Python; the
+# installer path it checks uses none. Needs `planar_cmd_planar` and
+# `planar_cmd_planar_agent` built; no link edge is created.
+if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME install.queue_probe
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/install-lib/queue_probe.test.py"
+      "$<TARGET_FILE:planar_cmd_planar_agent>" "$<TARGET_FILE:planar_cmd_planar>")
+  set_tests_properties(install.queue_probe PROPERTIES LABELS "install_queue_probe" TIMEOUT 300)
+endif()
