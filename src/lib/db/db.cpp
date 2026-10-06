@@ -270,18 +270,21 @@ connection::connection(sqlite3* handle, bool read_only) noexcept : _handle(handl
 }
 
 connection::connection(connection&& other) noexcept
-    : _handle(other._handle), _read_only(other._read_only), _write_allowlist(std::move(other._write_allowlist)) {
+    : _handle(other._handle), _read_only(other._read_only), _write_allowlist(std::move(other._write_allowlist)),
+      _busy_retry(std::move(other._busy_retry)) {
   other._handle = nullptr;
 }
 
 connection& connection::operator=(connection&& other) noexcept {
   if (this != &other) {
     if (_handle != nullptr) {
+      sqlite3_busy_handler(_handle, nullptr, nullptr);
       sqlite3_close_v2(_handle);
     }
     _handle          = other._handle;
     _read_only       = other._read_only;
     _write_allowlist = std::move(other._write_allowlist);
+    _busy_retry      = std::move(other._busy_retry);
     other._handle    = nullptr;
   }
   return *this;
@@ -289,6 +292,7 @@ connection& connection::operator=(connection&& other) noexcept {
 
 connection::~connection() {
   if (_handle != nullptr) {
+    sqlite3_busy_handler(_handle, nullptr, nullptr);
     sqlite3_close_v2(_handle);
   }
 }
@@ -374,6 +378,10 @@ auto percent_encode_uri_path(std::string_view path) -> std::string {
 } // namespace
 
 auto connection::open_read_only(std::string_view path) -> std::expected<connection, db_error> {
+  return open_read_only(path, 5000);
+}
+
+auto connection::open_read_only(std::string_view path, int busy_timeout_ms) -> std::expected<connection, db_error> {
   // Both the `mode=ro` URI parameter and SQLITE_OPEN_READONLY are used
   // together (docs/architecture.md-equivalent rationale ported from
   // zig/src/db/sqlite.zig's openReadOnly doc comment): the flag is
@@ -393,6 +401,7 @@ auto connection::open_read_only(std::string_view path) -> std::expected<connecti
     return std::unexpected(err);
   }
   sqlite3_extended_result_codes(handle, 1);
+  sqlite3_busy_timeout(handle, std::max(0, busy_timeout_ms));
 
   connection conn(handle, true);
   if (auto pragma = conn.execute("pragma foreign_keys = on;"); !pragma) {
@@ -402,10 +411,25 @@ auto connection::open_read_only(std::string_view path) -> std::expected<connecti
   // (waiting out a writer's lock is not itself a write), but never
   // `journal_mode` -- switching it IS a write, and SQLITE_OPEN_READONLY
   // would refuse it outright.
-  if (auto pragma = conn.execute("pragma busy_timeout = 5000;"); !pragma) {
-    return std::unexpected(pragma.error());
-  }
   return conn;
+}
+
+void connection::set_busy_timeout(int busy_timeout_ms) noexcept {
+  if (_handle != nullptr) {
+    sqlite3_busy_timeout(_handle, std::max(0, busy_timeout_ms));
+    _busy_retry.reset();
+  }
+}
+
+void connection::set_busy_retry(std::function<bool()> retry) {
+  if (_handle == nullptr) {
+    return;
+  }
+  auto replacement = std::make_unique<std::function<bool()>>(std::move(retry));
+  sqlite3_busy_handler(
+      _handle, [](void* opaque, int) -> int { return (*static_cast<std::function<bool()>*>(opaque))() ? 1 : 0; },
+      replacement.get());
+  _busy_retry = std::move(replacement);
 }
 
 auto connection::is_read_only() const noexcept -> bool {

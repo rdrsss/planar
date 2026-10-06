@@ -420,3 +420,76 @@ TEST_CASE("query_status: settings without a slot count or grace period report bo
   REQUIRE((tighter.has_value() && tighter->has_value()));
   CHECK((*tighter)->live == std::optional<bool>{false});
 }
+
+TEST_CASE("bounded wait uses one deadline across repeated reads and preserves the last status",
+          "[engine][hostqueue][bqw1123-deadlines]") {
+  std::int64_t     now   = 100;
+  int              reads = 0;
+  hq::wait_runtime runtime{
+      .now_ms             = [&] { return std::optional{now}; },
+      .interrupted_signal = [] { return std::optional<int>{}; },
+      .read               = [&](const std::function<std::expected<int, hq::status_error>()>& budget)
+          -> std::expected<hq::wait_status_lookup, hq::status_error> {
+        auto remaining = budget();
+        REQUIRE(remaining.has_value());
+        CHECK(*remaining == 2'500 - reads * 1'000);
+        ++reads;
+        hq::queue_status status;
+        status.state = hq::status_state::waiting;
+        status.live  = true;
+        return hq::wait_status_lookup{.status = status, .observed_seq = 4};
+      },
+      .sleep =
+          [&](std::chrono::milliseconds span) {
+            CHECK(span.count() <= 1'000);
+            now += span.count();
+          },
+  };
+  auto result = hq::observe_wait(2'500, runtime, now);
+  CHECK(result.reason == hq::wait_reason::timed_out);
+  CHECK(result.result_exit_code == 124);
+  CHECK(result.elapsed_ms == 2'500);
+  CHECK(result.snapshot->status->state == hq::status_state::waiting);
+  CHECK(reads == 3);
+}
+
+TEST_CASE("bounded wait stops on interruption and a busy read that consumes the deadline",
+          "[engine][hostqueue][bqw1123-deadlines]") {
+  for (bool interrupt : {false, true}) {
+    std::int64_t     now   = 10;
+    int              reads = 0;
+    hq::wait_runtime runtime{
+        .now_ms             = [&] { return std::optional{now}; },
+        .interrupted_signal = [&] { return now >= 20 && interrupt ? std::optional<int>{15} : std::optional<int>{}; },
+        .read               = [&](const std::function<std::expected<int, hq::status_error>()>& budget)
+            -> std::expected<hq::wait_status_lookup, hq::status_error> {
+          ++reads;
+          REQUIRE(budget().has_value());
+          now = 20;
+          return std::unexpected(hq::status_error{.message = "database is locked"});
+        },
+        .sleep = [](std::chrono::milliseconds) { FAIL("a failed read must not sleep"); },
+    };
+    auto result = hq::observe_wait(10, runtime, now);
+    CHECK(result.reason == (interrupt ? hq::wait_reason::interrupted : hq::wait_reason::timed_out));
+    CHECK(result.result_exit_code == (interrupt ? 143 : 124));
+    CHECK(reads == 1);
+  }
+}
+
+TEST_CASE("bounded wait rejects an invalid clock before reading", "[engine][hostqueue][bqw1123-deadlines]") {
+  CHECK(hq::checked_wait_deadline(1, std::numeric_limits<std::int64_t>::max()).error() == "clock_overflow");
+  hq::wait_runtime runtime{
+      .now_ms             = [] { return std::optional<std::int64_t>{}; },
+      .interrupted_signal = [] { return std::optional<int>{}; },
+      .read               = [](const std::function<std::expected<int, hq::status_error>()>&)
+          -> std::expected<hq::wait_status_lookup, hq::status_error> {
+        FAIL("an unavailable clock must stop before reading");
+        return {};
+      },
+      .sleep = [](std::chrono::milliseconds) { FAIL("an unavailable clock must not sleep"); },
+  };
+  auto result = hq::observe_wait(100, runtime, 42);
+  CHECK(result.reason == hq::wait_reason::error);
+  CHECK(result.tag == "clock_unavailable");
+}

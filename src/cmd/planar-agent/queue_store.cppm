@@ -77,6 +77,19 @@ export struct queue_store {
 /// @return The open store, or the refusal naming the tag and the remedy.
 export auto open_queue_store(const env_lookup& env, store_access access) -> std::expected<queue_store, store_refusal>;
 
+/// @brief Opens with a caller-owned monotonic budget checked before each read.
+/// The callback returns the remaining SQLite lock-wait allowance in ms, or
+/// the observer's timeout/interruption refusal. The callback lives through
+/// this synchronous call; no statement or connection is retained on failure.
+export using queue_store_budget = std::function<std::expected<int, store_refusal>()>;
+
+/// @brief Budget-aware read-only open for a logical-job observer.
+/// @param env The invocation's environment.
+/// @param budget Returns the remaining finite allowance before each opening/schema read.
+/// @return An open read-only store, or a refusal.
+export auto open_queue_store_for_wait(const env_lookup& env, const queue_store_budget& budget)
+    -> std::expected<queue_store, store_refusal>;
+
 /// @brief The directory a detached run's `<seq>.log` files go in, for the
 /// database at `db_path`: `<dir>/queue-logs/` when the file is named
 /// `planar.db`, else `<dir>/<stem>.queue-logs/`, where the stem is the file

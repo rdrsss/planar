@@ -201,6 +201,12 @@ auto query_wait_status(db::connection& conn, std::int64_t seq, const status_requ
       return store_failure(in_queue.error());
     }
     if (in_queue->has_value()) {
+      if (check) {
+        auto checked = check();
+        if (!checked) {
+          return std::unexpected(std::move(checked.error()));
+        }
+      }
       auto described = describe_entry(conn, seq, **in_queue, request);
       if (!described) {
         return std::unexpected(std::move(described.error()));

@@ -82,7 +82,23 @@ auto check_readable(db::connection& conn, const std::filesystem::path& path) -> 
 
 } // namespace
 
-auto open_queue_store(const env_lookup& env, store_access access) -> std::expected<queue_store, store_refusal> {
+/// @brief Shares the existing queue handshake with optional observer deadline checks.
+/// @param env The invocation environment that locates the database.
+/// @param access Whether this opening needs read-only or read-write access.
+/// @param budget An optional remaining-budget callback for observation.
+/// @return The checked queue store or a tagged refusal.
+auto open_queue_store_impl(const env_lookup& env, store_access access, const queue_store_budget& budget)
+    -> std::expected<queue_store, store_refusal> {
+  auto remaining = [&]() -> std::expected<int, store_refusal> {
+    if (budget) {
+      return budget();
+    }
+    return k_busy_ms;
+  };
+  auto allowance = remaining();
+  if (!allowance) {
+    return std::unexpected(std::move(allowance.error()));
+  }
   auto const path = resolve_db_path(env);
   if (!path) {
     return refuse(k_tag_store_unreachable,
@@ -92,7 +108,12 @@ auto open_queue_store(const env_lookup& env, store_access access) -> std::expect
     return std::unexpected(std::move(reachable.error()));
   }
 
-  auto opened = access == store_access::read_only ? db::connection::open_read_only(path->string())
+  allowance = remaining();
+  if (!allowance) {
+    return std::unexpected(std::move(allowance.error()));
+  }
+
+  auto opened = access == store_access::read_only ? db::connection::open_read_only(path->string(), *allowance)
                                                   : db::connection::open_existing(path->string(), k_busy_ms);
   if (!opened) {
     return refuse(k_tag_store_unreachable, std::format("cannot open the Planar database {}: {}; check PLANAR_DB and the path's "
@@ -100,7 +121,28 @@ auto open_queue_store(const env_lookup& env, store_access access) -> std::expect
                                                        path->string(), one_line(opened.error().message_)));
   }
   db::connection& conn = *opened;
+  if (budget) {
+    auto budget_copy = budget;
+    conn.set_busy_retry([budget_copy] {
+      auto left = budget_copy();
+      if (!left || *left <= 0) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds{std::min(*left, 10)});
+      return true;
+    });
+  }
+  allowance = remaining();
+  if (!allowance) {
+    return std::unexpected(std::move(allowance.error()));
+  }
+  if (!budget) {
+    conn.set_busy_timeout(*allowance);
+  }
   if (auto readable = check_readable(conn, *path); !readable) {
+    if (auto after = remaining(); !after) {
+      return std::unexpected(std::move(after.error()));
+    }
     return std::unexpected(std::move(readable.error()));
   }
 
@@ -110,8 +152,18 @@ auto open_queue_store(const env_lookup& env, store_access access) -> std::expect
   // way. The handshake's own diagnostics are not written (see
   // `database_policy::verify`, which does write them); what it found is folded
   // into the one refusal line below.
+  allowance = remaining();
+  if (!allowance) {
+    return std::unexpected(std::move(allowance.error()));
+  }
+  if (!budget) {
+    conn.set_busy_timeout(*allowance);
+  }
   auto const state = db::assert_schema_compatible(conn);
   if (!state) {
+    if (auto after = remaining(); !after) {
+      return std::unexpected(std::move(after.error()));
+    }
     return refuse(k_tag_store_unreadable, std::format("cannot read the schema version of {}: {}; try again", path->string(),
                                                       one_line(state.error().message_)));
   }
@@ -123,7 +175,17 @@ auto open_queue_store(const env_lookup& env, store_access access) -> std::expect
         std::format("schema version {} in {} is older than this binary's {}; run `planar init`", live, path->string(), embedded));
   }
 
+  allowance = remaining();
+  if (!allowance) {
+    return std::unexpected(std::move(allowance.error()));
+  }
+  if (!budget) {
+    conn.set_busy_timeout(*allowance);
+  }
   if (auto checked = hq::check_queue_schema(conn); !checked) {
+    if (auto after = remaining(); !after) {
+      return std::unexpected(std::move(after.error()));
+    }
     auto const& why = checked.error();
     if (why.kind == hq::queue_schema_failure::query_failed) {
       return refuse(k_tag_store_unreadable,
@@ -142,7 +204,20 @@ auto open_queue_store(const env_lookup& env, store_access access) -> std::expect
                                    "by this binary: {}; install a newer build",
                                    path->string(), live, embedded, one_line(why.message)));
   }
+  allowance = remaining();
+  if (!allowance) {
+    return std::unexpected(std::move(allowance.error()));
+  }
   return queue_store{.conn = std::move(*opened), .path = *path};
+}
+
+auto open_queue_store(const env_lookup& env, store_access access) -> std::expected<queue_store, store_refusal> {
+  return open_queue_store_impl(env, access, {});
+}
+
+auto open_queue_store_for_wait(const env_lookup& env, const queue_store_budget& budget)
+    -> std::expected<queue_store, store_refusal> {
+  return open_queue_store_impl(env, store_access::read_only, budget);
 }
 
 auto queue_log_directory(const std::filesystem::path& db_path) -> std::filesystem::path {

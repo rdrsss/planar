@@ -80,4 +80,102 @@ auto wait_observer::step(const wait_status_lookup& snapshot, std::int64_t now_mo
   return {};
 }
 
+auto checked_wait_deadline(std::int64_t timeout_ms, std::int64_t started_mono_ms)
+    -> std::expected<std::int64_t, std::string_view> {
+  if (timeout_ms <= 0 || timeout_ms > 86'400'000) {
+    return std::unexpected("invalid_observer_runtime");
+  }
+  if (started_mono_ms > std::numeric_limits<std::int64_t>::max() - timeout_ms) {
+    return std::unexpected("clock_overflow");
+  }
+  return started_mono_ms + timeout_ms;
+}
+
+auto observe_wait(std::int64_t timeout_ms, const wait_runtime& runtime, std::int64_t started_mono_ms) -> wait_result {
+  wait_result result;
+  result.result_exit_code = 125;
+  if (!runtime.now_ms || !runtime.interrupted_signal || !runtime.read || !runtime.sleep) {
+    result.tag = "invalid_observer_runtime";
+    return result;
+  }
+  auto const deadline_result = checked_wait_deadline(timeout_ms, started_mono_ms);
+  if (!deadline_result) {
+    result.tag = std::string{deadline_result.error()};
+    return result;
+  }
+  auto const deadline = *deadline_result;
+  auto       last_now = started_mono_ms;
+  auto const clock    = [&]() -> std::optional<std::int64_t> {
+    auto now = runtime.now_ms();
+    if (!now || *now < last_now) {
+      result.reason           = wait_reason::error;
+      result.tag              = now ? "clock_backwards" : "clock_unavailable";
+      result.result_exit_code = 125;
+      return std::nullopt;
+    }
+    last_now          = *now;
+    result.elapsed_ms = *now - started_mono_ms;
+    return now;
+  };
+  auto const check = [&]() -> std::expected<int, status_error> {
+    if (auto signal = runtime.interrupted_signal()) {
+      result.reason           = wait_reason::interrupted;
+      result.result_exit_code = 128 + *signal;
+      return std::unexpected(status_error{.kind = status_error_kind::store, .message = "observation interrupted"});
+    }
+    auto now = clock();
+    if (!now) {
+      return std::unexpected(status_error{.kind = status_error_kind::store, .message = "monotonic clock failed"});
+    }
+    if (*now >= deadline) {
+      result.reason           = wait_reason::timed_out;
+      result.result_exit_code = 124;
+      return std::unexpected(status_error{.kind = status_error_kind::store, .message = "observation deadline expired"});
+    }
+    return static_cast<int>(std::min<std::int64_t>(deadline - *now, std::numeric_limits<int>::max()));
+  };
+
+  wait_observer observer;
+  for (;;) {
+    if (!check()) {
+      return result;
+    }
+    auto snapshot = runtime.read(check);
+    // A busy read can exhaust the observation budget. Its expiry takes
+    // precedence over SQLite's error, but a completed read is still judged.
+    if (!snapshot) {
+      if (!check()) {
+        return result;
+      }
+      result.error            = std::move(snapshot.error());
+      result.tag              = "store_unreadable";
+      result.result_exit_code = 125;
+      return result;
+    }
+    result.snapshot = std::move(*snapshot);
+    auto now        = clock();
+    if (!now) {
+      return result;
+    }
+    if (*now >= deadline) {
+      result.reason           = wait_reason::timed_out;
+      result.result_exit_code = 124;
+      return result;
+    }
+    auto const decision = observer.step(*result.snapshot, *now);
+    if (decision.reason != wait_reason::pending) {
+      result.reason           = decision.reason;
+      result.result_exit_code = decision.result_exit_code;
+      if (decision.tag) {
+        result.tag = std::string{*decision.tag};
+      }
+      return result;
+    }
+    if (!check()) {
+      return result;
+    }
+    runtime.sleep(std::chrono::milliseconds{std::min<std::int64_t>(1'000, deadline - last_now)});
+  }
+}
+
 } // namespace planar::engine::hostqueue
