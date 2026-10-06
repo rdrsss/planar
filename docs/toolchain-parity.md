@@ -230,6 +230,33 @@ has since been exercised against apt.llvm.org's `/usr/lib/llvm-23`
 (task 6936): discovery accepts it, and the tree builds and runs its suite.
 See the platform table's Linux row for what was and was not measured.
 
+## Portable distribution builds
+
+`PLANAR_PORTABLE` defaults to `OFF`. The `debug` and `release` presets keep
+their shared C++ runtime link and toolchain rpath. The `dist` preset inherits
+`release`, enables `PLANAR_PORTABLE` and `PLANAR_VERSION_META`, reads
+`PLANAR_RELEASE_VERSION` from the environment, and sets the macOS deployment
+target to `26.0` (the setting has no effect on Linux). A tagged cut can pass
+its version explicitly:
+
+```sh
+cmake --preset dist -DPLANAR_RELEASE_VERSION=v0.1.0
+cmake --build --preset dist
+```
+
+Portable linking uses `-nostdlib++` and the resolved toolchain library
+directory's `libc++.a` and `libc++abi.a`, plus `libunwind.a` on Linux. The
+archives follow target libraries on the link line, and the toolchain rpath
+is omitted. On macOS each archive uses Apple's `-load_hidden` linker option:
+system frameworks load Apple's libc++ transitively, and exposing the pinned
+runtime's globals caused an invalid free in `locale::~locale` during CLI
+startup. Hiding the archive symbols keeps the two runtimes' state separate.
+Configure refuses a missing archive and names its path. Switching
+`PLANAR_PORTABLE` back to `OFF` restores the shared runtime link. The
+macOS distribution floor is macOS 26.0; Linux bundles target glibc 2.36.
+The portable option controls the C++ runtime; Linux curl's static TLS
+configuration and binary dependency inspection are separate release gates.
+
 ## Derived import-std / embed flag set (macOS, verified)
 
 Configure-time flags, mirroring the pattern in `centurion/CMakeLists.txt`

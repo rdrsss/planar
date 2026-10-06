@@ -39,6 +39,8 @@ include_guard(GLOBAL)
 # because `import std` support is what the floor is protecting.
 set(PLANAR_LLVM_MAJOR_FLOOR 23)
 
+option(PLANAR_PORTABLE "Link the pinned C++ runtime statically for release bundles" OFF)
+
 # --- validation --------------------------------------------------------
 #
 # A prefix is usable only if it provides ALL of: the two compilers, a
@@ -235,17 +237,45 @@ if(UNIX AND NOT APPLE)
 endif()
 set(CMAKE_CXX_FLAGS "-stdlib=libc++ -nostdinc++ -isystem ${PLANAR_LLVM_PREFIX}/include/c++/v1${_planar_llvm_extra_cxx_flags}"
     CACHE STRING "C++ flags" FORCE)
-# `-lc++abi` on non-Apple UNIX only. On macOS libc++abi is folded into
-# libc++, so the driver needs nothing extra; on Linux it is a separate DSO
-# and the driver does NOT add it, so a static archive that references e.g.
-# `std::length_error::~length_error` (first-party `planar_cliapp` does) fails
-# to link with "libc++abi.so.1: DSO missing from command line". Appending it
-# on Apple too would change the pinned flag set docs/toolchain-parity.md
-# records byte-for-byte.
-set(_planar_llvm_abi_flag "")
-if(UNIX AND NOT APPLE)
-  set(_planar_llvm_abi_flag " -lc++abi")
+if(PLANAR_PORTABLE)
+  # Keep archives after objects and target libraries: Linux linkers resolve
+  # static archive references in command-line order. -nostdlib++ prevents
+  # clang from adding a shared libc++ after our explicit runtime archives.
+  set(_planar_runtime_archives libc++.a libc++abi.a)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND _planar_runtime_archives libunwind.a)
+  endif()
+  set(_planar_runtime_libraries "")
+  foreach(_archive IN LISTS _planar_runtime_archives)
+    set(_path "${_planar_llvm_libdir}/${_archive}")
+    if(NOT EXISTS "${_path}")
+      message(FATAL_ERROR
+        "PLANAR_PORTABLE requires ${_path}; install the pinned LLVM static runtime archives or configure with -DPLANAR_PORTABLE=OFF.")
+    endif()
+    if(APPLE)
+      # System frameworks load Apple's libc++ transitively. Hide our archive
+      # globals so its locale/ABI state cannot interpose with the pinned
+      # runtime (a plain static link aborts in locale::~locale on startup).
+      string(APPEND _planar_runtime_libraries " -Wl,-load_hidden,\"${_path}\"")
+    else()
+      string(APPEND _planar_runtime_libraries " \"${_path}\"")
+    endif()
+  endforeach()
+  string(STRIP "${_planar_runtime_libraries}" _planar_runtime_libraries)
+  set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++ -nostdlib++"
+      CACHE STRING "Executable linker flags" FORCE)
+  set(CMAKE_CXX_STANDARD_LIBRARIES "${_planar_runtime_libraries}"
+      CACHE STRING "C++ runtime libraries" FORCE)
+else()
+  # Preserve the developer link: Apple folds the ABI into libc++; Linux
+  # needs the separate shared ABI library explicitly on its link line.
+  set(_planar_llvm_abi_flag "")
+  if(UNIX AND NOT APPLE)
+    set(_planar_llvm_abi_flag " -lc++abi")
+  endif()
+  set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++ -L${_planar_llvm_libdir} -Wl,-rpath,${_planar_llvm_libdir}${_planar_llvm_abi_flag}"
+      CACHE STRING "Executable linker flags" FORCE)
+  # Clear archives if an existing build tree switches back to shared mode.
+  set(CMAKE_CXX_STANDARD_LIBRARIES "" CACHE STRING "C++ runtime libraries" FORCE)
 endif()
-set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++ -L${_planar_llvm_libdir} -Wl,-rpath,${_planar_llvm_libdir}${_planar_llvm_abi_flag}"
-    CACHE STRING "Executable linker flags" FORCE)
 set(CMAKE_CXX_STDLIB_MODULES_JSON "${_planar_llvm_json}" CACHE FILEPATH "libc++ import-std module manifest" FORCE)
