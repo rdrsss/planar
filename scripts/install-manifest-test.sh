@@ -130,7 +130,8 @@ assert_absent "$UNINSTALL_PREFIX/bin"
 assert_absent "$UNINSTALL_PREFIX/skills"
 assert_absent "$UNINSTALL_PREFIX/install-manifest.json"
 
-# A prefix whose only would-be ownership signal is agent.db is NOT a Planar
+# A prefix whose only would-be ownership signal is agent.db (it holds no data
+# path either: the list names planar.db, never agent.db) is NOT a Planar
 # install any more (plan 1089): the uninstall-side ownership guard refuses it
 # without --force and removes nothing.
 AGENT_ONLY_HOME="$TMP/agent_only_home"

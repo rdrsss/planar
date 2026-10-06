@@ -26,9 +26,10 @@
 #                 difference.
 #       Status 1: ROOT is an existing directory that is not empty and carries
 #                 none of: the install stamp, an executable bin/planar,
-#                 planar.db, a valid recovery journal, a listed data path
-#                 (data-paths.sh: workbench/, config.toml, ...; an uninstall
-#                 leaves these behind). FORCE=1 adopts it.
+#                 planar.db, a valid recovery journal, or (only when ROOT is
+#                 $HOME/.planar) a listed data path (data-paths.sh: workbench/,
+#                 config.toml, ...; an uninstall leaves these behind).
+#                 FORCE=1 adopts it.
 #       A refusal prints one line to stderr naming the path and the rule. The
 #       function never removes, creates or writes anything and never exits; the
 #       caller turns the status into its exit code.
@@ -140,16 +141,19 @@ planar_prefix_guard() {
   if recovery_journal_valid "$canon"; then
     return 0
   fi
-  # Preserved Planar data is ownership evidence, with or without other files
-  # beside it: an uninstall leaves the data paths behind and removes the stamp
-  # and bin/. Files that are not listed data paths are not evidence.
-  if planar_root_has_data_path "$canon"; then
+  # Preserved Planar data is ownership evidence only in the directory that is
+  # the defined home of the data paths, $HOME/.planar (decision 1329): an
+  # uninstall leaves them there and removes the stamp and bin/. Any other
+  # directory can hold a models/ or src/ for its own reasons, so a data-path
+  # name there is not evidence and needs the classic signs or --force.
+  if [ -n "$home_canon" ] && { [ "$canon" = "$home_canon/.planar" ] || [ "$canon" -ef "$HOME/.planar" ]; } \
+    && planar_root_has_data_path "$canon"; then
     return 0
   fi
   if [ "$force" = "1" ]; then
     return 0
   fi
-  printf '%s does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp, no valid recovery journal, no Planar data path). Refusing to %s it. Pass the correct --prefix, or re-run with --force to %s it anyway.\n' "$canon" "$op" "$verb" >&2
+  printf '%s does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp, no valid recovery journal, no Planar data path in \$HOME/.planar). Refusing to %s it. Pass the correct --prefix, or re-run with --force to %s it anyway.\n' "$canon" "$op" "$verb" >&2
   return 1
 }
 

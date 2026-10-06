@@ -23,7 +23,10 @@
 #                          $HOME, so the location is $PLANAR_LOCAL_HOME/.planar/local)
 #   PLANAR_TEMPLATES_DIR   templates/
 # A variable that is unset or empty relocates nothing (the runtime ignores an
-# empty PLANAR_CONFIG_PATH and PLANAR_TEMPLATES_DIR the same way). One that
+# empty PLANAR_CONFIG_PATH and PLANAR_TEMPLATES_DIR the same way; it reads an
+# empty PLANAR_DB as the empty path, so treating it as unset here is a
+# deliberate difference in the safe direction: the default location stays
+# protected). One that
 # resolves to the default location, under the install root or under
 # $HOME/.planar, relocates nothing either. A relative value is taken against the
 # current directory. A leading `~/` is expanded against $HOME exactly where the
@@ -47,8 +50,9 @@
 #   planar_root_has_data_path ROOT
 #       Status 0 when ROOT contains a data path, at its default location under
 #       ROOT or at a relocated one inside ROOT. This is ownership evidence for
-#       planar_prefix_guard: an uninstall leaves data behind and removes the
-#       stamp and bin/. Unknown files alone are not evidence.
+#       planar_prefix_guard, which accepts it only for $HOME/.planar: an
+#       uninstall leaves data behind and removes the stamp and bin/. Unknown
+#       files alone are not evidence.
 #   planar_data_paths_list ROOT
 #       One line per data path, canonical order: NAME|KIND|LOCATION|RELOCATED_BY
 #       KIND is `file` or `dir`; LOCATION is where the path actually lives;
