@@ -254,8 +254,21 @@ startup. Hiding the archive symbols keeps the two runtimes' state separate.
 Configure refuses a missing archive and names its path. Switching
 `PLANAR_PORTABLE` back to `OFF` restores the shared runtime link. The
 macOS distribution floor is macOS 26.0; Linux bundles target glibc 2.36.
-The portable option controls the C++ runtime; Linux curl's static TLS
-configuration and binary dependency inspection are separate release gates.
+On Linux portable builds, curl discovers static OpenSSL archives and disables
+configure-host CA bundle detection. It uses `/etc/ssl/certs` on the runtime
+host and enables OpenSSL's default trust-store fallback. The portable Linux
+HTTP transport clears curl 8.7.1's literal `none` CA filename (CPM passes a
+scoped normal variable, while curl removes only the cache entry). It also
+loads `/etc/pki/tls/certs/ca-bundle.crt` when present: curl's OpenSSL fallback
+does not run when a CA directory is configured. Certificate and hostname
+verification remain enabled. Ordinary Linux builds
+retain curl's defaults, and macOS continues to use SecureTransport. Because
+OpenSSL is frozen into a portable Linux binary, TLS fixes reach operators
+through a new Planar release. When the system OpenSSL's static pkg-config
+dependencies include zstd (as on Trixie with OpenSSL 3.5), configure requires
+`libzstd.a` and resolves that dependency to the archive as well. Binary
+dependency and clean-host trust checks
+remain required release gates.
 
 ## Derived import-std / embed flag set (macOS, verified)
 
