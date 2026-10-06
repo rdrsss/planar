@@ -247,7 +247,13 @@ cmake --build --preset dist
 Portable linking uses `-nostdlib++` and the resolved toolchain library
 directory's `libc++.a` and `libc++abi.a`, plus `libunwind.a` on Linux. The
 archives follow target libraries on the link line, and the toolchain rpath
-is omitted. On macOS each archive uses Apple's `-load_hidden` linker option:
+is omitted. Linux uses `--unwindlib=none` to prevent Clang from adding its
+default shared `libgcc_s` unwinder alongside the explicit static archive;
+compiler builtins and startup objects remain enabled. The native host system
+selects the unwinder when CMake first reads the toolchain before initializing
+the target system name; an explicitly configured cross target takes precedence.
+The first-read regression probe runs on Linux with
+`cmake -DPLANAR_LLVM_PREFIX=/usr/lib/llvm-23 -P scripts/toolchain-probes/probe_portable_linux.cmake`. On macOS each archive uses Apple's `-load_hidden` linker option:
 system frameworks load Apple's libc++ transitively, and exposing the pinned
 runtime's globals caused an invalid free in `locale::~locale` during CLI
 startup. Hiding the archive symbols keeps the two runtimes' state separate.

@@ -241,9 +241,19 @@ if(PLANAR_PORTABLE)
   # Keep archives after objects and target libraries: Linux linkers resolve
   # static archive references in command-line order. -nostdlib++ prevents
   # clang from adding a shared libc++ after our explicit runtime archives.
+  # CMake first reads a native toolchain before initializing SYSTEM_NAME.
+  # Honor an explicit cross target; otherwise use the native host on that read.
+  set(_planar_runtime_system "${CMAKE_SYSTEM_NAME}")
+  if(NOT _planar_runtime_system)
+    set(_planar_runtime_system "${CMAKE_HOST_SYSTEM_NAME}")
+  endif()
   set(_planar_runtime_archives libc++.a libc++abi.a)
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(_planar_runtime_unwind_flag "")
+  if(_planar_runtime_system STREQUAL "Linux")
     list(APPEND _planar_runtime_archives libunwind.a)
+    # Supply the pinned archive ourselves, rather than clang's default
+    # libgcc_s unwinder. Compiler builtins and startup objects remain enabled.
+    set(_planar_runtime_unwind_flag " --unwindlib=none")
   endif()
   set(_planar_runtime_libraries "")
   foreach(_archive IN LISTS _planar_runtime_archives)
@@ -262,7 +272,7 @@ if(PLANAR_PORTABLE)
     endif()
   endforeach()
   string(STRIP "${_planar_runtime_libraries}" _planar_runtime_libraries)
-  set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++ -nostdlib++"
+  set(CMAKE_EXE_LINKER_FLAGS "-stdlib=libc++ -nostdlib++${_planar_runtime_unwind_flag}"
       CACHE STRING "Executable linker flags" FORCE)
   set(CMAKE_CXX_STANDARD_LIBRARIES "${_planar_runtime_libraries}"
       CACHE STRING "C++ runtime libraries" FORCE)
