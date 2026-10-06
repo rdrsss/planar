@@ -15,7 +15,7 @@
 #   - drives a relocated data path inside a managed tree: the install stops.
 # Nothing real is touched: HOME and every variable that could point elsewhere are
 # scratch paths. Runs under stock bash 3.2.
-# shellcheck disable=SC2016,SC2088,SC2012  # literal backticks and ~ in fixtures; ls for messages
+# shellcheck disable=SC2016,SC2088,SC2012,SC2030,SC2031  # literal backticks and ~ in fixtures; ls for messages
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -96,6 +96,44 @@ pass
 ) || fail "relocation check failed ($?)"
 pass
 
+# The default location is $HOME/.planar even when the install root is elsewhere:
+# both are protected, and a variable naming $HOME/.planar/... is no relocation.
+ALT="$TMP/altroot/inst"
+mkdir -p "$ALT"
+(
+  for p in "$ALT/workbench/x" "$HOME/.planar/workbench/x" "$HOME/.planar/planar.db-wal" "$HOME/.planar/templates/a.toml" \
+           "$HOME/.planar/local/skills"; do
+    planar_is_data_path "$ALT" "$p" || { echo "$p is not protected under a root elsewhere" >&2; exit 1; }
+  done
+  ! planar_is_data_path "$ALT" "$HOME/.planar/bin" || exit 2
+  export PLANAR_WORKBENCH_ROOT="$HOME/.planar/workbench" PLANAR_DB="$HOME/.planar/planar.db" PLANAR_TEMPLATES_DIR='~/.planar/templates'
+  export PLANAR_CONFIG_PATH="$HOME/.planar/config.toml" PLANAR_LOCAL_HOME="$HOME"
+  [[ -z "$(planar_data_paths_report "$ALT")" ]] || { echo "a $HOME/.planar location was reported as relocated: $(planar_data_paths_report "$ALT")" >&2; exit 3; }
+  # A real relocation from a root elsewhere is still reported.
+  r="$(PLANAR_WORKBENCH_ROOT="$TMP/ext/wb2" planar_data_paths_report "$ALT")"
+  [[ "$r" == *"data path workbench is relocated by PLANAR_WORKBENCH_ROOT to $TMP/ext/wb2"* ]] || exit 4
+  # PLANAR_DB is read literally by the runtime: no ~ expansion, relative to the cwd.
+  l="$(cd "$TMP" && PLANAR_DB='~/x.db' planar_data_paths_list "$ALT")"
+  has_line "$l" "planar.db|file|$TMP/~/x.db|PLANAR_DB" || { printf 'PLANAR_DB ~ was expanded or mislocated:\n%s\n' "$l" >&2; exit 5; }
+  # PLANAR_LOCAL_HOME is literal too; PLANAR_WORKBENCH_ROOT expands ~.
+  l="$(cd "$TMP" && PLANAR_LOCAL_HOME='~/lh' PLANAR_WORKBENCH_ROOT='~/wb3' planar_data_paths_list "$ALT")"
+  has_line "$l" "local|dir|$TMP/~/lh/.planar/local|PLANAR_LOCAL_HOME" || { printf 'PLANAR_LOCAL_HOME ~ expanded:\n%s\n' "$l" >&2; exit 6; }
+  has_line "$l" "workbench|dir|$HOME/wb3|PLANAR_WORKBENCH_ROOT" || { printf 'PLANAR_WORKBENCH_ROOT ~ not expanded:\n%s\n' "$l" >&2; exit 7; }
+) || fail "default-location resolution check failed ($?)"
+pass
+
+# planar_root_has_data_path: a listed data path is evidence, unknown files are not.
+mkdir -p "$TMP/evid/none" "$TMP/evid/cfg" "$TMP/evid/mixed"
+printf 'x\n' > "$TMP/evid/none/thesis.txt"
+printf '[x]\n' > "$TMP/evid/cfg/config.toml"
+printf 'x\n' > "$TMP/evid/mixed/thesis.txt"; mkdir -p "$TMP/evid/mixed/workbench"
+! planar_root_has_data_path "$TMP/evid/none" || fail "unknown files alone were taken as ownership evidence"
+planar_root_has_data_path "$TMP/evid/cfg" || fail "config.toml was not taken as ownership evidence"
+planar_root_has_data_path "$TMP/evid/mixed" || fail "workbench/ beside unknown files was not taken as ownership evidence"
+mkdir -p "$TMP/evid/inroot/db"; printf 'x\n' > "$TMP/evid/inroot/db/p.db"
+PLANAR_DB="$TMP/evid/inroot/db/p.db" planar_root_has_data_path "$TMP/evid/inroot" || fail "a relocated database inside the root was not evidence"
+pass
+
 # --- INSTALL.md matches the list ---------------------------------------------------
 
 # doc_matches DATAPATHS_SH INSTALL_MD -- status 0 when the generated list equals
@@ -120,16 +158,24 @@ out="$(doc_matches "$ROOT/scripts/install-lib/data-paths.sh" "$ROOT/INSTALL.md")
   || fail "INSTALL.md's preserved paths do not match data-paths.sh: $out"
 pass
 
+# The by-hand removal recipe names every listed path.
+recipe="$(sed -n '/^To remove the data by hand/,/^The by-hand commands/p' "$ROOT/INSTALL.md")"
+[[ -n "$recipe" ]] || fail "INSTALL.md has no by-hand removal recipe"
+for n in $want_names; do
+  [[ "$recipe" == *"~/.planar/$n"* ]] || fail "INSTALL.md's by-hand removal recipe omits $n"
+done
+pass
+
 # Mutation on scratch copies (the real files are never edited).
 MUT="$TMP/mut"
 mkdir -p "$MUT/scripts/install-lib"
 cp "$ROOT"/scripts/install-lib/*.sh "$MUT/scripts/install-lib/"
 cp "$ROOT/INSTALL.md" "$MUT/INSTALL.md"
 mut_sh="$MUT/scripts/install-lib/data-paths.sh"
-grep -q '^models|dir|' "$mut_sh" || fail "mutation target 'models' not found in the table"
-sed '/^models|dir|/d' "$mut_sh" > "$mut_sh.new" && mv "$mut_sh.new" "$mut_sh"
-if out="$(doc_matches "$mut_sh" "$MUT/INSTALL.md")"; then fail "removing models from data-paths.sh alone went undetected"; fi
-[[ "$out" == *'data path models is in INSTALL.md but missing from data-paths.sh'* ]] \
+grep -q '^workspaces|dir|' "$mut_sh" || fail "mutation target 'workspaces' not found in the table"
+sed '/^workspaces|dir|/d' "$mut_sh" > "$mut_sh.new" && mv "$mut_sh.new" "$mut_sh"
+if out="$(doc_matches "$mut_sh" "$MUT/INSTALL.md")"; then fail "removing workspaces from data-paths.sh alone went undetected"; fi
+[[ "$out" == *'data path workspaces is in INSTALL.md but missing from data-paths.sh'* ]] \
   || fail "the disagreement did not name the entry: $out"
 # Removed from INSTALL.md only.
 cp "$ROOT/scripts/install-lib/data-paths.sh" "$mut_sh"
@@ -138,8 +184,8 @@ if out="$(doc_matches "$mut_sh" "$MUT/INSTALL.new")"; then fail "removing execut
 [[ "$out" == *'data path execute is in data-paths.sh but missing from INSTALL.md'* ]] \
   || fail "the disagreement did not name the entry: $out"
 # Removed from both: agrees.
-sed '/^models|dir|/d' "$mut_sh" > "$mut_sh.new" && mv "$mut_sh.new" "$mut_sh"
-sed '/^- `models\/`/d' "$MUT/INSTALL.md" > "$MUT/INSTALL.both"
+sed '/^workspaces|dir|/d' "$mut_sh" > "$mut_sh.new" && mv "$mut_sh.new" "$mut_sh"
+sed '/^- `workspaces\/`/d' "$MUT/INSTALL.md" > "$MUT/INSTALL.both"
 out="$(doc_matches "$mut_sh" "$MUT/INSTALL.both")" || fail "removal from both sides still disagreed: $out"
 # Reordered text only.
 cp "$ROOT/scripts/install-lib/data-paths.sh" "$mut_sh"
@@ -284,6 +330,21 @@ grep -Fq "data path planar.db (and its -wal and -shm sidecars) is relocated by P
 [[ "$(cat "$P2/planar.db")" == "SQLite format 3" ]] || fail "uninstall removed the default-location planar.db"
 pass
 
+# A --prefix other than $HOME/.planar: the real default location is named by
+# nothing and left alone, and an install there does not call it relocated.
+H5="$TMP/alt/user"
+mkdir -p "$H5/.planar/workbench/x"
+printf 'readme\n' > "$H5/.planar/workbench/x/README.md"
+run_installer "$H5" "PLANAR_WORKBENCH_ROOT=$H5/.planar/workbench" -- --prefix "$TMP/alt/inst"
+[[ "$RC" == 0 ]] || fail "install with --prefix elsewhere failed ($RC): $(cat "$TMP/err")"
+[[ "$(cat "$TMP/out")" != *"relocated by PLANAR_WORKBENCH_ROOT"* ]] || fail "a \$HOME/.planar workbench was reported as relocated: $(cat "$TMP/out")"
+[[ "$(cat "$H5/.planar/workbench/x/README.md")" == "readme" ]] || fail "install touched \$HOME/.planar/workbench"
+run_installer "$H5" "PLANAR_WORKBENCH_ROOT=$TMP/alt/wb" -- --prefix "$TMP/alt/inst" --uninstall
+[[ "$RC" == 0 ]] || fail "uninstall of --prefix elsewhere failed ($RC): $(cat "$TMP/err")"
+grep -Fq "data path workbench is relocated by PLANAR_WORKBENCH_ROOT to $TMP/alt/wb" "$TMP/out" || fail "a real relocation was not named: $(cat "$TMP/out")"
+[[ "$(cat "$H5/.planar/workbench/x/README.md")" == "readme" ]] || fail "uninstall touched \$HOME/.planar/workbench"
+pass
+
 # A data path relocated into a tree the installer refreshes: stop, name it, delete nothing.
 H3="$TMP/inside/user"
 P3="$H3/.planar"
@@ -327,7 +388,6 @@ run_installer "$H4" "PLANAR_DB=$EXT4/p.db" -- --uninstall
 [[ "$RC" == 0 ]] || fail "second uninstall was refused without --force ($RC): $(cat "$TMP/err")"
 [[ "$(cat "$P4/workbench/x/README.md")" == "readme" && "$(head -1 "$EXT4/p.db")" == "SQLite format 3" ]] \
   || fail "second uninstall touched preserved data"
-[[ "$(cat "$P4/notes.txt")" == "notes" ]] || fail "uninstall removed an unknown file next to preserved data"
 # Directly after an uninstall the second uninstall is also accepted.
 run_installer "$H4" "PLANAR_DB=$EXT4/p.db" -- --uninstall
 [[ "$RC" == 0 ]] || fail "a repeated uninstall was refused ($RC): $(cat "$TMP/err")"

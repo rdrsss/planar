@@ -149,7 +149,10 @@ Planar install manifest records stops the install, naming the path. See
   [INSTALL.md § Upgrade note](../INSTALL.md#upgrade-note-the-previous-skill-and-agent-projections).
 - **Uninstall.** `./install.sh --uninstall` removes every target the manifest records while
   it still holds what Planar placed, and everything under `$PLANAR_HOME` except
-  `planar.db` and `queue-logs/`; `--force` removes those too. It never removes a vendor
+  the preserved data paths (`planar.db` and its sidecars, `queue-logs/`, `workbench/`,
+  `config.toml`, `local/` and the rest of the
+  [INSTALL.md § Preserved paths](../INSTALL.md#preserved-paths) list); `--force` does
+  not remove those. It never removes a vendor
   directory or `~/.agents/skills` itself. See [INSTALL.md § Uninstall](../INSTALL.md#uninstall).
 
 ## The `planar` skill

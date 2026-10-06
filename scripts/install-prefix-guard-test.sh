@@ -4,7 +4,8 @@
 # prefix-guard.sh) before anything is removed, created or built:
 #   - a root that is the empty string, /, or resolves to $HOME exits 2, even
 #     with --force, naming the path and the rule, leaving the tree untouched;
-#   - a root carrying the stamp, an executable bin/planar, planar.db or a
+#   - a root carrying the stamp, an executable bin/planar, planar.db, a listed
+#     data path (what an uninstall leaves behind) or a
 #     validated recovery journal is adopted without --force;
 #   - any other non-empty root is refused (exit 1) unless --force adopts it.
 # Every run is against a scratch copy of the installer, a scratch HOME and a stub
@@ -243,6 +244,32 @@ mkdir -p "$TMP/fresh"
 expect_adopted "absent prefix" "$TMP/fresh/.planar"
 mkdir -p "$TMP/fresh-empty/.planar"
 expect_adopted "empty prefix" "$TMP/fresh-empty/.planar"
+
+# A root holding only preserved data paths (what an uninstall leaves behind when
+# the database lives elsewhere) is adopted, install and uninstall, without
+# --force, with or without unknown files beside it. Unknown files alone are not
+# evidence (the foreign-root cases below).
+for dp in workbench/x config.toml local/skills models workspaces templates execute retired queue-logs; do
+  d="$TMP/dp-$(printf '%s' "$dp" | tr '/' '-')/.planar"
+  mkdir -p "$d"
+  case "$dp" in
+    config.toml) printf '[x]\n' > "$d/config.toml" ;;
+    *) mkdir -p "$d/$dp" ;;
+  esac
+  expect_adopted "data path $dp only" "$d"
+done
+d="$TMP/dp-mixed/.planar"
+mkdir -p "$d/workbench"
+printf 'mine\n' > "$d/thesis.txt"
+expect_adopted "data path beside an unknown file" "$d"
+[[ "$(cat "$d/thesis.txt")" == "mine" ]] || fail "adoption touched the unknown file"
+d="$TMP/dp-uninstall/.planar"
+mkdir -p "$d/workbench"
+printf 'x\n' > "$d/workbench/doc.md"
+run_installer "$(dirname "$d")" 0 --prefix "$d" --uninstall
+[[ "$RC" == 0 ]] || fail "uninstall of a root holding only a data path was refused ($RC): $(cat "$TMP/err")"
+[[ "$(cat "$d/workbench/doc.md")" == "x" ]] || fail "uninstall removed the preserved data path"
+pass
 
 # --- foreign roots: refused naming the path; --force adopts -------------------
 

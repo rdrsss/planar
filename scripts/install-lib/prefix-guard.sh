@@ -26,7 +26,9 @@
 #                 difference.
 #       Status 1: ROOT is an existing directory that is not empty and carries
 #                 none of: the install stamp, an executable bin/planar,
-#                 planar.db, a valid recovery journal. FORCE=1 adopts it.
+#                 planar.db, a valid recovery journal, a listed data path
+#                 (data-paths.sh: workbench/, config.toml, ...; an uninstall
+#                 leaves these behind). FORCE=1 adopts it.
 #       A refusal prints one line to stderr naming the path and the rule. The
 #       function never removes, creates or writes anything and never exits; the
 #       caller turns the status into its exit code.
@@ -138,9 +140,21 @@ planar_prefix_guard() {
   if recovery_journal_valid "$canon"; then
     return 0
   fi
+  # Preserved Planar data is ownership evidence, with or without other files
+  # beside it: an uninstall leaves the data paths behind and removes the stamp
+  # and bin/. Files that are not listed data paths are not evidence.
+  if planar_root_has_data_path "$canon"; then
+    return 0
+  fi
   if [ "$force" = "1" ]; then
     return 0
   fi
-  printf '%s does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp, no valid recovery journal). Refusing to %s it. Pass the correct --prefix, or re-run with --force to %s it anyway.\n' "$canon" "$op" "$verb" >&2
+  printf '%s does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp, no valid recovery journal, no Planar data path). Refusing to %s it. Pass the correct --prefix, or re-run with --force to %s it anyway.\n' "$canon" "$op" "$verb" >&2
   return 1
 }
+
+# data-paths.sh needs planar_canonical_path from this file, and this file asks it
+# planar_root_has_data_path. Its load flag ends the cycle whichever file is
+# sourced first.
+# shellcheck source=scripts/install-lib/data-paths.sh
+source "$_planar_guard_dir/data-paths.sh"

@@ -135,9 +135,8 @@ assert_absent "$UNINSTALL_PREFIX/install-manifest.json"
 # without --force and removes nothing.
 AGENT_ONLY_HOME="$TMP/agent_only_home"
 AGENT_ONLY_PREFIX="$AGENT_ONLY_HOME/.planar"
-mkdir -p "$AGENT_ONLY_PREFIX/queue-logs" "$AGENT_ONLY_PREFIX/stale"
+mkdir -p "$AGENT_ONLY_PREFIX/stale"
 make_agent_store "$AGENT_ONLY_PREFIX/agent.db"
-printf 'detached output\n' > "$AGENT_ONLY_PREFIX/queue-logs/2.log"
 if run_uninstall "$AGENT_ONLY_HOME" >"$TMP/agent-only-stdout" 2>"$TMP/agent-only-stderr"; then
   fail "uninstall accepted a prefix holding only agent.db as a Planar install"
 fi

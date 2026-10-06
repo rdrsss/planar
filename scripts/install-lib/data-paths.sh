@@ -24,11 +24,31 @@
 #   PLANAR_TEMPLATES_DIR   templates/
 # A variable that is unset or empty relocates nothing (the runtime ignores an
 # empty PLANAR_CONFIG_PATH and PLANAR_TEMPLATES_DIR the same way). One that
-# resolves to the default location relocates nothing either. A leading `~/` is
-# expanded against $HOME and a relative value against the current directory.
+# resolves to the default location, under the install root or under
+# $HOME/.planar, relocates nothing either. A relative value is taken against the
+# current directory. A leading `~/` is expanded against $HOME exactly where the
+# runtime expands it, and nowhere else:
+#   PLANAR_DB              literal (src/cmd/internal/environment.cpp,
+#                          resolve_db_path)
+#   PLANAR_CONFIG_PATH     `~` expanded (src/cmd/internal/config_path.cpp)
+#   PLANAR_WORKBENCH_ROOT  `~` expanded (src/engine/workbench/root.cpp,
+#                          resolve_root and expand_tilde)
+#   PLANAR_LOCAL_HOME      literal (src/engine/local/manifest.cpp,
+#                          resolve_home_and_root)
+#   PLANAR_TEMPLATES_DIR   `~` expanded (src/cmd/planar/handlers/templates/
+#                          command.cpp, resolve_templates_root)
+#
+# The default location is $HOME/.planar/NAME. The install root defaults to the
+# same directory, but --prefix or PLANAR_HOME can move the root elsewhere, so
+# the predicates protect both $ROOT/NAME and $HOME/.planar/NAME.
 #
 #   planar_data_path_names
 #       Print the data path names, one per line, in canonical order.
+#   planar_root_has_data_path ROOT
+#       Status 0 when ROOT contains a data path, at its default location under
+#       ROOT or at a relocated one inside ROOT. This is ownership evidence for
+#       planar_prefix_guard: an uninstall leaves data behind and removes the
+#       stamp and bin/. Unknown files alone are not evidence.
 #   planar_data_paths_list ROOT
 #       One line per data path, canonical order: NAME|KIND|LOCATION|RELOCATED_BY
 #       KIND is `file` or `dir`; LOCATION is where the path actually lives;
@@ -50,9 +70,15 @@
 #
 # None of these removes, creates or writes anything.
 
+[ -z "${_PLANAR_DATA_PATHS_LOADED-}" ] || return 0
+_PLANAR_DATA_PATHS_LOADED=1
 _planar_data_paths_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/install-lib/prefix-guard.sh
-source "$_planar_data_paths_dir/prefix-guard.sh"
+# prefix-guard.sh sources this file back (to ask planar_root_has_data_path); the
+# load flag above ends the cycle whichever file is sourced first.
+if ! type planar_canonical_path >/dev/null 2>&1; then
+  # shellcheck source=scripts/install-lib/prefix-guard.sh
+  source "$_planar_data_paths_dir/prefix-guard.sh"
+fi
 
 # NAME|KIND|RELOCATION VARIABLE|WHAT IT HOLDS. The only copy of this list.
 PLANAR_DATA_PATH_TABLE='planar.db|file|PLANAR_DB|the SQLite database
@@ -78,14 +104,20 @@ EOF
   return 0
 }
 
-# _planar_dp_value VAR -- the variable's value with `~/` expanded and a relative
+# _planar_dp_value VAR -- the variable's value as the runtime reads it: `~`
+# expanded for the variables whose reader expands it (see the header), a relative
 # value made absolute; empty when unset or empty.
 _planar_dp_value() {
   local v="${!1-}"
   [ -n "$v" ] || return 0
-  case "$v" in
-    \~) v="${HOME-}" ;;
-    \~/*) v="${HOME-}/${v#\~/}" ;;
+  case "$1" in
+    PLANAR_DB|PLANAR_LOCAL_HOME) ;;
+    *)
+      case "$v" in
+        \~) v="${HOME-}" ;;
+        \~/*) v="${HOME-}/${v#\~/}" ;;
+      esac
+      ;;
   esac
   case "$v" in
     /*) ;;
@@ -115,14 +147,17 @@ _planar_dp_canon() {
 }
 
 planar_data_paths_list() {
-  local root="$1" name kind var _what loc dflt by
+  local root="$1" name kind var _what loc loc_canon dflt by
   while IFS='|' read -r name kind var _what; do
     [ -n "$name" ] || continue
     loc="$(_planar_dp_location "$root" "$name" "$var")"
     by=""
     if [ -n "$var" ] && [ -n "$(_planar_dp_value "$var")" ]; then
-      dflt="$(_planar_dp_canon "${root%/}/$name")"
-      if [ "$(_planar_dp_canon "$loc")" != "$dflt" ]; then by="$var"; fi
+      by="$var"
+      loc_canon="$(_planar_dp_canon "$loc")"
+      for dflt in "${root%/}/$name" "${HOME-}/.planar/$name"; do
+        if [ "$loc_canon" = "$(_planar_dp_canon "$dflt")" ]; then by=""; fi
+      done
     fi
     printf '%s|%s|%s|%s\n' "$name" "$kind" "$loc" "$by"
   done <<EOF
@@ -151,13 +186,12 @@ EOF
 # one; MODE `covers`: PATH is a strict ancestor of one. Both the default
 # location and the relocated one are checked.
 _planar_dp_scan() {
-  local root="$1" path="$2" mode="$3" p d name kind loc by dflt
+  local root="$1" path="$2" mode="$3" p d name kind loc by
   PLANAR_DATA_PATH_HIT=""
   p="$(_planar_dp_canon "$path")"
   while IFS='|' read -r name kind loc by; do
     [ -n "$name" ] || continue
-    dflt="$(_planar_dp_canon "${root%/}/$name")"
-    for d in "$dflt" "$(_planar_dp_canon "$loc")"; do
+    for d in "$(_planar_dp_canon "${root%/}/$name")" "$(_planar_dp_canon "${HOME-}/.planar/$name")" "$(_planar_dp_canon "$loc")"; do
       if [ "$mode" = "within" ]; then
         if [ "$p" = "$d" ]; then PLANAR_DATA_PATH_HIT="$name"; return 0; fi
         case "$p" in "$d"/*) PLANAR_DATA_PATH_HIT="$name"; return 0 ;; esac
@@ -169,6 +203,20 @@ _planar_dp_scan() {
   done <<EOF
 $(planar_data_paths_list "$root")
 EOF
+  return 1
+}
+
+planar_root_has_data_path() {
+  local root canon name kind loc by
+  root="$(_planar_dp_canon "$1")"
+  while IFS='|' read -r name kind loc by; do
+    [ -n "$name" ] || continue
+    if [ -e "$root/$name" ] || [ -L "$root/$name" ]; then return 0; fi
+    canon="$(_planar_dp_canon "$loc")"
+    case "$canon" in "$root"/*) if [ -e "$canon" ] || [ -L "$canon" ]; then return 0; fi ;; esac
+  done <<EOF2
+$(planar_data_paths_list "$root")
+EOF2
   return 1
 }
 
