@@ -19,7 +19,9 @@
 #       FORCE      1 when --force was given, else 0
 #       OPERATION  `install` or `uninstall`, used in messages
 #       Status 0: ROOT may be used; PLANAR_PREFIX_CANON holds its canonical form.
-#       Status 2: ROOT is the empty string, `/`, or resolves to $HOME or `/`.
+#       Status 2: ROOT is the empty string, `/`, or resolves to $HOME or `/`
+#                 (by canonical string, or, for an existing root, by device and
+#                 inode, which catches case variants and firmlinks).
 #                 Refused before anything is touched, and FORCE makes no
 #                 difference.
 #       Status 1: ROOT is an existing directory that is not empty and carries
@@ -98,6 +100,20 @@ planar_prefix_guard() {
   if [ -n "$home_canon" ] && [ "$canon" = "$home_canon" ]; then
     printf 'refusing to %s: the install root %s resolves to $HOME (%s). Rule: the install root must never be $HOME, / or empty; --force does not override this. Pass the actual Planar install root.\n' "$op" "$root" "$home_canon" >&2
     return 2
+  fi
+  # The canonical string resolves symlinks only. A root that exists can still
+  # alias $HOME or / under another spelling (a case variant on a
+  # case-insensitive volume, a firmlink, a bind mount), so compare identity
+  # (device and inode). A root that does not exist cannot be either of them.
+  if [ -e "$canon" ]; then
+    if [ "$canon" -ef / ]; then
+      printf 'refusing to %s: the install root %s is the same directory as / . Rule: the install root must never be /, $HOME or empty; --force does not override this.\n' "$op" "$root" >&2
+      return 2
+    fi
+    if [ -n "${HOME:-}" ] && [ "$canon" -ef "$HOME" ]; then
+      printf 'refusing to %s: the install root %s is the same directory as $HOME (%s). Rule: the install root must never be $HOME, / or empty; --force does not override this. Pass the actual Planar install root.\n' "$op" "$root" "$HOME" >&2
+      return 2
+    fi
   fi
   # shellcheck disable=SC2034  # read by the caller after a successful check
   PLANAR_PREFIX_CANON="$canon"

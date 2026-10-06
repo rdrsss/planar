@@ -191,6 +191,7 @@ fi
       *) printf '%s\n' "$1" ;;
     esac
   }
+  # shellcheck disable=SC2030  # the subshell is the point: HOME is local to it
   HOME="$H"
   for force in 0 1; do
     rc=0; planar_prefix_guard alias-of-home "$force" install 2>/dev/null || rc=$?
@@ -335,6 +336,7 @@ j_symlink() {
 }
 j_dir()          { mkdir -p "$1/.planar-journal"; }
 j_nonprint()     { printf 'planar-journal 1\nroot=%s\nphase=mutating\n\001\n' "$1" > "$1/.planar-journal"; }
+j_del()          { printf 'planar-journal 1\nroot=%s\nphase=mutating\n\177\n' "$1" > "$1/.planar-journal"; }
 j_oversize() {
   write_journal "$1" "planar-journal 1" "root=$1" "phase=mutating"
   local i
@@ -344,7 +346,7 @@ j_oversize() {
 }
 j_other_stamp_name() { printf 'planar-install 1\n' > "$1/.planar-install.tmp"; }
 for c in j_wrong_root j_wrong_ver j_no_marker j_bad_phase j_no_phase j_no_root j_dup_key j_malformed \
-         j_bad_key j_empty j_bare_staging j_symlink j_dir j_nonprint j_oversize j_other_stamp_name; do
+         j_bad_key j_empty j_bare_staging j_symlink j_dir j_nonprint j_del j_oversize j_other_stamp_name; do
   reject_journal "$c" "$c"
 done
 
@@ -364,6 +366,12 @@ write_journal "$TMP/jlink-real/.planar" "planar-journal 1" "root=$TMP/jlink-real
 mkdir -p "$TMP/jlink"
 ln -s "$TMP/jlink-real/.planar" "$TMP/jlink/.planar"
 expect_adopted "valid journal through a symlinked prefix" "$TMP/jlink/.planar"
+
+# A well-formed journal for a root under a non-ASCII home is adopted without --force.
+NA="$TMP/jos$(printf '\303\251')/.planar"
+write_journal "$NA" "planar-journal 1" "root=$NA" "phase=mutating"
+printf 'partial\n' > "$NA/.staging-bin"
+expect_adopted "valid journal under a non-ASCII root" "$NA"
 
 # --- canonicalisation unit checks ----------------------------------------------
 

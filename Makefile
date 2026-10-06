@@ -131,7 +131,7 @@ test-install-stage: ## Run focused installer staging and vendor-surface fixtures
 	bash scripts/install-stage-test.sh
 
 .PHONY: test-install-prefix-guard
-test-install-prefix-guard: ## Run the install-root guard fixtures (install and --uninstall)
+test-install-prefix-guard: ## Run the install-root guard fixtures (ctest install.prefix_guard runs them under `make test`)
 	bash scripts/install-prefix-guard-test.sh
 
 .PHONY: test-install-deps
@@ -139,7 +139,7 @@ test-install-deps: ## Run focused installer compiler-preflight fixture
 	bash scripts/install-deps-test.sh
 
 .PHONY: test
-test: test-install-manifest test-install-stage test-install-deps test-install-prefix-guard ## Run unit tests
+test: test-install-manifest test-install-stage test-install-deps ## Run unit tests
 	$(configure_debug)
 	cmake --build build/debug --target all planar_tests $(ARGS)
 	ctest --test-dir build/debug --output-on-failure -j $(TEST_JOBS) $(ARGS)

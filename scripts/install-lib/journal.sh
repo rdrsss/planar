@@ -71,7 +71,9 @@ recovery_journal_valid() {
   local size nonprint
   size="$(wc -c < "$jf" | tr -d ' ')"
   [ -n "$size" ] && [ "$size" -le "$PLANAR_JOURNAL_MAX_BYTES" ] || return 1
-  nonprint="$(LC_ALL=C tr -d '[:print:]\n' < "$jf" | wc -c | tr -d ' ')"
+  # Reject C0 control characters (tab and newline allowed) and DEL; bytes
+  # >= 0x80 are legal so a root under a non-ASCII home validates.
+  nonprint="$(LC_ALL=C tr -d '\011\012\040-\176\200-\377' < "$jf" | wc -c | tr -d ' ')"
   [ "$nonprint" = "0" ] || return 1
   local phase=""
   while IFS= read -r line || [ -n "$line" ]; do
