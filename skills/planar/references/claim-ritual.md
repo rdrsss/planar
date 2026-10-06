@@ -109,7 +109,13 @@ task.
 
 In a Planar-managed repository, run builds and test suites through the host-wide queue
 instead of directly: `planar-agent queue run --detach --vendor <vendor> --role <role> --
-<command>`, then poll `planar-agent queue status <seq>` about every 30 seconds.
+<command>`, then use `planar-agent queue wait <seq> --timeout <budget> --json`.
+Choose a finite budget covering expected backlog and runtime, or use one short
+slice and save the ticket for an explicit later wait on that same sequence.
+Observation timeout or interruption leaves the job running; inspect the
+structured reason and recorded outcome before judging the gate. An older
+queue-capable install without `wait` uses the finite JSON-status fallback in
+the queue rule; refusal never authorizes a direct build.
 `planar-agent queue rule` prints the full rule. The queue runs the command in your
 directory with your environment and exits with its status; it coordinates every project
 on the host and is not a security boundary. When a `queue` verb refuses at exit 125,

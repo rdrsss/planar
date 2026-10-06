@@ -59,8 +59,10 @@ Summary: agents on one machine share its cores, so builds and test runs are
 ordered host-wide through one queue instead of each agent deciding when it is
 safe to start. The queue does not lock a build directory or a resource; it
 serializes execution, and a dead submitter cannot leave it stuck. Submit the
-command, poll for its outcome, and treat the ticket's recorded outcome as the
-truth rather than the command's exit code. A queue that refuses is reported to
+command, observe its ticket with a finite `queue wait` budget, and treat the
+structured reason and recorded outcome as the truth rather than the process
+exit code alone. A short observation slice can be resumed on the same ticket
+after an explicit decision. A queue that refuses is reported to
 the operator, never bypassed by running the command directly: the operator
 chose refusal over bypass. Only a Planar with no queue at all is the exception,
 and the agent then says Planar needs upgrading.

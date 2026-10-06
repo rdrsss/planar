@@ -274,10 +274,14 @@ ctest --test-dir build/debug --output-on-failure
 - Do not run two builds in the same build directory at once.
 - Agents in this repo send builds and tests through the host queue, not
   directly: `planar-agent queue run --detach --vendor <vendor> --role <role>
-  -- make test`, then poll `planar-agent queue status <seq>` every 30 seconds.
-  `planar-agent queue rule` prints the full rule, including what to do when
-  the queue refuses (exit 125: stop and report, never run the command
-  directly). The queue does not replace any gate; see
+  -- make test`, then observe the saved ticket with `planar-agent queue wait
+  <seq> --timeout <budget> --json`. Choose a finite budget for backlog plus
+  runtime. A short observation slice can resume on the same ticket after an
+  explicit decision; timeout or interruption leaves the queued command
+  running. Older queue-capable installs without `wait` use a finite JSON
+  status observer. `planar-agent queue rule` prints the full rule, including
+  what to do when the queue refuses (exit 125: stop and report, never run the
+  command directly). The queue does not replace any gate; see
   [docs/testing.md](docs/testing.md).
 - `clang-tidy` is advisory. `clang-format --Werror` and the Doxygen pass
   gate.
