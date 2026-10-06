@@ -17,10 +17,11 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
 | `make eval-contracts` | The provider-free eval lanes. |
+| `make eval-queue-observation-integration` | A live scratch-database detached ticket observed through native wait and the older-queue compatibility path. Needs the debug binaries built first. |
 | `make cpp-lint-gate` | `clang-format --Werror` and the Doxygen doc-comment pass. |
 | `make test-all` | All of the above, composed. This is the gate to run before a pull request. |
 | `make cpp-lint` | `cpp-lint-gate` plus `clang-tidy`. Not part of `test-all`. |
-| `make linux-gate` | The `debug` build and the whole ctest suite on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
+| `make linux-gate` | The `debug` build, whole ctest suite and queue observer Python checks on Debian trixie in Docker (native arm64). Not part of `test-all`. See [The Linux gate](#the-linux-gate). |
 
 ## How the skill tree is tested
 
@@ -55,6 +56,15 @@ the fixture test passed. A slice that expires retains the ticket under
 This command never resubmits the fixture test. The fixture arena has its own
 `PLANAR_DB` and queue logs; the outer host queue still serializes the eval
 gate itself.
+
+`make eval-queue-observation-integration` is the focused check for a live
+ticket. It submits one scratch-database command per observer mode, lets a
+short observation slice expire while the command is still active, and then
+observes the original ticket through completion. It is part of
+`make test-all`, which builds the debug binaries first. The full Linux CI
+tier runs both `make eval-orchestrator-unit` and this integration check in its
+pinned toolchain container. `make linux-gate` runs the same two Python checks
+after ctest and exports their logs with the gate result.
 
 ## Task and milestone cadence
 
@@ -148,7 +158,7 @@ the gate to run before a pull request; CI is the independent backstop.
 | Workflow | Runs | What |
 |---|---|---|
 | `ci.yml` (fast tier) | Pull requests into `master`, and pushes to `master` | `make fmt-check`, the installer fixtures, and the planning eval harness unit tests. It does not build the C++ tree. A newer push cancels the older run. |
-| `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, and the orchestrator eval harness unit tests (which need the built binaries on `PATH`), on Linux, in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
+| `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, the orchestrator eval harness unit tests and the scratch queue observer integration test, on Linux in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
 
 The fast tier does nothing for a change that touches only `agents/`, `skills/`,
 `docs/`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`, or a
@@ -230,7 +240,8 @@ fail a run. It enables one check, `readability-identifier-naming`.
 
 ## The Linux gate
 
-`make linux-gate` builds the `debug` preset and runs the whole ctest suite in
+`make linux-gate` builds the `debug` preset, runs the whole ctest suite and
+the queue observer Python checks in
 a `debian:trixie-slim` container, so code with a Linux-only branch
 (`close_range` and `/proc/self/fd` in `src/lib/process`, `pipe2` in the
 runner, `/proc/<pid>/fd` in the queue tests) is compiled and run somewhere
@@ -247,8 +258,9 @@ make linux-gate-prune                            # docker builder prune -f
 libc++ with its modules manifest, libc++abi), Kitware CMake pinned by version
 and SHA-256, ninja, git, python3, `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
 build never fails on a red suite. It records `configure.log`, `build.log`,
-`ctest.log` and `status.txt`, and the Makefile exports them to
-`build/linux-gate/`, prints the ctest verdict and exits nonzero unless
+`ctest.log`, `eval-unit.log`, `eval-queue-observation.log` and `status.txt`,
+and the Makefile exports them to
+`build/linux-gate/`, prints the gate verdict and exits nonzero unless
 `status=0`. Read `ctest.log` there rather than the build output: BuildKit
 clips a step's log at 2 MiB.
 

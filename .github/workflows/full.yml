@@ -52,5 +52,5 @@ jobs:
               # -j2, not -j4: a few queue and contention tests assert latency
               # bounds and worker fairness, and fail under heavy parallel load.
               ctest --test-dir build/debug -j2 --output-on-failure
-              PATH="/src/build/debug/bin:$PATH" make eval-orchestrator-unit
+              PATH="/src/build/debug/bin:$PATH" make eval-orchestrator-unit eval-queue-observation-integration
             '

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import subprocess
 import sys
 import tempfile
 import threading
@@ -204,6 +205,48 @@ class QueueObservationTests(unittest.TestCase):
                               time.monotonic() + 2)
             if before is not None:
                 self.assertLessEqual(len(list(fd_dir.iterdir())), before + 1)
+
+    def test_failure_after_helper_started_reaps_it_and_restores_resources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pid_file = root / "helper.pid"
+            script = root / "helper.py"
+            script.write_text(
+                "import os,sys,time\n"
+                "open(sys.argv[1],'w').write(str(os.getpid()))\n"
+                "time.sleep(60)\n", encoding="utf-8",
+            )
+            original_communicate = subprocess.Popen.communicate
+            processes: list[subprocess.Popen[str]] = []
+
+            def injected_failure(process: subprocess.Popen[str], *args: object, **kwargs: object):
+                if not processes:
+                    processes.append(process)
+                    for _ in range(100):
+                        if pid_file.exists():
+                            break
+                        time.sleep(0.01)
+                    raise OSError("injected pipe read failure after child creation")
+                return original_communicate(process, *args, **kwargs)
+
+            dispositions = (signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM))
+            fd_dir = Path("/dev/fd")
+            fds_before = len(list(fd_dir.iterdir())) if fd_dir.is_dir() else None
+            deadline = time.monotonic() + 2
+            with mock.patch.object(subprocess.Popen, "communicate", injected_failure):
+                with self.assertRaisesRegex(OSError, "injected pipe read failure"):
+                    with queue._Signals():
+                        queue._helper([sys.executable, str(script), str(pid_file)], root, self.env, deadline)
+            self.assertTrue(pid_file.exists())
+            self.assertLessEqual(time.monotonic(), deadline)
+            self.assertEqual(processes[0].returncode, -signal.SIGTERM)
+            self.assertTrue(processes[0].stdout.closed)
+            self.assertTrue(processes[0].stderr.closed)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), 0)
+            self.assertEqual((signal.getsignal(signal.SIGINT), signal.getsignal(signal.SIGTERM)), dispositions)
+            if fds_before is not None:
+                self.assertLessEqual(len(list(fd_dir.iterdir())), fds_before + 1)
 
 
 if __name__ == "__main__":
