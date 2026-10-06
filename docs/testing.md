@@ -493,13 +493,22 @@ sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
 
 ## Bundle assembler identity checks
 
-The `dist.identity` ctest (label `dist_identity`) runs seven focused controlled
+The `dist.identity` ctest (label `dist_identity`) runs nine focused controlled
 fixture tests for stable tag/HEAD/dirty identity, git-free snapshot inputs and Docker wrapper propagation,
 metadata init/health/schema refusals, zero or failed portable checks, and schema
 field type preservation and external scratch cwd/cleanup. The fixtures substitute external
 build commands and binaries to reach refusal paths; they do not establish real
 binary portability. Comprehensive layout/checksum coverage belongs to the
 separate bundle layout test.
+
+Fake-product assembly fixtures select Linux x86_64 through a scratch `uname`
+command, independently of the host running ctest (including Linux arm64).
+Layout expectations use that declared fixture target. This controls only tests
+of assembly with Python-script executables; it establishes no native binary
+portability or additional shipping platform. A separate refusal case gives the
+actual assembler Linux aarch64 and requires rejection before configure with no
+archive emitted. Production bundles still support only macOS arm64 and Linux
+x86_64, and the Linux gate keeps its existing platform.
 
 The `dist.layout` ctest (label `dist_layout`, entry point
 `scripts/dist-test.sh`) runs five layout scenarios against the actual

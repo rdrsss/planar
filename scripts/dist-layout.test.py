@@ -137,9 +137,8 @@ if '--install' in sys.argv:
         assets = list((self.root / 'dist').glob('planar-*.tar.gz'))
         self.assertEqual(len(assets), 1)
         archive = assets[0]
-        system = os.uname()
-        platform = {('Darwin', 'arm64'): ('macos', 'arm64', '26.0'),
-                    ('Linux', 'x86_64'): ('linux', 'x86_64', '2.36')}[(system.sysname, system.machine)]
+        # Fake products use the shared controlled target, never the real host.
+        platform = {('Linux', 'x86_64'): ('linux', 'x86_64', '2.36')}[identity.FIXTURE_PLATFORM]
         self.assertEqual(archive.name, f'planar-{platform[0]}-{platform[1]}.tar.gz')
         check_checksums(archive.parent, archive.name)
         self.assertEqual((archive.parent / 'VERSION').read_text(), version + '\n')

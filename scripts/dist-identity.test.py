@@ -118,6 +118,14 @@ class IdentityTests(unittest.TestCase):
         """Stub only external gates to reach metadata refusals, never prove portability."""
         tools = self.root / 'build/fixture-tools'
         tools.mkdir(parents=True)
+        # The products are Python scripts, so select a supported assembly target
+        # independently of the machine running these unconditionally registered tests.
+        uname = tools / 'uname'
+        uname.write_text('#!/bin/bash\ncase "$1" in\n'
+                         f'-s) echo {FIXTURE_PLATFORM[0]} ;;\n'
+                         f'-m) echo {FIXTURE_PLATFORM[1]} ;;\n'
+                         '*) exit 1 ;;\nesac\n')
+        uname.chmod(0o755)
         binary = tools / 'fixture-binary'
         binary.write_text('''#!/usr/bin/env python3
 import json, os, sys
