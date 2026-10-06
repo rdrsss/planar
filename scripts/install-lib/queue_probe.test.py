@@ -32,7 +32,7 @@ LIB = os.path.join(HERE, "queue-retire.sh")
 AGENT = os.path.abspath(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 PLANAR = os.path.abspath(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 
-BASE_UTILS = ["tr", "grep", "sed", "head", "cat", "mktemp", "rm", "dirname", "env"]
+BASE_UTILS = ["tr", "awk", "grep", "sed", "head", "cat", "mktemp", "rm", "dirname", "env"]
 
 
 def tagged(tag):
@@ -59,6 +59,35 @@ TABLE = [
     (0, "", "failed", "exit 0 with output that is not JSON"),
     (125, '{"error":{"verb":"queue status"}}', "failed", "exit 125 with JSON with no error tag"),
     (2, "error: unexpected argument", "failed", "exit 2 with output that is not JSON"),
+    # Hardening (reviewer, 7309): the tag comes from the FIRST top-level error
+    # object only, at that object's own depth.
+    (125, '{"error":{"message":"has \\"tag\\":\\"queue_schema_foreign\\"","tag":"store_unreachable"}}',
+     "failed", "exit 125 with tag store_unreachable"),
+    (125, '{"error":{"verb":"a","message":"x"},"tag":"queue_schema_foreign"}',
+     "failed", "exit 125 with JSON with no error tag"),
+    (125, '{"other":{"tag":"queue_schema_foreign"},"error":{"tag":"store_unreachable"}}',
+     "failed", "exit 125 with tag store_unreachable"),
+    (125, '{"error":{"tag":"queue_schema_foreign"},"extra":{"error":{"tag":"schema_version_behind"}}}',
+     "foreign", "exit 125, tag queue_schema_foreign"),
+    (125, '{"error":{"nested":{"tag":"queue_schema_foreign"},"tag":"schema_version_behind"}}',
+     "behind", "exit 125, tag schema_version_behind"),
+    (125, '{"error":{"nested":{"tag":"queue_schema_foreign"}}}', "failed", "exit 125 with JSON with no error tag"),
+    (125, '{"error":{"verb":"a"},"extra":{"tag":"queue_schema_foreign"}}', "failed", "exit 125 with JSON with no error tag"),
+    (125, '{"error":"queue_schema_foreign"}', "failed", "exit 125 with JSON with no error tag"),
+    (125, '{"error":{"tag":"queue_schema_foreign"}}{"error":{"tag":"schema_version_behind"}}',
+     "failed", "exit 125 with output that is not JSON"),
+    (125, '{"error":{"tag":"queue_schema_foreign"', "failed", "exit 125 with output that is not JSON"),
+    (125, '\ufeff{"error":{"tag":"queue_schema_foreign"}}', "failed", "exit 125 with output that is not JSON"),
+    # Invalid JSON or concatenated objects at exit 0 are never usable.
+    (0, '{"seq":1}\n{"seq":2}', "failed", "exit 0 with output that is not JSON"),
+    (0, '{garbage}', "failed", "exit 0 with output that is not JSON"),
+    (0, '{"seq":1,}', "failed", "exit 0 with output that is not JSON"),
+    (0, '{"seq":1} trailing', "failed", "exit 0 with output that is not JSON"),
+    (0, '[1,2]', "failed", "exit 0 with JSON with no error tag"),
+    # An "error" key below the top level does not turn a success into a refusal.
+    (0, '{"seq":1,"x":{"error":1}}', "usable", "exit 0 with a status object"),
+    (0, '{"seq":1,"x":[{"error":{"tag":"not_found"}}]}', "usable", "exit 0 with a status object"),
+    (0, '  {"seq":1}  \r\n', "usable", "exit 0 with a status object"),
 ]
 
 
