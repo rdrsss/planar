@@ -162,6 +162,32 @@ linux-gate: ## Build and run ctest plus queue observer Python checks on Linux in
 	@grep -qx "status=0" $(LINUX_GATE_OUT)/status.txt || { \
 	  echo "make linux-gate: FAILED (see $(LINUX_GATE_OUT)/*.log)"; exit 1; }
 
+# Bundle assembly is supplied by make dist (task 7305). Resolve identity on
+# the host before Docker loses .git; tagged cuts require that exact clean HEAD.
+LINUX_DIST_JOBS ?= 4
+LINUX_DIST_OUT  ?= dist
+export PLANAR_RELEASE_VERSION
+
+.PHONY: linux-dist
+linux-dist: ## Build the Linux x86_64 bundle on Debian Bookworm (amd64 emulation on Apple silicon)
+	@set -eu; \
+	  source_sha=$$(git rev-parse HEAD); \
+	  source_dirty=0; \
+	  if test -n "$$(git status --porcelain)"; then source_dirty=1; fi; \
+	  if test -n "$${PLANAR_RELEASE_VERSION:-}"; then \
+	    tag_sha=$$(git rev-parse --verify "refs/tags/$${PLANAR_RELEASE_VERSION}^{commit}") || { \
+	      echo "linux-dist: missing release tag $${PLANAR_RELEASE_VERSION}" >&2; exit 1; }; \
+	    test "$$tag_sha" = "$$source_sha" && test "$$source_dirty" = 0 || { \
+	      echo "linux-dist: release tag $${PLANAR_RELEASE_VERSION} requires clean HEAD at $$tag_sha" >&2; exit 1; }; \
+	  fi; \
+	  DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+	    --target dist -f docker/linux-gate.Dockerfile \
+	    --build-arg JOBS=$(LINUX_DIST_JOBS) \
+	    --build-arg PLANAR_RELEASE_VERSION="$${PLANAR_RELEASE_VERSION:-}" \
+	    --build-arg PLANAR_SOURCE_SHA="$$source_sha" \
+	    --build-arg PLANAR_SOURCE_DIRTY="$$source_dirty" \
+	    --progress=plain --output "type=local,dest=$(LINUX_DIST_OUT)" .
+
 .PHONY: linux-gate-prune
 linux-gate-prune: ## Reclaim the Docker build cache the Linux gate leaves behind (docker builder prune -f)
 	docker builder prune -f

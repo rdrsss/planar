@@ -498,3 +498,43 @@ values listed above.
 No C++26 feature this task needed to verify failed outright; the only
 caveat is the `#embed` extension-warning interaction with warnings-as-errors,
 documented above with its exact fix.
+
+## Linux release toolchain (task 7304)
+
+The Docker `dist-toolchain` stage uses `debian:bookworm-slim`, independently
+of the Trixie `toolchain` and `gate` stages. It installs the pinned LLVM major
+23 from apt.llvm.org's `llvm-toolchain-bookworm-23` repository, including
+`libc++-23-dev`, `libc++abi-23-dev` and `libunwind-23-dev`, and Bookworm's
+`libssl-dev`. The stage checks the modules manifest and all three static
+runtime archives before configuring a portable build. An unavailable repository
+or package fails the image build; it never substitutes a newer Debian base.
+`LLVM_APT_URL` is a build argument for probing an unavailable repository; its
+default is `https://apt.llvm.org` and it affects only the release toolchain.
+
+The M1 prerequisite was measured on 2026-10-06 on an Apple silicon host with
+Docker Desktop 4.93.0, targeting `linux/amd64`. Bookworm supplied glibc
+2.36-9+deb12u14 and OpenSSL 3.0.22-1~deb12u1; apt.llvm.org supplied LLVM
+23.1.2 (`1:23.1.2~++20260920033443+85ac56026243-1~exp1~20260920033605.79`).
+CMake 4.4.2 used the existing x86_64 SHA-256 pin. The cold portable product
+build ran 1,997 steps with four jobs; image setup, configure, build and export
+took 889 seconds. Both `portable`-labelled tests subsequently passed, inspecting
+all five binaries for startup, glibc-only shared dependencies, no rpath and
+no GLIBC requirement above 2.36. Full diagnostics and package/archive provenance
+are retained in `build/m1-evidence/task7304/` on the dispatch host. This is
+product-build evidence; bundle assembly and clean-container bundle health
+validation depend on the later `make dist` implementation.
+
+`make linux-dist` fixes the platform to `linux/amd64` on either host, uses a
+separate Bookworm build cache, invokes `make dist` inside the image and exports
+`/out/dist` contents into `dist/` (override `LINUX_DIST_OUT` for evidence).
+`LINUX_DIST_JOBS` defaults to four. Apple silicon uses amd64 emulation.
+The Trixie debug gate retains its platform, commands and cache.
+
+The host wrapper resolves the full HEAD SHA and dirty state before Docker
+copies the source snapshot without `.git`. A supplied `PLANAR_RELEASE_VERSION`
+must name an existing tag at that exact clean HEAD; missing tags, mismatched
+HEAD and dirty tagged cuts fail before Docker starts. The stage passes
+`PLANAR_RELEASE_VERSION`, `PLANAR_SOURCE_SHA` and `PLANAR_SOURCE_DIRTY` through
+to `make dist`. Its assembler must validate and embed that supplied identity in
+both binaries and `release.json`; it must not infer identity from the git-free
+container. Do not edit the source while the queued build waits or runs.

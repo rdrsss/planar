@@ -131,3 +131,78 @@ RUN --mount=type=cache,target=/src/build/debug,id=planar-linux-gate-build \
 
 FROM scratch AS gate
 COPY --from=run /out /
+
+# Release bundles use Bookworm's glibc 2.36 floor, independently of the
+# Trixie debug gate above. Keep a separate cache for this amd64 toolchain.
+FROM debian:bookworm-slim AS dist-toolchain
+ARG LLVM_MAJOR
+ARG LLVM_APT_URL=https://apt.llvm.org
+ARG CMAKE_VERSION
+ARG CMAKE_SHA256_AARCH64
+ARG CMAKE_SHA256_X86_64
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl gnupg git ninja-build make pkg-config \
+      python3 python3-venv sqlite3 libssl-dev zlib1g-dev procps xz-utils \
+ && rm -rf /var/lib/apt/lists/*
+
+# CMake >= 4.3 is not in Debian; take Kitware's release tarball, verified.
+RUN set -eu; \
+    case "$(uname -m)" in \
+      aarch64) arch=aarch64; sha="${CMAKE_SHA256_AARCH64}" ;; \
+      x86_64)  arch=x86_64;  sha="${CMAKE_SHA256_X86_64}" ;; \
+      *) echo "unsupported arch $(uname -m)"; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/cmake.tar.gz \
+      "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-${arch}.tar.gz"; \
+    echo "${sha}  /tmp/cmake.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/cmake.tar.gz -C /opt; \
+    ln -s "/opt/cmake-${CMAKE_VERSION}-linux-${arch}/bin/cmake" /usr/local/bin/cmake; \
+    ln -s "/opt/cmake-${CMAKE_VERSION}-linux-${arch}/bin/ctest" /usr/local/bin/ctest; \
+    rm -f /tmp/cmake.tar.gz
+
+# The pinned LLVM major from apt.llvm.org (docs/toolchain-parity.md).
+RUN set -eu; \
+    curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /usr/share/keyrings/llvm.asc; \
+    . /etc/os-release; \
+    echo "deb [signed-by=/usr/share/keyrings/llvm.asc] ${LLVM_APT_URL}/${VERSION_CODENAME}/ llvm-toolchain-${VERSION_CODENAME}-${LLVM_MAJOR} main" \
+      > /etc/apt/sources.list.d/llvm.list; \
+    echo "Installing Bookworm LLVM ${LLVM_MAJOR} from ${LLVM_APT_URL}/${VERSION_CODENAME}/"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      clang-${LLVM_MAJOR} lld-${LLVM_MAJOR} libc++-${LLVM_MAJOR}-dev libc++abi-${LLVM_MAJOR}-dev libunwind-${LLVM_MAJOR}-dev; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV PLANAR_LLVM_PREFIX=/usr/lib/llvm-${LLVM_MAJOR}
+
+# Fail the toolchain stage, not a 20-minute configure, if the pin is unusable.
+RUN set -eu; \
+    cmake --version | head -1; \
+    "${PLANAR_LLVM_PREFIX}/bin/clang++" --version | head -1; \
+    test -d "${PLANAR_LLVM_PREFIX}/include/c++/v1"; \
+    find "${PLANAR_LLVM_PREFIX}/lib" -name 'libc++.modules.json' | grep -q .; \
+    for archive in libc++.a libc++abi.a libunwind.a; do \
+      test -f "${PLANAR_LLVM_PREFIX}/lib/${archive}" || { echo "missing static runtime: ${archive}"; exit 1; }; \
+    done
+
+FROM dist-toolchain AS dist-run
+ARG JOBS=4
+# The host resolves these from the source snapshot because .git is excluded.
+# scripts/dist.sh owns validation and embedding of this identity (task 7305).
+ARG PLANAR_RELEASE_VERSION
+ARG PLANAR_SOURCE_SHA
+ARG PLANAR_SOURCE_DIRTY
+ENV PLANAR_RELEASE_VERSION=${PLANAR_RELEASE_VERSION} \
+    PLANAR_SOURCE_SHA=${PLANAR_SOURCE_SHA} \
+    PLANAR_SOURCE_DIRTY=${PLANAR_SOURCE_DIRTY}
+WORKDIR /src
+COPY . /src
+RUN --mount=type=cache,target=/src/build/dist,id=planar-linux-dist-bookworm-amd64 \
+    case "$(uname -m)" in x86_64) ;; *) echo "unsupported Linux bundle architecture: $(uname -m)" >&2; exit 1 ;; esac && \
+    make dist JOBS="${JOBS}" && \
+    mkdir -p /out && cp -a /src/dist /out/dist
+
+FROM scratch AS dist
+COPY --from=dist-run /out/dist /
