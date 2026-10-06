@@ -80,3 +80,6 @@ scripts/parity-data/parity-gap-report.json
 scripts/parity-data/parity-gap-report.md
 
 __pycache__/
+
+# Owned release bundle outputs; foreign source dirt still refuses tagged cuts.
+/dist/

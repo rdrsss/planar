@@ -538,3 +538,45 @@ HEAD and dirty tagged cuts fail before Docker starts. The stage passes
 to `make dist`. Its assembler must validate and embed that supplied identity in
 both binaries and `release.json`; it must not infer identity from the git-free
 container. Do not edit the source while the queued build waits or runs.
+
+## Bundle assembly
+
+`make dist` configures and builds the native `dist` preset, installs the five
+binaries into an owned temporary staging tree, and assembles
+`dist/planar-macos-arm64.tar.gz` or `dist/planar-linux-x86_64.tar.gz`.
+`JOBS` defaults to four. Only these two platforms are supported. The bundle
+contains the authored skill, agents, templates, workflows, migrations,
+installer and install library; Codex agents are rendered during assembly.
+The root bootstrap and uninstaller join the bundle when their milestones
+supply them. Bundle assembly does not change the installer's lifecycle.
+
+For a tagged cut, set `PLANAR_RELEASE_VERSION=vMAJOR.MINOR.PATCH`. The tag
+must already exist at clean HEAD; pre-release labels, missing tags, wrong HEAD,
+foreign untracked source and tracked edits refuse before building. An unset
+version produces `dev`, which cannot be published. Only owned build and dist
+outputs are ignored, so repeated cuts retain clean source identity. The native
+assembler and `linux-dist` share the same identity check. Git-free Docker builds
+consume the trusted host's full `PLANAR_SOURCE_SHA` and `PLANAR_SOURCE_DIRTY`;
+CMake embeds them, and the assembler requires matching SHA, release, dirty state
+and date from all four version-bearing staged binaries.
+
+`release.json` has seven flat fields, one per line. Its database schema comes
+from successful staged `init --skip-project --allow-no-repo` and `health --json`
+in an owned scratch HOME, PLANAR_DB and PLANAR_CONFIG_PATH outside the
+source worktree, with inherited Git-directory overrides removed for these probes. Health must report
+current schema and numerically equal database and target versions. The target's
+serialized type is preserved; the CLI catalog format version is never used.
+The scratch arena is removed on success and refusal. Tar entries are sorted,
+with uid/gid zero and owner/group `root`; compiled bytes and dates need not be
+identical across cuts. `SHA256SUMS` uses two spaces before each bare asset name,
+and `VERSION` contains the bare tag (or `dev`).
+
+Assembly requires exactly the two `portable` tests and inspects all five
+installed copies again. A sibling `<archive>.gates.json` records
+`format_version: 1`, the archive name, SHA-256, the complete `release` identity,
+and `gates.portable` with `result: "pass"`, `matched_count: 2` and
+`staged_binaries: 5`. It binds portability evidence to that exact archive.
+It contains no smoke or CA verdict: the later common publisher must require
+successful toolchain-free smoke and applicable CA trust evidence for both
+platforms, each bound to the same final checksum and release identity, and
+must refuse missing evidence or `dev`. Assembly does not publish anything.

@@ -282,3 +282,9 @@ if(NOT WIN32)
     "${CMAKE_SOURCE_DIR}/compile_commands.json"
     COPY_ON_ERROR SYMBOLIC)
 endif()
+
+# Focused assembler identity/schema refusals; fixtures do not establish portability.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME dist.identity
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/dist-identity.test.py")
+set_tests_properties(dist.identity PROPERTIES LABELS "dist_identity")

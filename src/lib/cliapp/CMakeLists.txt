@@ -121,6 +121,23 @@ if(PLANAR_VERSION_META)
       set(_planar_git_dirty 1)
     endif()
   endif()
+  # Exact source snapshot supplied by the dist host wrapper (Docker has no .git).
+  set(PLANAR_SOURCE_SHA "" CACHE STRING "Trusted distribution source commit SHA")
+  set(PLANAR_SOURCE_DIRTY "" CACHE STRING "Trusted distribution source dirty state (0 or 1)")
+  if(PLANAR_SOURCE_SHA OR NOT PLANAR_SOURCE_DIRTY STREQUAL "")
+    string(LENGTH "${PLANAR_SOURCE_SHA}" _planar_source_sha_length)
+    if(NOT _planar_source_sha_length EQUAL 40 OR NOT PLANAR_SOURCE_SHA MATCHES "^[0-9a-f]+$"
+        OR NOT PLANAR_SOURCE_DIRTY MATCHES "^[01]$")
+      message(FATAL_ERROR "Distribution source identity requires a full SHA and dirty state 0 or 1")
+    endif()
+    if(_planar_git_sha_result EQUAL 0 AND
+        (NOT PLANAR_SOURCE_SHA STREQUAL _planar_git_sha OR
+         NOT PLANAR_SOURCE_DIRTY STREQUAL "${_planar_git_dirty}"))
+      message(FATAL_ERROR "Distribution source identity differs from the git snapshot")
+    endif()
+    set(_planar_git_sha "${PLANAR_SOURCE_SHA}")
+    set(_planar_git_dirty "${PLANAR_SOURCE_DIRTY}")
+  endif()
   string(TIMESTAMP _planar_build_date "%Y-%m-%dT%H:%M:%SZ" UTC)
 
   target_compile_definitions(planar_cliapp PRIVATE

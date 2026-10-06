@@ -25,7 +25,7 @@ class IdentityTests(unittest.TestCase):
             shutil.copy2(ROOT / name, self.root / name)
         (self.root / '.gitignore').write_text('/build/\n/dist/\n/compile_commands.json\n')
         self.env = dict(os.environ)
-        for name in ('PLANAR_RELEASE_VERSION', 'PLANAR_SOURCE_SHA', 'PLANAR_SOURCE_DIRTY'):
+        for name in ('PLANAR_RELEASE_VERSION', 'PLANAR_SOURCE_SHA', 'PLANAR_SOURCE_DIRTY', 'GIT_DIR', 'GIT_WORK_TREE'):
             self.env.pop(name, None)
         self.git('init', '-q')
         self.git('add', '.')
@@ -80,6 +80,37 @@ class IdentityTests(unittest.TestCase):
         result = self.run_dist(True, PLANAR_RELEASE_VERSION='v1.2.3',
                                PLANAR_SOURCE_SHA=self.sha, PLANAR_SOURCE_DIRTY='0')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_linux_wrapper_uses_validated_snapshot_identity(self):
+        shutil.copy2(ROOT / 'Makefile', self.root / 'Makefile')
+        tools = self.root / 'build/fixture-tools'
+        tools.mkdir(parents=True)
+        docker = tools / 'docker'
+        capture = self.root / 'build/docker-args.json'
+        docker.write_text('#!/usr/bin/env python3\nimport json, os, pathlib, sys\n'
+                          'pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(sys.argv[1:]))\n')
+        docker.chmod(0o755)
+        self.git('add', 'Makefile')
+        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                 'commit', '-qm', 'wrapper fixture source')
+        sha = self.git('rev-parse', 'HEAD').strip()
+        self.git('tag', 'v1.2.4')
+        env = dict(self.env, PATH=str(tools) + os.pathsep + self.env['PATH'], CAPTURE=str(capture),
+                   PLANAR_RELEASE_VERSION='v1.2.4')
+        command = ['make', 'linux-dist', 'LINUX_DIST_OUT=build/fixture-output']
+        result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = json.loads(capture.read_text())
+        self.assertIn('PLANAR_SOURCE_SHA=' + sha, args)
+        self.assertIn('PLANAR_SOURCE_DIRTY=0', args)
+        self.assertIn('PLANAR_RELEASE_VERSION=v1.2.4', args)
+        self.assertEqual(args[args.index('--platform') + 1], 'linux/amd64')
+        capture.unlink()
+        env['PLANAR_RELEASE_VERSION'] = 'v1.2.4-rc1'
+        result = subprocess.run(command, cwd=self.root, env=env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('stable', result.stderr)
+        self.assertFalse(capture.exists(), 'Docker must not start after identity refusal')
 
     def prepare_commands(self):
         """Stub only external gates to reach metadata refusals, never prove portability."""

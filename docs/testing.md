@@ -490,3 +490,20 @@ To check a migration as raw SQL:
 ```bash
 sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
 ```
+
+## Bundle assembler identity checks
+
+The `dist.identity` ctest (label `dist_identity`) runs seven focused controlled
+fixture tests for stable tag/HEAD/dirty identity, git-free snapshot inputs and Docker wrapper propagation,
+metadata init/health/schema refusals, zero or failed portable checks, and schema
+field type preservation and external scratch cwd/cleanup. The fixtures substitute external
+build commands and binaries to reach refusal paths; they do not establish real
+binary portability. Comprehensive layout/checksum coverage belongs to the
+separate bundle layout test.
+
+Task validation also runs real `make dist` and `make linux-dist` through the host
+queue. Assembly requires exactly two portable tests, then inspects the staged
+products. Retain the archive and its checksum-bound `.gates.json`, plus
+`build/dist-evidence/` init, health and portability logs. Tagged tests use a
+disposable checkout; never create validation release tags in the real repository.
+The milestone barrier runs the full suite on the merged candidate separately.
