@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$ROOT/scripts/install-manifest.sh"
+source "$ROOT/scripts/install-lib/install-manifest.sh"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -691,22 +691,27 @@ qr_call PATH="$QR_CASE/spybin:$PATH" queue_retire_store || fail "retire failed w
 sed -n '/^# ---------- queue store ----------$/,/^# ---------- place artifacts ----------$/p' "$ROOT/install.sh" > "$TMP/queue-block.sh"
 grep -Fq 'queue_retire_store' "$TMP/queue-block.sh" || fail "the queue store block was not found in install.sh"
 run_queue_block() {
-  QUEUE_BLOCK="$TMP/queue-block.sh" RECHECK_RC="$1" bash -c '
+  QUEUE_BLOCK="$TMP/queue-block.sh" RECHECK_RC="$1" PREBUILT="${2:-0}" bash -c '
     set -eEuo pipefail
     title() { :; }
     queue_probe_migrate() { echo probe; }
     queue_live_guard() { echo "guard $1"; return "$RECHECK_RC"; }
     queue_retire_store() { echo retire; }
+    queue_retire_prebuilt() { echo prebuilt-move; }
     source "$QUEUE_BLOCK"
   '
 }
 [[ "$(run_queue_block 0 | tr '\n' ' ')" == "probe guard re-check retire " ]] \
   || fail "install.sh's queue store block does not run probe, re-check, retire in order: $(run_queue_block 0 | tr '\n' ' ')"
+# The prebuilt path runs the same probe, then moves agent.db aside instead of the
+# re-check and the python retirement (neither runs there: no python3).
+[[ "$(run_queue_block 0 1 | tr '\n' ' ')" == "probe prebuilt-move " ]] \
+  || fail "install.sh's queue store block on the prebuilt path is not probe, prebuilt-move: $(run_queue_block 0 1 | tr '\n' ' ')"
 if qr_block_out="$(run_queue_block 1)"; then fail "a refused re-check did not stop install.sh"; fi
 [[ "$qr_block_out" != *retire* ]] || fail "install.sh retired agent.db after a refused re-check"
 # The preflight comes before the dependency preflight and the build.
-_pre_line="$(grep -n '^queue_live_guard preflight || exit 1$' "$ROOT/install.sh" | cut -d: -f1)"
-_deps_line="$(grep -n '^check_deps "build"' "$ROOT/install.sh" | cut -d: -f1)"
+_pre_line="$(grep -n '^ *queue_live_guard preflight || exit 1$' "$ROOT/install.sh" | cut -d: -f1)"
+_deps_line="$(grep -n '^ *check_deps "build"' "$ROOT/install.sh" | cut -d: -f1)"
 [[ -n "$_pre_line" && -n "$_deps_line" && "$_pre_line" -lt "$_deps_line" ]] \
   || fail "install.sh's live-queue preflight must run before check_deps (lines '$_pre_line' / '$_deps_line')"
 
@@ -897,7 +902,7 @@ check_atomic_writer() {
     install_manifest_write "$dest" ) >/dev/null 2>&1 || return 1
   grep -Fq 'build-v2' "$dest" || return 1
 }
-check_atomic_writer "$ROOT/scripts/install-manifest.sh" || fail "install_manifest_write is not an atomic temp-file-and-rename writer"
+check_atomic_writer "$ROOT/scripts/install-lib/install-manifest.sh" || fail "install_manifest_write is not an atomic temp-file-and-rename writer"
 cat > "$TMP/inplace-writer.sh" <<'FIXTURE'
 # A deliberately wrong writer: it opens the destination in place.
 install_manifest_begin() { FX_BUILD="$1"; FX_MODE="$2"; FX_EXTRAS=(); }

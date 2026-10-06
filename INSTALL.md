@@ -16,8 +16,8 @@ Planar shells out to a small set of external tools. On macOS, install them via H
 brew install cmake ninja llvm python git gh jq ripgrep
 ```
 
-- `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries, on every install path. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
-- `python3` — **required to configure**. The configure step registers Python test runners (`scripts/install-lib/queue_retire.test.py`, `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. `install.sh` also runs it as its old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program), and only that: the queue-store probe of `planar.db` (`planar-agent queue status 1 --json`) is classified in shell and needs no Python, and `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
+- `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries, on a source install. A [prebuilt install](#prebuilt-install---prebuilt) needs none of them. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
+- `python3` — required to build from source, not to install a release bundle. The configure step registers Python test runners (`scripts/install-lib/queue_probe.test.py`, `scripts/install-lib/queue_retire.test.py` and `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. A source `install.sh` also runs it for two things: the old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program) and the Codex agent TOML renderer (`scripts/render-codex-agents.py`). The queue-store probe of `planar.db` (`planar-agent queue status 1 --json`) is classified in shell on every install path and needs no Python. `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
 - No network access and no token are needed to configure or build: every dependency is committed under `vendor/` as a pinned release archive.
 - `docker` — optional, developer-only. `make linux-gate` builds and tests the tree on Debian trixie in a container (see [docs/testing.md](docs/testing.md#the-linux-gate)). It is not an installer dependency.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. The full install also needs it to clone the source repository.
@@ -25,11 +25,11 @@ brew install cmake ninja llvm python git gh jq ripgrep
 - `jq` — used by the bundled agent specs (`planar-planner`, and the procedures in `agents/methodology.md`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session in [docs/getting-started.md](docs/getting-started.md#8-capture-hand-off-and-resume) (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
 
-The full source-checkout installer also uses the base-system utilities declared
-in `install.sh`'s `BUILD_DEPS` / `RUN_DEPS` manifests (`awk`, `basename`, `cat`, `chmod`, `cmp`, `diff`,
-`cp`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`,
-`readlink`, `rm`, `rmdir`, `sort`, and `tr`) alongside CMake, Ninja, and the exact pinned LLVM compiler paths above. These ship with supported Unix-like systems;
-the installer preflights them before making changes.
+`install.sh` declares its tools in three tiers in its `TOOLCHAIN_DEPS`, `BASE_DEPS` and `RUN_DEPS` manifests:
+
+- The **toolchain tier** (`cmake`, `ninja`, the pinned LLVM compilers and `python3`, above) is checked only on a source install.
+- The **base tier** is checked on every install path, `--prebuilt` included: `awk`, `basename`, `cat`, `chmod`, `cmp`, `cp`, `date`, `diff`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`, `readlink`, `realpath`, `rm`, `rmdir`, `sort`, `tr` and `uname`. These ship with supported Unix-like systems; the installer preflights them before making changes.
+- The **runtime tier** (`git`, `jq`, `gh`, `rg`) only warns.
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
 
@@ -121,6 +121,7 @@ That's it. The script:
 - Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and derives the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
 - Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen). It runs no renderer for the skill; the Codex agent TOML is derived by `scripts/render-codex-agents.py`.
 - Places the staged skill and agents into each vendor whose presence marker exists (the nine targets in the [layout reference](#install-layout-reference)), and prints the vendors found and skipped.
+- Writes `~/.planar/release.json`, the record of which release is installed. A source install writes it with `version` set to the sixth token of `planar version` (the release tag, `dev` for a build without one), so a source install is never mistaken for a release; a prebuilt install copies the bundle's file.
 - Atomically writes `~/.planar/install-manifest.json` after every placement
   succeeds. Each placed vendor path is recorded in its `extras` list;
   operator-authored destination files are not claimed.
@@ -150,6 +151,7 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 | `--prefix DIR` | Install root (default `~/.planar`). See [The install root guard](#the-install-root-guard). |
 | `--vendors LIST` | Comma-separated filter over the vendors found on the host: `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`. Default is all six. Naming an absent vendor warns. |
 | `--no-vendor` | Skip vendor surfaces entirely; install Planar core only. |
+| `--prebuilt DIR` | Install an unpacked release bundle instead of building: see [Prebuilt install](#prebuilt-install---prebuilt). Refused together with `--link` (exit 2). |
 | `--link` | Symlink the staged skill and the Markdown, Copilot and Codex agent files from the source repo instead of copying. **Dev mode** — edits to the repo propagate immediately. The OpenCode agents are always derived regular files. |
 | `--force` | Overwrite existing symlinks at the destinations (never a preserved path: shipped `templates/` files are still placed only where missing), and adopt a non-empty install root that carries no Planar sign. It does **not** override the install root guard for `$HOME`, `/` or an empty root, and does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
 | `--ignore-live-queue` | Retire (or uninstall) the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
@@ -160,6 +162,22 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 | `--verbose`, `-v` | Per-file detail (default prints a summary). |
 | `--version` | Print the installer version and exit. |
 | `--uninstall` | Tear down everything install.sh created except the [preserved paths](#preserved-paths) (`planar.db` with its `-wal`/`-shm` sidecars, `queue-logs/`, `workbench/`, `config.toml`, `local/`, ...); `--force` does not remove them. Removes the retired old queue database, behind the same live-queue guard as an install. |
+
+### Prebuilt install (`--prebuilt`)
+
+`install.sh --prebuilt <dir>` installs a release bundle that was unpacked into `<dir>` (the layout is `scripts/dist.sh`'s: `bin/`, `skills/planar/`, `agents/`, `codex-agents/`, `templates/`, `workflows/`, `migrations/`, `scripts/install-lib/`, `install-cleanup.txt` and `release.json`). Nothing is built, so only the [base tier](#prerequisites) of tools is needed: no CMake, Ninja, LLVM or `python3`.
+
+```bash
+./install.sh --prebuilt /path/to/planar-macos-arm64
+```
+
+It is the same installer as the source path from the build onward: the vendor sweep, the `~/.planar` cleanup, the queue store, staging, the vendor table, placement and the manifest. The differences:
+
+- **Inputs.** `bin/` is copied from `<dir>/bin/` and every staged input is read from `<dir>`. `codex-agents/` is copied from the bundle, where it was rendered when the bundle was cut, and `release.json` is copied from the bundle.
+- **A bundle must be whole.** A directory missing any of the five binaries (or `release.json`, the skill or `codex-agents/`) is refused at exit 1, naming what is missing, before anything is created: `~/.planar` does not exist afterwards.
+- **`--link` is refused.** `--link --prebuilt` exits 2 naming both flags, again before anything is created, because link mode would symlink into a directory the caller deletes after the install.
+- **The old queue database is moved aside, never read.** There is no `python3` on this path, so the live-queue check and the retirement reader do not run. After the `planar.db` probe passes, the retired queue database, its sidecars and the old numbered queue logs are moved into `~/.planar/retired/<YYYY-MM-DD>/` and each move is printed. Nothing is deleted, and nothing already in `retired/` is replaced. The [upgrade note on the old queue](#upgrade-note-what-installsh-does-with-the-old-queue-plan-1089) has the exact rules.
+- **The probe is shared.** The `planar.db` probe that stands in front of that move is the same shell classifier as on the source path: output that is not exactly one JSON object, or an error tag outside the `error` object, refuses the install with the old queue database left in place.
 
 ### Copy mode vs link mode
 
@@ -269,6 +287,19 @@ holds the old `agent.db`, `install.sh` (through
 refusal into a warning and nothing else. What it costs: the old queue is
 orphaned. Its submitters keep running their commands outside the new queue's
 slot count, and nothing reads the old database afterwards.
+
+**On a prebuilt install** (`install.sh --prebuilt`) steps 1, 4 and 5 differ,
+because there is no `python3` to read the old store. Step 3 runs unchanged,
+with the same shell classifier. Instead of the live-queue checks and the
+retirement, `agent.db`, `agent.db-wal`, `agent.db-shm` and the old numbered
+logs (`queue-logs/<n>.log`, `n` below 1,000,000) are moved, unread, into
+`~/.planar/retired/<YYYY-MM-DD>/` (the logs under `queue-logs/` there), and
+each move is printed. An existing `retired/<date>/` is reused and nothing in it
+is overwritten: a taken name gets the first free suffix (`agent.db.1`,
+`agent.db.2`, ...). `retired/` is a preserved path, so no later install or
+uninstall removes it. An old submitter still running keeps using the moved
+file, as in the note above, so there is no `--ignore-live-queue` decision to
+make.
 
 `--uninstall` runs the same live-queue guard first whenever `agent.db`
 exists, with or without `--force`; `--ignore-live-queue` is the only override.
@@ -482,6 +513,7 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   ├── planar-execute                  # deterministic spawn-free Lua workflow engine
 │   └── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
 ├── install-manifest.json               # versioned managed-projection authority
+├── release.json                        # the installed release (source: version = the build's sixth version token; prebuilt: the bundle's file)
 ├── planar.db                           # SQLite database (after `planar init`; mode 0600)
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
 ├── migrations/

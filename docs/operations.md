@@ -371,7 +371,7 @@ an agent or script that did not say who it is.
 (with its `-wal` and `-shm`) and `queue-logs/` among them, and `--force` does not
 change that; the full list is in
 [INSTALL.md § Preserved paths](../INSTALL.md#preserved-paths). Remove the data by
-hand when you want it gone. A live entry stores the submitter's task
+hand when you want it gone. (`install.sh --prebuilt` moves the retired queue database and its old logs into `~/.planar/retired/<date>/` instead of removing them; see [INSTALL.md § Prebuilt install](../INSTALL.md#prebuilt-install---prebuilt).) A live entry stores the submitter's task
 claim token in the clear (`queue_entries.claim_token`, written when `queue run`
 is given `--claim`; the history row does not keep it), and a claim token
 authorises heartbeats and terminal verbs on that claim. `planar.db` holds claim

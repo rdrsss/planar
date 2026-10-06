@@ -308,3 +308,11 @@ set_tests_properties(install.prefix_guard PROPERTIES LABELS "install_prefix_guar
 add_test(NAME install.data_paths
   COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-data-paths-test.sh")
 set_tests_properties(install.data_paths PROPERTIES LABELS "install_data_paths" TIMEOUT 300)
+
+# Prebuilt install: `install.sh --prebuilt <dir>` places a release bundle with no
+# build and no python3, moves an old agent.db aside unread, refuses --link and an
+# incomplete bundle before creating anything, and a source install writes
+# release.json. A fake bundle of tiny executables; nothing real is touched.
+add_test(NAME install.prebuilt
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-prebuilt-test.sh")
+set_tests_properties(install.prebuilt PROPERTIES LABELS "install_prebuilt" TIMEOUT 600)

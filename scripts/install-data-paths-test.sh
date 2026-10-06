@@ -393,4 +393,43 @@ run_installer "$H4" "PLANAR_DB=$EXT4/p.db" -- --uninstall
 [[ "$RC" == 0 ]] || fail "a repeated uninstall was refused ($RC): $(cat "$TMP/err")"
 pass
 
+# --- the prebuilt path keeps every data path too ---------------------------------------------
+
+# shellcheck source=fixtures/prebuilt-bundle.sh
+source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
+PB="$TMP/prebuilt/bundle"
+fake_bundle_make "$ROOT" "$PB" "$REPO/install-cleanup.txt"
+HP="$TMP/prebuilt/user"
+PP="$HP/.planar"
+mkdir -p "$PP/opt/stale-tool"
+printf 'stale\n' > "$PP/opt/stale-tool/f"
+seed "$PP"
+printf 'old queue\n' > "$PP/agent.db"
+# queue-logs/7.log is an old numbered log: with an agent.db present it moves into
+# retired/<date>/ (kept, not removed), so it leaves the unchanged-in-place list.
+grep -v '^queue-logs/7.log$' "$PP/../seeded.list" > "$PP/../seeded-prebuilt.list"
+PLIST="$PP/../seeded-prebuilt.list"
+pbefore="$(sums "$PP" "$PLIST")"
+run_prebuilt_install() {
+  RC=0
+  env -u CODEX_HOME -u PLANAR_HOME -u PLANAR_DB -u PLANAR_CONFIG_PATH -u PLANAR_WORKBENCH_ROOT -u PLANAR_LOCAL_HOME \
+    -u PLANAR_TEMPLATES_DIR HOME="$HP" NO_COLOR=1 \
+    "$PB/install.sh" --prebuilt "$PB" --no-vendor --prefix "$PP" "$@" >"$TMP/out" 2>"$TMP/err" || RC=$?
+}
+run_prebuilt_install
+[[ "$RC" == 0 ]] || fail "prebuilt install over a seeded prefix failed ($RC): $(cat "$TMP/err")"
+[[ "$(sums "$PP" "$PLIST")" == "$pbefore" ]] || fail "prebuilt install changed a data path: $(sums "$PP" "$PLIST" | diff - <(printf '%s\n' "$pbefore") || true)"
+[[ ! -e "$PP/opt/stale-tool" ]] || fail "the stale cleanup entry was not removed on the prebuilt path"
+[[ -x "$PP/bin/planar" && "$(cat "$PP/templates/a.toml")" == "my edited template" && "$(cat "$PP/templates/b.toml")" == "shipped b" ]] \
+  || fail "the prebuilt install did not place the binaries or kept-templates correctly"
+[[ ! -e "$PP/agent.db" && "$(cat "$PP/retired/$(date +%Y-%m-%d)/agent.db")" == "old queue" ]] || fail "agent.db was not moved into retired/<date>/"
+[[ "$(cat "$PP/retired/$(date +%Y-%m-%d)/queue-logs/7.log")" == "log" ]] || fail "the old numbered log was not kept in retired/<date>/queue-logs/"
+[[ "$(cat "$PP/retired/old/agent.db")" == "old" ]] || fail "a file already in retired/ changed"
+grep -Fq "kept $PP/queue-logs/" "$TMP/out" || fail "the prebuilt install did not say a cleanup entry was skipped for queue-logs"
+run_prebuilt_install --force
+[[ "$RC" == 0 ]] || fail "forced prebuilt install failed ($RC): $(cat "$TMP/err")"
+[[ "$(sums "$PP" "$PLIST")" == "$pbefore" ]] || fail "a forced prebuilt install changed a data path"
+[[ "$(cat "$PP/templates/a.toml")" == "my edited template" ]] || fail "--force overwrote an edited template on the prebuilt path"
+pass
+
 printf 'install data paths tests: %s passed\n' "$PASSED"

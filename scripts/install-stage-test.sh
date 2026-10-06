@@ -167,8 +167,8 @@ grep -Fq 'Staging the planar skill and agents' "$TMP/h5/out" || fail "the failur
 
 # 6. The staged recorder, directly: it adds extras only, never projection rows
 # (no vendor owns a staged path).
-# shellcheck source=install-manifest.sh
-source "$ROOT/scripts/install-manifest.sh"
+# shellcheck source=install-lib/install-manifest.sh
+source "$ROOT/scripts/install-lib/install-manifest.sh"
 install_manifest_begin "build-staged" copy
 install_manifest_record_staged "$TMP/h1/.planar" "$REPO"
 install_manifest_write "$TMP/staged-manifest.json"
