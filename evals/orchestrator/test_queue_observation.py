@@ -69,6 +69,73 @@ class QueueObservationTests(unittest.TestCase):
             observed = queue.observe(13, agent="planar-agent", cwd=self.cwd, env=self.env)
         self.assertEqual(observed.wait_reason, "history_unavailable")
 
+    def test_compatibility_follows_successor_to_authoritative_completion(self) -> None:
+        predecessor = {"seq": 9, "state": "ended", "outcome": "abandoned", "superseded_by": 10}
+        successor = {"seq": 10, "state": "ended", "outcome": "exited", "exit_code": 7,
+                     "superseded_by": None}
+        queried: list[int] = []
+
+        def status(args: list[str], *_args: object) -> object:
+            queried.append(int(args[3]))
+            return result(args, 0, predecessor if args[3] == "9" else successor)
+
+        with mock.patch.object(queue, "discover", return_value="compatibility"), mock.patch.object(
+            queue, "_helper", side_effect=status
+        ):
+            observed = queue.observe(9, agent="planar-agent", cwd=self.cwd, env=self.env,
+                                     timeout_seconds=2)
+        self.assertEqual(queried, [9, 10])
+        self.assertEqual((observed.seq, observed.observed_seq, observed.wait_reason,
+                          observed.result_exit_code), (9, 10, "completed", 7))
+        self.assertEqual(observed.status, successor)
+
+    def test_compatibility_missing_explicit_successor_is_uncertainty(self) -> None:
+        predecessor = {"seq": 9, "state": "ended", "outcome": "abandoned", "superseded_by": 10}
+        missing = {"error": {"tag": "not_found", "message": "missing"}}
+        queried: list[int] = []
+
+        def status(args: list[str], *_args: object) -> object:
+            queried.append(int(args[3]))
+            return result(args, 0, predecessor) if args[3] == "9" else result(args, 1, missing)
+
+        with mock.patch.object(queue, "discover", return_value="compatibility"), mock.patch.object(
+            queue, "_helper", side_effect=status
+        ):
+            observed = queue.observe(9, agent="planar-agent", cwd=self.cwd, env=self.env,
+                                     timeout_seconds=2)
+        self.assertEqual(queried, [9, 10])
+        self.assertEqual((observed.seq, observed.observed_seq, observed.wait_reason,
+                          observed.result_exit_code), (9, 10, "history_unavailable", 1))
+
+    def test_dead_confirmation_resets_when_resolved_entry_changes(self) -> None:
+        first = {"seq": 9, "state": "running", "live": False, "superseded_by": None}
+        moved = {"seq": 9, "state": "running", "live": False, "superseded_by": 10}
+        next_entry = {"seq": 10, "state": "running", "live": False, "superseded_by": None}
+        done = {"seq": 10, "state": "ended", "outcome": "exited", "exit_code": 0,
+                "superseded_by": None}
+        responses = iter([first, moved, next_entry, done])
+        queried: list[int] = []
+
+        def status(args: list[str], *_args: object) -> object:
+            queried.append(int(args[3]))
+            return result(args, 0, next(responses))
+
+        clock = [0.0]
+
+        def sleep(_seconds: float) -> None:
+            clock[0] += 1.1
+
+        with mock.patch.object(queue, "discover", return_value="compatibility"), mock.patch.object(
+            queue, "_helper", side_effect=status
+        ), mock.patch.object(queue.time, "monotonic", side_effect=lambda: clock[0]), mock.patch.object(
+            queue.time, "sleep", side_effect=sleep
+        ):
+            observed = queue.observe(9, agent="planar-agent", cwd=self.cwd, env=self.env,
+                                     timeout_seconds=8)
+        self.assertEqual(queried, [9, 9, 10, 10])
+        self.assertEqual((observed.observed_seq, observed.wait_reason,
+                          observed.result_exit_code), (10, "completed", 0))
+
     def test_capability_detection_distinguishes_absent_and_older_queue(self) -> None:
         def fake(args: list[str], *_args: object) -> object:
             if "schema" in args:
