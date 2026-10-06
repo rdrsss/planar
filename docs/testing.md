@@ -44,6 +44,18 @@ the checks are on the source.
   the thirteen invariants, names the five binaries and cites the feedback
   contract.
 
+The orchestrator lifecycle fixture's final repository test uses a detached
+queue ticket in its isolated arena. The harness records the ticket and log
+path, then takes one 20-second observation slice. Native `queue wait --json`
+is preferred; an installed queue without `wait` uses bounded `queue status
+--json` observations. Only recorded `ended`/`exited`/exit-code-zero proves
+the fixture test passed. A slice that expires retains the ticket under
+`fixture-test-ticket.json`; resume its observation and grading with
+`python3 evals/orchestrator/harness.py --resume-queue-ticket <artifact-dir>`.
+This command never resubmits the fixture test. The fixture arena has its own
+`PLANAR_DB` and queue logs; the outer host queue still serializes the eval
+gate itself.
+
 ## Task and milestone cadence
 
 Task cycles run focused acceptance and affected-behavior tests, together with
