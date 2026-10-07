@@ -492,8 +492,9 @@ a gap and removes the download directory when the install ends. An interrupted
 install or uninstall is reported (exit 1, with its retry command) instead of
 any verdict about the installed release; `planar update` never replays it
 itself. It opens no database: migration is the installer's, and so is the
-warning that a `planar` earlier on `PATH` (for example the retired
-`~/.local/bin/planar`) shadows the installed one. See
+warning that a different `planar` earlier on `PATH` (for example the retired
+`~/.local/bin/planar`) shadows the installed one; a `PATH` entry that is a
+symlink to the installed binary does not. See
 [`planar update`](docs/cli-reference.md#domain-update) for the full step list
 and messages.
 

@@ -520,6 +520,23 @@ kept_note() {
 
 # ---------- main ----------
 
+# canon_file PATH: PATH with its directory and any final symlinks resolved, so
+# two spellings of one file compare equal (the installer's notion of canonical).
+canon_file() {
+  _cf=$1
+  _cfn=0
+  while [ -L "$_cf" ] && [ "$_cfn" -lt 40 ]; do
+    _cft=$(readlink "$_cf") || break
+    case "$_cft" in
+      /*) _cf=$_cft ;;
+      *) _cf=$(dirname "$_cf")/$_cft ;;
+    esac
+    _cfn=$((_cfn + 1))
+  done
+  _cfd=$(CDPATH='' cd -P -- "$(dirname "$_cf")" 2>/dev/null && pwd -P) || { printf '%s\n' "$_cf"; return 0; }
+  printf '%s/%s\n' "${_cfd%/}" "$(basename "$_cf")"
+}
+
 main() {
   [ "$#" -eq 0 ] || die "takes no arguments; set PLANAR_VERSION or PLANAR_RELEASE_URL in the environment (see the header of this script)"
   read_inputs
@@ -633,23 +650,27 @@ main() {
     printf 'get-planar: finished the interrupted install of %s (the installer confirmed the recovery). Run the command again to check for a newer release.\n' "$TAG"
   fi
 
+  # Spec step 6: the comparison happens after placement. A bundled installer
+  # that carries the shadow check ("shadows the installed") has already printed
+  # the warning, so the bootstrap stays silent about shadowing rather than say
+  # it twice; its own check below is the fallback for an older bundle.
   _found=$(command -v planar 2>/dev/null) || _found=""
-  if [ "$_found" != "$ROOT/bin/planar" ]; then
-    if [ -n "$_found" ]; then
-      # Same wording as the installer's shadow warning; ~/.local/bin/planar is
-      # named as the retired `make install` location.
-      _shown=$_found
-      _retired=""
-      if [ -n "${HOME:-}" ] && [ "$_found" = "$HOME/.local/bin/planar" ]; then
-        # shellcheck disable=SC2088  # a display string: the literal ~ is intended
-        _shown='~/.local/bin/planar'
-        _retired=" (the retired 'make install' put it there)"
-      fi
-      printf 'get-planar: warning: %s shadows the installed %s/bin/planar: your shell runs %s. Put %s/bin first on PATH, or remove %s%s.\n' \
-        "$_shown" "$ROOT" "$_shown" "$ROOT" "$_shown" "$_retired"
-    else
-      printf 'get-planar: note: "planar" is not on your PATH; this install is %s/bin/planar. Add %s/bin to PATH.\n' "$ROOT" "$ROOT"
+  _installer_warns=no
+  grep -q 'shadows the installed' "$BUNDLE/install.sh" && _installer_warns=yes
+  if [ -z "$_found" ]; then
+    printf 'get-planar: note: "planar" is not on your PATH; this install is %s/bin/planar. Add %s/bin to PATH.\n' "$ROOT" "$ROOT"
+  elif [ "$_installer_warns" = no ] && [ "$(canon_file "$_found")" != "$(canon_file "$ROOT/bin/planar")" ]; then
+    # Same wording as the installer's shadow warning; ~/.local/bin/planar is
+    # named as the retired `make install` location.
+    _shown=$_found
+    _retired=""
+    if [ -n "${HOME:-}" ] && [ "$_found" = "$HOME/.local/bin/planar" ]; then
+      # shellcheck disable=SC2088  # a display string: the literal ~ is intended
+      _shown='~/.local/bin/planar'
+      _retired=" (the retired 'make install' put it there)"
     fi
+    printf 'get-planar: warning: %s shadows the installed %s/bin/planar: your shell runs %s. Put %s/bin first on PATH, or remove %s%s.\n' \
+      "$_shown" "$ROOT" "$_shown" "$ROOT" "$_shown" "$_retired"
   fi
   exit 0
 }

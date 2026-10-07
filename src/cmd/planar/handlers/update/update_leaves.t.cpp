@@ -981,6 +981,106 @@ TEST_CASE("update: the binary updates a bootstrap install end to end through the
   CHECK(again.out.contains("no changes"));
 }
 
+TEST_CASE(
+    "update: a shadowing planar on PATH is named once by the bootstrap and by update, and a symlink to the install is not one",
+    "[update][e2e][shadow]") {
+  auto       space = make_arena("upshadow");
+  auto const work  = space.cpp_root;
+  auto const rel   = work / "rel";
+  auto const base  = "file://" + canon(rel);
+  auto const plat  = host_platform();
+  if (!plat.has_value()) {
+    SUCCEED("no release bundle exists for this host");
+    return;
+  }
+  for (auto const& tag : {"v1.0.0", "v1.1.0"}) {
+    std::string out;
+    REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
+                 {source_root().string(), rel.string(), tag, *plat, "41"}, &out) == 0);
+  }
+  auto const inst  = work / "home";
+  auto const fhome = work / "fakehome";
+  // A planar that is not the installed one, as the retired `make install` left it.
+  write_file(fhome / ".local/bin/planar", "#!/bin/sh\nexit 0\n");
+  std::filesystem::permissions(fhome / ".local/bin/planar", std::filesystem::perms::owner_all);
+  // A PATH entry that is a symlink to the installed binary.
+  std::filesystem::create_directories(work / "linkbin");
+  std::filesystem::create_symlink(inst / "bin/planar", work / "linkbin/planar");
+
+  auto const with_path = [&](std::string const& front) { return front + ":" + std::getenv("PATH"); };
+  // The real bootstrap, pinned to `tag`, under PATH `path`; stdout and stderr together.
+  auto const bootstrap = [&](std::string const& tag, std::string const& path, std::string& out) {
+    std::filesystem::remove_all(inst);
+    return bash(std::format("cd {} && env -u PLANAR_QUEUE_SLOT HOME={} PLANAR_HOME={} PLANAR_DB={} PLANAR_CONFIG_PATH={} "
+                            "PATH={} PLANAR_VERSION={} PLANAR_RELEASE_URL={} sh {} 2>&1",
+                            shell_quote(work.string()), shell_quote(fhome.string()), shell_quote(inst.string()),
+                            shell_quote((work / "planar.db").string()), shell_quote((work / "config.toml").string()),
+                            shell_quote(path), tag, shell_quote(base),
+                            shell_quote((source_root() / "scripts/get-planar.sh").string())),
+                {}, &out);
+  };
+  auto const count = [](std::string const& text) {
+    std::size_t n = 0;
+    for (auto at = text.find("shadows the installed"); at != std::string::npos; at = text.find("shadows the installed", at + 1)) {
+      ++n;
+    }
+    return n;
+  };
+  auto const shadow_path = with_path((fhome / ".local/bin").string());
+  auto const own_path    = with_path((inst / "bin").string());
+  auto const link_path   = with_path((work / "linkbin").string());
+
+  SECTION("the bootstrap names ~/.local/bin/planar and the install, exactly once") {
+    std::string out;
+    REQUIRE(bootstrap("v1.0.0", shadow_path, out) == 0);
+    INFO(out);
+    CHECK(count(out) == 1);
+    CHECK(out.contains("~/.local/bin/planar shadows the installed " + inst.string() + "/bin/planar"));
+    CHECK(out.contains("(the retired 'make install' put it there)"));
+  }
+  SECTION("a shadow elsewhere is named by its path and carries no ~/.local/bin clause") {
+    auto const other = work / "otherbin";
+    write_file(other / "planar", "#!/bin/sh\nexit 0\n");
+    std::filesystem::permissions(other / "planar", std::filesystem::perms::owner_all);
+    std::string out;
+    REQUIRE(bootstrap("v1.0.0", with_path(other.string()), out) == 0);
+    INFO(out);
+    CHECK(count(out) == 1);
+    CHECK(out.contains((other / "planar").string() + " shadows the installed"));
+    CHECK_FALSE(out.contains("retired 'make install'"));
+  }
+  SECTION("the bootstrap is silent when the install is first on PATH") {
+    std::string out;
+    REQUIRE(bootstrap("v1.0.0", own_path, out) == 0);
+    INFO(out);
+    CHECK(count(out) == 0);
+  }
+  SECTION("the bootstrap is silent when a PATH entry is a symlink to the install") {
+    std::string out;
+    REQUIRE(bootstrap("v1.0.0", link_path, out) == 0);
+    INFO(out);
+    CHECK(count(out) == 0);
+  }
+  SECTION("planar update prints the installer's warning once, and none when the install or a link to it is first") {
+    for (auto const& [name, path, expected] :
+         {std::tuple{"shadow", shadow_path, 1U}, std::tuple{"own", own_path, 0U}, std::tuple{"link", link_path, 0U}}) {
+      INFO(name);
+      std::string boot;
+      REQUIRE(bootstrap("v1.0.0", std::getenv("PATH"), boot) == 0);
+      auto const got = run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "shadow",
+                                  env_with(work, base, {{.name = "PATH", .value = path}}));
+      auto const all = got.out + got.err;
+      INFO(all);
+      REQUIRE(got.code == 0);
+      CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.1.0\""));
+      CHECK(count(all) == expected);
+      if (expected == 1U) {
+        CHECK(all.contains("~/.local/bin/planar shadows the installed " + inst.string() + "/bin/planar"));
+      }
+    }
+  }
+}
+
 TEST_CASE("update: the exec'd installer is the lock owner and the verb opens no database", "[update][e2e]") {
   auto       space = make_arena("upexec");
   auto const work  = space.cpp_root;

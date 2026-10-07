@@ -6615,12 +6615,16 @@ A plain run, or `--version <tag>`:
    releases the lock itself.
 
 The shadow check belongs to the installer, after placement: when `command -v
-planar` differs from `<root>/bin/planar` it prints `<path> shadows the
-installed <root>/bin/planar: your shell runs <path>. Put <root>/bin first on
-PATH, or remove <path>`, naming `~/.local/bin/planar` and adding `(the retired
-'make install' put it there)` when that is the shadowing path. The verb does
-not repeat it: it never regains control after the exec. The bootstrap prints
-the same line, prefixed `get-planar: warning: `.
+planar` and `<root>/bin/planar` are different files (compared after resolving
+symlinks, so a `PATH` entry that links to the installed binary is not a
+shadow) it prints `<path> shadows the installed <root>/bin/planar: your shell
+runs <path>. Put <root>/bin first on PATH, or remove <path>`. It names
+`~/.local/bin/planar` for that path and appends `(the retired 'make install'
+put it there)` only when that is the shadowing path. The verb does not repeat
+it: it never regains control after the exec. The bootstrap prints the warning
+once: it leaves it to a bundled installer that carries the check and keeps the
+same check, with the same wording prefixed `get-planar: warning: `, only for an
+older bundle that lacks it.
 
 Refusals use the bootstrap's (`get-planar.sh`) messages, after `error: `:
 `cannot reach the release server at <base>: ...`, `release <tag> does not
