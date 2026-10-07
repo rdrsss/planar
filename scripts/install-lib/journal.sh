@@ -222,3 +222,55 @@ planar_journal_load() {
   done < "$jf"
   return 0
 }
+
+# THE UNINSTALLED MARKER. A completed uninstall that leaves the install root in
+# place (preserved data paths, or unknown entries it kept) writes
+# `<canonical-root>/.planar-uninstalled` so the next install adopts the root
+# without --force (tech spec 677, "The uninstaller": prefix adoption after a
+# completed uninstall). It is installer-validated evidence like the journal, never
+# a bare name: a regular file (not a symlink) owned by the current user, at most
+# 4096 bytes of printable ASCII (bytes of 0x80 and above allowed) and newlines,
+# exactly two lines:
+#
+#   planar-uninstalled 1
+#   root=<canonical root>     byte for byte the root being checked
+#
+# A marker copied from another root names that root and is not valid here. The
+# next completed install removes it (the install stamp supersedes it).
+
+PLANAR_UNINSTALLED_NAME=".planar-uninstalled"
+
+# planar_uninstalled_marker_valid CANONICAL_ROOT -- succeed when CANONICAL_ROOT
+# holds a well-formed marker that names it.
+planar_uninstalled_marker_valid() {
+  local root="${1%/}" mf size nonprint line n=0
+  [ -n "$root" ] || return 1
+  mf="$root/$PLANAR_UNINSTALLED_NAME"
+  [ ! -L "$mf" ] && [ -f "$mf" ] && [ -O "$mf" ] || return 1
+  size="$(wc -c < "$mf" | tr -d ' ')"
+  [ -n "$size" ] && [ "$size" -le 4096 ] || return 1
+  nonprint="$(LC_ALL=C tr -d '\012\040-\176\200-\377' < "$mf" | wc -c | tr -d ' ')"
+  [ "$nonprint" = "0" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    case "$n" in
+      1) [ "$line" = "planar-uninstalled 1" ] || return 1 ;;
+      2) [ "$line" = "root=$root" ] || return 1 ;;
+      *) return 1 ;;
+    esac
+  done < "$mf"
+  [ "$n" -eq 2 ]
+}
+
+# planar_uninstalled_marker_write CANONICAL_ROOT -- write the marker atomically
+# (exclusive temp file, then rename). Status 1 when it cannot be written.
+planar_uninstalled_marker_write() {
+  local root="${1%/}" mf tmp
+  mf="$root/$PLANAR_UNINSTALLED_NAME"
+  tmp="$mf.tmp.$$"
+  case "$root" in *"
+"*) return 1 ;; esac
+  rm -f "$tmp" 2>/dev/null || true
+  (umask 077 && set -C && printf 'planar-uninstalled 1\nroot=%s\n' "$root" > "$tmp") 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$mf" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+}

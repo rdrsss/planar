@@ -75,6 +75,20 @@ tree_id() {
 }
 # same_tree A B -- the two directories hold the same bytes and the same symlinks.
 same_tree() { [[ "$(tree_id "$1" nomode)" == "$(tree_id "$2" nomode)" ]]; }
+# bundle_tree BUNDLE NAME -- what the install of BUNDLE places as NAME: the
+# bundle's own subtree, except bin/, which also holds the bundle's uninstall.sh
+# as planar-uninstall.
+bundle_tree() {
+  local b="$1" n="$2" e
+  if [[ "$n" != bin ]]; then printf '%s' "$b/$n"; return 0; fi
+  e="$TMP/expected-bin/$(printf '%s' "$b" | cksum | tr -d ' ')/bin"
+  if [[ ! -d "$e" ]]; then
+    mkdir -p "$(dirname "$e")"
+    cp -R "$b/bin" "$e"
+    cp "$b/uninstall.sh" "$e/planar-uninstall"
+  fi
+  printf '%s' "$e"
+}
 no_evidence() { # no_evidence ROOT -- no staging, backup or journal is left
   [[ -z "$(ls -d "$1"/*.old "$1"/.staging-* "$1/.planar-journal" 2>/dev/null)" ]] || fail "recovery evidence is left: $(ls -a "$1")"
 }
@@ -108,11 +122,13 @@ data_before="$(cd "$P" && for d in $DATA; do tree_id "$d" 2>/dev/null || cksum "
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "the install over an install of unknown age failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
 for n in bin skills agents codex-agents workflows scripts migrations; do
-  same_tree "$BUNDLE/$n" "$P/$n" || fail "$n/ is not the bundle's: $(diff -r "$BUNDLE/$n" "$P/$n" | head)"
+  same_tree "$(bundle_tree "$BUNDLE" "$n")" "$P/$n" || fail "$n/ is not the bundle's: $(diff -r "$(bundle_tree "$BUNDLE" "$n")" "$P/$n" | head)"
 done
 for b in planar planar-agent planar-watch planar-execute planar-ext; do
   cmp -s "$BUNDLE/bin/$b" "$P/bin/$b" && [[ -x "$P/bin/$b" ]] || fail "bin/$b is not the bundle's executable"
 done
+cmp -s "$BUNDLE/uninstall.sh" "$P/bin/planar-uninstall" && [[ -x "$P/bin/planar-uninstall" ]] \
+  || fail "bin/planar-uninstall is not the bundle's uninstall.sh, executable"
 for gone in bin/scriptorium bin/mtkahypar lib/libmtkahypar.dylib opt/mtkahypar commands copilot skills/codex agents/claude codex-skills \
             scripts/stray.sh scripts/old workflows/old.lua codex-agents/planar-gone.toml migrations/00001_ancient.sql skills/planar/OLD.md; do
   [[ ! -e "$P/$gone" && ! -L "$P/$gone" ]] || fail "$gone survived the install"
@@ -195,7 +211,7 @@ H="$(new_home incomplete)"; P="$H/.planar"
 run_prebuilt "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "release 2 failed ($RC): $(cat "$TMP/err")"
 arena_before="$(tree_id "$P")"
-for missing in workflows migrations scripts/install-lib scripts skills/planar codex-agents; do
+for missing in workflows migrations scripts/install-lib scripts skills/planar codex-agents uninstall.sh; do
   BM="$TMP/bundle/missing-${missing//\//-}"
   fake_bundle_make "$ROOT" "$BM"
   rm -rf "${BM:?}/$missing"

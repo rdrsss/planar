@@ -10,6 +10,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo/scripts" "$TMP/repo/skills/planar" "$TMP/repo/agents" "$TMP/repo/workflows" "$TMP/repo/migrations" "$TMP/home"
 cp "$ROOT/install.sh" "$TMP/repo/install.sh"
 cp -R "$ROOT/scripts/install-lib" "$TMP/repo/scripts/"
+cp "$ROOT/scripts/uninstall.sh" "$TMP/repo/scripts/"
 
 perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang\+\+#/definitely/missing/planar-clang++#g' \
   "$TMP/repo/install.sh"

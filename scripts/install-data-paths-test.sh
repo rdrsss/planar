@@ -10,7 +10,8 @@
 #   - drives install.sh (stub cmake, scratch HOME) over a prefix seeded with
 #     every data path, with cleanup entries aimed at each of them, and asserts
 #     checksums are unchanged after the install, a --force install, and
-#     --uninstall (also --uninstall --force);
+#     --uninstall (which delegates to scripts/uninstall.sh; --uninstall --force
+#     is refused naming --purge, before anything changes);
 #   - drives a relocated database and workbench: named, left untouched;
 #   - drives a relocated data path inside a managed tree: the install stops.
 # Nothing real is touched: HOME and every variable that could point elsewhere are
@@ -304,15 +305,22 @@ run_installer "$H" -- --force
 [[ "$(cat "$P/templates/b.toml")" == "shipped b" ]] || fail "--force did not place a missing template"
 pass
 
-for uforce in "" "--force"; do
-  run_installer "$H" -- --uninstall $uforce
-  [[ "$RC" == 0 ]] || fail "uninstall $uforce failed ($RC): $(cat "$TMP/err")"
-  [[ "$(sums "$P" "$LIST")" == "$before" ]] || fail "uninstall $uforce changed a data path"
-  [[ ! -e "$P/bin" && ! -e "$P/scripts" && ! -e "$P/skills" ]] || fail "uninstall $uforce left managed trees: $(ls -A "$P" | tr '\n' ' ')"
-  [[ ! -e "$P/install-manifest.json" ]] || fail "uninstall $uforce left the manifest"
-  # Reinstall so the second round has something to remove.
-  run_installer "$H" --
-  [[ "$RC" == 0 ]] || fail "reinstall failed ($RC): $(cat "$TMP/err")"
+# --uninstall --force no longer exists: refused at exit 2 naming --purge, with
+# nothing changed.
+tree_before="$(cd "$P" && find . -print | LC_ALL=C sort)"
+run_installer "$H" -- --uninstall --force
+[[ "$RC" == 2 ]] || fail "--uninstall --force was not refused at exit 2 ($RC): $(cat "$TMP/err")"
+grep -Fq -- "--purge" "$TMP/err" || fail "the --uninstall --force refusal does not name --purge: $(cat "$TMP/err")"
+[[ "$(cd "$P" && find . -print | LC_ALL=C sort)" == "$tree_before" && "$(sums "$P" "$LIST")" == "$before" ]] \
+  || fail "the refused --uninstall --force changed the installation"
+run_installer "$H" -- --uninstall
+[[ "$RC" == 0 ]] || fail "uninstall failed ($RC): $(cat "$TMP/err")"
+[[ "$(sums "$P" "$LIST")" == "$before" ]] || fail "uninstall changed a data path"
+[[ ! -e "$P/bin" && ! -e "$P/scripts" && ! -e "$P/skills" ]] || fail "uninstall left managed trees: $(ls -A "$P" | tr '\n' ' ')"
+[[ ! -e "$P/install-manifest.json" ]] || fail "uninstall left the manifest"
+for n in $want_names; do
+  case "$n" in planar.db-*) continue ;; esac
+  grep -Fq "kept data path $P/$n" "$TMP/out" || fail "uninstall did not name the preserved data path $n: $(cat "$TMP/out")"
 done
 pass
 

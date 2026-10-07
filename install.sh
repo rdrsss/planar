@@ -65,7 +65,7 @@
 #   ./install.sh --prefix /opt/planar # override ~/.planar
 #   ./install.sh --force              # overwrite existing symlinks
 #   ./install.sh --ignore-live-queue  # retire agent.db despite live old queue entries
-#   ./install.sh --uninstall          # tear down everything install.sh created
+#   ./install.sh --uninstall          # run the uninstaller (~/.planar/bin/planar-uninstall)
 #   ./install.sh --preset debug       # CMake preset (default release)
 #   ./install.sh --dry-run            # preview planned actions without changing anything
 #   ./install.sh --verbose            # per-file detail (default prints a summary)
@@ -121,6 +121,10 @@ source "$REPO_ROOT/scripts/install-lib/data-paths.sh"
 source "$REPO_ROOT/scripts/install-lib/mutation-lock.sh"
 source "$REPO_ROOT/scripts/install-lib/install-state.sh"
 source "$REPO_ROOT/scripts/install-lib/db-probe.sh"
+# The vendor ownership rules and the release-record readers shared with the
+# uninstaller (plan 1122).
+source "$REPO_ROOT/scripts/install-lib/ownership.sh"
+source "$REPO_ROOT/scripts/install-lib/release.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -163,9 +167,14 @@ Options:
                      the developer's build/<preset>.
   --dry-run, -n      Show what would happen without making any changes
   --verbose, -v      Per-file detail (default prints a summary)
-  --uninstall        Tear down everything install.sh created, except data
-                     paths (planar.db, queue-logs/, workbench/, ...); --force
-                     does not remove those either
+  --uninstall        Run the standalone uninstaller (planar-uninstall): remove
+                     everything Planar installed, keep and name the data paths
+                     (planar.db, workbench/, templates/, ...) and anything it
+                     does not know. --force is refused; see --purge.
+  --purge            With --uninstall: remove the data paths too (a relocated
+                     one is named and left where it is)
+  --yes, -y          With --uninstall: remove Planar binaries in ~/.local/bin
+                     without asking
   --version          Print the installer version and exit
   -h, --help         Show this help and exit
 
@@ -177,9 +186,12 @@ EOF
 
 ORIG_ARGS=("$@")              # for the durable retry command
 CLEANUP_DIR=""                # set with --cleanup DIR (the updater's handoff only)
+PREFIX_GIVEN=0                # 1 when --prefix was passed (forwarded to the uninstaller)
+UNINSTALL_PURGE=0             # --purge: uninstall only
+UNINSTALL_YES=0               # --yes: uninstall only
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --prefix)     PLANAR_HOME="$2"; shift 2 ;;
+    --prefix)     PLANAR_HOME="$2"; PREFIX_GIVEN=1; shift 2 ;;
     --vendors)    VENDORS="$2"; VENDORS_EXPLICIT=1; shift 2 ;;
     --no-vendor)  VENDORS=""; shift ;;
     --link)       MODE="link"; shift ;;
@@ -192,6 +204,8 @@ while [[ $# -gt 0 ]]; do
     --force)      FORCE=1; shift ;;
     --ignore-live-queue) IGNORE_LIVE_QUEUE=1; shift ;;
     --uninstall)  UNINSTALL=1; shift ;;
+    --purge)      UNINSTALL_PURGE=1; shift ;;
+    --yes|-y)     UNINSTALL_YES=1; shift ;;
     --no-prune)   NO_PRUNE=1; shift ;;
     --preset)     BUILD_PRESET="$2"; shift 2 ;;
     --build-dir)  BUILD_DIR="$2"; shift 2 ;;
@@ -206,6 +220,35 @@ while [[ $# -gt 0 ]]; do
     *) printf 'install.sh: unknown flag: %s\n\n' "$1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+# ---------- uninstall: a call into the standalone uninstaller ----------
+
+# `install.sh --uninstall` runs the standalone uninstaller (decision 1331): the
+# bundle's uninstall.sh, or the checkout's scripts/uninstall.sh. It forwards
+# --prefix, --purge, --yes and --force (which the uninstaller refuses, naming
+# --purge); the install-only options are ignored, as they always were.
+if [[ "$UNINSTALL" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'install.sh: --dry-run is not supported with --uninstall; nothing was changed\n' >&2
+    exit 64
+  fi
+  _uninstaller="$REPO_ROOT/uninstall.sh"
+  [[ -f "$_uninstaller" ]] || _uninstaller="$REPO_ROOT/scripts/uninstall.sh"
+  if [[ ! -f "$_uninstaller" ]]; then
+    printf 'install.sh: cannot find the uninstaller (uninstall.sh or scripts/uninstall.sh) in %s; nothing was changed\n' "$REPO_ROOT" >&2
+    exit 1
+  fi
+  _uargs=()
+  [[ "$PREFIX_GIVEN" -eq 1 ]] && _uargs+=(--prefix "$PLANAR_HOME")
+  [[ "$UNINSTALL_PURGE" -eq 1 ]] && _uargs+=(--purge)
+  [[ "$UNINSTALL_YES" -eq 1 ]] && _uargs+=(--yes)
+  [[ "$FORCE" -eq 1 ]] && _uargs+=(--force)
+  exec "$BASH" "$_uninstaller" ${_uargs[@]+"${_uargs[@]}"}
+fi
+if [[ "$UNINSTALL_PURGE" -eq 1 || "$UNINSTALL_YES" -eq 1 ]]; then
+  printf 'install.sh: --purge and --yes are uninstall options; pass them with --uninstall (or run planar-uninstall)\n' >&2
+  exit 64
+fi
 
 # The installer's own build directory. Deliberately NOT build/<preset>: that
 # one belongs to the developer, and sharing it is how an install picked up a
@@ -243,6 +286,7 @@ if [[ "$PREBUILT" -eq 1 ]]; then
     [[ -f "$SRC_ROOT/bin/$_b" && -x "$SRC_ROOT/bin/$_b" ]] || _bundle_missing+=("bin/$_b")
   done
   [[ -f "$SRC_ROOT/release.json" ]] || _bundle_missing+=("release.json")
+  [[ -f "$SRC_ROOT/uninstall.sh" ]] || _bundle_missing+=("uninstall.sh")
   [[ -f "$SRC_ROOT/skills/planar/SKILL.md" ]] || _bundle_missing+=("skills/planar/SKILL.md")
   [[ -d "$SRC_ROOT/agents" ]] || _bundle_missing+=("agents/")
   _bundle_toml=0
@@ -257,14 +301,14 @@ if [[ "$PREBUILT" -eq 1 ]]; then
     for _b in ${_bundle_missing[@]+"${_bundle_missing[@]}"}; do printf '  %s\n' "$_b" >&2; done
     exit 1
   fi
-elif [[ "$UNINSTALL" -ne 1 ]]; then
+else
   # A source install stages every managed subtree from the checkout; one whose
   # source directory is absent is an incomplete checkout, refused before any write.
-  # An uninstall stages nothing and needs no checkout subtree, so it skips this.
   _src_missing=()
   for _b in skills/planar agents scripts/install-lib workflows migrations; do
     [[ -d "$SRC_ROOT/$_b" ]] || _src_missing+=("$_b/")
   done
+  [[ -f "$SRC_ROOT/scripts/uninstall.sh" ]] || _src_missing+=("scripts/uninstall.sh")
   if [[ ${#_src_missing[@]} -gt 0 ]]; then
     printf 'install.sh: the checkout %s is incomplete; missing:\n' "$SRC_ROOT" >&2
     for _b in ${_src_missing[@]+"${_src_missing[@]}"}; do printf '  %s\n' "$_b" >&2; done
@@ -445,371 +489,20 @@ symlink_to() {
   ln -s "$src" "$dst"
 }
 
-# ---------- shared helpers: previous-projection sweep and OpenCode form ----------
-
-SWEEP_REMOVED=0
-SWEEP_LEFT=0
-
-# sweep_remove <path> <what> — remove one proven entry and say so.
-sweep_remove() {
-  local path="$1" what="$2"
-  if [[ -L "$path" ]]; then rm -f "$path"; else rm -rf "$path"; fi
-  log "removed $what: $path"
-  SWEEP_REMOVED=$((SWEEP_REMOVED + 1))
-}
-
-# sweep_link_into <link> <glob-prefix...> — true when <link> is a symlink (live
-# or dangling: readlink, not -e) whose target matches one of the prefixes.
-sweep_link_into() {
-  local link="$1" target pat; shift
-  [[ -L "$link" ]] || return 1
-  target="$(readlink "$link" 2>/dev/null || true)"
-  for pat in "$@"; do
-    # shellcheck disable=SC2053  # the prefix is a glob on purpose
-    [[ "$target" == $pat ]] && return 0
-  done
-  return 1
-}
-
-# sweep_commands <dir> — the retired ~/.claude/commands symlinks.
-sweep_commands() {
-  local dir="$1" link
-  [[ -d "$dir" ]] || return 0
-  while IFS= read -r -d '' link; do
-    if sweep_link_into "$link" "$PLANAR_HOME/*" "$HOME/.planar/local/*"; then
-      sweep_remove "$link" "command symlink"
-    fi
-  done < <(find "$dir" -maxdepth 1 -type l \( -name 'pl-*.md' -o -name 'local-*.md' \) -print0)
-}
-
-# sweep_retired_toplevel_agent <link> — true when <link> points at a direct
-# child of $PLANAR_HOME/agents/ whose name is not planar-*: the layout an older
-# release linked vendor agents to before roles were prefixed. The current
-# layout links only to agents/planar-<role>.md, so it never matches. Live and
-# dangling links both match (readlink, not -e).
-sweep_retired_toplevel_agent() {
-  local link="$1" target rest
-  [[ -L "$link" ]] || return 1
-  target="$(readlink "$link" 2>/dev/null || true)"
-  [[ "$target" == "$PLANAR_HOME/agents/"* ]] || return 1
-  rest="${target#"$PLANAR_HOME/agents/"}"
-  [[ -n "$rest" && "$rest" != */* && "$rest" != planar-* ]]
-}
-
-# sweep_agents <dir> — the agent symlinks older installs placed: the unprefixed
-# render output under $PLANAR_HOME/agents/<vendor>/, and the still older links
-# to top-level $PLANAR_HOME/agents/<role>.md. A symlink to a top-level
-# agents/planar-<role>.md (link mode, the current layout) is not matched.
-sweep_agents() {
-  local dir="$1" link v
-  local -a pats=()
-  [[ -d "$dir" ]] || return 0
-  for v in claude codex copilot gemini antigravity opencode; do pats+=("$PLANAR_HOME/agents/$v/*"); done
-  while IFS= read -r -d '' link; do
-    if sweep_link_into "$link" ${pats[@]+"${pats[@]}"} || sweep_retired_toplevel_agent "$link"; then
-      sweep_remove "$link" "agent symlink"
-    fi
-  done < <(find "$dir" -maxdepth 1 -type l -print0)
-}
-
-# sweep_skills <dir> <staged-dir> — the pl-* skill directories an older install
-# copied or linked into <dir>. Removed when a symlink into $PLANAR_HOME, or when
-# the bytes equal <staged-dir>/<same name> (the old runtime marker file
-# .planar-source is Planar's own and ignored in the comparison). A pl-* directory
-# with neither proof is left and reported. Other entries are ignored.
-sweep_skills() {
-  local dir="$1" staged="$2" entry name
-  [[ -d "$dir" ]] || return 0
-  while IFS= read -r -d '' entry; do
-    name="$(basename "$entry")"
-    if [[ -L "$entry" ]]; then
-      if sweep_link_into "$entry" "$PLANAR_HOME/*"; then sweep_remove "$entry" "skill symlink"; fi
-    elif [[ -d "$entry" ]]; then
-      if [[ -d "$staged/$name" ]] && diff -r -x .planar-source "$staged/$name/" "$entry/" >/dev/null 2>&1; then
-        sweep_remove "$entry" "skill copy"
-      else
-        warn "left $entry: could not prove ownership (no byte-identical staged copy at $staged/$name)"
-        SWEEP_LEFT=$((SWEEP_LEFT + 1))
-      fi
-    fi
-  done < <(find "$dir" -maxdepth 1 -name 'pl-*' -print0)
-}
-
-# run_sweep — the sweep over every vendor directory that exists.
-run_sweep() {
-  local _d
-  sweep_commands "$HOME/.claude/commands"
-  for _d in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/agents" \
-            "$HOME/.gemini/antigravity-cli/agents" "$HOME/.config/opencode/agents"; do
-    sweep_agents "$_d"
-  done
-  sweep_skills "$CODEX_HOME/skills" "$PLANAR_HOME/codex-skills"
-  sweep_skills "$HOME/.copilot/skills" "$PLANAR_HOME/copilot-skills"
-  sweep_skills "$HOME/.gemini/antigravity-cli/skills" "$PLANAR_HOME/gemini-skills"
-  sweep_skills "$HOME/.config/opencode/skills" "$PLANAR_HOME/opencode-skills"
-}
-
-# opencode_derive <staged agent .md> — print the OpenCode form of an agent: the
-# frontmatter reduced to `description` and `mode: subagent`, the body unchanged.
-# A description YAML would misread as a mapping or comment is double-quoted.
-opencode_derive() {
-  awk '
-    NR == 1 { if ($0 != "---") exit 2; infm = 1; next }
-    infm && $0 == "---" {
-      if (desc == "") exit 3
-      if (desc !~ /^["\047]/ && (desc ~ /: / || desc ~ / #/ || desc ~ /:$/ || desc ~ /^[-?:,\[\]{}#&*!|>%@`]/)) {
-        gsub(/\\/, "\\\\", desc); gsub(/"/, "\\\"", desc); desc = "\"" desc "\""
-      }
-      print "---"; print "description: " desc; print "mode: subagent"; print "---"
-      infm = 0; next
-    }
-    infm { if ($0 ~ /^description:/) { desc = $0; sub(/^description:[ \t]*/, "", desc) } ; next }
-    { print }
-    END { if (infm) exit 4 }
-  ' "$1"
-}
-
-# uninstall_owned <staged> <installed> <vendor> <kind> — <installed> is still
-# what Planar placed: a symlink into $PLANAR_HOME, or content equal to <staged>
-# (an OpenCode agent is compared with its derived form).
-uninstall_owned() {
-  local staged="$1" installed="$2" vendor="$3" kind="$4" tmp rc=0
-  if [[ -L "$installed" ]]; then
-    [[ "$(readlink "$installed" 2>/dev/null || true)" == "$PLANAR_HOME"/* ]]
-    return
-  fi
-  if [[ "$kind" == skill ]]; then
-    [[ -d "$installed" && -d "$staged" ]] && diff -r "$staged/" "$installed/" >/dev/null 2>&1
-    return
-  fi
-  [[ -f "$installed" && -f "$staged" ]] || return 1
-  if [[ "$vendor" == opencode ]]; then
-    tmp="$(mktemp)"
-    if opencode_derive "$staged" > "$tmp" 2>/dev/null; then cmp -s "$tmp" "$installed" || rc=1; else rc=1; fi
-    rm -f "$tmp"
-    return "$rc"
-  fi
-  cmp -s "$staged" "$installed"
-}
-
-# uninstall_recorded_targets — remove each projection the manifest records that
-# is still Planar's, then report what is left under a planar name.
-uninstall_recorded_targets() {
-  local manifest="$PLANAR_HOME/install-manifest.json" staged installed vendor kind d e
-  local removed=0 listing
-  if [[ -f "$manifest" ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      listing="$(python3 - "$manifest" <<'PY' || true
-import json, sys
-try:
-    m = json.load(open(sys.argv[1], encoding='utf-8'))
-except Exception:
-    sys.exit(0)
-for r in m.get('projections', []):
-    if all(isinstance(r.get(k), str) for k in ('staged_path', 'installed_path', 'vendor', 'kind')):
-        sys.stdout.write('\t'.join((r['staged_path'], r['installed_path'], r['vendor'], r['kind'])) + '\n')
-PY
-)"
-      while IFS=$'\t' read -r staged installed vendor kind; do
-        [[ -n "$installed" ]] || continue
-        [[ -e "$installed" || -L "$installed" ]] || continue
-        if uninstall_owned "$staged" "$installed" "$vendor" "$kind"; then
-          if [[ -L "$installed" ]]; then rm -f "$installed"; else rm -rf "$installed"; fi
-          log "removed recorded target: $installed"
-          removed=$((removed + 1))
-        fi
-      done <<< "$listing"
-    else
-      warn "python3 not found: cannot read $manifest, so the placed vendor targets are not removed"
-    fi
-  fi
-  log "removed $removed recorded vendor target(s)"
-  for d in "$HOME/.claude/skills" "$HOME/.agents/skills" "$HOME/.gemini/antigravity-cli/skills" \
-           "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/agents" \
-           "$HOME/.gemini/antigravity-cli/agents" "$HOME/.config/opencode/agents"; do
-    [[ -d "$d" ]] || continue
-    while IFS= read -r -d '' e; do
-      warn "left $e: Planar did not place it as recorded"
-    done < <(find "$d" -maxdepth 1 \( -name 'planar' -o -name 'planar-*' \) -print0)
-  done
-}
-
 # ---------- prefix guard ----------
 
-# Runs before anything is removed, created or built, for install and
-# --uninstall alike (scripts/install-lib/prefix-guard.sh). An install root that
-# is the empty string, /, or $HOME exits 2 even with --force; a non-empty root
-# with no Planar sign exits 1 unless --force adopts it.
-_guard_op="install"
-[[ "$UNINSTALL" -eq 1 ]] && _guard_op="uninstall"
+# Runs before anything is removed, created or built
+# (scripts/install-lib/prefix-guard.sh; the uninstaller runs the same guard). An
+# install root that is the empty string, /, or $HOME exits 2 even with --force;
+# a non-empty root with no Planar sign exits 1 unless --force adopts it.
 _guard_rc=0
-planar_prefix_guard "$PLANAR_HOME" "$FORCE" "$_guard_op" || _guard_rc=$?
+planar_prefix_guard "$PLANAR_HOME" "$FORCE" install || _guard_rc=$?
 [[ "$_guard_rc" -eq 0 ]] || exit "$_guard_rc"
 # Every removal, the lock, the journal and the staging are keyed on the
 # canonical root, whatever spelling of it the operator gave.
 ROOT_C="$PLANAR_PREFIX_CANON"
 case "$ROOT_C" in *$'\n'*|*$'\t'*) printf 'install.sh: the install root %s holds a newline or tab; refusing\n' "$ROOT_C" >&2; exit 2 ;; esac
 HOME_PLANAR_C="$(trap - ERR; planar_canonical_path "$HOME/.planar" 2>/dev/null || printf '%s' "$HOME/.planar")"
-
-# ---------- uninstall path ----------
-
-if [[ "$UNINSTALL" -eq 1 ]]; then
-  title "Uninstalling Planar"
-  planar_data_paths_report "$PLANAR_HOME" | while IFS= read -r _l; do log "$_l"; done
-
-  # Common mutation ownership (decision 1328), held until every removal has
-  # finished. Every check that can still refuse runs under the lock BEFORE the
-  # journal records `uninstalling`: that record ends any pending install for
-  # good (no later install replays it), so it is written only when removals
-  # begin. A refused uninstall leaves the journal as it found it.
-  if [[ -d "$ROOT_C" ]]; then
-    planar_lock_acquire "$ROOT_C" uninstall || { printf '\ninstall.sh: %s\n' "$PLANAR_LOCK_ERROR" >&2; exit 1; }
-    trap 'planar_lock_release' EXIT
-    if [[ -e "$ROOT_C/.planar-journal" || -L "$ROOT_C/.planar-journal" ]]; then
-      planar_journal_load "$ROOT_C" \
-        || err "$ROOT_C/.planar-journal is not a valid recovery journal; refusing to uninstall around it (it is kept)"
-    else
-      planar_journal_clear
-    fi
-  fi
-
-  # The live-queue guard runs before anything is removed, --force or not:
-  # uninstall removes agent.db (it is no longer preserved), so it must not
-  # pull the store out from under a live old queue. This branch runs before
-  # the dependency preflight, so the guard checks for python3 itself, and
-  # only when agent.db exists. --ignore-live-queue is the only override.
-  queue_live_guard uninstall || exit 1
-
-  # Removals begin: record the cancellation. Nothing below refuses.
-  if [[ -d "$ROOT_C" ]]; then
-    J_phase=uninstalling
-    J_operation=uninstall
-    J_owner_pid="$$"
-    J_owner_start="$(trap - ERR; planar_lock_start_token "$$")" || J_owner_start=unknown
-    J_owner_lock="$PLANAR_LOCK_GEN"
-    J_retry="cd $(printf '%q' "$REPO_ROOT") && ./install.sh --uninstall$([[ "$ROOT_C" == "$HOME_PLANAR_C" ]] || printf ' --prefix %q' "$ROOT_C")"
-    planar_journal_write "$ROOT_C" || err "cannot record the uninstall in $ROOT_C/.planar-journal"
-  fi
-
-  # The targets this installer places (plan 1104, M2): every `installed_path`
-  # the manifest's projection rows record, removed only while it is still what
-  # Planar placed (a symlink into $PLANAR_HOME, or bytes equal to the staged
-  # source). Only the `planar` entries go: no vendor directory and not
-  # ~/.agents/skills is removed. Anything else named planar or planar-* in those
-  # directories is left and reported. The previous skill and agent projections
-  # an older install made are swept the same way as on install.
-  uninstall_recorded_targets
-  run_sweep
-  log "retired $SWEEP_REMOVED previous projection(s); left $SWEEP_LEFT that could not be proven Planar's"
-
-  for vendor_root in "$HOME/.claude/commands" "$HOME/.codex/skills" "$HOME/.copilot/skills" "$HOME/.gemini/antigravity-cli/skills"; do
-    [[ -d "$vendor_root" ]] || continue
-    while IFS= read -r -d '' link; do
-      target="$(readlink "$link" 2>/dev/null || true)"
-      if [[ "$target" == "$PLANAR_HOME"/* ]]; then
-        log "removing symlink: $link"
-        rm -f "$link"
-      fi
-    done < <(find "$vendor_root" -maxdepth 1 -name 'pl-*.md' -print0)
-  done
-
-  for codex_root in "$CODEX_HOME/skills"; do
-    [[ -d "$codex_root" ]] || continue
-    while IFS= read -r -d '' link; do
-      target="$(readlink "$link" 2>/dev/null || true)"
-      if [[ "$target" == "$PLANAR_HOME"/* ]]; then
-        log "removing Codex skill link: $link"
-        rm -f "$link"
-      fi
-    done < <(find "$codex_root" -maxdepth 1 -name 'pl-*' -type l -print0)
-  done
-
-  if [[ -d "$CODEX_HOME/skills" ]]; then
-    while IFS= read -r -d '' link; do
-      skill_dir="$(dirname "$link")"
-      target="$(readlink "$link" 2>/dev/null || true)"
-      marker="$skill_dir/.planar-source"
-      marker_target=""
-      if [[ -f "$marker" ]]; then
-        marker_target="$(cat "$marker" 2>/dev/null || true)"
-      fi
-      if [[ "$target" == "$PLANAR_HOME"/* || "$marker_target" == "$PLANAR_HOME"/* ]]; then
-        log "removing Codex skill: $skill_dir"
-        rm -f "$link"
-        rm -f "$marker"
-        rmdir "$skill_dir" 2>/dev/null || true
-      fi
-    done < <(find "$CODEX_HOME/skills" -mindepth 2 -maxdepth 2 -path '*/pl-*/SKILL.md' -print0)
-  fi
-
-  if [[ -d "$HOME/.copilot/skills" ]]; then
-    while IFS= read -r -d '' link; do
-      skill_dir="$(dirname "$link")"
-      target="$(readlink "$link" 2>/dev/null || true)"
-      marker="$skill_dir/.planar-source"
-      marker_target=""
-      if [[ -f "$marker" ]]; then
-        marker_target="$(cat "$marker" 2>/dev/null || true)"
-      fi
-      if [[ "$target" == "$PLANAR_HOME"/* || "$marker_target" == "$PLANAR_HOME"/* ]]; then
-        log "removing Copilot skill: $skill_dir"
-        rm -f "$link"
-        rm -f "$marker"
-        rmdir "$skill_dir" 2>/dev/null || true
-      fi
-    done < <(find "$HOME/.copilot/skills" -mindepth 2 -maxdepth 2 -path '*/pl-*/SKILL.md' -print0)
-  fi
-
-  if [[ -d "$PLANAR_HOME/codex-skills" ]]; then
-    log "removing Codex runtime skills: $PLANAR_HOME/codex-skills"
-    rm -rf "$PLANAR_HOME/codex-skills"
-  fi
-
-  if [[ -d "$PLANAR_HOME/copilot-skills" ]]; then
-    log "removing Copilot runtime skills: $PLANAR_HOME/copilot-skills"
-    rm -rf "$PLANAR_HOME/copilot-skills"
-  fi
-
-  # Remove agent symlinks installed by symlink_vendor_agents. Mirrors the
-  # prune_stale_vendor_agents safety semantics: only remove files whose symlink
-  # target points into $PLANAR_HOME; regular files and operator-authored links
-  # are left untouched.
-  for agent_dir in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/antigravity-cli/agents"; do
-    [[ -d "$agent_dir" ]] || continue
-    while IFS= read -r -d '' link; do
-      target="$(readlink "$link" 2>/dev/null || true)"
-      if [[ "$target" == "$PLANAR_HOME"/* ]]; then
-        log "removing agent symlink: $link"
-        rm -f "$link"
-      fi
-    done < <(find "$agent_dir" -maxdepth 1 -type l -print0)
-  done
-
-  if [[ -d "$PLANAR_HOME" ]]; then
-    log "removing everything under the install root except data paths: $PLANAR_HOME"
-    log "(data paths are preserved, --force included: $(planar_data_path_names | tr '\n' ' ')the retired agent.db is removed)"
-    # Remove each top-level entry unless it is a data path or holds one (a
-    # relocated data path can sit inside a managed tree). The retired agent.db
-    # and its sidecars are removed (plan 1089; the live-queue guard above
-    # already ran). planar.db's SQLite sidecars hold committed data not yet
-    # checkpointed into the main file, so they stay with it.
-    while IFS= read -r -d '' _entry; do
-      [[ "$_entry" == "$PLANAR_HOME/.planar-journal" ]] && continue
-      if planar_removal_blocked "$PLANAR_HOME" "$_entry"; then
-        log "kept $_entry (data path '$PLANAR_DATA_PATH_HIT')"
-        continue
-      fi
-      rm -rf "$_entry"
-    done < <(find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 -print0)
-    # The cancellation journal goes last, after every removal; an install
-    # root left empty (no data path survived) goes too.
-    rm -f "$PLANAR_HOME/.planar-journal"
-    rmdir "$PLANAR_HOME" 2>/dev/null || true
-  fi
-
-  title "Uninstall complete."
-  exit 0
-fi
 
 # ---------- preflight ----------
 
@@ -995,19 +688,8 @@ fi
 # one is refused above); commands/ and copilot/ are retired paths listed in
 # install-cleanup.txt.
 PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
-DEFAULT_RELEASE_BASE="https://github.com/rdrsss/planar/releases"
-
-# release_field FILE KEY -- one value of a release.json written one key per line.
-release_field() {
-  sed -n "s/^[[:space:]]*\"$2\":[[:space:]]*\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}[[:space:]]*\$/\1/p" "$1" 2>/dev/null | head -n 1
-}
-
-# release_base_valid URL -- the bootstrap's release-base grammar: https, a local
-# file:// fixture, or http on the exact loopback hosts, with no userinfo, quote
-# or blank.
-release_base_valid() {
-  [[ "$1" =~ ^(https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\"\'@]*)?|file:///[^[:space:]\"\'@]*|http://(127\.0\.0\.1|localhost)(:[0-9]+)?(/[^[:space:]\"\'@]*)?)$ ]]
-}
+# DEFAULT_RELEASE_BASE, release_field and release_base_valid come from
+# scripts/install-lib/release.sh, shared with the uninstaller.
 
 # quote_args ARG... -- the arguments as one shell-safe line.
 quote_args() {
@@ -1249,6 +931,14 @@ planar_install_fault after-prepared || err "test fault after recording the attem
 
 # ---------- stage ----------
 
+# stage_uninstaller SRC -- the standalone uninstaller, as bin/planar-uninstall
+# of the staged bin/ (bin/ is swapped in whole). Always a copy, in link mode
+# too: it must keep working whatever happens to the checkout.
+stage_uninstaller() {
+  cp -f "$1" "$STAGE/bin/planar-uninstall"
+  chmod 755 "$STAGE/bin/planar-uninstall"
+}
+
 # stage_prebuilt -- copy every managed subtree of the bundle into $STAGE.
 stage_prebuilt() {
   local b d
@@ -1257,6 +947,7 @@ stage_prebuilt() {
     cp -f "$SRC_ROOT/bin/$b" "$STAGE/bin/$b"
     chmod 755 "$STAGE/bin/$b"
   done
+  stage_uninstaller "$SRC_ROOT/uninstall.sh"
   cp -R "$SRC_ROOT/skills/planar" "$STAGE/skills/planar"
   find "$SRC_ROOT/agents" -maxdepth 1 -type f -exec cp -f {} "$STAGE/agents/" \;
   cp -R "$SRC_ROOT/codex-agents" "$STAGE/codex-agents"
@@ -1304,6 +995,7 @@ stage_source() {
   [[ -d "$STAGE/.cmake-install/bin" ]] || err "the build installed no bin/ into $STAGE/.cmake-install"
   mv "$STAGE/.cmake-install/bin" "$STAGE/bin"
   rm -rf "$STAGE/.cmake-install"
+  stage_uninstaller "$REPO_ROOT/scripts/uninstall.sh"
   title "Staging the planar skill and agents"
   mkdir -p "$STAGE/skills" "$STAGE/agents"
   place "$SRC_ROOT/skills/planar" "$STAGE/skills/planar"
@@ -1982,6 +1674,8 @@ write_release_json
 # A database the install itself created or replaced is private too.
 harden_planar_home
 printf 'planar-install %s\nbuild %s\n' "$INSTALLER_VERSION" "${PLANAR_BUILD_ID:-unknown}" > "$PLANAR_STAMP"
+# The stamp supersedes the marker a previous uninstall left (journal.sh).
+rm -f "$ROOT_C/$PLANAR_UNINSTALLED_NAME"
 
 # ---------- commit ----------
 
@@ -2009,7 +1703,7 @@ fi
 printf '\n'
 log "database:   $PLANAR_INSTALL_DB (current)"
 log "next:       planar init  (in a project checkout, to register it)"
-log "uninstall:  ./install.sh --uninstall"
+log "uninstall:  $PLANAR_HOME/bin/planar-uninstall  (--purge also removes the data paths)"
 
 # Print PATH instructions only when ~/.planar/bin is not already on PATH.
 PLANAR_BIN_DIR="$PLANAR_HOME/bin"

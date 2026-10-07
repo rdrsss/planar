@@ -69,6 +69,7 @@ fake_bundle_make() {
   local root="$1" dest="$2" cleanup="${3:-$1/install-cleanup.txt}" b
   mkdir -p "$dest/bin" "$dest/skills" "$dest/scripts" "$dest/templates" "$dest/workflows"
   cp "$root/install.sh" "$dest/install.sh"
+  cp "$root/scripts/uninstall.sh" "$dest/uninstall.sh"
   cp "$cleanup" "$dest/install-cleanup.txt"
   cp -R "$root/scripts/install-lib" "$dest/scripts/install-lib"
   rm -rf "$dest/scripts/install-lib/__pycache__"

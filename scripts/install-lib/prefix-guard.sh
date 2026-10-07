@@ -26,7 +26,9 @@
 #                 difference.
 #       Status 1: ROOT is an existing directory that is not empty and carries
 #                 none of: the install stamp, an executable bin/planar,
-#                 planar.db, a valid recovery journal, or (only when ROOT is
+#                 planar.db, a valid recovery journal, a valid uninstalled
+#                 marker (journal.sh: what a completed uninstall leaves in a
+#                 root it kept), or (only when ROOT is
 #                 $HOME/.planar) a listed data path (data-paths.sh: workbench/,
 #                 config.toml, ...; an uninstall leaves these behind).
 #                 FORCE=1 adopts it.
@@ -141,6 +143,11 @@ planar_prefix_guard() {
   if recovery_journal_valid "$canon"; then
     return 0
   fi
+  # A completed uninstall that kept this root (preserved data, kept unknown
+  # entries) leaves validated evidence naming it (journal.sh).
+  if planar_uninstalled_marker_valid "$canon"; then
+    return 0
+  fi
   # Preserved Planar data is ownership evidence only in the directory that is
   # the defined home of the data paths, $HOME/.planar (decision 1329): an
   # uninstall leaves them there and removes the stamp and bin/. Any other
@@ -153,7 +160,7 @@ planar_prefix_guard() {
   if [ "$force" = "1" ]; then
     return 0
   fi
-  printf '%s does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp, no valid recovery journal, no Planar data path in \$HOME/.planar). Refusing to %s it. Pass the correct --prefix, or re-run with --force to %s it anyway.\n' "$canon" "$op" "$verb" >&2
+  printf '%s does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp, no valid recovery journal or uninstall record, no Planar data path in \$HOME/.planar). Refusing to %s it. Pass the correct --prefix, or re-run with --force to %s it anyway.\n' "$canon" "$op" "$verb" >&2
   return 1
 }
 

@@ -79,8 +79,12 @@ for source, destination in [('skills/planar', 'skills/planar'), ('scripts/instal
     shutil.copytree(source, stage / destination, symlinks=True, ignore=ignore)
 PYTHON
 cp install.sh install-cleanup.txt "$stage/"
-# Later milestones supply these root assets. Never substitute another script.
-for script in get-planar.sh uninstall.sh; do
+# The standalone uninstaller ships at the bundle root, byte-identical to
+# scripts/uninstall.sh; the installer stages it as bin/planar-uninstall.
+[ -f scripts/uninstall.sh ] || fail "scripts/uninstall.sh is missing"
+cp scripts/uninstall.sh "$stage/uninstall.sh"
+# A later milestone supplies the bootstrap. Never substitute another script.
+for script in get-planar.sh; do
   if [ -f "$script" ]; then cp "$script" "$stage/"; fi
 done
 python3 scripts/render-codex-agents.py "$stage/agents" "$stage/codex-agents"

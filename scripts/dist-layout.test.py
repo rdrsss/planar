@@ -14,7 +14,7 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 BINARIES = {'planar', 'planar-agent', 'planar-watch', 'planar-execute', 'planar-ext'}
 FIELDS = {'version', 'sha', 'date', 'os', 'arch', 'os_floor', 'schema_version'}
-FUTURE_SCRIPTS = ('get-planar.sh', 'uninstall.sh')
+FUTURE_SCRIPTS = ('get-planar.sh',)
 spec = importlib.util.spec_from_file_location('dist_identity', ROOT / 'scripts/dist-identity.test.py')
 identity = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(identity)
@@ -46,7 +46,7 @@ def check_checksums(directory, asset):
 
 
 def check_layout(stage, source, fake_bin, expected):
-    entries = {'release.json', 'install.sh', 'install-cleanup.txt', 'bin', 'skills',
+    entries = {'release.json', 'install.sh', 'uninstall.sh', 'install-cleanup.txt', 'bin', 'skills',
                'agents', 'codex-agents', 'templates', 'workflows', 'migrations', 'scripts'}
     entries.update(name for name in FUTURE_SCRIPTS if (source / name).is_file())
     require({p.name for p in stage.iterdir()} == entries, 'top-level entries differ')
@@ -54,6 +54,10 @@ def check_layout(stage, source, fake_bin, expected):
         if name in entries:
             require((stage / name).read_bytes() == (source / name).read_bytes(),
                     f'{name}: not byte-identical')
+    # The standalone uninstaller ships at the bundle root, a byte copy of
+    # scripts/uninstall.sh (install.sh stages it as bin/planar-uninstall).
+    require((stage / 'uninstall.sh').read_bytes() == (source / 'scripts/uninstall.sh').read_bytes(),
+            'uninstall.sh: not byte-identical to scripts/uninstall.sh')
     require({p.name for p in (stage / 'bin').iterdir()} == BINARIES, 'bin entries differ')
     for name in BINARIES:
         product = stage / 'bin' / name
@@ -167,7 +171,7 @@ if '--install' in sys.argv:
         for name in FUTURE_SCRIPTS:
             (self.root / name).unlink(missing_ok=True)
         self.assemble()
-        for present in ((FUTURE_SCRIPTS[0],), (FUTURE_SCRIPTS[1],), FUTURE_SCRIPTS):
+        for present in (FUTURE_SCRIPTS,):
             with self.subTest(scripts=present):
                 for name in FUTURE_SCRIPTS:
                     (self.root / name).unlink(missing_ok=True)
@@ -192,6 +196,7 @@ if '--install' in sys.argv:
                      ('scripts must contain', stage / 'scripts/extra', b'extra'),
                      ('codex-agents entries', stage / 'codex-agents/extra.toml', b'extra'),
                      ('not byte-identical', stage / 'install.sh', b'wrong installer'),
+                     ('uninstall.sh: not byte-identical', stage / 'uninstall.sh', b'wrong uninstaller'),
                      ('release.json fields', stage / 'release.json', b'{}\n'),
                      ('one key per line', stage / 'release.json', json.dumps(expected).encode()),
                      ('values differ', stage / 'release.json',
@@ -206,10 +211,22 @@ if '--install' in sys.argv:
                     path.unlink()
                 else:
                     path.write_bytes(original)
+        uninstaller = (stage / 'uninstall.sh').read_bytes()
+        (stage / 'uninstall.sh').unlink()
+        with self.assertRaisesRegex(AssertionError, 'top-level entries'):
+            check_layout(stage, self.root, self.fake_bin, expected)
+        (stage / 'uninstall.sh').write_bytes(uninstaller)
         victim = stage / 'bin/planar-watch'
         victim.unlink()
         with self.assertRaisesRegex(AssertionError, 'bin entries'):
             check_layout(stage, self.root, self.fake_bin, expected)
+
+    def test_missing_uninstaller_stops_assembly(self):
+        (self.root / 'scripts/uninstall.sh').unlink()
+        result = self.fixture.run_dist()
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('scripts/uninstall.sh is missing', result.stderr)
+        self.assertEqual(list((self.root / 'dist').glob('planar-*.tar.gz')), [])
 
     def test_corrupt_archive_fails_shell_checksum_assertion(self):
         archive, _, _, _ = self.assemble()

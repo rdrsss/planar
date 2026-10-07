@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
-# Prefix-guard fixtures (plan 1122, task rel-prefix-guard). install.sh and
-# `install.sh --uninstall` both call planar_prefix_guard (scripts/install-lib/
-# prefix-guard.sh) before anything is removed, created or built:
+# Prefix-guard fixtures (plan 1122, tasks rel-prefix-guard and
+# rel-uninstall-script). install.sh and the standalone uninstaller
+# (scripts/uninstall.sh, which `install.sh --uninstall` runs) both call
+# planar_prefix_guard (scripts/install-lib/prefix-guard.sh) before anything is
+# removed, created or built:
 #   - a root that is the empty string, /, or resolves to $HOME exits 2, even
 #     with --force, naming the path and the rule, leaving the tree untouched;
-#   - a root carrying the stamp, an executable bin/planar, planar.db, a listed
-#     data path (what an uninstall leaves behind) or a
-#     validated recovery journal is adopted without --force;
-#   - any other non-empty root is refused (exit 1) unless --force adopts it.
+#   - a root carrying the stamp, an executable bin/planar, planar.db, a
+#     validated recovery journal, a validated uninstalled marker, or (only in
+#     $HOME/.planar, however it is spelled) a listed data path is adopted
+#     without --force;
+#   - any other non-empty root is refused (exit 1) unless --force adopts it;
+#   - an uninstall has no --force: it exits 2 naming --purge.
 # Every run is against a scratch copy of the installer, a scratch HOME and a stub
 # cmake, so nothing is built and the operator's ~/.planar is never looked at.
 # A shim `rm`, `mv` and `rmdir` ahead on PATH records every call and fails it,
 # so a refusal that did not happen before removal is caught as a log entry (and
 # a broken guard can never reach a real recursive delete of a root such as /).
 # Runs under stock bash 3.2.
+# shellcheck disable=SC2015,SC2016  # A && B || fail is intended; literal $HOME in messages
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -101,9 +106,14 @@ expect_hard_refusal() {
   RUN_PLANAR_HOME="$home/.planar-default"
   run_installer "$home" 1 --prefix "$root" ${flags[@]+"${flags[@]}"}
   [[ "$RC" == 2 ]] || fail "$label ($op force=$force): expected exit 2, got $RC: $(cat "$TMP/err")"
-  grep -Fq "$want" "$TMP/err" || fail "$label ($op force=$force): stderr does not contain '$want': $(cat "$TMP/err")"
-  grep -Fq "Rule:" "$TMP/err" || fail "$label ($op force=$force): stderr does not name the rule: $(cat "$TMP/err")"
-  grep -Fq "does not override" "$TMP/err" || fail "$label ($op force=$force): stderr does not say --force is no override"
+  if [[ "$op" == uninstall && "$force" == 1 ]]; then
+    # An uninstall has no --force at all: refused first, naming --purge.
+    grep -Fq -- "--purge" "$TMP/err" || fail "$label ($op force=$force): the --force refusal does not name --purge: $(cat "$TMP/err")"
+  else
+    grep -Fq "$want" "$TMP/err" || fail "$label ($op force=$force): stderr does not contain '$want': $(cat "$TMP/err")"
+    grep -Fq "Rule:" "$TMP/err" || fail "$label ($op force=$force): stderr does not name the rule: $(cat "$TMP/err")"
+    grep -Fq "does not override" "$TMP/err" || fail "$label ($op force=$force): stderr does not say --force is no override"
+  fi
   [[ ! -s "$SHIMLOG" ]] || fail "$label ($op force=$force): a removal was attempted before the refusal: $(cat "$SHIMLOG")"
   [[ ! -e "$home/build" && ! -e "$home/.planar-default" ]] || fail "$label ($op force=$force): the installer created something"
   after="$(snapshot "$home")"
@@ -146,7 +156,11 @@ for op in install uninstall; do
     run_installer "$H" 1 ${flags[@]+"${flags[@]}"}
     unset RUN_PLANAR_HOME
     [[ "$RC" == 2 ]] || fail "PLANAR_HOME= ($op force=$force): expected exit 2, got $RC: $(cat "$TMP/err")"
-    grep -Fq "empty string" "$TMP/err" || fail "PLANAR_HOME= ($op force=$force): the rule is not named"
+    if [[ "$op" == uninstall && "$force" == 1 ]]; then
+      grep -Fq -- "--purge" "$TMP/err" || fail "PLANAR_HOME= ($op force=$force): the --force refusal does not name --purge"
+    else
+      grep -Fq "empty string" "$TMP/err" || fail "PLANAR_HOME= ($op force=$force): the rule is not named"
+    fi
     [[ ! -s "$SHIMLOG" ]] || fail "PLANAR_HOME= ($op force=$force): a removal was attempted"
     [[ "$before" == "$(snapshot "$H")" ]] || fail "PLANAR_HOME= ($op force=$force): the arena changed"
     pass
@@ -301,9 +315,14 @@ expect_ownership_refusal "foreign root" "$F" uninstall
 run_installer "$(dirname "$F")" 0 --prefix "$F" --force
 [[ "$RC" == 0 && -f "$F/.planar-install" ]] || fail "--force did not adopt the foreign root: rc=$RC $(cat "$TMP/err")"
 pass
+# An uninstall has no --force, so a foreign root is never removed: refused at
+# exit 2 naming --purge, the root untouched.
 F2="$(make_foreign foreign2)"
-run_installer "$(dirname "$F2")" 0 --prefix "$F2" --force --uninstall
-[[ "$RC" == 0 && ! -e "$F2" ]] || fail "--force --uninstall did not remove the foreign root: rc=$RC $(cat "$TMP/err")"
+before="$(snapshot "$F2")"
+run_installer "$(dirname "$F2")" 1 --prefix "$F2" --force --uninstall
+[[ "$RC" == 2 ]] || fail "--force --uninstall of a foreign root was not refused at exit 2: rc=$RC $(cat "$TMP/err")"
+grep -Fq -- "--purge" "$TMP/err" || fail "--force --uninstall: the refusal does not name --purge: $(cat "$TMP/err")"
+[[ ! -s "$SHIMLOG" && "$before" == "$(snapshot "$F2")" ]] || fail "--force --uninstall touched the foreign root"
 pass
 
 # A directory that merely holds a name from the data-path list is not a Planar
@@ -327,7 +346,10 @@ chmod +x "$TMP/own/.planar/bin/planar"
 printf 'x\n' > "$TMP/own/.planar/other.txt"
 run_installer "$TMP/own" 0 --prefix "$TMP/own/.planar" --uninstall
 [[ "$RC" == 0 ]] || fail "uninstall of an owned root failed: rc=$RC $(cat "$TMP/err")"
-[[ ! -e "$TMP/own/.planar/bin" && ! -e "$TMP/own/.planar/other.txt" ]] || fail "uninstall of an owned root left files"
+[[ ! -e "$TMP/own/.planar/bin" ]] || fail "uninstall of an owned root left bin/"
+# An entry the uninstaller does not know is kept and reported, never removed.
+[[ "$(cat "$TMP/own/.planar/other.txt")" == x ]] || fail "uninstall removed the unknown other.txt"
+grep -Fq "kept $TMP/own/.planar/other.txt" "$TMP/err" || fail "uninstall did not report the unknown entry it kept: $(cat "$TMP/err")"
 pass
 
 # --- recovery journal ----------------------------------------------------------
@@ -444,6 +466,135 @@ NA="$TMP/jos$(printf '\303\251')/.planar"
 write_journal "$NA" "planar-journal 1" "root=$NA" "phase=prepared"
 printf 'partial\n' > "$NA/.staging-bin"
 expect_adopted "valid journal under a non-ASCII root" "$NA"
+
+# --- planar-uninstall runs the same guard ---------------------------------------
+
+# The standalone uninstaller, run directly (not through install.sh --uninstall):
+# $HOME, / and the empty string exit 2 before anything is removed, with the shim
+# recording any removal attempt; --force is refused naming --purge.
+run_uninstaller() {
+  local home="$1" shimmed="$2"; shift 2
+  local path="$PATH"
+  [[ "$shimmed" == 1 ]] && path="$SHIM:$path"
+  : > "$SHIMLOG"
+  RC=0
+  env -u CODEX_HOME -u PLANAR_HOME PATH="$path" HOME="$home" PLANAR_DB="$home/planar.db" NO_COLOR=1 \
+    ${RUN_PLANAR_HOME+PLANAR_HOME="$RUN_PLANAR_HOME"} \
+    /bin/bash "$REPO/scripts/uninstall.sh" "$@" </dev/null >"$TMP/out" 2>"$TMP/err" || RC=$?
+}
+H="$(new_home direct)"
+for root in "$H" "/" ""; do
+  for force in 0 1; do
+    flags=()
+    [[ "$force" == 1 ]] && flags+=(--force)
+    before="$(snapshot "$H")"
+    run_uninstaller "$H" 1 --prefix "$root" ${flags[@]+"${flags[@]}"}
+    [[ "$RC" == 2 ]] || fail "planar-uninstall --prefix '$root' (force=$force): expected exit 2, got $RC: $(cat "$TMP/err")"
+    if [[ "$force" == 1 ]]; then
+      grep -Fq -- "--purge" "$TMP/err" || fail "planar-uninstall --force: the refusal does not name --purge: $(cat "$TMP/err")"
+    else
+      grep -Fq "Rule:" "$TMP/err" || fail "planar-uninstall --prefix '$root': the rule is not named: $(cat "$TMP/err")"
+      [[ -z "$root" ]] || grep -Fq "$root" "$TMP/err" || fail "planar-uninstall --prefix '$root': the path is not named"
+    fi
+    [[ ! -s "$SHIMLOG" && "$before" == "$(snapshot "$H")" ]] || fail "planar-uninstall --prefix '$root' (force=$force) touched the arena: $(cat "$SHIMLOG")"
+    pass
+  done
+done
+before="$(snapshot "$H")"
+RUN_PLANAR_HOME=""
+run_uninstaller "$H" 1
+unset RUN_PLANAR_HOME
+[[ "$RC" == 2 ]] && grep -Fq "empty string" "$TMP/err" || fail "planar-uninstall with PLANAR_HOME= was not refused naming the empty string ($RC): $(cat "$TMP/err")"
+[[ ! -s "$SHIMLOG" && "$before" == "$(snapshot "$H")" ]] || fail "planar-uninstall with PLANAR_HOME= touched the arena"
+pass
+FD="$(make_foreign foreign-direct)"
+expect_direct_ownership_refusal() {
+  local before
+  before="$(snapshot "$FD")"
+  run_uninstaller "$(dirname "$FD")" 1 --prefix "$FD"
+  [[ "$RC" == 1 ]] && grep -Fq "does not look like a Planar install" "$TMP/err" || fail "planar-uninstall over a foreign root: expected exit 1 ($RC): $(cat "$TMP/err")"
+  [[ ! -s "$SHIMLOG" && "$before" == "$(snapshot "$FD")" ]] || fail "planar-uninstall over a foreign root touched it"
+  pass
+}
+expect_direct_ownership_refusal
+
+# --- the uninstalled marker ----------------------------------------------------
+
+# What a completed uninstall leaves in a root it keeps: validated evidence that
+# names the root (journal.sh). A valid one is adopted without --force; a copy
+# from another root, a symlink, a malformed or extended one never is.
+P="$TMP/marker-ok/.planar"
+mkdir -p "$P/research"
+printf 'paper\n' > "$P/research/draft.md"
+printf 'planar-uninstalled 1\nroot=%s\n' "$P" > "$P/.planar-uninstalled"
+expect_adopted "valid uninstalled marker" "$P"
+[[ ! -e "$P/.planar-uninstalled" && "$(cat "$P/research/draft.md")" == paper ]] || fail "the install did not supersede the marker, or touched the kept entry"
+bad_marker() {
+  local label="$1" P="$TMP/marker-$1/.planar"; shift
+  mkdir -p "$P"
+  printf 'x\n' > "$P/thing"
+  "$@" "$P"
+  expect_ownership_refusal "uninstalled marker: $label" "$P" install
+  expect_ownership_refusal "uninstalled marker: $label" "$P" uninstall
+}
+m_other_root() {
+  local Q="$TMP/marker-src/.planar"
+  mkdir -p "$Q"
+  printf 'planar-uninstalled 1\nroot=%s\n' "$Q" > "$Q/.planar-uninstalled"
+  cp "$Q/.planar-uninstalled" "$1/.planar-uninstalled"
+}
+m_symlink() {
+  printf 'planar-uninstalled 1\nroot=%s\n' "$1" > "$TMP/marker-link-target"
+  ln -s "$TMP/marker-link-target" "$1/.planar-uninstalled"
+}
+m_extra_line() { printf 'planar-uninstalled 1\nroot=%s\nextra=1\n' "$1" > "$1/.planar-uninstalled"; }
+m_wrong_ver()  { printf 'planar-uninstalled 2\nroot=%s\n' "$1" > "$1/.planar-uninstalled"; }
+m_empty()      { : > "$1/.planar-uninstalled"; }
+m_dir()        { mkdir -p "$1/.planar-uninstalled"; }
+m_control()    { printf 'planar-uninstalled 1\nroot=%s\001\n' "$1" > "$1/.planar-uninstalled"; }
+m_lookalike()  { printf 'uninstalled\n' > "$1/.planar-uninstalled.bak"; printf 'x\n' > "$1/uninstalled"; }
+for c in m_other_root m_symlink m_extra_line m_wrong_ver m_empty m_dir m_control m_lookalike; do
+  bad_marker "$c" "$c"
+done
+
+# --- $HOME/.planar under another spelling (identity, -ef) ---------------------
+
+# Preserved data paths are evidence only in $HOME/.planar. When $HOME/.planar is
+# a symlink, the canonical root is its target, which no string comparison with
+# "$HOME/.planar" matches: only the identity check (-ef) adopts it.
+HL="$TMP/ef-link/user"
+mkdir -p "$HL" "$TMP/ef-link/real-planar/workbench"
+printf 'w\n' > "$TMP/ef-link/real-planar/workbench/doc.md"
+ln -s "$TMP/ef-link/real-planar" "$HL/.planar"
+run_installer "$HL" 0
+[[ "$RC" == 0 ]] || fail "a symlinked \$HOME/.planar holding only a data path was refused ($RC): $(cat "$TMP/err")"
+[[ -x "$TMP/ef-link/real-planar/bin/planar" && "$(cat "$TMP/ef-link/real-planar/workbench/doc.md")" == w ]] \
+  || fail "the install through a symlinked \$HOME/.planar did not install into its target, or touched the data path"
+pass
+# The same data through a second, unrelated symlink is not $HOME/.planar: refused.
+HO="$TMP/ef-other/user"
+mkdir -p "$HO" "$TMP/ef-other/real/workbench"
+printf 'w\n' > "$TMP/ef-other/real/workbench/doc.md"
+ln -s "$TMP/ef-other/real" "$TMP/ef-other/alias"
+before="$(snapshot "$TMP/ef-other/real")"
+run_installer "$HO" 1 --prefix "$TMP/ef-other/alias"
+[[ "$RC" == 1 ]] && grep -Fq "$TMP/ef-other/real does not look like a Planar install" "$TMP/err" \
+  || fail "a data path behind a symlink that is not \$HOME/.planar was adopted ($RC): $(cat "$TMP/err")"
+[[ ! -s "$SHIMLOG" && "$before" == "$(snapshot "$TMP/ef-other/real")" ]] || fail "the refused alias root changed"
+pass
+# A case variant of $HOME/.planar names the same directory on a case-insensitive
+# volume; the canonical string differs, so only -ef adopts it.
+HC="$TMP/ef-case/user"
+mkdir -p "$HC/.planar/workbench"
+printf 'w\n' > "$HC/.planar/workbench/doc.md"
+if [[ -d "$HC/.PLANAR" ]]; then
+  run_installer "$HC" 0 --prefix "$HC/.PLANAR"
+  [[ "$RC" == 0 ]] || fail "a case-variant spelling of \$HOME/.planar holding only a data path was refused ($RC): $(cat "$TMP/err")"
+  [[ -x "$HC/.planar/bin/planar" && "$(cat "$HC/.planar/workbench/doc.md")" == w ]] || fail "the case-variant install did not land in \$HOME/.planar"
+  pass
+else
+  printf 'install-prefix-guard-test: skipping the case-variant $HOME/.planar adoption fixture: the scratch filesystem is case-sensitive\n'
+fi
 
 # --- canonicalisation unit checks ----------------------------------------------
 

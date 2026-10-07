@@ -617,28 +617,42 @@ run_install "$KILL_HOME" "$B2" --
 [[ "$(tree_sum "$P")" == "$before" ]] || fail "the refusal over an uninstalling journal changed the installation"
 pass "uninstall ends a pending install and an uninstalling journal is never replayed"
 
-# An uninstall that refuses before removing anything cancels nothing: with the
-# old agent.db present and no python3 the live-queue guard refuses, the pending
-# install's journal is untouched, and the same install command then resumes it.
+# An uninstall that refuses before removing anything cancels nothing: while
+# another process holds the mutation lock the uninstaller refuses naming it, the
+# pending install's journal is untouched, and the same install command then
+# resumes it once the holder is gone.
+# hold_lock ROOT -- a background process that owns ROOT's mutation lock (as an
+# install) until it is killed; sets LOCK_HOLDER.
+hold_lock() {
+  rm -f "$TMP/lock.ready"
+  /bin/bash -c 'source "$1"; planar_lock_acquire "$2" install || { echo "$PLANAR_LOCK_ERROR" >&2; exit 1; }; : > "$3"; exec sleep 300' \
+    hold "$ROOT/scripts/install-lib/mutation-lock.sh" "$1" "$TMP/lock.ready" &
+  LOCK_HOLDER=$!
+  BG+=("$LOCK_HOLDER")
+  local i=0
+  while [[ ! -e "$TMP/lock.ready" ]]; do i=$((i + 1)); [[ "$i" -lt 600 ]] || fail "the lock holder never acquired"; sleep 0.05; done
+}
 kill_case backed-up:scripts
 P="$KILL_HOME/.planar"
-printf 'old queue store\n' > "$P/agent.db"
 j_before="$(cat "$P/.planar-journal")"; before="$(tree_sum "$P")"
+hold_lock "$P"
 RC=0
 ( /usr/bin/env -i HOME="$KILL_HOME" PATH="$BASEBIN" NO_COLOR=1 LC_ALL=C /bin/bash "$B2/install.sh" --uninstall >"$TMP/out" 2>"$TMP/err" ) || RC=$?
-[[ "$RC" == 1 ]] && grep -Fq 'python3 is required' "$TMP/err" || fail "uninstall with agent.db and no python3 did not refuse ($RC): $(show)"
+[[ "$RC" == 1 ]] && grep -Fq "another Planar install (pid $LOCK_HOLDER)" "$TMP/err" || fail "uninstall under a held lock did not refuse naming the holder ($RC): $(show)"
 [[ "$(cat "$P/.planar-journal")" == "$j_before" ]] || fail "a refused uninstall rewrote the pending install's journal: $(cat "$P/.planar-journal")"
 [[ "$(tree_sum "$P")" == "$before" ]] || fail "a refused uninstall changed the installation"
+kill -9 "$LOCK_HOLDER"; wait "$LOCK_HOLDER" 2>/dev/null || true
 run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 0 ]] || fail "an install after a refused uninstall did not complete ($RC): $(show)"
 grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "the pending install was not resumed after the refused uninstall: $(show)"
 no_evidence "$P"
 # With no pending install, a refused uninstall leaves no journal behind.
 H="$(healthy refused-uninstall)"; P="$H/.planar"
-printf 'old queue store\n' > "$P/agent.db"
+hold_lock "$P"
 RC=0
 ( /usr/bin/env -i HOME="$H" PATH="$BASEBIN" NO_COLOR=1 LC_ALL=C /bin/bash "$B2/install.sh" --uninstall >"$TMP/out" 2>"$TMP/err" ) || RC=$?
-[[ "$RC" == 1 && ! -e "$P/.planar-journal" ]] || fail "a refused uninstall left a journal ($RC): $(show)"
+[[ "$RC" == 1 && ! -e "$P/.planar-journal" && -x "$P/bin/planar" ]] || fail "a refused uninstall left a journal or removed something ($RC): $(show)"
+kill -9 "$LOCK_HOLDER"; wait "$LOCK_HOLDER" 2>/dev/null || true
 run_install "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "an install after a refused uninstall failed ($RC): $(show)"
 no_evidence "$P"

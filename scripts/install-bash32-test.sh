@@ -179,8 +179,9 @@ run_in() {
       "$bash_bin" "$@" >"$TMP/out" 2>"$TMP/err" ) || RC=$?
 }
 install_run() { local b="$1" h="$2"; shift 2; run_in "$b" "$h" "$BUNDLE/install.sh" --prebuilt "$BUNDLE" "$@"; }
-UNINSTALL_REMOVES_VENDORS=0
-uninstall_run() { local b="$1" h="$2"; run_in "$b" "$h" "$BUNDLE/install.sh" --uninstall; } # 7314: swap in planar-uninstall here
+UNINSTALL_REMOVES_VENDORS=1
+# The installed standalone uninstaller (task 7314), run under the bash under test.
+uninstall_run() { local b="$1" h="$2"; run_in "$b" "$h" "$h/.planar/bin/planar-uninstall"; }
 
 # tree_state HOME -- the relative file list plus checksums, for comparing runs. Run-specific
 # state is normalised: .planar.lock/ (owner and released records) is left out, and the
@@ -221,9 +222,8 @@ scenario() {
   [[ "$RC" == 0 ]] || fail "[$tag/$name] uninstall exited $RC: $(cat "$TMP/err") $(cat "$TMP/out")"
   grep -Eqi 'unbound variable|syntax error|bad substitution|command not found' "$TMP/err" "$TMP/out" && fail "[$tag/$name] uninstall printed a shell error: $(cat "$TMP/err")"
   [[ ! -e "$p/bin" && ! -e "$p/install-manifest.json" && ! -e "$p/skills" ]] || fail "[$tag/$name] uninstall left managed trees: $(ls -A "$p" | tr '\n' ' ')"
-  # install.sh --uninstall reads the manifest with python3 (absent from this PATH), so it
-  # cannot remove vendor surfaces here; task 7314 moves that to a python-free uninstaller
-  # and sets UNINSTALL_REMOVES_VENDORS=1.
+  # planar-uninstall reads the manifest with sed (no python3 is on this PATH) and
+  # removes the vendor surfaces it recorded.
   if [[ "$vendors" == 1 && "$UNINSTALL_REMOVES_VENDORS" == 1 ]]; then
     [[ ! -e "$home/.claude/agents/planar-coder.md" && ! -e "$home/.codex/agents/planar-coder.toml" ]] || fail "[$tag/$name] uninstall left vendor surfaces"
   fi

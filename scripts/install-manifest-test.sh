@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/install-lib/install-manifest.sh"
 
-TMP="$(mktemp -d)"
+TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 HOME="$TMP/home"
 PREFIX="$HOME/.planar"
@@ -54,12 +54,12 @@ grep -q '"extras": \[\]' "$MANIFEST"
 [[ "$(install_manifest_agent_name /x/planar-coder.md)" == planar-coder ]]
 
 # Uninstall preserves the operator's data: `planar.db`, its SQLite sidecars
-# and the detached-run output directory `queue-logs/` survive a non-force
-# uninstall while every managed artifact is removed. The retired agent store
-# `agent.db` and its sidecars are no longer preserved (plan 1089, superseding
-# decision 1202): they are removed behind the live-queue guard. The uninstall
-# branch returns before the build-dependency preflight, so this drives the
-# real `install.sh --uninstall` against a scratch home.
+# and the detached-run output directory `queue-logs/` survive an uninstall
+# while every managed artifact is removed. The legacy agent store `agent.db`
+# and its sidecars are kept and named too, never read (plan 1122,
+# rel-uninstall-script: the uninstaller needs no python3); only --purge removes
+# them. This drives the real `install.sh --uninstall`, which runs the
+# standalone scripts/uninstall.sh, against a scratch home.
 # /bin/bash 3.2 does not honor `set -e` for a failing bare `[[ … ]]`, so
 # every assertion below goes through fail() to be non-vacuous.
 fail() { printf 'install-manifest-test: %s\n' "$*" >&2; exit 1; }
@@ -118,14 +118,13 @@ printf '{"version": 1}\n' > "$UNINSTALL_PREFIX/install-manifest.json"
 printf 'skill\n' > "$UNINSTALL_PREFIX/skills/planar/SKILL.md"
 run_uninstall "$UNINSTALL_HOME" >"$TMP/uninstall-stdout" 2>"$TMP/uninstall-stderr" \
   || fail "uninstall of a full prefix failed: $(cat "$TMP/uninstall-stderr")"
-# Exactly planar.db, its sidecars and queue-logs/ are left; the idle agent.db
-# and its sidecars are removed with everything else.
-[[ "$(ls -A "$UNINSTALL_PREFIX" | tr '\n' ' ')" == "planar.db planar.db-shm planar.db-wal queue-logs " ]] \
-  || fail "uninstall left more or less than planar.db, its sidecars and queue-logs/: $(ls -A "$UNINSTALL_PREFIX" | tr '\n' ' ')"
+# Exactly planar.db, its sidecars, queue-logs/ and the legacy agent.db with its
+# sidecars are left, plus the marker that lets the next install adopt the root.
+[[ "$(ls -A "$UNINSTALL_PREFIX" | LC_ALL=C sort | tr '\n' ' ')" == ".planar-uninstalled agent.db agent.db-shm agent.db-wal planar.db planar.db-shm planar.db-wal queue-logs " ]] \
+  || fail "uninstall left more or less than the data paths and the legacy agent.db: $(ls -A "$UNINSTALL_PREFIX" | tr '\n' ' ')"
 assert_present "$UNINSTALL_PREFIX/queue-logs/1000001.log"
-assert_absent "$UNINSTALL_PREFIX/agent.db"
-assert_absent "$UNINSTALL_PREFIX/agent.db-wal"
-assert_absent "$UNINSTALL_PREFIX/agent.db-shm"
+grep -Fq "kept legacy queue database $UNINSTALL_PREFIX/agent.db " "$TMP/uninstall-stdout" \
+  || fail "uninstall did not name the legacy agent.db it kept: $(cat "$TMP/uninstall-stdout")"
 assert_absent "$UNINSTALL_PREFIX/bin"
 assert_absent "$UNINSTALL_PREFIX/skills"
 assert_absent "$UNINSTALL_PREFIX/install-manifest.json"
@@ -146,16 +145,25 @@ grep -Fq 'does not look like a Planar install' "$TMP/agent-only-stderr" \
 assert_present "$AGENT_ONLY_PREFIX/agent.db"
 assert_present "$AGENT_ONLY_PREFIX/stale"
 
-# --force no longer removes data (plan 1122, rel-data-paths): the database,
-# its sidecars and the queue logs survive, the retired agent.db does not.
+# --uninstall --force no longer exists (plan 1122, rel-uninstall-script): it is
+# refused at exit 2 naming --purge, before anything is removed. --purge removes
+# the data paths and the legacy agent.db, naming each, and the emptied root.
 FORCE_HOME="$TMP/force_home"
 FORCE_PREFIX="$FORCE_HOME/.planar"
 seed_prefix "$FORCE_PREFIX"
-run_uninstall "$FORCE_HOME" --force >"$TMP/force-stdout" 2>"$TMP/force-stderr" \
-  || fail "forced uninstall failed: $(cat "$TMP/force-stderr")"
-[[ "$(ls -A "$FORCE_PREFIX" | tr '\n' ' ')" == "planar.db planar.db-shm planar.db-wal queue-logs " ]] \
-  || fail "forced uninstall left more or less than the data paths: $(ls -A "$FORCE_PREFIX" | tr '\n' ' ')"
-assert_absent "$FORCE_PREFIX/agent.db"
+force_rc=0
+run_uninstall "$FORCE_HOME" --force >"$TMP/force-stdout" 2>"$TMP/force-stderr" || force_rc=$?
+[[ "$force_rc" == 2 ]] || fail "--uninstall --force was not refused at exit 2 ($force_rc): $(cat "$TMP/force-stderr")"
+grep -Fq -- '--purge' "$TMP/force-stderr" || fail "the --uninstall --force refusal does not name --purge: $(cat "$TMP/force-stderr")"
+assert_present "$FORCE_PREFIX/agent.db"
+assert_present "$FORCE_PREFIX/planar.db"
+run_uninstall "$FORCE_HOME" --purge >"$TMP/force-stdout" 2>"$TMP/force-stderr" \
+  || fail "uninstall --purge failed: $(cat "$TMP/force-stderr")"
+assert_absent "$FORCE_PREFIX"
+for f in planar.db planar.db-wal planar.db-shm queue-logs; do
+  grep -Fq "purging data path $FORCE_PREFIX/$f" "$TMP/force-stdout" || fail "--purge did not name $f before removing it: $(cat "$TMP/force-stdout")"
+done
+grep -Fq "purging legacy queue database $FORCE_PREFIX/agent.db" "$TMP/force-stdout" || fail "--purge did not name agent.db"
 
 # The install-side ownership guard is the sourced planar_prefix_guard that
 # install.sh and --uninstall share (plan 1122). Exercise the exact function
@@ -802,56 +810,40 @@ _deps_line="$(grep -n '^ *check_deps "build"' "$ROOT/install.sh" | cut -d: -f1)"
 [[ -n "$_pre_line" && -n "$_deps_line" && "$_pre_line" -lt "$_deps_line" ]] \
   || fail "install.sh's live-queue preflight must run before check_deps (lines '$_pre_line' / '$_deps_line')"
 
-# Uninstall: with a live agent.db entry, --uninstall and --uninstall --force
-# both refuse before removing anything; --ignore-live-queue proceeds.
-for qr_flags in "" "--force"; do
-  QR_UHOME="$TMP/qr_uninstall_live${qr_flags}"
-  seed_prefix "$QR_UHOME/.planar"
-  mkdir -p "$QR_UHOME/.planar/bin"
-  printf '#!/bin/sh\n' > "$QR_UHOME/.planar/bin/planar"; chmod +x "$QR_UHOME/.planar/bin/planar"
-  rm -f "$QR_UHOME/.planar/agent.db"
-  make_agent_store "$QR_UHOME/.planar/agent.db" "$(qr_live_row_sql 11 "$QR_LIVE_PID")"
-  if run_uninstall "$QR_UHOME" $qr_flags >"$TMP/qr-u-out" 2>"$TMP/qr-u-err"; then
-    fail "uninstall $qr_flags passed a live old entry"
-  fi
-  grep -Fq 'seq=11 ' "$TMP/qr-u-err" || fail "uninstall $qr_flags refused for an unexpected reason: $(cat "$TMP/qr-u-err")"
-  assert_present "$QR_UHOME/.planar/bin/planar"
-  assert_present "$QR_UHOME/.planar/agent.db"
-  run_uninstall "$QR_UHOME" $qr_flags --ignore-live-queue >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
-    || fail "uninstall $qr_flags --ignore-live-queue refused: $(cat "$TMP/qr-u-err")"
-  assert_absent "$QR_UHOME/.planar/agent.db"
-done
+# Uninstall never reads agent.db (no python3 on the uninstall path): with a live
+# old queue entry in it, an uninstall keeps it and names it, and --purge removes
+# it after naming it. --ignore-live-queue, an install option, changes nothing.
+QR_UHOME="$TMP/qr_uninstall_live"
+seed_prefix "$QR_UHOME/.planar"
+mkdir -p "$QR_UHOME/.planar/bin"
+printf '#!/bin/sh\n' > "$QR_UHOME/.planar/bin/planar"; chmod +x "$QR_UHOME/.planar/bin/planar"
+rm -f "$QR_UHOME/.planar/agent.db"
+make_agent_store "$QR_UHOME/.planar/agent.db" "$(qr_live_row_sql 11 "$QR_LIVE_PID")"
+qr_store_sum="$(cksum < "$QR_UHOME/.planar/agent.db")"
+run_uninstall "$QR_UHOME" --ignore-live-queue >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
+  || fail "uninstall over a live old agent.db failed: $(cat "$TMP/qr-u-err")"
+assert_absent "$QR_UHOME/.planar/bin"
+[[ "$(cksum < "$QR_UHOME/.planar/agent.db")" == "$qr_store_sum" ]] || fail "uninstall changed the live old agent.db"
+grep -Fq "kept legacy queue database $QR_UHOME/.planar/agent.db" "$TMP/qr-u-out" || fail "uninstall did not name the kept agent.db: $(cat "$TMP/qr-u-out")"
 
-# Uninstall without python3: with agent.db present it refuses before removing
-# anything, naming python3 and the remedies; --ignore-live-queue proceeds
-# with a warning; with no agent.db, python3 is not needed. PATH is a farm of
-# the tools the uninstall branch uses, without python3 (the mutation lock adds
-# od, ps, uname, ln, sed, wc and mv).
+# Uninstall without python3: PATH is a farm of the base tools the uninstaller
+# uses (the mutation lock adds od, ps, uname, ln, sed, wc and mv), without
+# python3. An agent.db is kept and named, and --purge removes it.
 QR_NOPY="$TMP/nopy-bin"
 mkdir -p "$QR_NOPY"
-for tool in bash env dirname find readlink rm rmdir cat realpath ls mkdir grep tr od ps uname ln sed wc mv; do
+for tool in bash env dirname basename find readlink rm rmdir cat ls mkdir grep tr od ps uname ln sed wc mv head sync cmp diff mktemp sort cut; do
   ln -s "$(command -v "$tool")" "$QR_NOPY/$tool"
 done
 run_uninstall_nopy() { PATH="$QR_NOPY" run_uninstall "$@"; }
 QR_UHOME="$TMP/qr_uninstall_nopy"
 seed_prefix "$QR_UHOME/.planar"
-if run_uninstall_nopy "$QR_UHOME" >"$TMP/qr-u-out" 2>"$TMP/qr-u-err"; then
-  fail "uninstall with agent.db and no python3 did not refuse"
-fi
-grep -Fq 'python3 is required' "$TMP/qr-u-err" || fail "the no-python3 refusal does not name python3: $(cat "$TMP/qr-u-err")"
-grep -Fq -- '--ignore-live-queue' "$TMP/qr-u-err" || fail "the no-python3 refusal does not name --ignore-live-queue"
+run_uninstall_nopy "$QR_UHOME" >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
+  || fail "uninstall with agent.db and no python3 failed: $(cat "$TMP/qr-u-err")"
 assert_present "$QR_UHOME/.planar/agent.db"
 assert_present "$QR_UHOME/.planar/queue-logs/1000001.log"
-run_uninstall_nopy "$QR_UHOME" --ignore-live-queue >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
-  || fail "uninstall --ignore-live-queue without python3 refused: $(cat "$TMP/qr-u-err")"
-grep -Fq 'python3 is not installed' "$TMP/qr-u-err" || fail "uninstall --ignore-live-queue without python3 did not warn"
-assert_absent "$QR_UHOME/.planar/agent.db"
-QR_UHOME="$TMP/qr_uninstall_nopy_noagent"
-seed_prefix "$QR_UHOME/.planar"
-rm -f "$QR_UHOME/.planar/agent.db" "$QR_UHOME/.planar/agent.db-wal" "$QR_UHOME/.planar/agent.db-shm"
-run_uninstall_nopy "$QR_UHOME" >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
-  || fail "uninstall with no agent.db needed python3: $(cat "$TMP/qr-u-err")"
-assert_present "$QR_UHOME/.planar/planar.db"
+run_uninstall_nopy "$QR_UHOME" --purge >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
+  || fail "uninstall --purge without python3 failed: $(cat "$TMP/qr-u-err")"
+assert_absent "$QR_UHOME/.planar"
 
 # Dependencies: python3's reason names the retirement reader. The live-queue
 # guard has no ps process signal (question 1011): ps is a base-tier entry only
