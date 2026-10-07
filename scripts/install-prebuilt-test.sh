@@ -282,7 +282,7 @@ if [[ "$1" == "--install" ]]; then
   prefix="$4"
   mkdir -p "$prefix/bin"
   for b in planar planar-agent planar-watch planar-execute planar-ext; do
-    printf '#!/bin/sh\n[ "$1" = version ] && echo "%s abc123def456 2026-10-06T00:00:00Z cxx Clang-23.1.2 %s"\n[ "$1" = queue ] && echo "{\\"seq\\":1}"\nexit 0\n' "$b" "${STUB_TAG:-dev}" > "$prefix/bin/$b"
+    printf '#!/bin/sh\nif [ "$1" = version ] && [ "${2:-}" = --json ]; then echo "{\\"release\\":\\"%s\\",\\"sha\\":\\"abc123def4560123456789abcdef0123456789ab\\",\\"date\\":\\"2026-10-06T00:00:00Z\\",\\"dirty\\":false,\\"compiler\\":\\"Clang-23.1.2\\"}"; exit 0; fi\n[ "$1" = version ] && echo "%s abc123def456 2026-10-06T00:00:00Z cxx Clang-23.1.2 %s"\n[ "$1" = queue ] && echo "{\\"seq\\":1}"\nexit 0\n' "${STUB_TAG:-dev}" "$b" "${STUB_TAG:-dev}" > "$prefix/bin/$b"
     chmod +x "$prefix/bin/$b"
   done
 fi
@@ -306,7 +306,18 @@ R="$H/.planar/release.json"
 grep -Fxq '  "version": "dev",' "$R" || fail "an untagged source build did not record version dev: $(cat "$R")"
 for key in sha date os arch os_floor; do grep -Eq "^  \"$key\": \"[^\"]+\",\$" "$R" || fail "release.json lacks $key: $(cat "$R")"; done
 grep -Fxq "  \"schema_version\": $max_migration" "$R" || fail "schema_version is not the highest embedded migration ($max_migration): $(cat "$R")"
-grep -Fxq '  "sha": "abc123def456",' "$R" || fail "sha is not the version line's: $(cat "$R")"
+# The sha is the full 40-character commit from `planar version --json`, not the
+# version line's short form, and os_floor is the platform floor scripts/dist.sh
+# records (26.0 on macOS, the glibc floor 2.36 on Linux), not the host's version.
+grep -Fxq '  "sha": "abc123def4560123456789abcdef0123456789ab",' "$R" || fail "sha is not the full sha from version --json: $(cat "$R")"
+case "$(uname -s)" in
+  Darwin) want_floor=26.0 ;;
+  Linux) want_floor=2.36 ;;
+  *) want_floor=unknown ;;
+esac
+dist_floor="$(sed -n "s/^  $(uname -s)-$(uname -m)) .*floor=\([0-9.]*\) ;;\$/\1/p" "$ROOT/scripts/dist.sh")"
+[[ -z "$dist_floor" || "$dist_floor" == "$want_floor" ]] || fail "this test's floor $want_floor disagrees with scripts/dist.sh ($dist_floor)"
+grep -Fxq "  \"os_floor\": \"$want_floor\"," "$R" || fail "os_floor is not $want_floor: $(cat "$R")"
 H="$TMP/homes/source-tag"; mkdir -p "$H"
 run_source "$H" STUB_TAG=v7.8.9
 [[ "$RC" == 0 ]] || fail "tagged source install failed ($RC): $(cat "$TMP/err")"
