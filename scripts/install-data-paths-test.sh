@@ -96,6 +96,15 @@ pass
 ) || fail "relocation check failed ($?)"
 pass
 
+# A data path with no relocation variable (queue-logs/, retired/, ...) resolves
+# through _planar_dp_value with an empty variable name. Bash 4 and later reject
+# `${!1}` for an empty name ("invalid variable name"), which fired install.sh's
+# ERR trap on Linux; the answer must be empty, silent and successful everywhere.
+dp_err="$(bash -c 'set -eEuo pipefail; trap "echo ERR-TRAP >&2" ERR; source "$1"; v="$(_planar_dp_value "")"; [ -z "$v" ]; l="$(_planar_dp_location /r queue-logs "")"; [ "$l" = /r/queue-logs ]' dp "$ROOT/scripts/install-lib/data-paths.sh" 2>&1 >/dev/null)" \
+  || fail "a data path without a relocation variable did not resolve: $dp_err"
+[[ -z "$dp_err" ]] || fail "resolving a data path without a relocation variable printed: $dp_err"
+pass
+
 # The default location is $HOME/.planar even when the install root is elsewhere:
 # both are protected, and a variable naming $HOME/.planar/... is no relocation.
 ALT="$TMP/altroot/inst"
