@@ -381,14 +381,10 @@ TEST_CASE("install_db_probe_migrate", "[cmd][install][queue]") {
     };
     std::array const cases{
         probe_case{.tag = "iq_ahead", .build = qfix::ahead_store, .state = "db state: ahead", .detail = "newer than"},
-        probe_case{.tag    = "iq_incompat",
-                   .build  = qfix::incompatible_ahead_store,
-                   .state  = "db state: ahead",
-                   .detail = "newer than"},
-        probe_case{.tag    = "iq_foreign",
-                   .build  = qfix::foreign_store,
-                   .state  = "db state: fault",
-                   .detail = "queue_schema_foreign"},
+        probe_case{
+            .tag = "iq_incompat", .build = qfix::incompatible_ahead_store, .state = "db state: ahead", .detail = "newer than"},
+        probe_case{
+            .tag = "iq_foreign", .build = qfix::foreign_store, .state = "db state: fault", .detail = "queue_schema_foreign"},
     };
     for (auto const& one : cases) {
       auto fx = make_install(one.tag);
