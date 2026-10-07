@@ -316,3 +316,11 @@ set_tests_properties(install.data_paths PROPERTIES LABELS "install_data_paths" T
 add_test(NAME install.prebuilt
   COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-prebuilt-test.sh")
 set_tests_properties(install.prebuilt PROPERTIES LABELS "install_prebuilt" TIMEOUT 600)
+
+# The common mutation ownership protocol (scripts/install-lib/mutation-lock.sh):
+# live, killed and pid-reused owners, ambiguous records, simultaneous reclaims,
+# the update handoff and update temporaries, with real processes under stock
+# bash and base utilities only. Scratch HOME; nothing real is touched.
+add_test(NAME install.lock
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-lock-test.sh")
+set_tests_properties(install.lock PROPERTIES LABELS "install_lock" TIMEOUT 300)
