@@ -643,12 +643,12 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   planar_data_paths_report "$PLANAR_HOME" | while IFS= read -r _l; do log "$_l"; done
 
   # Common mutation ownership (decision 1328), held until every removal has
-  # finished. Before anything is removed the journal records `uninstalling`,
-  # which ends any pending install for good: no later install replays it.
+  # finished. Every check that can still refuse runs under the lock BEFORE the
+  # journal records `uninstalling`: that record ends any pending install for
+  # good (no later install replays it), so it is written only when removals
+  # begin. A refused uninstall leaves the journal as it found it.
   if [[ -d "$ROOT_C" ]]; then
-    planar_lock_acquire "$ROOT_C" uninstall || { printf '
-install.sh: %s
-' "$PLANAR_LOCK_ERROR" >&2; exit 1; }
+    planar_lock_acquire "$ROOT_C" uninstall || { printf '\ninstall.sh: %s\n' "$PLANAR_LOCK_ERROR" >&2; exit 1; }
     trap 'planar_lock_release' EXIT
     if [[ -e "$ROOT_C/.planar-journal" || -L "$ROOT_C/.planar-journal" ]]; then
       planar_journal_load "$ROOT_C" \
@@ -656,13 +656,6 @@ install.sh: %s
     else
       planar_journal_clear
     fi
-    J_phase=uninstalling
-    J_operation=uninstall
-    J_owner_pid="$$"
-    J_owner_start="$(trap - ERR; planar_lock_start_token "$$")" || J_owner_start=unknown
-    J_owner_lock="$PLANAR_LOCK_GEN"
-    J_retry="cd $(printf '%q' "$REPO_ROOT") && ./install.sh --uninstall$([[ "$ROOT_C" == "$HOME_PLANAR_C" ]] || printf ' --prefix %q' "$ROOT_C")"
-    planar_journal_write "$ROOT_C" || err "cannot record the uninstall in $ROOT_C/.planar-journal"
   fi
 
   # The live-queue guard runs before anything is removed, --force or not:
@@ -671,6 +664,17 @@ install.sh: %s
   # the dependency preflight, so the guard checks for python3 itself, and
   # only when agent.db exists. --ignore-live-queue is the only override.
   queue_live_guard uninstall || exit 1
+
+  # Removals begin: record the cancellation. Nothing below refuses.
+  if [[ -d "$ROOT_C" ]]; then
+    J_phase=uninstalling
+    J_operation=uninstall
+    J_owner_pid="$$"
+    J_owner_start="$(trap - ERR; planar_lock_start_token "$$")" || J_owner_start=unknown
+    J_owner_lock="$PLANAR_LOCK_GEN"
+    J_retry="cd $(printf '%q' "$REPO_ROOT") && ./install.sh --uninstall$([[ "$ROOT_C" == "$HOME_PLANAR_C" ]] || printf ' --prefix %q' "$ROOT_C")"
+    planar_journal_write "$ROOT_C" || err "cannot record the uninstall in $ROOT_C/.planar-journal"
+  fi
 
   # The targets this installer places (plan 1104, M2): every `installed_path`
   # the manifest's projection rows record, removed only while it is still what

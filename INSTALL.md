@@ -477,7 +477,7 @@ This removes:
 
 A prefix that holds only preserved data (a `planar.db`, or any other [preserved path](#preserved-paths) such as `workbench/` or `config.toml`) still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
 
-The uninstall takes the same [mutation lock](#ownership-recovery-and-the-order-of-an-install) as an install, so a running install or update refuses it, and holds it until every removal has finished. Before it removes anything it records **uninstalling** in `~/.planar/.planar-journal`, which ends any interrupted install for good: no later install resumes it. The journal is removed last. The lock directory beside the root (`~/.planar.lock`) is not removed.
+The uninstall takes the same [mutation lock](#ownership-recovery-and-the-order-of-an-install) as an install, so a running install or update refuses it, and holds it until every removal has finished. Every check that can refuse (an invalid journal, the [live-queue guard](#upgrade-note-what-installsh-does-with-the-old-queue-plan-1089)) runs under the lock first; only then, as the removals begin, does it record **uninstalling** in `~/.planar/.planar-journal`, which ends any interrupted install for good: no later install resumes it. A refused uninstall leaves the journal as it found it, so a pending install can still be completed by running the same install command again. The journal is removed last. The lock directory beside the root (`~/.planar.lock`) is not removed.
 
 ### The install root guard
 
