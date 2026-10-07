@@ -580,6 +580,33 @@ run_install "$KILL_HOME" "$B2" --
 [[ "$(tree_sum "$P")" == "$before" ]] || fail "the refusal over an uninstalling journal changed the installation"
 pass "uninstall ends a pending install and an uninstalling journal is never replayed"
 
+# An uninstall that refuses before removing anything cancels nothing: with the
+# old agent.db present and no python3 the live-queue guard refuses, the pending
+# install's journal is untouched, and the same install command then resumes it.
+kill_case backed-up:workflows
+P="$KILL_HOME/.planar"
+printf 'old queue store\n' > "$P/agent.db"
+j_before="$(cat "$P/.planar-journal")"; before="$(tree_sum "$P")"
+RC=0
+( /usr/bin/env -i HOME="$KILL_HOME" PATH="$BASEBIN" NO_COLOR=1 LC_ALL=C /bin/bash "$B2/install.sh" --uninstall >"$TMP/out" 2>"$TMP/err" ) || RC=$?
+[[ "$RC" == 1 ]] && grep -Fq 'python3 is required' "$TMP/err" || fail "uninstall with agent.db and no python3 did not refuse ($RC): $(show)"
+[[ "$(cat "$P/.planar-journal")" == "$j_before" ]] || fail "a refused uninstall rewrote the pending install's journal: $(cat "$P/.planar-journal")"
+[[ "$(tree_sum "$P")" == "$before" ]] || fail "a refused uninstall changed the installation"
+run_install "$KILL_HOME" "$B2" --
+[[ "$RC" == 0 ]] || fail "an install after a refused uninstall did not complete ($RC): $(show)"
+grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "the pending install was not resumed after the refused uninstall: $(show)"
+no_evidence "$P"
+# With no pending install, a refused uninstall leaves no journal behind.
+H="$(healthy refused-uninstall)"; P="$H/.planar"
+printf 'old queue store\n' > "$P/agent.db"
+RC=0
+( /usr/bin/env -i HOME="$H" PATH="$BASEBIN" NO_COLOR=1 LC_ALL=C /bin/bash "$B2/install.sh" --uninstall >"$TMP/out" 2>"$TMP/err" ) || RC=$?
+[[ "$RC" == 1 && ! -e "$P/.planar-journal" ]] || fail "a refused uninstall left a journal ($RC): $(show)"
+run_install "$H" "$B2" --
+[[ "$RC" == 0 ]] || fail "an install after a refused uninstall failed ($RC): $(show)"
+no_evidence "$P"
+pass "a refused uninstall cancels nothing: the pending install resumes and later installs proceed"
+
 # --- the fault hook is inert unless armed ---------------------------------------------------------------------------------
 
 H="$(new_home inert)"
