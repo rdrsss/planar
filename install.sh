@@ -257,9 +257,10 @@ if [[ "$PREBUILT" -eq 1 ]]; then
     for _b in "${_bundle_missing[@]}"; do printf '  %s\n' "$_b" >&2; done
     exit 1
   fi
-else
+elif [[ "$UNINSTALL" -ne 1 ]]; then
   # A source install stages every managed subtree from the checkout; one whose
   # source directory is absent is an incomplete checkout, refused before any write.
+  # An uninstall stages nothing and needs no checkout subtree, so it skips this.
   _src_missing=()
   for _b in skills/planar agents scripts/install-lib workflows migrations; do
     [[ -d "$SRC_ROOT/$_b" ]] || _src_missing+=("$_b/")

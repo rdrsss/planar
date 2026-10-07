@@ -215,6 +215,22 @@ for missing in workflows migrations scripts/install-lib; do
   run_prebuilt "$H2" "$BM" --
   [[ "$RC" != 0 && ! -e "$H2/.planar" ]] || fail "a bundle without $missing/ created ~/.planar on a fresh home ($RC)"
 done
+# The bundle's own install.sh cannot run without its scripts/install-lib, so the
+# case above never reaches the completeness check for it. The checkout's
+# installer can: REPO_ROOT is the checkout, sourcing succeeds, and only the
+# completeness check stands between a bundle lacking scripts/install-lib and a
+# half-created ~/.planar.
+H3="$(new_home incomplete-checkout-installer)"
+BM="$TMP/bundle/missing-install-lib-checkout"
+fake_bundle_make "$ROOT" "$BM"
+rm -rf "${BM:?}/scripts/install-lib"
+RC=0
+( cd "$H3" && /usr/bin/env -i HOME="$H3" PATH="$BASEBIN" NO_COLOR=1 LC_ALL=C TMPDIR="$TMP" \
+    /bin/bash "$ROOT/install.sh" --prebuilt "$BM" --no-vendor >"$TMP/out" 2>"$TMP/err" ) || RC=$?
+[[ "$RC" != 0 ]] || fail "the checkout installer accepted a bundle without scripts/install-lib/"
+grep -Fq "scripts/install-lib" "$TMP/err" || fail "the refusal does not name scripts/install-lib: $(cat "$TMP/err")"
+! grep -Fq "Staging into" "$TMP/out" || fail "a bundle without scripts/install-lib/ was refused only after staging began"
+[[ ! -e "$H3/.planar" && ! -e "$H3/.planar.lock" ]] || fail "a bundle without scripts/install-lib/ left state behind: $(ls -A "$H3")"
 pass "a prebuilt bundle missing a managed subtree is refused, naming it, with the installed tree and a fresh home unchanged"
 
 # The source install refuses the same way when the checkout lacks a source directory.
@@ -371,5 +387,15 @@ run_source "$H"
 [[ "$RC" != 0 && "$(tree_id "$P")" == "$arena_before" ]] || fail "a source install without workflows/ changed an installed tree ($RC)"
 REPO="$REPO_GOOD"
 pass "a source install whose checkout lacks a managed subtree's directory is refused, naming it, before any write"
+
+# --uninstall needs no workflows/ or migrations/, so a checkout lacking them
+# still uninstalls (the completeness check is for installs only).
+REPO="$TMP/repo-uninstall-incomplete"
+cp -R "$REPO_GOOD" "$REPO"; rm -rf "$REPO/workflows" "$REPO/migrations"
+run_source "$H" --uninstall
+[[ "$RC" == 0 ]] || fail "--uninstall from a checkout lacking workflows/ and migrations/ failed ($RC): $(cat "$TMP/err")"
+[[ ! -e "$P/bin" && ! -e "$P/workflows" && ! -e "$P/install-manifest.json" ]] || fail "--uninstall from an incomplete checkout left managed trees: $(ls -A "$P" | tr '\n' ' ')"
+REPO="$REPO_GOOD"
+pass "--uninstall from a checkout lacking workflows/ and migrations/ still uninstalls"
 
 printf 'install managed tests: %s passed\n' "$PASSED"

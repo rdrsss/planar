@@ -319,8 +319,8 @@ set_tests_properties(install.prebuilt PROPERTIES LABELS "install_prebuilt" TIMEO
 
 # Managed subtrees, retired paths and the templates rule through install.sh: an
 # install of unknown age becomes clean, symlinks are never followed, link and
-# copy mode replace each other, type/mode changes apply, an unshipped subtree is
-# retired, templates stay missing-only under --force. Scratch HOME, fake bundles.
+# copy mode replace each other, type/mode changes apply, an incomplete bundle or
+# checkout is refused, templates stay missing-only under --force. Scratch HOME, fake bundles.
 add_test(NAME install.managed
   COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-managed-test.sh")
 set_tests_properties(install.managed PROPERTIES LABELS "install_managed" TIMEOUT 600)
