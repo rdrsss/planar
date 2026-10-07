@@ -20,7 +20,7 @@ brew install cmake ninja llvm python git gh jq ripgrep
 - `python3` — required to build from source, not to install a release bundle. The configure step registers Python test runners (`scripts/install-lib/queue_probe.test.py`, `scripts/install-lib/queue_retire.test.py` and `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. A source `install.sh` also runs it for two things: the old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program) and the Codex agent TOML renderer (`scripts/render-codex-agents.py`). The queue-store probe of `planar.db` (`planar-agent queue status 1 --json`) is classified in shell on every install path and needs no Python. `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
 - `bash` — `install.sh`, `planar-uninstall` and the scripts they source run under the `/bin/bash` 3.2 that stock macOS ships, with `set -u`; Homebrew bash is not needed. Possibly empty arrays are expanded as `${a[@]+"${a[@]}"}`, and no bash-4-only construct is used. `scripts/install-bash32-test.sh` (ctest label `install_bash32`) lints every sourced script for an unguarded expansion (a provably non-empty array carries `# bash32: nonempty`) and runs a prebuilt install and an uninstall under `/bin/bash`.
 - No network access and no token are needed to configure or build: every dependency is committed under `vendor/` as a pinned release archive.
-- `curl` or GNU `wget`, `tar`, `gzip`, `mktemp`, and `shasum` or `sha256sum` — used only by the release bootstrap `get-planar.sh` (POSIX `sh`, no Python), which downloads, checks and unpacks a release bundle before it runs `install.sh --prebuilt`. `install.sh` itself calls only `mktemp` of these (it is in its `BASE_DEPS` manifest); `curl`, `wget`, `tar`, `gzip` and the checksum tools are in neither its `BASE_DEPS` nor its `RUN_DEPS` manifest. The bootstrap also needs `bash` to run the installer. BusyBox `wget` is refused: it cannot be told not to follow redirects.
+- `curl` or GNU `wget`, `tar`, `gzip`, `mktemp`, and `shasum` or `sha256sum` — used only by the release bootstrap `get-planar.sh` (POSIX `sh`, no Python), which downloads, checks and unpacks a release bundle before it runs `install.sh --prebuilt`. `install.sh` itself calls only `mktemp` of these (it is in its `BASE_DEPS` manifest); `curl`, `wget`, `gzip` and the checksum tools are in neither its `BASE_DEPS` nor its `RUN_DEPS` manifest. `tar` is in its `RUN_DEPS` manifest, because [`planar update`](#update-planar-update) unpacks the bundle it downloads with the system `tar` (it downloads and verifies natively and needs none of the others). The bootstrap also needs `bash` to run the installer. BusyBox `wget` is refused: it cannot be told not to follow redirects.
 - `docker` — optional, developer-only. `make linux-gate` builds and tests the tree on Debian trixie in a container (see [docs/testing.md](docs/testing.md#the-linux-gate)). It is not an installer dependency.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. The full install also needs it to clone the source repository.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
@@ -31,7 +31,7 @@ brew install cmake ninja llvm python git gh jq ripgrep
 
 - The **toolchain tier** (`cmake`, `ninja`, the pinned LLVM compilers and `python3`, above) is checked only on a source install.
 - The **base tier** is checked on every install path, `--prebuilt` included: `awk`, `basename`, `cat`, `chmod`, `cmp`, `cp`, `cut`, `date`, `diff`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`, `od`, `ps`, `readlink`, `realpath`, `rm`, `rmdir`, `sed`, `sleep`, `sort`, `sync`, `tr`, `uname` and `wc`. These ship with supported Unix-like systems; the installer preflights them before making changes.
-- The **runtime tier** (`git`, `jq`, `gh`, `rg`) only warns.
+- The **runtime tier** (`git`, `jq`, `gh`, `rg`, `tar`) only warns.
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
 
@@ -465,6 +465,35 @@ To smoke a single migration as raw SQL against a scratch database:
 ```bash
 sqlite3 /tmp/scratch.db < migrations/00001_foundation.up.sql
 ```
+
+## Update (`planar update`)
+
+`planar update` replaces an installation with a published release, from the
+installed binary itself; the [bootstrap](#prebuilt-install---prebuilt) stays
+the first-install path and the fallback when the binary cannot run.
+
+```bash
+planar update --check            # installed v1.2.3 latest v1.3.0; exit 10 when they differ, 0 when equal
+planar update                    # install the latest release
+planar update --version v1.2.3   # install that release
+```
+
+It updates `$PLANAR_HOME` when set, else `~/.planar`, from
+`https://github.com/rdrsss/planar/releases` or `PLANAR_RELEASE_URL` (the
+bootstrap's grammar, `file://` included). It takes the installation's
+[mutation lock](#ownership-recovery-and-the-order-of-an-install), so a running
+install, update or uninstall makes it exit 1 naming the holder; downloads
+`SHA256SUMS` and the platform bundle into `~/.planar/.planar-update/<name>/`;
+verifies the one checksum record for the bundle; unpacks it with the system
+`tar`; refuses an older glibc or a bundle whose database schema is older than
+its own; and then execs the bundle's `install.sh --prebuilt` with
+[the handoff](#the-update-handoff-and---cleanup), which keeps the lock without
+a gap and removes the download directory when the install ends. An interrupted
+install or uninstall is reported (exit 1, with its retry command) instead of
+any verdict about the installed release; `planar update` never replays it
+itself. It opens no database: migration is the installer's. See
+[`planar update`](docs/cli-reference.md#domain-update) for the full step list
+and messages.
 
 ## Uninstall
 

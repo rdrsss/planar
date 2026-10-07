@@ -71,6 +71,7 @@ the `planar` binary.
 | `6` | Precondition conflict: slug conflict, or the entity already exists. | `slug_conflict`, `already_exists` |
 | `7` | Database schema is **newer** than this binary supports. | `schema_version_ahead` |
 | `8` | **Worktree-gate refusal**: a planning verb was run from inside a git worktree. Outside the `domain_error_kind` bucket table entirely — `planar.cmd.planar.worktree_gate` returns it directly, before the parser even runs, so it fires even when the invocation's flags would also fail to parse. `--scope` does not bypass it. | `planar.cmd.planar.worktree_gate::check` |
+| `10` | **Update available** — not a failure. Only `planar update --check` returns it, when the installed release differs from the latest one (see [Domain: `update`](#domain-update)). Outside the `domain_error_kind` table; the handler returns it through `passthrough_code`. No other verb returns 10 of its own (`workflow run` passes a workflow's own status through verbatim). | `planar update --check` |
 | `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
 
 **Usage errors exit `2`, not `64`.** An unknown flag, a missing required
@@ -6553,6 +6554,86 @@ tables. No planning entity is read or written.
 
 ---
 
+## Domain: `update`
+
+### `planar update`
+
+**Synopsis:**
+```
+planar update [--check] [--version <tag>]
+```
+
+**Description:** Update the Planar installation to a published release
+(plan 1122 M3; tech spec 677, "The update verb"). The installation root is
+`$PLANAR_HOME` when set, else `~/.planar`: the root `install.sh` itself uses.
+The verb opens no database; the database probe, migration and live-queue
+warning belong to the installer it hands off to. The release base is
+`https://github.com/rdrsss/planar/releases`, or `PLANAR_RELEASE_URL` under the
+bootstrap's grammar (`https://HOST[:PORT]/...`, `file:///PATH`, or
+`http://127.0.0.1[:PORT]/...` / `http://localhost[:PORT]/...`; no userinfo,
+query or fragment). A malformed value is refused at exit 2.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--check` | Print `installed <v> latest <v>` and change nothing. `<v>` is `release.json`'s `version`, or `none` without one; latest is `<base>/latest/download/VERSION`, which must be a release tag. Exit 0 when they are equal, 10 when they differ. Takes no lock. Cannot be combined with `--version` (exit 2). | off |
+| `--version <tag>` | Install this release (`vMAJOR.MINOR.PATCH`) instead of the latest. A malformed tag is refused at exit 2. | latest |
+
+A plain run, or `--version <tag>`:
+
+1. Takes the common mutation lock (`<root>.lock`, the protocol in
+   `scripts/install-lib/mutation-lock.sh`, which this verb implements natively)
+   as an `update`, recording its download directory
+   `<root>/.planar-update/update-<hex>/` before creating it. A running install,
+   update or uninstall refuses it at exit 1, naming the owner's operation and
+   pid. An updater that was killed is proven dead (its pid is gone, or was
+   reused) and its recorded download directory, and nothing else, is removed.
+2. Reads the recovery journal under the lock. An interrupted install
+   (`mutating`) or uninstall (`uninstalling`) is reported as an incomplete
+   installation at exit 1 with the journal's durable retry command, before any
+   verdict about the installed release; `--check` reports it the same way. The
+   verb never replays recovery itself: the version-pinned bootstrap does.
+   A `prepared` or aborted attempt leaves the previous completed release
+   authoritative.
+3. Resolves the tag. When it equals the installed release of a completed
+   install, prints that there are no changes and exits 0.
+4. Downloads `SHA256SUMS` (at most 1 MiB) and `planar-<os>-<arch>.tar.gz` (at
+   most 512 MiB) from `<base>/download/<tag>/`, following redirects with every
+   hop checked against the same grammar, sending no `Authorization` header,
+   within a 10-minute bound. Exactly one checksum record must name the asset;
+   the asset is verified with SHA-256.
+5. Lists and extracts the archive with the system `tar` (every entry under
+   `planar-<os>-<arch>/`, no `..`, no links), checks that the bundle's
+   `release.json` names the tag, on Linux that the host's glibc
+   (`ldd --version`) meets the bundle's `os_floor`, and that the bundle's
+   `schema_version` is not below this binary's own (an older release is never
+   installed over a newer database).
+6. Replaces itself with `bash <bundle>/install.sh --prebuilt <bundle> --cleanup
+   <download dir>`, passing `PLANAR_MUTATION_HANDOFF=<generation>:<nonce>`. The
+   lock is never released before the exec: the installer adopts it (the exec
+   keeps the pid and start time), removes the download directory and releases
+   the lock when it ends. If the exec fails, the verb removes the directory and
+   releases the lock itself.
+
+Refusals use the bootstrap's (`get-planar.sh`) messages, after `error: `:
+`cannot reach the release server at <base>: ...`, `release <tag> does not
+exist on the release server <base>: ...`, `checksum mismatch for <asset>: ...`,
+`<base>/latest/download/VERSION holds '<value>', which is not a release tag
+...`, `this host has glibc <host> but this release needs glibc <floor> or
+later; nothing was installed`, and `unsupported platform <os> <arch>; ...`.
+Every refusal before the exec leaves no download directory and no held lock.
+
+**Writes:** outside the database only: the lock record
+`<root>.lock/owner.<G>` and the download directory under
+`<root>/.planar-update/`; everything else is the installer's.
+
+**Exit codes:** `0` success or no changes, `1` a fault, refusal, competing
+owner or incomplete installation, `2` bad input, `10` (`--check` only) an
+update is available.
+
+**Capture:** None.
+
+---
+
 ## Miscellaneous leaves
 
 Commands that do not group into a larger domain page.
@@ -8462,6 +8543,7 @@ For quick reference, all documented commands grouped by domain:
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
 | `schema` | `schema` (also on `planar-agent` and `planar-watch`) |
+| `update` | `update`, `update --check`, `update --version <tag>` |
 ## Domain: `closure`
 
 Derived-closure extraction: given a task's touched `(repo, path)` seeds, walk

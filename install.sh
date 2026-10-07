@@ -598,6 +598,7 @@ RUN_DEPS=(
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
+  "tar||planar update unpacks a downloaded release bundle"
 )
 
 if [[ "$PREBUILT" -eq 1 ]]; then
