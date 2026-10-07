@@ -162,30 +162,36 @@ for f in agent.db agent.db-wal agent.db-shm; do
   [[ ! -e "$P/$f" && ! -L "$P/$f" ]] || fail "$f is still in the install root"
 done
 [[ "$(cat "$RD/agent.db")" == "earlier retirement" ]] || fail "an earlier retirement was overwritten"
+# SQLite pairs a database with the sidecars named <db>-wal and <db>-shm, so a
+# collision on any of the three moves all three under one shared suffix.
 [[ "$(cksum < "$RD/agent.db.1")" == "$sum_agent" ]] || fail "the colliding agent.db was not kept as agent.db.1, intact"
-[[ "$(cksum < "$RD/agent.db-wal")" == "$sum_wal" ]] || fail "agent.db-wal did not move intact"
-[[ -e "$RD/agent.db-shm" ]] || fail "agent.db-shm did not move"
+[[ "$(cksum < "$RD/agent.db.1-wal")" == "$sum_wal" ]] || fail "agent.db-wal did not move intact beside agent.db.1 as agent.db.1-wal: $(ls "$RD")"
+[[ -e "$RD/agent.db.1-shm" ]] || fail "agent.db-shm did not move beside agent.db.1 as agent.db.1-shm: $(ls "$RD")"
+[[ ! -e "$RD/agent.db-wal" && ! -e "$RD/agent.db-shm" ]] || fail "a sidecar was split from its database: $(ls "$RD")"
 [[ "$(cksum < "$RD/queue-logs/5.log")" == "$sum_l5" && "$(cksum < "$RD/queue-logs/12.log")" == "$sum_l12" ]] || fail "old numbered logs did not move intact"
 [[ ! -e "$P/queue-logs/5.log" && ! -e "$P/queue-logs/12.log" ]] || fail "old numbered logs remain in queue-logs/"
 [[ -f "$P/queue-logs/1000001.log" && -f "$P/queue-logs/notes.log" && -f "$P/queue-logs/7.txt" ]] || fail "a log that is not an old numbered one was moved"
 [[ "$(cat "$P/retired/old-day/agent.db")" == "older" ]] || fail "an older retired file changed"
-for line in "moved $P/agent.db -> $RD/agent.db.1" "moved $P/agent.db-wal -> $RD/agent.db-wal" "moved $P/queue-logs/5.log -> $RD/queue-logs/5.log"; do
+for line in "moved $P/agent.db -> $RD/agent.db.1" "moved $P/agent.db-wal -> $RD/agent.db.1-wal" "moved $P/queue-logs/5.log -> $RD/queue-logs/5.log"; do
   grep -Fq "$line" "$TMP/out" || fail "the move was not printed: $line
 $(cat "$TMP/out")"
 done
 [[ "$(cat "$P/planar.db" | head -1)" == "SQLite format 3" ]] || fail "planar.db was touched"
 pass
-chmod 600 "$RD/agent.db-shm" 2>/dev/null || true
+chmod 600 "$RD/agent.db.1-shm" 2>/dev/null || true
 
 # A second run moves nothing more; a new agent.db takes the next free suffix.
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "re-run after a retirement failed ($RC): $(cat "$TMP/err")"
 ! grep -Fq 'moved ' "$TMP/out" || fail "a re-run moved something: $(cat "$TMP/out")"
 printf 'another old store\n' > "$P/agent.db"
+printf 'another wal\n' > "$P/agent.db-wal"
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "second retirement failed ($RC): $(cat "$TMP/err")"
 [[ "$(cat "$RD/agent.db.2")" == "another old store" && "$(cksum < "$RD/agent.db.1")" == "$sum_agent" ]] \
   || fail "the second collision did not take agent.db.2 and leave agent.db.1 intact"
+[[ "$(cat "$RD/agent.db.2-wal")" == "another wal" && "$(cksum < "$RD/agent.db.1-wal")" == "$sum_wal" ]] \
+  || fail "the second collision did not keep its wal beside agent.db.2: $(ls "$RD")"
 [[ "$(tree_sum "$P/retired/old-day")" == "$old_day_before" ]] || fail "an older retired day changed"
 no_python
 pass
