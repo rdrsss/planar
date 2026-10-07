@@ -24,7 +24,7 @@ PASSED=0
 pass() { PASSED=$((PASSED + 1)); }
 
 REPO="$TMP/repo"
-mkdir -p "$REPO/skills"
+mkdir -p "$REPO/skills" "$REPO/workflows" "$REPO/migrations"
 cp "$ROOT/install.sh" "$REPO/install.sh"
 cp -R "$ROOT/scripts" "$REPO/scripts"
 cp -R "$ROOT/agents" "$REPO/agents"

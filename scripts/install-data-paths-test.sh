@@ -205,7 +205,7 @@ pass
 # --- driving install.sh and --uninstall ----------------------------------------------
 
 REPO="$TMP/repo"
-mkdir -p "$REPO/skills" "$REPO/templates"
+mkdir -p "$REPO/skills" "$REPO/templates" "$REPO/workflows" "$REPO/migrations"
 cp "$ROOT/install.sh" "$REPO/install.sh"
 cp -R "$ROOT/scripts" "$REPO/scripts"
 cp -R "$ROOT/agents" "$REPO/agents"

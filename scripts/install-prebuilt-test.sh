@@ -277,7 +277,7 @@ pass
 # --- a source install writes a release record ---------------------------------------------------------
 
 REPO="$TMP/repo"
-mkdir -p "$REPO/skills" "$REPO/templates"
+mkdir -p "$REPO/skills" "$REPO/templates" "$REPO/workflows"
 cp "$ROOT/install.sh" "$REPO/install.sh"
 cp -R "$ROOT/scripts" "$REPO/scripts"
 rm -rf "$REPO/scripts/install-lib/__pycache__"
