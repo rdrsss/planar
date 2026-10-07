@@ -24,8 +24,9 @@
 # under or over a backup. A symlinked subtree (link mode) is renamed, never
 # followed. On a retry, planar_state_reconcile maps an interruption between a
 # rename and its journal update back to a recorded state from the inodes it
-# recorded, restores a journal-owned <n>.old whose live name is missing, and
-# refuses (removing nothing) when the files match no recorded state.
+# recorded, restores a journal-owned <n>.old whose live name is missing (writing
+# the journal after each restore), and refuses (removing nothing) when the files
+# match no recorded state.
 #
 # The backups have no PID in their names; only the journal associates them with
 # the transaction. Unknown `.staging-*` and `*.old` entries are reported and
@@ -190,22 +191,32 @@ planar_state_swap() {
 
 # planar_state_reconcile ROOT -- bring every subtree of a mutating journal back
 # to pending or swapped (tech spec 677 step 3). A subtree interrupted after its
-# backup with no live name is restored from its journal-owned <n>.old. Writes
-# the journal. Status 1, with nothing removed, when the files match no recorded
-# state. Prints one line per restored subtree.
+# backup with no live name is restored from its journal-owned <n>.old, and the
+# journal is written right after each restore. Status 1, with nothing removed,
+# when the files match no recorded state; the refusal names any restore this
+# run already made (and recorded). Prints one line per restored subtree.
+#
+# Every rename here is followed by a journal write, and a kill between the two
+# is recognized on the next run: a backed_up subtree whose live name holds the
+# recorded live inode with no <n>.old left was already restored, so it is
+# pending. The other transitions (backing_up to pending or backed_up, and
+# backed_up to swapped) rename nothing; they are derived again from the same
+# files when a run stops before the journal is written.
 planar_state_reconcile() {
-  local root="$1" n sk st rl rs li oi l o
+  local root="$1" n sk st rl rs li oi l o restored="" note
   for n in ${PLANAR_JOURNAL_SUBTREES-}; do
     sk="$(planar_journal_sub_key "$n")"
     st="$(_ps_get "$sk")"
     rl="$(_ps_get "${sk}_live")"; rs="$(_ps_get "${sk}_staged")"
     l="$root/$n"; o="$root/$n.old"
     li="$(_ps_ino "$l")"; oi="$(_ps_ino "$o")"
+    note="Nothing was removed"
+    [ -z "$restored" ] || note="Nothing was removed; this run restored$restored and recorded that in the journal"
     case "$st" in
       ""|pending) continue ;;
       swapped)
         if [ "$li" != "$rs" ]; then
-          INSTALL_STATE_ERROR="the journal records $n as swapped in, but $l is not the staged copy it recorded (inode $li, recorded $rs). Nothing was removed."
+          INSTALL_STATE_ERROR="the journal records $n as swapped in, but $l is not the staged copy it recorded (inode $li, recorded $rs). $note."
           return 1
         fi
         continue
@@ -217,7 +228,7 @@ planar_state_reconcile() {
         if [ "$rl" != none ] && [ "$li" = none ] && [ "$oi" = "$rl" ]; then
           st=backed_up
         else
-          INSTALL_STATE_ERROR="cannot tell whether $l was backed up: live inode $li, backup inode $oi, recorded live $rl. Nothing was removed; inspect $l and $o."
+          INSTALL_STATE_ERROR="cannot tell whether $l was backed up: live inode $li, backup inode $oi, recorded live $rl. $note; inspect $l and $o."
           return 1
         fi
         ;;
@@ -226,19 +237,26 @@ planar_state_reconcile() {
       if [ "$li" = "$rs" ] && { [ "$rl" = none ] || [ "$oi" = "$rl" ]; }; then
         _ps_set "$sk" swapped; continue
       fi
-      if [ "$li" = none ] && { { [ "$rl" = none ] && [ "$oi" = none ]; } || { [ "$rl" != none ] && [ "$oi" = "$rl" ]; }; }; then
-        if [ "$rl" != none ]; then
-          mv "$o" "$l" || { INSTALL_STATE_ERROR="cannot restore $o to $l"; return 1; }
-          printf 'restored %s from %s\n' "$l" "$o"
-          planar_install_fault "restore:$n" || { INSTALL_STATE_ERROR="test fault after restoring $n"; return 1; }
-        fi
+      # Restored by an earlier run that stopped before recording it.
+      if [ "$rl" != none ] && [ "$li" = "$rl" ] && [ "$oi" = none ]; then
         _ps_set "$sk" pending; _ps_set "${sk}_live" ""; _ps_set "${sk}_staged" ""
         continue
       fi
-      INSTALL_STATE_ERROR="cannot reconcile $n: live inode $li, backup inode $oi, recorded live $rl and staged $rs. Nothing was removed; inspect $l and $o."
+      if [ "$li" = none ] && { { [ "$rl" = none ] && [ "$oi" = none ]; } || { [ "$rl" != none ] && [ "$oi" = "$rl" ]; }; }; then
+        _ps_set "$sk" pending; _ps_set "${sk}_live" ""; _ps_set "${sk}_staged" ""
+        if [ "$rl" != none ]; then
+          mv "$o" "$l" || { INSTALL_STATE_ERROR="cannot restore $o to $l. $note."; return 1; }
+          printf 'restored %s from %s\n' "$l" "$o"
+          restored="$restored${restored:+,} $l from $o"
+          planar_install_fault "restore:$n" || { INSTALL_STATE_ERROR="test fault after restoring $n"; return 1; }
+          planar_journal_write "$root" || { INSTALL_STATE_ERROR="restored $l from $o but cannot write the recovery journal"; return 1; }
+        fi
+        continue
+      fi
+      INSTALL_STATE_ERROR="cannot reconcile $n: live inode $li, backup inode $oi, recorded live $rl and staged $rs. $note; inspect $l and $o."
       return 1
     fi
-    INSTALL_STATE_ERROR="the journal records an unknown state '$st' for $n. Nothing was removed."
+    INSTALL_STATE_ERROR="the journal records an unknown state '$st' for $n. $note."
     return 1
   done
   planar_journal_write "$root" || { INSTALL_STATE_ERROR="cannot write the recovery journal"; return 1; }
