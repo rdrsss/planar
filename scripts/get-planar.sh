@@ -236,8 +236,8 @@ http_get() {
   else
     if [ "$_hg_scheme" = https ]; then _hg_only=--https-only; else _hg_only=""; fi
     _hg_rc=0
-    # shellcheck disable=SC2086  # _hg_only and WGET_NOHSTS are empty or one fixed option
-    WGETRC="$TMP_DIR/wgetrc" wget -nv -S --no-netrc --max-redirect=0 --tries=1 --timeout=60 $WGET_NOHSTS $_hg_only \
+    # shellcheck disable=SC2086  # _hg_only, WGET_NONETRC and WGET_NOHSTS are empty or one fixed option
+    WGETRC="$TMP_DIR/wgetrc" wget -nv -S $WGET_NONETRC --max-redirect=0 --tries=1 --timeout=60 $WGET_NOHSTS $_hg_only \
       -O "$2" "$1" 2>"$4" || _hg_rc=$?
     # The headers go to stderr. A redirect or an error status makes wget exit
     # non-zero, so the status line is the verdict there; but a 200 whose body
@@ -256,13 +256,17 @@ http_get() {
 
 # fetch URL DEST -- download URL to DEST, following redirects by hand under the
 # redirect policy. Status 1 with F_REASON set on any failure; DEST is only
-# trusted on status 0.
+# trusted on status 0. F_KIND classifies a failure: "missing" (the server
+# answered 404 or 410, or a file:// fixture lacks the file under an existing
+# base directory), "unreachable" (no HTTP response: DNS, connect, TLS or
+# timeout failure, or the file:// base directory is absent) or "other".
 fetch() {
   _f_url=$1
   _f_dest=$2
   _f_hops=0
   _f_prev=""
   F_REASON=""
+  F_KIND=other
   rm -f "$_f_dest"
   while :; do
     if ! url_parse "$_f_url" yes; then
@@ -279,12 +283,13 @@ fetch() {
         return 0
       fi
       F_REASON="no such file $U_PATH"
+      if [ -d "$BASE_PATH" ]; then F_KIND=missing; else F_KIND=unreachable; fi
       return 1
     fi
     _f_scheme=$U_SCHEME
     _f_auth=$U_AUTH
     http_get "$_f_url" "$_f_dest" "$TMP_DIR/headers" "$TMP_DIR/client-err" \
-      || { F_REASON="the $CLIENT client failed: $(printable "$(cat "$TMP_DIR/client-err" 2>/dev/null)")"; rm -f "$_f_dest"; return 1; }
+      || { F_REASON="the $CLIENT client failed: $(printable "$(cat "$TMP_DIR/client-err" 2>/dev/null)")"; F_KIND=unreachable; rm -f "$_f_dest"; return 1; }
     case "$F_STATUS" in
       200)
         return 0
@@ -305,8 +310,10 @@ fetch() {
       *)
         if [ -n "$F_STATUS" ]; then
           F_REASON="HTTP $F_STATUS"
+          case "$F_STATUS" in 404|410) F_KIND=missing ;; esac
         else
           F_REASON="no HTTP response: $(printable "$(cat "$TMP_DIR/client-err" 2>/dev/null)")"
+          F_KIND=unreachable
         fi
         rm -f "$_f_dest"
         return 1
@@ -325,7 +332,9 @@ pick_client() {
       CLIENT=wget
       : > "$TMP_DIR/wgetrc"   # an empty config: ~/.wgetrc must not change redirect handling
       WGET_NOHSTS=""
+      WGET_NONETRC=""
       if wget --help 2>&1 | grep -q -- '--no-hsts'; then WGET_NOHSTS=--no-hsts; fi
+      if wget --help 2>&1 | grep -q -- '--no-netrc'; then WGET_NONETRC=--no-netrc; fi
     else
       die "found wget but it is not GNU Wget, which cannot be told not to follow redirects; install curl or GNU wget"
     fi
@@ -460,6 +469,48 @@ release_field() {
   sed -n "s/^[[:space:]]*\"$2\":[[:space:]]*\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}[[:space:]]*\$/\1/p" "$1" 2>/dev/null | head -n 1
 }
 
+# fetch_die WHAT -- die for a failed fetch. An unreachable server is always
+# named by its release base. WHAT is "tag" for the first request under a tag
+# (a missing answer there means the tag does not exist) or "other".
+fetch_die() {
+  case "$F_KIND" in
+    unreachable) die "cannot reach the release server at $BASE: $F_REASON$(kept_note)" ;;
+    missing)
+      if [ "$1" = tag ]; then
+        die "release $TAG does not exist on the release server $BASE: $F_REASON$(kept_note)"
+      fi
+      ;;
+  esac
+  die "$2: $F_REASON$(kept_note)"
+}
+
+# version_parts VERSION -- MAJOR.MINOR[.PATCH] into V_MAJOR and V_MINOR with no
+# leading zeros (so arithmetic never reads octal), or fail.
+version_parts() {
+  printf '%s\n' "$1" | grep -Eq '^[0-9]{1,6}\.[0-9]{1,6}(\.[0-9]{1,6})?$' || return 1
+  _vp=${1%%.*}
+  V_MAJOR=$(printf '%s' "$_vp" | sed 's/^0*//;s/^$/0/')
+  _vp=${1#*.}
+  _vp=${_vp%%.*}
+  V_MINOR=$(printf '%s' "$_vp" | sed 's/^0*//;s/^$/0/')
+}
+
+# glibc_check FLOOR -- on Linux, refuse a host whose glibc (the last word of the
+# first line of `ldd --version`) is older than FLOOR, numerically by
+# major.minor. Both numbers are named. A host with no ldd, a musl ldd or any
+# output without a trailing version is refused naming what was seen.
+glibc_check() {
+  version_parts "$1" || die "release.json holds os_floor '$(printable "$1")', which is not a glibc version (MAJOR.MINOR); nothing was installed"
+  _gf_major=$V_MAJOR; _gf_minor=$V_MINOR
+  command -v ldd >/dev/null 2>&1 || die "ldd is not installed, so the glibc version cannot be read; this release needs glibc $1 or later; nothing was installed"
+  _gl_line=$(ldd --version 2>&1 | head -n 1)
+  _gl_ver=${_gl_line##* }
+  version_parts "$_gl_ver" || die "cannot read the glibc version from 'ldd --version' (first line: '$(printable "$_gl_line")'); this release needs glibc $1 or later (musl is not supported); nothing was installed"
+  if [ "$V_MAJOR" -lt "$_gf_major" ] || { [ "$V_MAJOR" -eq "$_gf_major" ] && [ "$V_MINOR" -lt "$_gf_minor" ]; }; then
+    die "this host has glibc $_gl_ver but this release needs glibc $1 or later; nothing was installed"
+  fi
+}
+
 # kept_note -- appended to a download failure of a recovery run.
 kept_note() {
   if [ "$PINNED" = yes ]; then
@@ -504,6 +555,8 @@ main() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   pick_client
+  BASE_PATH=""
+  if base_valid "$BASE" && [ "$U_SCHEME" = file ]; then BASE_PATH=$U_PATH; fi
 
   if [ "$PINNED" = yes ]; then
     printf 'get-planar: finishing the interrupted install of %s (commit %s) from %s\n' "$TAG" "$EXPECT_SHA" "$BASE"
@@ -511,7 +564,7 @@ main() {
     TAG=$WANT_VERSION
   else
     fetch "$BASE/latest/download/VERSION" "$TMP_DIR/VERSION" \
-      || die "cannot read the latest release from $BASE/latest/download/VERSION: $F_REASON"
+      || fetch_die other "cannot read the latest release from $BASE/latest/download/VERSION"
     [ "$(wc -c < "$TMP_DIR/VERSION" | tr -d ' ')" -le 64 ] || die "$BASE/latest/download/VERSION is too large to be a release tag"
     TAG=$(head -n 1 "$TMP_DIR/VERSION" | tr -d '\r')
     version_valid "$TAG" || die "$BASE/latest/download/VERSION holds '$(printable "$TAG")', which is not a release tag (^v[0-9]+\\.[0-9]+\\.[0-9]+\$)"
@@ -520,9 +573,9 @@ main() {
   ASSETS="$BASE/download/$TAG"
   printf 'get-planar: installing Planar %s for %s\n' "$TAG" "$PLATFORM"
   fetch "$ASSETS/SHA256SUMS" "$TMP_DIR/SHA256SUMS" \
-    || die "cannot download SHA256SUMS for $TAG from $ASSETS/SHA256SUMS: $F_REASON$(kept_note)"
+    || fetch_die tag "cannot download SHA256SUMS for $TAG from $ASSETS/SHA256SUMS"
   fetch "$ASSETS/$ASSET" "$TMP_DIR/$ASSET" \
-    || die "cannot download $ASSET for $TAG from $ASSETS/$ASSET: $F_REASON$(kept_note)"
+    || fetch_die other "cannot download $ASSET for $TAG from $ASSETS/$ASSET"
 
   select_record
   sha_check "$TMP_DIR" asset.sha256 || die "checksum mismatch for $ASSET: the download does not match SHA256SUMS; nothing was extracted or installed"
@@ -541,6 +594,9 @@ main() {
   [ -f "$BUNDLE/install.sh" ] && [ -f "$BUNDLE/release.json" ] || die "$ASSET is not a release bundle (no install.sh or release.json); nothing was installed"
   _bv=$(release_field "$BUNDLE/release.json" version)
   [ "$_bv" = "$TAG" ] || die "$ASSET holds Planar '$(printable "$_bv")' but was fetched as $TAG; nothing was installed"
+  if [ "$PLATFORM" = linux-x86_64 ]; then
+    glibc_check "$(release_field "$BUNDLE/release.json" os_floor)"
+  fi
   if [ "$PINNED" = yes ]; then
     _bs=$(release_field "$BUNDLE/release.json" sha)
     [ "$_bs" = "$EXPECT_SHA" ] || die "$ASSET for $TAG holds commit '$(printable "$_bs")' but the interrupted install recorded $EXPECT_SHA; nothing was changed"
