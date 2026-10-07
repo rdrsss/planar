@@ -20,7 +20,7 @@ class IdentityTests(unittest.TestCase):
         for name in ('skills', 'agents', 'templates', 'workflows', 'migrations'):
             shutil.copytree(ROOT / name, self.root / name)
         (self.root / 'scripts').mkdir()
-        for name in ('dist.sh', 'render-codex-agents.py', 'uninstall.sh'):
+        for name in ('dist.sh', 'get-planar.sh', 'render-codex-agents.py', 'uninstall.sh'):
             shutil.copy2(ROOT / 'scripts' / name, self.root / 'scripts' / name)
         shutil.copytree(ROOT / 'scripts/install-lib', self.root / 'scripts/install-lib')
         for name in ('install.sh', 'install-cleanup.txt'):

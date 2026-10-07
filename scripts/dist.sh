@@ -83,8 +83,10 @@ cp install.sh install-cleanup.txt "$stage/"
 # scripts/uninstall.sh; the installer stages it as bin/planar-uninstall.
 [ -f scripts/uninstall.sh ] || fail "scripts/uninstall.sh is missing"
 cp scripts/uninstall.sh "$stage/uninstall.sh"
-# A later milestone supplies the bootstrap. Never substitute another script.
-if [ -f get-planar.sh ]; then cp get-planar.sh "$stage/"; fi
+# The bootstrap ships at the bundle root and, below, as a standalone release
+# asset: one script, byte-identical in both places.
+[ -f scripts/get-planar.sh ] || fail "scripts/get-planar.sh is missing"
+cp scripts/get-planar.sh "$stage/get-planar.sh"
 python3 scripts/render-codex-agents.py "$stage/agents" "$stage/codex-agents"
 
 # init is planning-class: even a scratch DB must be probed outside a worktree.
@@ -128,9 +130,9 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   [ "$actual" = "$(printf '%s\n%s' "$sha" "$dirty")" ] || fail "source identity changed during build"
 fi
 mkdir -p dist
-python3 - "$stage" "$scratch" "$root/dist" "$logs" <<'PY'
-import hashlib, json, pathlib, sys, tarfile
-stage, scratch, output, logs = map(pathlib.Path, sys.argv[1:])
+python3 - "$stage" "$scratch" "$root/dist" "$logs" "$root/scripts/get-planar.sh" <<'PY'
+import hashlib, json, pathlib, shutil, sys, tarfile
+stage, scratch, output, logs, bootstrap = map(pathlib.Path, sys.argv[1:])
 archive = scratch / (stage.name + '.tar.gz')
 with tarfile.open(archive, 'w:gz', format=tarfile.PAX_FORMAT) as tar:
     for path in sorted([stage, *stage.rglob('*')], key=lambda p: p.relative_to(stage.parent).as_posix()):
@@ -150,9 +152,13 @@ evidence = dict(format_version=1, archive=archive.name, sha256=digest, release=r
 # Smoke/CA gates are deliberately absent; this alone cannot authorize publication.
 archive.replace(output / archive.name)
 (output / (archive.name + '.gates.json')).write_text(json.dumps(evidence, indent=2) + '\n')
+# The standalone bootstrap asset: the same bytes as the bundle-root copy.
+shutil.copyfile(bootstrap, output / 'get-planar.sh')
+(output / 'get-planar.sh').chmod(0o755)
 # Preserve the other platform's checksum when assembling in a shared output dir.
+# The checksums cover every tarball and the standalone script, one bare name each.
 checksums = []
-for asset in sorted(output.glob('planar-*.tar.gz')):
+for asset in [*sorted(output.glob('planar-*.tar.gz')), output / 'get-planar.sh']:
     checksums.append(hashlib.sha256(asset.read_bytes()).hexdigest() + '  ' + asset.name + '\n')
 (output / 'SHA256SUMS').write_text(''.join(checksums))
 (output / 'VERSION').write_text(release['version'] + '\n')

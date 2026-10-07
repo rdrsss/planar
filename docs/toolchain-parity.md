@@ -547,8 +547,10 @@ binaries into an owned temporary staging tree, and assembles
 `JOBS` defaults to four. Only these two platforms are supported. The bundle
 contains the authored skill, agents, templates, workflows, migrations,
 installer and install library; Codex agents are rendered during assembly.
-The root `uninstall.sh` is a byte copy of `scripts/uninstall.sh`; the root
-bootstrap joins the bundle when its milestone supplies it. Bundle assembly does not change the installer's lifecycle.
+The root `uninstall.sh` is a byte copy of `scripts/uninstall.sh`, and the root
+`get-planar.sh` is a byte copy of `scripts/get-planar.sh`; assembly refuses when
+either source is missing. The same bootstrap bytes are also written to
+`dist/get-planar.sh` as the standalone release asset. Bundle assembly does not change the installer's lifecycle.
 
 For a tagged cut, set `PLANAR_RELEASE_VERSION=vMAJOR.MINOR.PATCH`. The tag
 must already exist at clean HEAD; pre-release labels, missing tags, wrong HEAD,
@@ -568,8 +570,9 @@ current schema and numerically equal database and target versions. The target's
 serialized type is preserved; the CLI catalog format version is never used.
 The scratch arena is removed on success and refusal. Tar entries are sorted,
 with uid/gid zero and owner/group `root`; compiled bytes and dates need not be
-identical across cuts. `SHA256SUMS` uses two spaces before each bare asset name,
-and `VERSION` contains the bare tag (or `dev`).
+identical across cuts. `SHA256SUMS` uses two spaces before each bare asset name
+and covers every tarball in `dist/` and `get-planar.sh`, one record each, and
+`VERSION` contains the bare tag (or `dev`).
 
 Assembly requires exactly the two `portable` tests and inspects all five
 installed copies again. A sibling `<archive>.gates.json` records
