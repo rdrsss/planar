@@ -424,7 +424,9 @@ _qr_move_aside() {
 # every new entry exceeds; the old store's maximum is not read) move into
 # $PLANAR_HOME/retired/<YYYY-MM-DD>/ (logs under queue-logs/ there), each move
 # printed. An existing retired/<date>/ is reused and nothing in it is replaced:
-# a taken name gets a numeric suffix. Logs numbered at or above the floor, such
+# when any of the three names is taken, all three move as agent.db.<n>,
+# agent.db.<n>-wal and agent.db.<n>-shm (the first free <n>), keeping SQLite's
+# database/sidecar pairing; a taken log name gets a numeric suffix. Logs numbered at or above the floor, such
 # as a new queue's, and every other file stay. retired/ is a data path, so no
 # install or uninstall removes what lands there.
 queue_retire_prebuilt() {
@@ -446,9 +448,18 @@ queue_retire_prebuilt() {
   fi
   chmod 700 "$home/retired" "$dest" 2>/dev/null || true
 
+  # SQLite pairs a database with <db>-wal and <db>-shm by name, so the three
+  # move under one shared name: agent.db, or the first agent.db.<n> for which
+  # none of agent.db.<n>, agent.db.<n>-wal and agent.db.<n>-shm is taken.
+  local base="agent.db" n=0
+  while [[ -e "$dest/$base" || -L "$dest/$base" || -e "$dest/$base-wal" || -L "$dest/$base-wal" \
+           || -e "$dest/$base-shm" || -L "$dest/$base-shm" ]]; do
+    n=$((n + 1))
+    base="agent.db.$n"
+  done
   for f in agent.db agent.db-wal agent.db-shm; do
     if [[ -e "$home/$f" || -L "$home/$f" ]]; then
-      _qr_move_aside "$home/$f" "$dest" "$f" || return 1
+      _qr_move_aside "$home/$f" "$dest" "$base${f#agent.db}" || return 1
     fi
   done
   for log in "$home/queue-logs"/*.log; do

@@ -295,8 +295,10 @@ retirement, `agent.db`, `agent.db-wal`, `agent.db-shm` and the old numbered
 logs (`queue-logs/<n>.log`, `n` below 1,000,000) are moved, unread, into
 `~/.planar/retired/<YYYY-MM-DD>/` (the logs under `queue-logs/` there), and
 each move is printed. An existing `retired/<date>/` is reused and nothing in it
-is overwritten: a taken name gets the first free suffix (`agent.db.1`,
-`agent.db.2`, ...). `retired/` is a preserved path, so no later install or
+is overwritten. The database and its sidecars keep SQLite's pairing: when any
+of the three names is taken, all three move under the first free shared name
+(`agent.db.1`, `agent.db.1-wal`, `agent.db.1-shm`, then `agent.db.2`, ...); a
+taken log name gets the first free suffix. `retired/` is a preserved path, so no later install or
 uninstall removes it. An old submitter still running keeps using the moved
 file, as in the note above, so there is no `--ignore-live-queue` decision to
 make.
