@@ -244,10 +244,18 @@ private:
 
 /// @brief Create `<root>/.planar-update/` if needed and then the update
 /// temporary itself, exclusively.
+///
+/// The namespace is checked before anything is created inside it: a
+/// symlinked or foreign `.planar-update` would otherwise receive a stray
+/// directory at the link's target before the temporary's own check refused.
 auto make_update_tmp(const std::string& canon, const std::string& tmp) -> std::expected<void, std::string> {
   auto const ns = std::format("{}/{}", canon, up::lock::k_update_namespace);
   if (::mkdir(ns.c_str(), 0700) != 0 && errno != EEXIST) {
     return std::unexpected(std::format("cannot create {}: {}", ns, std::strerror(errno)));
+  }
+  struct stat ns_st{};
+  if (::lstat(ns.c_str(), &ns_st) != 0 || !S_ISDIR(ns_st.st_mode) || ns_st.st_uid != ::geteuid()) {
+    return std::unexpected(std::format("{} is not a directory of this user (a symlink?); refusing to download into it", ns));
   }
   if (::mkdir(tmp.c_str(), 0700) != 0) {
     return std::unexpected(std::format("cannot create the update directory {}: {}", tmp, std::strerror(errno)));

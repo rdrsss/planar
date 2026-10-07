@@ -424,6 +424,24 @@ TEST_CASE("update: each refused fault leaves no temporary directory, no held loc
   }
 }
 
+TEST_CASE("update: a symlinked update namespace is refused before anything is created through it", "[update]") {
+  auto w = make_world("upnslink");
+  publish(w, "v1.1.0", "macos-arm64");
+  seed_install(w, "v1.0.0");
+  auto const target = w.root / "elsewhere";
+  std::filesystem::create_directories(target);
+  std::filesystem::create_symlink(target, update_ns(w));
+  recorder   rec;
+  auto const got = invoke(w, {}, host_for("macos-arm64", std::nullopt, rec));
+  INFO(got.out << got.err);
+  CHECK(got.code == 1);
+  CHECK(got.err.contains("is not a directory of this user"));
+  CHECK_FALSE(rec.request.has_value());
+  // Nothing was created at the link's target, and ownership was released.
+  CHECK(std::filesystem::is_empty(target));
+  CHECK(lock_free(canon(w.inst) + ".lock"));
+}
+
 TEST_CASE("update: a bundle with an older schema is refused naming both schema versions", "[update]") {
   auto w = make_world("upschema");
   publish(w, "v1.1.0", "macos-arm64", 99);
@@ -1084,4 +1102,38 @@ TEST_CASE("update: a KILLed update leaves nothing the next update cannot reclaim
   CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
   CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.1.0\""));
   CHECK(lock_free(dir));
+}
+
+TEST_CASE("update: --check runs from inside a linked git worktree and is not refused as a planning verb", "[update][e2e]") {
+  // `update` writes no planning state, so the worktree gate must let it
+  // through. The bypass is removed from the child's environment, and a
+  // planning verb from the same directory is the control that proves the
+  // directory really is a worktree the gate refuses from.
+  if (std::system("git --version >/dev/null 2>&1") != 0) {
+    SKIP("git not on PATH");
+  }
+  auto        space = make_arena("upwtree");
+  auto const  work  = space.cpp_root;
+  auto const  rel   = work / "rel";
+  auto const  base  = "file://" + canon(rel);
+  std::string out;
+  REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
+               {source_root().string(), rel.string(), "v1.1.0", "macos-arm64"}, &out) == 0);
+  write_file(work / "home/release.json", "{\"version\": \"v1.0.0\", \"schema_version\": 41}\n");
+  auto const repo = work / "mainrepo";
+  std::filesystem::create_directories(repo);
+  std::filesystem::remove_all(work / "proj");
+  REQUIRE(bash(R"(cd "$1" && git init -q -b main && git -c user.email=planar@example.invalid -c user.name=Planar )"
+               R"(commit -q --allow-empty -m seed && git worktree add -q -b side "$2")",
+               {repo.string(), (work / "proj").string()}) == 0);
+
+  auto const env     = env_with(work, base, {pinned_var{.name = "PLANAR_DISABLE_WORKTREE_GATE", .value = "", .unset = true}});
+  auto const control = run_pinned(cpp_bin(), std::vector<std::string>{"plan", "create", "refused"}, work, "control", env);
+  REQUIRE(control.code == 8);
+
+  auto const check = run_pinned(cpp_bin(), std::vector<std::string>{"update", "--check"}, work, "check", env);
+  INFO(check.out << check.err);
+  CHECK(check.code == 10);
+  CHECK(check.out == "installed v1.0.0 latest v1.1.0\n");
+  CHECK_FALSE(check.err.contains("may not run from inside a worktree"));
 }
