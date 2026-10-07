@@ -235,12 +235,20 @@ http_get() {
     F_STATUS=$(printf '%s' "$F_STATUS" | tr -cd '0-9')
   else
     if [ "$_hg_scheme" = https ]; then _hg_only=--https-only; else _hg_only=""; fi
-    # shellcheck disable=SC2086  # _hg_only is empty or one fixed option
-    WGETRC="$TMP_DIR/wgetrc" wget -nv -S --max-redirect=0 --tries=1 --timeout=60 $WGET_NOHSTS $_hg_only \
-      -O "$2" "$1" 2>"$4"
-    # The headers go to stderr; the client's exit status is not the verdict.
+    _hg_rc=0
+    # shellcheck disable=SC2086  # _hg_only and WGET_NOHSTS are empty or one fixed option
+    WGETRC="$TMP_DIR/wgetrc" wget -nv -S --no-netrc --max-redirect=0 --tries=1 --timeout=60 $WGET_NOHSTS $_hg_only \
+      -O "$2" "$1" 2>"$4" || _hg_rc=$?
+    # The headers go to stderr. A redirect or an error status makes wget exit
+    # non-zero, so the status line is the verdict there; but a 200 whose body
+    # was cut short is a failure, so a 200 needs exit status 0.
     cp "$4" "$3" 2>/dev/null
     F_STATUS=$(sed -n 's/^[[:space:]]*HTTP\/[0-9.]*[[:space:]]\{1,\}\([0-9][0-9][0-9]\).*/\1/p' "$3" | tail -n 1)
+    if [ "$F_STATUS" = 200 ] && [ "$_hg_rc" -ne 0 ]; then
+      printf 'wget exited with status %s after a 200 response; the download is incomplete\n' "$_hg_rc" > "$4"
+      F_STATUS=""
+      return 1
+    fi
   fi
   F_LOC=$(tr -d '\r' < "$3" | sed -n 's/^[[:space:]]*[Ll][Oo][Cc][Aa][Tt][Ii][Oo][Nn]:[[:space:]]*//p' | tail -n 1)
   return 0
@@ -334,7 +342,7 @@ pick_client() {
 # JR_VERSION, JR_SHA and JR_BASE. A journal that is not a well-formed version-1
 # journal for the canonical root dies: it is preserved, never interpreted.
 journal_scan() {
-  JR_STATE=none; JR_VERSION=""; JR_SHA=""; JR_BASE=""; JR_SOURCE=""
+  JR_STATE=none; JR_VERSION=""; JR_SHA=""; JR_BASE=""; JR_SOURCE=""; JR_OP=""
   _jf=$ROOT/.planar-journal
   if [ ! -e "$_jf" ] && [ ! -L "$_jf" ]; then
     return 0
@@ -347,7 +355,7 @@ journal_scan() {
   [ -n "$_size" ] && [ "$_size" -le 65536 ] || die "$_bad"
   [ "$(tr -d '\011\012\040-\176\200-\377' < "$_jf" | wc -c | tr -d ' ')" = 0 ] || die "$_bad"
   _n=0; _seen=" "; _phase=""; _root=""
-  _op=""
+  _op=""; JR_OP=""
   while IFS= read -r _line || [ -n "$_line" ]; do
     _n=$((_n + 1))
     if [ "$_n" -eq 1 ]; then
@@ -372,6 +380,7 @@ journal_scan() {
       phase) _phase=$_val ;;
       source) JR_SOURCE=$_val ;;
       operation) _op=$_val ;;
+      operation_id) JR_OP=$_val ;;
       target_version) JR_VERSION=$_val ;;
       target_sha) JR_SHA=$_val ;;
       release_base) JR_BASE=$_val ;;
@@ -388,7 +397,12 @@ journal_scan() {
   if [ "$JR_SOURCE" != prebuilt ]; then
     die "an interrupted source install of $_croot is pending (journal $_jf); finish it by re-running install.sh from the checkout it was started in. This bootstrap installs releases only; nothing was changed"
   fi
-  version_valid "$JR_VERSION" || die "$_bad (its target version is not a release tag)"
+  case "$JR_OP" in
+    *[!0-9a-f]*|"") die "$_bad (its operation id is not 32 hex digits)" ;;
+  esac
+  [ "${#JR_OP}" -eq 32 ] || die "$_bad (its operation id is not 32 hex digits)"
+  version_valid "$JR_VERSION" \
+    || die "an interrupted install of $_croot from a bundle with no release tag ('$(printable "$JR_VERSION")', commit $(printable "$JR_SHA")) is pending (journal $_jf). This bootstrap installs tagged releases only; nothing was changed. Finish it by re-running install.sh --prebuilt from an unpacked bundle of that commit"
   printf '%s\n' "$JR_SHA" | grep -Eq '^[0-9a-f]{40}$' || die "$_bad (its target commit is not a full SHA)"
   JR_BASE=$(base_normalize "$JR_BASE")
   base_valid "$JR_BASE" || die "$_bad (its release base is not an accepted URL)"
@@ -465,6 +479,7 @@ main() {
   journal_scan
   PINNED=no
   EXPECT_SHA=""
+  EXPECT_OP=""
   case "$JR_STATE" in
     uninstalling)
       die "an uninstall of $ROOT was interrupted; an install never resumes a cancelled installation. Finish the uninstall first: run $ROOT/bin/planar-uninstall (or uninstall.sh from a release bundle). Nothing was changed"
@@ -480,6 +495,7 @@ main() {
       TAG=$JR_VERSION
       BASE=$JR_BASE
       EXPECT_SHA=$JR_SHA
+      EXPECT_OP=$JR_OP
       ;;
   esac
 
@@ -516,6 +532,9 @@ main() {
   if grep -Ev "^$BUNDLE_NAME(/|\$)" "$TMP_DIR/entries" | grep -q . || grep -Eq '(^|/)\.\.(/|$)' "$TMP_DIR/entries"; then
     die "$ASSET holds entries outside $BUNDLE_NAME/; nothing was extracted or installed"
   fi
+  # A link entry can point outside the extraction directory; a bundle holds none.
+  tar -tvzf "$TMP_DIR/$ASSET" 2>/dev/null | grep -Eq '^[lh]' \
+    && die "$ASSET holds a symbolic or hard link; nothing was extracted or installed"
   mkdir "$TMP_DIR/x" || die "cannot create $TMP_DIR/x"
   tar -xzf "$TMP_DIR/$ASSET" -C "$TMP_DIR/x" || die "cannot extract $ASSET; nothing was installed"
   BUNDLE="$TMP_DIR/x/$BUNDLE_NAME"
@@ -525,17 +544,26 @@ main() {
   if [ "$PINNED" = yes ]; then
     _bs=$(release_field "$BUNDLE/release.json" sha)
     [ "$_bs" = "$EXPECT_SHA" ] || die "$ASSET for $TAG holds commit '$(printable "$_bs")' but the interrupted install recorded $EXPECT_SHA; nothing was changed"
-    # Revalidate just before replay. The authoritative check is the installer's,
-    # under the mutation lock; this narrows the window and refuses early.
-    _was=$JR_VERSION:$JR_SHA:$JR_BASE
+    # Revalidate just before replay. This unlocked re-read only narrows the
+    # window and refuses early; the authoritative check is the installer's,
+    # under the mutation lock, against PLANAR_EXPECT_RECOVERY below.
+    _was=$JR_OP:$JR_VERSION:$JR_SHA:$JR_BASE
     journal_scan
-    [ "$JR_STATE" = mutating ] && [ "$_was" = "$JR_VERSION:$JR_SHA:$JR_BASE" ] \
+    [ "$JR_STATE" = mutating ] && [ "$_was" = "$JR_OP:$JR_VERSION:$JR_SHA:$JR_BASE" ] \
       || die "the recovery state of $ROOT changed while $ASSET was downloading; refusing to replay stale evidence. Run the command again"
   fi
 
   command -v bash >/dev/null 2>&1 || die "bash is required to run the installer"
   # The installer reads its input from the environment it is given, not from ours.
-  unset PLANAR_MUTATION_HANDOFF
+  unset PLANAR_MUTATION_HANDOFF PLANAR_EXPECT_RECOVERY
+  if [ "$PINNED" = yes ]; then
+    # Only an installer that revalidates the journal under its lock may be
+    # trusted to say it recovered; a bundle without that check is refused.
+    grep -q 'PLANAR_EXPECT_RECOVERY' "$BUNDLE/install.sh" \
+      || die "$ASSET for $TAG holds an installer that cannot confirm the interrupted install under the mutation lock; nothing was changed"
+    PLANAR_EXPECT_RECOVERY=$EXPECT_OP
+    export PLANAR_EXPECT_RECOVERY
+  fi
   PLANAR_RELEASE_URL=$BASE
   export PLANAR_RELEASE_URL
   set -- --prebuilt "$BUNDLE"
@@ -546,7 +574,7 @@ main() {
     exit "$_irc"
   fi
   if [ "$PINNED" = yes ]; then
-    printf 'get-planar: finished the interrupted install of %s. Run the command again to check for a newer release.\n' "$TAG"
+    printf 'get-planar: finished the interrupted install of %s (the installer confirmed the recovery). Run the command again to check for a newer release.\n' "$TAG"
   fi
 
   _found=$(command -v planar 2>/dev/null) || _found=""
