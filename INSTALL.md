@@ -506,10 +506,10 @@ It removes, printing each removal:
 
 It keeps, and names:
 - Every [preserved path](#preserved-paths): `planar.db` with its `-wal` and `-shm` sidecars, `queue-logs/`, `retired/` (old queue databases and logs), `workbench/`, `config.toml`, `local/`, `workspaces/`, `models/`, `execute/` and every file in `templates/`. A relocated one is named and left where it is.
-- A legacy `agent.db` and its sidecars, which it never reads.
+- The retired old queue database and its sidecars, left from before the [queue upgrade](#upgrade-note-what-installsh-does-with-the-old-queue-plan-1089), which it never reads.
 - Every other entry it does not know, including `.staging-*` and `.old` entries no journal owns: reported, never removed.
 
-**`--purge`** also removes the preserved paths under the install root and the legacy `agent.db`, naming each first (the files under `retired/` one by one), then the install root when nothing is left in it. A data path relocated by `PLANAR_DB`, `PLANAR_CONFIG_PATH`, `PLANAR_WORKBENCH_ROOT`, `PLANAR_LOCAL_HOME` or `PLANAR_TEMPLATES_DIR` is named and left where it is, and nothing outside the install root is removed. Unknown entries are still kept.
+**`--purge`** also removes the preserved paths under the install root and the retired old queue database, naming each first (the files under `retired/` one by one), then the install root when nothing is left in it. A data path relocated by `PLANAR_DB`, `PLANAR_CONFIG_PATH`, `PLANAR_WORKBENCH_ROOT`, `PLANAR_LOCAL_HOME` or `PLANAR_TEMPLATES_DIR` is named and left where it is, and nothing outside the install root is removed. Unknown entries are still kept.
 
 **`~/.local/bin`.** When `~/.local/bin` holds `planar` or a sibling binary (`planar-agent`, `planar-watch`, `planar-execute`, `planar-ext`) left by the retired `make install`, the uninstaller names them and asks whether to remove them; `--yes` removes them without asking. With no terminal on standard input it asks nothing, leaves them and says to re-run with `--yes`.
 

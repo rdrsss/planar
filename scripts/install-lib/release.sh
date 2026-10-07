@@ -13,6 +13,7 @@
 #       local file:// fixture, or http on the exact loopback hosts, with no
 #       userinfo, quote or blank.
 
+# shellcheck disable=SC2034  # read by the sourcing scripts
 DEFAULT_RELEASE_BASE="https://github.com/rdrsss/planar/releases"
 
 release_field() {

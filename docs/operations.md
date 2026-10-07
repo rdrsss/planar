@@ -369,8 +369,8 @@ an agent or script that did not say who it is.
 
 **Preservation and file modes.** `planar-uninstall` (`~/.planar/bin/planar-uninstall`,
 also run by `install.sh --uninstall`) keeps and names every data path, `planar.db`
-(with its `-wal` and `-shm`) and `queue-logs/` among them, and the legacy
-`agent.db`; the full list is in
+(with its `-wal` and `-shm`) and `queue-logs/` among them, and the retired old
+queue database; the full list is in
 [INSTALL.md § Preserved paths](../INSTALL.md#preserved-paths). `planar-uninstall --purge`
 removes them too, except a relocated one, which it names and leaves; there is no
 `--force` (see [INSTALL.md § Uninstall](../INSTALL.md#uninstall)). (`install.sh --prebuilt` moves the retired queue database and its old logs into `~/.planar/retired/<date>/` instead of removing them; see [INSTALL.md § Prebuilt install](../INSTALL.md#prebuilt-install---prebuilt).) A live entry stores the submitter's task

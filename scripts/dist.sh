@@ -84,9 +84,7 @@ cp install.sh install-cleanup.txt "$stage/"
 [ -f scripts/uninstall.sh ] || fail "scripts/uninstall.sh is missing"
 cp scripts/uninstall.sh "$stage/uninstall.sh"
 # A later milestone supplies the bootstrap. Never substitute another script.
-for script in get-planar.sh; do
-  if [ -f "$script" ]; then cp "$script" "$stage/"; fi
-done
+if [ -f get-planar.sh ]; then cp get-planar.sh "$stage/"; fi
 python3 scripts/render-codex-agents.py "$stage/agents" "$stage/codex-agents"
 
 # init is planning-class: even a scratch DB must be probed outside a worktree.
