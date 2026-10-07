@@ -387,12 +387,13 @@ rm -f "$FAULTDIR"/*
     /bin/bash "$B2/install.sh" --prebuilt "$B2" >"$TMP/holder.out" 2>&1 ) &
 HOLDER=$!; BG+=("$HOLDER")
 i=0; while [[ ! -e "$FAULTDIR/paused.after-lock" ]]; do i=$((i + 1)); [[ "$i" -lt 600 ]] || fail "the holder never paused: $(cat "$TMP/holder.out")"; sleep 0.1; done
-holder_pid="$(sed -n 's/^pid=//p' "$P.lock"/owner.* | tail -1)"
+holder_pid="$HOLDER"   # env and the installer exec in place, so this is the installer's pid
 before="$(tree_sum "$P")"
 run_install "$H" "$B2" --
 [[ "$RC" == 1 ]] || fail "a second concurrent install was not refused ($RC): $(show)"
 grep -Fq "another Planar install (pid $holder_pid)" "$TMP/err" || fail "the refusal does not name the holder's pid $holder_pid: $(show)"
 [[ "$(tree_sum "$P")" == "$before" ]] || fail "the refused concurrent install changed something"
+grep -qx "pid=$holder_pid" "$P.lock"/owner.* 2>/dev/null || fail "the paused holder does not own the lock record"
 kill -9 "$HOLDER"; wait "$HOLDER" 2>/dev/null || true
 run_install "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "a run after the holder was killed did not complete ($RC): $(show)"
