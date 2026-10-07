@@ -202,15 +202,19 @@ for missing in workflows migrations scripts/install-lib scripts skills/planar co
   run_prebuilt "$H" "$BM" --
   [[ "$RC" != 0 ]] || fail "a bundle without $missing/ was installed"
   grep -Fq "$missing" "$TMP/err" || fail "the refusal does not name $missing: $(cat "$TMP/err")"
+  ! grep -Fq "Staging into" "$TMP/out" || fail "a bundle without $missing/ was refused only after staging began: $(cat "$TMP/out")"
   [[ "$(tree_id "$P")" == "$arena_before" ]] || fail "a bundle without $missing/ changed the install: $(tree_id "$P" | diff - <(printf '%s\n' "$arena_before") | head)"
 done
 # On a fresh home nothing is created either.
 H2="$(new_home incomplete-fresh)"
-BM="$TMP/bundle/missing-fresh"
-fake_bundle_make "$ROOT" "$BM"
-rm -rf "$BM/workflows"
-run_prebuilt "$H2" "$BM" --
-[[ "$RC" != 0 && ! -e "$H2/.planar" ]] || fail "an incomplete bundle created ~/.planar on a fresh home ($RC)"
+for missing in workflows migrations scripts/install-lib; do
+  BM="$TMP/bundle/missing-fresh"
+  rm -rf "$BM"
+  fake_bundle_make "$ROOT" "$BM"
+  rm -rf "${BM:?}/$missing"
+  run_prebuilt "$H2" "$BM" --
+  [[ "$RC" != 0 && ! -e "$H2/.planar" ]] || fail "a bundle without $missing/ created ~/.planar on a fresh home ($RC)"
+done
 pass "a prebuilt bundle missing a managed subtree is refused, naming it, with the installed tree and a fresh home unchanged"
 
 # The source install refuses the same way when the checkout lacks a source directory.
@@ -353,6 +357,7 @@ for missing in workflows migrations scripts/install-lib skills/planar agents; do
   run_source "$H"
   [[ "$RC" != 0 ]] || fail "a source install without $missing/ succeeded"
   grep -Fq "$missing" "$TMP/err" || fail "the refusal does not name $missing: $(cat "$TMP/err")"
+  ! grep -Fq "Building" "$TMP/out" || fail "a checkout without $missing/ was refused only after the build began"
   [[ ! -e "$H/.planar" && ! -e "$H/build" ]] || fail "a source install without $missing/ wrote before refusing: $(ls -a "$H")"
 done
 REPO="$REPO_GOOD"
