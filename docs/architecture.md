@@ -665,7 +665,7 @@ The operational plane adapters connect Planar to external issue trackers, and ar
 
 The boundary is a pure-virtual C++ interface: `src/lib/adapter/adapter.cppm`'s `external_adapter` class declares four operations — `validate`, `pull`, `push`, `render` — and `sync.cppm`/`propagate.cppm` consume any adapter polymorphically through `const external_adapter&`. (This is a smaller, C++-native surface than the Zig tree's five-method `fetch`/`create`/`update`/`comment`/`search` duck-typed `adapter: anytype`; both adapters implement the smaller interface.) `render` returns the provider's JSON creation payload without sending it.
 
-HTTP transport runs over vendored libcurl (`vendor/curl/`, `src/lib/http/`) with a 30-second client timeout.
+HTTP transport runs over vendored libcurl (`vendor/curl/`, `src/lib/http/`) with a 30-second client timeout and no redirect following (`curl_transport`). A separate download policy, `planar::http::download`, serves the `planar update` asset fetch: it follows redirects by hand, validating the initial URL and every hop with `check_download_url` (HTTPS in production; fixtures only `file://` or `http://` on the exact hosts `127.0.0.1` and `localhost`; no userinfo; an HTTPS chain never steps down to HTTP or `file`), sets no headers so no `Authorization` header is ever sent, and bounds a request by 10 minutes plus a low-speed abort.
 
 Both adapters together are one binary, deliberately — decision 997: splitting Jira and GitHub across two binaries would put one interface across two write surfaces and split `sync_events` writes between them, breaking the disjoint-write-surface property the five-binary doctrine rests on.
 
