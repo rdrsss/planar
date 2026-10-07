@@ -194,7 +194,7 @@ auto toml_string(std::string_view text) -> std::string {
   return out;
 }
 
-/// @brief Whether `install.sh`'s opencode_derive double-quotes a description.
+/// @brief Whether `ownership.sh`'s opencode_derive double-quotes a description.
 auto opencode_needs_quotes(std::string_view desc) -> bool {
   if (desc.starts_with('"') || desc.starts_with('\'')) {
     return false;
