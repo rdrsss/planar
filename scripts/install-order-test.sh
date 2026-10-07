@@ -329,6 +329,19 @@ for point in backup:bin swap:bin swap:skills after-mutating; do
 done
 pass "a kill at every swap point is recovered by the same command"
 
+# A kill after the commit record leaves only owned cleanup: release.json and the
+# stamp are already the new release, and the next run disposes of the backups.
+H="$(healthy kill-complete)"; P="$H/.planar"
+run_install "$H" "$B2" PLANAR_INSTALL_TEST_FAULT=kill@after-complete --
+[[ "$RC" -ge 128 && "$(journal_phase "$P")" == complete ]] || fail "the kill after the commit record did not leave a complete journal ($RC): $(cat "$P/.planar-journal" 2>/dev/null)"
+grep -Fq '"version": "v1.2.4"' "$P/release.json" && [[ -f "$P/.planar-install" && -d "$P/bin.old" ]] \
+  || fail "the commit record was not written after release.json and the stamp, before the backups were disposed of"
+run_install "$H" "$B1" --
+[[ "$RC" == 0 ]] || fail "the run after a committed-then-killed install failed ($RC): $(show)"
+grep -Fq "the previous install committed; removing its leftover backups and staging" "$TMP/out" || fail "the committed transaction's cleanup was not reported: $(show)"
+no_evidence "$P"
+pass "a kill after the commit record leaves only owned cleanup for the next run"
+
 # --- recovery precedes failed restaging -----------------------------------------------------------------------------
 
 kill_case backed-up:bin
