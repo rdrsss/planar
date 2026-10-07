@@ -172,18 +172,35 @@ if(PLANAR_PORTABLE)
   set_tests_properties(portable.binaries portable.inspector PROPERTIES LABELS "portable")
 endif()
 
-# --- the installer's queue-store probe, with no python3 (plan 1122 M2) -------
+# --- the installer's database probe, with no python3 (plan 1122 M2) ----------
 #
-# `scripts/install-lib/queue_probe.test.py` drives install.sh's
-# `queue_probe_migrate` under a PATH holding base utilities only, against the
-# REAL built `planar-agent` and `planar` and scratch databases. A plain
-# add_test (not a Catch2 case) because the seeding harness is Python; the
-# installer path it checks uses none. Needs `planar_cmd_planar` and
-# `planar_cmd_planar_agent` built; no link edge is created.
-if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent)
+# `scripts/install-lib/queue_probe.test.py` drives install.sh's database probe
+# (`planar_db_probe`, `planar_db_migrate`) under a PATH holding base utilities
+# only, against the REAL built `planar-agent`, `planar` and `planar-watch` and
+# scratch databases. A plain add_test (not a Catch2 case) because the seeding
+# harness is Python; the installer path it checks uses none. Needs the three
+# targets built; no link edge is created.
+if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar_cmd_planar_watch)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   add_test(NAME install.queue_probe
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/install-lib/queue_probe.test.py"
-      "$<TARGET_FILE:planar_cmd_planar_agent>" "$<TARGET_FILE:planar_cmd_planar>")
+      "$<TARGET_FILE:planar_cmd_planar_agent>" "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_watch>")
   set_tests_properties(install.queue_probe PROPERTIES LABELS "install_queue_probe" TIMEOUT 300)
+endif()
+
+# --- the order of an install, end to end (plan 1122 M2, rel-install-order) ----
+#
+# `scripts/install-order-test.sh` runs install.sh --prebuilt under /bin/bash and
+# base utilities only, against bundles assembled from the REAL built binaries
+# and scratch homes: fresh, behind, ahead and faulty databases, the queue
+# warning, kill-and-resume at every swap point, concurrent owners, the updater
+# handoff and --cleanup, and uninstall over a pending install.
+if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar_cmd_planar_watch
+   AND TARGET planar_cmd_planar_execute AND TARGET planar_cmd_planar_ext)
+  add_test(NAME install.order
+    COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-order-test.sh"
+      "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_agent>"
+      "$<TARGET_FILE:planar_cmd_planar_watch>" "$<TARGET_FILE:planar_cmd_planar_execute>"
+      "$<TARGET_FILE:planar_cmd_planar_ext>")
+  set_tests_properties(install.order PROPERTIES LABELS "install_order" TIMEOUT 2400)
 endif()

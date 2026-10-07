@@ -4,18 +4,23 @@
 # the validity predicate the prefix guard uses (plan 1122, task rel-prefix-guard;
 # tech spec 677, "Order of an install" and "Mutation ownership and cleanup").
 #
-# SCOPE. This file defines only the narrow seam the prefix guard needs: where
-# the journal lives, what a well-formed one looks like, and
-# `recovery_journal_valid`. The install state machine (writing the journal,
-# phase transitions, recovery, owner identity, retention and removal) is task
-# rel-install-order and extends this file; it must keep every rule below.
+# The prefix guard uses `recovery_journal_valid`; the install state machine
+# (install-state.sh, task rel-install-order) writes and reads the journal with
+# `planar_journal_write` and `planar_journal_load`. The uninstaller writes the
+# `uninstalling` phase through the same writer.
 #
 # LOCATION. `<canonical-root>/.planar-journal`, a regular file directly under
-# the install root, written by the installer with an atomic rename. It sits
-# beside the install stamp (`.planar-install`) and is never a symlink.
+# the install root, never a symlink. It is replaced atomically: the writer
+# creates `<root>/.planar-journal.tmp.<pid>` exclusively and renames it over
+# the journal, so a reader (or a run after a KILL) sees the old or the new
+# journal, never a mix.
 #
-# FORMAT (version 1). A UTF-8/ASCII text file of at most 65536 bytes made of
-# printable characters only. Lines end in a newline; the last may omit it.
+# FORMAT (version 1). A text file of at most 65536 bytes. Every byte must be
+# tab, newline, a printable ASCII character (0x20-0x7e) or a byte of 0x80 or
+# above; other C0 control bytes and DEL make it invalid. Bytes of 0x80 and above
+# are accepted as they are, without checking that they form valid UTF-8, so a
+# root under a non-ASCII home validates. Lines end in a newline; the last may
+# omit it.
 #
 #   planar-journal 1            line 1, exactly: the format marker and version
 #   root=<canonical root>       required, once: the canonical install root this
@@ -25,18 +30,38 @@
 #                               aborted-before-mutation | uninstalling
 #   <key>=<value>               zero or more further lines. key is
 #                               [a-z][a-z0-9_]*, may not repeat, and may not be
-#                               `root` or `phase`. Reserved for later tasks
-#                               (operation, owner, target release, per-subtree
-#                               progress); a reader that does not know a key
-#                               ignores it but still requires it well formed.
+#                               `root` or `phase`; a reader that does not know a
+#                               key ignores it but still requires it well formed.
+#
+# The keys the installer writes (install-state.sh), in this order:
+#   operation        install | update | uninstall
+#   operation_id     32 hex digits, fresh per attempt
+#   owner_pid, owner_start, owner_lock
+#                    the owning process, its start token and its lock generation
+#                    (mutation-lock.sh)
+#   source           prebuilt | checkout
+#   mode             copy | link
+#   target_version, target_sha, target_schema
+#                    the release being installed (release.json of the bundle, or
+#                    the checkout's version line, HEAD and highest migration)
+#   target_path      the bundle directory or the checkout
+#   release_base     the validated release base URL (prebuilt), else empty
+#   retry            the durable command that completes this transaction
+#   staging          space-separated `.staging-<token>` names this transaction
+#                    owns (directly under the root)
+#   db               missing | behind | current: the pre-swap database probe
+#   sub_<n>          per managed subtree (`-` in the name becomes `_`):
+#                    pending | backing_up | backed_up | swapped
+#   sub_<n>_live     inode of the live subtree before the swap, or `none`
+#   sub_<n>_staged   inode of the staged subtree that replaces it
 #
 # A file that is missing, a symlink, not a regular file, not owned by the
-# current user, oversized, holds a non-printable byte, has any line that is not
-# in the forms above, names a different root, a version other than 1 or an
-# unknown phase is NOT valid. A bare `.staging-*` directory, a `.old` entry or
+# current user, oversized, holds a byte outside the set above, has any line that
+# is not in the forms above, names a different root, a version other than 1 or
+# an unknown phase is NOT valid. A bare `.staging-*` directory, a `.old` entry or
 # any other marker is never evidence: only this file is. Validity is evidence
 # that an installer started here, not proof of liveness; ownership and
-# liveness belong to the mutation lock.
+# liveness belong to the mutation lock (mutation-lock.sh).
 #
 # Bash 3.2 and Linux base utilities only; no python3. Functions return a status
 # and never exit.
@@ -110,5 +135,83 @@ recovery_journal_valid() {
   [ "$n" -ge 1 ] && [ "$seen_root" -eq 1 ] && [ "$seen_phase" -eq 1 ] || return 1
   # shellcheck disable=SC2034  # read by the caller after a successful check
   PLANAR_JOURNAL_PHASE="$phase"
+  return 0
+}
+
+# The fixed keys, in the order the writer emits them after root and phase.
+PLANAR_JOURNAL_KEYS="operation operation_id owner_pid owner_start owner_lock source mode target_version target_sha target_schema target_path release_base retry staging db"
+
+# planar_journal_sub_key NAME -- the journal key stem of a managed subtree.
+planar_journal_sub_key() {
+  printf 'sub_%s\n' "$(printf '%s' "$1" | tr '-' '_')"
+}
+
+# planar_journal_clear -- unset every J_* journal variable for SUBTREES.
+planar_journal_clear() {
+  local k n sk
+  # shellcheck disable=SC2034  # read by the caller
+  J_root=""; J_phase=""
+  for k in $PLANAR_JOURNAL_KEYS; do printf -v "J_$k" '%s' ""; done
+  for n in ${PLANAR_JOURNAL_SUBTREES-}; do
+    sk="$(planar_journal_sub_key "$n")"
+    printf -v "J_$sk" '%s' ""; printf -v "J_${sk}_live" '%s' ""; printf -v "J_${sk}_staged" '%s' ""
+  done
+  return 0
+}
+
+# planar_journal_write ROOT -- write J_phase and the J_* keys (and the subtree
+# keys of $PLANAR_JOURNAL_SUBTREES) as ROOT's journal, atomically. Status 1
+# when a value holds a newline or the file cannot be written.
+planar_journal_write() {
+  local root="${1%/}" jf tmp k v n sk body var
+  jf="$(planar_journal_path "$root")"
+  tmp="$jf.tmp.$$"
+  planar_journal_phase_valid "${J_phase-}" || return 1
+  body="planar-journal 1
+root=$root
+phase=$J_phase
+"
+  for k in $PLANAR_JOURNAL_KEYS; do
+    var="J_$k"; v="${!var-}"
+    case "$v" in *"
+"*) return 1 ;; esac
+    body="$body$k=$v
+"
+  done
+  for n in ${PLANAR_JOURNAL_SUBTREES-}; do
+    sk="$(planar_journal_sub_key "$n")"
+    for k in "$sk" "${sk}_live" "${sk}_staged"; do
+      var="J_$k"; v="${!var-}"
+      body="$body$k=$v
+"
+    done
+  done
+  rm -f "$tmp" 2>/dev/null || true
+  (umask 077 && set -C && printf '%s' "$body" > "$tmp") 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  mv -f "$tmp" "$jf" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  return 0
+}
+
+# planar_journal_load ROOT -- validate ROOT's journal and read it into J_*
+# (J_phase, J_root, the fixed keys and the subtree keys of
+# $PLANAR_JOURNAL_SUBTREES; unknown keys are ignored). Status 1 when it is not
+# valid; the J_* variables are then cleared.
+planar_journal_load() {
+  local root="${1%/}" jf line key value n=0 known sk
+  planar_journal_clear
+  recovery_journal_valid "$root" || return 1
+  jf="$(planar_journal_path "$root")"
+  known=" root phase $PLANAR_JOURNAL_KEYS "
+  for n in ${PLANAR_JOURNAL_SUBTREES-}; do
+    sk="$(planar_journal_sub_key "$n")"
+    known="$known$sk ${sk}_live ${sk}_staged "
+  done
+  n=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    [ "$n" -gt 1 ] || continue
+    key="${line%%=*}"; value="${line#*=}"
+    case "$known" in *" $key "*) printf -v "J_$key" '%s' "$value" ;; esac
+  done < "$jf"
   return 0
 }

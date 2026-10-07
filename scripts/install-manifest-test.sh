@@ -299,168 +299,255 @@ assert_mode "$MODES_PREFIX/planar.db" 600
 assert_mode "$MODES_PREFIX" 700
 
 # ---------------------------------------------------------------------------
-# The queue store probe (plan 1089, task qp-install-migrate; tech spec 656,
-# "Install and upgrade", step 3; test spec 658). install.sh sources
-# scripts/install-lib/queue-retire.sh after it installs the binaries; these
-# cases source the same file and drive queue_probe_migrate with STUB
-# planar-agent and planar binaries in a scratch prefix, so the probe table is
-# pinned before anything is built. The post-build ctest case
-# `install_queue_probe_migrate` drives it with the real binaries.
+# The database probe and migration (plan 1122, task rel-install-order; tech
+# spec 677, "Order of an install" steps 5, 6 and 8). install.sh sources
+# scripts/install-lib/db-probe.sh, probes the database with the STAGED binaries
+# before anything live changes, and initializes or migrates it with the
+# swapped-in installed planar afterwards. These cases source the same files and
+# drive planar_db_probe, planar_db_migrate and planar_queue_warning with STUB
+# planar-watch, planar-agent and planar binaries, so the state table is pinned
+# before anything is built. scripts/install-order-test.sh drives the same
+# functions through install.sh with the real built binaries.
 #
-# The stub planar-agent answers its Nth call from $STUB_DIR/agent.N.{code,out}
-# and records "cwd|PLANAR_DB|args"; the stub planar records
-# "cwd|PLANAR_DB|PLANAR_CONFIG_PATH|args" and answers from
+# The stub planar-watch and planar-agent answer their Nth call from
+# $STUB_DIR/{watch,agent}.N.{code,out,err} and record "cwd|PLANAR_DB|args"; the
+# stub planar records "cwd|PLANAR_DB|PLANAR_CONFIG_PATH|args" and answers from
 # $STUB_DIR/planar.{code,err}.
 QR_LIB="$ROOT/scripts/install-lib/queue-retire.sh"
-[[ -f "$QR_LIB" ]] || fail "missing $QR_LIB"
+DBP_LIB="$ROOT/scripts/install-lib/db-probe.sh"
+GUARD_LIB="$ROOT/scripts/install-lib/prefix-guard.sh"
+[[ -f "$QR_LIB" && -f "$DBP_LIB" ]] || fail "missing $QR_LIB or $DBP_LIB"
 qr_setup() {
   QR_CASE="$TMP/qr_$1"
   QR_P="$QR_CASE/prefix"
   QR_S="$QR_CASE/stub"
   mkdir -p "$QR_P/bin" "$QR_S" "$QR_P/queue-logs"
-  cat > "$QR_P/bin/planar-agent" <<'STUB'
+  local b
+  for b in watch agent; do
+    cat > "$QR_P/bin/planar-$b" <<STUB
 #!/usr/bin/env bash
-n=$(( $(cat "$STUB_DIR/agent.n" 2>/dev/null || echo 0) + 1 ))
-printf '%s\n' "$n" > "$STUB_DIR/agent.n"
-printf '%s|%s|%s\n' "$PWD" "${PLANAR_DB-<unset>}" "$*" >> "$STUB_DIR/agent.calls"
-[[ -f "$STUB_DIR/agent.$n.out" ]] && cat "$STUB_DIR/agent.$n.out"
-exit "$(cat "$STUB_DIR/agent.$n.code" 2>/dev/null || echo 99)"
+n=\$(( \$(cat "\$STUB_DIR/$b.n" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "\$n" > "\$STUB_DIR/$b.n"
+printf '%s|%s|%s\n' "\$PWD" "\${PLANAR_DB-<unset>}" "\$*" >> "\$STUB_DIR/$b.calls"
+[[ -f "\$STUB_DIR/$b.\$n.out" ]] && cat "\$STUB_DIR/$b.\$n.out"
+[[ -f "\$STUB_DIR/$b.\$n.err" ]] && cat "\$STUB_DIR/$b.\$n.err" >&2
+exit "\$(cat "\$STUB_DIR/$b.\$n.code" 2>/dev/null || echo 99)"
 STUB
+  done
   cat > "$QR_P/bin/planar" <<'STUB'
 #!/usr/bin/env bash
 printf '%s|%s|%s|%s\n' "$PWD" "${PLANAR_DB-<unset>}" "${PLANAR_CONFIG_PATH-<unset>}" "$*" >> "$STUB_DIR/planar.calls"
 [[ -f "$STUB_DIR/planar.err" ]] && cat "$STUB_DIR/planar.err" >&2
 exit "$(cat "$STUB_DIR/planar.code" 2>/dev/null || echo 0)"
 STUB
-  chmod +x "$QR_P/bin/planar-agent" "$QR_P/bin/planar"
+  chmod +x "$QR_P/bin/planar-watch" "$QR_P/bin/planar-agent" "$QR_P/bin/planar"
   printf 'old agent store\n' > "$QR_P/agent.db"
   printf 'old wal\n' > "$QR_P/agent.db-wal"
   printf 'old log\n' > "$QR_P/queue-logs/7.log"
 }
-# qr_reply N CODE OUT -- the stub planar-agent's Nth answer.
-qr_reply() { printf '%s\n' "$2" > "$QR_S/agent.$1.code"; printf '%s' "$3" > "$QR_S/agent.$1.out"; }
+# qr_reply WHO N CODE OUT [ERR] -- the stub WHO's (watch|agent) Nth answer.
+qr_reply() {
+  printf '%s\n' "$3" > "$QR_S/$1.$2.code"; printf '%s' "$4" > "$QR_S/$1.$2.out"
+  [[ -z "${5:-}" ]] || printf '%s\n' "$5" > "$QR_S/$1.$2.err"
+}
 qr_json_error() { printf '{"error":{"verb":"queue status","tag":"%s","message":"m"}}\n' "$1"; }
-# qr_run FN -- call FN from the seam with the case's prefix; stdout and
-# stderr land in $QR_CASE/{out,err}; returns FN's status.
+QR_AHEAD_ERR="error: schema version 42 in /x/planar.db is newer than this binary's embedded max (41); the DB was migrated by a newer build — rebuild/reinstall planar
+error: SchemaVersionAhead"
+QR_BEHIND_ERR="error: schema version 40 in /x/planar.db is older than this binary's minimum of 41; run \`planar init\` to apply migrations
+error: SchemaVersionBehind"
+QR_ZERO_ERR="error: schema version 0 in /x/planar.db is older than this binary's minimum of 41; run \`planar init\` to apply migrations
+error: SchemaVersionBehind"
+# qr_run FN [ENV=V...] -- source the libraries the way install.sh does, resolve
+# the database for the case's prefix, call FN on the prefix's bin/ and print
+# "state|version|target|detail" to $QR_CASE/out; stderr in $QR_CASE/err.
+# Returns FN's status. The ERR trap is install.sh's shape: a substitution that
+# fires it prints "install failed".
 qr_run() {
-  (cd "$QR_CASE" && PLANAR_HOME="$QR_P" STUB_DIR="$QR_S" QR_LIB="$QR_LIB" QR_FN="$1" \
-    bash -c 'set -eEuo pipefail; source "$QR_LIB"; "$QR_FN"') >"$QR_CASE/out" 2>"$QR_CASE/err"
+  local fn="$1"; shift
+  (cd "$QR_CASE" && env -u PLANAR_DB -u PLANAR_CONFIG_PATH "$@" PLANAR_HOME="$QR_P" STUB_DIR="$QR_S" GUARD_LIB="$GUARD_LIB" QR_LIB="$QR_LIB" DBP_LIB="$DBP_LIB" QR_FN="$fn" \
+    bash -c '
+      set -eEuo pipefail
+      on_err() { printf "\n==> install failed during: db probe (line %s, exit %s)\n" "$2" "$1" >&2; exit "$1"; }
+      trap '"'"'on_err $? $LINENO'"'"' ERR
+      source "$GUARD_LIB"; source "$QR_LIB"; source "$DBP_LIB"
+      planar_db_resolve "$PLANAR_HOME"
+      rc=0; "$QR_FN" "$PLANAR_HOME/bin" || rc=$?
+      printf "%s|%s|%s|%s\n" "${INSTALL_DB_STATE-}" "${INSTALL_DB_VERSION-}" "${INSTALL_DB_TARGET-}" "${INSTALL_DB_DETAIL-}"
+      exit "$rc"') >"$QR_CASE/out" 2>"$QR_CASE/err"
 }
 qr_calls() { if [[ -f "$QR_S/$1.calls" ]]; then grep -c . "$QR_S/$1.calls" || true; else echo 0; fi; }
+qr_state() { tail -n 1 "$QR_CASE/out" | cut -d'|' -f1-3; }
 qr_untouched() {
   [[ "$(cat "$QR_P/agent.db")" == "old agent store" ]] || fail "$QR_CASE: agent.db changed"
   [[ "$(cat "$QR_P/agent.db-wal")" == "old wal" ]] || fail "$QR_CASE: agent.db-wal changed"
   [[ "$(cat "$QR_P/queue-logs/7.log")" == "old log" ]] || fail "$QR_CASE: queue-logs/7.log changed"
+  ! grep -Fq 'install failed' "$QR_CASE/err" || fail "$QR_CASE: the ERR trap fired: $(cat "$QR_CASE/err")"
 }
 
-# Empty: no planar.db, so nothing is probed, nothing is migrated, and no
-# planar.db appears.
-qr_setup none
-qr_run queue_probe_migrate || fail "probe step failed on a prefix with no planar.db: $(cat "$QR_CASE/err")"
-[[ "$(qr_calls agent)" == 0 && "$(qr_calls planar)" == 0 ]] || fail "a prefix with no planar.db was probed or migrated"
-[[ ! -e "$QR_P/planar.db" ]] || fail "the probe step created planar.db"
+# Missing: no file at the path, so nothing runs and nothing is created.
+qr_setup missing
+qr_run planar_db_probe || fail "the probe failed on a prefix with no planar.db: $(cat "$QR_CASE/err")"
+[[ "$(qr_state)" == "missing||" ]] || fail "no planar.db is not 'missing': $(cat "$QR_CASE/out")"
+[[ "$(qr_calls watch)$(qr_calls agent)$(qr_calls planar)" == 000 ]] || fail "a missing planar.db ran a binary"
+[[ ! -e "$QR_P/planar.db" ]] || fail "the probe created planar.db"
+qr_untouched
 
-# Usable: exit 0 with a status object, or exit 1 with tag not_found. One
-# read-only probe from /, naming the prefix database, and no init.
+# Current: the read-only handshake answers a JSON list, the queue store
+# answers usable. Both run from / against the prefix database; no init.
 for qr_usable in "0|{\"seq\":1,\"state\":\"ended\"}" "1|$(qr_json_error not_found)"; do
-  qr_setup "usable_${qr_usable%%|*}"
+  qr_setup "current_${qr_usable%%|*}"
   printf 'db\n' > "$QR_P/planar.db"
-  qr_reply 1 "${qr_usable%%|*}" "${qr_usable#*|}"
-  qr_run queue_probe_migrate || fail "a usable probe (${qr_usable%%|*}) failed: $(cat "$QR_CASE/err")"
-  [[ "$(cat "$QR_S/agent.calls")" == "/|$QR_P/planar.db|queue status 1 --json" ]] \
-    || fail "the probe was not run from / against the prefix planar.db: $(cat "$QR_S/agent.calls")"
-  [[ "$(qr_calls planar)" == 0 ]] || fail "a usable planar.db was migrated"
+  qr_reply watch 1 0 '[]'
+  qr_reply agent 1 "${qr_usable%%|*}" "${qr_usable#*|}"
+  qr_run planar_db_probe || fail "a current probe failed: $(cat "$QR_CASE/err")"
+  [[ "$(qr_state)" == "current||" ]] || fail "a current database is not 'current': $(cat "$QR_CASE/out")"
+  [[ "$(cat "$QR_S/watch.calls")" == "/|$QR_P/planar.db|queue --json" ]] || fail "the handshake was not run from / against the prefix db: $(cat "$QR_S/watch.calls")"
+  [[ "$(cat "$QR_S/agent.calls")" == "/|$QR_P/planar.db|queue status 1 --json" ]] || fail "the queue probe was not run from /: $(cat "$QR_S/agent.calls")"
+  [[ "$(qr_calls planar)" == 0 ]] || fail "a current planar.db was migrated"
   qr_untouched
 done
 
-# Behind: migrate with init from /, naming the prefix database and config,
-# then probe again.
+# Ahead: refused territory, whatever the queue store would say -- the queue
+# probe is not even asked (decision 1326).
+qr_setup ahead
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply watch 1 7 '' "$QR_AHEAD_ERR"
+qr_reply agent 1 0 '{"seq":1}'
+qr_run planar_db_probe || fail "the ahead probe failed: $(cat "$QR_CASE/err")"
+[[ "$(qr_state)" == "ahead|42|41" ]] || fail "an ahead database is not 'ahead|42|41': $(cat "$QR_CASE/out")"
+[[ "$(qr_calls agent)" == 0 ]] || fail "queue compatibility was consulted for an ahead database"
+qr_untouched
+
+# Behind: names both versions; a zero-byte file reads behind at 0 (SQLite treats
+# it as empty); a non-empty file with no migration record is a fault.
 qr_setup behind
 printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 125 "$(qr_json_error schema_version_behind)"
-qr_reply 2 1 "$(qr_json_error not_found)"
-qr_run queue_probe_migrate || fail "a behind planar.db was not migrated: $(cat "$QR_CASE/err")"
-[[ "$(cat "$QR_S/planar.calls")" == "/|$QR_P/planar.db|$QR_P/config.toml|init --skip-project --allow-no-repo" ]] \
-  || fail "the migrate command was not the documented one: $(cat "$QR_S/planar.calls")"
-[[ "$(qr_calls agent)" == 2 ]] || fail "a migrated planar.db was not probed again"
-[[ ! -e "$QR_P/config.toml" ]] || fail "the migrate step created a config file"
-
-# A migration that fails aborts, prints its stderr and the remedy, and leaves
-# agent.db and its logs alone.
-qr_setup migrate_fails
-printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 125 "$(qr_json_error schema_version_behind)"
-printf '1\n' > "$QR_S/planar.code"
-printf 'boom' > "$QR_S/planar.err"
-if qr_run queue_probe_migrate; then fail "a failed migration did not abort"; fi
-grep -Fq 'planar.db migration failed: boom' "$QR_CASE/err" || fail "the migration failure did not name its stderr: $(cat "$QR_CASE/err")"
-grep -Fq 'agent.db was NOT retired' "$QR_CASE/err" || fail "the migration failure did not say agent.db was kept"
-grep -Fq 'init --skip-project --allow-no-repo' "$QR_CASE/err" || fail "the migration failure did not print the command to run by hand"
-[[ "$(qr_calls agent)" == 1 ]] || fail "a failed migration was probed again"
+qr_reply watch 1 7 '' "$QR_BEHIND_ERR"
+qr_run planar_db_probe || fail "the behind probe failed"
+[[ "$(qr_state)" == "behind|40|41" ]] || fail "a behind database is not 'behind|40|41': $(cat "$QR_CASE/out")"
+qr_setup zero_empty
+: > "$QR_P/planar.db"
+qr_reply watch 1 7 '' "$QR_ZERO_ERR"
+qr_run planar_db_probe || fail "the empty-file probe failed"
+[[ "$(qr_state)" == "behind|0|41" ]] || fail "a zero-byte planar.db is not 'behind|0|41': $(cat "$QR_CASE/out")"
+qr_setup zero_full
+printf 'tables but no schema_migrations\n' > "$QR_P/planar.db"
+qr_reply watch 1 7 '' "$QR_ZERO_ERR"
+qr_run planar_db_probe || fail "the version-0 probe failed"
+[[ "$(qr_state)" == "fault|0|41" ]] || fail "a non-empty planar.db with no migration record is not a fault: $(cat "$QR_CASE/out")"
+grep -Fq 'records no applied migration' "$QR_CASE/out" || fail "the version-0 fault does not say why"
 qr_untouched
 
-# A migration after which the database is still not usable aborts.
-qr_setup still_behind
-printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 125 "$(qr_json_error schema_version_behind)"
-qr_reply 2 125 "$(qr_json_error schema_version_behind)"
-if qr_run queue_probe_migrate; then fail "a planar.db still behind after init did not abort"; fi
-qr_untouched
-
-# Ahead and incompatible, or the same number with a foreign migration: warn,
-# naming which, and continue without migrating. An ahead planar.db is never
-# refused.
-qr_setup incompatible
-printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 125 "$(qr_json_error queue_schema_incompatible)"
-qr_run queue_probe_migrate || fail "an incompatible ahead planar.db was refused: $(cat "$QR_CASE/err")"
-grep -Fq 'ahead of this build' "$QR_CASE/err" || fail "the incompatible warning does not say ahead"
-grep -Fq 'until a newer build is installed' "$QR_CASE/err" || fail "the incompatible warning does not name a newer build"
-[[ "$(qr_calls planar)" == 0 ]] || fail "an incompatible ahead planar.db was migrated"
-qr_setup foreign
-printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 125 "$(qr_json_error queue_schema_foreign)"
-qr_run queue_probe_migrate || fail "a foreign planar.db was refused: $(cat "$QR_CASE/err")"
-grep -Fq 'same number, foreign migration' "$QR_CASE/err" || fail "the foreign warning does not name a foreign migration"
-grep -Fq 'a newer build alone will not fix it' "$QR_CASE/err" || fail "the foreign warning does not say a newer build alone will not fix it"
-[[ "$(qr_calls planar)" == 0 ]] || fail "a foreign planar.db was migrated"
-
-# Anything else aborts before retire, naming the remedy, with no init and
-# agent.db untouched -- including a known tag on the wrong exit code.
-qr_fail_case=0
-for qr_bad in \
-  "125|$(qr_json_error store_unreachable)" \
-  "125|$(qr_json_error store_unreadable)" \
-  "125|$(qr_json_error internal)" \
-  "2|$(qr_json_error invalid_input)" \
-  "1|error: status: The following argument was not expected: --json" \
-  "1|$(qr_json_error schema_version_behind)" \
-  "0|not json" \
-  "125|$(qr_json_error not_found)" \
-  "7|$(qr_json_error schema_version_ahead)"; do
-  qr_fail_case=$((qr_fail_case + 1))
-  qr_setup "bad_$qr_fail_case"
+# Faults keep the probe's own diagnostic: unreadable or corrupt (exit 1), an
+# exit-7 answer whose versions cannot be read, a JSON answer that is not a list,
+# and a same-version foreign or incompatible queue schema.
+qr_fault_case=0
+for qr_fault in \
+  "1||error: cannot read the database at /x/planar.db: file is not a database.|cannot read the database" \
+  "7||error: schema version is strange
+error: SchemaVersionAhead|schema version is strange" \
+  "0|{\"seq\":1}||without a JSON list" \
+  "0|not json||without a JSON list"; do
+  qr_fault_case=$((qr_fault_case + 1))
+  qr_setup "fault_$qr_fault_case"
   printf 'db\n' > "$QR_P/planar.db"
-  qr_reply 1 "${qr_bad%%|*}" "${qr_bad#*|}"
-  if qr_run queue_probe_migrate; then fail "probe answer '$qr_bad' did not abort the install"; fi
-  grep -Fq 'agent.db was NOT retired' "$QR_CASE/err" || fail "probe answer '$qr_bad' did not say agent.db was kept: $(cat "$QR_CASE/err")"
-  grep -Fq 'queue status 1 --json' "$QR_CASE/err" || fail "probe answer '$qr_bad' did not name the remedy"
-  [[ "$(qr_calls planar)" == 0 ]] || fail "probe answer '$qr_bad' ran a migration"
+  IFS='|' read -r qr_code qr_out qr_err qr_want <<< "$(printf '%s' "$qr_fault" | tr '\n' '\036')"
+  qr_reply watch 1 "$qr_code" "$qr_out" "$(printf '%s' "$qr_err" | tr '\036' '\n')"
+  qr_run planar_db_probe || fail "fault probe $qr_fault_case failed itself"
+  [[ "$(qr_state | cut -d'|' -f1)" == fault ]] || fail "fault case $qr_fault_case is not a fault: $(cat "$QR_CASE/out")"
+  grep -Fq "$qr_want" "$QR_CASE/out" || fail "fault case $qr_fault_case lost its diagnostic '$qr_want': $(cat "$QR_CASE/out")"
+  qr_untouched
+done
+for qr_tag in queue_schema_foreign queue_schema_incompatible store_unreachable; do
+  qr_setup "queue_$qr_tag"
+  printf 'db\n' > "$QR_P/planar.db"
+  qr_reply watch 1 0 '[]'
+  qr_reply agent 1 125 "$(qr_json_error "$qr_tag")"
+  qr_run planar_db_probe || fail "the $qr_tag probe failed itself"
+  [[ "$(qr_state | cut -d'|' -f1)" == fault ]] || fail "a $qr_tag queue store at the current schema is not a fault: $(cat "$QR_CASE/out")"
+  grep -Fq "$qr_tag" "$QR_CASE/out" || fail "the $qr_tag fault does not name the tag"
   qr_untouched
 done
 
-# The call site: install.sh sources the seam, and runs the probe after it
-# installs the binaries (the probe IS the newly installed planar-agent), with
-# a refusal ending the install.
-grep -Fqx 'source "$REPO_ROOT/scripts/install-lib/queue-retire.sh"' "$ROOT/install.sh" \
-  || fail "install.sh does not source scripts/install-lib/queue-retire.sh"
-_install_line="$(grep -n 'cmake --install "$BUILD_DIR" --prefix "$PLANAR_HOME"' "$ROOT/install.sh" | head -1 | cut -d: -f1)"
-_probe_line="$(grep -n '^queue_probe_migrate || exit 1$' "$ROOT/install.sh" | cut -d: -f1)"
-[[ -n "$_install_line" ]] || fail "the cmake --install step was not found in install.sh"
-[[ "$(printf '%s\n' "$_probe_line" | grep -c .)" == 1 ]] \
-  || fail "install.sh must call 'queue_probe_migrate || exit 1' exactly once"
-[[ "$_probe_line" -gt "$_install_line" ]] \
-  || fail "install.sh probes planar.db (line $_probe_line) before it installs the binaries (line $_install_line)"
+# PLANAR_DB and PLANAR_CONFIG_PATH relocate what is probed and initialized; a
+# relative value is made absolute against the installer's directory, because
+# the binaries run from /.
+qr_setup relocated
+mkdir -p "$QR_CASE/elsewhere"
+qr_run planar_db_migrate PLANAR_DB=elsewhere/r.db PLANAR_CONFIG_PATH="$QR_CASE/elsewhere/c.toml" || true
+[[ "$(head -n 1 "$QR_S/planar.calls")" == "/|$QR_CASE/elsewhere/r.db|$QR_CASE/elsewhere/c.toml|init --skip-project --allow-no-repo" ]] \
+  || fail "init did not get the relocated, absolute database and config: $(cat "$QR_S/planar.calls")"
+
+# Migrate: init from / with the resolved database and config, then a probe that
+# must answer current.
+qr_setup migrate_ok
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply watch 1 0 '[]'
+qr_reply agent 1 1 "$(qr_json_error not_found)"
+qr_run planar_db_migrate || fail "a migration followed by a current probe failed: $(cat "$QR_CASE/err") $(cat "$QR_CASE/out")"
+[[ "$(cat "$QR_S/planar.calls")" == "/|$QR_P/planar.db|$QR_P/config.toml|init --skip-project --allow-no-repo" ]] \
+  || fail "the migrate command was not the documented one: $(cat "$QR_S/planar.calls")"
+[[ ! -e "$QR_P/config.toml" ]] || fail "the migrate step created a config file"
+qr_untouched
+qr_setup migrate_fails
+printf 'db\n' > "$QR_P/planar.db"
+printf '1\n' > "$QR_S/planar.code"; printf 'boom' > "$QR_S/planar.err"
+if qr_run planar_db_migrate; then fail "a failed init did not fail the migration"; fi
+grep -Fq 'planar init exited 1: boom' "$QR_CASE/out" || fail "the init failure lost its stderr: $(cat "$QR_CASE/out")"
+[[ "$(qr_calls watch)" == 0 ]] || fail "a failed init was probed again"
+qr_untouched
+qr_setup migrate_still_behind
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply watch 1 7 '' "$QR_BEHIND_ERR"
+if qr_run planar_db_migrate; then fail "a database still behind after init passed"; fi
+grep -Fq 'after planar init the database is behind' "$QR_CASE/out" || fail "the post-migration probe failure is not named: $(cat "$QR_CASE/out")"
+qr_untouched
+
+# The live-queue warning reads the still-installed planar-watch; it names each
+# running and waiting entry with the lease warning, and an absent or failing
+# planar-watch prints one skipped line. It never fails.
+qr_setup warn_entries
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply watch 1 0 '[{"seq":1000007,"state":"running","live":true,"argv":["make"]},{"seq":1000008,"state":"waiting","live":true}]'
+qr_run planar_queue_warning || fail "the queue warning failed"
+grep -Fq '1000007 (running), 1000008 (waiting)' "$QR_CASE/err" || fail "the queue warning did not name both entries: $(cat "$QR_CASE/err")"
+grep -Fq 'can lapse while the database is migrated' "$QR_CASE/err" || fail "the queue warning lacks the lease warning"
+qr_untouched
+qr_setup warn_fails
+printf 'db\n' > "$QR_P/planar.db"
+qr_reply watch 1 7 '' "$QR_AHEAD_ERR"
+qr_run planar_queue_warning || fail "a failing planar-watch failed the warning step"
+[[ "$(grep -c 'could not be checked' "$QR_CASE/err")" == 1 ]] || fail "a failing planar-watch did not print exactly one skipped line: $(cat "$QR_CASE/err")"
+qr_untouched
+qr_setup warn_absent
+printf 'db\n' > "$QR_P/planar.db"
+rm -f "$QR_P/bin/planar-watch"
+qr_run planar_queue_warning || fail "an absent planar-watch failed the warning step"
+[[ "$(grep -c 'could not be checked' "$QR_CASE/err")" == 1 ]] || fail "an absent planar-watch did not print exactly one skipped line: $(cat "$QR_CASE/err")"
+qr_untouched
+
+# The call sites: install.sh sources the libraries, probes with the STAGED
+# binaries after staging and before the mutating record, warns about the queue
+# with the still-installed planar-watch before it, and migrates with the
+# swapped-in binaries after the swap and before the old queue store is retired.
+for qr_src in queue-retire.sh db-probe.sh mutation-lock.sh install-state.sh; do
+  grep -Fqx "source \"\$REPO_ROOT/scripts/install-lib/$qr_src\"" "$ROOT/install.sh" || fail "install.sh does not source $qr_src"
+done
+qr_line() { grep -n "$1" "$ROOT/install.sh" | cut -d: -f1; }
+_stage_line="$(qr_line '^  stage_prebuilt$' | head -1)"
+_probe_line="$(qr_line '^planar_db_probe "\$STAGE/bin"$')"
+_warn_line="$(qr_line '^planar_queue_warning "\$ROOT_C/bin"$')"
+_mutating_line="$(qr_line '^J_phase=mutating$')"
+_swap_line="$(qr_line 'planar_state_swap "\$ROOT_C" "\$STAGE"')"
+_migrate_line="$(qr_line '^  planar_db_migrate "\$ROOT_C/bin"')"
+_retire_line="$(qr_line '^  queue_retire_prebuilt || exit 1$')"
+for v in _stage_line _probe_line _warn_line _mutating_line _swap_line _migrate_line _retire_line; do
+  [[ "$(printf '%s\n' "${!v}" | grep -c .)" == 1 ]] || fail "install.sh: $v is not exactly one line ('${!v}')"
+done
+[[ "$_stage_line" -lt "$_probe_line" && "$_probe_line" -lt "$_warn_line" && "$_warn_line" -lt "$_mutating_line" \
+   && "$_mutating_line" -lt "$_swap_line" && "$_swap_line" -lt "$_migrate_line" && "$_migrate_line" -lt "$_retire_line" ]] \
+  || fail "install.sh's order is not stage < probe < queue warning < mutating < swap < migrate < retire: $_stage_line $_probe_line $_warn_line $_mutating_line $_swap_line $_migrate_line $_retire_line"
+! grep -q 'queue_probe_migrate' "$ROOT/install.sh" "$QR_LIB" || fail "the retired queue_probe_migrate is still referenced"
 
 # ---------------------------------------------------------------------------
 # The live-queue guard and agent.db retirement (plan 1089, task
@@ -685,28 +772,28 @@ qr_call PATH="$QR_CASE/spybin:$PATH" queue_retire_store || fail "retire failed w
 [[ ! -e "$QR_CASE/python3.calls" ]] || fail "python3 was invoked with no agent.db"
 [[ "$(qr_snapshot)" == "$qr_before" ]] || fail "the queue steps changed a prefix with no agent.db"
 
-# The call site: the queue-store block of install.sh runs the probe, the
-# re-check and retire, in that order, and a refused re-check stops it before
-# retire. The block is extracted and run with stub functions.
-sed -n '/^# ---------- queue store ----------$/,/^# ---------- place artifacts ----------$/p' "$ROOT/install.sh" > "$TMP/queue-block.sh"
+# The call site: the queue-store block of install.sh re-checks and retires on
+# the source path, and moves agent.db aside on the prebuilt path; a refused
+# re-check stops it before retire. The block is extracted and run with stub
+# functions.
+sed -n '/^# ---------- queue store ----------$/,/^# ---------- vendor surfaces ----------$/p' "$ROOT/install.sh" > "$TMP/queue-block.sh"
 grep -Fq 'queue_retire_store' "$TMP/queue-block.sh" || fail "the queue store block was not found in install.sh"
 run_queue_block() {
   QUEUE_BLOCK="$TMP/queue-block.sh" RECHECK_RC="$1" PREBUILT="${2:-0}" bash -c '
     set -eEuo pipefail
     title() { :; }
-    queue_probe_migrate() { echo probe; }
     queue_live_guard() { echo "guard $1"; return "$RECHECK_RC"; }
     queue_retire_store() { echo retire; }
     queue_retire_prebuilt() { echo prebuilt-move; }
     source "$QUEUE_BLOCK"
   '
 }
-[[ "$(run_queue_block 0 | tr '\n' ' ')" == "probe guard re-check retire " ]] \
-  || fail "install.sh's queue store block does not run probe, re-check, retire in order: $(run_queue_block 0 | tr '\n' ' ')"
-# The prebuilt path runs the same probe, then moves agent.db aside instead of the
-# re-check and the python retirement (neither runs there: no python3).
-[[ "$(run_queue_block 0 1 | tr '\n' ' ')" == "probe prebuilt-move " ]] \
-  || fail "install.sh's queue store block on the prebuilt path is not probe, prebuilt-move: $(run_queue_block 0 1 | tr '\n' ' ')"
+[[ "$(run_queue_block 0 | tr '\n' ' ')" == "guard re-check retire " ]] \
+  || fail "install.sh's queue store block does not run re-check, retire in order: $(run_queue_block 0 | tr '\n' ' ')"
+# The prebuilt path moves agent.db aside instead of the re-check and the python
+# retirement (neither runs there: no python3).
+[[ "$(run_queue_block 0 1 | tr '\n' ' ')" == "prebuilt-move " ]] \
+  || fail "install.sh's queue store block on the prebuilt path is not prebuilt-move: $(run_queue_block 0 1 | tr '\n' ' ')"
 if qr_block_out="$(run_queue_block 1)"; then fail "a refused re-check did not stop install.sh"; fi
 [[ "$qr_block_out" != *retire* ]] || fail "install.sh retired agent.db after a refused re-check"
 # The preflight comes before the dependency preflight and the build.
@@ -738,10 +825,11 @@ done
 # Uninstall without python3: with agent.db present it refuses before removing
 # anything, naming python3 and the remedies; --ignore-live-queue proceeds
 # with a warning; with no agent.db, python3 is not needed. PATH is a farm of
-# the tools the uninstall branch uses, without python3.
+# the tools the uninstall branch uses, without python3 (the mutation lock adds
+# od, ps, uname, ln, sed, wc and mv).
 QR_NOPY="$TMP/nopy-bin"
 mkdir -p "$QR_NOPY"
-for tool in bash env dirname find readlink rm rmdir cat realpath ls mkdir grep tr; do
+for tool in bash env dirname find readlink rm rmdir cat realpath ls mkdir grep tr od ps uname ln sed wc mv; do
   ln -s "$(command -v "$tool")" "$QR_NOPY/$tool"
 done
 run_uninstall_nopy() { PATH="$QR_NOPY" run_uninstall "$@"; }
@@ -765,14 +853,19 @@ run_uninstall_nopy "$QR_UHOME" >"$TMP/qr-u-out" 2>"$TMP/qr-u-err" \
   || fail "uninstall with no agent.db needed python3: $(cat "$TMP/qr-u-err")"
 assert_present "$QR_UHOME/.planar/planar.db"
 
-# Dependencies: python3's reason names the retirement reader; neither ps nor
-# sysctl is a manifest entry or an INSTALL.md prerequisite (question 1011).
+# Dependencies: python3's reason names the retirement reader. The live-queue
+# guard has no ps process signal (question 1011): ps is a base-tier entry only
+# for the mutation lock's start-time check (plan 1122), and its reason says so;
+# sysctl is never a manifest entry or an INSTALL.md prerequisite.
 grep -Fq '"python3|python|CMake configure (the Python test runners); install.sh'"'"'s agent.db retirement reader' "$ROOT/install.sh" \
   || fail "python3's BUILD_DEPS reason does not name the agent.db retirement reader"
-! grep -Eq '^  "(ps|sysctl)\|' "$ROOT/install.sh" || fail "ps or sysctl is in BUILD_DEPS/RUN_DEPS"
+! grep -Eq '^  "sysctl\|' "$ROOT/install.sh" || fail "sysctl is in BUILD_DEPS/RUN_DEPS"
+[[ "$(grep -Ec '^  "ps\|' "$ROOT/install.sh")" == 1 ]] && grep -Eq '^  "ps\|\|.*mutation-lock' "$ROOT/install.sh" \
+  || fail "ps must appear once, as the mutation lock's base-tier entry"
+! grep -Eq '^  "ps\|.*(queue|agent\.db)' "$ROOT/install.sh" || fail "ps is named for the live-queue guard"
 sed -n '/^## Prerequisites/,/^### /p' "$ROOT/INSTALL.md" > "$TMP/prereqs.md"
 grep -Fq 'old-queue-database retirement reader' "$TMP/prereqs.md" || fail "INSTALL.md Prerequisites does not name the retirement reader"
-! grep -Eq '`(ps|sysctl)`' "$TMP/prereqs.md" || fail "INSTALL.md Prerequisites names ps or sysctl"
+! grep -Eq '`sysctl`' "$TMP/prereqs.md" || fail "INSTALL.md Prerequisites names sysctl"
 
 # install.sh runs under `set -eEuo pipefail` with an ERR trap (on_err), and
 # -E carries that trap into command substitutions. The seam's substitutions
@@ -795,19 +888,6 @@ qr_trap_call() {
 qr_no_install_failed() {
   ! grep -Fq 'install failed' "$QR_CASE/err" || fail "$1 printed 'install failed': $(cat "$QR_CASE/err")"
 }
-# Usable: the probe answers exit 1 not_found.
-qr_setup trap_usable
-printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 1 "$(qr_json_error not_found)"
-qr_trap_call queue_probe_migrate || fail "a usable probe failed under the ERR trap: $(cat "$QR_CASE/err")"
-qr_no_install_failed "a usable (not_found) probe"
-# Behind, migrated, then usable.
-qr_setup trap_behind
-printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 125 "$(qr_json_error schema_version_behind)"
-qr_reply 2 1 "$(qr_json_error not_found)"
-qr_trap_call queue_probe_migrate || fail "behind -> migrate -> usable failed under the ERR trap: $(cat "$QR_CASE/err")"
-qr_no_install_failed "behind -> migrate -> usable"
 # The guard blocking (the reader exits 3): a refusal, but not a crash.
 QR_S=""
 qr_retire_setup trap_block
@@ -821,24 +901,9 @@ qr_no_install_failed "the guard override"
 qr_trap_call IGNORE_LIVE_QUEUE=1 queue_retire_store || fail "retire failed under the ERR trap: $(cat "$QR_CASE/err")"
 qr_no_install_failed "retire"
 
-# Refusals report through the seam's own message, never through on_err: a
-# failed migration, and retire of a store whose old range cannot be read.
-qr_setup trap_migrate_fails
-printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 125 "$(qr_json_error schema_version_behind)"
-printf '1\n' > "$QR_S/planar.code"
-printf 'boom' > "$QR_S/planar.err"
-if qr_trap_call queue_probe_migrate; then fail "a failed migration did not abort under the ERR trap"; fi
-grep -Fq 'planar.db migration failed: boom' "$QR_CASE/err" || fail "the migration failure under the ERR trap lost its message: $(cat "$QR_CASE/err")"
-qr_no_install_failed "a failed migration"
-# A probe answer the shell classifier cannot place is a failed probe, reported
-# by the seam, with no on_err message from the classifier's own greps.
-qr_setup trap_classifier_garbage
-printf 'db\n' > "$QR_P/planar.db"
-qr_reply 1 125 "not json at all"
-if qr_trap_call queue_probe_migrate; then fail "an unclassifiable probe answer did not abort"; fi
-grep -Fq 'queue store probe: failed' "$QR_CASE/out" || fail "an unclassifiable answer was not a failed probe: $(cat "$QR_CASE/out")"
-qr_no_install_failed "an unclassifiable probe answer"
+# Refusals report through the seam's own message, never through on_err: retire
+# of a store whose old range cannot be read. (The database probe's refusals are
+# run under the same trap shape above.)
 QR_S=""
 qr_retire_setup trap_oldmax_fails
 qr_store "insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) values (3, 'exited', '/', '[]', 1, 2, 0);"

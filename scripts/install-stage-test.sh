@@ -36,14 +36,15 @@ make_repo() {
 # the cleanup manifest.
 STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
-cat > "$STUBS/cmake" <<'STUB'
+cat > "$STUBS/cmake" <<STUB
 #!/usr/bin/env bash
-if [[ "$1" == "--install" ]]; then
-  prefix="$4"
-  mkdir -p "$prefix/bin"
+# A stub cmake: \`cmake --install D --prefix P\` writes the five fake binaries of
+# scripts/fixtures/prebuilt-bundle.sh (stub_binary_write) into P/bin.
+if [[ "\$1" == "--install" ]]; then
+  source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
+  mkdir -p "\$4/bin"
   for b in planar planar-agent planar-watch planar-execute planar-ext; do
-    printf '#!/bin/sh\n[ "$1" = version ] && echo "planar stage-test"\nexit 0\n' > "$prefix/bin/$b"
-    chmod +x "$prefix/bin/$b"
+    stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"
   done
 fi
 exit 0
@@ -202,9 +203,11 @@ mk_home() {
 
 # placed_set HOME -- every file Planar placed outside the prefix, following
 # links so a linked skill directory lists its files like a copied one does.
+# The mutation lock directory beside the prefix (.planar.lock) is coordination
+# state, not a placed file.
 placed_set() {
   (cd "$1" && find -L . -type f \
-    ! -path './.planar/*' ! -path './build/*' ! -path './out' ! -path './err' \
+    ! -path './.planar/*' ! -path './.planar.lock/*' ! -path './build/*' ! -path './out' ! -path './err' \
     ! -path './planar.db*' ! -path './.gemini/settings.json' | sort)
 }
 
@@ -306,7 +309,7 @@ assert m['version'] == 2, m['version']
 assert m['vendors'] == found, (m['vendors'], found)
 extras = set(m['extras'])
 out = subprocess.run(['find', '-L', '.', '-type', 'f'], cwd=home, capture_output=True, text=True).stdout.split()
-skip = ('./.planar/', './build/', './out', './err', './planar.db', './.gemini/settings.json')
+skip = ('./.planar/', './.planar.lock/', './build/', './out', './err', './planar.db', './.gemini/settings.json')
 missing = []
 for rel in out:
     if rel.startswith(skip):
@@ -530,7 +533,7 @@ for mode in copy link; do
   [[ ! "$TMP/h18$mode/.planar/install-manifest.json" -nt "$TMP/stamp18$mode" ]] || fail "$mode: the manifest was rewritten on a no-change run"
   touched="$(find "$TMP/h18$mode" -newer "$TMP/stamp18$mode" ! -path "$TMP/h18$mode/.planar" ! -path "$TMP/h18$mode/.planar/*" \
     ! -path "$TMP/h18$mode/build" ! -path "$TMP/h18$mode/build/*" ! -path "$TMP/h18$mode/out" ! -path "$TMP/h18$mode/err" \
-    ! -path "$TMP/h18$mode/planar.db*" ! -path "$TMP/h18$mode")"
+    ! -path "$TMP/h18$mode/planar.db*" ! -path "$TMP/h18$mode/.planar.lock" ! -path "$TMP/h18$mode/.planar.lock/*" ! -path "$TMP/h18$mode")"
   [[ -z "$touched" ]] || fail "$mode: a no-change run modified: $(echo "$touched" | head -5)"
   assert_placed "$TMP/h18$mode" "${ALL6[@]}"
 done
@@ -647,9 +650,11 @@ if [[ ! -x "$PLANAR_BIN" ]]; then
   exit 0
 fi
 
-# health_json HOME -- `planar health --json` for a scratch install.
+# health_json HOME -- `planar health --json` for a scratch install. The install
+# initialized $HOME/planar.db with the stub planar (a placeholder, not SQLite),
+# so the real binary gets a database of its own beside it.
 health_json() {
-  env -u CODEX_HOME HOME="$1" PLANAR_HOME="$1/.planar" PLANAR_DB="$1/planar.db" "$PLANAR_BIN" health --json
+  env -u CODEX_HOME HOME="$1" PLANAR_HOME="$1/.planar" PLANAR_DB="$1/planar.db.health" "$PLANAR_BIN" health --json
 }
 
 # freshness HOME -- "manifest_status state managed fresh stale missing".

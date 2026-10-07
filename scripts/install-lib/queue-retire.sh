@@ -1,13 +1,11 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2034  # QR_VERDICT and QR_DETAIL are read by the caller (db-probe.sh)
 #
 # queue-retire.sh -- install.sh's queue-upgrade steps, as sourceable functions
 # (plan 1089; tech spec 656, "Install and upgrade", decisions 1219-1229).
 #
-# install.sh sources this file. So do scripts/install-manifest-test.sh (with
-# stub binaries, before the build) and the post-build ctest case
-# `install_queue_probe_migrate` (with the real built binaries), which is why
-# the steps live here rather than inline: a test drives exactly the code the
-# installer runs.
+# install.sh sources this file. So does scripts/install-manifest-test.sh, which
+# drives exactly the functions the installer runs, with stub binaries.
 #
 # Inputs, read from the caller's environment:
 #   PLANAR_HOME         the install prefix. Required.
@@ -19,17 +17,16 @@
 # through the caller's log/warn helpers when it defines them, so the
 # installer's framing and warning count apply.
 #
-# The queue-store probe is classified in shell (_qr_classify_probe), so an
-# install onto a prefix with a planar.db needs no python3 (decision 1333). The
-# reader of the retired agent.db, scripts/install-lib/queue_retire.py, runs
-# with python3 on the source path only. Paths reach it only through argv.
+# _qr_classify_probe classifies `planar-agent queue status 1 --json` in shell,
+# so the database probe (db-probe.sh, plan 1122) needs no python3 (decision
+# 1333). The reader of the retired agent.db, scripts/install-lib/queue_retire.py,
+# runs with python3 on the source path only. Paths reach it only through argv.
 #
 # install.sh runs under `set -eEuo pipefail` with an ERR trap (on_err), and
 # -E carries that trap into command substitutions. Every substitution here
-# whose command is EXPECTED to exit non-zero -- the probe (exit 1 not_found on
-# almost every upgrade), init, and the store reader (exit 3 for a blocking
-# row) -- therefore starts with `trap - ERR`. That clears the trap inside the
-# substitution's own subshell only: the caller's trap is never touched, so
+# whose command is EXPECTED to exit non-zero (the store reader exits 3 for a
+# blocking row) therefore starts with `trap - ERR`. That clears the trap inside
+# the substitution's own subshell only: the caller's trap is never touched, so
 # there is nothing to restore, and the status still reaches `&& rc=0 ||
 # rc=$?`. Without it on_err prints "install failed" while the install goes on.
 
@@ -52,12 +49,6 @@ _qr_warn() {
 }
 _qr_fail() {
   printf '\ninstall.sh: %s\n' "$*" >&2
-}
-
-# _qr_quote_cmd -- the migrate command as one line an operator can paste.
-_qr_migrate_cmd_text() {
-  printf '(cd / && PLANAR_DB=%q PLANAR_CONFIG_PATH=%q %q init --skip-project --allow-no-repo)' \
-    "$PLANAR_HOME/planar.db" "$PLANAR_HOME/config.toml" "$PLANAR_HOME/bin/planar"
 }
 
 # _QR_JSON_AWK -- a small JSON scanner for the probe's answer, read on stdin
@@ -198,89 +189,6 @@ _qr_classify_probe() {
     shape="tag $tag"
   fi
   QR_DETAIL="exit $rc with $shape"
-}
-
-# _qr_probe -- ask the newly installed planar-agent, read-only and from /,
-# whether the prefix planar.db is usable, and classify the answer in shell.
-# Sets QR_VERDICT (usable|behind|incompatible|foreign|failed), QR_DETAIL and
-# QR_PROBE_STDERR. Never fails itself: an unreadable answer is the verdict
-# `failed`.
-_qr_probe() {
-  local db="$PLANAR_HOME/planar.db" out rc errf
-  errf="$(mktemp)"
-  out="$(trap - ERR; cd / && PLANAR_DB="$db" "$PLANAR_HOME/bin/planar-agent" queue status 1 --json 2>"$errf")" && rc=0 || rc=$?
-  QR_PROBE_STDERR="$(cat "$errf" 2>/dev/null || true)"
-  rm -f "$errf"
-  _qr_classify_probe "$rc" "$out"
-  _qr_log "queue store probe: $QR_VERDICT ($QR_DETAIL)"
-}
-
-# queue_probe_migrate -- tech spec 656 step 3 (decision 1008).
-#
-# Runs only when $PLANAR_HOME/planar.db exists, so it never creates one. The
-# probe is the newly installed planar-agent's `queue status 1 --json`, run
-# read-only from /. Behind: migrate with `planar init` from / and probe
-# again, which must then be usable. Ahead with an incompatible or foreign
-# queue schema: warn, naming which, and continue -- an ahead planar.db is
-# never refused. Anything else: refuse, so the caller stops before agent.db
-# is retired.
-queue_probe_migrate() {
-  local db="$PLANAR_HOME/planar.db"
-  if [[ ! -e "$db" ]]; then
-    _qr_log "no $db yet; skipping the queue store probe (it never creates one)"
-    return 0
-  fi
-  _qr_probe
-  case "$QR_VERDICT" in
-    usable)
-      return 0
-      ;;
-    behind)
-      local cmd init_err init_out rc errf
-      cmd="$(_qr_migrate_cmd_text)"
-      _qr_log "planar.db is behind this build; migrating it:"
-      _qr_log "  $cmd"
-      errf="$(mktemp)"
-      init_out="$(trap - ERR; cd / && PLANAR_DB="$db" PLANAR_CONFIG_PATH="$PLANAR_HOME/config.toml" \
-        "$PLANAR_HOME/bin/planar" init --skip-project --allow-no-repo 2>"$errf")" && rc=0 || rc=$?
-      init_err="$(cat "$errf" 2>/dev/null || true)"
-      rm -f "$errf"
-      if [[ "$rc" -ne 0 ]]; then
-        _qr_fail "planar.db migration failed: ${init_err:-exit $rc}; agent.db was NOT retired. The new binaries are installed. Run the command above by hand, then re-run ./install.sh:
-  $cmd"
-        return 1
-      fi
-      [[ -n "$init_out" ]] && _qr_log "$init_out"
-      _qr_probe
-      if [[ "$QR_VERDICT" != "usable" ]]; then
-        _qr_fail "planar.db is still not usable after the migration ($QR_VERDICT: $QR_DETAIL${QR_PROBE_STDERR:+; $QR_PROBE_STDERR}); agent.db was NOT retired. Inspect it with: (cd / && PLANAR_DB=$(printf '%q' "$db") $(printf '%q' "$PLANAR_HOME/bin/planar-agent") queue status 1 --json), then re-run ./install.sh."
-        return 1
-      fi
-      return 0
-      ;;
-    incompatible)
-      _qr_warn "planar.db is ahead of this build and its queue tables changed; queue verbs from this install refuse at 125 until a newer build is installed"
-      return 0
-      ;;
-    foreign)
-      local n
-      n="$(_qr_head_version_hint)"
-      _qr_warn "planar.db's migration $n is not this build's migration $n (same number, foreign migration: two branches used the same number); queue verbs from this install refuse at 125 until the database or the build is corrected -- a newer build alone will not fix it"
-      return 0
-      ;;
-    *)
-      _qr_fail "the queue store probe of $db failed ($QR_DETAIL${QR_PROBE_STDERR:+; $QR_PROBE_STDERR}); agent.db was NOT retired. The new binaries are installed. Inspect it with: (cd / && PLANAR_DB=$(printf '%q' "$db") $(printf '%q' "$PLANAR_HOME/bin/planar-agent") queue status 1 --json), fix what it reports, then re-run ./install.sh."
-      return 1
-      ;;
-  esac
-}
-
-# _qr_head_version_hint -- the migration number a foreign verdict is about,
-# from the probe's own refusal text when it names one.
-_qr_head_version_hint() {
-  local n
-  n="$(printf '%s' "$QR_PROBE_STDERR" | grep -oE 'version [0-9]+' | head -1 | grep -oE '[0-9]+' || true)"
-  printf '%s' "${n:-<N>}"
 }
 
 # The documented cost of overriding the guard (tech spec 656, "Override").

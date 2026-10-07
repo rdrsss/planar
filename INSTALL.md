@@ -28,7 +28,7 @@ brew install cmake ninja llvm python git gh jq ripgrep
 `install.sh` declares its tools in three tiers in its `TOOLCHAIN_DEPS`, `BASE_DEPS` and `RUN_DEPS` manifests:
 
 - The **toolchain tier** (`cmake`, `ninja`, the pinned LLVM compilers and `python3`, above) is checked only on a source install.
-- The **base tier** is checked on every install path, `--prebuilt` included: `awk`, `basename`, `cat`, `chmod`, `cmp`, `cp`, `date`, `diff`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`, `readlink`, `realpath`, `rm`, `rmdir`, `sort`, `tr` and `uname`. These ship with supported Unix-like systems; the installer preflights them before making changes.
+- The **base tier** is checked on every install path, `--prebuilt` included: `awk`, `basename`, `cat`, `chmod`, `cmp`, `cp`, `cut`, `date`, `diff`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`, `od`, `ps`, `readlink`, `realpath`, `rm`, `rmdir`, `sed`, `sleep`, `sort`, `tr`, `uname` and `wc`. These ship with supported Unix-like systems; the installer preflights them before making changes.
 - The **runtime tier** (`git`, `jq`, `gh`, `rg`) only warns.
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
@@ -117,9 +117,10 @@ make install-full       # extra flags via: make install-full INSTALL_FLAGS="--li
 
 That's it. The script:
 
-- Builds all five binaries from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix "$HOME/.planar"`, which writes `~/.planar/bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}`.
-- Stages `skills/planar/` and `agents/*.md` into `~/.planar/skills/planar/` and `~/.planar/agents/`, and derives the Codex agent TOML files from `agents/` into `~/.planar/codex-agents/` (never under `agents/codex/`), before any vendor placement. The staged paths are recorded in the `extras` list of `install-manifest.json`.
-- Stages `scripts/`, `workflows/`, `migrations/`, and `templates/` into `~/.planar/` (migrations are staged at `~/.planar/migrations/` for ad-hoc `sqlx` use; the binary embeds them at build time via codegen). It runs no renderer for the skill; the Codex agent TOML is derived by `scripts/render-codex-agents.py`.
+- Takes the installation's [mutation lock](#ownership-recovery-and-the-order-of-an-install) and records a recovery journal, so a second install, update or uninstall of the same root is refused and an interrupted run can be completed by running it again.
+- Builds all five binaries from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix ~/.planar/.staging-<token>/.cmake-install`, and takes `bin/{planar,planar-agent,planar-watch,planar-execute,planar-ext}` from there.
+- Stages `skills/planar/` and `agents/*.md`, derives the Codex agent TOML files from `agents/` into `codex-agents/` (never under `agents/codex/`), and stages `scripts/`, `workflows/` and `migrations/` (for ad-hoc `sqlx` use; the binary embeds them at build time via codegen), all under the same `~/.planar/.staging-<token>/`. It runs no renderer for the skill; the Codex agent TOML is derived by `scripts/render-codex-agents.py`. The staged paths are recorded in the `extras` list of `install-manifest.json`.
+- Probes the database with the staged binaries, then swaps `bin/`, `skills/`, `agents/`, `codex-agents/`, `workflows/`, `scripts/` and `migrations/` into `~/.planar/` whole, and creates a missing database or migrates a behind one with the installed `planar init --skip-project --allow-no-repo`. `templates/` is placed missing-only.
 - Places the staged skill and agents into each vendor whose presence marker exists (the nine targets in the [layout reference](#install-layout-reference)), and prints the vendors found and skipped.
 - Writes `~/.planar/release.json`, the record of which release is installed. A source install writes it with `version` set to the sixth token of `planar version` (the release tag, `dev` for a build without one), so a source install is never mistaken for a release; a prebuilt install copies the bundle's file.
 - Atomically writes `~/.planar/install-manifest.json` after every placement
@@ -161,6 +162,7 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 | `--dry-run`, `-n` | Show the planned actions without changing anything. |
 | `--verbose`, `-v` | Per-file detail (default prints a summary). |
 | `--version` | Print the installer version and exit. |
+| `--cleanup DIR` | Updater only: remove the updater's temporary directory when the install ends. Accepted only with `--prebuilt` and the updater's handoff; see [the handoff](#the-update-handoff-and---cleanup). |
 | `--uninstall` | Tear down everything install.sh created except the [preserved paths](#preserved-paths) (`planar.db` with its `-wal`/`-shm` sidecars, `queue-logs/`, `workbench/`, `config.toml`, `local/`, ...); `--force` does not remove them. Removes the retired old queue database, behind the same live-queue guard as an install. |
 
 ### Prebuilt install (`--prebuilt`)
@@ -177,7 +179,103 @@ It is the same installer as the source path from the build onward: the vendor sw
 - **A bundle must be whole.** A directory missing any of the five binaries (or `release.json`, the skill or `codex-agents/`) is refused at exit 1, naming what is missing, before anything is created: `~/.planar` does not exist afterwards.
 - **`--link` is refused.** `--link --prebuilt` exits 2 naming both flags, again before anything is created, because link mode would symlink into a directory the caller deletes after the install.
 - **The old queue database is moved aside, never read.** There is no `python3` on this path, so the live-queue check and the retirement reader do not run. After the `planar.db` probe passes, the retired queue database, its sidecars and the old numbered queue logs are moved into `~/.planar/retired/<YYYY-MM-DD>/` and each move is printed. Nothing is deleted, and nothing already in `retired/` is replaced. The [upgrade note on the old queue](#upgrade-note-what-installsh-does-with-the-old-queue-plan-1089) has the exact rules.
-- **The probe is shared.** The `planar.db` probe that stands in front of that move is the same shell classifier as on the source path: output that is not exactly one JSON object, or an error tag outside the `error` object, refuses the install with the old queue database left in place.
+- **The probe is shared.** The database probe that stands in front of that move is the same as on the source path (see [the order of an install](#ownership-recovery-and-the-order-of-an-install)): a queue answer that is not exactly one JSON object, or an error tag outside the `error` object, refuses the install before anything changes, with the old queue database left in place.
+- **The updater's handoff.** `planar update` hands its lock to the bundled installer with `--cleanup <dir>`; see [the handoff](#the-update-handoff-and---cleanup).
+
+### Ownership, recovery and the order of an install
+
+Every install, update and uninstall of one installation takes the same lock
+first, and every install records what it is doing in a journal, so an
+interrupted install is completed by running the same command again, never by
+`--force` (tech spec 677, "Order of an install"; decisions 1324-1328).
+
+**The mutation lock.** The lock lives *beside* the install root, at
+`<root>.lock` (`~/.planar.lock` for the default root), keyed by the root's
+canonical path, so no spelling of the root, and no removal or `--purge` of it,
+can split it. It holds small ownership records naming the operation, the
+process id and that process's start time. A second install, update or
+uninstall exits 1 naming the holder's operation and pid and changes nothing. A
+holder that was killed is reclaimed by the next run; a pid that was reused by
+another process is recognized from its start time. When ownership cannot be
+judged (a malformed record, another host's record, a start time that cannot be
+read), the run refuses and keeps every file. Nothing removes `<root>.lock`;
+remove it by hand only when no Planar install, update or uninstall can be
+running. The protocol is specified in the header of
+`scripts/install-lib/mutation-lock.sh`.
+
+**The order of an install.**
+
+1. Resolve the root and the relocated data paths, apply the
+   [install root guard](#the-install-root-guard), check the tools, and take the
+   lock.
+2. Read `~/.planar/.planar-journal` when it exists. A journal that does not
+   validate stops the install and is kept. A **prepared** or
+   **aborted-before-mutation** attempt never changed anything: its staging is
+   removed and the install starts over. A **complete** one only left backups
+   and staging: they are removed. A **mutating** one is resumed when this run
+   installs the same release (the same bundle version, commit and schema, or
+   the same checkout and commit); a different release refuses, naming the
+   command that completes the pending one. An **uninstalling** journal refuses:
+   an interrupted uninstall is finished by uninstalling, never undone.
+3. When resuming, a subtree whose live name is missing is restored from its
+   journal-owned `<name>.old` before anything new is staged. `.staging-*` and
+   `*.old` entries no journal owns are reported and kept.
+4. Stage everything under an exclusively created `.staging-<token>/`, recorded
+   in the journal first (phase **prepared**).
+5. Probe the database with the **staged** binaries, read-only and from `/`:
+   - missing: it is created after the swap; no project is registered;
+   - behind: it is migrated after the swap;
+   - current: nothing to do;
+   - ahead: the install exits 1 naming both schema versions, and nothing
+     changes (an older release is never installed over a newer database);
+   - unreadable, corrupt, a foreign or incompatible queue schema at the same
+     version, or an answer the probe cannot classify: the install exits 1 with
+     the probe's diagnostic, before any vendor cleanup or swap.
+   The main schema is judged by `planar-watch`'s read-only startup check; the
+   queue tables never decide it.
+6. Name running and waiting host-queue entries with the still-installed
+   `planar-watch queue --json`: a running command keeps its old binary, and a
+   claim lease renewed by `queue run --claim` can lapse while the database is
+   migrated. Without a working `planar-watch` it prints one line saying the
+   queue could not be checked. It never blocks.
+7. Record **mutating**, then run the vendor sweep and `install-cleanup.txt`
+   (never a data path, never through a symlink), then swap each managed
+   subtree: the live `<name>` is renamed to `<name>.old`, the staged one to
+   `<name>`, the journal updated around each rename.
+8. Create or migrate the database with the installed
+   `planar init --skip-project --allow-no-repo` (against `PLANAR_DB` and
+   `PLANAR_CONFIG_PATH` when they are set), and require a current probe.
+9. Retire the old queue store, place the vendor surfaces and write the
+   manifest, then `release.json`, then the install stamp last. Record
+   **complete**, remove the backups and the staging, and remove the journal.
+
+**When it fails.** A failure before step 7 removes only that attempt's staging
+and journal: the previous install, its stamp and `release.json` are untouched.
+A failure after it (a failed migration, say) exits non-zero, keeps the
+journal, the `*.old` backups and every data path, says the binaries may
+already have changed, and prints the command that completes the install: for a
+release, the version-pinned bootstrap
+(`curl -fsSL <base>/download/<tag>/get-planar.sh | PLANAR_VERSION=<tag> sh`);
+for a source install, `cd <checkout> && ./install.sh <the same flags>`. Binaries
+are never rolled back across a schema change. Fix the cause (a continuing
+fault, such as an unreadable database or a full disk, keeps failing), then run
+that command.
+
+### The update handoff and `--cleanup`
+
+`planar update` (plan 1122 M3) downloads a bundle into an exclusively created
+directory `~/.planar/.planar-update/<name>/`, records it in its ownership
+record, and `exec`s the bundled `install.sh --prebuilt <dir> --cleanup <dir>`
+with `PLANAR_MUTATION_HANDOFF=<generation>:<nonce>`. The installer adopts the
+lock only when that record is the current owner, belongs to the updater, and
+names the installer's own process (exec keeps the pid and start time), and only
+once; a forged or replayed handoff exits 1. `--cleanup` is accepted only with
+`--prebuilt` (exit 2 otherwise) and the handoff, and only for exactly the
+directory the updater recorded: the install root, a data path, a managed
+subtree, a symlink, a path through a symlink or an unrelated directory exits 1
+and nothing is removed. The directory is removed when the installer exits,
+after success or failure; after a KILL, the next owner removes the killed
+updater's recorded directory and nothing else under `.planar-update/`.
 
 ### Copy mode vs link mode
 
@@ -189,7 +287,9 @@ The install manifest records each placed target's kind (link or copy), so health
 
 ### Initialize the database
 
-After install, create the local database:
+The install creates the database when it is missing (with
+`planar init --skip-project --allow-no-repo`, which registers no project) and
+migrates it when it is behind. Register a project from its checkout:
 
 ```bash
 planar init --name "my-project"
@@ -267,14 +367,12 @@ holds the old `agent.db`, `install.sh` (through
    entries and the remedies: let them finish, cancel them with the old
    `planar-agent queue cancel <seq>` if it is still installed, or re-run with
    `--ignore-live-queue`.
-2. **Builds and installs the binaries.**
-3. **Probes `planar.db`** with the new `planar-agent queue status 1 --json`,
-   read-only and from `/`, and migrates it with
-   `planar init --skip-project --allow-no-repo` only when it is behind. An
-   ahead `planar.db` is never refused: if its queue tables are newer than
-   this build, or differ under the same migration number, it warns and
-   continues. Any other probe result stops the install before anything is
-   retired. It never creates `planar.db`.
+2. **Builds and stages the binaries.**
+3. **Probes `planar.db`** with the staged binaries and, after the swap,
+   creates or migrates it, as [the order of an install](#ownership-recovery-and-the-order-of-an-install)
+   describes. An ahead `planar.db`, or one whose queue tables are foreign or
+   incompatible at the same migration number, refuses the install before
+   anything changes (decision 1326 replaces the earlier warn-and-continue).
 4. **Checks the old queue again**, immediately before removing anything.
 5. **Retires `agent.db`**: it reads the old store's highest sequence number,
    refuses when it cannot or when that number reaches 1,000,000 (the new
@@ -378,6 +476,8 @@ This removes:
 - Everything in `~/.planar/` *except* the [preserved paths](#preserved-paths): your database (`planar.db` with its `-wal` and `-shm` sidecars), the queue logs, the workbench, your configuration, local skills and agents, workspaces, models, execute profiles and templates. A retired old queue database left from before the upgrade is removed; the upgrade note above covers the guard that protects a live old queue.
 
 A prefix that holds only preserved data (a `planar.db`, or any other [preserved path](#preserved-paths) such as `workbench/` or `config.toml`) still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
+
+The uninstall takes the same [mutation lock](#ownership-recovery-and-the-order-of-an-install) as an install, so a running install or update refuses it, and holds it until every removal has finished. Before it removes anything it records **uninstalling** in `~/.planar/.planar-journal`, which ends any interrupted install for good: no later install resumes it. The journal is removed last. The lock directory beside the root (`~/.planar.lock`) is not removed.
 
 ### The install root guard
 
@@ -504,7 +604,9 @@ planar-ext sync resolve <event-id> --keep local \
 
 ## Install layout reference
 
-After a full install (`install.sh`), the layout under `~/.planar/` is:
+After a full install (`install.sh`), the layout under `~/.planar/` is (the
+[mutation lock](#ownership-recovery-and-the-order-of-an-install) is beside it,
+at `~/.planar.lock/`):
 
 ```
 ~/.planar/
@@ -516,7 +618,11 @@ After a full install (`install.sh`), the layout under `~/.planar/` is:
 │   └── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
 ├── install-manifest.json               # versioned managed-projection authority
 ├── release.json                        # the installed release (source: version = the build's sixth version token; prebuilt: the bundle's file)
-├── planar.db                           # SQLite database (after `planar init`; mode 0600)
+├── planar.db                           # SQLite database (created by the install; mode 0600)
+├── .planar-install                     # the install stamp, written last
+├── .planar-journal                     # recovery journal; present only while an install or uninstall is unfinished
+├── .staging-<token>/, <name>.old       # staging and backups of an unfinished install (journal-owned)
+├── .planar-update/<name>/              # `planar update`'s download directory, removed by the installer it hands off to
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
 ├── migrations/
 │   ├── 00001_foundation.up.sql         # canonical migration sources, sqlx-cli format

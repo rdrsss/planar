@@ -9,7 +9,8 @@
 #   - an old agent.db and its sidecars and old numbered queue logs are moved,
 #     unread, into retired/<date>/, colliding names are never overwritten, and
 #     the probe in front of it is the shared classifier (concatenated objects, a
-#     tag outside the error object are refused; a foreign schema only warns);
+#     tag outside the error object and a same-version foreign queue schema are
+#     refused before anything changes);
 #   - --link with --prebuilt exits 2 and a bundle missing a binary (or another
 #     required file) exits 1, each before ~/.planar exists;
 #   - a source install writes release.json whose version is the sixth token of
@@ -115,7 +116,13 @@ man_before="$(cksum < "$man")"; rel_mtime="$(ls -l "$P/release.json" | awk '{pri
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "second prebuilt install failed ($RC): $(cat "$TMP/err")"
 grep -Eq 'no changes: all [0-9]+ vendor target\(s\) already match' "$TMP/out" || fail "the second run did not report no changes: $(cat "$TMP/out")"
-grep -Fq '0 of 5 binaries written' "$TMP/out" || fail "the second run rewrote binaries: $(cat "$TMP/out")"
+# bin/ is a managed subtree, swapped in whole on every install (tech spec 677,
+# "Order of an install"): the second run's binaries are the bundle's again and no
+# backup or staging directory is left behind.
+for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  cmp -s "$BUNDLE/bin/$b" "$P/bin/$b" || fail "the second run left a bin/$b that is not the bundle's"
+done
+[[ -z "$(ls -d "$P"/*.old "$P"/.staging-* "$P/.planar-journal" 2>/dev/null)" ]] || fail "the second run left recovery evidence: $(ls -a "$P")"
 [[ "$(cksum < "$man")" == "$man_before" ]] || fail "the second run changed the manifest"
 [[ "$(ls -l "$P/release.json" | awk '{print $6 $7 $8}')" == "$rel_mtime" ]] || fail "the second run rewrote release.json"
 no_python
@@ -212,15 +219,22 @@ probe_case() {
     [[ "$RC" == 0 ]] || fail "probe case $name: expected the install to proceed ($RC): $(cat "$TMP/err")"
     [[ ! -e "$p/agent.db" && -f "$(ls -d "$p"/retired/*/ | head -1)agent.db" ]] || fail "probe case $name: agent.db was not moved"
   else
+    # The staged binaries' probe refuses before anything live changes: no bin/,
+    # no move of agent.db, and no journal or staging left behind.
     [[ "$RC" == 1 ]] || fail "probe case $name: expected a refusal at exit 1, got $RC: $(cat "$TMP/err")"
-    grep -Fq 'agent.db was NOT retired' "$TMP/err" || fail "probe case $name: the refusal does not say agent.db was not retired: $(cat "$TMP/err")"
+    grep -Fq 'refusing to install: the database' "$TMP/err" || fail "probe case $name: the refusal does not name the database: $(cat "$TMP/err")"
+    grep -Fq 'Nothing was changed' "$TMP/err" || fail "probe case $name: the refusal does not say nothing changed: $(cat "$TMP/err")"
     [[ "$(cat "$p/agent.db")" == old && ! -e "$p/retired" ]] || fail "probe case $name: agent.db moved despite the refusal"
+    [[ ! -e "$p/bin" && ! -e "$p/.planar-journal" && -z "$(ls -d "$p"/.staging-* 2>/dev/null)" ]] \
+      || fail "probe case $name: the refused attempt left changes: $(ls -a "$p")"
   fi
 }
 probe_case usable 0 '{"seq":1}' proceeds
 probe_case notfound 1 '{"error":{"verb":"queue status","tag":"not_found","message":"m"}}' proceeds
-probe_case foreign 125 '{"error":{"verb":"queue status","tag":"queue_schema_foreign","message":"m"}}' proceeds
-grep -Fq 'foreign' "$TMP/out" || fail "the foreign verdict was not reported"
+# A same-version foreign queue schema is a database fault: refused before any
+# change (tech spec 677 step 5), no longer a warning.
+probe_case foreign 125 '{"error":{"verb":"queue status","tag":"queue_schema_foreign","message":"m"}}' refuses
+grep -Fq 'foreign' "$TMP/err" || fail "the foreign verdict was not reported"
 probe_case concatenated 0 '{"seq":1}{"seq":2}' refuses
 probe_case invalid 0 '{garbage}' refuses
 probe_case taghoisted 125 '{"error":{"verb":"queue status"},"tag":"queue_schema_foreign"}' refuses
@@ -276,14 +290,15 @@ cp "$ROOT/install-cleanup.txt" "$REPO/install-cleanup.txt"
 perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang(\+\+)?#/bin/sh#g' "$REPO/install.sh"
 STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
-cat > "$STUBS/cmake" <<'STUB'
+cat > "$STUBS/cmake" <<STUB
 #!/usr/bin/env bash
-if [[ "$1" == "--install" ]]; then
-  prefix="$4"
-  mkdir -p "$prefix/bin"
+# A stub cmake: \`cmake --install D --prefix P\` writes the five fake binaries of
+# scripts/fixtures/prebuilt-bundle.sh (stub_binary_write) into P/bin.
+if [[ "\$1" == "--install" ]]; then
+  source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
+  mkdir -p "\$4/bin"
   for b in planar planar-agent planar-watch planar-execute planar-ext; do
-    printf '#!/bin/sh\nif [ "$1" = version ] && [ "${2:-}" = --json ]; then echo "{\\"release\\":\\"%s\\",\\"sha\\":\\"abc123def4560123456789abcdef0123456789ab\\",\\"date\\":\\"2026-10-06T00:00:00Z\\",\\"dirty\\":false,\\"compiler\\":\\"Clang-23.1.2\\"}"; exit 0; fi\n[ "$1" = version ] && echo "%s abc123def456 2026-10-06T00:00:00Z cxx Clang-23.1.2 %s"\n[ "$1" = queue ] && echo "{\\"seq\\":1}"\nexit 0\n' "${STUB_TAG:-dev}" "$b" "${STUB_TAG:-dev}" > "$prefix/bin/$b"
-    chmod +x "$prefix/bin/$b"
+    stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"
   done
 fi
 exit 0

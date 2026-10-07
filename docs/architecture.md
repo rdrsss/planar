@@ -814,6 +814,28 @@ Fifteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `rev
 
 Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`, `agents/planar-feedback-triager.md`, and `agents/planar-introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
 
+`install.sh`, the update verb and the uninstaller change an installation only
+while they hold its **mutation lock**, a coordination directory beside the
+canonical install root (`<root>.lock`, so removing or purging the root cannot
+split it). Ownership is a generation-numbered record created with `link(2)`,
+naming the operation, the pid and the process start time; the highest
+generation owns the lock until it is released or its process is proven dead,
+and two processes reclaiming a dead owner race for the same generation so at
+most one wins. The update verb hands its generation to the installer it execs
+(`PLANAR_MUTATION_HANDOFF`), which adopts it once and only in that process.
+`scripts/install-lib/mutation-lock.sh` specifies the protocol for the shell and
+native implementations. Under the lock, an install keeps a **recovery journal**
+(`<root>/.planar-journal`, replaced atomically) with the phases `prepared`,
+`mutating`, `complete`, `aborted-before-mutation` and `uninstalling`, the
+target release and per-subtree swap progress
+(`scripts/install-lib/journal.sh`): it stages every managed subtree, probes the
+database with the staged binaries, swaps each subtree in by two renames through
+`<name>.old`, then creates or migrates the database with the installed
+`planar init`, and writes `release.json` and the install stamp last. A run
+after an interruption resumes the same target, and a `mutating` journal takes
+precedence over the old release's stamp. [INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install)
+gives the full order and the failure rules.
+
 `install.sh` writes `$PLANAR_HOME/install-manifest.json` (normally
 `~/.planar/install-manifest.json`) before the first vendor target is placed and
 again after every target, through a same-directory temp file and an atomic

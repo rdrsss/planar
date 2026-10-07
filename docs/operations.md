@@ -382,8 +382,12 @@ tokens too. So the files are owner-only:
 - `queue-logs/` is created `0700` and its logs `0600`. A log directory that
   already exists must be owned by you and not writable by group or others, or a
   detached run refuses.
-- A `PLANAR_DB` outside the install root is yours: `install.sh` only touches
-  the database directly under the install root.
+- A `PLANAR_DB` outside the install root is yours: `install.sh` changes the
+  modes of the database directly under the install root only. It does create
+  a missing database, or migrate a behind one, at the resolved path (`PLANAR_DB`
+  when set) with the installed `planar init --skip-project --allow-no-repo`,
+  and refuses, changing nothing, a database ahead of the release it installs
+  ([INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install)).
 - An install root shared by several users (a `--prefix` such as `/opt/planar`
   that more than one account runs from) is unsupported under the `0700` rule:
   only the owner can open the database. Run one install per user.

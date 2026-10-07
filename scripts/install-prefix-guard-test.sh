@@ -36,16 +36,15 @@ perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang(\+\+)?#/bin/sh#g' "$REPO/instal
 
 STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
-cat > "$STUBS/cmake" <<'STUB'
+cat > "$STUBS/cmake" <<STUB
 #!/usr/bin/env bash
-if [[ "$1" == "--install" ]]; then
-  prefix="$4"
-  mkdir -p "$prefix/bin"
+# A stub cmake: \`cmake --install D --prefix P\` writes the five fake binaries of
+# scripts/fixtures/prebuilt-bundle.sh (stub_binary_write) into P/bin.
+if [[ "\$1" == "--install" ]]; then
+  source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
+  mkdir -p "\$4/bin"
   for b in planar planar-agent planar-watch planar-execute planar-ext; do
-    # `queue status 1 --json` answers a status object, so the install's queue
-    # store probe of a preserved planar.db reads "usable".
-    printf '#!/bin/sh\n[ "$1" = version ] && echo "planar guard-test"\n[ "$1" = queue ] && echo "{\\"seq\\":1}"\nexit 0\n' > "$prefix/bin/$b"
-    chmod +x "$prefix/bin/$b"
+    stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"
   done
 fi
 exit 0
@@ -342,13 +341,35 @@ write_journal() {
   for l in "$@"; do printf '%s\n' "$l" >> "$prefix/.planar-journal"; done
 }
 
-# A validated journal for each phase adopts an otherwise unowned root.
-for phase in prepared mutating complete aborted-before-mutation uninstalling; do
+# A validated journal for each phase passes the guard of an otherwise unowned
+# root. Prepared, complete and aborted attempts leave nothing to resume, so the
+# install completes; an unknown .staging-* entry is reported and kept.
+for phase in prepared complete aborted-before-mutation; do
   P="$TMP/jvalid-$phase/.planar"
   write_journal "$P" "planar-journal 1" "root=$P" "phase=$phase" "owner=ignored-extra-key"
   printf 'partial\n' > "$P/.staging-bin"
-  # the uninstalling phase is exercised by the install path only here
   expect_adopted "valid journal ($phase)" "$P"
+  [[ "$(cat "$P/.staging-bin")" == partial && ! -e "$P/.planar-journal" ]] || fail "valid journal ($phase): the unknown staging entry was not kept, or the journal was left"
+done
+# A mutating journal that records no target, and an uninstalling one, pass the
+# guard too; the install state machine then refuses to replay them (the target
+# is not this install's; an interrupted uninstall is never undone), keeping
+# every file.
+for phase in mutating uninstalling; do
+  P="$TMP/jvalid-$phase/.planar"
+  write_journal "$P" "planar-journal 1" "root=$P" "phase=$phase" "owner=ignored-extra-key"
+  printf 'partial\n' > "$P/.staging-bin"
+  before="$(snapshot "$P")"
+  run_installer "$(dirname "$P")" 0 --prefix "$P"
+  [[ "$RC" == 1 ]] || fail "valid journal ($phase): expected the state machine's refusal (exit 1), got $RC: $(cat "$TMP/err")"
+  ! grep -Fq 'does not look like a Planar install' "$TMP/err" || fail "valid journal ($phase): the guard refused it: $(cat "$TMP/err")"
+  case "$phase" in
+    mutating) want='was interrupted after it changed the installation' ;;
+    uninstalling) want='an uninstall of' ;;
+  esac
+  grep -Fq "$want" "$TMP/err" || fail "valid journal ($phase): the refusal does not say '$want': $(cat "$TMP/err")"
+  [[ "$before" == "$(snapshot "$P")" ]] || fail "valid journal ($phase): the refusal changed the root"
+  pass
 done
 
 # Forged and unrelated markers never adopt.
@@ -396,9 +417,19 @@ P="$TMP/jcopy/.planar"; Q="$TMP/jcopy-src/.planar"
 write_journal "$Q" "planar-journal 1" "root=$Q" "phase=mutating"
 mkdir -p "$P"; cp "$Q/.planar-journal" "$P/.planar-journal"
 expect_ownership_refusal "journal copied from another root" "$P" install
-# --force still adopts a root whose journal is not valid.
+# --force still gets past the guard of a root whose journal is not valid, but
+# the install state machine never treats a journal it cannot validate as
+# permission to proceed: it refuses, keeping the file. With the file moved
+# away, --force adopts the root.
+before="$(snapshot "$P")"
 run_installer "$(dirname "$P")" 0 --prefix "$P" --force
-[[ "$RC" == 0 && -f "$P/.planar-install" ]] || fail "--force did not adopt a forged-journal root"
+[[ "$RC" == 1 ]] || fail "--force installed over an invalid journal ($RC): $(cat "$TMP/err")"
+! grep -Fq 'does not look like a Planar install' "$TMP/err" || fail "--force did not get past the guard"
+grep -Fq 'is not a valid recovery journal' "$TMP/err" || fail "the invalid journal was not named: $(cat "$TMP/err")"
+[[ "$before" == "$(snapshot "$P")" ]] || fail "the refusal over an invalid journal changed the root"
+mv "$P/.planar-journal" "$TMP/jcopy-forged-journal"
+run_installer "$(dirname "$P")" 0 --prefix "$P" --force
+[[ "$RC" == 0 && -f "$P/.planar-install" ]] || fail "--force did not adopt the root once the forged journal was gone: $(cat "$TMP/err")"
 pass
 
 # A journal reached through a symlinked prefix names the canonical root.
@@ -410,7 +441,7 @@ expect_adopted "valid journal through a symlinked prefix" "$TMP/jlink/.planar"
 
 # A well-formed journal for a root under a non-ASCII home is adopted without --force.
 NA="$TMP/jos$(printf '\303\251')/.planar"
-write_journal "$NA" "planar-journal 1" "root=$NA" "phase=mutating"
+write_journal "$NA" "planar-journal 1" "root=$NA" "phase=prepared"
 printf 'partial\n' > "$NA/.staging-bin"
 expect_adopted "valid journal under a non-ASCII root" "$NA"
 
