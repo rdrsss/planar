@@ -24,8 +24,11 @@ def main():
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--toolchain-image", required=True)
     parser.add_argument("--runtime-image", required=True)
+    # Release gates pin linux/amd64 so an Apple silicon host runs x86_64 images.
+    parser.add_argument("--platform")
     options = parser.parse_args()
     evidence = options.evidence.resolve()
+    platform = ["--platform", options.platform] if options.platform else []
     # Each run needs fresh trust directories and retained, distinct evidence.
     evidence.mkdir(parents=True, exist_ok=False)
     fixtures = Path(__file__).resolve().parent / "fixtures/portable-tls"
@@ -40,10 +43,10 @@ mkdir /fixture/debian-certs /fixture/no-certs
 cp /fixture/ca.pem /fixture/debian-certs/test-ca.pem
 openssl rehash /fixture/debian-certs
 """
-    run(["docker", "run", "--rm", "-v", f"{evidence}:/fixture",
+    run(["docker", "run", "--rm", *platform, "-v", f"{evidence}:/fixture",
          options.toolchain_image, "sh", "-c", generate], check=True)
     server = f"planar-portable-tls-{os.getpid()}"
-    run(["docker", "run", "-d", "--name", server, "-v",
+    run(["docker", "run", "-d", *platform, "--name", server, "-v",
          f"{evidence}:/fixture:ro", options.toolchain_image,
          "python3", "/fixture/server.py"], check=True)
     try:
@@ -51,7 +54,7 @@ openssl rehash /fixture/debian-certs
         failed = False
         for mode in ["debian", "removed", "redhat"]:
             certs = evidence / ("debian-certs" if mode == "debian" else "no-certs")
-            args = ["docker", "run", "--rm", "--network", f"container:{server}",
+            args = ["docker", "run", "--rm", *platform, "--network", f"container:{server}",
                     "-v", f"{options.bin_dir.resolve()}:/opt/planar:ro",
                     "-v", f"{evidence}:/fixture:ro",
                     "-v", f"{certs}:/etc/ssl/certs:ro"]

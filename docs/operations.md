@@ -420,6 +420,51 @@ refusing is not an absent-queue fallback.
 
 ---
 
+## 6. Release Gate Evidence
+
+A release publishes only bundles whose gates passed on the exact archive being
+uploaded. Three scripts share one evidence file per archive,
+`planar-<platform>.tar.gz.gates.json`, beside the archive:
+
+- `scripts/dist.sh` (`make dist`, `make linux-dist`) writes `format_version: 1`:
+  the archive name, its `sha256`, the bundled `release.json` as `release`, and
+  `gates.portable` (`result`, `matched_count`, `staged_binaries`). Format 1 is
+  assembly evidence and never authorizes publication.
+- `scripts/release-gates.sh --platform <macos-arm64|linux-x86_64> <dir>` checks
+  the format 1 record against the archive's SHA-256 and `release.json`, refuses a
+  portable gate that did not pass or matched zero tests, extracts the archive and
+  runs the clean-host gates on its binaries. It then rewrites the file as
+  `format_version: 2`: `archive`, `sha256` (recomputed after the gates ran),
+  `platform`, `release`, `recorded_at` and `gates`. Each gate records `result`,
+  `matched_count`, `expected_count`, and its log under
+  `<dir>/planar-<platform>.gate-logs/`.
+  - `smoke`, both platforms: `scripts/release-smoke.sh` runs `version --json` on
+    the four version-bearing binaries (release and sha must match
+    `release.json`), `planar-execute --help`, `init` and `health --json` (current
+    schema equal to `release.json`), seven checks in a scratch HOME and
+    database. macOS runs it on a macOS arm64 host under `env -i` with a
+    system-only PATH; Linux runs it in a bare `debian:bookworm-slim` linux/amd64
+    container with no network (`PLANAR_GATE_RUNTIME_IMAGE` overrides the image).
+  - `ca_debian` (trusted through `/etc/ssl/certs`, refused with the CA removed)
+    and `ca_redhat` (trusted through `/etc/pki/tls/certs/ca-bundle.crt`), Linux
+    only, through `scripts/test-portable-tls.py`. The fixture image is the
+    Dockerfile's `dist-toolchain` stage unless `PLANAR_GATE_TOOLCHAIN_IMAGE`
+    names one.
+  A failed gate is recorded as `result: "fail"` and the script exits 1.
+- `scripts/release-publish.sh [--dry-run] <tag> <dir>...` requires format 2 for
+  both platforms, with `portable` and `smoke` passed (and `ca_debian` and
+  `ca_redhat` on Linux), each with a nonzero `matched_count` equal to its
+  `expected_count`, and the recorded `sha256` and `release` equal to the archive
+  as it is now.
+
+Rebuilding an archive writes format 1 again, and any change to an archive's
+bytes breaks its recorded checksum, so either one requires a new gate run.
+`make release-cut TAG=vX.Y.Z [DRY_RUN=1]` runs the whole sequence on a macOS
+arm64 host: tag and clean-checkout preflight, `make dist`, macOS gates,
+`make linux-dist`, Linux gates and the publisher, with outputs under
+`build/release-cut/<tag>/<platform>/` and the staged assets under
+`dist/release/<tag>/`.
+
 ## See Also
 
 - [Architecture](architecture.md) — storage model, schema contract, binary

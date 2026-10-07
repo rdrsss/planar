@@ -579,7 +579,10 @@ installed copies again. A sibling `<archive>.gates.json` records
 `format_version: 1`, the archive name, SHA-256, the complete `release` identity,
 and `gates.portable` with `result: "pass"`, `matched_count: 2` and
 `staged_binaries: 5`. It binds portability evidence to that exact archive.
-It contains no smoke or CA verdict: the later common publisher must require
-successful toolchain-free smoke and applicable CA trust evidence for both
-platforms, each bound to the same final checksum and release identity, and
-must refuse missing evidence or `dev`. Assembly does not publish anything.
+It contains no smoke or CA verdict, so it cannot authorize publication:
+`scripts/release-gates.sh` adds the toolchain-free smoke and CA trust gates as
+`format_version: 2`, and `scripts/release-publish.sh` requires that record for
+both platforms, bound to the same final checksum and release identity, and
+refuses missing evidence or `dev`. The contract is in
+[operations.md § Release Gate Evidence](operations.md#6-release-gate-evidence).
+Assembly does not publish anything.
