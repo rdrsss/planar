@@ -94,7 +94,7 @@ uninstall: ## Remove the five Planar executables from PREFIX/bin
 	rm -f $(PREFIX)/bin/$(EXT_BINARY)
 
 .PHONY: uninstall-full
-uninstall-full: ## Remove the legacy full install (preserves every data path: planar.db and its -wal/-shm sidecars, queue-logs/, workbench/, config.toml, local/ and the rest of INSTALL.md's Preserved paths, --force included; removes the retired agent.db behind the live-queue guard)
+uninstall-full: ## Run the uninstaller (planar-uninstall): keeps and names every data path in INSTALL.md's Preserved paths; INSTALL_FLAGS=--purge removes them too
 	./install.sh --uninstall $(INSTALL_FLAGS)
 
 # Scratch database for hand-run smoke tests, kept in the build dir.

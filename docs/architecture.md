@@ -837,6 +837,20 @@ after an interruption resumes the same target, and a `mutating` journal takes
 precedence over the old release's stamp. [INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install)
 gives the full order and the failure rules.
 
+The uninstaller is `scripts/uninstall.sh`, a standalone bash script installed as
+`$PLANAR_HOME/bin/planar-uninstall` and shipped at the bundle root as
+`uninstall.sh`; `install.sh --uninstall` execs it. It shares the installer's
+library: the prefix guard, the lock, the journal, the data-path list and the
+vendor ownership rules (`scripts/install-lib/ownership.sh`, moved out of
+`install.sh`). Under the lock it records `uninstalling` before its first
+removal, removes the recorded vendor projections it can prove are Planar's
+(reading the version 2 manifest with `sed`), the journal-owned staging and
+backups, the managed subtrees and the install records, keeps and names the data
+paths (or removes them under `--purge`, never a relocated one), keeps and
+reports every unknown entry, and removes the journal last. A root it keeps gets
+`<root>/.planar-uninstalled`, validated evidence naming the root that the
+prefix guard accepts in place of `--force`; the next install removes it.
+
 `install.sh` writes `$PLANAR_HOME/install-manifest.json` (normally
 `~/.planar/install-manifest.json`) before the first vendor target is placed and
 again after every target, through a same-directory temp file and an atomic

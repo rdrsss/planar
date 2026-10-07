@@ -522,10 +522,11 @@ maximum, sorted entries with fixed owners, and tagged repeat cuts. It verifies
 the emitted checksum record with both `sha256sum -c` and `shasum -a 256 -c`
 when available, and requires at least one checker.
 
-At M1, root `get-planar.sh` and `uninstall.sh` are included only when present
-in the source. Fixtures pin absence and successive inclusion as byte copies
-without supplying installer or bootstrap behavior. Deliberate mutations prove
-that wrong entry counts, installer bytes and metadata fail; appending a byte
+The root `uninstall.sh` is always shipped, a byte copy of `scripts/uninstall.sh`;
+assembly stops when that file is missing. The root `get-planar.sh` is included
+only when present in the source; fixtures pin its absence and inclusion as a
+byte copy without supplying bootstrap behavior. Deliberate mutations prove
+that wrong entry counts, installer and uninstaller bytes and metadata fail; appending a byte
 to the archive must make the shell entry point's checksum assertion fail and
 name the asset. To check a retained fixture manually, use
 `scripts/dist-test.sh --check-checksums <directory> <asset-basename>` through

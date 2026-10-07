@@ -547,8 +547,8 @@ binaries into an owned temporary staging tree, and assembles
 `JOBS` defaults to four. Only these two platforms are supported. The bundle
 contains the authored skill, agents, templates, workflows, migrations,
 installer and install library; Codex agents are rendered during assembly.
-The root bootstrap and uninstaller join the bundle when their milestones
-supply them. Bundle assembly does not change the installer's lifecycle.
+The root `uninstall.sh` is a byte copy of `scripts/uninstall.sh`; the root
+bootstrap joins the bundle when its milestone supplies it. Bundle assembly does not change the installer's lifecycle.
 
 For a tagged cut, set `PLANAR_RELEASE_VERSION=vMAJOR.MINOR.PATCH`. The tag
 must already exist at clean HEAD; pre-release labels, missing tags, wrong HEAD,

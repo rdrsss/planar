@@ -18,7 +18,7 @@ brew install cmake ninja llvm python git gh jq ripgrep
 
 - `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries, on a source install. A [prebuilt install](#prebuilt-install---prebuilt) needs none of them. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
 - `python3` — required to build from source, not to install a release bundle. The configure step registers Python test runners (`scripts/install-lib/queue_probe.test.py`, `scripts/install-lib/queue_retire.test.py` and `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. A source `install.sh` also runs it for two things: the old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program) and the Codex agent TOML renderer (`scripts/render-codex-agents.py`). The queue-store probe of `planar.db` (`planar-agent queue status 1 --json`) is classified in shell on every install path and needs no Python. `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.
-- `bash` — `install.sh` and the scripts it sources run under the `/bin/bash` 3.2 that stock macOS ships, with `set -u`; Homebrew bash is not needed. Possibly empty arrays are expanded as `${a[@]+"${a[@]}"}`, and no bash-4-only construct is used. `scripts/install-bash32-test.sh` (ctest label `install_bash32`) lints every sourced script for an unguarded expansion (a provably non-empty array carries `# bash32: nonempty`) and runs a prebuilt install and an uninstall under `/bin/bash`.
+- `bash` — `install.sh`, `planar-uninstall` and the scripts they source run under the `/bin/bash` 3.2 that stock macOS ships, with `set -u`; Homebrew bash is not needed. Possibly empty arrays are expanded as `${a[@]+"${a[@]}"}`, and no bash-4-only construct is used. `scripts/install-bash32-test.sh` (ctest label `install_bash32`) lints every sourced script for an unguarded expansion (a provably non-empty array carries `# bash32: nonempty`) and runs a prebuilt install and an uninstall under `/bin/bash`.
 - No network access and no token are needed to configure or build: every dependency is committed under `vendor/` as a pinned release archive.
 - `docker` — optional, developer-only. `make linux-gate` builds and tests the tree on Debian trixie in a container (see [docs/testing.md](docs/testing.md#the-linux-gate)). It is not an installer dependency.
 - `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. The full install also needs it to clone the source repository.
@@ -156,7 +156,7 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 | `--prebuilt DIR` | Install an unpacked release bundle instead of building: see [Prebuilt install](#prebuilt-install---prebuilt). Refused together with `--link` (exit 2). |
 | `--link` | Symlink the staged skill and the Markdown, Copilot and Codex agent files from the source repo instead of copying. **Dev mode** — edits to the repo propagate immediately. The OpenCode agents are always derived regular files. |
 | `--force` | Overwrite existing symlinks at the destinations (never a preserved path: shipped `templates/` files are still placed only where missing), and adopt a non-empty install root that carries no Planar sign. It does **not** override the install root guard for `$HOME`, `/` or an empty root, and does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
-| `--ignore-live-queue` | Retire (or uninstall) the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
+| `--ignore-live-queue` | Retire the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
 | `--no-prune` | Skip removal of stale vendor files. |
 | `--preset NAME` | CMake build preset: `debug`\|`release` (default `release`). |
 | `--build-dir DIR` | Where to configure and build (default `build/install-<preset>`). |
@@ -164,11 +164,13 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 | `--verbose`, `-v` | Per-file detail (default prints a summary). |
 | `--version` | Print the installer version and exit. |
 | `--cleanup DIR` | Updater only: remove the updater's temporary directory when the install ends. Accepted only with `--prebuilt` and the updater's handoff; see [the handoff](#the-update-handoff-and---cleanup). |
-| `--uninstall` | Tear down everything install.sh created except the [preserved paths](#preserved-paths) (`planar.db` with its `-wal`/`-shm` sidecars, `queue-logs/`, `workbench/`, `config.toml`, `local/`, ...); `--force` does not remove them. Removes the retired old queue database, behind the same live-queue guard as an install. |
+| `--uninstall` | Run the standalone uninstaller, `planar-uninstall` (the bundle's `uninstall.sh`, or the checkout's `scripts/uninstall.sh`); see [Uninstall](#uninstall). `--prefix`, `--purge` and `--yes` are passed on; every other install option is ignored. `--uninstall --force` exits 2 naming `--purge`, and `--uninstall --dry-run` exits 64. |
+| `--purge` | With `--uninstall` only: remove the [preserved paths](#preserved-paths) too, except a relocated one. |
+| `--yes`, `-y` | With `--uninstall` only: remove Planar binaries left in `~/.local/bin` without asking. |
 
 ### Prebuilt install (`--prebuilt`)
 
-`install.sh --prebuilt <dir>` installs a release bundle that was unpacked into `<dir>` (the layout is `scripts/dist.sh`'s: `bin/`, `skills/planar/`, `agents/`, `codex-agents/`, `templates/`, `workflows/`, `migrations/`, `scripts/install-lib/`, `install-cleanup.txt` and `release.json`). Nothing is built, so only the [base tier](#prerequisites) of tools is needed: no CMake, Ninja, LLVM or `python3`.
+`install.sh --prebuilt <dir>` installs a release bundle that was unpacked into `<dir>` (the layout is `scripts/dist.sh`'s: `bin/`, `skills/planar/`, `agents/`, `codex-agents/`, `templates/`, `workflows/`, `migrations/`, `scripts/install-lib/`, `install.sh`, `uninstall.sh`, `install-cleanup.txt` and `release.json`). Nothing is built, so only the [base tier](#prerequisites) of tools is needed: no CMake, Ninja, LLVM or `python3`.
 
 ```bash
 ./install.sh --prebuilt /path/to/planar-macos-arm64
@@ -177,7 +179,7 @@ The skill and the agents are now in place. Check the skill in any vendor that re
 It is the same installer as the source path from the build onward: the vendor sweep, the `~/.planar` cleanup, the queue store, staging, the vendor table, placement and the manifest. The differences:
 
 - **Inputs.** `bin/` is copied from `<dir>/bin/` and every staged input is read from `<dir>`. `codex-agents/` is copied from the bundle, where it was rendered when the bundle was cut, and `release.json` is copied from the bundle.
-- **A bundle must be whole.** A directory missing any of the five binaries (or `release.json`, the skill or `codex-agents/`) is refused at exit 1, naming what is missing, before anything is created: `~/.planar` does not exist afterwards.
+- **A bundle must be whole.** A directory missing any of the five binaries (or `release.json`, `uninstall.sh`, the skill or `codex-agents/`) is refused at exit 1, naming what is missing, before anything is created: `~/.planar` does not exist afterwards.
 - **`--link` is refused.** `--link --prebuilt` exits 2 naming both flags, again before anything is created, because link mode would symlink into a directory the caller deletes after the install.
 - **The old queue database is moved aside, never read.** There is no `python3` on this path, so the live-queue check and the retirement reader do not run. After the `planar.db` probe passes, the retired queue database, its sidecars and the old numbered queue logs are moved into `~/.planar/retired/<YYYY-MM-DD>/` and each move is printed. Nothing is deleted, and nothing already in `retired/` is replaced. The [upgrade note on the old queue](#upgrade-note-what-installsh-does-with-the-old-queue-plan-1089) has the exact rules.
 - **The probe is shared.** The database probe that stands in front of that move is the same as on the source path (see [the order of an install](#ownership-recovery-and-the-order-of-an-install)): a queue answer that is not exactly one JSON object, or an error tag outside the `error` object, refuses the install before anything changes, with the old queue database left in place.
@@ -415,15 +417,14 @@ is overwritten. The database and its sidecars keep SQLite's pairing: when any
 of the three names is taken, all three move under the first free shared name
 (`agent.db.1`, `agent.db.1-wal`, `agent.db.1-shm`, then `agent.db.2`, ...); a
 taken log name gets the first free suffix. `retired/` is a preserved path, so no later install or
-uninstall removes it. An old submitter still running keeps using the moved
+uninstall removes it; only `planar-uninstall --purge` does, naming each file first. An old submitter still running keeps using the moved
 file, as in the note above, so there is no `--ignore-live-queue` decision to
 make.
 
-`--uninstall` runs the same live-queue guard first whenever `agent.db`
-exists, with or without `--force`; `--ignore-live-queue` is the only override.
-It needs `python3` for that and refuses without it; with no `agent.db`,
-`python3` is not needed. A prefix that holds only an `agent.db` does not count
-as a Planar install.
+The uninstaller never reads `agent.db` (it needs no `python3`): an uninstall
+keeps `agent.db` and its sidecars and names them, and `--purge` removes them
+after naming them. A prefix that holds only an `agent.db` does not count as a
+Planar install.
 
 `PLANAR_AGENT_DB` was the variable that relocated the old database. It is no
 longer read: a value left exported is ignored, never refused, and a store it
@@ -483,32 +484,56 @@ sqlite3 /tmp/scratch.db < migrations/00001_foundation.up.sql
 ## Uninstall
 
 ```bash
-cd /path/to/planar     # the source repo, where install.sh lives
-./install.sh --uninstall
-# or:
-make uninstall-full
+~/.planar/bin/planar-uninstall            # keep the data paths
+~/.planar/bin/planar-uninstall --purge    # remove them too
+# equivalently, from a checkout or an unpacked bundle:
+./install.sh --uninstall [--purge] [--yes]
 ```
 
-This removes:
-- Every target `install.sh` placed and recorded in `~/.planar/install-manifest.json` (the `planar` skill under `~/.claude/skills`, `~/.agents/skills` and `~/.gemini/antigravity-cli/skills`, and the `planar-<role>` agents under the six agent directories), while it is still what Planar placed: a symlink into `~/.planar/` or the staged bytes. A recorded path someone replaced, and any other `planar` or `planar-*` entry there, is left and reported. No vendor directory and not `~/.agents/skills` itself is removed.
-- Everything in `~/.planar/` *except* the [preserved paths](#preserved-paths): your database (`planar.db` with its `-wal` and `-shm` sidecars), the queue logs, the workbench, your configuration, local skills and agents, workspaces, models, execute profiles and templates. A retired old queue database left from before the upgrade is removed; the upgrade note above covers the guard that protects a live old queue.
+`planar-uninstall` is `scripts/uninstall.sh`, installed into `~/.planar/bin/`
+by every install and shipped at the root of every release bundle as
+`uninstall.sh`. It is a standalone bash script that needs only the
+[base tools](#prerequisites) (no `python3`, and no working Planar binary), so it
+works when the binaries are broken, schema-locked or already gone.
+`./install.sh --uninstall` runs it. Options: `--prefix DIR` (the install root;
+default `PLANAR_HOME`, else `~/.planar`), `--purge`, `--yes`. There is no
+`--force`: it exits 2 naming `--purge`, and nothing is changed.
 
-A prefix that holds only preserved data (a `planar.db`, or any other [preserved path](#preserved-paths) such as `workbench/` or `config.toml`) still counts as a Planar install: a later `--uninstall` or re-install accepts it without `--force`.
+It removes, printing each removal:
+- Every vendor path recorded in `~/.planar/install-manifest.json` (the `planar` skill under `~/.claude/skills`, `~/.agents/skills` and `~/.gemini/antigravity-cli/skills`, and the `planar-<role>` agents under the six agent directories), each only while it is still what Planar placed: a symlink to the staged entry or into `~/.planar/`, or the staged bytes (an OpenCode agent: its derived form). A recorded path someone replaced, and any other `planar` or `planar-*` entry there, is left and reported. No vendor directory and not `~/.agents/skills` itself is removed. The manifest is read with `sed`, one projection per line; a line it cannot read is reported by its line number and its target is left in place. **Without a manifest, or with a version 1 manifest, nothing under the vendor directories is removed**, and it says so.
+- The managed subtrees (`bin/`, `skills/`, `agents/`, `codex-agents/`, `workflows/`, `scripts/`, `migrations/`), never following a symlink: a link-mode subtree is unlinked and the checkout behind it is untouched. Also the paths `install-cleanup.txt` lists as retired, and `install-cleanup.txt`, `release.json`, the install stamp and the manifest.
+- The staging directories and `<name>.old` backups that an interrupted install's journal owns, and an abandoned `planar update`'s recorded download directory.
 
-The uninstall takes the same [mutation lock](#ownership-recovery-and-the-order-of-an-install) as an install, so a running install or update refuses it, and holds it until every removal has finished. Every check that can refuse (an invalid journal, the [live-queue guard](#upgrade-note-what-installsh-does-with-the-old-queue-plan-1089)) runs under the lock first; only then, as the removals begin, does it record **uninstalling** in `~/.planar/.planar-journal`, which ends any interrupted install for good: no later install resumes it. A refused uninstall leaves the journal as it found it, so a pending install can still be completed by running the same install command again. The journal is removed last. The lock directory beside the root (`~/.planar.lock`) is not removed.
+It keeps, and names:
+- Every [preserved path](#preserved-paths): `planar.db` with its `-wal` and `-shm` sidecars, `queue-logs/`, `retired/` (old queue databases and logs), `workbench/`, `config.toml`, `local/`, `workspaces/`, `models/`, `execute/` and every file in `templates/`. A relocated one is named and left where it is.
+- A legacy `agent.db` and its sidecars, which it never reads.
+- Every other entry it does not know, including `.staging-*` and `.old` entries no journal owns: reported, never removed.
+
+**`--purge`** also removes the preserved paths under the install root and the legacy `agent.db`, naming each first (the files under `retired/` one by one), then the install root when nothing is left in it. A data path relocated by `PLANAR_DB`, `PLANAR_CONFIG_PATH`, `PLANAR_WORKBENCH_ROOT`, `PLANAR_LOCAL_HOME` or `PLANAR_TEMPLATES_DIR` is named and left where it is, and nothing outside the install root is removed. Unknown entries are still kept.
+
+**`~/.local/bin`.** When `~/.local/bin` holds `planar` or a sibling binary (`planar-agent`, `planar-watch`, `planar-execute`, `planar-ext`) left by the retired `make install`, the uninstaller names them and asks whether to remove them; `--yes` removes them without asking. With no terminal on standard input it asks nothing, leaves them and says to re-run with `--yes`.
+
+**Ownership and interruption.** The uninstall takes the same [mutation lock](#ownership-recovery-and-the-order-of-an-install) as an install, `--purge` included: a running install, update or uninstall makes it exit 1 naming the holder, before anything is removed, and it holds the lock until every removal has finished. The lock directory beside the root (`~/.planar.lock`) is never removed. A recovery journal that does not validate stops it, kept. Before its first removal it records **uninstalling** in `~/.planar/.planar-journal` and flushes it to disk, which ends any interrupted install for good: no later install resumes or restores it, and an install refuses while that journal exists. It also prints the durable retry command:
+
+- for a release install, the matching release's bundled uninstaller, downloaded afresh (the installed copy may already be gone):
+  `d="$(mktemp -d)" && curl -fsSL https://github.com/rdrsss/planar/releases/download/<tag>/planar-<os>-<arch>.tar.gz | tar -xzf - -C "$d" && bash "$d/planar-<os>-<arch>/uninstall.sh"` (with `--prefix`, `--purge` and `--yes` repeated, and `PLANAR_RELEASE_URL` honoured);
+- for a source install run from a checkout, `cd <checkout> && ./install.sh --uninstall`;
+- otherwise the bundle's `uninstall.sh` it ran from.
+
+Running that command, or `planar-uninstall` again while it exists, finishes the removals; it never brings binaries back. The journal is removed last. When the uninstall keeps the install root (preserved data, or entries it does not know), it writes `~/.planar/.planar-uninstalled`, a two-line record naming the root, so the next install into that root, `--prefix` included, needs no `--force`; that install removes it. A fresh install after a finished uninstall proceeds normally, with a relocated `PLANAR_DB` still the database it uses.
 
 ### The install root guard
 
-`install.sh` and `install.sh --uninstall` run one guard, `scripts/install-lib/prefix-guard.sh`, on the install root (`--prefix`, else `PLANAR_HOME`, else `~/.planar`) before anything is removed, created or built:
+`install.sh` and `planar-uninstall` (also as `install.sh --uninstall`) run one guard, `scripts/install-lib/prefix-guard.sh`, on the install root (`--prefix`, else `PLANAR_HOME`, else `~/.planar`) before anything is removed, created or built:
 
 - A root that is the empty string (`--prefix ""` or `PLANAR_HOME=`), `/`, or resolves to `$HOME` exits **2**, naming the path and the rule. The path is canonicalised first, so `$HOME/.`, `$HOME/../<user>`, a trailing slash and a symlink to `$HOME` or `/` are all caught. `--force` makes no difference.
-- An existing non-empty root is accepted without `--force` when it carries the install stamp (`.planar-install`), an executable `bin/planar`, `planar.db`, a valid installer recovery journal (`.planar-journal`, so an interrupted first install is adopted), or, only when the root is `~/.planar` itself, any [preserved path](#preserved-paths) (what an uninstall leaves behind once it has removed the stamp and `bin/`; it counts with or without unknown files beside it, while unknown files alone never do). In any other directory a preserved-path name such as `models/` or `templates/` is not evidence, so a project that holds one is refused without `--force`. Installs made before the stamp existed carry `bin/planar` or `planar.db`. A bare `.staging-*` directory or any other marker file is not evidence.
+- An existing non-empty root is accepted without `--force` when it carries the install stamp (`.planar-install`), an executable `bin/planar`, `planar.db`, a valid installer recovery journal (`.planar-journal`, so an interrupted first install is adopted), a valid uninstall record (`.planar-uninstalled`, which a finished uninstall writes into a root it keeps and which names that root, so a copy from another root does not count), or, only when the root is `~/.planar` itself however it is spelled (a symlink to it, or a case variant on a case-insensitive volume), any [preserved path](#preserved-paths) (what an uninstall leaves behind once it has removed the stamp and `bin/`; it counts with or without unknown files beside it, while unknown files alone never do). In any other directory a preserved-path name such as `models/` or `templates/` is not evidence, so a project that holds one is refused without `--force`. Installs made before the stamp existed carry `bin/planar` or `planar.db`. A bare `.staging-*` directory or any other marker file is not evidence.
 - Any other non-empty root exits **1** naming the path, unless `--force` adopts it.
 - The root's parent directory must be writable, even when the root already exists: the [mutation lock](#ownership-recovery-and-the-order-of-an-install) is created beside the root as `<root>.lock` (for `--prefix /opt/planar`, `/opt/planar.lock`). When it cannot be created the run exits **1** before any change with `cannot create the mutation lock directory <root>.lock (is <parent> writable?)`. Create `<root>.lock` yourself (`mkdir -m 700`, owned by you) if the parent must stay read-only.
 
 ### Preserved paths
 
-The data paths are listed once, in `scripts/install-lib/data-paths.sh`, which `install.sh` sources. The installer never removes one: a re-install, an `install-cleanup.txt` entry and a managed-tree refresh all skip them, and a cleanup entry that names one is skipped with a note. Two writes are allowed: a `planar.db` that is behind the binary is migrated forward, and shipped files are placed into `templates/` only where missing, `--force` included, so an edited template is never overwritten. `install.sh --uninstall` preserves them too, and `--force` does not change that. `install.sh --uninstall` has no `--purge`, and a `--purge` for the uninstaller is not available yet; to delete data, remove it by hand (below). Each lives under `~/.planar/` unless one of five variables relocates it, and the installer protects the path under both the install root and `~/.planar/` (they differ when `--prefix` or `PLANAR_HOME` points elsewhere). It names a relocation and leaves the file where it is:
+The data paths are listed once, in `scripts/install-lib/data-paths.sh`, which `install.sh` sources. The installer never removes one: a re-install, an `install-cleanup.txt` entry and a managed-tree refresh all skip them, and a cleanup entry that names one is skipped with a note. Two writes are allowed: a `planar.db` that is behind the binary is migrated forward, and shipped files are placed into `templates/` only where missing, `--force` included, so an edited template is never overwritten. `planar-uninstall` (and `install.sh --uninstall`) preserves them too and names each; only `planar-uninstall --purge` removes them, and never a relocated one (see [Uninstall](#uninstall)). You can also remove the data by hand (below). Each lives under `~/.planar/` unless one of five variables relocates it, and the installer protects the path under both the install root and `~/.planar/` (they differ when `--prefix` or `PLANAR_HOME` points elsewhere). It names a relocation and leaves the file where it is:
 
 <!-- data-paths:begin (generated by `bash scripts/install-lib/data-paths.sh --markdown`; checked by scripts/install-data-paths-test.sh) -->
 - `planar.db`: the SQLite database; relocated by `PLANAR_DB`
@@ -599,7 +624,7 @@ By default, install.sh refuses to overwrite a destination that no Planar install
 ls -la ~/.claude/skills/planar
 ```
 
-If it is yours and you want it gone, move it aside and rerun `./install.sh`. `--uninstall` likewise leaves a recorded path that someone replaced, and reports it.
+If it is yours and you want it gone, move it aside and rerun `./install.sh`. `planar-uninstall` likewise leaves a recorded path that someone replaced, and reports it.
 
 **Database operations fail with "no such table".**
 
@@ -634,12 +659,14 @@ at `~/.planar.lock/`):
 │   ├── planar-agent                    # agent-callable coordination binary
 │   ├── planar-watch                    # human-facing read-only viewer
 │   ├── planar-execute                  # deterministic spawn-free Lua workflow engine
-│   └── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
+│   ├── planar-ext                      # operational-plane binary (Jira, GitHub Issues)
+│   └── planar-uninstall                # the standalone uninstaller (scripts/uninstall.sh)
 ├── install-manifest.json               # versioned managed-projection authority
 ├── release.json                        # the installed release (source: version = the build's sixth version token; prebuilt: the bundle's file)
 ├── planar.db                           # SQLite database (created by the install; mode 0600)
 ├── .planar-install                     # the install stamp, written last
 ├── .planar-journal                     # recovery journal; present only while an install or uninstall is unfinished
+├── .planar-uninstalled                 # left by a finished uninstall that kept the root; the next install removes it
 ├── .staging-<token>/, <name>.old       # staging and backups of an unfinished install (journal-owned)
 ├── .planar-update/<name>/              # `planar update`'s download directory, removed by the installer it hands off to
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
