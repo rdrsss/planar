@@ -299,6 +299,8 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
   std::string               current(url);
   std::optional<url_scheme> previous;
   std::uint32_t             hops = 0;
+  // One deadline for the whole redirect chain; each hop gets what remains.
+  auto const deadline = std::chrono::steady_clock::now() + policy.total_timeout;
 
   while (true) {
     auto const checked = check_download_url(current, previous);
@@ -307,6 +309,11 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
           download_error{.kind = previous.has_value() ? download_error_kind::redirect_refused : download_error_kind::invalid_url,
                          .url  = current,
                          .message = checked.error()});
+    }
+    auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) {
+      return std::unexpected(download_error{
+          .kind = download_error_kind::timeout, .url = current, .message = std::format("download of {} timed out", current)});
     }
     easy_handle easy;
     if (easy.handle == nullptr) {
@@ -319,7 +326,7 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
     curl_easy_setopt(handle, CURLOPT_URL, current.c_str());
     curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &write_body);
     curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body_out);
-    curl_easy_setopt(handle, CURLOPT_TIMEOUT, static_cast<long>(policy.total_timeout.count()));
+    curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, static_cast<long>(remaining.count()));
     curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, static_cast<long>(policy.connect_timeout.count()));
     curl_easy_setopt(handle, CURLOPT_LOW_SPEED_LIMIT, static_cast<long>(policy.low_speed_limit));
     curl_easy_setopt(handle, CURLOPT_LOW_SPEED_TIME, static_cast<long>(policy.low_speed_time.count()));

@@ -391,6 +391,31 @@ TEST_CASE("a slow body completes under the download bound and fails under the ad
   CHECK(bounded.error() == planar::http::transport_error::send_failed);
 }
 
+TEST_CASE("the download bound covers the whole redirect chain, not each hop", "[http]") {
+  // Each hop streams a four-piece body at one second a piece (3-4 seconds), so
+  // either hop alone fits inside the 5-second bound; the two together do not.
+  planar::http::fixture::server server([](const captured_request& req) {
+    canned_response reply;
+    if (req.target == "/start") {
+      reply = redirect_to("/final");
+    } else {
+      reply.status = 200;
+    }
+    reply.body        = std::string(40000, 'h');
+    reply.chunk_bytes = 10000;
+    reply.chunk_delay = std::chrono::milliseconds{1000};
+    return reply;
+  });
+
+  auto const url = server.base_url() + "/final";
+  auto const got = planar::http::download(
+      server.base_url() + "/start",
+      {.total_timeout = std::chrono::seconds{5}, .low_speed_limit = 100, .low_speed_time = std::chrono::seconds{5}});
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == download_error_kind::timeout);
+  CHECK(got.error().url == url);
+}
+
 TEST_CASE("a stalled body is aborted by the low-speed bound with a timeout naming the url", "[http]") {
   planar::http::fixture::server server([](const captured_request&) {
     return canned_response{.status                  = 200,

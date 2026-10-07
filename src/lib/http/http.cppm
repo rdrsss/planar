@@ -188,7 +188,7 @@ export auto check_download_url(std::string_view url, std::optional<url_scheme> p
 
 /// @brief Bounds for one `download`.
 export struct download_policy {
-  std::chrono::seconds total_timeout{600};     ///< Whole-request bound across the whole redirect chain, per hop.
+  std::chrono::seconds total_timeout{600};     ///< One deadline for the whole redirect chain; each hop gets the time left.
   std::chrono::seconds connect_timeout{30};    ///< Connection establishment bound per hop.
   std::uint32_t        low_speed_limit = 1024; ///< Bytes per second below which the transfer counts as stalled.
   std::chrono::seconds low_speed_time{60};     ///< How long the rate may stay below `low_speed_limit` before abort.
