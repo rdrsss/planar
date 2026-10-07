@@ -112,6 +112,9 @@ EOF
 # expanded for the variables whose reader expands it (see the header), a relative
 # value made absolute; empty when unset or empty.
 _planar_dp_value() {
+  # No variable name, no relocation. Bash 4 and later reject `${!1}` for an
+  # empty name ("invalid variable name"); bash 3.2 expands it to empty.
+  [ -n "$1" ] || return 0
   local v="${!1-}"
   [ -n "$v" ] || return 0
   case "$1" in
