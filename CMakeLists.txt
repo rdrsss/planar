@@ -317,6 +317,14 @@ add_test(NAME install.prebuilt
   COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-prebuilt-test.sh")
 set_tests_properties(install.prebuilt PROPERTIES LABELS "install_prebuilt" TIMEOUT 600)
 
+# Managed subtrees, retired paths and the templates rule through install.sh: an
+# install of unknown age becomes clean, symlinks are never followed, link and
+# copy mode replace each other, type/mode changes apply, an unshipped subtree is
+# retired, templates stay missing-only under --force. Scratch HOME, fake bundles.
+add_test(NAME install.managed
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-managed-test.sh")
+set_tests_properties(install.managed PROPERTIES LABELS "install_managed" TIMEOUT 600)
+
 # The common mutation ownership protocol (scripts/install-lib/mutation-lock.sh):
 # live, killed and pid-reused owners, ambiguous records, simultaneous reclaims,
 # the update handoff and update temporaries, with real processes under stock

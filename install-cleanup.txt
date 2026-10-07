@@ -38,14 +38,11 @@ opt/mtkahypar/
 # `dev/grouping-solvers`), so a re-install removes it.
 lib/libmtkahypar.dylib
 
-# Doc-synthesis prompts that earlier installs copied into templates/. Nothing
-# reads them any more; templates/doc-prompts/agents.md is still live.
-templates/doc-prompts/adr_index.md
-templates/doc-prompts/changelog.md
-templates/doc-prompts/feature.md
-templates/doc-prompts/getting_started.md
-templates/doc-prompts/glossary.md
-templates/doc-prompts/research.md
+# NOT listed: templates/doc-prompts/{adr_index,changelog,feature,getting_started,
+# glossary,research}.md and any other renamed or formerly shipped template.
+# templates/ is a data path: an install places shipped defaults missing-only,
+# even with --force, and never removes or overwrites a template, so a cleanup
+# line naming one could only mislead (the installer skips it and says so).
 
 # Retired per-vendor skill and agent projections (plan 1104, M2: agent skills).
 # Planar now stages one `planar` skill and the planar-<role> agents and places
@@ -56,7 +53,8 @@ templates/doc-prompts/research.md
 # directory is Planar's, so the sweep runs BEFORE these lines take effect.
 # bin/scriptorium: the renderer is gone; a re-install removes the stale binary.
 bin/scriptorium
-commands/
+commands/               # retired managed subtree (skills are placed from skills/planar/)
+copilot/                # retired managed subtree; Copilot gets its agents and skills from the staged source
 skills/codex/
 skills/copilot/
 skills/gemini/

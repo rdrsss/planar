@@ -28,8 +28,6 @@
 #                                     # (planar-*.md roles plus the shared docs)
 #     skills/planar/                  # staged planar skill (SKILL.md + references/)
 #     codex-agents/planar-*.toml      # Codex custom agents rendered from agents/
-#     copilot/                        # Copilot instructions/prompts (only when
-#                                     # the checkout has a copilot/ directory)
 #     templates/                      # operator-editable defaults
 #     workflows/                      # Lua workflows
 #     scripts/validate-{barrel-modes,plan-status}-acceptance
@@ -976,7 +974,9 @@ fi
 
 # The managed subtrees: each is staged complete, then swapped in by two renames
 # (scripts/install-lib/install-state.sh). templates/ is a data path and is
-# placed missing-only after the swap; copilot/ is still placed in place.
+# placed missing-only after the swap. A subtree the release does not ship is
+# retired through the same swap (its live copy is backed up, nothing replaces
+# it); commands/ and copilot/ are retired paths listed in install-cleanup.txt.
 PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
 DEFAULT_RELEASE_BASE="https://github.com/rdrsss/planar/releases"
 
@@ -1431,28 +1431,17 @@ title "Swapping the managed subtrees into $ROOT_C"
 for _n in $PLANAR_JOURNAL_SUBTREES; do
   _sk="$(planar_journal_sub_key "$_n")"
   _st="J_$_sk"
-  if [[ "${!_st}" != swapped && ! -e "$STAGE/$_n" && ! -L "$STAGE/$_n" ]]; then
-    # Nothing staged for it (the source has no such tree): the live one stays.
-    printf -v "J_$_sk" '%s' swapped
-    printf -v "J_${_sk}_live" '%s' none
-    printf -v "J_${_sk}_staged" '%s' "$(_ps_ino "$ROOT_C/$_n")"
-    journal_save
-    continue
-  fi
   if [[ "${!_st}" == swapped ]]; then
     vlog "$_n/ already swapped by the interrupted run"
     continue
   fi
   planar_state_swap "$ROOT_C" "$STAGE" "$_n" || err "could not swap $_n/: $INSTALL_STATE_ERROR"
-  log "$_n/ → $ROOT_C/$_n ($MODE)"
+  if [[ "$(_ps_ino "$ROOT_C/$_n")" == none ]]; then
+    log "$_n/ retired: this release does not ship it"
+  else
+    log "$_n/ → $ROOT_C/$_n ($MODE)"
+  fi
 done
-
-# copilot/ is optional and may not exist yet; it is placed in place.
-if [[ -d "$SRC_ROOT/copilot" ]]; then
-  rm_managed "$ROOT_C/copilot"
-  place "$SRC_ROOT/copilot" "$ROOT_C/copilot"
-  log "copilot/ → $ROOT_C/copilot ($MODE)"
-fi
 
 # templates/ ships operator-editable defaults (workspace-capabilities.toml,
 # doc prompts). It is a data path: each file is placed only when missing, so

@@ -245,6 +245,18 @@ running. The protocol is specified in the header of
    (never a data path, never through a symlink), then swap each managed
    subtree: the live `<name>` is renamed to `<name>.old`, the staged one to
    `<name>`, the journal updated around each rename.
+   The managed subtrees are `bin/`, `skills/`, `agents/`, `codex-agents/`,
+   `workflows/`, `scripts/` and `migrations/`; the installer owns each outright
+   and replaces it whole. A subtree that is a symlink (a `--link` install) is
+   renamed aside, never followed, so a checkout behind it is never touched, and
+   switching between link and copy mode replaces the subtree's form. A subtree
+   the release no longer ships is retired: its live copy is kept as
+   `<name>.old` until the install succeeds and nothing replaces it. `commands/`
+   and `copilot/` are retired paths removed through `install-cleanup.txt`.
+   Shipped `templates/` files are placed only where missing, `--force`
+   included; a template an operator edited, or one an older release shipped
+   under another name, is never overwritten or removed, even when
+   `install-cleanup.txt` lists it.
 8. Create or migrate the database with the installed
    `planar init --skip-project --allow-no-repo` (against `PLANAR_DB` and
    `PLANAR_CONFIG_PATH` when they are set), and require a current probe.
@@ -327,7 +339,7 @@ what it can prove Planar made, and prints each removal:
   left and reported as "could not prove ownership".
 
 It then removes the retired `~/.planar` paths listed in `install-cleanup.txt`
-(`commands/`, `skills/<vendor>/`, `<vendor>-skills/` including
+(`commands/`, `copilot/`, `skills/<vendor>/`, `<vendor>-skills/` including
 `opencode-skills/`, `agents/<vendor>/`). The retired renderer binary under `bin/` is listed too, so an install over an older tree removes it.
 
 <!-- retired-ref: agent.db upgrade note -->
