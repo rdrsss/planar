@@ -1705,8 +1705,23 @@ log "database:   $PLANAR_INSTALL_DB (current)"
 log "next:       planar init  (in a project checkout, to register it)"
 log "uninstall:  $PLANAR_HOME/bin/planar-uninstall  (--purge also removes the data paths)"
 
-# Print PATH instructions only when ~/.planar/bin is not already on PATH.
+# A planar ahead of the installed one on PATH shadows it: name that binary, and
+# say plainly when it is the one the retired `make install` left in
+# ~/.local/bin. Resolved after the summary so the warning is the last thing read.
 PLANAR_BIN_DIR="$PLANAR_HOME/bin"
+_shadow="$(command -v planar 2>/dev/null || true)"
+if [[ -n "$_shadow" && "$_shadow" == /* ]]; then
+  _shadow_c="$(trap - ERR; planar_canonical_path "$_shadow" 2>/dev/null || printf '%s' "$_shadow")"
+  _installed_c="$(trap - ERR; planar_canonical_path "$PLANAR_BIN_DIR/planar" 2>/dev/null || printf '%s' "$PLANAR_BIN_DIR/planar")"
+  if [[ "$_shadow_c" != "$_installed_c" ]]; then
+    _shadow_name="$_shadow"
+    # shellcheck disable=SC2088  # a display string: the literal ~ is intended
+    [[ "$_shadow" == "$HOME/.local/bin/planar" ]] && _shadow_name="~/.local/bin/planar"
+    warn "$_shadow_name shadows the installed $PLANAR_BIN_DIR/planar: your shell runs $_shadow_name. Put $PLANAR_BIN_DIR first on PATH, or remove $_shadow_name (the retired 'make install' put it there)."
+  fi
+fi
+
+# Print PATH instructions only when ~/.planar/bin is not already on PATH.
 if ! printf '%s' "$PATH" | tr ':' '\n' | grep -qx "$PLANAR_BIN_DIR"; then
   printf '\n'
   printf '  Add %s to your PATH so the planar command is available:\n' "$PLANAR_BIN_DIR"

@@ -234,7 +234,6 @@ Do not claim the guard is universal without measuring. Matrix:
 
 ```bash
 make build      # release build; copies the binaries into ./bin/
-make install    # release build with version metadata; installs into PREFIX
 make test       # debug build, then ctest
 make test-all   # the full gate; run it before a pull request
 make cpp-lint   # clang-format, clang-tidy and the Doxygen pass
@@ -246,8 +245,8 @@ cmake --build build/debug --target all planar_tests   # test binaries are not in
 ctest --test-dir build/debug --output-on-failure
 ```
 
-- Version metadata is opt-in (`-DPLANAR_VERSION_META=ON`). Only `make
-  install` and `install.sh` pass it. Embedding the live sha and dirty flag by
+- Version metadata is opt-in (`-DPLANAR_VERSION_META=ON`). Only
+  `install.sh` passes it. Embedding the live sha and dirty flag by
   default invalidates the whole build graph on every commit.
 - `make test` alone is not the merge gate; `make test-all` is.
 - **Tasks run targeted tests; milestones run the full suite.** A task builds
@@ -261,7 +260,7 @@ ctest --test-dir build/debug --output-on-failure
   builds the product only; `--target planar_tests` builds every Catch2
   binary (`make test`, `make linux-gate` and the full CI tier do both). A
   cold build spent a quarter of its CPU compiling tests that `make build`,
-  `make install` and `install.sh` never ran (measured 2026-10-03). Every
+  `install.sh` never ran (measured 2026-10-03). Every
   test executable goes through `planar_mark_test_binary()` in
   `cmake/module.cmake`; a hand-rolled `add_executable(<x>_tests …)` that
   skips it lands back in `all`.

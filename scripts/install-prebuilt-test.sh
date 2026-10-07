@@ -19,7 +19,7 @@
 # (scripts/fixtures/prebuilt-bundle.sh); nothing real is read or built. Set
 # PLANAR_REAL_BUNDLE to an unpacked real bundle to add a placement check of its
 # binaries. Runs under stock bash 3.2.
-# shellcheck disable=SC2016,SC2012  # literal $ in fixtures; ls for messages
+# shellcheck disable=SC2016,SC2012,SC2088  # literal $ in fixtures; ls for messages
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -337,6 +337,30 @@ H="$TMP/homes/source-tag"; mkdir -p "$H"
 run_source "$H" STUB_TAG=v7.8.9
 [[ "$RC" == 0 ]] || fail "tagged source install failed ($RC): $(cat "$TMP/err")"
 grep -Fxq '  "version": "v7.8.9",' "$H/.planar/release.json" || fail "version is not the sixth token: $(cat "$H/.planar/release.json")"
+pass
+
+# --- a shadowing planar is named ----------------------------------------------------------
+# A planar in ~/.local/bin ahead of ~/.planar/bin on PATH: the install still exits 0 and
+# warns, naming ~/.local/bin/planar and the installed path. With ~/.planar/bin first
+# there is no such warning.
+
+H="$(new_home shadow)"
+mkdir -p "$H/.local/bin"
+printf '#!/bin/sh\nexit 0\n' > "$H/.local/bin/planar"
+chmod 755 "$H/.local/bin/planar"
+run_prebuilt "$H" "$BUNDLE" "PATH=$H/.local/bin:$H/.planar/bin:$SHIM:$BASEBIN" --
+[[ "$RC" == 0 ]] || fail "shadowed install failed ($RC): $(cat "$TMP/err")"
+grep -F '~/.local/bin/planar' "$TMP/err" | grep -Fq "$H/.planar/bin/planar" \
+  || fail "shadow-warning-names-local-bin: no warning names ~/.local/bin/planar and the installed path: $(cat "$TMP/err")"
+pass
+
+H="$(new_home noshadow)"
+mkdir -p "$H/.local/bin"
+printf '#!/bin/sh\nexit 0\n' > "$H/.local/bin/planar"
+chmod 755 "$H/.local/bin/planar"
+run_prebuilt "$H" "$BUNDLE" "PATH=$H/.planar/bin:$H/.local/bin:$SHIM:$BASEBIN" --
+[[ "$RC" == 0 ]] || fail "unshadowed install failed ($RC): $(cat "$TMP/err")"
+if grep -Fq 'shadows' "$TMP/err" "$TMP/out"; then fail "no-warning-when-planar-bin-first: a shadow warning appeared with ~/.planar/bin first"; fi
 pass
 
 # --- optional: a real unpacked bundle ---------------------------------------------------------------------

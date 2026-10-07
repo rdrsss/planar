@@ -58,7 +58,7 @@ set(_planar_arena_sweep_source "${CMAKE_CURRENT_LIST_DIR}/test_support/arena_swe
 #   cmake --build <dir> --target planar_tests  # every test binary
 #
 # `make test`, `make linux-gate` and the full CI tier build `planar_tests`
-# explicitly; `make build`, `make install` and `install.sh` no longer compile
+# explicitly; `make build` and `install.sh` no longer compile
 # the suite at all. catch_discover_tests() is unaffected: its discovery step
 # is a POST_BUILD of the test binary and still runs whenever that binary is
 # built, so a registered-but-unbuilt test cannot exist — ctest reports a

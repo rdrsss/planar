@@ -214,11 +214,11 @@ symptom is a build step failing with `code=127` and
 file or directory`, usually from the first third-party target
 (`_deps/spdlog-build/...`) because that is what ninja reaches first. It
 looks like a missing tool; it is a stale path. `rm -rf build/<preset>`
-and re-run the configure or `make install`; discovery resolves the new
+and re-run the configure or `install.sh`; discovery resolves the new
 prefix. EVERY build tree configured before the bump is affected —
 `build/debug` and `build/release` alike — and each one fails only when it
 next has something to compile, so `make test` can keep passing on a tree
-whose objects are all up to date while `make install` fails on the other
+whose objects are all up to date while `install.sh` fails on the other
 tree the same afternoon (2026-09-21: `release` failed first, `debug`
 failed an hour later on `make surface-lint`, which needed to rebuild the
 lint tool). Re-running configure over the stale tree is NOT enough: the

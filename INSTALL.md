@@ -2,7 +2,7 @@
 
 This guide covers three install paths, ordered from simplest to most flexible:
 
-1. [Quick install (`make install`)](#quick-install-make-install) — just the executables, no vendor surfaces.
+1. [Binaries only (`cmake --install`)](#binaries-only-cmake---install) — just the executables, no vendor surfaces.
 2. [Full install (`install.sh`)](#full-install-installsh) — binary + the `planar` skill + the `planar-<role>` agents, placed into each vendor harness found (Claude Code / Codex / Copilot / Gemini CLI / Antigravity / OpenCode).
 3. [Build from source](#build-from-source) — for contributors.
 
@@ -42,27 +42,25 @@ No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor
 cargo install sqlx-cli --no-default-features --features sqlite
 ```
 
-## Quick install (`make install`)
+## Binaries only (`cmake --install`)
 
-The shortest path. Builds and installs Planar's five executables into
-`~/.local/bin` and nothing else.
+The shortest path from a clone: build the `release` preset and install Planar's
+five executables and nothing else. The Makefile has no install or uninstall target
+(the retired ones left binaries in `~/.local/bin` that shadow the installed
+ones, which is why `install.sh` now names a shadowing `~/.local/bin/planar`).
 
 ```bash
 git clone https://github.com/rdrsss/planar.git
 cd planar
-make install
+cmake --preset release -DPLANAR_VERSION_META=ON
+cmake --build build/release
+cmake --install build/release --prefix "$HOME/.planar"
 ```
 
-Override the conventional prefix when needed:
+Add `~/.planar/bin` to your `$PATH`, then verify:
 
 ```bash
-make install PREFIX=/opt/planar
-```
-
-Add `~/.local/bin` to your `$PATH`, then verify:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.planar/bin:$PATH"
 planar health
 ```
 
@@ -70,7 +68,7 @@ This installs only the executables. Runtime migrations and default propagation
 templates are *embedded* at build time, so the CLI works standalone against a
 local database. The `planar` skill and the role agents are **not** embedded —
 they are source files that `install.sh` stages and places — so neither is wired
-into any vendor harness by a `make install` or a `cmake --install` alone; for
+into any vendor harness by a `cmake --install` alone; for
 those, use the [full install](#full-install-installsh).
 
 The five binaries are installed. The four
@@ -84,19 +82,7 @@ Centurion-enabled build (the `dev/centurion-integration` branch); this build
 refuses them with `planar-execute was built without the Centurion engine` and
 exit `1`. `planar-execute run` is unaffected.
 
-`make install` always builds the `release` CMake preset with version metadata
-stamped in (`-DPLANAR_VERSION_META=ON`). To run the same release-preset build by
-hand and install under `~/.planar` instead:
-
-```bash
-cmake --preset release -DPLANAR_VERSION_META=ON
-cmake --build build/release
-cmake --install build/release --prefix "$HOME/.planar"
-```
-
-This puts the five binaries in `~/.planar/bin/`; add that
-directory to your `$PATH` and run `planar health` as above. For a debug build
-instead, configure and build by hand:
+For a debug build instead, configure and build by hand:
 
 ```bash
 cmake --preset debug
@@ -112,8 +98,6 @@ The recommended path. Installs the binary plus the canonical agent specs, the `p
 git clone https://github.com/rdrsss/planar.git
 cd planar
 ./install.sh
-# or, equivalently:
-make install-full       # extra flags via: make install-full INSTALL_FLAGS="--link --force"
 ```
 
 That's it. The script:
@@ -511,7 +495,7 @@ It keeps, and names:
 
 **`--purge`** also removes the preserved paths under the install root and the retired old queue database, naming each first (the files under `retired/` one by one), then the install root when nothing is left in it. A data path relocated by `PLANAR_DB`, `PLANAR_CONFIG_PATH`, `PLANAR_WORKBENCH_ROOT`, `PLANAR_LOCAL_HOME` or `PLANAR_TEMPLATES_DIR` is named and left where it is, and nothing outside the install root is removed. Unknown entries are still kept.
 
-**`~/.local/bin`.** When `~/.local/bin` holds `planar` or a sibling binary (`planar-agent`, `planar-watch`, `planar-execute`, `planar-ext`) left by the retired `make install`, the uninstaller names them and asks whether to remove them; `--yes` removes them without asking. With no terminal on standard input it asks nothing, leaves them and says to re-run with `--yes`.
+**`~/.local/bin`.** When `~/.local/bin` holds `planar` or a sibling binary (`planar-agent`, `planar-watch`, `planar-execute`, `planar-ext`) left by the retired Makefile install, the uninstaller names them and asks whether to remove them; `--yes` removes them without asking. With no terminal on standard input it asks nothing, leaves them and says to re-run with `--yes`.
 
 **Ownership and interruption.** The uninstall takes the same [mutation lock](#ownership-recovery-and-the-order-of-an-install) as an install, `--purge` included: a running install, update or uninstall makes it exit 1 naming the holder, before anything is removed, and it holds the lock until every removal has finished. The lock directory beside the root (`~/.planar.lock`) is never removed. A recovery journal that does not validate stops it, kept. Before its first removal it records **uninstalling** in `~/.planar/.planar-journal` and flushes it to disk, which ends any interrupted install for good: no later install resumes or restores it, and an install refuses while that journal exists. It also prints the durable retry command:
 
@@ -551,8 +535,6 @@ The data paths are listed once, in `scripts/install-lib/data-paths.sh`, which `i
 <!-- data-paths:end -->
 
 A variable that is unset, empty, or points at the default location relocates nothing. The installer reads each variable the way the runtime does: `PLANAR_DB` and `PLANAR_LOCAL_HOME` literally, a relative value against the current directory, and a leading `~/` expanded only for `PLANAR_CONFIG_PATH`, `PLANAR_WORKBENCH_ROOT` and `PLANAR_TEMPLATES_DIR`. A relocation set in `config.toml` (`workbench.root`, `templates.dir`) is not read. `PLANAR_LOCAL_HOME` stands in for `$HOME`, so `local/` is then `$PLANAR_LOCAL_HOME/.planar/local`. A data path inside a tree the installer refreshes (for example a `PLANAR_TEMPLATES_DIR` under `~/.planar/scripts/`) stops the install with a message naming it, rather than being removed.
-
-`make uninstall` is the counterpart of `make install`: it removes only the five Planar executables from `PREFIX/bin` (default `~/.local/bin`).
 
 To remove the data by hand, delete the paths in the list above (the commands below cover the default locations; a relocated path is wherever its variable points, and anything you keep outside `~/.planar/` is not touched):
 

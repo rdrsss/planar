@@ -1012,8 +1012,6 @@ The CMake project root IS the repo root: `CMakeLists.txt` and `CMakePresets.json
 # Makefile wrappers
 make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copies
                         # the five Planar binaries into ./bin/
-make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
-                        # cmake --install into PREFIX/bin (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-cpp-report    # the same ctest suite plus its SKIP TALLY (expected: 0)
 make test-all           # unit (ctest) + ctest-registry-check + coverage +
@@ -1036,9 +1034,9 @@ Planar runs a two-tier test model:
 - **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator (`cli_usage_lint`) followed by the semantic authored-surface validator (`surface_lint`), both C++ tools under `src/tools/` (decision 1000, ported from the Zig tree at task 6402 — no `zig build-exe` remains in this gate). `cli_usage_lint` dumps all **five** binaries' `schema` catalogs, `planar`/`planar-agent`/`planar-watch`/`planar-ext`/`planar-execute` (decision 998 adds `planar-ext`'s). `cli_usage_lint` also reads each catalog's `docs.examples` and validates every entry like an authored invocation (an unknown flag is a finding naming the command path and the flag; an example that invokes another command is a finding too), and its summary line counts the examples checked. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 - **C++ format/tidy/doc-comment lint** — `make cpp-lint` (pinned `clang-format`/`clang-tidy`/Doxygen; see [docs/toolchain-parity.md](toolchain-parity.md)). The full target is not composed into `make test-all`: it requires the build already configured and built (clang-tidy needs the module BMIs materialized) and clang-tidy is advisory only, with 105 residual findings (task 6439). Its gating half — `clang-format --Werror` plus the Doxygen pass — runs in `make test-all` as `make cpp-lint-gate`. `make fmt-check` runs the cheap format half with no build precondition.
 
-The binaries produced by `make build` land under `./bin/`. `make install`
-installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
-`~/.local/bin`). `install.sh` / `make install-full` additionally
+The binaries produced by `make build` land under `./bin/`. The Makefile has no
+install target; `cmake --install` places the C++ executables under a prefix you
+choose, and `install.sh` additionally
 stages the skill, agents, workflows, and migrations under `~/.planar` and places
 the skill and agents into each present vendor's directories after the CMake build.
 

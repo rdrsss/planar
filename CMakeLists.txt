@@ -224,7 +224,7 @@ include(module)         # planar_module() (cmake/module.cmake)
 # only; `cmake --build <dir> --target planar_tests` builds the suite. Measured
 # before this change (2026-10-03, cold release build on 8 cores): the 150
 # test targets plus Catch2 were 81 of 320 CPU-minutes, compiled by
-# `make build`, `make install` and `install.sh` and then never run.
+# `make build` and `install.sh` and then never run.
 add_custom_target(planar_tests)
 
 add_subdirectory(src)
@@ -323,6 +323,12 @@ set_tests_properties(install.data_paths PROPERTIES LABELS "install_data_paths" T
 add_test(NAME install.prebuilt
   COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-prebuilt-test.sh")
 set_tests_properties(install.prebuilt PROPERTIES LABELS "install_prebuilt" TIMEOUT 600)
+
+# The retired make install, install-bin, install-full, uninstall and uninstall-full targets are gone
+# (make's no-rule message, absent from `make help`) and no install doc carries a make install recipe.
+add_test(NAME install.retired_targets
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-retired-targets-test.sh")
+set_tests_properties(install.retired_targets PROPERTIES LABELS "install_retired_targets" TIMEOUT 120)
 
 # Managed subtrees, retired paths and the templates rule through install.sh: an
 # install of unknown age becomes clean, symlinks are never followed, link and

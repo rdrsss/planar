@@ -10,6 +10,13 @@
 # deleted `zig/` outright, and the targets that drove it were removed rather
 # than stubbed — see the note above `test-cpp-report`.
 
+# No built-in suffix rules. With them, `make install` would match the repository's
+# install.sh through make's `%: %.sh` rule and copy it to a file named `install`
+# instead of refusing: the install and uninstall targets are retired (plan 1122)
+# and must fail with make's no-rule message.
+MAKEFLAGS += --no-builtin-rules
+.SUFFIXES:
+
 BINARY        := planar
 AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
@@ -21,8 +28,6 @@ AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
-
-PREFIX      ?= $(HOME)/.local
 
 # CMake build output — binaries land under `build/<preset>/bin` per
 # CMakePresets.json. Override to point a target at a different build
@@ -71,31 +76,6 @@ build: ## Build the five Planar binaries into ./bin/
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
-
-.PHONY: install
-install: ## Build and install the five Planar executables into PREFIX/bin
-	cmake --preset release -DPLANAR_VERSION_META=ON
-	cmake --build build/release $(ARGS)
-	cmake --install build/release --prefix $(PREFIX)
-
-.PHONY: install-bin
-install-bin: install ## Compatibility alias for the binary-only install
-
-.PHONY: install-full
-install-full: ## Legacy full install: binaries plus skills, agents, workflows, and vendor wiring
-	./install.sh $(INSTALL_FLAGS)
-
-.PHONY: uninstall
-uninstall: ## Remove the five Planar executables from PREFIX/bin
-	rm -f $(PREFIX)/bin/$(BINARY)
-	rm -f $(PREFIX)/bin/$(AGENT_BINARY)
-	rm -f $(PREFIX)/bin/$(WATCH_BINARY)
-	rm -f $(PREFIX)/bin/$(EXECUTE_BINARY)
-	rm -f $(PREFIX)/bin/$(EXT_BINARY)
-
-.PHONY: uninstall-full
-uninstall-full: ## Run the uninstaller (planar-uninstall): keeps and names every data path in INSTALL.md's Preserved paths; INSTALL_FLAGS=--purge removes them too
-	./install.sh --uninstall $(INSTALL_FLAGS)
 
 # Scratch database for hand-run smoke tests, kept in the build dir.
 #
