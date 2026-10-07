@@ -230,6 +230,7 @@ planar_state_reconcile() {
         if [ "$rl" != none ]; then
           mv "$o" "$l" || { INSTALL_STATE_ERROR="cannot restore $o to $l"; return 1; }
           printf 'restored %s from %s\n' "$l" "$o"
+          planar_install_fault "restore:$n" || { INSTALL_STATE_ERROR="test fault after restoring $n"; return 1; }
         fi
         _ps_set "$sk" pending; _ps_set "${sk}_live" ""; _ps_set "${sk}_staged" ""
         continue

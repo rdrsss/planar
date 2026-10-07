@@ -378,6 +378,45 @@ run_install "$KILL_HOME" "$B2" --
 [[ "$(tree_sum "$P")" == "$before" ]] || fail "the reconcile refusal changed the installation"
 pass "recovery restores before restaging, keeps unknown entries, resumes after late failures, refuses ambiguity"
 
+# --- a recovery restore is journaled ----------------------------------------------------------------------------------
+
+# A kill right after recovery renames <n>.old back to <n>, before the journal
+# records it: the live name holds the recorded inode and no backup is left. The
+# same command completes, from a backed_up and from a backing_up interruption.
+for first in backed-up:bin backup:bin; do
+  kill_case "$first"
+  P="$KILL_HOME/.planar"
+  run_install "$KILL_HOME" "$B2" PLANAR_INSTALL_TEST_FAULT=kill@restore:bin --
+  [[ "$RC" -ge 128 ]] || fail "after $first: the kill at restore:bin did not fire ($RC): $(show)"
+  [[ "$(bin_sum "$P/bin")" == "$KILL_OLD_BIN" && ! -e "$P/bin.old" ]] || fail "after $first: bin/ was not restored before the kill: $(ls -a "$P")"
+  run_install "$KILL_HOME" "$B2" --
+  [[ "$RC" == 0 ]] || fail "after $first: a kill right after the restore was not recovered by the same command ($RC): $(show)"
+  [[ "$(bin_sum "$P/bin")" == "$(bin_sum "$B2/bin")" ]] || fail "after $first: bin/ is not the bundle's after recovery"
+  no_evidence "$P"
+done
+# Two subtrees: bin is restored, skills matches no recorded state. The refusal
+# names the restore, the journal records it, and once the stray skills/ is gone
+# the same command completes.
+kill_case backed-up:bin
+P="$KILL_HOME/.planar"
+# skills/ recorded as being backed up from no live copy; a stray one appeared.
+sed -e 's/^sub_skills=.*/sub_skills=backing_up/' -e 's/^sub_skills_live=.*/sub_skills_live=none/' \
+    -e 's/^sub_skills_staged=.*/sub_skills_staged=1/' "$P/.planar-journal" > "$TMP/journal.edit"
+cat "$TMP/journal.edit" > "$P/.planar-journal"
+rm -rf "$P/skills"; mkdir "$P/skills"; printf 'stray\n' > "$P/skills/stray"
+run_install "$KILL_HOME" "$B2" --
+[[ "$RC" == 1 ]] && grep -Fq "cannot tell whether $P/skills was backed up" "$TMP/err" || fail "the ambiguous skills/ did not refuse: $(show)"
+[[ "$(bin_sum "$P/bin")" == "$KILL_OLD_BIN" && ! -e "$P/bin.old" ]] || fail "bin/ was not restored before the refusal: $(ls -a "$P")"
+grep -Fq "this run restored $P/bin from $P/bin.old" "$TMP/err" || fail "the refusal does not name the restore it performed: $(show)"
+grep -qx 'sub_bin=pending' "$P/.planar-journal" || fail "the restore was not recorded in the journal: $(cat "$P/.planar-journal")"
+rm -rf "$P/skills"
+run_install "$KILL_HOME" "$B2" --
+[[ "$RC" == 0 ]] || fail "the rerun after the ambiguity was cleared did not complete ($RC): $(show)"
+[[ "$(bin_sum "$P/bin")" == "$(bin_sum "$B2/bin")" ]] && diff -r "$B2/skills" "$P/skills" >/dev/null 2>&1 \
+  || fail "the completed rerun is not the bundle's bin/ and skills/"
+no_evidence "$P"
+pass "a recovery restore is journaled: a kill after it and a later ambiguity both complete on rerun"
+
 # --- concurrent installs and an interrupted first installation ------------------------------------------------------
 
 H="$(healthy concurrent)"; P="$H/.planar"
