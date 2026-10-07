@@ -256,7 +256,7 @@ make linux-gate-prune                            # docker builder prune -f
 
 `docker/linux-gate.Dockerfile` installs apt.llvm.org's LLVM 23 (clang,
 libc++ with its modules manifest, libc++abi), Kitware CMake pinned by version
-and SHA-256, ninja, git, python3, `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
+and SHA-256, ninja, git, python3, GNU `wget` (the `bootstrap.release` test), `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
 build never fails on a red suite. It records `configure.log`, `build.log`,
 `ctest.log`, `eval-unit.log`, `eval-queue-observation.log` and `status.txt`,
 and the Makefile exports them to

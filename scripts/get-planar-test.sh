@@ -456,7 +456,6 @@ refusal 1 "get-planar: cannot read the latest release from $BASE/latest/download
 end_case
 
 new_case unreachable-server
-begin_case unreachable-server
 BASE="http://127.0.0.1:$DEAD_PORT/none"
 boot PLANAR_RELEASE_URL="$BASE"
 refusal 1 "get-planar: cannot reach the release server at $BASE:"
