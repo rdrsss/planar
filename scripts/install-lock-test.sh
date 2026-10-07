@@ -253,4 +253,36 @@ mv "$R/.planar-update" "$TMP/v/ns"; ln -s "$TMP/v/ns" "$R/.planar-update"
 if valid "$R/.planar-update/ok-1"; then fail "an update temporary under a symlinked namespace was accepted"; fi
 pass
 
+# --- a lock directory writable by its group or by others is refused ---------------------------
+
+R="$TMP/m1/.planar"; mkdir -p "$R.lock"; chmod 770 "$R.lock"
+ambiguous group-writable-dir "writable by its group or by others"
+R="$TMP/m2/.planar"; mkdir -p "$R.lock"; chmod 703 "$R.lock"
+ambiguous other-writable-dir "writable by its group or by others"
+R="$TMP/m3/.planar"; mkdir -p "$R.lock"; chmod 755 "$R.lock"
+out="$(lk 'planar_lock_acquire "'"$R"'" install && echo "gen=$PLANAR_LOCK_GEN"')"
+[[ "$out" == "gen=1" ]] || fail "a lock directory only readable by others was refused: $out"
+# The handoff validates the directory the same way.
+R="$TMP/m4/.planar"; mkdir -p "$R/.planar-update/t1"
+hold "$R" update "$TMP/m4.ready" "$R/.planar-update/t1"
+g="$(cat "$TMP/m4.ready")"; nonce="$(sed -n 's/^nonce=//p' "$R.lock/owner.$g")"
+chmod 770 "$R.lock"
+out="$(PLANAR_MUTATION_HANDOFF="$g:$nonce" "$BASH_BIN" "$ADOPT" "$LIB" "$R")"
+[[ "$out" == "refused: "*"writable by its group or by others"* ]] || fail "a handoff through a group-writable lock directory was adopted: $out"
+kill -9 "$HOLD_PID"; wait "$HOLD_PID" 2>/dev/null || true
+pass
+
+# --- a record that cannot be linked names the reason, not contention ---------------------------
+
+STUBBIN="$TMP/stubbin"; mkdir -p "$STUBBIN"
+printf '#!/bin/sh\necho "ln: $2: Operation not permitted" >&2\nexit 1\n' > "$STUBBIN/ln"
+chmod 755 "$STUBBIN/ln"
+R="$TMP/n/.planar"; mkdir -p "$TMP/n"
+rc=0; out="$(PATH="$STUBBIN:$BASEBIN" lk 'planar_lock_acquire "'"$R"'" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+[[ "$rc" == 1 && "$out" == *"cannot create the ownership record $R.lock/owner.1"*"Operation not permitted"* ]] \
+  || fail "a failing link(2) was not reported with its reason ($rc): $out"
+[[ "$out" != *contention* && "$out" != *ERR-TRAP-FIRED* ]] || fail "a failing link(2) was reported as contention: $out"
+[[ -z "$(ls "$R.lock")" ]] || fail "a failed acquire left records behind: $(ls "$R.lock")"
+pass
+
 printf 'install lock tests: %s passed (%s reclaim rounds, %s wins)\n' "$PASSED" "$rounds" "$wins"
