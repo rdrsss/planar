@@ -620,7 +620,7 @@ pass "uninstall ends a pending install and an uninstalling journal is never repl
 # An uninstall that refuses before removing anything cancels nothing: with the
 # old agent.db present and no python3 the live-queue guard refuses, the pending
 # install's journal is untouched, and the same install command then resumes it.
-kill_case backed-up:workflows
+kill_case backed-up:scripts
 P="$KILL_HOME/.planar"
 printf 'old queue store\n' > "$P/agent.db"
 j_before="$(cat "$P/.planar-journal")"; before="$(tree_sum "$P")"
