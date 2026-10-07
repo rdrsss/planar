@@ -198,7 +198,10 @@ uninstall exits 1 naming the holder's operation and pid and changes nothing. A
 holder that was killed is reclaimed by the next run; a pid that was reused by
 another process is recognized from its start time. When ownership cannot be
 judged (a malformed record, another host's record, a start time that cannot be
-read), the run refuses and keeps every file. Nothing removes `<root>.lock`;
+read), the run refuses and keeps every file. It also refuses a `<root>.lock`
+that is a symlink, is not owned by you or is writable by its group or by
+others, and a filesystem where a record cannot be hard-linked, naming the
+reason. Nothing removes `<root>.lock`;
 remove it by hand only when no Planar install, update or uninstall can be
 running. The protocol is specified in the header of
 `scripts/install-lib/mutation-lock.sh`.
@@ -487,6 +490,7 @@ The uninstall takes the same [mutation lock](#ownership-recovery-and-the-order-o
 - A root that is the empty string (`--prefix ""` or `PLANAR_HOME=`), `/`, or resolves to `$HOME` exits **2**, naming the path and the rule. The path is canonicalised first, so `$HOME/.`, `$HOME/../<user>`, a trailing slash and a symlink to `$HOME` or `/` are all caught. `--force` makes no difference.
 - An existing non-empty root is accepted without `--force` when it carries the install stamp (`.planar-install`), an executable `bin/planar`, `planar.db`, a valid installer recovery journal (`.planar-journal`, so an interrupted first install is adopted), or, only when the root is `~/.planar` itself, any [preserved path](#preserved-paths) (what an uninstall leaves behind once it has removed the stamp and `bin/`; it counts with or without unknown files beside it, while unknown files alone never do). In any other directory a preserved-path name such as `models/` or `templates/` is not evidence, so a project that holds one is refused without `--force`. Installs made before the stamp existed carry `bin/planar` or `planar.db`. A bare `.staging-*` directory or any other marker file is not evidence.
 - Any other non-empty root exits **1** naming the path, unless `--force` adopts it.
+- The root's parent directory must be writable, even when the root already exists: the [mutation lock](#ownership-recovery-and-the-order-of-an-install) is created beside the root as `<root>.lock` (for `--prefix /opt/planar`, `/opt/planar.lock`). When it cannot be created the run exits **1** before any change with `cannot create the mutation lock directory <root>.lock (is <parent> writable?)`. Create `<root>.lock` yourself (`mkdir -m 700`, owned by you) if the parent must stay read-only.
 
 ### Preserved paths
 

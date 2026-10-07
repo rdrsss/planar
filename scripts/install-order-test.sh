@@ -465,6 +465,28 @@ run_install "$H" "$B1" --
 no_evidence "$P"
 pass "an interrupted first installation is recognized without --force"
 
+# --prefix needs a writable parent for <root>.lock: an existing root under a
+# parent the operator cannot write refuses before any change, naming the
+# parent. A lock directory others can write refuses too.
+H="$(new_home roparent)"; P="$H/opt/planar"; mkdir -p "$H/opt"
+run_install "$H" "$B1" -- --prefix "$P"
+[[ "$RC" == 0 && -d "$P.lock" ]] || fail "the --prefix seed install failed ($RC): $(show)"
+rm -rf "$P.lock"; chmod 555 "$H/opt"
+before="$(tree_sum "$P")"
+run_install "$H" "$B2" -- --prefix "$P"
+chmod 755 "$H/opt"
+[[ "$RC" == 1 ]] && grep -Fq "cannot create the mutation lock directory $P.lock (is $H/opt writable?)" "$TMP/err" \
+  || fail "a root under an unwritable parent did not refuse naming the parent ($RC): $(show)"
+[[ "$(tree_sum "$P")" == "$before" ]] || fail "the refusal under an unwritable parent changed the installation"
+mkdir "$P.lock"; chmod 770 "$P.lock"
+run_install "$H" "$B2" -- --prefix "$P"
+[[ "$RC" == 1 ]] && grep -Fq "is writable by its group or by others" "$TMP/err" || fail "a group-writable lock directory was used ($RC): $(show)"
+[[ "$(tree_sum "$P")" == "$before" ]] || fail "the refusal over a group-writable lock directory changed the installation"
+chmod 700 "$P.lock"
+run_install "$H" "$B2" -- --prefix "$P"
+[[ "$RC" == 0 ]] || fail "the install after the lock directory was made private failed ($RC): $(show)"
+pass "--prefix needs a writable parent for its lock, and a lock directory others can write is refused"
+
 # --- a refused attempt does not poison a completed install -----------------------------------------------------------
 
 H="$(healthy refused)"; P="$H/.planar"
