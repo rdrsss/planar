@@ -298,6 +298,13 @@ set_tests_properties(dist.layout PROPERTIES LABELS "dist_layout" TIMEOUT 180)
 # The install-root guard: install.sh and install.sh --uninstall refuse $HOME, /
 # and the empty string at exit 2 (even with --force) and adopt legacy and
 # journal-owned roots. Scratch HOME, stub cmake, shim rm/mv: nothing real.
+# Stock macOS bash 3.2: a static lint for unguarded empty-array expansions and bash-4-only
+# constructs in install.sh and its sourced scripts, plus a prebuilt install and
+# uninstall run under /bin/bash (3.2 on macOS) in a scratch HOME.
+add_test(NAME install.bash32
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-bash32-test.sh")
+set_tests_properties(install.bash32 PROPERTIES LABELS "install_bash32" TIMEOUT 300)
+
 add_test(NAME install.prefix_guard
   COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-prefix-guard-test.sh")
 set_tests_properties(install.prefix_guard PROPERTIES LABELS "install_prefix_guard" TIMEOUT 300)

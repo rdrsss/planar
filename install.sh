@@ -239,7 +239,7 @@ if [[ "$PREBUILT" -eq 1 ]]; then
   fi
   SRC_ROOT="$(cd "$PREBUILT_DIR" && pwd -P)"
   _bundle_missing=()
-  for _b in "${PLANAR_BINARIES[@]}"; do
+  for _b in "${PLANAR_BINARIES[@]}"; do  # bash32: nonempty
     [[ -f "$SRC_ROOT/bin/$_b" && -x "$SRC_ROOT/bin/$_b" ]] || _bundle_missing+=("bin/$_b")
   done
   [[ -f "$SRC_ROOT/release.json" ]] || _bundle_missing+=("release.json")
@@ -254,7 +254,7 @@ if [[ "$PREBUILT" -eq 1 ]]; then
   done
   if [[ ${#_bundle_missing[@]} -gt 0 ]]; then
     printf 'install.sh: the prebuilt directory %s is not a complete release bundle; missing:\n' "$SRC_ROOT" >&2
-    for _b in "${_bundle_missing[@]}"; do printf '  %s\n' "$_b" >&2; done
+    for _b in ${_bundle_missing[@]+"${_bundle_missing[@]}"}; do printf '  %s\n' "$_b" >&2; done
     exit 1
   fi
 elif [[ "$UNINSTALL" -ne 1 ]]; then
@@ -267,7 +267,7 @@ elif [[ "$UNINSTALL" -ne 1 ]]; then
   done
   if [[ ${#_src_missing[@]} -gt 0 ]]; then
     printf 'install.sh: the checkout %s is incomplete; missing:\n' "$SRC_ROOT" >&2
-    for _b in "${_src_missing[@]}"; do printf '  %s\n' "$_b" >&2; done
+    for _b in ${_src_missing[@]+"${_src_missing[@]}"}; do printf '  %s\n' "$_b" >&2; done
     exit 1
   fi
 fi
@@ -369,14 +369,14 @@ check_deps() {
   [[ ${#missing[@]} -eq 0 ]] && return 0
   if [[ "$fatal" -eq 1 ]]; then
     printf '\n%sinstall.sh: missing required %s tool(s):%s\n' "$C_RED$C_BOLD" "$label" "$C_RESET" >&2
-    for m in "${missing[@]}"; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$m" >&2; done
-    [[ ${#brew[@]} -gt 0 ]] && printf '  macOS: brew install %s\n' "${brew[*]}" >&2
+    for m in ${missing[@]+"${missing[@]}"}; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$m" >&2; done
+    [[ ${#brew[@]} -gt 0 ]] && printf '  macOS: brew install %s\n' "${brew[*]:-}" >&2
     exit 1
   fi
   printf '  %s!%s %s tool(s) missing — install proceeds, but some workflows will degrade:\n' \
     "$C_YELLOW" "$C_RESET" "$label" >&2
-  for m in "${missing[@]}"; do WARN_COUNT=$((WARN_COUNT + 1)); printf '    %s-%s %s\n' "$C_YELLOW" "$C_RESET" "$m" >&2; done
-  [[ ${#brew[@]} -gt 0 ]] && printf '    macOS: brew install %s\n' "${brew[*]}" >&2
+  for m in ${missing[@]+"${missing[@]}"}; do WARN_COUNT=$((WARN_COUNT + 1)); printf '    %s-%s %s\n' "$C_YELLOW" "$C_RESET" "$m" >&2; done
+  [[ ${#brew[@]} -gt 0 ]] && printf '    macOS: brew install %s\n' "${brew[*]:-}" >&2
   return 0
 }
 
@@ -506,7 +506,7 @@ sweep_agents() {
   [[ -d "$dir" ]] || return 0
   for v in claude codex copilot gemini antigravity opencode; do pats+=("$PLANAR_HOME/agents/$v/*"); done
   while IFS= read -r -d '' link; do
-    if sweep_link_into "$link" "${pats[@]}" || sweep_retired_toplevel_agent "$link"; then
+    if sweep_link_into "$link" ${pats[@]+"${pats[@]}"} || sweep_retired_toplevel_agent "$link"; then
       sweep_remove "$link" "agent symlink"
     fi
   done < <(find "$dir" -maxdepth 1 -type l -print0)
@@ -881,7 +881,7 @@ BASE_DEPS=(
   "sleep||wait at a paused test fault point (scripts/install-lib/install-state.sh; test-only)"
   "sync||flush the recovery journal's mutating and complete records to disk (install.sh)"
 )
-BUILD_DEPS=("${TOOLCHAIN_DEPS[@]}" "${BASE_DEPS[@]}")
+BUILD_DEPS=("${TOOLCHAIN_DEPS[@]}" "${BASE_DEPS[@]}")  # bash32: nonempty
 RUN_DEPS=(
   "cmp||compares staged and installed bytes in the installer (also a build dep above)"
   "git|git|repo discovery + 'planar import' (required at runtime)"
@@ -891,9 +891,9 @@ RUN_DEPS=(
 )
 
 if [[ "$PREBUILT" -eq 1 ]]; then
-  check_deps "base" 1 "${BASE_DEPS[@]}"
+  check_deps "base" 1 "${BASE_DEPS[@]}"  # bash32: nonempty
 else
-  check_deps "build" 1 "${BUILD_DEPS[@]}"
+  check_deps "build" 1 "${BUILD_DEPS[@]}"  # bash32: nonempty
 
   # Check that we are in a CMake Planar source checkout.
   [[ -f "$REPO_ROOT/CMakeLists.txt" ]] || err "CMakeLists.txt not found in $REPO_ROOT (run install.sh from the Planar source repo)"
@@ -903,7 +903,7 @@ fi
 
 # Runtime tools — non-fatal; the install still produces a working binary, but
 # Planar's git-backed verbs and the bundled agent skills need these to work.
-check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"
+check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"  # bash32: nonempty
 
 # git version floor — non-fatal, matching the RUN_DEPS tier above (git is
 # already in RUN_DEPS; this adds the *version* check check_deps' presence-only
@@ -1030,7 +1030,7 @@ retry_command() {
     args+=("$a")
   done
   if [[ "$PREBUILT" -eq 0 ]]; then
-    printf 'cd %s && ./install.sh%s' "$(printf '%q' "$REPO_ROOT")" "${args[*]+ $(quote_args "${args[@]}")}"
+    printf 'cd %s && ./install.sh%s' "$(printf '%q' "$REPO_ROOT")" "${args[*]+ $(quote_args ${args[@]+"${args[@]}"})}"
     return 0
   fi
   if [[ "$J_target_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -1044,7 +1044,7 @@ retry_command() {
       printf 're-run install.sh --prebuilt from an unpacked bundle of commit %s (this %s bundle is not published)' "$J_target_sha" "$J_target_version"
       ;;
     *)
-      printf 'bash %s --prebuilt %s%s' "$(printf '%q' "$SRC_ROOT/install.sh")" "$(printf '%q' "$SRC_ROOT")" "${args[*]+ $(quote_args "${args[@]}")}"
+      printf 'bash %s --prebuilt %s%s' "$(printf '%q' "$SRC_ROOT/install.sh")" "$(printf '%q' "$SRC_ROOT")" "${args[*]+ $(quote_args ${args[@]+"${args[@]}"})}"
       ;;
   esac
 }
@@ -1253,7 +1253,7 @@ planar_install_fault after-prepared || err "test fault after recording the attem
 stage_prebuilt() {
   local b d
   mkdir -p "$STAGE/bin" "$STAGE/skills" "$STAGE/agents"
-  for b in "${PLANAR_BINARIES[@]}"; do
+  for b in "${PLANAR_BINARIES[@]}"; do  # bash32: nonempty
     cp -f "$SRC_ROOT/bin/$b" "$STAGE/bin/$b"
     chmod 755 "$STAGE/bin/$b"
   done
@@ -1761,10 +1761,10 @@ record_manifest() {
   for p in ${VENDORS_FOUND[@]+"${VENDORS_FOUND[@]}"}; do INSTALL_MANIFEST_VENDORS+=("$p"); done
   if [[ "$STAGED_EXTRAS_READ" -eq 0 ]]; then
     install_manifest_record_staged "$PLANAR_HOME" "$SRC_ROOT"
-    STAGED_EXTRAS=("${INSTALL_MANIFEST_EXTRAS[@]}")
+    STAGED_EXTRAS=(${INSTALL_MANIFEST_EXTRAS[@]+"${INSTALL_MANIFEST_EXTRAS[@]}"})
     STAGED_EXTRAS_READ=1
   else
-    INSTALL_MANIFEST_EXTRAS=("${STAGED_EXTRAS[@]}")
+    INSTALL_MANIFEST_EXTRAS=(${STAGED_EXTRAS[@]+"${STAGED_EXTRAS[@]}"})
   fi
   for ((i = 0; i < ${#PLAN_DST[@]}; i++)); do
     [[ -n "${PLAN_STATE[$i]:-}" ]] || continue
@@ -1782,10 +1782,10 @@ if [[ -n "$VENDORS" ]]; then
   title "Placing vendor surfaces"
 
   IFS=',' read -r -a _requested <<< "$VENDORS"
-  for _v in "${_requested[@]}"; do
-    [[ " ${VENDOR_NAMES[*]} " == *" $_v "* ]] || warn "unknown vendor: $_v (skipping)"
+  for _v in ${_requested[@]+"${_requested[@]}"}; do
+    [[ " ${VENDOR_NAMES[*]} " == *" $_v "* ]] || warn "unknown vendor: $_v (skipping)"  # bash32: nonempty
   done
-  for _v in "${VENDOR_NAMES[@]}"; do
+  for _v in "${VENDOR_NAMES[@]}"; do  # bash32: nonempty
     if [[ ",$VENDORS," != *",$_v,"* ]]; then
       VENDORS_SKIPPED+=("$_v (not in --vendors)")
     elif vendor_present "$_v"; then
@@ -1807,11 +1807,11 @@ if [[ -n "$VENDORS" ]]; then
   # the glob's sorted order (planar-coder first). The install-stage tests rely
   # on this order (a stop at the Nth target leaves exactly the first N-1 placed
   # and recorded).
-  for _row in "${VENDOR_TARGETS[@]}"; do
+  for _row in "${VENDOR_TARGETS[@]}"; do  # bash32: nonempty
     IFS='|' read -r _owners _fmt _dir <<< "$_row"
     _active=0
     IFS=',' read -r -a _owner_list <<< "$_owners"
-    for _o in "${_owner_list[@]}"; do
+    for _o in ${_owner_list[@]+"${_owner_list[@]}"}; do
       [[ " ${VENDORS_FOUND[*]:-} " == *" $_o "* ]] && _active=1
     done
     [[ "$_active" -eq 1 ]] || continue
