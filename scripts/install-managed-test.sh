@@ -16,8 +16,8 @@
 #     directions and leaves the checkout byte-identical;
 #   - a file mode, and a path's type (directory to file, file to symlink), may
 #     change between releases and the install applies it;
-#   - a subtree the release no longer ships is retired through the swap (its
-#     backup is kept until success, a kill in between is finished by a re-run);
+#   - an incomplete release (a managed subtree absent from the bundle or the
+#     checkout) is refused before any write: it is never a retirement;
 #   - templates are placed missing-only, --force included, and an edited template
 #     or a formerly shipped, renamed one survives even when install-cleanup.txt
 #     names it; no cleanup entry removes a data path.
@@ -187,27 +187,53 @@ same_tree "$B2/workflows" "$P/workflows" && same_tree "$B2/migrations" "$P/migra
 no_evidence "$P"
 pass "executable-bit and type changes between releases are applied (directory to file, file to symlink)"
 
-# --- 4. a subtree the release no longer ships is retired ---------------------------------------------
+# --- 4. an incomplete release is refused before anything is written ----------------------------------
+# A managed subtree is always shipped. One that is absent from the source is a
+# broken bundle or checkout, never a retirement: the installed tree must survive.
 
-B3="$TMP/bundle/rel3"
-fake_bundle_make "$ROOT" "$B3"
-rm -rf "$B3/workflows"
-{ run_prebuilt "$H" "$B3" PLANAR_INSTALL_TEST_FAULT=kill@backup:workflows PLANAR_INSTALL_TEST_FAULT_ARMED=test-only --; } 2>/dev/null
-[[ "$RC" != 0 ]] || fail "the armed kill did not stop the install"
-[[ -d "$P/workflows.old" && ! -e "$P/workflows" ]] || fail "after the kill workflows/ was not backed up whole: $(ls -a "$P")"
-run_prebuilt "$H" "$B3" --
-[[ "$RC" == 0 ]] || fail "the re-run did not finish the retirement ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
-[[ ! -e "$P/workflows" && ! -L "$P/workflows" ]] || fail "a subtree the release does not ship was kept"
-no_evidence "$P"
-# Uninterrupted, the retirement is reported and equally complete.
+H="$(new_home incomplete)"; P="$H/.planar"
 run_prebuilt "$H" "$B2" --
-[[ "$RC" == 0 && -d "$P/workflows" ]] || fail "release 2 did not restore workflows/ ($RC): $(cat "$TMP/err")"
-run_prebuilt "$H" "$B3" --
-[[ "$RC" == 0 && ! -e "$P/workflows" && ! -L "$P/workflows" ]] || fail "an uninterrupted retirement failed ($RC): $(cat "$TMP/err")"
-grep -Fq "workflows/ retired" "$TMP/out" || fail "the retirement was not reported: $(cat "$TMP/out")"
-no_evidence "$P"
-for n in bin skills agents codex-agents scripts migrations; do same_tree "$B3/$n" "$P/$n" || fail "$n/ is not release 3's"; done
-pass "a subtree absent from the release is retired through the swap and a killed retirement is finished by the re-run"
+[[ "$RC" == 0 ]] || fail "release 2 failed ($RC): $(cat "$TMP/err")"
+arena_before="$(tree_id "$P")"
+for missing in workflows migrations scripts/install-lib scripts skills/planar codex-agents; do
+  BM="$TMP/bundle/missing-${missing//\//-}"
+  fake_bundle_make "$ROOT" "$BM"
+  rm -rf "${BM:?}/$missing"
+  run_prebuilt "$H" "$BM" --
+  [[ "$RC" != 0 ]] || fail "a bundle without $missing/ was installed"
+  grep -Fq "$missing" "$TMP/err" || fail "the refusal does not name $missing: $(cat "$TMP/err")"
+  [[ "$(tree_id "$P")" == "$arena_before" ]] || fail "a bundle without $missing/ changed the install: $(tree_id "$P" | diff - <(printf '%s\n' "$arena_before") | head)"
+done
+# On a fresh home nothing is created either.
+H2="$(new_home incomplete-fresh)"
+BM="$TMP/bundle/missing-fresh"
+fake_bundle_make "$ROOT" "$BM"
+rm -rf "$BM/workflows"
+run_prebuilt "$H2" "$BM" --
+[[ "$RC" != 0 && ! -e "$H2/.planar" ]] || fail "an incomplete bundle created ~/.planar on a fresh home ($RC)"
+pass "a prebuilt bundle missing a managed subtree is refused, naming it, with the installed tree and a fresh home unchanged"
+
+# The source install refuses the same way when the checkout lacks a source directory.
+# (Its fixture checkout is built in section 6; that case is section 7.)
+
+# The swap itself refuses a subtree with no staged copy and renames nothing.
+SWAP="$TMP/swap"; mkdir -p "$SWAP/root/workflows" "$SWAP/stage"
+printf 'live\n' > "$SWAP/root/workflows/w.lua"
+swap_before="$(tree_id "$SWAP")"
+swap_out="$( cd "$SWAP" && /bin/bash -c '
+  set -u
+  for l in journal mutation-lock prefix-guard data-paths install-state; do
+    [ -f "$1/scripts/install-lib/$l.sh" ] && source "$1/scripts/install-lib/$l.sh"
+  done
+  PLANAR_JOURNAL_SUBTREES="workflows"
+  planar_journal_clear
+  J_phase=mutating; J_sub_workflows=pending
+  if planar_state_swap "$2/root" "$2/stage" workflows; then echo SWAPPED; else echo "REFUSED: $INSTALL_STATE_ERROR"; fi
+' _ "$ROOT" "$SWAP" 2>&1 )"
+[[ "$swap_out" == REFUSED:*missing* ]] || fail "planar_state_swap did not refuse a missing staged copy: $swap_out"
+[[ "$(tree_id "$SWAP" | grep -v journal)" == "$(printf '%s\n' "$swap_before" | grep -v journal)" ]] || fail "a refused swap renamed something: $(tree_id "$SWAP")"
+[[ -f "$SWAP/root/workflows/w.lua" && ! -e "$SWAP/root/workflows.old" ]] || fail "a refused swap moved the live subtree"
+pass "planar_state_swap refuses a subtree with no staged copy and renames nothing"
 
 # --- 5. templates are missing-only, with or without --force --------------------------------------------
 
@@ -315,5 +341,29 @@ done
 [[ "$(tree_id "$REPO")" == "$repo_before" ]] || fail "the checkout changed when copy mode gave way to link mode"
 no_evidence "$P"
 pass "switching between link and copy mode replaces the subtree's form and leaves the checkout byte-identical"
+
+# --- 7. a checkout without a managed subtree's source is refused before any write -----------------------
+
+REPO_GOOD="$REPO"
+for missing in workflows migrations scripts/install-lib skills/planar agents; do
+  REPO="$TMP/repo-missing-${missing//\//-}"
+  cp -R "$REPO_GOOD" "$REPO"
+  rm -rf "${REPO:?}/$missing"
+  H="$(new_home "src-missing-${missing//\//-}")"
+  run_source "$H"
+  [[ "$RC" != 0 ]] || fail "a source install without $missing/ succeeded"
+  grep -Fq "$missing" "$TMP/err" || fail "the refusal does not name $missing: $(cat "$TMP/err")"
+  [[ ! -e "$H/.planar" && ! -e "$H/build" ]] || fail "a source install without $missing/ wrote before refusing: $(ls -a "$H")"
+done
+H="$(new_home src-missing-live)"; P="$H/.planar"
+run_source "$H"
+[[ "$RC" == 0 ]] || fail "the baseline source install failed ($RC): $(cat "$TMP/err")"
+arena_before="$(tree_id "$P")"
+REPO="$TMP/repo-missing-live"
+cp -R "$REPO_GOOD" "$REPO"; rm -rf "$REPO/workflows"
+run_source "$H"
+[[ "$RC" != 0 && "$(tree_id "$P")" == "$arena_before" ]] || fail "a source install without workflows/ changed an installed tree ($RC)"
+REPO="$REPO_GOOD"
+pass "a source install whose checkout lacks a managed subtree's directory is refused, naming it, before any write"
 
 printf 'install managed tests: %s passed\n' "$PASSED"
