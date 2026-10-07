@@ -50,6 +50,7 @@ import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.test_spec;
 import planar.cmd.planar.handlers.tree;
 import planar.cmd.planar.handlers.unlink;
+import planar.cmd.planar.handlers.update;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
 import planar.cmd.planar.handlers.workflow;
@@ -115,6 +116,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_import(*app);     // 34
   handlers::declare_synthesize(*app); // 35
   handlers::declare_version(*app);    // 36
+  handlers::declare_update(*app);     // 36a: plan 1122 M3 (task 7319)
   handlers::declare_completion(*app); // 37
   handlers::declare_schema(*app);     // 38
   handlers::declare_report(*app);     // 39

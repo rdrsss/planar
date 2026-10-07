@@ -52,6 +52,7 @@ import planar.cmd.planar.handlers.drafting;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.link;
 import planar.cmd.planar.handlers.unlink;
+import planar.cmd.planar.handlers.update;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
 import planar.cmd.planar.handlers.workflow;
@@ -534,6 +535,9 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("task link", handlers::task_link);
   table.emplace("question link", handlers::question_link);
   table.emplace("version", handlers::version);
+  // `update` (plan 1122 M3, task 7319) opens no database: it downloads a
+  // release under the common mutation lock and execs the bundled installer.
+  table.emplace("update", handlers::update);
   // `schema` and `completion` describe the TREE, so they take it; every
   // other handler describes DATA and does not. Same shape as the
   // `planar-agent` and `planar-watch` tables.

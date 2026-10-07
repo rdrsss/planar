@@ -58,6 +58,7 @@ import std;
 import cli11;
 import planar.cliapp.schema;
 import planar.cmd.planar.main;
+import planar.cmd.planar.handlers.update;
 import planar.db;
 import planar.db.migrate;
 
@@ -2714,4 +2715,80 @@ TEST_CASE("planar schema --command task is a lookup, not the task subcommand", "
   CHECK(before.out == bare.out);
   auto const eq = run_pinned(cpp_bin(), std::vector<std::string>{"schema", "--command=task"}, arena.cpp_root, "eq");
   CHECK(eq.out == bare.out);
+}
+
+// =========================================================================
+// Task 7319 — `planar update`, the one `planar` leaf that writes OUTSIDE the
+// database (tech spec 677, "The update verb"; CLAUDE.md's write-surface
+// table). Recorded here as a write surface: it opens no database, and what it
+// writes before handing off to the installer is exactly the mutation-lock
+// record beside the install root (`<root>.lock/owner.<G>`) and its download
+// directory under `<root>/.planar-update/`.
+// =========================================================================
+
+TEST_CASE("update writes only its lock record and download directory, and never a database", "[cmd][parity][update]") {
+  auto const space = make_arena("updatesurface");
+  auto const work  = space.cpp_root;
+  auto const rel   = work / "rel";
+  auto const root  = work / "home"; // the pinned PLANAR_HOME
+  auto const env   = [&](std::vector<::planar::cmd::parity::pinned_var> extra) {
+    auto vars = ::planar::cmd::parity::pinned_env(work);
+    vars.push_back({.name = "PLANAR_RELEASE_URL", .value = "file://" + rel.string()});
+    for (auto& v : extra) {
+      vars.push_back(std::move(v));
+    }
+    return vars;
+  };
+  {
+    std::ofstream(root / "release.json") << "{\"version\": \"v1.0.0\", \"schema_version\": 41}\n";
+    std::ofstream(root / ".planar-install") << "x\ny\n";
+  }
+
+  // --check reads and fetches only: nothing is written anywhere.
+  std::filesystem::create_directories(rel / "latest/download");
+  std::ofstream(rel / "latest/download/VERSION") << "v1.1.0\n";
+  auto const check = run_pinned(cpp_bin(), std::vector<std::string>{"update", "--check"}, work, "check", env({}));
+  CHECK(check.code == 10);
+  CHECK(check.out == "installed v1.0.0 latest v1.1.0\n");
+  CHECK_FALSE(std::filesystem::exists(work / "planar.db"));
+  CHECK_FALSE(std::filesystem::exists(work / "home.lock"));
+
+  // A plain run, stopped where it would exec the installer by a `bash` that
+  // only exits: everything it wrote is what it hands to the installer.
+  auto const host_platform = ::planar::cmd::handlers::native_host().platform();
+  if (!host_platform.has_value()) {
+    // No bundle exists for this host: the verb refuses before it writes anything.
+    auto const refused = run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "refused", env({}));
+    CHECK(refused.code == 1);
+    CHECK(refused.err.starts_with("error: unsupported platform"));
+    CHECK_FALSE(std::filesystem::exists(work / "planar.db"));
+    CHECK_FALSE(std::filesystem::exists(work / "home.lock"));
+    return;
+  }
+  auto const platform = *host_platform;
+  auto const fixture  = std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "src/cmd/planar/handlers/update/release_fixture.sh";
+  REQUIRE(std::system(std::format("bash {} {} {} v1.1.0 {} > /dev/null 2>&1", shell_quote(fixture.string()),
+                                  shell_quote(PLANAR_TARGET_SOURCE_ROOT), shell_quote(rel.string()), platform)
+                          .c_str()) == 0);
+  auto const fake = work / "fakebin";
+  std::filesystem::create_directories(fake);
+  std::ofstream(fake / "bash") << "#!/bin/sh\nexit 0\n";
+  std::filesystem::permissions(fake / "bash", std::filesystem::perms::owner_all);
+  auto const got = run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "update",
+                              env({{.name = "PATH", .value = fake.string() + ":" + std::getenv("PATH")}}));
+  INFO(got.out << got.err);
+  CHECK(got.code == 0);
+  CHECK_FALSE(std::filesystem::exists(work / "planar.db"));
+  std::vector<std::string> lock_entries;
+  for (auto const& e : std::filesystem::directory_iterator(work / "home.lock")) {
+    lock_entries.push_back(e.path().filename().string());
+  }
+  CHECK(lock_entries == std::vector<std::string>{"owner.1"});
+  std::vector<std::string> root_entries;
+  for (auto const& e : std::filesystem::directory_iterator(root)) {
+    root_entries.push_back(e.path().filename().string());
+  }
+  std::ranges::sort(root_entries);
+  CHECK(root_entries == std::vector<std::string>{".planar-install", ".planar-update", "release.json"});
+  CHECK(read_all(root / "release.json") == "{\"version\": \"v1.0.0\", \"schema_version\": 41}\n");
 }

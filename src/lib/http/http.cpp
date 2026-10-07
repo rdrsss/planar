@@ -27,6 +27,31 @@ auto write_body(char* data, std::size_t size, std::size_t nmemb, void* user) -> 
   return bytes;
 }
 
+/// @brief A body sink with an optional size limit, for `download`.
+struct bounded_body {
+  std::string   body;             ///< The bytes received so far.
+  std::uint64_t limit    = 0;     ///< The largest body accepted; 0 accepts any size.
+  bool          exceeded = false; ///< Set when a write would pass `limit`.
+};
+
+/// @brief `CURLOPT_WRITEFUNCTION` for a `bounded_body`: append, or abort the
+/// transfer when the limit would be passed.
+/// @param data The received bytes.
+/// @param size Element size (always 1 for libcurl).
+/// @param nmemb Element count.
+/// @param user The `bounded_body*` passed as `CURLOPT_WRITEDATA`.
+/// @return The number of bytes consumed; 0 aborts the transfer.
+auto write_bounded(char* data, std::size_t size, std::size_t nmemb, void* user) -> std::size_t {
+  auto* const sink  = static_cast<bounded_body*>(user);
+  auto const  bytes = size * nmemb;
+  if (sink->limit != 0 && sink->body.size() + bytes > sink->limit) {
+    sink->exceeded = true;
+    return 0;
+  }
+  sink->body.append(data, bytes);
+  return bytes;
+}
+
 /// @brief Run libcurl's global initialization exactly once per process.
 ///
 /// `curl_easy_init` will do this implicitly, but implicitly it is NOT
@@ -321,11 +346,11 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
                                             .url     = current,
                                             .message = std::format("could not start a transfer for {}", current)});
     }
-    auto* const handle = easy.handle;
-    std::string body_out;
+    auto* const  handle = easy.handle;
+    bounded_body sink{.limit = policy.max_body_bytes};
     curl_easy_setopt(handle, CURLOPT_URL, current.c_str());
-    curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &write_body);
-    curl_easy_setopt(handle, CURLOPT_WRITEDATA, &body_out);
+    curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &write_bounded);
+    curl_easy_setopt(handle, CURLOPT_WRITEDATA, &sink);
     curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, static_cast<long>(remaining.count()));
     curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, static_cast<long>(policy.connect_timeout.count()));
     curl_easy_setopt(handle, CURLOPT_LOW_SPEED_LIMIT, static_cast<long>(policy.low_speed_limit));
@@ -349,6 +374,12 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
 #endif
 
     auto const result = curl_easy_perform(handle);
+    if (sink.exceeded) {
+      return std::unexpected(
+          download_error{.kind    = download_error_kind::body_too_large,
+                         .url     = current,
+                         .message = std::format("download of {} exceeded the {}-byte limit", current, policy.max_body_bytes)});
+    }
     if (result == CURLE_OPERATION_TIMEDOUT) {
       return std::unexpected(download_error{
           .kind = download_error_kind::timeout, .url = current, .message = std::format("download of {} timed out", current)});
@@ -375,7 +406,7 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
     }
     if (location == nullptr) {
       return download_result{
-          .status = static_cast<std::uint16_t>(status), .body = std::move(body_out), .final_url = current, .redirects = hops};
+          .status = static_cast<std::uint16_t>(status), .body = std::move(sink.body), .final_url = current, .redirects = hops};
     }
     if (hops >= policy.max_redirects) {
       return std::unexpected(

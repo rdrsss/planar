@@ -285,6 +285,9 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar feedback triage show", R"(planar feedback triage show task:42)"},
       {"planar feedback triage set",
        R"(planar feedback triage set task:42 --severity high --disposition accepted --reproduction reproduced)"},
+      {"planar update", R"(planar update --check)"},
+      {"planar update", R"(planar update)"},
+      {"planar update", R"(planar update --version v1.2.3)"},
   };
   static constexpr std::pair<std::string_view, std::string_view> k_exit_codes[] = {
       {"planar init", "0 1 2 7 8"},
@@ -506,6 +509,7 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar feedback triage show", "0 1 2 7"},
       {"planar feedback triage set", "0 1 2 5 7 8"},
       {"planar help", "0 2"},
+      {"planar update", "0 1 2 10"},
   };
   static constexpr cliapp::exit_code_doc k_meanings[] = {
       {0, R"(Success.)"},
@@ -529,6 +533,8 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar workbench publish", 6, R"(The plan already has an external link on that system.)"},
       {"planar bench start", 6, R"(A run with that uid already exists.)"},
       {"planar run start", 6, R"(A run with that uid already exists.)"},
+      {"planar update", 1, R"(A fault, a refusal, a competing owner, or an incomplete installation; nothing was installed.)"},
+      {"planar update", 10, R"(--check found a release newer than the installed one.)"},
   };
   static constexpr cliapp::command_docs k_docs{k_examples, k_exit_codes, k_meanings, k_overrides};
   return k_docs;

@@ -96,6 +96,15 @@ export inline constexpr int exit_scope_violation       = 5;  ///< Cross-scope wr
 export inline constexpr int exit_precondition_conflict = 6;  ///< Slug conflict / already-exists.
 export inline constexpr int exit_schema_version        = 7;  ///< DB schema newer/older than this binary supports.
 export inline constexpr int exit_not_implemented       = 64; ///< Placeholder / not-yet-implemented handler.
+/// @brief `planar update --check` found a release newer than the installed one.
+///
+/// Not a failure: the one success-shaped status other than 0. It is outside the
+/// `domain_error_kind` table and is returned through `passthrough_code` by
+/// that one leaf alone. No other `planar` verb returns 10 of its own (task 7319
+/// audited the handlers, this table, `docs/cli-reference.md` and
+/// `scripts/exit-code-contract.sh`); `workflow run` alone can surface any status,
+/// because it passes a workflow's own exit status through verbatim.
+export inline constexpr int exit_update_available = 10;
 
 /// @brief A handler failure: which exit-code bucket it falls in, plus the
 /// stderr text.

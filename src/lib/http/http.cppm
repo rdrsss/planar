@@ -192,7 +192,8 @@ export struct download_policy {
   std::chrono::seconds connect_timeout{30};    ///< Connection establishment bound per hop.
   std::uint32_t        low_speed_limit = 1024; ///< Bytes per second below which the transfer counts as stalled.
   std::chrono::seconds low_speed_time{60};     ///< How long the rate may stay below `low_speed_limit` before abort.
-  std::uint32_t        max_redirects = 10;     ///< Redirect hops followed before giving up.
+  std::uint32_t        max_redirects  = 10;    ///< Redirect hops followed before giving up.
+  std::uint64_t        max_body_bytes = 0;     ///< Largest body accepted, in bytes; 0 accepts any size.
 };
 
 /// @brief Why a `download` failed.
@@ -203,6 +204,7 @@ export enum class download_error_kind : std::uint8_t {
   timeout,                         ///< The total bound or the low-speed bound fired.
   certificate_verification_failed, ///< The peer certificate could not be verified.
   transport_failed,                ///< Any other failure to obtain a response.
+  body_too_large,                  ///< The body passed `max_body_bytes`; the transfer was aborted.
 };
 
 /// @brief A failed `download`.
@@ -226,6 +228,8 @@ export struct download_result {
 /// every hop validated by `check_download_url`; no header is ever sent, so no
 /// `Authorization`; the request obeys `policy`'s total and low-speed bounds. A
 /// non-2xx final status is a result, not an error, as with `curl_transport`.
+/// A body larger than a non-zero `max_body_bytes` aborts the transfer as soon
+/// as the limit is passed, so memory never holds more than the limit.
 /// Adapters must keep using `curl_transport`, which does not follow redirects.
 /// @param url The absolute initial URL.
 /// @param policy The bounds to apply.

@@ -314,6 +314,27 @@ TEST_CASE("download reads a file fixture and refuses a malformed initial url", "
   CHECK(bad.error().kind == download_error_kind::invalid_url);
 }
 
+TEST_CASE("download aborts a body larger than max_body_bytes and accepts one at the limit", "[http]") {
+  std::string const             big(64 * 1024, 'x');
+  planar::http::fixture::server server([&](const captured_request&) {
+    return canned_response{.status = 200, .body = big, .content_type = "application/octet-stream", .chunk_bytes = 4096};
+  });
+
+  auto const over = planar::http::download(server.base_url() + "/asset", {.max_body_bytes = big.size() - 1});
+  REQUIRE_FALSE(over.has_value());
+  CHECK(over.error().kind == download_error_kind::body_too_large);
+  CHECK(over.error().message.contains(server.base_url() + "/asset"));
+
+  auto const at = planar::http::download(server.base_url() + "/asset", {.max_body_bytes = big.size()});
+  REQUIRE(at.has_value());
+  CHECK(at->body.size() == big.size());
+
+  // The default (0) keeps the unbounded behaviour every caller had before.
+  auto const unbounded = planar::http::download(server.base_url() + "/asset");
+  REQUIRE(unbounded.has_value());
+  CHECK(unbounded->body == big);
+}
+
 TEST_CASE("check_download_url accepts only the allowed authorities and protocols", "[http]") {
   using planar::http::check_download_url;
   // Accepted.
