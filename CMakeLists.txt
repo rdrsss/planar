@@ -339,3 +339,12 @@ set_tests_properties(install.managed PROPERTIES LABELS "install_managed" TIMEOUT
 add_test(NAME install.lock
   COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-lock-test.sh")
 set_tests_properties(install.lock PROPERTIES LABELS "install_lock" TIMEOUT 300)
+
+# The standalone uninstaller (scripts/uninstall.sh, installed as
+# ~/.planar/bin/planar-uninstall): removals through the ownership check, the
+# python-free manifest reader, preserved and purged data paths, unknown entries
+# kept, ~/.local/bin, the mutation lock, interrupted-uninstall retry and
+# reinstall. Fake bundle, scratch HOME, base tools only; nothing real is touched.
+add_test(NAME install.uninstall
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-uninstall-test.sh")
+set_tests_properties(install.uninstall PROPERTIES LABELS "install_uninstall" TIMEOUT 900)
