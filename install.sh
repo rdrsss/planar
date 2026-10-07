@@ -1593,8 +1593,9 @@ vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_EXTRAS[@]} r
 # `version` is the sixth token of `planar version` (the release tag, `dev`
 # for a build without one), so `planar update --check` on a source install
 # reports dev and always finds an update. The other fields are read from the
-# build and the host: the version line's sha and date, the host os, arch and
-# os floor, and the highest migration number the build embeds. The file is
+# build and the host: the full sha from `planar version --json`, the version
+# line's date, the host os and arch, the os floor dist.sh records for that os,
+# and the highest migration number the build embeds. The file is
 # written beside its destination and renamed into place, and left alone when
 # its bytes are unchanged.
 release_json_safe() {
@@ -1607,9 +1608,14 @@ write_release_json() {
   if [[ "$PREBUILT" -eq 1 ]]; then
     cp -f "$SRC_ROOT/release.json" "$tmp"
   else
-    local version sha date os arch floor schema f n
+    local version sha date os arch floor schema f n vjson
     version="$(release_json_safe "$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $6}')" dev)"
-    sha="$(release_json_safe "$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')" unknown)"
+    # The full commit sha, as scripts/dist.sh records it, comes from
+    # `planar version --json`; the version line carries a short form only.
+    vjson="$(trap - ERR; "$PLANAR_RELEASE_BIN" version --json 2>/dev/null)" || vjson=""
+    sha="$(printf '%s' "$vjson" | sed -n 's/.*"sha":"\([^"]*\)".*/\1/p' | head -n 1)"
+    [[ -n "$sha" ]] || sha="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
+    sha="$(release_json_safe "$sha" unknown)"
     date="$(release_json_safe "$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $3}')" unknown)"
     case "$(uname -s)" in
       Darwin) os=macos ;;
@@ -1618,13 +1624,14 @@ write_release_json() {
     esac
     arch="$(uname -m)"
     [[ "$arch" == aarch64 ]] && arch=arm64
-    floor=unknown
-    if [[ "$os" == macos ]] && command -v sw_vers >/dev/null 2>&1; then
-      floor="$(sw_vers -productVersion 2>/dev/null | awk -F. '{print $1 "." ($2 == "" ? 0 : $2)}')"
-    elif [[ "$os" == linux ]] && command -v getconf >/dev/null 2>&1; then
-      floor="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')"
-    fi
-    floor="$(release_json_safe "${floor:-unknown}" unknown)"
+    # The platform floor scripts/dist.sh records for a bundle of this OS: the
+    # macOS deployment target, or the glibc floor of the Linux bundles. Keep
+    # these two constants in step with dist.sh.
+    case "$os" in
+      macos) floor=26.0 ;;
+      linux) floor=2.36 ;;
+      *)     floor=unknown ;;
+    esac
     schema=0
     for f in "$SRC_ROOT"/migrations/*.up.sql; do
       [[ -f "$f" ]] || continue
@@ -1646,6 +1653,7 @@ write_release_json() {
 }
 
 title "Recording the release"
+PLANAR_RELEASE_BIN="$PLANAR_HOME/bin/planar"
 write_release_json
 
 # ---------- ownership stamp ----------
