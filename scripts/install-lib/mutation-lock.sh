@@ -25,8 +25,13 @@
 #   the same L. It lives OUTSIDE the root, so removing or purging the
 #   installation never removes it, and it is never removed by any Planar
 #   program: it is created once (mkdir, mode 0700) and kept. A run refuses an L
-#   that is a symlink, is not a directory or is not owned by the current user.
-#   L's parent (the root's parent) must be writable to create it.
+#   that is a symlink, is not a directory, is not owned by the current user or
+#   is writable by its group or by others (its `ls -ld` mode has `w` in the
+#   group or other position). L's parent (the root's parent) must be writable
+#   to create it; a run that cannot create it refuses and names the parent.
+#   link(2) must work in L: when it fails for a reason other than an existing
+#   record (no hard links on that filesystem, no permission), the run refuses
+#   with that reason.
 #
 # RECORDS IN L (regular files, never symlinks)
 #
@@ -198,9 +203,10 @@ _pl_node() {
   printf '%s\n' "${n:-unknown}"
 }
 
-# _pl_validate_dir L -- L exists as a real directory owned by the caller.
+# _pl_validate_dir L -- L exists as a real directory owned by the caller and
+# writable by no one else.
 _pl_validate_dir() {
-  local l="$1"
+  local l="$1" mode
   if [ -L "$l" ]; then
     PLANAR_LOCK_ERROR="the mutation lock directory $l is a symlink; refusing to use it (remove it only if no Planar install, update or uninstall can be running)"
     return 1
@@ -213,6 +219,19 @@ _pl_validate_dir() {
     PLANAR_LOCK_ERROR="the mutation lock directory $l is not owned by the current user; refusing to use it"
     return 1
   fi
+  # Another user who can write L could forge or remove ownership records.
+  mode="$(trap - ERR; LC_ALL=C ls -ld "$l" 2>/dev/null)" || mode=""
+  mode="${mode%% *}"
+  case "$mode" in
+    ??????????*) ;;
+    *) PLANAR_LOCK_ERROR="cannot read the permissions of the mutation lock directory $l; refusing to use it"; return 1 ;;
+  esac
+  case "$mode" in
+    ?????w*|????????w*)
+      PLANAR_LOCK_ERROR="the mutation lock directory $l is writable by its group or by others (mode $mode); refusing to use it. Make it private (chmod 700 $l) once no Planar install, update or uninstall is running."
+      return 1
+      ;;
+  esac
   return 0
 }
 
@@ -384,7 +403,7 @@ _pl_housekeep() {
 }
 
 planar_lock_acquire() {
-  local canon="$1" op="$2" tmp="${3:-}" l g new top tries=0 reclaimed="" reclaimed_tmp=""
+  local canon="$1" op="$2" tmp="${3:-}" l g new top tries=0 reclaimed="" reclaimed_tmp="" lerr
   if [ -n "$PLANAR_LOCK_GEN" ]; then
     PLANAR_LOCK_ERROR="this process already holds the mutation lock $PLANAR_LOCK_DIR (generation $PLANAR_LOCK_GEN)"
     return 1
@@ -427,8 +446,14 @@ planar_lock_acquire() {
     esac
     new=$((g + 1))
     _pl_write_cand "$l" "$new" "$op" "$tmp" || return 1
-    if ! ln "$_PL_CAND" "$l/owner.$new" 2>/dev/null; then
-      continue
+    if ! lerr="$(trap - ERR; LC_ALL=C ln "$_PL_CAND" "$l/owner.$new" 2>&1)"; then
+      # Lost the race for G (link(2) gave EEXIST): start over. Any other
+      # failure would repeat on every attempt, so name it.
+      case "$lerr" in *[Ee]xists*) continue ;; esac
+      if [ -e "$l/owner.$new" ] || [ -L "$l/owner.$new" ]; then continue; fi
+      PLANAR_LOCK_ERROR="cannot create the ownership record $l/owner.$new: ${lerr:-ln failed}. The mutation lock needs a directory you can write on a filesystem with hard links."
+      rm -f "$_PL_CAND" 2>/dev/null || true
+      return 1
     fi
     top="$(_pl_max_gen "$l")"
     if [ "$top" -gt "$new" ]; then
