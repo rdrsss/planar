@@ -445,6 +445,13 @@ uploaded. Three scripts share one evidence file per archive,
     database. macOS runs it on a macOS arm64 host under `env -i` with a
     system-only PATH; Linux runs it in a bare `debian:bookworm-slim` linux/amd64
     container with no network (`PLANAR_GATE_RUNTIME_IMAGE` overrides the image).
+    The macOS smoke gate is a PATH and environment test: the developer toolchain
+    stays installed on that host, so it cannot show that the binaries never load
+    it. The assembly step proves that instead: `scripts/dist.sh` runs
+    `scripts/portable-check.py --toolchain-prefix` over the staged binaries and
+    refuses a binary whose load commands or library dependencies name the
+    toolchain prefix, carry a runtime search path, or link anything beyond the
+    system libraries.
   - `ca_debian` (trusted through `/etc/ssl/certs`, refused with the CA removed)
     and `ca_redhat` (trusted through `/etc/pki/tls/certs/ca-bundle.crt`), Linux
     only, through `scripts/test-portable-tls.py`. The fixture image is the
@@ -452,15 +459,24 @@ uploaded. Three scripts share one evidence file per archive,
     names one.
   A failed gate is recorded as `result: "fail"` and the script exits 1.
 - `scripts/release-publish.sh [--dry-run] <tag> <dir>...` requires format 2 for
-  both platforms, with `portable` and `smoke` passed (and `ca_debian` and
-  `ca_redhat` on Linux), each with a nonzero `matched_count` equal to its
-  `expected_count`, and the recorded `sha256` and `release` equal to the archive
-  as it is now.
+  both platforms, with the recorded `sha256` and `release` equal to the archive
+  as it is now, and `portable` and `smoke` passed (and `ca_debian` and
+  `ca_redhat` on Linux). The publisher, not the evidence, holds the size of a
+  complete run of each gate: `portable` 2, `smoke` 7, `ca_debian` 2 and
+  `ca_redhat` 1. It refuses, as missing checks, a gate whose `matched_count` is
+  below that size; a `smoke`, `ca_debian` or `ca_redhat` record with no
+  `expected_count`, or with an `expected_count` below the size or different
+  from `matched_count`; and CA records whose `cases` are not exactly
+  `["debian", "removed"]` and `["redhat"]`. The refusal names the platform, the
+  gate and both counts. `portable` records no `expected_count`; its size is
+  checked against `matched_count` alone. The same checks run with and without
+  `--dry-run`.
 
 Rebuilding an archive writes format 1 again, and any change to an archive's
 bytes breaks its recorded checksum, so either one requires a new gate run.
 `make release-cut TAG=vX.Y.Z [DRY_RUN=1]` runs the whole sequence on a macOS
-arm64 host: tag and clean-checkout preflight, `make dist`, macOS gates,
+arm64 host (only `DRY_RUN=1` is a dry run; any other non-empty value, such as
+`DRY_RUN=0`, is refused before anything runs): tag and clean-checkout preflight, `make dist`, macOS gates,
 `make linux-dist`, Linux gates and the publisher, with outputs under
 `build/release-cut/<tag>/<platform>/` and the staged assets under
 `dist/release/<tag>/`.

@@ -21,7 +21,10 @@
 #   - each archive has format_version 2 evidence whose sha256 is the archive's
 #     SHA-256 now, whose release identity is the bundled release.json, and whose
 #     required gates (portable and smoke; ca_debian and ca_redhat on Linux) all
-#     passed with a nonzero matched count equal to the expected count;
+#     passed with a matched count no smaller than the gate's complete size, which
+#     this script owns (portable 2, smoke 7, ca_debian 2, ca_redhat 1). smoke and
+#     both CA gates must record an expected_count equal to the matched count, and
+#     the CA gates exactly the cases debian+removed and redhat;
 #   - both bundled get-planar.sh copies, and every standalone copy found, are
 #     byte-identical to scripts/get-planar.sh at the tag commit.
 #
@@ -99,8 +102,18 @@ python3 - "$mode" "$tag" "$tag_sha" "$stage" "$scratch" "${dirs[@]}" <<'PY'
 import hashlib, json, pathlib, shlex, shutil, sys, tarfile
 mode, tag, tag_sha, stage, scratch, *dirs = sys.argv[1:]
 stage, scratch = pathlib.Path(stage), pathlib.Path(scratch)
-PLATFORMS = {'macos-arm64': dict(floor='26.0', gates=('portable', 'smoke')),
-             'linux-x86_64': dict(floor='2.36', gates=('portable', 'smoke', 'ca_debian', 'ca_redhat'))}
+# Each platform's required gates and the size of each: the number of checks a
+# complete run performs. portable is the two portable ctest cases scripts/dist.sh
+# requires; smoke is the seven checks of scripts/release-smoke.sh; ca_debian is
+# trusted plus refused-once-removed and ca_redhat is one trusted case, both from
+# scripts/release-gates.sh. The publisher owns these numbers so that evidence
+# which ran fewer checks than a complete run is refused even when it says pass.
+PORTABLE, SMOKE = dict(size=2), dict(size=7, expected=True)
+CA_DEBIAN = dict(size=2, expected=True, cases=['debian', 'removed'])
+CA_REDHAT = dict(size=1, expected=True, cases=['redhat'])
+PLATFORMS = {'macos-arm64': dict(floor='26.0', gates=dict(portable=PORTABLE, smoke=SMOKE)),
+             'linux-x86_64': dict(floor='2.36', gates=dict(portable=PORTABLE, smoke=SMOKE,
+                                                           ca_debian=CA_DEBIAN, ca_redhat=CA_REDHAT))}
 
 def fail(message):
     sys.exit(f'release-publish: {message}')
@@ -180,7 +193,7 @@ for platform in order:
         fail(f'{evidence}: evidence release identity differs from {archive.name} release.json')
     gates = record.get('gates') if isinstance(record.get('gates'), dict) else {}
     summary = []
-    for name in rule['gates']:
+    for name, need in rule['gates'].items():
         gate = gates.get(name)
         if not isinstance(gate, dict):
             fail(f'{archive}: missing {name} gate evidence')
@@ -189,12 +202,23 @@ for platform in order:
         count = gate.get('matched_count')
         if isinstance(count, bool) or not isinstance(count, int) or count < 1:
             fail(f'{archive}: {name} gate matched {count!r} checks; zero matched is no gate')
-        if 'expected_count' in gate:
-            if gate['expected_count'] != count:
-                fail(f'{archive}: {name} gate matched {count} of {gate["expected_count"]} expected checks')
-            summary.append(f'{name}={count}/{count}')
-        else:
-            summary.append(f'{name}={count}')
+        expected = gate.get('expected_count')
+        if expected is None and need.get('expected'):
+            fail(f'{archive}: {platform} {name} gate matched {count} checks and records no expected_count; '
+                 f'missing checks (a complete {platform} {name} gate runs {need["size"]})')
+        if expected is not None:
+            if isinstance(expected, bool) or not isinstance(expected, int):
+                fail(f'{archive}: {platform} {name} gate expected_count {expected!r} is not a count')
+            if expected != count:
+                fail(f'{archive}: {platform} {name} gate matched {count} of {expected} expected checks')
+        if count < need['size']:  # expected_count, when recorded, equals count
+            fail(f'{archive}: {platform} {name} gate matched {count} of '
+                 f'{"no recorded" if expected is None else expected} expected checks, below the '
+                 f'{need["size"]} a complete {platform} {name} gate runs; missing checks')
+        if 'cases' in need and gate.get('cases') != need['cases']:
+            fail(f'{archive}: {platform} {name} gate ran cases {gate.get("cases")!r}, not {need["cases"]!r} '
+                 f'(matched {count} of {expected} expected checks); missing checks')
+        summary.append(f'{name}={count}' if expected is None else f'{name}={count}/{expected}')
     if gates['portable'].get('staged_binaries') != 5:
         fail(f'{archive}: portable gate inspected {gates["portable"].get("staged_binaries")!r} staged binaries, not 5')
     bundle['summary'] = summary

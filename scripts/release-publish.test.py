@@ -211,6 +211,20 @@ class GateTests(ReleaseFixture):
         self.assertFalse(self.log.exists(), 'no container may start for unportable evidence')
         self.assertEqual(json.loads(self.evidence('linux-x86_64').read_text())['format_version'], 1)
 
+    def test_failed_portable_gate_refuses_before_gates_run(self):
+        # Scenario 3760: an injected portability failure with a nonzero count.
+        for platform in PLATFORMS:
+            with self.subTest(platform=platform):
+                directory = self.make_bundle(platform)
+                self.edit_evidence(platform, lambda r: r['gates']['portable'].update(result='fail', matched_count=2))
+                result = self.gate(platform)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(f'planar-{platform}.tar.gz: the portable gate did not pass', result.stderr)
+                self.assertFalse(self.log.exists(), 'no container may start for a failed portable gate')
+                self.assertFalse((directory / f'planar-{platform}.gate-logs/smoke.log').exists(),
+                                 'no smoke may run for a failed portable gate')
+                self.assertEqual(json.loads(self.evidence(platform).read_text())['format_version'], 1)
+
     def test_archive_changed_after_assembly_refuses_before_gates_run(self):
         directory = self.make_bundle('linux-x86_64')
         with (directory / 'planar-linux-x86_64.tar.gz').open('ab') as archive:
@@ -367,6 +381,49 @@ class PublishTests(ReleaseFixture):
                 self.edit_evidence('macos-arm64', lambda r, g=gate, f=fields: r['gates'][g].update(f))
                 self.assert_refused(message)
 
+    def test_evidence_short_of_a_complete_gate_is_refused(self):
+        # A record that says pass but ran fewer checks than a complete gate:
+        # the publisher owns each gate's size and the CA gates' case lists.
+        def drop_expected(fields):
+            return lambda gate: (gate.pop('expected_count'), gate.update(fields))
+        changes = (
+            ('macos-arm64', 'smoke', drop_expected(dict(matched_count=1)),
+             'macos-arm64 smoke gate matched 1 checks and records no expected_count; missing checks'),
+            ('linux-x86_64', 'ca_redhat', drop_expected({}),
+             'linux-x86_64 ca_redhat gate matched 1 checks and records no expected_count; missing checks'),
+            ('linux-x86_64', 'ca_debian', lambda g: g.update(matched_count=1, expected_count=1, cases=['debian']),
+             'linux-x86_64 ca_debian gate matched 1 of 1 expected checks, below the 2 a complete '
+             'linux-x86_64 ca_debian gate runs; missing checks'),
+            ('macos-arm64', 'portable', lambda g: g.update(matched_count=1),
+             'macos-arm64 portable gate matched 1 of no recorded expected checks, below the 2 a complete '
+             'macos-arm64 portable gate runs; missing checks'),
+            ('linux-x86_64', 'portable', lambda g: g.update(matched_count=1),
+             'linux-x86_64 portable gate matched 1 of no recorded expected checks, below the 2'),
+            ('linux-x86_64', 'smoke', lambda g: g.update(matched_count=6, expected_count=6),
+             'linux-x86_64 smoke gate matched 6 of 6 expected checks, below the 7'),
+            ('linux-x86_64', 'ca_debian', lambda g: g.update(cases=['debian', 'debian']),
+             "linux-x86_64 ca_debian gate ran cases ['debian', 'debian'], not ['debian', 'removed'] "
+             '(matched 2 of 2 expected checks); missing checks'),
+            ('linux-x86_64', 'ca_redhat', lambda g: g.pop('cases'),
+             "linux-x86_64 ca_redhat gate ran cases None, not ['redhat']"),
+            ('macos-arm64', 'smoke', lambda g: g.update(expected_count='7'),
+             "macos-arm64 smoke gate expected_count '7' is not a count"),
+            ('macos-arm64', 'smoke', lambda g: g.update(expected_count=8),
+             'planar-macos-arm64.tar.gz: macos-arm64 smoke gate matched 7 of 8 expected checks'),
+        )
+        for platform, gate, change, message in changes:
+            with self.subTest(message=message):
+                self.ready()
+                self.edit_evidence(platform, lambda r, g=gate, c=change: c(r['gates'][g]))
+                self.assert_refused(message)
+
+    def test_failed_portable_gate_in_release_evidence_is_refused(self):
+        for platform in PLATFORMS:
+            with self.subTest(platform=platform):
+                self.ready()
+                self.edit_evidence(platform, lambda r: r['gates']['portable'].update(result='fail'))
+                self.assert_refused(f'planar-{platform}.tar.gz: portable gate result is fail, not pass')
+
     def test_archive_changed_after_checks_invalidates_its_evidence(self):
         self.ready()
         with (self.inputs / 'macos-arm64/planar-macos-arm64.tar.gz').open('ab') as archive:
@@ -427,6 +484,16 @@ class ReleaseCutTests(ReleaseFixture):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('release-gates:', result.stderr)
                 self.assert_no_publish(result)
+
+    def test_dry_run_accepts_only_one(self):
+        for value in ('0', 'yes', 'true', '2'):
+            with self.subTest(DRY_RUN=value):
+                result = self.cut(f'DRY_RUN={value}')
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn(f"DRY_RUN must be 1 (a dry run) or unset (publish), not '{value}'", result.stderr)
+                self.assert_no_publish(result)
+                self.assertEqual(self.calls(), [], 'no build or container may start')
+                self.assertFalse((self.repo / 'build/release-cut').exists())
 
     def test_identity_refusals_stop_before_any_build(self):
         result = self.run_cmd(['make', 'release-cut', 'TAG=v9.9.9'])
