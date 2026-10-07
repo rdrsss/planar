@@ -7,7 +7,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 # Run an isolated installer copy whose pinned C++ compiler path is unavailable.
 # The dependency preflight must refuse before it can invoke CMake.
-mkdir -p "$TMP/repo/scripts" "$TMP/home"
+mkdir -p "$TMP/repo/scripts" "$TMP/repo/skills/planar" "$TMP/repo/agents" "$TMP/repo/workflows" "$TMP/repo/migrations" "$TMP/home"
 cp "$ROOT/install.sh" "$TMP/repo/install.sh"
 cp -R "$ROOT/scripts/install-lib" "$TMP/repo/scripts/"
 

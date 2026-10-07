@@ -19,7 +19,7 @@ fail() { printf 'install-stage-test: %s\n' "$*" >&2; exit 1; }
 # at a missing one.
 make_repo() {
   local repo="$1"
-  mkdir -p "$repo/skills"
+  mkdir -p "$repo/skills" "$repo/workflows" "$repo/migrations"
   cp "$ROOT/install.sh" "$repo/install.sh"
   cp -R "$ROOT/scripts" "$repo/scripts"
   cp -R "$ROOT/agents" "$repo/agents"
