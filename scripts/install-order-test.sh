@@ -166,6 +166,21 @@ run_install "$H" "$B1" PLANAR_DB="$H/data/elsewhere.db" PLANAR_CONFIG_PATH="$H/c
 grep -Fq "relocated by PLANAR_DB to $H/data/elsewhere.db" "$TMP/out" || fail "the relocation was not named: $(show)"
 pass "fresh install honours a relocated database and config"
 
+# The mutating and complete records are flushed to disk with sync(1) once they
+# are written: a recording sync on the PATH notes the journal's phase each time
+# it runs.
+SYNCBIN="$TMP/syncbin"; mkdir -p "$SYNCBIN"
+for f in "$BASEBIN"/*; do [[ "${f##*/}" == sync ]] || ln -s "$(readlink "$f")" "$SYNCBIN/${f##*/}"; done
+real_sync="$(command -v sync)"
+printf '#!/bin/sh\nwhile IFS= read -r l; do case "$l" in phase=*) echo "$l" >> "$SYNC_LOG" ;; esac; done < "$SYNC_ROOT/.planar-journal"\nexec %s\n' "$real_sync" > "$SYNCBIN/sync"
+chmod 755 "$SYNCBIN/sync"
+H="$(new_home durable)"; P="$H/.planar"
+run_install "$H" "$B1" PATH="$SYNCBIN" SYNC_LOG="$TMP/sync.log" SYNC_ROOT="$P" --
+[[ "$RC" == 0 ]] || fail "the install with a recording sync failed ($RC): $(show)"
+[[ "$(cat "$TMP/sync.log" 2>/dev/null | tr '\n' ' ')" == "phase=mutating phase=complete " ]] \
+  || fail "the mutating and complete records were not each flushed with sync: $(cat "$TMP/sync.log" 2>/dev/null)"
+pass "the mutating and complete records are flushed with sync"
+
 # --- a behind database is migrated after the swap ---------------------------------------------------------
 
 H="$(new_home behind)"; P="$H/.planar"; mkdir -p "$P"
