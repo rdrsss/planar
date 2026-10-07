@@ -6614,6 +6614,14 @@ A plain run, or `--version <tag>`:
    the lock when it ends. If the exec fails, the verb removes the directory and
    releases the lock itself.
 
+The shadow check belongs to the installer, after placement: when `command -v
+planar` differs from `<root>/bin/planar` it prints `<path> shadows the
+installed <root>/bin/planar: your shell runs <path>. Put <root>/bin first on
+PATH, or remove <path>`, naming `~/.local/bin/planar` and adding `(the retired
+'make install' put it there)` when that is the shadowing path. The verb does
+not repeat it: it never regains control after the exec. The bootstrap prints
+the same line, prefixed `get-planar: warning: `.
+
 Refusals use the bootstrap's (`get-planar.sh`) messages, after `error: `:
 `cannot reach the release server at <base>: ...`, `release <tag> does not
 exist on the release server <base>: ...`, `checksum mismatch for <asset>: ...`,

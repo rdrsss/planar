@@ -491,7 +491,9 @@ its own; and then execs the bundle's `install.sh --prebuilt` with
 a gap and removes the download directory when the install ends. An interrupted
 install or uninstall is reported (exit 1, with its retry command) instead of
 any verdict about the installed release; `planar update` never replays it
-itself. It opens no database: migration is the installer's. See
+itself. It opens no database: migration is the installer's, and so is the
+warning that a `planar` earlier on `PATH` (for example the retired
+`~/.local/bin/planar`) shadows the installed one. See
 [`planar update`](docs/cli-reference.md#domain-update) for the full step list
 and messages.
 

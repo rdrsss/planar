@@ -636,7 +636,17 @@ main() {
   _found=$(command -v planar 2>/dev/null) || _found=""
   if [ "$_found" != "$ROOT/bin/planar" ]; then
     if [ -n "$_found" ]; then
-      printf 'get-planar: note: "planar" on your PATH is %s, but this install is %s/bin/planar. Put %s/bin first on PATH to use it.\n' "$_found" "$ROOT" "$ROOT"
+      # Same wording as the installer's shadow warning; ~/.local/bin/planar is
+      # named as the retired `make install` location.
+      _shown=$_found
+      _retired=""
+      if [ -n "${HOME:-}" ] && [ "$_found" = "$HOME/.local/bin/planar" ]; then
+        # shellcheck disable=SC2088  # a display string: the literal ~ is intended
+        _shown='~/.local/bin/planar'
+        _retired=" (the retired 'make install' put it there)"
+      fi
+      printf 'get-planar: warning: %s shadows the installed %s/bin/planar: your shell runs %s. Put %s/bin first on PATH, or remove %s%s.\n' \
+        "$_shown" "$ROOT" "$_shown" "$ROOT" "$_shown" "$_retired"
     else
       printf 'get-planar: note: "planar" is not on your PATH; this install is %s/bin/planar. Add %s/bin to PATH.\n' "$ROOT" "$ROOT"
     fi

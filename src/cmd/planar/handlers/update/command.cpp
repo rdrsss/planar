@@ -582,8 +582,12 @@ auto run_update(context& ctx, const cliapp::parsed_args& args, const update_host
   }
 
   // 6. Hand off. Ownership is checked, never released, before the exec.
-  // Task 7320 adds the `command -v planar` versus `<root>/bin/planar` shadow
-  // check here, before the exec replaces this process.
+  // The shadow check (`command -v planar` versus `<root>/bin/planar`) is not made
+  // here: the exec below never returns control, and a check before it would run
+  // before the new binaries are placed. The bundled installer makes it after
+  // placement, with the environment this process hands it, and names
+  // `~/.local/bin/planar` when that is the shadowing path. Printing it here too
+  // would print it twice.
   if (auto owned = up::lock::assert_owner(session.held()); !owned) {
     return failure(owned.error());
   }
