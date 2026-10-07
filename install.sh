@@ -864,6 +864,7 @@ BASE_DEPS=(
   "wc||check the recovery journal's size (scripts/install-lib/journal.sh)"
   "cut||shorten the staging token (scripts/install-lib/install-state.sh)"
   "sleep||wait at a paused test fault point (scripts/install-lib/install-state.sh; test-only)"
+  "sync||flush the recovery journal's mutating and complete records to disk (install.sh)"
 )
 BUILD_DEPS=("${TOOLCHAIN_DEPS[@]}" "${BASE_DEPS[@]}")
 RUN_DEPS=(
@@ -1034,6 +1035,15 @@ retry_command() {
 # journal_save -- write the journal or stop.
 journal_save() {
   planar_journal_write "$ROOT_C" || err "cannot write the recovery journal $ROOT_C/.planar-journal"
+}
+
+# journal_save_durable -- write the journal, then flush it to disk with sync(1),
+# so the record survives a power loss as well as a kill. Used for the two phase
+# records the recovery depends on: mutating (before the first live change) and
+# complete (before the backups are disposed of).
+journal_save_durable() {
+  journal_save
+  sync || warn "sync failed; the recovery journal $ROOT_C/.planar-journal is written but may not be on disk yet"
 }
 
 # set_target -- the identity of the release this run installs, into J_target_*.
@@ -1360,7 +1370,7 @@ done
 # sweep is one). From here a failure keeps the journal and the backups.
 J_db="$INSTALL_DB_STATE"
 J_phase=mutating
-journal_save
+journal_save_durable
 planar_install_fault after-mutating || err "test fault after recording the mutating intent"
 RUN_MUTATED=1
 
@@ -1976,7 +1986,7 @@ printf 'planar-install %s\nbuild %s\n' "$INSTALLER_VERSION" "${PLANAR_BUILD_ID:-
 # The installation is committed: record that first, then dispose of the
 # backups and the staging, and remove the journal last (tech spec 677 step 9).
 J_phase=complete
-journal_save
+journal_save_durable
 planar_install_fault after-complete || err "test fault after recording completion"
 planar_state_finish "$ROOT_C"
 

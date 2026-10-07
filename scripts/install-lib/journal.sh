@@ -15,6 +15,13 @@
 # the journal, so a reader (or a run after a KILL) sees the old or the new
 # journal, never a mix.
 #
+# DURABILITY. planar_journal_write does not flush: a write survives the
+# installer being killed, not a power loss. install.sh runs sync(1) after the
+# two records recovery depends on, `mutating` (before the first live change)
+# and `complete` (before the backups are disposed of). The per-subtree swap
+# records between them are not flushed; after a power loss recovery maps the
+# files back to a recorded state from the inodes, or refuses.
+#
 # FORMAT (version 1). A text file of at most 65536 bytes. Every byte must be
 # tab, newline, a printable ASCII character (0x20-0x7e) or a byte of 0x80 or
 # above; other C0 control bytes and DEL make it invalid. Bytes of 0x80 and above

@@ -28,7 +28,7 @@ brew install cmake ninja llvm python git gh jq ripgrep
 `install.sh` declares its tools in three tiers in its `TOOLCHAIN_DEPS`, `BASE_DEPS` and `RUN_DEPS` manifests:
 
 - The **toolchain tier** (`cmake`, `ninja`, the pinned LLVM compilers and `python3`, above) is checked only on a source install.
-- The **base tier** is checked on every install path, `--prebuilt` included: `awk`, `basename`, `cat`, `chmod`, `cmp`, `cp`, `cut`, `date`, `diff`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`, `od`, `ps`, `readlink`, `realpath`, `rm`, `rmdir`, `sed`, `sleep`, `sort`, `tr`, `uname` and `wc`. These ship with supported Unix-like systems; the installer preflights them before making changes.
+- The **base tier** is checked on every install path, `--prebuilt` included: `awk`, `basename`, `cat`, `chmod`, `cmp`, `cp`, `cut`, `date`, `diff`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`, `od`, `ps`, `readlink`, `realpath`, `rm`, `rmdir`, `sed`, `sleep`, `sort`, `sync`, `tr`, `uname` and `wc`. These ship with supported Unix-like systems; the installer preflights them before making changes.
 - The **runtime tier** (`git`, `jq`, `gh`, `rg`) only warns.
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
@@ -238,7 +238,7 @@ running. The protocol is specified in the header of
    claim lease renewed by `queue run --claim` can lapse while the database is
    migrated. Without a working `planar-watch` it prints one line saying the
    queue could not be checked. It never blocks.
-7. Record **mutating**, then run the vendor sweep and `install-cleanup.txt`
+7. Record **mutating** (flushed to disk with `sync`), then run the vendor sweep and `install-cleanup.txt`
    (never a data path, never through a symlink), then swap each managed
    subtree: the live `<name>` is renamed to `<name>.old`, the staged one to
    `<name>`, the journal updated around each rename.
@@ -247,7 +247,8 @@ running. The protocol is specified in the header of
    `PLANAR_CONFIG_PATH` when they are set), and require a current probe.
 9. Retire the old queue store, place the vendor surfaces and write the
    manifest, then `release.json`, then the install stamp last. Record
-   **complete**, remove the backups and the staging, and remove the journal.
+   **complete** (flushed with `sync`), remove the backups and the staging, and
+   remove the journal.
 
 **When it fails.** A failure before step 7 removes only that attempt's staging
 and journal: the previous install, its stamp and `release.json` are untouched.

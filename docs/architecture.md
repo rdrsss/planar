@@ -825,7 +825,8 @@ most one wins. The update verb hands its generation to the installer it execs
 (`PLANAR_MUTATION_HANDOFF`), which adopts it once and only in that process.
 `scripts/install-lib/mutation-lock.sh` specifies the protocol for the shell and
 native implementations. Under the lock, an install keeps a **recovery journal**
-(`<root>/.planar-journal`, replaced atomically) with the phases `prepared`,
+(`<root>/.planar-journal`, replaced atomically; the `mutating` and `complete`
+records are flushed with `sync(1)`) with the phases `prepared`,
 `mutating`, `complete`, `aborted-before-mutation` and `uninstalling`, the
 target release and per-subtree swap progress
 (`scripts/install-lib/journal.sh`): it stages every managed subtree, probes the
