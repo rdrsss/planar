@@ -15,7 +15,9 @@
 #           present. On macOS /bin/bash must be 3.2; elsewhere the dynamic half
 #           still runs under whatever /bin/bash is and only that version assertion
 #           is skipped, with a printed reason. The end state is checked explicitly
-#           and, when another bash 4 or newer is on the host, compared tree for tree
+#           and compared tree for tree (run-specific lock records left out, the HOME
+#           path normalised) between two runs under /bin/bash (a self-check that keeps
+#           the comparison honest) and, when a different, newer bash is on the host,
 #           with that bash's run.
 #
 # The uninstall command is a function (uninstall_run), so the standalone
@@ -44,13 +46,29 @@ lint_files() {
 }
 
 # Flags: --static-only, --dynamic-only (the mutant probes isolate one half).
-# lint_unguarded FILE -- print N:line for each unguarded array expansion.
+# lint_unguarded FILE -- print N:line for each unguarded array expansion, and for each
+# braced "${@}" / "${*}" (an unbound-variable error under bash 3.2 `set -u` when there are
+# no arguments; the plain "$@" is fine). The guarded form must repeat the same name:
+# ${a[@]+"${a[@]}"}; a mismatched ${a[@]+"${b[@]}"} is flagged. The name match is done
+# in bash because sed -E backreferences are not portable to BSD sed.
 lint_unguarded() {
-  grep -n '' "$1" \
-    | grep -Ev '^[0-9]+:[[:space:]]*#' \
-    | grep -v 'bash32: nonempty' \
-    | sed -E 's/\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\][+]"\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\}"\}//g' \
-    | grep -E '\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]\}' || true
+  local re='\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\+"\$\{([A-Za-z_][A-Za-z0-9_]*)\[@\]\}"\}'
+  local bare='\$\{[A-Za-z_][A-Za-z0-9_]*\[[@*]\]\}|\$\{[@*]\}'
+  local n=0 line rest mismatch
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ "$line" == *'bash32: nonempty'* ]] && continue
+    rest="$line"; mismatch=0
+    while [[ "$rest" =~ $re ]]; do
+      if [[ "${BASH_REMATCH[1]}" == "${BASH_REMATCH[2]}" ]]; then
+        rest="${rest/"${BASH_REMATCH[0]}"/}"
+      else
+        mismatch=1; break
+      fi
+    done
+    if [[ "$mismatch" == 1 ]] || [[ "$rest" =~ $bare ]]; then printf '%d:%s\n' "$n" "$line"; fi
+  done < "$1"
 }
 
 # lint_bash4 FILE -- print N:line for each bash-4-only construct.
@@ -88,6 +106,14 @@ lint_selftest() {
   [[ -n "$(lint_unguarded "$f")" ]] || fail "lint self-test: an unguarded \"\${x[*]}\" went undetected"
   printf 'for a in ${x[@]+"${x[@]}"}; do :; done\necho "${#x[@]} ${x[*]:-}"\nfor a in "${x[@]}"; do :; done # bash32: nonempty\n# "${x[@]}" in a comment\n' > "$f"
   [[ -z "$(lint_unguarded "$f")" ]] || fail "lint self-test: a guarded, marked or commented form was flagged: $(lint_unguarded "$f")"
+  printf 'for a in ${x[@]+"${y[@]}"}; do :; done\n' > "$f"
+  [[ -n "$(lint_unguarded "$f")" ]] || fail "lint self-test: a mismatched guard \${x[@]+\"\${y[@]}\"} went undetected"
+  printf 'f "${@}"\n' > "$f"
+  [[ -n "$(lint_unguarded "$f")" ]] || fail "lint self-test: a braced \"\${@}\" went undetected"
+  printf 'f "${*}"\n' > "$f"
+  [[ -n "$(lint_unguarded "$f")" ]] || fail "lint self-test: a braced \"\${*}\" went undetected"
+  printf 'f "$@" "$*" "${#x[@]}" "${1-}" "${@:2}"\n' > "$f"
+  [[ -z "$(lint_unguarded "$f")" ]] || fail "lint self-test: a plain \"\$@\" was flagged: $(lint_unguarded "$f")"
   printf 'declare -A m\n' > "$f"
   [[ -n "$(lint_bash4 "$f")" ]] || fail "lint self-test: declare -A went undetected"
   printf 'echo "${v,,}"\n' > "$f"
@@ -118,9 +144,11 @@ fi
 # A newer bash for the end-state comparison, when the host has one.
 NEW_BASH=""
 for c in /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash || true)"; do
-  [[ -n "$c" && -x "$c" && "$c" != /bin/bash ]] || continue
+  [[ -n "$c" && -x "$c" ]] || continue
+  # the same file as /bin/bash (Debian: /bin -> /usr/bin) is no comparison at all
+  [[ "$c" -ef /bin/bash ]] && continue
   m="$("$c" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || true)"
-  if [[ "$m" =~ ^[0-9]+$ && "$m" -ge 4 ]]; then NEW_BASH="$c"; break; fi
+  if [[ "$m" =~ ^[0-9]+$ && "$m" -gt "$child_major" && "$m" -ge 4 ]]; then NEW_BASH="$c"; break; fi
 done
 if [[ -n "$NEW_BASH" ]]; then
   printf 'note: comparing end states against %s (bash %s)\n' "$NEW_BASH" "$("$NEW_BASH" -c 'echo "${BASH_VERSINFO[0]}"')"
@@ -154,9 +182,12 @@ install_run() { local b="$1" h="$2"; shift 2; run_in "$b" "$h" "$BUNDLE/install.
 UNINSTALL_REMOVES_VENDORS=0
 uninstall_run() { local b="$1" h="$2"; run_in "$b" "$h" "$BUNDLE/install.sh" --uninstall; } # 7314: swap in planar-uninstall here
 
-# tree_state HOME -- the relative file list plus checksums, for comparing runs.
-tree_state() { ( cd "$1" && find . \( -type f -o -type l \) | sort | while IFS= read -r f; do
-  if [[ -L "$f" ]]; then printf '%s -> link\n' "$f"; else printf '%s %s\n' "$f" "$(cksum < "$f")"; fi
+# tree_state HOME -- the relative file list plus checksums, for comparing runs. Run-specific
+# state is normalised: .planar.lock/ (owner and released records) is left out, and the
+# HOME path is replaced by @HOME@ inside every file before it is checksummed (the
+# manifest and release stamp record absolute paths).
+tree_state() { ( cd "$1" && find . -path ./.planar.lock -prune -o \( -type f -o -type l \) -print | sort | while IFS= read -r f; do
+  if [[ -L "$f" ]]; then printf '%s -> link\n' "$f"; else printf '%s %s\n' "$f" "$(LC_ALL=C sed "s#$1#@HOME@#g" "$f" | cksum)"; fi
 done ); }
 
 # scenario BASH TAG NAME VENDORS(0 none present, 1 present and placed, 2 present, --no-vendor) [install args] -- install, re-install, uninstall; echoes the
