@@ -249,10 +249,11 @@ running. The protocol is specified in the header of
    `workflows/`, `scripts/` and `migrations/`; the installer owns each outright
    and replaces it whole. A subtree that is a symlink (a `--link` install) is
    renamed aside, never followed, so a checkout behind it is never touched, and
-   switching between link and copy mode replaces the subtree's form. A subtree
-   the release no longer ships is retired: its live copy is kept as
-   `<name>.old` until the install succeeds and nothing replaces it. `commands/`
-   and `copilot/` are retired paths removed through `install-cleanup.txt`.
+   switching between link and copy mode replaces the subtree's form. Every
+   managed subtree is always shipped: a prebuilt bundle or a checkout that lacks
+   one is refused before anything is written, naming the missing path, never
+   treated as a retirement. `commands/` and `copilot/` are retired paths removed
+   through `install-cleanup.txt`.
    Shipped `templates/` files are placed only where missing, `--force`
    included; a template an operator edited, or one an older release shipped
    under another name, is never overwritten or removed, even when

@@ -20,10 +20,6 @@
 #   rename <staging>/<n> to <root>/<n>
 #               --(journal: swapped)-->
 #
-# A subtree with no staged copy is RETIRED: the release no longer ships it, so
-# its live copy is renamed to <n>.old (kept until success) and nothing is put in
-# its place (recorded staged inode `none`).
-#
 # A rename never targets an existing name, so live is never renamed into, nested
 # under or over a backup. A symlinked subtree (link mode) is renamed, never
 # followed. On a retry, planar_state_reconcile maps an interruption between a
@@ -163,6 +159,10 @@ planar_state_swap() {
     INSTALL_STATE_ERROR="$n is in state $st, which only recovery may resolve"
     return 1
   fi
+  if [ ! -e "$s" ] && [ ! -L "$s" ]; then
+    INSTALL_STATE_ERROR="the staged $s is missing"
+    return 1
+  fi
   if [ -e "$o" ] || [ -L "$o" ]; then
     INSTALL_STATE_ERROR="$o already exists; refusing to back $l up over it"
     return 1
@@ -182,11 +182,7 @@ planar_state_swap() {
     INSTALL_STATE_ERROR="$l appeared while it was being replaced; refusing to nest the staged copy under it"
     return 1
   fi
-  # A subtree the release no longer ships has no staged copy: it is retired, so
-  # the live one stays in <n>.old until success and nothing replaces it.
-  if [ "$(_ps_get "${sk}_staged")" != none ]; then
-    mv "$s" "$l" || { INSTALL_STATE_ERROR="cannot rename $s to $l"; return 1; }
-  fi
+  mv "$s" "$l" || { INSTALL_STATE_ERROR="cannot rename $s to $l"; return 1; }
   planar_install_fault "swap:$n" || { INSTALL_STATE_ERROR="test fault after swapping $n"; return 1; }
   _ps_set "$sk" swapped
   planar_journal_write "$root" || { INSTALL_STATE_ERROR="cannot write the recovery journal"; return 1; }

@@ -355,6 +355,7 @@ for missing in workflows migrations scripts/install-lib skills/planar agents; do
   grep -Fq "$missing" "$TMP/err" || fail "the refusal does not name $missing: $(cat "$TMP/err")"
   [[ ! -e "$H/.planar" && ! -e "$H/build" ]] || fail "a source install without $missing/ wrote before refusing: $(ls -a "$H")"
 done
+REPO="$REPO_GOOD"
 H="$(new_home src-missing-live)"; P="$H/.planar"
 run_source "$H"
 [[ "$RC" == 0 ]] || fail "the baseline source install failed ($RC): $(cat "$TMP/err")"

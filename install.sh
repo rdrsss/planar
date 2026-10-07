@@ -248,9 +248,25 @@ if [[ "$PREBUILT" -eq 1 ]]; then
   _bundle_toml=0
   for _b in "$SRC_ROOT"/codex-agents/planar-*.toml; do [[ -f "$_b" ]] && _bundle_toml=1; done
   [[ "$_bundle_toml" -eq 1 ]] || _bundle_missing+=("codex-agents/planar-*.toml")
+  # Every managed subtree is always shipped; an absent one is a broken bundle.
+  for _b in workflows migrations scripts/install-lib; do
+    [[ -d "$SRC_ROOT/$_b" ]] || _bundle_missing+=("$_b/")
+  done
   if [[ ${#_bundle_missing[@]} -gt 0 ]]; then
     printf 'install.sh: the prebuilt directory %s is not a complete release bundle; missing:\n' "$SRC_ROOT" >&2
     for _b in "${_bundle_missing[@]}"; do printf '  %s\n' "$_b" >&2; done
+    exit 1
+  fi
+else
+  # A source install stages every managed subtree from the checkout; one whose
+  # source directory is absent is an incomplete checkout, refused before any write.
+  _src_missing=()
+  for _b in skills/planar agents scripts/install-lib workflows migrations; do
+    [[ -d "$SRC_ROOT/$_b" ]] || _src_missing+=("$_b/")
+  done
+  if [[ ${#_src_missing[@]} -gt 0 ]]; then
+    printf 'install.sh: the checkout %s is incomplete; missing:\n' "$SRC_ROOT" >&2
+    for _b in "${_src_missing[@]}"; do printf '  %s\n' "$_b" >&2; done
     exit 1
   fi
 fi
@@ -974,9 +990,9 @@ fi
 
 # The managed subtrees: each is staged complete, then swapped in by two renames
 # (scripts/install-lib/install-state.sh). templates/ is a data path and is
-# placed missing-only after the swap. A subtree the release does not ship is
-# retired through the same swap (its live copy is backed up, nothing replaces
-# it); commands/ and copilot/ are retired paths listed in install-cleanup.txt.
+# placed missing-only after the swap. Every subtree is always shipped (an absent
+# one is refused above); commands/ and copilot/ are retired paths listed in
+# install-cleanup.txt.
 PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
 DEFAULT_RELEASE_BASE="https://github.com/rdrsss/planar/releases"
 
@@ -1244,7 +1260,7 @@ stage_prebuilt() {
   find "$SRC_ROOT/agents" -maxdepth 1 -type f -exec cp -f {} "$STAGE/agents/" \;
   cp -R "$SRC_ROOT/codex-agents" "$STAGE/codex-agents"
   for d in workflows scripts migrations; do
-    [[ -d "$SRC_ROOT/$d" ]] && cp -R "$SRC_ROOT/$d" "$STAGE/$d"
+    cp -R "$SRC_ROOT/$d" "$STAGE/$d"
   done
   [[ -d "$STAGE/scripts" ]] && chmod +x "$STAGE/scripts/"* 2>/dev/null
   log "staged the bundle's bin/, skills/, agents/, codex-agents/, workflows/, scripts/ and migrations/ (prebuilt: nothing is built)"
@@ -1303,7 +1319,7 @@ stage_source() {
     err "rendering the Codex agents failed: $out"
   fi
   for d in workflows scripts migrations; do
-    [[ -d "$SRC_ROOT/$d" ]] && place "$SRC_ROOT/$d" "$STAGE/$d"
+    place "$SRC_ROOT/$d" "$STAGE/$d"
   done
   # Copied script tooling is executable. In link mode the path resolves into the
   # checkout, whose modes are left alone.
@@ -1436,11 +1452,7 @@ for _n in $PLANAR_JOURNAL_SUBTREES; do
     continue
   fi
   planar_state_swap "$ROOT_C" "$STAGE" "$_n" || err "could not swap $_n/: $INSTALL_STATE_ERROR"
-  if [[ "$(_ps_ino "$ROOT_C/$_n")" == none ]]; then
-    log "$_n/ retired: this release does not ship it"
-  else
-    log "$_n/ → $ROOT_C/$_n ($MODE)"
-  fi
+  log "$_n/ → $ROOT_C/$_n ($MODE)"
 done
 
 # templates/ ships operator-editable defaults (workspace-capabilities.toml,
