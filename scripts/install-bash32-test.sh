@@ -206,17 +206,28 @@ pass "dynamic: prebuilt install and uninstall exit 0 under $BASH_BIN with no ven
 scenario "$BASH_BIN" stock vendors 1
 pass "dynamic: prebuilt install and uninstall exit 0 under $BASH_BIN with vendors present"
 
-if [[ -n "$NEW_BASH" ]]; then
-  scenario "$NEW_BASH" new novendor-flag 2 --no-vendor
-  scenario "$NEW_BASH" new novendor-home 0
-  scenario "$NEW_BASH" new vendors 1
+# compare_runs TAG_A TAG_B LABEL -- the three scenarios' end states under two tags must be
+# identical once the scenario tag in the HOME path is normalised.
+compare_runs() {
+  local a="$1" b="$2" label="$3" s ph
   for s in novendor-flag novendor-home vendors; do
     for ph in installed removed; do
-      # HOME paths differ by the scenario tag; normalise it.
-      diff <(sed "s#stock-##g" "$TMP/state-stock-$s.$ph") <(sed "s#new-##g" "$TMP/state-new-$s.$ph") > "$TMP/diff.out" \
-        || fail "[$s/$ph] end state differs between $BASH_BIN and $NEW_BASH: $(cat "$TMP/diff.out")"
+      diff "$TMP/state-$a-$s.$ph" "$TMP/state-$b-$s.$ph" > "$TMP/diff.out" \
+        || fail "[$s/$ph] end state differs between $label: $(cat "$TMP/diff.out")"
     done
   done
+}
+
+# Self-check: the same bash run twice must compare equal, whether or not the host has a
+# newer bash, so the comparison itself cannot rot unnoticed.
+run_scenarios() { scenario "$1" "$2" novendor-flag 2 --no-vendor; scenario "$1" "$2" novendor-home 0; scenario "$1" "$2" vendors 1; }
+run_scenarios "$BASH_BIN" again
+compare_runs stock again "two runs under $BASH_BIN"
+pass "dynamic: comparison self-check: two runs under $BASH_BIN have identical end states"
+
+if [[ -n "$NEW_BASH" ]]; then
+  run_scenarios "$NEW_BASH" new
+  compare_runs stock new "$BASH_BIN and $NEW_BASH"
   pass "dynamic: end states under $BASH_BIN and $NEW_BASH are identical"
 fi
 
