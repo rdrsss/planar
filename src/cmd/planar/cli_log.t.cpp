@@ -234,6 +234,60 @@ TEST_CASE("the verb slot IS recorded verbatim, and that is the oracle's boundary
   CHECK_FALSE(deep.verb_path.contains("SENTINEL"));
 }
 
+// --- verb-path and flag-name redaction (task 7369) ------------------------
+
+TEST_CASE("a mistyped top-level token is recorded as <unknown>", "[cmd][cli_log][privacy][redaction]") {
+  auto const bogus = shape_of({"SENTINEL_MUST_NOT_LEAK"});
+  CHECK(bogus.verb_path == "<unknown>");
+  CHECK_FALSE(bogus.verb_path.contains("SENTINEL"));
+
+  // The unknown token is not a parent verb, so a following word is a counted positional.
+  auto const with_prose = shape_of({"SENTINEL_MUST_NOT_LEAK", "more", "prose"});
+  CHECK(with_prose.verb_path == "<unknown>");
+  CHECK(with_prose.args_shape == "<pos:2>");
+}
+
+TEST_CASE("a prose token after a parent verb is recorded as <unknown>", "[cmd][cli_log][privacy][redaction]") {
+  auto const prose = shape_of({"task", "SENTINEL_MUST_NOT_LEAK", "second", "third"});
+  CHECK(prose.verb_path == "task <unknown>");
+  CHECK(prose.args_shape == "<pos:2>");
+
+  // A real subcommand is still recorded.
+  CHECK(shape_of({"task", "add"}).verb_path == "task add");
+  CHECK(shape_of({"plan", "show", "42"}).verb_path == "plan show");
+}
+
+TEST_CASE("a flag the resolved verb does not declare is recorded as --<unknown>", "[cmd][cli_log][privacy][redaction]") {
+  auto const separate = shape_of({"task", "list", "--SENTINEL_MUST_NOT_LEAK", "value"});
+  CHECK(separate.verb_path == "task list");
+  CHECK(separate.args_shape == "--<unknown>");
+
+  auto const inline_form = shape_of({"task", "list", "--SENTINEL_MUST_NOT_LEAK=value"});
+  CHECK(inline_form.args_shape == "--<unknown>");
+
+  auto const short_form = shape_of({"task", "list", "-zSENTINEL_MUST_NOT_LEAK"});
+  CHECK(short_form.args_shape == "--<unknown>");
+
+  // A declared flag next to an undeclared one keeps its name.
+  auto const mixed = shape_of({"task", "add", "--title", "x", "--SENTINEL_MUST_NOT_LEAK", "--json"});
+  CHECK(mixed.args_shape == "--title --<unknown> --json");
+
+  // An unresolved verb declares nothing but the root's flags.
+  auto const unresolved = shape_of({"SENTINEL_MUST_NOT_LEAK", "--title"});
+  CHECK(unresolved.args_shape == "--<unknown>");
+
+  for (auto const& shape : {separate, inline_form, short_form, mixed, unresolved}) {
+    CHECK_FALSE(shape.args_shape.contains("SENTINEL"));
+  }
+}
+
+TEST_CASE("real verbs and structured operands are still recorded", "[cmd][cli_log][redaction]") {
+  CHECK(shape_of({"task", "add"}).verb_path == "task add");
+  CHECK(shape_of({"resume", "6073"}).verb_path == "resume 6073");
+  CHECK(shape_of({"tree", "plan:42"}).verb_path == "tree plan:42");
+  CHECK(shape_of({"health", "--json"}).args_shape == "--json");
+}
+
 // --- the rest of the shape contract --------------------------------------
 
 TEST_CASE("parse_args reproduces the oracle's rows for the ordinary shapes", "[cmd][cli_log]") {
