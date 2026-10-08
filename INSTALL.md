@@ -63,11 +63,11 @@ The binaries link the C++ runtime statically, so no compiler or LLVM install is 
 
 The release install needs only tools a Unix host already has:
 
-- `bash`: the installer and `planar-uninstall` run under the `/bin/bash` 3.2 that stock macOS ships, with `set -u`; Homebrew bash is not needed.
+- `bash`: the installer and `planar-uninstall` run under the `/bin/bash` 3.2 that stock macOS ships, with `set -u`; Homebrew bash is not needed. [`planar update`](#update-planar-update) runs the bundle's `install.sh` with it.
 - `curl` or GNU `wget`: the bootstrap downloads with whichever it finds, `curl` first. BusyBox `wget` is refused because it cannot be told not to follow redirects.
 - `shasum` or `sha256sum`: the bootstrap verifies the bundle with whichever it finds.
 - `tar`: unpacks the bundle (the bootstrap, and [`planar update`](#update-planar-update) with the system `tar`).
-- The base system tools (`cp`, `mv`, `rm`, `mkdir`, `find`, `sed` and the like), which the installer preflights on every install and which any supported host ships; on Linux also `ldd`.
+- The base system tools (`cp`, `mv`, `rm`, `mkdir`, `find`, `sed` and the like), which the installer preflights on every install and which any supported host ships; on Linux also `ldd`, which the bootstrap and `planar update` read the glibc version from. `planar update` also reads a lock owner's start time with `env` and `ps` (`TZ=UTC LC_ALL=C ps -o lstart= -p <pid>`), both stock on every supported host.
 - On macOS, `/usr/sbin/ioreg` (stock on every Mac): the [install lock](#ownership-recovery-and-the-order-of-an-install) names the Mac by its hardware UUID with it. Without it the lock falls back to the host name and the installer warns. On Linux the lock reads `/etc/machine-id` instead, which needs no tool.
 
 At runtime Planar uses these tools when they are present, and the installer warns when one is missing:
@@ -157,7 +157,7 @@ It keeps, and names:
 
 - for a release install (one whose `release.json` records no `source_checkout`), the matching release's bundled uninstaller, downloaded afresh (the installed copy may already be gone). The retry downloads `SHA256SUMS` and the archive, verifies the archive against its one record with `sha256sum -c` or `shasum -a 256 -c` as the bootstrap does, and extracts only after the check passes. A mismatch or a missing or duplicate record refuses with `checksum verification failed for planar-<os>-<arch>.tar.gz`, naming that asset; with neither `sha256sum` nor `shasum` it refuses saying so; either way nothing is extracted. For an `https` release base both downloads add `--proto-redir =https`, so a redirect to plain http is refused as in the bootstrap. The scratch directory is removed when the command ends, however it ends. It is one parenthesised line (`PLANAR_RELEASE_URL` honoured, `--prefix`, `--purge` and `--yes` repeated, the release base shell-quoted):
   `(d="$(mktemp -d "${TMPDIR:-/tmp}/planar-uninstall.XXXXXX")" || exit 1; trap 'rm -rf "$d"' EXIT; a=planar-<os>-<arch>.tar.gz && u=<base>/download/<tag> && curl -fsSL "$u/SHA256SUMS" -o "$d/SHA256SUMS" && curl -fsSL "$u/$a" -o "$d/$a" && <verify "$a" against SHA256SUMS in "$d"> && tar -xzf "$d/$a" -C "$d" && bash "$d/planar-<os>-<arch>/uninstall.sh")`;
-- for a source install, `cd <checkout> && ./install.sh --uninstall` with the checkout path shell-quoted. The installed copy has no checkout beside it, so a source install records the absolute checkout path as `"source_checkout"` in `release.json` (omitted for a path holding a quote, a backslash or a control character); `planar-uninstall` reads it, and names the checkout only while it is absolute and still holds `install.sh` and `scripts/uninstall.sh`. A usable recorded checkout takes precedence over the release form, so a source build of a tagged commit (whose `version` is the tag) gets the checkout command and never a release download. Run from the checkout itself, the uninstaller names the checkout it runs from;
+- for a source install, `cd <checkout> && ./install.sh --uninstall` with the checkout path shell-quoted. The installed copy has no checkout beside it, so a source install records the absolute checkout path as `"source_checkout"` in `release.json` (omitted for a path holding a quote, a backslash or a control character); `planar-uninstall` reads it, and names the checkout only while it is absolute and still holds `install.sh` and `scripts/uninstall.sh`. A usable recorded checkout takes precedence over the release form, so a source build of a tagged commit (whose `version` is the tag) gets the checkout command and never a release download. When `release.json` records no usable checkout and the uninstaller runs from a checkout, it names the checkout it runs from;
 - otherwise the bundle's `uninstall.sh` it ran from.
 
 Running that command, or `planar-uninstall` again while it exists, finishes the removals; it never brings binaries back. The journal is removed last. When the uninstall keeps the install root (preserved data, or entries it does not know), it writes `~/.planar/.planar-uninstalled`, a two-line record naming the root, so the next install into that root, `--prefix` included, needs no `--force`; that install removes it. A fresh install after a finished uninstall proceeds normally, with a relocated `PLANAR_DB` still the database it uses.
@@ -280,13 +280,21 @@ host that recorded it: another machine sharing the filesystem (a network home)
 never judges an owner dead. A host with neither identity falls back to its host
 name, as earlier builds did; there a rename refuses (it never reclaims).
 
+A restarted container gets a new pid namespace, so it is a different host from
+the one that wrote its own crashed record: that record is refused (see below) and
+must be removed by hand. Cloned Linux VMs or images that share a network-mounted
+install root must each regenerate `/etc/machine-id` (for example with
+`systemd-machine-id-setup`); clones carrying the same machine id are one host
+to the lock, which would judge each other's owners by pid.
+
 **When ownership cannot be judged**, the run exits 1, names the cause and keeps
 every file:
 
 - a record that is malformed, not a regular file, or names another generation,
   or a release marker that is not a link to its record;
 - a record from another host: another machine identity (or another pid
-  namespace), even under the same host name;
+  namespace, as a restarted container has: its own crashed record is refused
+  and removed by hand), even under the same host name;
 - a record from a host with no identity at all (no machine id and no host
   name), even on that host;
 - a record from an earlier build, which named hosts by host name, under a name
@@ -329,7 +337,14 @@ running. The protocol is specified in the header of
    when the checkout has uncommitted changes, tracked or untracked (or git
    cannot read it): only a clean checkout at the recorded commit is the tree
    the interrupted run was building. Stash the changes
-   (`git stash --include-untracked`) and run the printed command. An
+   (`git stash --include-untracked`) and run the printed command. A source
+   tree that is not a git checkout installs fresh (its commit is recorded as
+   `unknown`) but can never be shown clean, so its interrupted install is never
+   resumed and the refusal says so instead of advising a stash: once no Planar
+   install, update or uninstall is running, remove
+   `~/.planar/.planar-journal` by hand and install again (the `.staging-*` and
+   `*.old` entries it owned are then reported and kept, as for any entry no
+   journal owns). An
    **uninstalling** journal refuses: an interrupted uninstall is finished by
    uninstalling, never undone.
 3. When resuming, a subtree whose live name is missing is restored from its
@@ -554,8 +569,10 @@ Build and install from a checkout to develop on Planar or to run a platform that
 On macOS, install the toolchain and the runtime tools via Homebrew:
 
 ```bash
-brew install cmake ninja llvm python git gh jq ripgrep
+brew install cmake ninja llvm python git gh jq ripgrep wget
 ```
+
+`wget` (GNU) is test-only: `scripts/get-planar-test.sh` exercises the bootstrap's `wget` fallback and fails without it. Neither the installer nor `planar` needs it, and a release install needs only `curl` or `wget` as above.
 
 - `cmake` (>= 4.3), `ninja`, and the pinned LLVM toolchain — required to configure and build the C++ binaries, on a source install. A [prebuilt install](#prebuilt-install---prebuilt) needs none of them. Both presets resolve the toolchain through `cmake/llvm-toolchain.cmake`, which discovers the prefix (an explicit `-DPLANAR_LLVM_PREFIX` first, then `brew --prefix llvm`, then apt.llvm.org's versioned prefixes and `PATH`) and refuses a candidate that lacks a modules-enabled `libc++`. `install.sh` additionally preflights the Homebrew paths `/opt/homebrew/opt/llvm/bin/clang` and `clang++` before invoking CMake. See [toolchain parity](docs/toolchain-parity.md) for the pinned versions and non-Homebrew-ARM-macOS resolution.
 - `python3` — required to build from source, not to install a release bundle. The configure step registers Python test runners (`scripts/install-lib/queue_probe.test.py`, `scripts/install-lib/queue_retire.test.py` and `scripts/queue-logs-after-reset.test.py`) and `find_package(Python3)` is `REQUIRED`. A source `install.sh` also runs it for two things: the old-queue-database retirement reader (`scripts/install-lib/queue_retire.py`, standard library and `ctypes` only; it runs no other program) and the Codex agent TOML renderer (`scripts/render-codex-agents.py`). The queue-store probe of `planar.db` (`planar-agent queue status 1 --json`) is classified in shell on every install path and needs no Python. `migrations/README.md`'s counter-reset recipe runs the log helper `scripts/queue-logs-after-reset.py` with it.

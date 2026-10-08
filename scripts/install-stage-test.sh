@@ -28,6 +28,12 @@ make_repo() {
   : > "$repo/CMakeLists.txt"
   : > "$repo/CMakePresets.json"
   perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang(\+\+)?#/bin/sh#g' "$repo/install.sh"
+  # A clean git checkout, as a source install has: a re-run after a mid-run
+  # failure resumes the interrupted install, and a resume refuses a tree that
+  # git cannot show clean (install.sh checkout_clean).
+  git -C "$repo" init -q
+  git -C "$repo" add -A
+  git -C "$repo" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m fixture
 }
 
 # Stub cmake and binaries. `cmake --install D --prefix P` puts the stubs in
@@ -902,7 +908,7 @@ for f in install.sh scripts/uninstall.sh scripts/install-lib/ownership.sh; do
   grep -Fq 'managed-lists.sh' "$ROOT/$f" || fail "$f does not source managed-lists.sh"
   ! grep -Eq '^[[:space:]]*(PLANAR_JOURNAL_SUBTREES|PLANAR_VENDOR_NAMES)=' "$ROOT/$f" || fail "$f defines a list of its own"
   ! grep -Fq 'codex-agents workflows' "$ROOT/$f" || fail "$f spells out the managed-subtree list"
-  ! grep -Eq 'claude,? codex,? copilot|claude codex copilot' "$ROOT/$f" || fail "$f spells out the vendor list"
+  ! grep -Eq 'claude,? ?codex,? ?copilot' "$ROOT/$f" || fail "$f spells out the vendor list"
 done
 # Behaviour, not just text: a vendor added to the one list is known to the installer.
 MUT="$TMP/repo-lists"; make_repo "$MUT"

@@ -118,6 +118,10 @@ test-install-prefix-guard: ## Run the install-root guard fixtures (ctest install
 test-install-data-paths: ## Run the data-path fixtures (ctest install.data_paths runs them under `make test`)
 	bash scripts/install-data-paths-test.sh
 
+.PHONY: test-install-prereq
+test-install-prereq: ## Run the prerequisite-listing fixture (ctest install.prereq runs it under `make test`)
+	bash scripts/install-prereq-test.sh
+
 .PHONY: test-install-deps
 test-install-deps: ## Run focused installer compiler-preflight fixture
 	bash scripts/install-deps-test.sh
@@ -396,6 +400,8 @@ cli-usage-check: ## Validate authored surfaces and catalog docs.examples against
 	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY) $(CPP_BIN_ABS)/$(EXECUTE_BINARY)
 	$(CLI_DOCS_COVERAGE) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY)
 	$(SURFACE_LINT) $(CURDIR) --enable-pending-retired
+	python3 scripts/check-md-anchors.py --self-test
+	python3 scripts/check-md-anchors.py docs/cli-reference.md INSTALL.md
 
 .PHONY: surface-lint
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references

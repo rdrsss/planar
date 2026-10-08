@@ -132,7 +132,8 @@ VENDORS="${PLANAR_VENDOR_NAMES// /,}"   # comma-separated for --vendors; order i
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
 # scrape, which broke whenever the header format drifted.)
 usage() {
-  cat <<'EOF'
+  # The vendor list is the one in scripts/install-lib/managed-lists.sh, never spelled out here.
+  cat <<'EOF' | sed "s/@VENDOR_LIST@/${PLANAR_VENDOR_NAMES// /,}/"
 install.sh — install Planar from a source checkout.
 
 Usage:
@@ -141,7 +142,7 @@ Usage:
 Options:
   --prefix DIR       Install root (default: ~/.planar)
   --vendors LIST     Comma-separated filter over the vendors found on this host:
-                     claude,codex,copilot,gemini,antigravity,opencode (default: all
+                     @VENDOR_LIST@ (default: all
                      of them; a vendor is placed only when its presence marker exists)
   --no-vendor        Install Planar core only; skip vendor surfaces
   --link             Symlink from this repo instead of copying (dev mode).
@@ -430,8 +431,8 @@ trap 'on_err $? $LINENO' ERR
 # Checks every entry and reports ALL missing tools at once (not one-at-a-time),
 # with a `brew install …` hint built from the entries that have a Homebrew
 # package. Fatal tier aborts; non-fatal tier warns (counted) and continues.
-# Keep the BUILD_DEPS / RUN_DEPS manifests below in sync with README.md
-# § Prerequisites.
+# Keep the BUILD_DEPS / RUN_DEPS manifests below in sync with INSTALL.md
+# § Prerequisites (scripts/install-prereq-test.sh pins the pair).
 check_deps() {
   local label="$1" fatal="$2"; shift 2
   local entry cmd rest pkg desc m
@@ -617,11 +618,21 @@ RUN_DEPS=(
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
   "tar||planar update unpacks a downloaded release bundle"
+  "bash||planar update runs the bundle's install.sh with it (also the installer's own interpreter)"
+  "env||planar update reads a lock owner's start time through env (TZ=UTC LC_ALL=C ps; also a base tool)"
 )
+# Test-only tool, not a dependency of the installer or of planar: GNU wget runs
+# scripts/get-planar-test.sh's wget fallback case, which fails without it. It is
+# listed under INSTALL.md § Contributor prerequisites and on its Homebrew line.
 # The install lock names a Mac by its hardware UUID, read with ioreg by its
 # absolute path (scripts/install-lib/mutation-lock.sh, HOST IDENTITY; the native
 # lock behind planar update does the same). Without it the lock falls back to the
 # host name, and a renamed Mac then cannot recover a crashed install's lock.
+# planar update reads the host's glibc version with `ldd --version` before it
+# installs a bundle (Linux only; get-planar.sh does the same).
+if [[ "$(uname -s 2>/dev/null || true)" == Linux ]]; then
+  RUN_DEPS+=("ldd||planar update reads the glibc version (ldd --version) to refuse a bundle built for a newer glibc")
+fi
 if [[ "$(uname -s 2>/dev/null || true)" == Darwin ]]; then
   RUN_DEPS+=("/usr/sbin/ioreg||names this Mac by its hardware UUID in the install lock (falls back to the host name without it)")
 fi
@@ -832,8 +843,11 @@ set_target() {
 # untracked (ignored files aside). Status 1 with CHECKOUT_WHY set when it has
 # one, or when git cannot say (not a repository, no git).
 CHECKOUT_WHY=""
+CHECKOUT_NOGIT=0   # 1 when the tree is not a git checkout: no commit can be shown, so it can never resume
 checkout_clean() {
   local st n first
+  CHECKOUT_NOGIT=0
+  if ! (trap - ERR; git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1); then CHECKOUT_NOGIT=1; fi
   if ! st="$(trap - ERR; git --no-optional-locks -C "$REPO_ROOT" status --porcelain 2>&1)"; then
     CHECKOUT_WHY="cannot tell whether the source checkout $REPO_ROOT has uncommitted changes (git status: ${st%%$'\n'*})"
     return 1
@@ -979,6 +993,9 @@ if [[ -e "$JOURNAL_FILE" || -L "$JOURNAL_FILE" ]]; then
       # A source resume restages from the checkout: only a clean tree at the
       # recorded commit is the tree the interrupted run was building.
       if [[ "$J_source" == checkout ]] && ! checkout_clean; then
+        if [[ "$CHECKOUT_NOGIT" == 1 ]]; then
+          err "$CHECKOUT_WHY, so it cannot be shown to hold the tree the interrupted install of $J_target_sha was building; a resume never stages a tree it cannot show clean, and a tree that is not a git checkout never can. Nothing was changed. To give up the interrupted install instead, make sure no Planar install, update or uninstall is running, remove the recovery journal $ROOT_C/.planar-journal by hand, and install again; its .staging-* and *.old entries are then reported and kept, never removed"
+        fi
         err "$CHECKOUT_WHY, so it cannot be shown to hold the tree the interrupted install of $J_target_sha was building; a resume never stages a dirty checkout. Nothing was changed. Make the checkout clean at that commit (git stash --include-untracked keeps your changes), then complete the install: $J_retry"
       fi
       planar_state_reconcile "$ROOT_C" || err "the interrupted install cannot be resumed safely: $INSTALL_STATE_ERROR"

@@ -334,6 +334,13 @@ add_test(NAME install.data_paths
   COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-data-paths-test.sh")
 set_tests_properties(install.data_paths PROPERTIES LABELS "install_data_paths" TIMEOUT 300)
 
+# Every program `planar update` and get-planar.sh run is listed in install.sh's
+# RUN_DEPS (or BASE_DEPS) and INSTALL.md § Prerequisites; wget is a test-only
+# prerequisite on the Homebrew line.
+add_test(NAME install.prereq
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-prereq-test.sh")
+set_tests_properties(install.prereq PROPERTIES LABELS "install_prereq" TIMEOUT 120)
+
 # Prebuilt install: `install.sh --prebuilt <dir>` places a release bundle with no
 # build and no python3, moves an old agent.db aside unread, refuses --link and an
 # incomplete bundle before creating anything, and a source install writes

@@ -487,6 +487,8 @@ no_evidence "$P"
 REPO="$REPO_GOOD"
 kill_source resume-nogit
 refused_resume "a resume from a checkout that is not a git repository" "cannot tell whether the source checkout"
+grep -Fq "remove the recovery journal $P/.planar-journal by hand" "$TMP/err" || fail "the not-a-git-checkout refusal does not name the journal to remove: $(cat "$TMP/err")"
+! grep -Fq 'git stash' "$TMP/err" || fail "the not-a-git-checkout refusal advises a stash that cannot be followed: $(cat "$TMP/err")"
 REPO="$REPO_GOOD"
 pass "a resume refuses the other copy/link mode and a dirty or unreadable checkout, naming the reason; the clean resume completes"
 

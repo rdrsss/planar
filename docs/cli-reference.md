@@ -6890,7 +6890,7 @@ The `tree` domain provides a hierarchical view of Planar entities — plans, tas
 
 The walk follows `plans.parent_plan_id` for plan→plan, `tasks.plan_id` and `tasks.parent_task_id` for plan→task and task→subtask, and `entity_links(relationship='derives-from')` for artifacts / decisions / scenarios / questions attached to plans. Filters apply during the walk so excluded subtrees never enter the output.
 
-The flag surface deliberately mirrors `tree(1)` wherever the semantic translates. Filesystem-specific flags from `tree(1)` are explicitly rejected at parse time rather than silently ignored — see [Deliberately omitted flags](#deliberately-omitted-flags).
+The flag surface deliberately mirrors `tree(1)` wherever the semantic translates. Filesystem-specific flags from `tree(1)` are explicitly rejected at parse time rather than silently ignored — see [`tree(1)` flags with no Planar analog](#tree1-flags-with-no-planar-analog).
 
 ### `planar tree`
 
@@ -8591,7 +8591,7 @@ to walk and is refused rather than silently writing an empty closure.
 Seed paths are resolved against `projects.root_path`, which is why a project
 registered with a path that does not match your checkout produces an empty or
 wrong result — see the association-less-repo advisory under
-[`task touches add`](#planar-task-touches-add-task-id).
+[`task touches add`](#planar-task-touches-add-task-id-repo-slug---path-p).
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees
 with the task's, using the membership-aware comparison (see
