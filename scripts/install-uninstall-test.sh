@@ -523,9 +523,18 @@ sums_write "$REL/download/v1.2.3" planar-macos-arm64.tar.gz
 NETBIN="$TMP/netbin"; mkdir -p "$NETBIN"
 for n in "$BASEBIN"/*; do ln -s "$(readlink "$n")" "$NETBIN/${n##*/}"; done
 for n in curl tar gzip grep mktemp sha256sum shasum; do f="$(command -v "$n" || true)"; [[ -z "$f" ]] || ln -sf "$f" "$NETBIN/$n"; done
+# mktemp and tar log what they were asked to do (RTLOG), then run the real tool: the
+# retry's scratch directory is removed on exit, so the log is how a test observes
+# where it was made and whether anything was extracted.
+RTLOG="$TMP/retry-tools.log"
+for n in mktemp tar; do
+  real="$(command -v "$n")"; rm -f "$NETBIN/$n"
+  printf '#!/bin/bash\nprintf "%%s\\n" "%s $*" >> "%s"\nexec "%s" "$@"\n' "$n" "$RTLOG" "$real" > "$NETBIN/$n"
+  chmod +x "$NETBIN/$n"
+done
 # run_retry HOME TMPD CMD -- run the printed retry CMD as an operator would paste it, with a private TMPDIR.
 run_retry() {
-  RC=0
+  RC=0; : > "$RTLOG"
   ( cd "$1/work" && /usr/bin/env -i HOME="$1" PATH="$NETBIN" NO_COLOR=1 LC_ALL=C TMPDIR="$2" PLANAR_DB="$1/.planar/planar.db" \
       /bin/bash -c "$3" </dev/null >"$TMP/out" 2>"$TMP/err" ) || RC=$?
 }
@@ -578,16 +587,20 @@ mkdir -p "$TMP/rt-mismatch"
 run_retry "$H" "$TMP/rt-mismatch" "$retry"
 [[ "$RC" != 0 ]] || fail "the retry succeeded against an archive that does not match SHA256SUMS: $(show)"
 grep -Fq "checksum verification failed for $ASSET" "$TMP/err" || fail "the retry's refusal does not name the asset: $(show)"
-[[ -n "$(find "$TMP/rt-mismatch" -name "$ASSET")" ]] || fail "the retry's scratch directory is not under TMPDIR, so the extraction check below proves nothing: $(show)"
-[[ -z "$(find "$TMP/rt-mismatch" -name 'planar-macos-arm64' -o -name uninstall.sh)" ]] \
-  || fail "the retry extracted the archive although it did not match SHA256SUMS: $(find "$TMP/rt-mismatch" | tr '\n' ' ')"
+# The scratch directory is gone afterwards, so observe the refusal through the
+# tools' log: mktemp ran under TMPDIR (the check can see a scratch directory) and
+# tar never ran.
+grep -Fq "mktemp -d $TMP/rt-mismatch/planar-uninstall." "$RTLOG" || fail "the retry's scratch directory was not made under TMPDIR, so the extraction check proves nothing: $(cat "$RTLOG")"
+! grep -q '^tar ' "$RTLOG" || fail "the retry extracted the archive although it did not match SHA256SUMS: $(cat "$RTLOG")"
+[[ -z "$(ls -A "$TMP/rt-mismatch")" ]] || fail "the refused retry left its scratch directory behind: $(find "$TMP/rt-mismatch" | tr '\n' ' ')"
 [[ "$(sums "$P")" == "$state_before" ]] || fail "the refused retry changed the installation"
 # A SHA256SUMS with no record for the asset.
 printf '%064d  other-asset.tar.gz\n' 0 > "$REL/download/v1.2.3/SHA256SUMS"
 mkdir -p "$TMP/rt-norecord"
 run_retry "$H" "$TMP/rt-norecord" "$retry"
 [[ "$RC" != 0 ]] && grep -Fq "checksum verification failed for $ASSET" "$TMP/err" || fail "the retry accepted a SHA256SUMS with no record for the asset ($RC): $(show)"
-[[ -z "$(find "$TMP/rt-norecord" -name 'planar-macos-arm64' -o -name uninstall.sh)" ]] || fail "the retry extracted without a checksum record"
+! grep -q '^tar ' "$RTLOG" || fail "the retry extracted without a checksum record: $(cat "$RTLOG")"
+[[ -z "$(ls -A "$TMP/rt-norecord")" ]] || fail "the refused retry left its scratch directory behind: $(find "$TMP/rt-norecord" | tr '\n' ' ')"
 # The genuine archive, with its record: the same printed retry finishes.
 cp "$TMP/genuine.tar.gz" "$REL/download/v1.2.3/$ASSET"
 sums_write "$REL/download/v1.2.3" "$ASSET"
@@ -595,6 +608,17 @@ mkdir -p "$TMP/rt-good"
 run_retry "$H" "$TMP/rt-good" "$retry"
 [[ "$RC" == 0 ]] && grep -Fq "finishing an interrupted uninstall" "$TMP/out" || fail "the retry did not finish once the archive matched SHA256SUMS ($RC): $(show)"
 [[ ! -e "$P/skills" && ! -e "$P/.planar-journal" ]] || fail "the verified retry left the installation or the journal"
+grep -q '^tar ' "$RTLOG" || fail "the verified retry never extracted, so the refusals above proved nothing: $(cat "$RTLOG")"
+[[ -z "$(ls -A "$TMP/rt-good")" ]] || fail "the finished retry left its scratch directory behind: $(find "$TMP/rt-good" | tr '\n' ' ')"
+# An https release base never follows a redirect to http; a loopback or file base
+# (the fixtures) has no such restriction to impose.
+[[ "$retry" != *"--proto-redir"* ]] || fail "the file:// retry carries a redirect restriction it has no use for: $retry"
+H2="$(make_installed httpsbase)"
+uninstall "$H2" "PLANAR_RELEASE_URL=https://releases.example.test/planar" "PLANAR_INSTALL_TEST_FAULT=kill@uninstall-subtree:bin" --
+[[ "$RC" -ge 128 ]] || fail "the https-base uninstall was not killed ($RC): $(show)"
+retry_https="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //p' "$TMP/out")"
+[[ "$(grep -o -e '--proto-redir =https' <<<"$retry_https" | wc -l | tr -d ' ')" == 2 ]] \
+  || fail "the retry for an https base does not forbid an https-to-http redirect on both downloads: $retry_https"
 pass "the printed release retry downloads SHA256SUMS and refuses a mismatched or unrecorded archive naming the asset, extracting nothing; the genuine archive finishes it"
 
 # A source install records its checkout, so the installed copy's retry names it
@@ -618,7 +642,7 @@ cat > "$SSTUBS/cmake" <<STUB
 if [[ "\$1" == "--install" ]]; then
   source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
   mkdir -p "\$4/bin"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do stub_binary_write "\$4/bin/\$b" dev; done
+  for b in planar planar-agent planar-watch planar-execute planar-ext; do stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"; done
 fi
 exit 0
 STUB
@@ -644,6 +668,28 @@ for n in bin skills agents scripts migrations; do [[ ! -e "$P/$n" ]] || fail "th
 [[ "$(data_sums "$P")" == "$dbefore" ]] || fail "the source retry changed a data path"
 [[ -f "$SRC/install.sh" ]] || fail "the source retry removed the checkout"
 pass "a source install records its checkout; the interrupted uninstall's printed retry names it, quoted, and completes the uninstall from it"
+
+# A source install of a TAGGED build writes the tag as release.json's version, so
+# the version alone looks like a release. The recorded checkout wins: the printed
+# retry is the checkout command, never the release download (which may have no
+# asset for this platform).
+H="$(new_home source-tagged)"; P="$H/.planar"
+RC=0
+env -u CODEX_HOME -u PLANAR_HOME -u PLANAR_DB -u PLANAR_CONFIG_PATH STUB_TAG=v7.8.9 PATH="$SSTUBS:$PATH" HOME="$H" NO_COLOR=1 \
+  "$SRC/install.sh" --build-dir "$H/build" --no-vendor --prefix "$P" >"$TMP/out" 2>"$TMP/err" || RC=$?
+[[ "$RC" == 0 ]] || fail "the tagged source install failed ($RC): $(show)"
+grep -Fxq '  "version": "v7.8.9",' "$P/release.json" && grep -Fxq "  \"source_checkout\": \"$SRC\"," "$P/release.json" \
+  || fail "the tagged source install did not record a v-tag version and its checkout: $(cat "$P/release.json")"
+uninstall "$H" "PLANAR_RELEASE_URL=file://$REL" "PLANAR_INSTALL_TEST_FAULT=kill@uninstall-subtree:bin" --
+[[ "$RC" -ge 128 && ! -e "$P/bin" && -d "$P/skills" ]] || fail "the tagged source uninstall was not killed after bin/ ($RC): $(show)"
+retry="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //p' "$TMP/out")"
+[[ "$retry" == "cd '$SRC' && ./install.sh --uninstall" || "$retry" == "cd ${SRC// /\\ } && ./install.sh --uninstall" ]] \
+  || fail "a tagged source install's retry does not name the recorded checkout: $retry"
+[[ "$retry" != *".tar.gz"* && "$retry" != *"curl"* ]] || fail "a tagged source install's retry downloads a release: $retry"
+mkdir -p "$TMP/rt-tagged"
+run_retry "$H" "$TMP/rt-tagged" "$retry"
+[[ "$RC" == 0 && ! -e "$P/skills" && ! -e "$P/.planar-journal" ]] || fail "the tagged source retry did not finish the uninstall ($RC): $(show)"
+pass "a source install of a tagged build still prints the recorded-checkout retry, not a release download"
 
 # A kill in the middle of the vendor removals: the installed copy is still there
 # and the next run finishes every recorded removal.
