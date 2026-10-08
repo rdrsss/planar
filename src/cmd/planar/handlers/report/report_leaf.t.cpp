@@ -90,6 +90,39 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   return invocation{.code = code, .out = out.str(), .err = err.str()};
 }
 
+/// @brief The second whitespace-separated token of `planar version`.
+auto build_version_token(const fixture& fx) -> std::string {
+  auto const         line = dispatch(fx, {"version"}).out;
+  std::istringstream in(line);
+  std::string        program;
+  std::string        token;
+  in >> program >> token;
+  return token;
+}
+
+/// @brief Enable the capture log in the fixture's scratch config.
+auto enable_cli_log(const fixture& fx) -> void {
+  std::filesystem::create_directories(fx.root / "fakehome" / ".planar");
+  std::ofstream cfg(fx.root / "fakehome" / ".planar" / "config.toml", std::ios::binary);
+  cfg << "[introspection]\ncli_log = true\n";
+}
+
+/// @brief Run one SQL statement against the fixture's scratch database.
+auto seed(const fixture& fx, std::string_view sql) -> void {
+  std::ostringstream out;
+  std::ostringstream err;
+  context            ctx{{"planar", "report"},
+                         planar::cmd::map_env(fx.vars),
+                         fx.root / "proj",
+                         std::make_shared<planar::cmd::database>(fx.db_path, err),
+                         out,
+                         err};
+  auto               conn = ctx.db().ensure_db();
+  REQUIRE(conn.has_value());
+  auto const applied = (*conn)->execute(sql);
+  REQUIRE(applied.has_value());
+}
+
 } // namespace
 
 TEST_CASE("report --days 0 refuses at exit 2, naming the offending value", "[cmd][report]") {
@@ -126,7 +159,13 @@ TEST_CASE("report --json on a fresh scratch arena reports the deterministic empt
   auto const result = dispatch(fx, {"report", "--json"});
   CHECK(result.code == 0);
   CHECK(result.err.empty());
-  CHECK(result.out.starts_with(R"({"version":"planar","schema_version":41,"health":"ok","window":30,)"));
+  // `version` is the build's version token (the second token of the
+  // `planar version` line), never the literal program name.
+  auto const version = build_version_token(fx);
+  CHECK(version != "planar");
+  CHECK(result.out.starts_with(
+      std::format(R"({{"version":"{}","schema_version":41,"health":"ok","window":30,"logging_enabled":false,)", version)));
+  CHECK(result.out.find(R"("failure_tail":[])") != std::string::npos);
   CHECK(result.out.find(R"("invocations":[])") != std::string::npos);
   CHECK(result.out.find(R"("introspection_preview":{"signals":[],"coverage":[)") != std::string::npos);
   CHECK(result.out.find(R"({"vendor":"claude","state":"unavailable","scanned":0)") != std::string::npos);
@@ -234,4 +273,52 @@ TEST_CASE("report --json walks a real transcript directory under the fixture's s
   CHECK(result.code == 0);
   CHECK(result.out.find(R"({"vendor":"claude","state":"observed","scanned":1,"malformed":1)") != std::string::npos);
   CHECK(result.out.find(R"({"vendor":"claude","kind":"malformed","count":1})") != std::string::npos);
+}
+
+TEST_CASE("report --json reads an oversize capture log newest first and warns byte_cap instead of failing",
+          "[cmd][report][7364]") {
+  // 20000 failed rows of roughly 230 bytes of JSONL each exceed the 4 MiB
+  // budget but stay under the 50000-record cap. The newest ten rows carry a
+  // recognizable verb path and so do the oldest ten; the middle is filler.
+  auto const fx = make_fixture("cli_byte_cap");
+  enable_cli_log(fx);
+  seed(fx, R"(with recursive n(i) as (select 0 union all select i + 1 from n where i < 19999)
+insert into cli_invocations (verb_path, exit_code, error_category, recorded_at)
+select case when i < 10 then 'newest-marker'
+            when i >= 19990 then 'oldest-marker'
+            else 'filler-' || printf('%05d', i) || '-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' end,
+       2, 'usage', datetime('now', '-' || i || ' seconds')
+from n)");
+
+  auto const result = dispatch(fx, {"report", "--json"});
+  REQUIRE(result.code == 0);
+  CHECK(result.out.find(R"("kind":"cli_adapter_failed")") == std::string::npos);
+  CHECK(result.out.find(R"({"vendor":"cli_log","state":"observed")") != std::string::npos);
+  CHECK(result.out.find(R"({"vendor":"cli_log","kind":"byte_cap","count":)") != std::string::npos);
+  CHECK(result.out.find("planar newest-marker") != std::string::npos);
+  CHECK(result.out.find("planar oldest-marker") == std::string::npos);
+}
+
+TEST_CASE("report --json carries failure_tail, logging_enabled and the real version", "[cmd][report][7368]") {
+  auto const fx = make_fixture("json_fields");
+  enable_cli_log(fx);
+  seed(fx, "insert into cli_invocations (verb_path, exit_code, error_category, recorded_at) values"
+           " ('task add', 2, 'usage', datetime('now', '-1 minutes')),"
+           " ('plan show', 1, 'not_found', datetime('now', '-2 minutes'))");
+
+  auto const result = dispatch(fx, {"report", "--json"});
+  REQUIRE(result.code == 0);
+  auto const version = build_version_token(fx);
+  CHECK(version != "planar");
+  CHECK(result.out.starts_with(std::format(R"({{"version":"{}",)", version)));
+  CHECK(result.out.find(R"("logging_enabled":true)") != std::string::npos);
+  CHECK(result.out.find(R"("failure_tail":[{"verb_path":"task add","error_category":"usage","exit_code":2,"recorded_at":")") !=
+        std::string::npos);
+  CHECK(result.out.find(R"({"verb_path":"plan show","error_category":"not_found","exit_code":1,"recorded_at":")") !=
+        std::string::npos);
+
+  // The text output prints the same rows.
+  auto const text = dispatch(fx, {"report"});
+  CHECK(text.out.find("  task add  cat=usage  exit=2  at=") != std::string::npos);
+  CHECK(text.out.find("  plan show  cat=not_found  exit=1  at=") != std::string::npos);
 }
