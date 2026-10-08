@@ -47,10 +47,27 @@
 ///      it (exec keeps the pid and start time). The installer removes the
 ///      temporary directory and releases ownership when it ends.
 ///
-/// Every refusal before the exec removes the temporary directory and releases
-/// ownership. A KILL leaves both; the next owner proves the updater dead and
-/// removes exactly its recorded directory. Refusals reuse the bootstrap's
-/// messages (`scripts/get-planar.sh`).
+/// Every refusal before the exec, and a failed exec, removes the temporary
+/// directory and releases ownership. Refusals reuse the bootstrap's messages
+/// (`scripts/get-planar.sh`).
+///
+/// ## SIGINT and SIGTERM
+///
+/// From just before it takes ownership until the exec, a plain run catches
+/// SIGINT and SIGTERM (one that was ignored when it started, such as a
+/// background job's SIGINT, stays ignored). The handler only records the
+/// signal. The run stops at its next checkpoint, or at once inside a download
+/// through `planar.http`'s cancel hook, removes the temporary directory and
+/// releases ownership (both with the two signals blocked, so a second signal
+/// cannot cut them short), restores the previous dispositions and exits
+/// 128+signo (130 or 143) through `passthrough_code`. Immediately before the
+/// exec, with both signals blocked, it gives up when one was caught and
+/// otherwise restores the previous dispositions: a signal from there on is
+/// never lost, and acts as it would on any process. Before the exec it ends
+/// this one like a KILL; after it the installer, which then owns the directory
+/// and ownership, handles it. A KILL leaves both; the next owner proves the
+/// updater dead and removes exactly its recorded directory. `--check` holds
+/// nothing and catches nothing.
 ///
 /// ## The host seam
 ///
@@ -104,7 +121,8 @@ export auto native_host() -> update_host;
 /// @param args The parsed arguments.
 /// @param host The host facts and exec.
 /// @return Success; exit 10 through `passthrough_code` for `--check` with an
-/// update available; otherwise the failure.
+/// update available; 128+signo through `passthrough_code` for a plain run
+/// stopped by SIGINT or SIGTERM; otherwise the failure.
 export auto run_update(context& ctx, const cliapp::parsed_args& args, const update_host& host) -> handler_result;
 
 /// @brief Handle `planar update` on the real host.

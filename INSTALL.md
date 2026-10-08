@@ -111,7 +111,11 @@ verifies the one checksum record for the bundle; unpacks it with the system
 `tar`; refuses an older glibc or a bundle whose database schema is older than
 its own; and then execs the bundle's `install.sh --prebuilt` with
 [the handoff](#the-update-handoff-and---cleanup), which keeps the lock without
-a gap and removes the download directory when the install ends. An interrupted
+a gap and removes the download directory when the install ends. Ctrl-C
+(`SIGINT`) or `SIGTERM` before that hand-off, or an installer that cannot be
+run, removes the download directory and releases the lock, so the next
+`planar update` starts clean; an interrupted run exits `130` (`143` for
+`SIGTERM`). An interrupted
 install or uninstall is reported (exit 1, with its retry command) instead of
 any verdict about the installed release; `planar update` never replays it
 itself. It opens no database: migration is the installer's, and so is the
@@ -423,8 +427,10 @@ form. `--cleanup` is accepted only with
 directory the updater recorded: the install root, a data path, a managed
 subtree, a symlink, a path through a symlink or an unrelated directory exits 1
 and nothing is removed. The directory is removed when the installer exits,
-after success or failure; after a KILL, the next owner removes the killed
-updater's recorded directory and nothing else under `.planar-update/`.
+after success or failure. Before the exec it is the updater's: a failed exec,
+`SIGINT` or `SIGTERM` makes the updater remove it and release the lock itself;
+after a KILL, the next owner removes the killed updater's recorded directory
+and nothing else under `.planar-update/`.
 
 ### Copy mode vs link mode
 

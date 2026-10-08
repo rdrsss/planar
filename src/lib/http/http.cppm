@@ -55,7 +55,9 @@
 /// followed by hand: the first URL and every `Location` target pass
 /// `check_download_url()` before curl sees them, and an HTTPS chain can never
 /// step down to HTTP or `file`. The whole request is bounded by 10 minutes
-/// plus a low-speed abort, instead of the adapter's 30 seconds.
+/// plus a low-speed abort, instead of the adapter's 30 seconds. A caller's
+/// `download_policy::cancelled` hook abandons it early (`planar update` stops
+/// on SIGINT or SIGTERM through it).
 module;
 
 export module planar.http;
@@ -194,6 +196,11 @@ export struct download_policy {
   std::chrono::seconds low_speed_time{60};     ///< How long the rate may stay below `low_speed_limit` before abort.
   std::uint32_t        max_redirects  = 10;    ///< Redirect hops followed before giving up.
   std::uint64_t        max_body_bytes = 0;     ///< Largest body accepted, in bytes; 0 accepts any size.
+  /// @brief Polled before each hop and during the transfer (at least about
+  /// once a second, even while nothing arrives); returning true abandons the
+  /// download as `download_error_kind::cancelled`. Unset never cancels. It
+  /// runs on the calling thread.
+  std::function<bool()> cancelled;
 };
 
 /// @brief Why a `download` failed.
@@ -205,6 +212,7 @@ export enum class download_error_kind : std::uint8_t {
   certificate_verification_failed, ///< The peer certificate could not be verified.
   transport_failed,                ///< Any other failure to obtain a response.
   body_too_large,                  ///< The body passed `max_body_bytes`; the transfer was aborted.
+  cancelled,                       ///< `download_policy::cancelled` returned true; the transfer was abandoned.
 };
 
 /// @brief A failed `download`.
