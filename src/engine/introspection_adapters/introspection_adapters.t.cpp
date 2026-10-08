@@ -1266,8 +1266,8 @@ TEST_CASE("transcript format: the Codex fixture parses clean and its current rec
   auto const                  preview = ia::collect_preview(sources, test_catalog);
 
   CHECK(preview.coverage[0].malformed == 0);
-  CHECK(preview.coverage[0].scanned == 11);
-  CHECK(preview.coverage[0].ignored == 11);
+  CHECK(preview.coverage[0].scanned == 10);
+  CHECK(preview.coverage[0].ignored == 10);
   CHECK(preview.signals.empty());
 }
 

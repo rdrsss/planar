@@ -8267,6 +8267,13 @@ Empty windows emit empty arrays, never nulls or missing fields.
 
 The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
 
+**Transcript recognition:** A transcript signal is a failed `planar` command, and its verb path comes from the same live-CLI catalog rule the capture log uses (a token the tree names, a structured operand in the second slot, otherwise `<unknown>`), so typed words, flag values and prose never reach a signal.
+
+- **Claude:** a `Bash` `tool_use` paired with an `is_error: true` `tool_result`.
+- **Codex:** an `event_msg` `item_completed` of type `CommandExecution` with a non-zero `exit_code` or `status: "failed"`. The `command` array is either an argv or a shell wrapper (`bash -lc "<script>"`). The older `schema_version`/`command_execution` records are still read. `custom_tool_call` and `custom_tool_call_output` records are validated and otherwise ignored.
+- **Recognized command shapes:** `planar ...`, `./bin/planar ...`, `build/*/bin/planar ...`, any path ending in `/planar`, a leading `cd <dir> &&`, `env`/`NAME=value` prefixes, and `&&` or `;` chains, from which only the planar segment is used. A pipeline (`|`), command substitution, a here-document, a background job, or more than one planar segment is not attributed to a verb, because the recorded exit status would not be planar's.
+- **Copilot:** only `*.jsonl` files under the session-state path are read. When the directory holds none (the installed Copilot CLI writes YAML, Markdown and JSON metadata there), the Copilot row is `unavailable` and `warnings` carries `{"vendor":"copilot","kind":"unsupported_layout","count":1}`. Copilot's `session-store.db` and logs are not read.
+
 **Exit codes:**
 
 | Code | Meaning |

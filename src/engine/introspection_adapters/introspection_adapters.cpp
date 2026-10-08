@@ -269,6 +269,131 @@ auto bounded_planar_verb_path(std::string_view command) -> std::optional<std::st
   return std::nullopt;
 }
 
+/// @brief The final path component of `word`.
+auto path_basename(std::string_view word) -> std::string_view {
+  auto const slash = word.rfind('/');
+  return slash == std::string_view::npos ? word : word.substr(slash + 1);
+}
+
+/// @brief Whether `word` is a `NAME=value` environment assignment.
+auto is_env_assignment(std::string_view word) -> bool {
+  auto const eq = word.find('=');
+  if (eq == std::string_view::npos || eq == 0) {
+    return false;
+  }
+  auto const is_name_char = [](char c) { return c == '_' || std::isalnum(static_cast<unsigned char>(c)) != 0; };
+  return !std::isdigit(static_cast<unsigned char>(word[0])) && std::ranges::all_of(word.substr(0, eq), is_name_char);
+}
+
+/// @brief Whether `word` starts a shell redirection (`>f`, `2>&1`, `<f`).
+auto is_redirection(std::string_view word) -> bool {
+  std::size_t i = 0;
+  while (i < word.size() && std::isdigit(static_cast<unsigned char>(word[i])) != 0) {
+    ++i;
+  }
+  return i < word.size() && (word[i] == '<' || word[i] == '>');
+}
+
+/// @brief The argument words after the `planar` executable in `command`, or
+/// unset when the command is not a single planar invocation whose exit status
+/// is planar's own.
+///
+/// Accepts `cd dir && planar ...`, `;` and `&&` chains, `env`/`NAME=value`
+/// prefixes, and an executable spelled `planar` or any path ending in
+/// `/planar`. Rejects pipelines, command substitution, here-documents,
+/// background jobs and commands with more than one planar segment, because
+/// then the status the transcript recorded cannot be attributed to one planar
+/// verb. Only the planar segment's words are returned.
+auto planar_argv_tail(std::string_view command) -> std::optional<std::vector<std::string>> {
+  if (command.find_first_of("|`\n\r") != std::string_view::npos || command.find("$(") != std::string_view::npos ||
+      command.find("<<") != std::string_view::npos) {
+    return std::nullopt;
+  }
+  std::string spaced;
+  for (std::size_t i = 0; i < command.size(); ++i) {
+    char const c = command[i];
+    if (c == ';') {
+      spaced += " ; ";
+    } else if (c == '&') {
+      if (i + 1 < command.size() && command[i + 1] == '&') {
+        spaced += " ; ";
+        ++i;
+      } else if (i > 0 && command[i - 1] == '>') {
+        spaced += c; // the `&` of `2>&1`
+      } else {
+        return std::nullopt; // a background job
+      }
+    } else {
+      spaced += c;
+    }
+  }
+  std::optional<std::vector<std::string>> found;
+  std::vector<std::string_view>           segment;
+  auto const                              flush = [&]() -> bool {
+    std::size_t at = 0;
+    while (at < segment.size() && (segment[at] == "env" || is_env_assignment(segment[at]))) {
+      ++at;
+    }
+    if (at < segment.size() && path_basename(segment[at]) == "planar") {
+      if (found.has_value()) {
+        return false;
+      }
+      std::vector<std::string> tail;
+      for (std::size_t i = at + 1; i < segment.size() && !is_redirection(segment[i]); ++i) {
+        tail.emplace_back(segment[i]);
+      }
+      found = std::move(tail);
+    }
+    segment.clear();
+    return true;
+  };
+  for (auto const word : tokenize(spaced)) {
+    if (word == ";") {
+      if (!flush()) {
+        return std::nullopt;
+      }
+    } else {
+      segment.push_back(word);
+    }
+  }
+  if (!flush() || !found.has_value() || found->empty()) {
+    return std::nullopt;
+  }
+  return found;
+}
+
+/// @brief The signal verb path (`planar <verb path>`) for the planar
+/// invocation in `command`, or unset when `command` is not one. The words are
+/// never copied through: the verb path is what `resolve` (the live CLI
+/// catalog rule) returns for them, so operator prose cannot reach a signal.
+/// Without a resolver the built-in verb table decides.
+auto planar_verb_path_from_command(std::string_view command, const verb_path_resolver* resolve) -> std::optional<std::string> {
+  auto const tail = planar_argv_tail(command);
+  if (!tail.has_value()) {
+    return std::nullopt;
+  }
+  std::string path;
+  if (resolve != nullptr && static_cast<bool>(*resolve)) {
+    auto const resolved = (*resolve)(*tail);
+    path                = resolved.empty() ? std::string{"planar"} : "planar " + resolved;
+  } else {
+    std::string joined = "planar";
+    for (auto const& word : *tail) {
+      joined += ' ';
+      joined += word;
+    }
+    auto const table = bounded_planar_verb_path(joined);
+    if (!table.has_value()) {
+      return std::nullopt;
+    }
+    path = std::string{*table};
+  }
+  if (path.size() > 96) {
+    return std::nullopt;
+  }
+  return path;
+}
+
 auto category_from_evidence(const jd::json_value* exit_value, bool retry, bool abandoned, bool gap) -> std::optional<category> {
   if (abandoned) {
     return category::abandonment;
@@ -309,7 +434,7 @@ auto time_bucket(std::string_view ts) -> std::string_view {
 // ===========================================================================
 
 struct extracted {
-  std::string_view verb_path;
+  std::string      verb_path;
   category         cat;
   std::string_view timestamp;
 };
@@ -340,7 +465,7 @@ auto finish_legacy(const jd::json_value* command_value, const jd::json_value* ti
   if (!cat.has_value()) {
     return k_ignored;
   }
-  return extract_result{extract_kind::normalized, extracted{*command, *cat, *timestamp}};
+  return extract_result{extract_kind::normalized, extracted{std::string{*command}, *cat, *timestamp}};
 }
 
 struct pending_claude_tool {
@@ -353,6 +478,7 @@ struct pending_claude_tool {
 /// every raw source, matching the Zig original's `ExtractState`.
 struct extract_state {
   std::vector<pending_claude_tool> claude_tools;
+  const verb_path_resolver*        resolve = nullptr; ///< The transcript verb-path catalog rule, or null.
 };
 
 auto find_claude_tool(std::vector<pending_claude_tool>& tools, std::string_view id) -> pending_claude_tool* {
@@ -460,7 +586,7 @@ auto extract_claude(extract_state& state, const jd::json_value& obj) -> extract_
         continue;
       }
       auto const command   = *string_value(input->find("command"));
-      auto const verb_path = bounded_planar_verb_path(command);
+      auto const verb_path = planar_verb_path_from_command(command, state.resolve);
       if (!verb_path.has_value()) {
         continue;
       }
@@ -470,7 +596,7 @@ auto extract_claude(extract_state& state, const jd::json_value& obj) -> extract_
       if (state.claude_tools.size() == k_default_max_records) {
         continue;
       }
-      state.claude_tools.push_back(pending_claude_tool{std::string{id}, std::string{*verb_path}, false});
+      state.claude_tools.push_back(pending_claude_tool{std::string{id}, *verb_path, false});
     }
     return k_ignored;
   }
@@ -528,7 +654,62 @@ auto extract_claude(extract_state& state, const jd::json_value& obj) -> extract_
   return k_ignored;
 }
 
-auto extract_codex(const jd::json_value& obj) -> extract_result {
+/// @brief The Codex `event_msg` arm: an `item_completed` `CommandExecution`
+/// of a planar command with failure evidence (a non-zero `exit_code` or
+/// `status: "failed"`) is a failure signal. The command array is either an
+/// argv or a shell wrapper (`bash -lc "<script>"`); both go through the same
+/// recognizer as Claude's Bash commands.
+auto extract_codex_event(const extract_state& state, const jd::json_value& obj, std::string_view timestamp) -> extract_result {
+  auto const* payload = object_value(obj.find("payload"));
+  if (payload == nullptr || !string_equals(payload->find("type"), "item_completed")) {
+    return k_ignored;
+  }
+  auto const* item = object_value(payload->find("item"));
+  if (item == nullptr) {
+    return k_malformed;
+  }
+  if (!string_equals(item->find("type"), "CommandExecution")) {
+    return k_ignored;
+  }
+  auto const* command = item->find("command");
+  if (command == nullptr || command->kind != jd::json_kind::array) {
+    return k_malformed;
+  }
+  std::vector<std::string_view> argv;
+  for (auto const& element : command->array) {
+    auto const word = string_value(&element);
+    if (!word.has_value()) {
+      return k_malformed;
+    }
+    argv.push_back(*word);
+  }
+  auto const* exit_value = item->find("exit_code");
+  if (exit_value != nullptr && !integer_value(exit_value).has_value()) {
+    return k_malformed;
+  }
+  bool const failed = (exit_value != nullptr && *integer_value(exit_value) != 0) || string_equals(item->find("status"), "failed");
+  if (!failed) {
+    return k_ignored;
+  }
+  std::string script;
+  auto const  shell = argv.empty() ? std::string_view{} : path_basename(argv[0]);
+  if (argv.size() >= 3 && (shell == "bash" || shell == "sh" || shell == "zsh") && argv[1].size() >= 2 && argv[1][0] == '-' &&
+      argv[1].back() == 'c') {
+    script = std::string{argv[2]};
+  } else {
+    for (auto const word : argv) {
+      script += script.empty() ? "" : " ";
+      script += word;
+    }
+  }
+  auto const verb_path = planar_verb_path_from_command(script, state.resolve);
+  if (!verb_path.has_value()) {
+    return k_ignored;
+  }
+  return extract_result{extract_kind::normalized, extracted{*verb_path, category::failure, timestamp}};
+}
+
+auto extract_codex(const extract_state& state, const jd::json_value& obj) -> extract_result {
   if (obj.find("schema_version") != nullptr || obj.find("event") != nullptr) {
     if (!integer_equals(obj.find("schema_version"), 1) || !string_equals(obj.find("event"), "command_execution")) {
       return k_malformed;
@@ -545,6 +726,9 @@ auto extract_codex(const jd::json_value& obj) -> extract_result {
   if (!timestamp.has_value() || !valid_timestamp(*timestamp)) {
     return k_malformed;
   }
+  if (*record_type == "event_msg") {
+    return extract_codex_event(state, obj, *timestamp);
+  }
   if (*record_type != "response_item") {
     return k_ignored;
   }
@@ -556,7 +740,18 @@ auto extract_codex(const jd::json_value& obj) -> extract_result {
   if (!payload_type.has_value()) {
     return k_malformed;
   }
-  if (*payload_type == "function_call") {
+  if (*payload_type == "custom_tool_call") {
+    if (!string_value(payload->find("call_id")).has_value() || !string_value(payload->find("name")).has_value() ||
+        !string_value(payload->find("input")).has_value()) {
+      return k_malformed;
+    }
+  } else if (*payload_type == "custom_tool_call_output") {
+    auto const* output = payload->find("output");
+    if (!string_value(payload->find("call_id")).has_value() || output == nullptr ||
+        (output->kind != jd::json_kind::string && output->kind != jd::json_kind::array)) {
+      return k_malformed;
+    }
+  } else if (*payload_type == "function_call") {
     if (!string_value(payload->find("name")).has_value()) {
       return k_malformed;
     }
@@ -644,7 +839,7 @@ auto extract(extract_state& state, vendor v, const jd::json_value& value) -> ext
   case vendor::claude:
     return extract_claude(state, value);
   case vendor::codex:
-    return extract_codex(value);
+    return extract_codex(state, value);
   case vendor::copilot:
     return extract_copilot(value);
   case vendor::cli_log:
@@ -681,7 +876,7 @@ auto add_aggregate(std::vector<signal_row>& signals, vendor v, const extracted& 
   }
   signals.push_back(signal_row{
       .v          = v,
-      .verb_path  = std::string{item.verb_path},
+      .verb_path  = item.verb_path,
       .cat        = item.cat,
       .count      = 1,
       .first_seen = std::string{item.timestamp},
@@ -737,18 +932,18 @@ auto coverage_accounted(const coverage_row& cov) -> bool {
 } // namespace
 
 auto collect_preview(std::span<const raw_source> sources, const verb_path_resolver& resolve) -> preview {
-  static_cast<void>(resolve);
   std::vector<signal_row>   signals;
   std::vector<coverage_row> coverage;
 
   for (auto const& source : sources) {
     extract_state state;
-    coverage_row  cov{.v                    = source.v,
-                      .state                = coverage_state::observed,
-                      .bytes_read           = source.bytes_read,
-                      .files_partial        = source.files_partial,
-                      .files_skipped_cap    = source.files_skipped_cap,
-                      .files_skipped_window = source.files_skipped_window};
+    state.resolve = &resolve;
+    coverage_row cov{.v                    = source.v,
+                     .state                = coverage_state::observed,
+                     .bytes_read           = source.bytes_read,
+                     .files_partial        = source.files_partial,
+                     .files_skipped_cap    = source.files_skipped_cap,
+                     .files_skipped_window = source.files_skipped_window};
     if (!source.enabled) {
       cov.state = coverage_state::disabled;
       coverage.push_back(cov);
@@ -924,8 +1119,8 @@ auto fs_should_fail(const fs_fault& fault, vendor v, fs_operation operation, std
 /// @param override_path The operator override path, or empty for the built-in.
 /// @param home The operator's home directory.
 /// @param builtin_rel The built-in path, relative to `home`.
-/// @param jsonl_only When true (Claude, Codex), only `.jsonl`-suffixed
-/// files count inside a directory; Copilot (`false`) takes every file.
+/// @param jsonl_only When true (every transcript vendor), only `.jsonl`-suffixed
+/// files count inside a directory; `false` takes every file.
 /// @param files_left Remaining file budget, shared across all three vendors.
 /// @param bytes_left Remaining byte budget, shared across all three vendors.
 /// @param records_left Remaining record budget, shared across all three vendors.
@@ -961,6 +1156,7 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
   }
 
   std::vector<std::string> paths;
+  bool                     layout_scanned = false;
   if (status.type() == std::filesystem::file_type::regular) {
     paths.push_back(selected_str);
   } else if (status.type() == std::filesystem::file_type::directory) {
@@ -995,6 +1191,7 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
       owned.push_back(raw_source{.v = v, .available = false});
       return;
     }
+    layout_scanned = true;
     std::filesystem::recursive_directory_iterator const end;
     while (it != end) {
       std::error_code entry_ec;
@@ -1025,6 +1222,15 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
       }
     }
   } else {
+    owned.push_back(raw_source{.v = v, .available = false});
+    return;
+  }
+
+  // A Copilot session-state directory that holds no JSONL file has no record
+  // stream this adapter can read (the CLI writes YAML, Markdown and JSON
+  // metadata there): report it unsupported instead of counting those lines.
+  if (v == vendor::copilot && layout_scanned && paths.empty()) {
+    warnings.push_back(warning_row{.v = v, .kind = warning_kind::unsupported_layout});
     owned.push_back(raw_source{.v = v, .available = false});
     return;
   }
@@ -1173,7 +1379,6 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
 auto collect_preview_from_paths(const transcript_config& config, const std::optional<cli_log_adapter>& cli,
                                 const collector_limits& limits, const fs_fault& fault, const verb_path_resolver& resolve)
     -> preview {
-  static_cast<void>(resolve);
   std::vector<raw_source>  owned;
   std::vector<warning_row> extra_warnings;
   std::size_t              files_left   = limits.max_files;
@@ -1188,7 +1393,7 @@ auto collect_preview_from_paths(const transcript_config& config, const std::opti
   collect_vendor_path(owned, extra_warnings, vendor::codex, config.codex_enabled, config.codex_path, config.home_dir,
                       ".codex/sessions", true, files_left, bytes_left, records_left, byte_share, limits.window_start, fault);
   collect_vendor_path(owned, extra_warnings, vendor::copilot, config.copilot_enabled, config.copilot_path, config.home_dir,
-                      ".copilot/session-state", false, files_left, bytes_left, records_left, byte_share, limits.window_start,
+                      ".copilot/session-state", true, files_left, bytes_left, records_left, byte_share, limits.window_start,
                       fault);
 
   if (cli.has_value()) {
@@ -1233,7 +1438,7 @@ auto collect_preview_from_paths(const transcript_config& config, const std::opti
     owned.push_back(raw_source{.v = vendor::cli_log, .available = false});
   }
 
-  auto result = collect_preview(owned);
+  auto result = collect_preview(owned, resolve);
   if (!extra_warnings.empty()) {
     result.warnings.insert(result.warnings.end(), std::make_move_iterator(extra_warnings.begin()),
                            std::make_move_iterator(extra_warnings.end()));
