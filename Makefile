@@ -107,7 +107,7 @@ test-install-manifest: ## Run focused installer manifest ownership/atomicity fix
 	bash scripts/install-manifest-test.sh
 
 .PHONY: test-install-stage
-test-install-stage: ## Run focused installer staging and vendor-surface fixtures (ctest install.stage runs them under `make test`)
+test-install-stage: ## Run focused installer staging and vendor-surface fixtures (the ctest `install.stage_*` tests run them under `make test`)
 	bash scripts/install-stage-test.sh
 
 .PHONY: test-install-prefix-guard

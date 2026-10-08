@@ -267,7 +267,7 @@ and the Makefile exports them to
 clips a step's log at 2 MiB.
 
 The image also builds bash 3.2.57 from the GNU source archive (a `bash32`
-stage, copied to `/opt/bash-3.2`) for `install.bash32`'s two-shell comparison;
+stage, copied to `/opt/bash-3.2`) for the `install.bash32_*` tests' two-shell comparison;
 see [The two-shell comparison](#the-two-shell-comparison).
 
 Every dependency is committed under `vendor/`, so the gate needs no token, no
@@ -299,7 +299,9 @@ tests (measured 2026-10-08 on the M5 tree: 4486 listed on macOS, 4483 in
 `make linux-gate`, compared by name). Each is a `TEST_CASE` inside
 `#if defined(__APPLE__)` with a reason comment above the guard. Nothing
 enforces the table: add a row when you add a platform guard, and compare
-`ctest -N` names on both hosts when a count looks off.
+`ctest -N` names on both hosts when a count looks off (sort both lists with
+`LC_ALL=C sort`; duplicate names such as `engine_planning` otherwise produce
+false differences).
 
 | Test | Absent on | Reason |
 |------|-----------|--------|
@@ -308,16 +310,27 @@ enforces the table: add a row when you add a platform guard, and compare
 | `terminate: on macOS a real group whose leader exited unreaped is never reported as a failed signal` (`src/engine/hostqueue/terminate.t.cpp`) | Linux | Pins the macOS EPERM refusal; Linux has none. The fake-probe cases in the same file run everywhere. |
 
 Tests that are registered on both platforms but vacuous on a host with no
-release bundle: `update_leaves.t.cpp` has six end-to-end cases (the bootstrap
-end-to-end update, the exec'd-installer lock owner, the KILL case, and
-the SIGINT, SIGTERM and failed-installer-exec cases, the last three
-sharing a helper) that return early with
-`SUCCEED("no release bundle exists for this host")`
-where `release_platform` finds none, which includes the linux-aarch64
-gate. They count on both platforms and pass without exercising the
-updater there; the in-process cases of the same behaviours run
-everywhere. Making them run needs a Linux aarch64 bundle, which is not a
-shipping platform.
+release bundle: `update_leaves.t.cpp` has six end-to-end cases that return
+early with `SUCCEED("no release bundle exists for this host...")` where
+`release_platform` finds none, which includes the linux-aarch64 gate:
+
+- `update: a shadowing planar on PATH is named once by the bootstrap and by update, and a symlink to the install is not one`
+- `update: the exec'd installer is the lock owner and the verb opens no database`
+- `update: a KILLed update leaves nothing the next update cannot reclaim`
+- `update: SIGINT during a slowed download removes the download directory and releases the lock`
+- `update: SIGTERM during a slowed download removes the download directory and releases the lock`
+- `update: a failed installer exec removes the download directory and releases the lock`
+
+SIGINT and SIGTERM share the `interrupt_a_download` helper, which holds the
+early return. They count on both platforms and pass without exercising the
+updater there. The exec'd-installer, KILL and failed-exec cases name an
+in-process case that covers the same behaviour on every host; the shadow,
+SIGINT and SIGTERM cases have no in-process counterpart, so on such a host
+nothing exercises those behaviours. The bootstrap end-to-end update
+(`update: the binary updates a bootstrap install end to end through the real
+installer`) is not vacuous: with no bundle it asserts exit 1 and an
+`unsupported platform` error. Making the six run needs a Linux aarch64
+bundle, which is not a shipping platform.
 
 ## When every build is a full rebuild
 
@@ -548,7 +561,7 @@ that need built binaries, `src/cmd/planar/CMakeLists.txt` and
 `scripts/install-manifest-test.sh`, `install-stage-test.sh` and
 `install-deps-test.sh` directly, for a focused run, and are not prerequisites
 of `make test`: ctest runs the same scripts as `install.manifest`,
-`install.stage` and `install.deps`. `install-manifest-test.sh` also pins
+the `install.stage_*` tests and `install.deps`. `install-manifest-test.sh` also pins
 INSTALL.md § Prerequisites. `make ctest-registry-check` fails when any
 `scripts/install-*-test.sh` is named by no registered ctest case. **No installer
 test may run longer than five minutes** (measured on a loaded host); a script
@@ -601,7 +614,7 @@ fails when either tool is missing. Run it by hand after editing
 
 ### The two-shell comparison
 
-`install.bash32` installs and uninstalls a fake bundle under bash 3.2 and under
+The `install.bash32_*` tests install and uninstall a fake bundle under bash 3.2 and under
 a newer bash and compares the two end states tree for tree: each file's mode and
 checksum, each directory's mode and each symlink's target (BSD `stat -f %Lp` and
 GNU `stat -c %a` are both handled; the HOME path is normalised, the lock records
