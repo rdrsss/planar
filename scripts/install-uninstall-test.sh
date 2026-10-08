@@ -619,6 +619,13 @@ uninstall "$H2" "PLANAR_RELEASE_URL=https://releases.example.test/planar" "PLANA
 retry_https="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //p' "$TMP/out")"
 [[ "$(grep -o -e '--proto-redir =https' <<<"$retry_https" | wc -l | tr -d ' ')" == 2 ]] \
   || fail "the retry for an https base does not forbid an https-to-http redirect on both downloads: $retry_https"
+# Trailing slashes on the base are dropped, as the bootstrap and install.sh drop them.
+H3="$(make_installed slashbase)"
+uninstall "$H3" "PLANAR_RELEASE_URL=https://releases.example.test/planar//" "PLANAR_INSTALL_TEST_FAULT=kill@uninstall-subtree:bin" --
+[[ "$RC" -ge 128 ]] || fail "the slash-base uninstall was not killed ($RC): $(show)"
+retry_slash="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //p' "$TMP/out")"
+[[ "$retry_slash" == *"u=https://releases.example.test/planar/download/"* ]] \
+  || fail "the retry for a base with trailing slashes does not name the base without them: $retry_slash"
 pass "the printed release retry downloads SHA256SUMS and refuses a mismatched or unrecorded archive naming the asset, extracting nothing; the genuine archive finishes it"
 
 # A source install records its checkout, so the installed copy's retry names it

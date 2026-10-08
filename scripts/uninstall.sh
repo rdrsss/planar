@@ -180,7 +180,7 @@ uninstall_args() {
 # recorded in release.json when this is the installed copy), or the bundle
 # it runs from when that lies outside the root.
 retry_command() {
-  local args v os arch base checkout pr=""
+  local args v os arch base rb checkout pr=""
   args="$(uninstall_args)"
   if [ -f "$ROOT_C/release.json" ]; then
     # A source install records its checkout; a usable one wins over the release
@@ -197,7 +197,10 @@ retry_command() {
     arch="$(release_field "$ROOT_C/release.json" arch)"
     if [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$os" =~ ^[a-z0-9_]+$ && "$arch" =~ ^[a-z0-9_]+$ ]]; then
       base="$DEFAULT_RELEASE_BASE"
-      if [ -n "${PLANAR_RELEASE_URL-}" ] && release_base_valid "$PLANAR_RELEASE_URL"; then base="${PLANAR_RELEASE_URL%/}"; fi
+      if [ -n "${PLANAR_RELEASE_URL-}" ]; then
+        rb="$(release_base_normalize "$PLANAR_RELEASE_URL")"
+        if release_base_valid "$rb"; then base="$rb"; fi
+      fi
       # As the bootstrap does, an https base never follows a redirect to http.
       case "$base" in https://*) pr=" --proto-redir =https" ;; esac
       # The retry downloads SHA256SUMS and the archive, verifies the archive

@@ -13,6 +13,11 @@
 #       ("source_checkout", written by install.sh), or nothing. Unlike
 #       release_field it accepts a comma in the path; install.sh records no
 #       path with a quote, a backslash or a control character.
+#   release_base_normalize URL
+#       Print URL without any trailing slashes. The same rule as the bootstrap's
+#       base_normalize (scripts/get-planar.sh, a standalone asset that cannot
+#       source this file); scripts/get-planar-test.sh feeds both the same inputs.
+#       Normalize first, then validate, as the bootstrap does.
 #   release_base_valid URL
 #       Status 0 when URL is in the bootstrap's release-base grammar: https, a
 #       local file:// fixture, or http on the exact loopback hosts, with no
@@ -31,4 +36,10 @@ release_source_checkout() {
 
 release_base_valid() {
   [[ "$1" =~ ^(https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\"\'@]*)?|file:///[^[:space:]\"\'@]*|http://(127\.0\.0\.1|localhost)(:[0-9]+)?(/[^[:space:]\"\'@]*)?)$ ]]
+}
+
+release_base_normalize() {
+  local u="$1"
+  while [[ "$u" == */ ]]; do u="${u%/}"; done
+  printf '%s' "$u"
 }

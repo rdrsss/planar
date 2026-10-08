@@ -732,7 +732,7 @@ fi
 # install-cleanup.txt.
 # PLANAR_JOURNAL_SUBTREES comes from scripts/install-lib/managed-lists.sh, shared
 # with the uninstaller.
-# DEFAULT_RELEASE_BASE, release_field and release_base_valid come from
+# DEFAULT_RELEASE_BASE, release_field, release_base_normalize and release_base_valid come from
 # scripts/install-lib/release.sh, shared with the uninstaller.
 
 # quote_args ARG... -- the arguments as one shell-safe line.
@@ -802,8 +802,10 @@ set_target() {
     J_target_path="$SRC_ROOT"
     J_release_base="$DEFAULT_RELEASE_BASE"
     if [[ -n "${PLANAR_RELEASE_URL-}" ]]; then
-      if release_base_valid "$PLANAR_RELEASE_URL"; then
-        J_release_base="${PLANAR_RELEASE_URL%/}"
+      # The bootstrap's rule: strip every trailing slash, then validate.
+      _rb="$(release_base_normalize "$PLANAR_RELEASE_URL")"
+      if release_base_valid "$_rb"; then
+        J_release_base="$_rb"
       else
         warn "PLANAR_RELEASE_URL is not a valid release base; the retry command names $DEFAULT_RELEASE_BASE"
       fi
