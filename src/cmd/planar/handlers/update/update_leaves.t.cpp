@@ -25,8 +25,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <signal.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 import std;
@@ -758,6 +760,80 @@ TEST_CASE("update lock: the native start token, canonical path and records agree
   CHECK(again->reclaimed == std::format("uninstall pid {}", pid));
   CHECK_FALSE(std::filesystem::exists(std::format("{}/owner.{}", again->dir, held->gen)));
   lock::release(*again);
+}
+
+namespace {
+
+/// Sets `TZ` for this process for one scope and restores it; `ps` children inherit it.
+class scoped_tz {
+public:
+  explicit scoped_tz(const char* zone) {
+    if (auto const* old = std::getenv("TZ"); old != nullptr) {
+      _old = old;
+    }
+    ::setenv("TZ", zone, 1);
+    ::tzset();
+  }
+  scoped_tz(const scoped_tz&)                    = delete;
+  auto operator=(const scoped_tz&) -> scoped_tz& = delete;
+  ~scoped_tz() {
+    if (_old.has_value()) {
+      ::setenv("TZ", _old->c_str(), 1);
+    } else {
+      ::unsetenv("TZ");
+    }
+    ::tzset();
+  }
+
+private:
+  std::optional<std::string> _old;
+};
+
+constexpr const char* k_tz_owner   = "Pacific/Kiritimati"; // UTC+14
+constexpr const char* k_tz_checker = "America/Adak";       // UTC-10 / -9
+
+} // namespace
+
+TEST_CASE("update lock: a live owner is recognised across time zones on both sides", "[update][lock]") {
+  auto space = make_arena("locktz");
+
+  // Native owner in one zone, shell checker in another.
+  auto const root = canon(space.cpp_root / "inst");
+  {
+    auto const owner = [&] {
+      scoped_tz const tz{k_tz_owner};
+      return lock::acquire(root, "update", "");
+    }();
+    REQUIRE(owner.has_value());
+    std::string out;
+    int const   rc =
+        bash(R"(export TZ="$3"; source "$1"; planar_lock_acquire "$2" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; })",
+             {lock_lib(), root, k_tz_checker}, &out);
+    CHECK(rc == 1);
+    CHECK(out.contains(std::format("update (pid {})", ::getpid())));
+    CHECK(highest_gen(owner->dir) == std::to_string(owner->gen));
+    lock::release(*owner);
+  }
+
+  // Shell owner in one zone, native checker in another.
+  auto const shell_root = canon(space.cpp_root / "inst2");
+  auto const ready      = space.cpp_root / "ready";
+  std::system(
+      std::format(
+          "TZ={} bash -c {} bash {} {} {} > /dev/null 2>&1 &", k_tz_owner,
+          shell_quote(
+              R"(source "$1"; planar_lock_acquire "$2" install || exit 1; echo $$ > "$3.tmp"; mv "$3.tmp" "$3"; exec sleep 30)"),
+          shell_quote(lock_lib()), shell_quote(shell_root), shell_quote(ready.string()))
+          .c_str());
+  REQUIRE(planar::cmd::parity::await_sentinel(ready, true, std::chrono::seconds{20}).has_value());
+  auto const pid = std::stoi(read_all(ready));
+  {
+    scoped_tz const tz{k_tz_checker};
+    auto const      refused = lock::acquire(shell_root, "update", "");
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().starts_with(std::format("another Planar install (pid {}) is changing this installation", pid)));
+  }
+  ::kill(pid, SIGKILL);
 }
 
 TEST_CASE("update lock: a reused pid is reclaimed and ambiguous records refuse on both sides", "[update][lock]") {
