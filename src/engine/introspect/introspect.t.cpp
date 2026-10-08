@@ -308,6 +308,51 @@ TEST_CASE("build/cli_preview_jsonl: a verb_path the predicate rejects is rendere
   CHECK(stmt->column_int64(1) == 1);
 }
 
+TEST_CASE("build/cli_preview_jsonl: a legacy planar-prefixed stored path is judged bare at all three sites",
+          "[engine][introspect][build][redaction]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+             " values ('planar plan show', '', 2, 'usage', datetime('now'))");
+
+  auto const catalog = [](std::string_view path) { return path == "plan show"; };
+
+  auto b = intro::build(conn, 30, 20, true, "test-version", catalog);
+  REQUIRE(b.has_value());
+  REQUIRE(b->invocations.size() == 1);
+  CHECK(b->invocations[0].verb_path == "planar plan show");
+  REQUIRE(b->failure_tail.size() == 1);
+  CHECK(b->failure_tail[0].verb_path == "planar plan show");
+
+  auto preview = intro::cli_preview_jsonl(conn, 30, 4096, catalog);
+  REQUIRE(preview.has_value());
+  CHECK(preview->jsonl.find(R"("verb_path":"planar plan show")") != std::string::npos);
+  CHECK(preview->jsonl.find("<unrecognized>") == std::string::npos);
+}
+
+TEST_CASE("build: merged masked rows sum every count and sort by the merged total", "[engine][introspect][build][redaction]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  // Three rejected paths, one row each (one succeeded), merge to a total of
+  // 3 and must outrank the recognised path's 2 rows even though no single
+  // rejected row does.
+  for (std::string_view const row : {"'bogus1', 2", "'bogus2', 2", "'search A', 0", "'task add', 0", "'task add', 0"}) {
+    exec(conn, std::format("insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+                           " values ({}, '', {}, datetime('now'))",
+                           row.substr(0, row.find(',')), row.substr(row.find(',') + 2) == "0" ? "0, null" : "2, 'usage'"));
+  }
+
+  auto b = intro::build(conn, 30, 20, true, "test-version", [](std::string_view path) { return path == "task add"; });
+  REQUIRE(b.has_value());
+  REQUIRE(b->invocations.size() == 2);
+  CHECK(b->invocations.front().verb_path == "<unrecognized>");
+  CHECK(b->invocations.front().count == 3);
+  CHECK(b->invocations.front().success_count == 1);
+  CHECK(b->invocations.front().failure_count == 2);
+  CHECK(b->invocations.back().verb_path == "task add");
+}
+
 TEST_CASE("build: handoffs never_consumed is distinct from stale_handoffs", "[engine][introspect][build]") {
   // A consumed handoff created > 24h ago: stale_handoffs = 0 (already
   // consumed), never_consumed = 0 (was consumed). Two unconsumed (pending

@@ -90,14 +90,11 @@ export struct warning_row {
 /// hour bucket of `first_seen`) collapsed to a count and a seen range.
 export struct signal_row {
   vendor        v;          ///< The source vendor.
-  std::string   verb_path;  ///< The bounded verb path — redacted for the three
-                            ///< transcript vendors, but NOT for `vendor::cli_log`:
-                            ///< `cli_invocations.verb_path` carries free-text
-                            ///< operands verbatim (e.g. `search <query>`), and
-                            ///< this field passes that text through unchanged.
-                            ///< Reproduced from the oracle, not introduced by
-                            ///< this port — see task 6351's finding and
-                            ///< `report.cppm`'s "`verb_path` leaks" note.
+  std::string   verb_path;  ///< The bounded verb path. For `vendor::cli_log` it is
+                            ///< the JSONL boundary's value, which the report
+                            ///< handler has already masked against the live CLI
+                            ///< catalog (`<unrecognized>` for a stored path the
+                            ///< catalog rejects); this module does not mask.
   category      cat;        ///< The evidence category.
   std::uint32_t count = 0;  ///< How many raw records collapsed into this bucket.
   std::string   first_seen; ///< Earliest timestamp merged into this bucket.
@@ -118,12 +115,9 @@ export struct coverage_row {
 /// @brief Preview output. Owns only normalized keys and timestamps —
 /// mirrors the oracle's own comment on `Preview`
 /// (`zig/src/engine/introspection_adapters.zig:53`) verbatim, which
-/// claims nothing stronger. It does NOT redact `cli_log`'s `verb_path`:
-/// `signal_row::verb_path` carries `cli_invocations.verb_path` through
-/// unchanged for `vendor::cli_log`, including any free-text search
-/// operand (task 6351). See that field's own doc comment for the
-/// carve-out, and `report.cppm`'s "`verb_path` leaks" note for why this
-/// is the oracle's behavior, reproduced rather than introduced here.
+/// claims nothing stronger. It does NOT itself redact `cli_log`'s
+/// `verb_path`: the value arrives already masked by the report handler's
+/// catalog predicate. See that field's doc comment.
 export struct preview {
   std::vector<signal_row>   signals;  ///< Aggregated evidence buckets, deduplicated and sorted.
   std::vector<coverage_row> coverage; ///< Per-vendor scan tallies, sorted by vendor.

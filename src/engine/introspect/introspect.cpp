@@ -170,12 +170,19 @@ auto health_summary(db::connection& conn) -> std::string {
   return "ok";
 }
 
+/// @brief A stored `verb_path` without a legacy leading `planar `.
+/// @param stored The stored value.
+/// @return The value the catalog predicate is asked about.
+auto bare_verb_path(std::string_view stored) -> std::string_view {
+  return stored.starts_with("planar ") ? stored.substr(7) : stored;
+}
+
 /// @brief The value to render for a stored `verb_path`.
 /// @param recognized The injected catalog predicate.
 /// @param stored The stored value.
-/// @return `stored` when recognized, else `unrecognized_verb_path`.
+/// @return `stored` when the predicate accepts its bare form, else `unrecognized_verb_path`.
 auto masked_verb_path(const verb_path_predicate& recognized, std::string stored) -> std::string {
-  if (recognized(stored)) {
+  if (recognized(bare_verb_path(stored))) {
     return stored;
   }
   return std::string{unrecognized_verb_path};
@@ -567,9 +574,7 @@ auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size
     std::string row = R"({"schema":1,"kind":"cli_invocation","verb_path":)";
     // The predicate sees the stored value, not the `planar `-prefixed form
     // the boundary needs; a legacy stored prefix is looked through.
-    auto const stored = stmt->column_text(4);
-    auto const bare   = stored.starts_with("planar ") ? stored.substr(7) : stored;
-    if (recognized(bare)) {
+    if (recognized(bare_verb_path(stmt->column_text(4)))) {
       append_json_string(row, stmt->column_text(0));
     } else {
       append_json_string(row, std::format("planar {}", unrecognized_verb_path));
