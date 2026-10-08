@@ -1697,8 +1697,17 @@ write_release_json() {
       [[ "$n" =~ ^[0-9]+$ ]] || continue
       (( 10#$n > schema )) && schema=$((10#$n))
     done
-    printf '{\n  "version": "%s",\n  "sha": "%s",\n  "date": "%s",\n  "os": "%s",\n  "arch": "%s",\n  "os_floor": "%s",\n  "schema_version": %s\n}\n' \
-      "$version" "$sha" "$date" "$os" "$arch" "$floor" "$schema" > "$tmp"
+    # The checkout this install ran from, so the uninstaller's durable retry can
+    # name it once the installed copy has replaced the checkout's own scripts.
+    # A path the line-based reader cannot hold (not absolute, or holding a
+    # quote, a backslash or a control character) is not recorded; the
+    # uninstaller then prints a generic retry.
+    local checkout_line="" checkout_re='^/[^"\\[:cntrl:]]*$'
+    if [[ "$REPO_ROOT" =~ $checkout_re ]]; then
+      checkout_line="  \"source_checkout\": \"$REPO_ROOT\","$'\n'
+    fi
+    printf '{\n  "version": "%s",\n  "sha": "%s",\n  "date": "%s",\n  "os": "%s",\n  "arch": "%s",\n  "os_floor": "%s",\n%s  "schema_version": %s\n}\n' \
+      "$version" "$sha" "$date" "$os" "$arch" "$floor" "$checkout_line" "$schema" > "$tmp"
   fi
   if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
     rm -f "$tmp"

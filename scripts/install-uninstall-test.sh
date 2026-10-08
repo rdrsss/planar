@@ -515,9 +515,20 @@ REL="$TMP/release"
 mkdir -p "$REL/download/v1.2.3" "$TMP/pack"
 cp -R "$BUNDLE" "$TMP/pack/planar-macos-arm64"
 ( cd "$TMP/pack" && tar -czf "$REL/download/v1.2.3/planar-macos-arm64.tar.gz" planar-macos-arm64 )
+# The release's SHA256SUMS, as the release workflow merges it: one `<hash>  <asset>` record.
+sums_write() { # sums_write DIR ASSET -- DIR/SHA256SUMS with ASSET's current checksum
+  if command -v sha256sum >/dev/null 2>&1; then ( cd "$1" && sha256sum "$2" > SHA256SUMS ); else ( cd "$1" && shasum -a 256 "$2" > SHA256SUMS ); fi
+}
+sums_write "$REL/download/v1.2.3" planar-macos-arm64.tar.gz
 NETBIN="$TMP/netbin"; mkdir -p "$NETBIN"
 for n in "$BASEBIN"/*; do ln -s "$(readlink "$n")" "$NETBIN/${n##*/}"; done
-for n in curl tar gzip; do f="$(command -v "$n" || true)"; [[ -z "$f" ]] || ln -sf "$f" "$NETBIN/$n"; done
+for n in curl tar gzip grep mktemp sha256sum shasum; do f="$(command -v "$n" || true)"; [[ -z "$f" ]] || ln -sf "$f" "$NETBIN/$n"; done
+# run_retry HOME TMPD CMD -- run the printed retry CMD as an operator would paste it, with a private TMPDIR.
+run_retry() {
+  RC=0
+  ( cd "$1/work" && /usr/bin/env -i HOME="$1" PATH="$NETBIN" NO_COLOR=1 LC_ALL=C TMPDIR="$2" PLANAR_DB="$1/.planar/planar.db" \
+      /bin/bash -c "$3" </dev/null >"$TMP/out" 2>"$TMP/err" ) || RC=$?
+}
 H="$(make_installed killed)"; P="$H/.planar"
 recorded "$H" > "$TMP/recorded.killed"
 dbefore="$(data_sums "$P")"
@@ -526,15 +537,14 @@ uninstall "$H" "PLANAR_RELEASE_URL=file://$REL" "PLANAR_INSTALL_TEST_FAULT=kill@
 [[ ! -e "$P/bin" && -d "$P/skills" ]] || fail "the kill did not land after bin/ was removed: $(ls -A "$P" | tr '\n' ' ')"
 [[ "$(sed -n 's/^phase=//p' "$P/.planar-journal")" == uninstalling ]] || fail "the killed uninstall left no uninstalling journal"
 retry="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //p' "$TMP/out")"
-[[ "$retry" == *"file://$REL/download/v1.2.3/planar-macos-arm64.tar.gz"* && "$retry" == *"uninstall.sh"* ]] \
+[[ "$retry" == *"file://$REL/download/v1.2.3"* && "$retry" == *"planar-macos-arm64.tar.gz"* && "$retry" == *"uninstall.sh"* ]] \
   || fail "the durable retry does not download the matching release's uninstaller: $retry"
 install "$H"
 [[ "$RC" == 1 ]] && grep -Fq "an uninstall of $P was interrupted" "$TMP/err" && grep -Fq "planar-macos-arm64.tar.gz" "$TMP/err" \
   || fail "an install over the interrupted uninstall was not refused naming the retry ($RC): $(show)"
 [[ ! -e "$P/bin" ]] || fail "the refused install resurrected bin/"
-RC=0
-( cd "$H/work" && /usr/bin/env -i HOME="$H" PATH="$NETBIN" NO_COLOR=1 LC_ALL=C TMPDIR="$TMP" PLANAR_DB="$P/planar.db" \
-    /bin/bash -c "$retry" </dev/null >"$TMP/out" 2>"$TMP/err" ) || RC=$?
+mkdir -p "$TMP/rt-killed"
+run_retry "$H" "$TMP/rt-killed" "$retry"
 [[ "$RC" == 0 ]] || fail "following the durable retry failed ($RC): $(show)"
 grep -Fq "finishing an interrupted uninstall" "$TMP/out" || fail "the retry did not finish the interrupted uninstall: $(show)"
 for n in bin skills agents codex-agents workflows scripts migrations; do [[ ! -e "$P/$n" ]] || fail "the retry left $n/"; done
@@ -545,6 +555,95 @@ install "$H"
 [[ "$RC" == 0 ]] || fail "a fresh install after the finished uninstall failed ($RC): $(show)"
 ! grep -Fq "resuming" "$TMP/out" || fail "the install resumed something after the uninstall"
 pass "a killed uninstall leaves an uninstalling journal; installs refuse naming the durable retry, which downloads the release's uninstaller and finishes; a fresh install then succeeds"
+
+# The printed retry verifies before it extracts (test spec 679, "Error -- the
+# printed uninstall retry verifies before it extracts"). Kill an uninstall of a
+# release install, then serve an archive that no longer matches SHA256SUMS: the
+# retry refuses naming the asset and extracts nothing; the install is as the
+# kill left it. A SHA256SUMS without the asset's record refuses the same way.
+# With the genuine archive back, the same retry finishes.
+H="$(make_installed verify)"; P="$H/.planar"
+uninstall "$H" "PLANAR_RELEASE_URL=file://$REL" "PLANAR_INSTALL_TEST_FAULT=kill@uninstall-subtree:bin" --
+[[ "$RC" -ge 128 && ! -e "$P/bin" && -d "$P/skills" ]] || fail "the verify fixture's uninstall was not killed after bin/ ($RC): $(show)"
+retry="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //p' "$TMP/out")"
+[[ "$retry" == *"SHA256SUMS"* ]] || fail "the printed release retry does not download SHA256SUMS: $retry"
+[[ "$retry" != *"--prebuilt"* ]] || fail "the printed release retry uses --prebuilt: $retry"
+ASSET=planar-macos-arm64.tar.gz
+cp "$REL/download/v1.2.3/$ASSET" "$TMP/genuine.tar.gz"
+mkdir -p "$TMP/pack-bad"; rm -rf "$TMP/pack-bad/planar-macos-arm64"; cp -R "$BUNDLE" "$TMP/pack-bad/planar-macos-arm64"
+printf 'tampered\n' > "$TMP/pack-bad/planar-macos-arm64/uninstall.sh"
+( cd "$TMP/pack-bad" && tar -czf "$REL/download/v1.2.3/$ASSET" planar-macos-arm64 )
+state_before="$(sums "$P")"
+mkdir -p "$TMP/rt-mismatch"
+run_retry "$H" "$TMP/rt-mismatch" "$retry"
+[[ "$RC" != 0 ]] || fail "the retry succeeded against an archive that does not match SHA256SUMS: $(show)"
+grep -Fq "checksum verification failed for $ASSET" "$TMP/err" || fail "the retry's refusal does not name the asset: $(show)"
+[[ -n "$(find "$TMP/rt-mismatch" -name "$ASSET")" ]] || fail "the retry's scratch directory is not under TMPDIR, so the extraction check below proves nothing: $(show)"
+[[ -z "$(find "$TMP/rt-mismatch" -name 'planar-macos-arm64' -o -name uninstall.sh)" ]] \
+  || fail "the retry extracted the archive although it did not match SHA256SUMS: $(find "$TMP/rt-mismatch" | tr '\n' ' ')"
+[[ "$(sums "$P")" == "$state_before" ]] || fail "the refused retry changed the installation"
+# A SHA256SUMS with no record for the asset.
+printf '%064d  other-asset.tar.gz\n' 0 > "$REL/download/v1.2.3/SHA256SUMS"
+mkdir -p "$TMP/rt-norecord"
+run_retry "$H" "$TMP/rt-norecord" "$retry"
+[[ "$RC" != 0 ]] && grep -Fq "checksum verification failed for $ASSET" "$TMP/err" || fail "the retry accepted a SHA256SUMS with no record for the asset ($RC): $(show)"
+[[ -z "$(find "$TMP/rt-norecord" -name 'planar-macos-arm64' -o -name uninstall.sh)" ]] || fail "the retry extracted without a checksum record"
+# The genuine archive, with its record: the same printed retry finishes.
+cp "$TMP/genuine.tar.gz" "$REL/download/v1.2.3/$ASSET"
+sums_write "$REL/download/v1.2.3" "$ASSET"
+mkdir -p "$TMP/rt-good"
+run_retry "$H" "$TMP/rt-good" "$retry"
+[[ "$RC" == 0 ]] && grep -Fq "finishing an interrupted uninstall" "$TMP/out" || fail "the retry did not finish once the archive matched SHA256SUMS ($RC): $(show)"
+[[ ! -e "$P/skills" && ! -e "$P/.planar-journal" ]] || fail "the verified retry left the installation or the journal"
+pass "the printed release retry downloads SHA256SUMS and refuses a mismatched or unrecorded archive naming the asset, extracting nothing; the genuine archive finishes it"
+
+# A source install records its checkout, so the installed copy's retry names it
+# (quoted: the checkout path holds a space) and completes the uninstall from it.
+SRC="$TMP/my checkout"
+mkdir -p "$SRC/skills" "$SRC/templates" "$SRC/workflows" "$SRC/migrations"
+cp "$ROOT/install.sh" "$SRC/install.sh"
+cp -R "$ROOT/scripts" "$SRC/scripts"
+rm -rf "$SRC/scripts/__pycache__" "$SRC/scripts/install-lib/__pycache__"
+cp -R "$ROOT/agents" "$SRC/agents"
+cp -R "$ROOT/skills/planar" "$SRC/skills/planar"
+cp "$ROOT/install-cleanup.txt" "$SRC/install-cleanup.txt"
+printf 'shipped a\n' > "$SRC/templates/a.toml"
+printf -- '-- wf\n' > "$SRC/workflows/w.lua"
+printf -- '-- m\n' > "$SRC/migrations/00001_x.up.sql"
+: > "$SRC/CMakeLists.txt"; : > "$SRC/CMakePresets.json"
+perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang(\+\+)?#/bin/sh#g' "$SRC/install.sh"
+SSTUBS="$TMP/sstubs"; mkdir -p "$SSTUBS"
+cat > "$SSTUBS/cmake" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1" == "--install" ]]; then
+  source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
+  mkdir -p "\$4/bin"
+  for b in planar planar-agent planar-watch planar-execute planar-ext; do stub_binary_write "\$4/bin/\$b" dev; done
+fi
+exit 0
+STUB
+chmod +x "$SSTUBS/cmake"
+H="$(new_home source-retry)"; P="$H/.planar"
+RC=0
+env -u CODEX_HOME -u PLANAR_HOME -u PLANAR_DB -u PLANAR_CONFIG_PATH PATH="$SSTUBS:$PATH" HOME="$H" NO_COLOR=1 \
+  "$SRC/install.sh" --build-dir "$H/build" --no-vendor --prefix "$P" >"$TMP/out" 2>"$TMP/err" || RC=$?
+[[ "$RC" == 0 ]] || fail "the source install failed ($RC): $(show)"
+grep -Fxq "  \"source_checkout\": \"$SRC\"," "$P/release.json" || fail "the source install did not record its checkout in release.json: $(cat "$P/release.json")"
+seed_data "$P"
+dbefore="$(data_sums "$P")"
+uninstall "$H" "PLANAR_INSTALL_TEST_FAULT=kill@uninstall-subtree:bin" --
+[[ "$RC" -ge 128 && ! -e "$P/bin" && -d "$P/skills" ]] || fail "the source uninstall was not killed after bin/ ($RC): $(show)"
+retry="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //p' "$TMP/out")"
+[[ "$retry" == "cd '$SRC' && ./install.sh --uninstall" || "$retry" == "cd ${SRC// /\\ } && ./install.sh --uninstall" ]] \
+  || fail "the source install's retry does not name the recorded checkout, quoted: $retry"
+mkdir -p "$TMP/rt-source"
+run_retry "$H" "$TMP/rt-source" "$retry"
+[[ "$RC" == 0 ]] && grep -Fq "finishing an interrupted uninstall" "$TMP/out" || fail "the source retry did not finish the interrupted uninstall ($RC): $(show)"
+for n in bin skills agents scripts migrations; do [[ ! -e "$P/$n" ]] || fail "the source retry left $n/"; done
+[[ ! -e "$P/.planar-journal" && ! -e "$P/release.json" ]] || fail "the source retry left the journal or release.json"
+[[ "$(data_sums "$P")" == "$dbefore" ]] || fail "the source retry changed a data path"
+[[ -f "$SRC/install.sh" ]] || fail "the source retry removed the checkout"
+pass "a source install records its checkout; the interrupted uninstall's printed retry names it, quoted, and completes the uninstall from it"
 
 # A kill in the middle of the vendor removals: the installed copy is still there
 # and the next run finishes every recorded removal.
