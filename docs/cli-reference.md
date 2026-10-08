@@ -8230,19 +8230,21 @@ When `[introspection].cli_log` is off (the default), the invocation and failure 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--days <n>` | int | 30 | Window in days. Must be a positive integer. |
-| `--tail <n>` | int | 20 | Number of failure-tail rows to include in the text output. Must be a positive integer. |
+| `--tail <n>` | int | 20 | Number of failure-tail rows to include, in the text output and in the JSON `failure_tail`. Must be a positive integer. |
 | `--json` | bool | false | Emit stable machine-readable JSON. |
 
 **JSON wire format (`--json`):** Top-level fields are the contract consumed by downstream agents and skills:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `version` | string | Binary version string. |
+| `version` | string | The build's version token: the second token of the `planar version` line, which is the 12-character git sha (with `+dirty` appended for a dirty tree), or `dev` for a build without version metadata. Never the program name. |
 | `schema_version` | integer | Max schema_migrations version applied. |
 | `health` | string | `"ok"` or `"degraded"`. |
 | `window` | integer | The `--days` value queried. |
+| `logging_enabled` | boolean | Whether `[introspection].cli_log` is on. `false` means `invocations`, `failures` and `failure_tail` are empty because nothing was captured, not because nothing failed. |
 | `invocations` | array | Per-verb-path aggregate rows; empty array when logging disabled or no data. |
 | `failures` | array | Per-error-category failure counts; empty array when logging disabled or no data. |
+| `failure_tail` | array | The `--tail` most recent failed invocations, newest first, as `{verb_path, error_category, exit_code, recorded_at}` rows: the same rows the text output prints under `[failure tail]`. Empty array (never absent) when logging is disabled or no invocation failed. |
 | `actions` | array | Agent-action outcome aggregates (always-on). |
 | `sync` | array | Sync-event outcome aggregates (always-on). |
 | `claims` | object | `{stale_claims, never_consumed}` (always-on). |
@@ -8251,6 +8253,8 @@ When `[introspection].cli_log` is off (the default), the invocation and failure 
 | `reopens` | integer | Count of `task_reopens` rows created in the window (always-on). |
 
 Empty windows emit empty arrays, never nulls or missing fields.
+
+**Capture-log byte cap:** The `cli_log` adapter shares a 4 MiB read budget with the transcript adapters. When the window's `cli_invocations` rows would exceed what is left of it, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
 
 **Exit codes:**
 

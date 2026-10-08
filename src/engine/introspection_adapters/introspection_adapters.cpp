@@ -1116,6 +1116,16 @@ auto collect_preview_from_paths(const transcript_config& config, const std::opti
           bytes_left -= result.bytes.size();
           records_left -= records;
           owned.push_back(raw_source{.v = vendor::cli_log, .jsonl = std::move(result.bytes)});
+          if (result.truncated) {
+            // The reader stopped at the byte budget (oldest rows dropped): the
+            // source is observed, and the omitted-row count rides on the warning.
+            extra_warnings.push_back(warning_row{
+                .v    = vendor::cli_log,
+                .kind = warning_kind::byte_cap,
+                .count =
+                    static_cast<std::uint32_t>(std::min<std::size_t>(result.omitted, std::numeric_limits<std::uint32_t>::max())),
+            });
+          }
         }
       } else {
         owned.push_back(raw_source{.v = vendor::cli_log, .available = false});

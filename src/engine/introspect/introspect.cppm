@@ -146,7 +146,7 @@ export struct handoff_counts {
 /// version, schema_version, health, window, invocations, failures,
 /// actions, sync, claims, claim_failure_categories, handoffs.
 export struct bundle {
-  std::string                               version;                  ///< Binary version string ("planar").
+  std::string                               version;                  ///< Build version token (see `build`).
   std::int64_t                              schema_version = 0;       ///< Max applied `schema_migrations` version.
   std::string                               health;                   ///< `"ok"` or `"degraded"`.
   std::int64_t                              window_days     = 0;      ///< Window in days that was queried.
@@ -179,24 +179,37 @@ export enum class introspect_error : std::uint8_t {
 /// @param logging_enabled Whether `[introspection].cli_log` is on. When
 /// false the invocation/failure/failure-tail sections are left empty so the
 /// caller can render "logging disabled" instead of zeros.
-/// @param db_path Borrowed path string, unused by this port (kept for
-/// signature parity with the oracle, which also never reads it).
+/// @param version The build's version token (the sha token of the
+/// `planar version` line), reported verbatim as `bundle::version`.
 /// @return The bundle, or an `introspect_error`.
 export auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled,
-                  std::string_view db_path) -> std::expected<bundle, introspect_error>;
+                  std::string_view version) -> std::expected<bundle, introspect_error>;
+
+/// @brief The bounded CLI-invocation JSONL `cli_preview_jsonl` produced.
+export struct cli_preview {
+  std::string jsonl;             ///< Rows read, oldest first; empty when none fit.
+  bool        truncated = false; ///< True when the byte budget left rows unread.
+  std::size_t rows      = 0;     ///< Number of rows in `jsonl`.
+  std::size_t omitted   = 0;     ///< Window rows not in `jsonl` (the oldest ones).
+};
 
 /// @brief Convert authoritative, structurally-redacted `cli_invocations`
 /// rows into the adapter's private JSONL boundary. Only verb path, exit
 /// code, error category, and timestamp are selected; argument shapes and
 /// entity-bearing tables are never read.
+///
+/// Rows are selected newest first and taken while the accumulated text stays
+/// within `max_bytes` (a row that would exceed it is not taken, so a text of
+/// exactly `max_bytes` is not truncated). The rows taken are returned
+/// oldest first. Rows left over are counted in `omitted`; the call does not
+/// fail because the window is large.
 /// @param conn An open, migrated database connection.
 /// @param window_days How many days back to query.
-/// @param max_bytes Abort with `query_failed` once the accumulated text
-/// would exceed this many bytes (mirrors the oracle's `error.StreamTooLong`).
-/// @return The JSONL text (always populated on success — see this file's
-/// header), or an `introspect_error`.
+/// @param max_bytes Upper bound on `jsonl.size()`.
+/// @return The preview (always populated on success), or `query_failed`
+/// when a statement fails.
 export auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes)
-    -> std::expected<std::string, introspect_error>;
+    -> std::expected<cli_preview, introspect_error>;
 
 /// @brief Render the diagnostic bundle as human-readable text.
 /// @param b The bundle to render.

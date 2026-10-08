@@ -465,10 +465,10 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
 
 } // namespace
 
-auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled,
-           std::string_view /*db_path*/) -> std::expected<bundle, introspect_error> {
+auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled, std::string_view version)
+    -> std::expected<bundle, introspect_error> {
   bundle result;
-  result.version         = "planar";
+  result.version         = std::string{version};
   result.schema_version  = count_query_unwindowed(conn, "select coalesce(max(version), 0) from schema_migrations", 0);
   result.health          = health_summary(conn);
   result.window_days     = window_days;
@@ -509,7 +509,7 @@ auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, 
 }
 
 auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes)
-    -> std::expected<std::string, introspect_error> {
+    -> std::expected<cli_preview, introspect_error> {
   auto stmt = conn.prepare("select"
                            " case when verb_path like 'planar %' then verb_path else 'planar ' || verb_path end,"
                            " exit_code,"
@@ -519,12 +519,16 @@ auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size
                            "      else replace(recorded_at,' ','T') || 'Z' end"
                            " from cli_invocations"
                            " where recorded_at >= datetime('now', ?)"
-                           " order by recorded_at asc");
+                           " order by recorded_at desc, id desc");
   if (!stmt || !stmt->bind_text(1, window_modifier(window_days))) {
     return std::unexpected(introspect_error::query_failed);
   }
 
-  std::string out;
+  // Newest first: rows are taken until the next one would push the text past
+  // `max_bytes`; the rest of the window is only counted.
+  std::vector<std::string> newest_first;
+  std::size_t              used = 0;
+  cli_preview              result;
   while (true) {
     auto step = stmt->step();
     if (!step) {
@@ -533,18 +537,32 @@ auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size
     if (*step != db::step_result::row) {
       break;
     }
-    out += R"({"schema":1,"kind":"cli_invocation","verb_path":)";
-    append_json_string(out, stmt->column_text(0));
-    out += std::format(",\"exit_code\":{},\"error_category\":", stmt->column_int64(1));
-    append_json_string(out, stmt->column_text(2));
-    out += ",\"recorded_at\":";
-    append_json_string(out, stmt->column_text(3));
-    out += "}\n";
-    if (out.size() > max_bytes) {
-      return std::unexpected(introspect_error::query_failed);
+    if (result.truncated) {
+      ++result.omitted;
+      continue;
     }
+    std::string row = R"({"schema":1,"kind":"cli_invocation","verb_path":)";
+    append_json_string(row, stmt->column_text(0));
+    row += std::format(",\"exit_code\":{},\"error_category\":", stmt->column_int64(1));
+    append_json_string(row, stmt->column_text(2));
+    row += ",\"recorded_at\":";
+    append_json_string(row, stmt->column_text(3));
+    row += "}\n";
+    if (row.size() > max_bytes - used) {
+      result.truncated = true;
+      result.omitted   = 1;
+      continue;
+    }
+    used += row.size();
+    newest_first.push_back(std::move(row));
   }
-  return out;
+
+  result.rows = newest_first.size();
+  result.jsonl.reserve(used);
+  for (auto it = newest_first.rbegin(); it != newest_first.rend(); ++it) {
+    result.jsonl += *it;
+  }
+  return result;
 }
 
 auto render_text(const bundle& b) -> std::string {
@@ -636,6 +654,7 @@ auto render_json(const bundle& b) -> std::string {
   out += ",\"health\":";
   append_json_string(out, b.health);
   out += std::format(",\"window\":{}", b.window_days);
+  out += std::format(",\"logging_enabled\":{}", b.logging_enabled ? "true" : "false");
 
   out += ",\"invocations\":[";
   if (b.logging_enabled) {
@@ -661,6 +680,24 @@ auto render_json(const bundle& b) -> std::string {
       out += "{\"category\":";
       append_json_string(out, f.category);
       out += std::format(",\"count\":{}}}", f.count);
+    }
+  }
+  out += "]";
+
+  out += ",\"failure_tail\":[";
+  if (b.logging_enabled) {
+    for (std::size_t i = 0; i < b.failure_tail.size(); ++i) {
+      auto const& r = b.failure_tail[i];
+      if (i > 0) {
+        out += ",";
+      }
+      out += "{\"verb_path\":";
+      append_json_string(out, r.verb_path);
+      out += ",\"error_category\":";
+      append_json_string(out, r.error_category);
+      out += std::format(",\"exit_code\":{},\"recorded_at\":", r.exit_code);
+      append_json_string(out, r.recorded_at);
+      out += "}";
     }
   }
   out += "]";

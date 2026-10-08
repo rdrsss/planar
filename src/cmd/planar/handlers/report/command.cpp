@@ -6,6 +6,7 @@ module planar.cmd.planar.handlers.report;
 
 import std;
 import planar.cliapp.args;
+import planar.cliapp.version;
 import planar.db;
 import planar.engine.config.effective;
 import planar.engine.introspect;
@@ -88,7 +89,13 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   }
   bool const logging_enabled = cfg_result->introspection.cli_log;
 
-  auto bundle = intro::build(db_conn, days, tail, logging_enabled, ctx.db_path().string());
+  // The bundle's `version` is the second token of the `planar version` line:
+  // the shortened sha (plus the dirty marker), or the `dev` sentinel when the
+  // build carries no version metadata.
+  auto const build_info = cliapp::current_build_info();
+  auto const version    = std::format("{}{}", cliapp::shorten_sha(build_info.sha), build_info.dirty ? "+dirty" : "");
+
+  auto bundle = intro::build(db_conn, days, tail, logging_enabled, version);
   if (!bundle.has_value()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "building report: QueryFailed"));
   }
@@ -148,7 +155,10 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
         if (!jsonl.has_value()) {
           return ia::cli_read_result{.status = ia::cli_read_status::failed};
         }
-        return ia::cli_read_result{.status = ia::cli_read_status::ok, .bytes = std::move(*jsonl)};
+        return ia::cli_read_result{.status    = ia::cli_read_status::ok,
+                                   .bytes     = std::move(jsonl->jsonl),
+                                   .truncated = jsonl->truncated,
+                                   .omitted   = jsonl->omitted};
       },
   };
 

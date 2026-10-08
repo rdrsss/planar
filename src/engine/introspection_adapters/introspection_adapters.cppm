@@ -219,6 +219,8 @@ export enum class cli_read_status : std::uint8_t {
 export struct cli_read_result {
   cli_read_status status = cli_read_status::unavailable; ///< Which of the three states this is.
   std::string     bytes;                                 ///< Valid only when `status == ok`.
+  bool            truncated = false;                     ///< `ok` only: rows were left unread for the byte budget.
+  std::size_t     omitted   = 0;                         ///< `ok` only: how many rows were left unread.
 };
 
 /// @brief Read-only boundary for authoritative CLI rows. The adapter is
