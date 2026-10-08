@@ -122,23 +122,24 @@ TEST_CASE("a flag value never reaches args_shape, in any of its four spellings",
 
   // 1. Separate following token. Consumed as the value and discarded --
   //    note it is not counted as a positional either.
-  auto const separate = shape_of({"task", "add", "--title", sentinel, "--json"});
+  auto const separate = shape_of({"task", "add", "--body", sentinel, "--json"});
   CHECK(separate.verb_path == "task add");
-  CHECK(separate.args_shape == "--title --json");
+  CHECK(separate.args_shape == "--body --json");
 
   // 2. The inline form. The recorded name EXCLUDES the `=`, which is what
-  //    the oracle writes (`task show --plan=X` recorded `--plan`).
-  auto const inline_form = shape_of({"task", "show", std::string_view{"--plan=SENTINEL_MUST_NOT_LEAK"}});
-  CHECK(inline_form.verb_path == "task show");
+  //    the oracle writes (`task list --plan=X` records `--plan`).
+  auto const inline_form = shape_of({"task", "list", std::string_view{"--plan=SENTINEL_MUST_NOT_LEAK"}});
+  CHECK(inline_form.verb_path == "task list");
   CHECK(inline_form.args_shape == "--plan");
 
   // 3 and 4. Short flag with an attached value, with and without `=`. No
-  //    planar flag declares a short form today; the closure is structural,
-  //    because the invariant has to hold for whatever argv arrives.
+  //    planar flag declares a short form today, so the name is redacted too;
+  //    the closure is structural, because the invariant has to hold for
+  //    whatever argv arrives.
   auto const short_attached = shape_of({"task", "add", std::string_view{"-pSENTINEL_MUST_NOT_LEAK"}});
-  CHECK(short_attached.args_shape == "-p");
+  CHECK(short_attached.args_shape == "--<unknown>");
   auto const short_equals = shape_of({"task", "add", std::string_view{"-p=SENTINEL_MUST_NOT_LEAK"}});
-  CHECK(short_equals.args_shape == "-p");
+  CHECK(short_equals.args_shape == "--<unknown>");
 
   for (auto const& shape : {separate, inline_form, short_attached, short_equals}) {
     CHECK_FALSE(shape.args_shape.contains(sentinel));
@@ -160,7 +161,7 @@ TEST_CASE("a positional value is counted, never recorded", "[cmd][cli_log][priva
   CHECK(after_separator.args_shape == "<pos:3>");
 
   // Mixed: a flag consumes its value, and the trailing bare word counts.
-  auto const mixed = shape_of({"plan", "show", "--scope", sentinel, "trailing"});
+  auto const mixed = shape_of({"task", "list", "--scope", sentinel, "trailing"});
   CHECK(mixed.args_shape == "<pos:1> --scope");
 
   for (auto const& shape : {one, after_separator, mixed}) {
@@ -180,7 +181,7 @@ TEST_CASE("a hostile value cannot reach the cli_invocations ROW", "[cmd][cli_log
   scratch_db arena;
   auto       conn = arena.open();
 
-  auto const hostile = tail({"task", "add", "--title", "SENTINEL_MUST_NOT_LEAK", "--body", "line one\nline two", "--plan",
+  auto const hostile = tail({"task", "add", "--slug", "SENTINEL_MUST_NOT_LEAK", "--body", "line one\nline two", "--plan",
                              "SENTINEL_MUST_NOT_LEAK", "--json", "SENTINEL_MUST_NOT_LEAK"});
   auto const shape   = pc::parse_args(hostile);
   REQUIRE(pc::write_invocation(conn, shape, 2, pc::category_for(planar::cmd::domain_error_kind::invalid_input), 12, 90));
@@ -189,7 +190,7 @@ TEST_CASE("a hostile value cannot reach the cli_invocations ROW", "[cmd][cli_log
   REQUIRE(rows.size() == 1);
   CHECK_FALSE(rows[0].contains(sentinel));
   CHECK_FALSE(rows[0].contains("line one"));
-  CHECK(rows[0] == "task add --title --body --plan --json");
+  CHECK(rows[0] == "task add --slug --body --plan --json");
 
   // The non-shape columns came through, so the row is a real record rather
   // than an empty one that trivially contains no secret.
@@ -202,7 +203,7 @@ TEST_CASE("a hostile value cannot reach the cli_invocations ROW", "[cmd][cli_log
   CHECK(stmt->is_null(3)); // scope_slug is written as NULL, matching the oracle.
 }
 
-TEST_CASE("the verb slot IS recorded verbatim, and that is the oracle's boundary", "[cmd][cli_log][privacy]") {
+TEST_CASE("structured operands in the verb slot are recorded as typed", "[cmd][cli_log][privacy]") {
   // Pinned in the OPPOSITE direction from the cases above, on purpose.
   //
   // The stated invariant is "flag VALUES are never recorded", and it says
@@ -269,8 +270,8 @@ TEST_CASE("a flag the resolved verb does not declare is recorded as --<unknown>"
   CHECK(short_form.args_shape == "--<unknown>");
 
   // A declared flag next to an undeclared one keeps its name.
-  auto const mixed = shape_of({"task", "add", "--title", "x", "--SENTINEL_MUST_NOT_LEAK", "--json"});
-  CHECK(mixed.args_shape == "--title --<unknown> --json");
+  auto const mixed = shape_of({"task", "add", "--body", "x", "--SENTINEL_MUST_NOT_LEAK", "--json"});
+  CHECK(mixed.args_shape == "--body --<unknown> --json");
 
   // An unresolved verb declares nothing but the root's flags.
   auto const unresolved = shape_of({"SENTINEL_MUST_NOT_LEAK", "--title"});
@@ -300,8 +301,8 @@ TEST_CASE("parse_args reproduces the oracle's rows for the ordinary shapes", "[c
   CHECK(task_show.args_shape == "<pos:1> --json");
 
   auto const unknown = shape_of({"nosuchverb", "--json"});
-  CHECK(unknown.verb_path == "nosuchverb");
-  CHECK(unknown.args_shape == "--json");
+  CHECK(unknown.verb_path == "<unknown>");
+  CHECK(unknown.args_shape == "--<unknown>"); // an unresolved verb declares no flags
 
   // Empty argv tail: no verb, no shape, and no crash.
   auto const nothing = pc::parse_args({});
@@ -310,7 +311,7 @@ TEST_CASE("parse_args reproduces the oracle's rows for the ordinary shapes", "[c
 
   // A flag whose value LOOKS like a flag is not consumed as a value -- it
   // is recorded as a flag name in its own right, exactly as the oracle does.
-  auto const flaggy = shape_of({"plan", "show", "--scope", "--json"});
+  auto const flaggy = shape_of({"task", "list", "--scope", "--json"});
   CHECK(flaggy.args_shape == "--scope --json");
 }
 

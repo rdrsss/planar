@@ -41,22 +41,19 @@
 ///   2. POSITIONAL VALUES ARE NEVER RECORDED either. They are COUNTED, and
 ///      the count is emitted as `<pos:N>`. Everything after a bare `--` is
 ///      a positional.
-///   3. THE VERB SLOT IS RECORDED VERBATIM. The first up to
-///      `max_verb_depth` (2) non-flag tokens appearing BEFORE any flag are
-///      joined into `verb_path` exactly as given. For a genuine two-level
-///      verb that is just the subcommand chain (`task show`). For a
-///      ONE-level verb that takes a positional it is not: `resume <id>`
-///      and `tree <ref>` put the operator's argument straight into
-///      `verb_path`, as the last two rows above show against the real
-///      oracle.
+///   3. THE VERB SLOT IS RECORDED ONLY WHEN THE LIVE CLI TREE NAMES IT. The
+///      first up to `max_verb_depth` (2) non-flag tokens appearing BEFORE
+///      any flag are joined into `verb_path`. A token is recorded as typed
+///      only when the live tree names it at that depth (`task`, then
+///      `add`) or when it is a structured operand (a bare id such as
+///      `resume 6073`, an entity ref such as `tree plan:42`); any other
+///      token is recorded as `<unknown>`. Flag NAMES follow the same rule:
+///      a name is recorded only when the resolved verb (or an ancestor)
+///      declares it, else `--<unknown>` (task 7369).
 ///
-/// Part 3 is not a defect being reproduced — it is the boundary as the
-/// oracle draws it, and the stated invariant is precise: it promises
-/// nothing about the verb slot. It is spelled out here because "no values
-/// are ever recorded" is the plausible misreading, and a port written to
-/// the misreading would diverge from the oracle on every `resume` and
-/// `tree` invocation. `cli_log.t.cpp` pins BOTH directions, so neither the
-/// guarantee nor the known exception can drift.
+/// Structured operands stay verbatim because the oracle recorded them and
+/// their shape cannot carry prose. `cli_log.t.cpp` pins the guarantee and the
+/// kept exception.
 ///
 /// ## Fail-open, and what that costs
 ///
@@ -83,10 +80,12 @@ namespace planar::cmd {
 /// @brief The privacy-safe summary of one invocation's arguments.
 export struct parsed_args_shape {
   /// @brief The subcommand chain: the first up to two non-flag tokens
-  /// before any flag, joined by a space. Recorded VERBATIM — see this
+  /// before any flag, joined by a space. A token the live CLI tree does not
+  /// name, and that is not a structured operand, is `<unknown>` — see this
   /// module's header, part 3.
   std::string verb_path;
-  /// @brief Flag NAMES and positional ARITY, e.g. `"<pos:1> --plan --json"`.
+  /// @brief Flag NAMES (`--<unknown>` for one the resolved verb does not
+  /// declare) and positional ARITY, e.g. `"<pos:1> --plan --json"`.
   /// Flag and positional VALUES are never present here.
   std::string args_shape;
 };

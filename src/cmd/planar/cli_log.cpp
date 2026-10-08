@@ -6,6 +6,7 @@ module;
 module planar.cmd.planar.cli_log;
 
 import std;
+import cli11;
 import planar.db;
 import planar.engine.config.effective;
 import planar.cmd.planar.context;
@@ -32,6 +33,52 @@ auto is_long_flag(std::string_view token) -> bool {
 /// @return `true` for a short-flag-shaped token.
 auto is_short_flag(std::string_view token) -> bool {
   return token.size() >= 2 && token[0] == '-' && token[1] != '-';
+}
+
+/// @brief The placeholder recorded for a verb-slot token the live CLI tree
+/// does not name at that depth.
+constexpr std::string_view unknown_verb = "<unknown>";
+
+/// @brief The placeholder recorded for a flag the resolved verb does not
+/// declare.
+constexpr std::string_view unknown_flag = "--<unknown>";
+
+/// @brief The live CLI tree, built once for membership checks.
+/// @return The root node; borrowed and valid for the process lifetime.
+auto live_root() -> const CLI::App& {
+  static const std::unique_ptr<CLI::App> root = root_app();
+  return *root;
+}
+
+/// @brief The visible direct subcommand of `parent` named `name`.
+/// @param parent The node to search.
+/// @param name The token as typed.
+/// @return The child, or `nullptr` when `parent` has no visible child by that name.
+auto named_child(const CLI::App& parent, std::string_view name) -> const CLI::App* {
+  for (auto const* child : cliapp::children(parent)) {
+    if (child->get_name() == name) {
+      return child;
+    }
+  }
+  return nullptr;
+}
+
+/// @brief Whether any node on `chain` declares the flag spelled `name`.
+///
+/// Hidden options count: they are declared, and their names are catalog
+/// controlled rather than operator typed.
+/// @param chain The resolved nodes, root first.
+/// @param name The flag name as typed, `--long` or `-s`, value excluded.
+/// @return `true` when an option on the chain answers to `name`.
+auto flag_declared(std::span<const CLI::App* const> chain, std::string const& name) -> bool {
+  for (auto const* node : chain) {
+    for (auto const* opt : node->get_options()) {
+      if (!opt->get_positional() && opt->check_name(name)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 } // namespace
@@ -65,7 +112,14 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
   auto const&                   parent_verbs = parent_verb_set();
   std::vector<std::string_view> verb_parts;
   std::vector<std::string_view> flag_names;
-  std::size_t                   positional_count = 0;
+  // Verb-slot tokens as they will be recorded: the typed token only when the
+  // live tree names it (or it is a structured operand), else `<unknown>`.
+  std::vector<std::string> recorded_parts;
+  // The nodes the verb slot resolved to, root first. Flags are checked
+  // against these; an unresolved verb leaves only the root.
+  auto const&                  root = live_root();
+  std::vector<const CLI::App*> chain{&root};
+  std::size_t                  positional_count = 0;
 
   // Set by the first flag or by `--`; after it, no token can join the verb
   // path, so a positional that happens to be a bare word is counted rather
@@ -162,6 +216,20 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
         !past_verbs && (verb_parts.empty() || (verb_parts.size() < max_verb_depth &&
                                                (parent_verbs.contains(verb_parts.front()) || structured_operand(token))));
     if (verb_slot_open) {
+      const CLI::App* resolved = nullptr;
+      if (verb_parts.empty()) {
+        resolved = named_child(root, token);
+      } else if (chain.size() == 2) {
+        resolved = named_child(*chain.back(), token);
+      }
+      if (resolved != nullptr) {
+        chain.push_back(resolved);
+        recorded_parts.emplace_back(token);
+      } else if (structured_operand(token)) {
+        recorded_parts.emplace_back(token);
+      } else {
+        recorded_parts.emplace_back(unknown_verb);
+      }
       verb_parts.push_back(token);
       continue;
     }
@@ -172,7 +240,7 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
   }
 
   parsed_args_shape shape;
-  for (auto const& part : verb_parts) {
+  for (auto const& part : recorded_parts) {
     if (!shape.verb_path.empty()) {
       shape.verb_path += ' ';
     }
@@ -186,7 +254,11 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
     if (!shape.args_shape.empty()) {
       shape.args_shape += ' ';
     }
-    shape.args_shape += flag;
+    if (flag_declared(chain, std::string{flag})) {
+      shape.args_shape += flag;
+    } else {
+      shape.args_shape += unknown_flag;
+    }
   }
   return shape;
 }
