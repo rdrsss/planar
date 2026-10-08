@@ -109,6 +109,12 @@ export inline constexpr std::size_t max_verb_depth = 2;
 /// @return The verb path and the value-free argument shape.
 export auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape;
 
+/// @brief Whether a stored `verb_path` is one the live CLI tree could have
+/// produced: the read-time counterpart of `parse_args`' write-time rule.
+/// @param verb_path The stored value, never prefixed.
+/// @return `true` when it is acceptable to render.
+export auto verb_path_recognized(std::string_view verb_path) -> bool;
+
 /// @brief The `cli_invocations.error_category` value for a handler failure.
 ///
 /// Mirrors `zig/src/cmd/planar/cli_log.zig`'s `categoryFor`: the same

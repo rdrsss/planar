@@ -280,6 +280,10 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
   return shape;
 }
 
+auto verb_path_recognized(std::string_view) -> bool {
+  return true;
+}
+
 auto category_for(domain_error_kind kind) -> std::optional<std::string_view> {
   // Exhaustive rather than defaulted, so a new domain_error_kind is a
   // compiler error here instead of silently landing in `internal`. The

@@ -85,6 +85,19 @@ namespace planar::engine::introspect {
 /// callers): this bucket has no pre-existing callers to keep compiling.
 using preview_type = planar::introspection_preview::preview;
 
+/// @brief The placeholder rendered for a stored `verb_path` the catalog
+/// predicate rejects.
+export inline constexpr std::string_view unrecognized_verb_path = "<unrecognized>";
+
+/// @brief Decides whether a stored `verb_path` is one the live CLI catalog
+/// could have produced.
+///
+/// Injected by the caller so this engine never imports a `cmd` module. The
+/// argument is the stored value as written (never prefixed). A rejected
+/// value is rendered as `unrecognized_verb_path`; the stored row is never
+/// changed or purged (decision 1045). Must be cheap and side-effect free.
+export using verb_path_predicate = std::function<bool(std::string_view)>;
+
 /// @brief One verb-path invocation aggregate row.
 export struct verb_count {
   std::string  verb_path;         ///< The recorded verb path.
@@ -182,9 +195,13 @@ export enum class introspect_error : std::uint8_t {
 /// caller can render "logging disabled" instead of zeros.
 /// @param version The build's version token (the sha token of the
 /// `planar version` line), reported verbatim as `bundle::version`.
+/// @param recognized Catalog predicate over stored `verb_path` values. A
+/// rejected path is rendered as `unrecognized_verb_path`, and rejected paths
+/// aggregate into one `[invocations]` row. Required, not defaulted: an
+/// omitted predicate must be a compile error rather than a silent no-mask.
 /// @return The bundle, or an `introspect_error`.
 export auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled,
-                  std::string_view version) -> std::expected<bundle, introspect_error>;
+                  std::string_view version, const verb_path_predicate& recognized) -> std::expected<bundle, introspect_error>;
 
 /// @brief The bounded CLI-invocation JSONL `cli_preview_jsonl` produced.
 export struct cli_preview {
@@ -207,10 +224,12 @@ export struct cli_preview {
 /// @param conn An open, migrated database connection.
 /// @param window_days How many days back to query.
 /// @param max_bytes Upper bound on `jsonl.size()`.
+/// @param recognized Catalog predicate over stored `verb_path` values; a
+/// rejected path is emitted as `planar <unrecognized>`.
 /// @return The preview (always populated on success), or `query_failed`
 /// when a statement fails.
-export auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes)
-    -> std::expected<cli_preview, introspect_error>;
+export auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes,
+                              const verb_path_predicate& recognized) -> std::expected<cli_preview, introspect_error>;
 
 /// @brief Render the diagnostic bundle as human-readable text.
 /// @param b The bundle to render.

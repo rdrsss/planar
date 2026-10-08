@@ -286,6 +286,28 @@ TEST_CASE("flags on a three-level verb are checked against the leaf", "[cmd][cli
   CHECK(undeclared.args_shape == "<pos:1> --<unknown>");
 }
 
+TEST_CASE("verb_path_recognized accepts what the writer produces and rejects the rest", "[cmd][cli_log][privacy][redaction]") {
+  // Everything the writer can emit for real input is recognized, so the
+  // read mask never masks a current row.
+  for (std::string_view const path : {"", "health", "task add", "task show", "feedback triage", "resume 6073", "tree plan:42",
+                                      "<unknown>", "task <unknown>", "<unknown> 6073"}) {
+    CAPTURE(path);
+    CHECK(pc::verb_path_recognized(path));
+  }
+  // Historical leaks and anything the tree does not name are not.
+  for (std::string_view const path : {"search NDJSON", "bogusverb", "task bogus", "task add extra", "5551234567", "acme:7",
+                                      "health prose", "resume SENTINEL", "task <unrecognized>", "a b c"}) {
+    CAPTURE(path);
+    CHECK_FALSE(pc::verb_path_recognized(path));
+  }
+  // Whatever parse_args writes, the predicate accepts.
+  for (auto const& shape : {shape_of({"task", "SENTINEL", "x"}), shape_of({"SENTINEL"}), shape_of({"search", "SENTINEL"}),
+                            shape_of({"feedback", "triage", "set", "--severity", "high"}), shape_of({"resume", "6073"})}) {
+    CAPTURE(shape.verb_path);
+    CHECK(pc::verb_path_recognized(shape.verb_path));
+  }
+}
+
 TEST_CASE("real verbs and structured operands are still recorded", "[cmd][cli_log][redaction]") {
   CHECK(shape_of({"task", "add"}).verb_path == "task add");
   CHECK(shape_of({"resume", "6073"}).verb_path == "resume 6073");

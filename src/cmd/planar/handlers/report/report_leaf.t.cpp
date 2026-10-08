@@ -31,6 +31,7 @@
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.db;
 import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.main;
@@ -294,4 +295,35 @@ TEST_CASE("report --json carries failure_tail, logging_enabled and the real vers
   auto const text = dispatch(fx, {"report"});
   CHECK(text.out.find("  task add  cat=usage  exit=2  at=") != std::string::npos);
   CHECK(text.out.find("  plan show  cat=not_found  exit=1  at=") != std::string::npos);
+}
+
+TEST_CASE("report masks a historical leaked verb_path in text and JSON, and keeps the row", "[cmd][report][redaction]") {
+  auto const fx = make_fixture("readmask");
+  enable_cli_log(fx);
+  for (std::string_view const path : {"search NDJSON", "bogusverb", "task add", "<unknown>"}) {
+    seed(fx, std::format("insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+                         " values ('{}', '--secret-term', 2, 'usage', datetime('now'))",
+                         path));
+  }
+
+  auto const text = dispatch(fx, {"report"});
+  auto const json = dispatch(fx, {"report", "--json"});
+  REQUIRE(text.code == 0);
+  REQUIRE(json.code == 0);
+  for (auto const* out : {&text.out, &json.out}) {
+    CHECK(out->find("<unrecognized>") != std::string::npos);
+    CHECK(out->find("task add") != std::string::npos);
+    CHECK(out->find("<unknown>") != std::string::npos);
+    CHECK(out->find("NDJSON") == std::string::npos);
+    CHECK(out->find("bogusverb") == std::string::npos);
+    CHECK(out->find("secret-term") == std::string::npos);
+  }
+
+  // No purge.
+  auto conn = planar::db::connection::open(fx.db_path.string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select count(*) from cli_invocations");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  CHECK(stmt->column_int64(0) == 4);
 }

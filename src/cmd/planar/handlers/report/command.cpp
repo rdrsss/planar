@@ -95,7 +95,7 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const build_info = cliapp::current_build_info();
   auto const version    = std::format("{}{}", cliapp::shorten_sha(build_info.sha), build_info.dirty ? "+dirty" : "");
 
-  auto bundle = intro::build(db_conn, days, tail, logging_enabled, version);
+  auto bundle = intro::build(db_conn, days, tail, logging_enabled, version, verb_path_recognized);
   if (!bundle.has_value()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "building report: QueryFailed"));
   }
@@ -151,7 +151,7 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   ia::cli_log_adapter const cli_adapter{
       .enabled = logging_enabled,
       .read    = [&db_conn, days](std::size_t max_bytes) -> ia::cli_read_result {
-        auto jsonl = intro::cli_preview_jsonl(db_conn, days, max_bytes);
+        auto jsonl = intro::cli_preview_jsonl(db_conn, days, max_bytes, verb_path_recognized);
         if (!jsonl.has_value()) {
           return ia::cli_read_result{.status = ia::cli_read_status::failed};
         }

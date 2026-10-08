@@ -465,8 +465,8 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
 
 } // namespace
 
-auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled, std::string_view version)
-    -> std::expected<bundle, introspect_error> {
+auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled, std::string_view version,
+           const verb_path_predicate& /*recognized*/) -> std::expected<bundle, introspect_error> {
   bundle result;
   result.version         = std::string{version};
   result.schema_version  = count_query_unwindowed(conn, "select coalesce(max(version), 0) from schema_migrations", 0);
@@ -508,8 +508,8 @@ auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, 
   return result;
 }
 
-auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes)
-    -> std::expected<cli_preview, introspect_error> {
+auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes,
+                       const verb_path_predicate& /*recognized*/) -> std::expected<cli_preview, introspect_error> {
   auto stmt = conn.prepare("select"
                            " case when verb_path like 'planar %' then verb_path else 'planar ' || verb_path end,"
                            " exit_code,"

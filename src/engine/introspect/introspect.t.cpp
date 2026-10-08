@@ -47,6 +47,9 @@ auto open_migrated(const scratch_db_path& scratch) -> planar::db::connection {
   return std::move(*conn);
 }
 
+/// @brief A catalog predicate that recognises every path (the pre-mask behaviour).
+auto const accept_all = [](std::string_view) { return true; };
+
 auto exec(planar::db::connection& conn, std::string_view sql) -> void {
   auto ok = conn.execute(sql);
   REQUIRE(ok.has_value());
@@ -58,7 +61,7 @@ TEST_CASE("build: empty database — all aggregates are zero / empty", "[engine]
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   CHECK(b->invocations.empty());
@@ -88,7 +91,7 @@ TEST_CASE("build: health_summary fails CLOSED — a broken `tasks` query reports
 
   exec(conn, "alter table tasks rename to tasks_renamed_away");
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
   CHECK(b->health == "degraded");
 }
@@ -100,7 +103,7 @@ TEST_CASE("build: logging disabled — invocations/failures are empty", "[engine
   exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
              " values ('health', '', 0, datetime('now'))");
 
-  auto b = intro::build(conn, 30, 20, false, "test-version");
+  auto b = intro::build(conn, 30, 20, false, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   CHECK_FALSE(b->logging_enabled);
@@ -120,7 +123,7 @@ TEST_CASE("build: aggregates reflect seeded cli_invocations", "[engine][introspe
   exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
              " values ('task add', '<pos:1>', 2, 'usage', datetime('now'))");
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   REQUIRE(b->invocations.size() == 2);
@@ -146,7 +149,7 @@ TEST_CASE("build: window filter excludes old rows", "[engine][introspect][build]
              " values ('recent', '', 0, datetime('now', '-5 days')),"
              "        ('old', '', 0, datetime('now', '-31 days'))");
 
-  auto b = intro::build(conn, 7, 20, true, "test-version");
+  auto b = intro::build(conn, 7, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   REQUIRE(b->invocations.size() == 1);
@@ -164,7 +167,7 @@ TEST_CASE("build: failure tail cap — only tail_n rows returned", "[engine][int
              "        ('v4', '', 2, 'usage', datetime('now', '-1 minutes')),"
              "        ('v5', '', 2, 'usage', datetime('now'))");
 
-  auto b = intro::build(conn, 30, 2, true, "test-version");
+  auto b = intro::build(conn, 30, 2, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   REQUIRE(b->failure_tail.size() == 2);
@@ -182,7 +185,7 @@ TEST_CASE("build: redaction — seeded sentinel titles never appear in text or J
   exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
              " values ('health', '', 0, datetime('now'))");
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   auto const text = intro::render_text(*b);
@@ -192,9 +195,11 @@ TEST_CASE("build: redaction — seeded sentinel titles never appear in text or J
   CHECK(json.find(k_sentinel) == std::string::npos);
 }
 
-TEST_CASE("build/cli_preview_jsonl: verb_path is NOT entity-text-safe — a top-level free-text positional leaks verbatim",
+TEST_CASE("build/cli_preview_jsonl: a predicate that accepts everything passes stored verb_path text through verbatim",
           "[engine][introspect][build][redaction]") {
-  // introspect.cppm's header narrows the redaction claim to "no entity-TABLE
+  // The catalog predicate is the ONLY thing standing between a stored
+  // `verb_path` and the bundle (the masking cases below); this case pins
+  // that an accepting predicate changes nothing. introspect.cppm's header narrows the redaction claim to "no entity-TABLE
   // column is read" — it does NOT claim `verb_path` is free of
   // operator-authored text. `search` is a top-level verb with a REQUIRED
   // free-text positional (handlers/search.zig:38), so `cli_log.zig` records
@@ -211,7 +216,7 @@ TEST_CASE("build/cli_preview_jsonl: verb_path is NOT entity-text-safe — a top-
                          " values ('search {}', '<pos:1>', 2, 'usage', datetime('now'))",
                          k_sentinel));
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   // [invocations]: the free-text query is IN the rendered verb_path.
@@ -225,9 +230,82 @@ TEST_CASE("build/cli_preview_jsonl: verb_path is NOT entity-text-safe — a top-
   CHECK(b->failure_tail[0].verb_path.find(k_sentinel) != std::string::npos);
 
   // The JSONL preview boundary leaks it too.
-  auto preview = intro::cli_preview_jsonl(conn, 30, 4096);
+  auto preview = intro::cli_preview_jsonl(conn, 30, 4096, accept_all);
   REQUIRE(preview.has_value());
   CHECK(preview->jsonl.find(k_sentinel) != std::string::npos);
+}
+
+TEST_CASE("build/cli_preview_jsonl: a verb_path the predicate rejects is rendered <unrecognized> everywhere, rows kept",
+          "[engine][introspect][build][redaction]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+
+  // Historical leaked rows plus rows the writer produces today.
+  for (std::string_view const path :
+       {"search NDJSON", "bogusverb", "link task:7333", "task add", "<unknown>", "task <unknown>"}) {
+    exec(conn, std::format("insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
+                           " values ('{}', '--secret-term', 2, 'usage', datetime('now'))",
+                           path));
+  }
+
+  auto const catalog = [](std::string_view path) {
+    return path == "task add" || path == "<unknown>" || path == "task <unknown>";
+  };
+
+  auto b = intro::build(conn, 30, 20, true, "test-version", catalog);
+  REQUIRE(b.has_value());
+
+  // [invocations]: the three rejected paths aggregate into ONE masked row;
+  // recognized paths, including the writer's own `<unknown>`, pass unchanged.
+  std::map<std::string, std::int64_t> counts;
+  for (auto const& v : b->invocations) {
+    counts[v.verb_path] += v.count;
+  }
+  CHECK(b->invocations.size() == 4);
+  CHECK(counts["<unrecognized>"] == 3);
+  CHECK(counts["task add"] == 1);
+  CHECK(counts["<unknown>"] == 1);
+  CHECK(counts["task <unknown>"] == 1);
+  for (auto const& v : b->invocations) {
+    if (v.verb_path == "<unrecognized>") {
+      CHECK(v.failure_count == 3);
+    }
+  }
+
+  // [failure tail] masks per row and keeps every row.
+  REQUIRE(b->failure_tail.size() == 6);
+  std::int64_t masked_tail = 0;
+  for (auto const& r : b->failure_tail) {
+    masked_tail += r.verb_path == "<unrecognized>" ? 1 : 0;
+  }
+  CHECK(masked_tail == 3);
+
+  auto const text = intro::render_text(*b);
+  auto const json = intro::render_json(*b);
+  for (auto const* leaked : {"NDJSON", "bogusverb", "task:7333", "secret-term"}) {
+    CHECK(text.find(leaked) == std::string::npos);
+    CHECK(json.find(leaked) == std::string::npos);
+  }
+  CHECK(text.find("<unrecognized>") != std::string::npos);
+  CHECK(json.find("<unrecognized>") != std::string::npos);
+
+  // The JSONL boundary masks too, and still carries every row.
+  auto preview = intro::cli_preview_jsonl(conn, 30, 1 << 16, catalog);
+  REQUIRE(preview.has_value());
+  CHECK(preview->rows == 6);
+  CHECK(preview->jsonl.find("NDJSON") == std::string::npos);
+  CHECK(preview->jsonl.find("bogusverb") == std::string::npos);
+  CHECK(preview->jsonl.find("task:7333") == std::string::npos);
+  CHECK(preview->jsonl.find(R"("verb_path":"planar <unrecognized>")") != std::string::npos);
+  CHECK(preview->jsonl.find(R"("verb_path":"planar task add")") != std::string::npos);
+  CHECK(preview->jsonl.find(R"("verb_path":"planar <unknown>")") != std::string::npos);
+
+  // No purge: the stored rows are untouched.
+  auto stmt = conn.prepare("select count(*), sum(verb_path = 'search NDJSON') from cli_invocations");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  CHECK(stmt->column_int64(0) == 6);
+  CHECK(stmt->column_int64(1) == 1);
 }
 
 TEST_CASE("build: handoffs never_consumed is distinct from stale_handoffs", "[engine][introspect][build]") {
@@ -252,7 +330,7 @@ TEST_CASE("build: handoffs never_consumed is distinct from stale_handoffs", "[en
   exec(conn, "insert into handoffs (from_snapshot_id, from_vendor, status, created_at)"
              " values (1, 'v1', 'validated', datetime('now'))");
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   CHECK(b->handoffs.stale_handoffs == 0);
@@ -265,7 +343,7 @@ TEST_CASE("build: reopens count reflects seeded task_reopens rows", "[engine][in
   auto            conn = open_migrated(scratch);
 
   {
-    auto b = intro::build(conn, 30, 20, true, "test-version");
+    auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
     REQUIRE(b.has_value());
     CHECK(b->reopens == 0);
   }
@@ -275,12 +353,12 @@ TEST_CASE("build: reopens count reflects seeded task_reopens rows", "[engine][in
   exec(conn,
        "insert into task_reopens (task_id, from_status, to_status, source) values (1, 'done', 'doing', 'task-update-force')");
 
-  auto b2 = intro::build(conn, 30, 20, true, "test-version");
+  auto b2 = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b2.has_value());
   CHECK(b2->reopens == 2);
 
   // A 1-day window still includes these rows: all timestamps are datetime('now').
-  auto b3 = intro::build(conn, 1, 20, true, "test-version");
+  auto b3 = intro::build(conn, 1, 20, true, "test-version", accept_all);
   REQUIRE(b3.has_value());
   CHECK(b3->reopens == 2);
 }
@@ -289,7 +367,7 @@ TEST_CASE("build: schema_version reflects the applied migrations", "[engine][int
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   auto stmt = conn.prepare("select max(version) from schema_migrations");
@@ -318,7 +396,7 @@ TEST_CASE("build: agent_actions aggregates a populated table, not just the empty
   exec(conn, "insert into agent_actions (session_id, action_kind, vendor, outcome, started_at)"
              " values (1, 'reviewer', 'claude', 'error', datetime('now'))");
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   REQUIRE(b->actions.size() == 2);
@@ -356,7 +434,7 @@ TEST_CASE("build+render: a populated invocations bundle pins the exact render_te
   exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
              " values ('task add', '<pos:1>', 2, 'usage', datetime('now'))");
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   auto const text = intro::render_text(*b);
@@ -393,7 +471,7 @@ TEST_CASE("build+render: claims — stale_claims and never_consumed are NOT inte
              " values ('tok-expired', 1, 'task', 1, 'released', 'claude',"
              " datetime('now'), datetime('now','+1 hour'))");
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
   REQUIRE(b->claims.stale_claims == 3);
   REQUIRE(b->claims.never_consumed == 1);
@@ -422,7 +500,7 @@ TEST_CASE("build: claim_failure_category_count — provider and category are NOT
              " values ('tok-1', 1, 'task', 1, 'aborted', 'claude-provider-marker',"
              " 'tool_failure', datetime('now'), datetime('now','+1 hour'))");
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   REQUIRE(b->claim_failure_categories.size() == 1);
@@ -446,7 +524,7 @@ TEST_CASE("cli_preview_jsonl: exceeding max_bytes keeps the newest rows, oldest 
                            i, i));
   }
 
-  auto const full = intro::cli_preview_jsonl(conn, 30, 1 << 20);
+  auto const full = intro::cli_preview_jsonl(conn, 30, 1 << 20, accept_all);
   REQUIRE(full.has_value());
   REQUIRE(full->rows == 10);
   CHECK_FALSE(full->truncated);
@@ -455,7 +533,7 @@ TEST_CASE("cli_preview_jsonl: exceeding max_bytes keeps the newest rows, oldest 
   REQUIRE(row_size * 10 == full->jsonl.size());
 
   // Room for exactly four rows (plus a partial fifth): the four newest stay.
-  auto preview = intro::cli_preview_jsonl(conn, 30, row_size * 4 + row_size / 2);
+  auto preview = intro::cli_preview_jsonl(conn, 30, row_size * 4 + row_size / 2, accept_all);
   REQUIRE(preview.has_value());
   CHECK(preview->truncated);
   CHECK(preview->rows == 4);
@@ -474,7 +552,7 @@ TEST_CASE("cli_preview_jsonl: exceeding max_bytes keeps the newest rows, oldest 
   CHECK(preview->jsonl.find("planar r9") == std::string::npos);
 
   // A budget smaller than any one row reads nothing and omits everything.
-  auto none = intro::cli_preview_jsonl(conn, 30, 16);
+  auto none = intro::cli_preview_jsonl(conn, 30, 16, accept_all);
   REQUIRE(none.has_value());
   CHECK(none->jsonl.empty());
   CHECK(none->truncated);
@@ -491,11 +569,11 @@ TEST_CASE("cli_preview_jsonl: a window exactly at max_bytes is not truncated; on
                            " values ('r{}', '', 0, datetime('now', '-{} minutes'))",
                            i, i));
   }
-  auto const full = intro::cli_preview_jsonl(conn, 30, 1 << 20);
+  auto const full = intro::cli_preview_jsonl(conn, 30, 1 << 20, accept_all);
   REQUIRE(full.has_value());
   auto const exact = full->jsonl.size();
 
-  auto at_cap = intro::cli_preview_jsonl(conn, 30, exact);
+  auto at_cap = intro::cli_preview_jsonl(conn, 30, exact, accept_all);
   REQUIRE(at_cap.has_value());
   CHECK_FALSE(at_cap->truncated);
   CHECK(at_cap->omitted == 0);
@@ -504,7 +582,7 @@ TEST_CASE("cli_preview_jsonl: a window exactly at max_bytes is not truncated; on
 
   exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, recorded_at)"
              " values ('r5', '', 0, datetime('now', '-6 minutes'))");
-  auto over = intro::cli_preview_jsonl(conn, 30, exact);
+  auto over = intro::cli_preview_jsonl(conn, 30, exact, accept_all);
   REQUIRE(over.has_value());
   CHECK(over->truncated);
   CHECK(over->omitted == 1);
@@ -519,7 +597,7 @@ TEST_CASE("render_json: failure_tail and logging_enabled are present, and versio
   exec(conn, "insert into cli_invocations (verb_path, args_shape, exit_code, error_category, recorded_at)"
              " values ('task add', '', 2, 'usage', datetime('now'))");
 
-  auto on = intro::build(conn, 30, 20, true, "abc123def456");
+  auto on = intro::build(conn, 30, 20, true, "abc123def456", accept_all);
   REQUIRE(on.has_value());
   auto const on_json = intro::render_json(*on);
   CHECK(on_json.starts_with(R"({"version":"abc123def456",)"));
@@ -527,7 +605,7 @@ TEST_CASE("render_json: failure_tail and logging_enabled are present, and versio
   CHECK(on_json.find(R"("failure_tail":[{"verb_path":"task add","error_category":"usage","exit_code":2,"recorded_at":")") !=
         std::string::npos);
 
-  auto off = intro::build(conn, 30, 20, false, "abc123def456");
+  auto off = intro::build(conn, 30, 20, false, "abc123def456", accept_all);
   REQUIRE(off.has_value());
   auto const off_json = intro::render_json(*off);
   CHECK(off_json.find(R"("logging_enabled":false)") != std::string::npos);
@@ -542,7 +620,7 @@ TEST_CASE("cli_preview_jsonl: canonicalizes captured verb paths exactly once", "
              " values ('task add', '', 2, 'usage', strftime('%Y-%m-%dT%H:%M:%SZ','now')),"
              "        ('planar plan show', '', 1, 'not_found', datetime('now'))");
 
-  auto preview = intro::cli_preview_jsonl(conn, 30, 4096);
+  auto preview = intro::cli_preview_jsonl(conn, 30, 4096, accept_all);
   REQUIRE(preview.has_value());
   CHECK(preview->jsonl.find("\"verb_path\":\"planar task add\"") != std::string::npos);
   CHECK(preview->jsonl.find("\"verb_path\":\"planar plan show\"") != std::string::npos);
@@ -554,7 +632,7 @@ TEST_CASE("cli_preview_jsonl: empty window still returns an empty (not null) res
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  auto preview = intro::cli_preview_jsonl(conn, 30, 4096);
+  auto preview = intro::cli_preview_jsonl(conn, 30, 4096, accept_all);
   REQUIRE(preview.has_value());
   CHECK(preview->jsonl.empty());
   CHECK_FALSE(preview->truncated);
@@ -565,7 +643,7 @@ TEST_CASE("render_json: empty windows emit empty arrays, never nulls", "[engine]
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
 
   auto const json = intro::render_json(*b);
@@ -594,7 +672,7 @@ TEST_CASE("render_text: introspection preview renders 'unavailable' when build()
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
   REQUIRE_FALSE(b->preview.has_value());
 
@@ -614,7 +692,7 @@ TEST_CASE("render_text: a preview with no coverage rows renders 'empty', distinc
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
   b->preview = ip::preview{};
   REQUIRE(b->preview->coverage.empty());
@@ -638,7 +716,7 @@ TEST_CASE("build+render: a populated preview renders every coverage/signal/warni
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
 
-  auto b = intro::build(conn, 30, 20, true, "test-version");
+  auto b = intro::build(conn, 30, 20, true, "test-version", accept_all);
   REQUIRE(b.has_value());
   b->preview = ip::preview{
       .signals =
