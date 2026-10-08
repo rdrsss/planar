@@ -127,10 +127,14 @@ export inline constexpr std::size_t k_default_max_bytes = 4 * 1024 * 1024;
 /// @brief One discovered source. `jsonl` may contain multiple raw vendor
 /// records, one JSON object per line.
 export struct raw_source {
-  vendor      v;                ///< Which vendor this source came from.
-  bool        enabled   = true; ///< Whether the adapter is configured on.
-  bool        available = true; ///< Whether the source could be read at all.
-  std::string jsonl;            ///< Raw newline-delimited JSON. Empty when unavailable/disabled.
+  vendor        v;                        ///< Which vendor this source came from.
+  bool          enabled   = true;         ///< Whether the adapter is configured on.
+  bool          available = true;         ///< Whether the source could be read at all.
+  std::string   jsonl;                    ///< Raw newline-delimited JSON. Empty when unavailable/disabled.
+  std::uint64_t bytes_read           = 0; ///< Transcript bytes read into `jsonl` (excludes joining newlines).
+  std::uint32_t files_partial        = 0; ///< Files read from their tail only.
+  std::uint32_t files_skipped_cap    = 0; ///< Files skipped for a file, byte or record cap.
+  std::uint32_t files_skipped_window = 0; ///< Files skipped for a modification time before the window.
 };
 
 /// @brief Collect a no-write preview from raw vendor JSONL.
@@ -170,6 +174,7 @@ export struct collector_limits {
   std::size_t max_bytes = k_default_max_bytes; ///< Total bytes across all three transcript vendors PLUS the CLI adapter.
   std::size_t max_records =
       k_default_max_records; ///< Total JSONL records across all three transcript vendors PLUS the CLI adapter.
+  std::optional<std::filesystem::file_time_type> window_start; ///< Files last modified before this are skipped; unset reads all.
 };
 
 /// @brief Per-vendor transcript location configuration. Mirrors the

@@ -924,3 +924,160 @@ TEST_CASE("collect_preview_from_paths: a disabled CLI adapter reports coverage d
   REQUIRE(cli_log != nullptr);
   CHECK(cli_log->state == ia::coverage_state::disabled);
 }
+
+// ============================================================================
+// --- transcript scan: skip, don't break --- (diagnose-transcript-scan-skip-not-break)
+// ============================================================================
+
+namespace {
+
+/// A failed Claude Bash invocation: one tool_use record and one errored
+/// tool_result record, each on its own line, newline-terminated.
+auto failed_pair(std::string_view id, std::string_view command) -> std::string {
+  return std::format(
+      R"({{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{0}","name":"Bash","input":{{"command":"{1}"}}}}]}},"timestamp":"2026-07-12T12:00:00.000Z"}})"
+      "\n"
+      R"({{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{0}","is_error":true,"content":"x"}}]}},"timestamp":"2026-07-12T12:00:01.000Z"}})"
+      "\n",
+      id, command);
+}
+
+/// `count` distinct failed pairs of `command`.
+auto many_pairs(std::string_view prefix, std::size_t count, std::string_view command) -> std::string {
+  std::string out;
+  for (std::size_t i = 0; i < count; ++i) {
+    out += failed_pair(std::format("{}-{}", prefix, i), command);
+  }
+  return out;
+}
+
+auto set_age(const std::filesystem::path& path, std::chrono::hours age) -> void {
+  std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() - age);
+}
+
+} // namespace
+
+TEST_CASE("transcript scan: an oversize lexically-first file is skipped and counted, the rest are scanned",
+          "[engine][introspection_adapters][discovery][skip-not-break]") {
+  auto const        pair  = failed_pair("p", "planar task show 1");
+  std::size_t const share = 3 * pair.size() + 10; // admits three one-pair files, never the big one
+  scratch_dir       scratch;
+  auto const        dir = scratch.path_ / ".claude" / "projects";
+  write(dir / "a_big.jsonl", many_pairs("big", 10, "planar task show 1"));
+  write(dir / "b.jsonl", failed_pair("b", "planar task show 1"));
+  write(dir / "c.jsonl", failed_pair("c", "planar task show 1"));
+  write(dir / "d.jsonl", failed_pair("d", "planar task show 1"));
+  set_age(dir / "a_big.jsonl", std::chrono::hours{40});
+  set_age(dir / "b.jsonl", std::chrono::hours{3});
+  set_age(dir / "c.jsonl", std::chrono::hours{2});
+  set_age(dir / "d.jsonl", std::chrono::hours{1});
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->scanned == 6);
+  CHECK(claude->files_skipped_cap == 1);
+  CHECK(claude->files_partial == 0);
+  CHECK(claude->bytes_read == 3 * pair.size());
+  REQUIRE(preview.signals.size() == 1);
+  CHECK(preview.signals[0].count == 3);
+  CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::byte_cap));
+}
+
+TEST_CASE("transcript scan: the tail of an oversize newest file is read from a record boundary and counted partial",
+          "[engine][introspection_adapters][discovery][skip-not-break]") {
+  auto const        pair  = failed_pair("p", "planar plan show 9");
+  std::size_t const share = 2 * pair.size() + 7; // lands mid-record of the file below
+  scratch_dir       scratch;
+  auto const        dir = scratch.path_ / ".claude" / "projects";
+  write(dir / "live.jsonl", many_pairs("live", 8, "planar task show 1") + failed_pair("last", "planar plan show 9"));
+  set_age(dir / "live.jsonl", std::chrono::hours{1});
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->files_partial == 1);
+  CHECK(claude->files_skipped_cap == 0);
+  CHECK(claude->malformed == 0); // the partial first line was dropped
+  CHECK(claude->scanned >= 2);
+  CHECK(claude->bytes_read > 0);
+  CHECK(claude->bytes_read <= share);
+  bool saw_final = false;
+  for (auto const& signal : preview.signals) {
+    saw_final = saw_final || signal.verb_path == "planar plan show";
+  }
+  CHECK(saw_final);
+}
+
+TEST_CASE("transcript scan: files with identical modification times are read in path order",
+          "[engine][introspection_adapters][discovery][skip-not-break]") {
+  auto const        pair  = failed_pair("p", "planar task show 1");
+  std::size_t const share = pair.size() + 5; // admits exactly one file
+  scratch_dir       scratch;
+  auto const        dir = scratch.path_ / ".claude" / "projects";
+  write(dir / "b.jsonl", failed_pair("b", "planar plan show 2"));
+  write(dir / "a.jsonl", failed_pair("a", "planar task show 1"));
+  auto const same = std::filesystem::file_time_type::clock::now() - std::chrono::hours{1};
+  std::filesystem::last_write_time(dir / "a.jsonl", same);
+  std::filesystem::last_write_time(dir / "b.jsonl", same);
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->files_skipped_cap == 1);
+  REQUIRE(preview.signals.size() == 1);
+  CHECK(preview.signals[0].verb_path == "planar task show");
+}
+
+TEST_CASE("transcript scan: out-of-window files are counted and not read, newest in-window files win the budget",
+          "[engine][introspection_adapters][discovery][skip-not-break]") {
+  auto const        pair  = failed_pair("p", "planar task show 1");
+  std::size_t const share = pair.size() + 5; // admits exactly one file
+  scratch_dir       scratch;
+  auto const        dir = scratch.path_ / ".claude" / "projects";
+  write(dir / "old.jsonl", failed_pair("o", "planar spec ingest"));
+  write(dir / "mid.jsonl", failed_pair("m", "planar plan show 2"));
+  write(dir / "new.jsonl", failed_pair("n", "planar task show 1"));
+  set_age(dir / "old.jsonl", std::chrono::hours{500});
+  set_age(dir / "mid.jsonl", std::chrono::hours{5});
+  set_age(dir / "new.jsonl", std::chrono::hours{1});
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits        limits{.max_bytes = 4 * share};
+  limits.window_start = std::filesystem::file_time_type::clock::now() - std::chrono::hours{24 * 7};
+  auto const preview  = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->files_skipped_window == 1);
+  CHECK(claude->files_skipped_cap == 1);
+  REQUIRE(preview.signals.size() == 1);
+  CHECK(preview.signals[0].verb_path == "planar task show");
+}
+
+TEST_CASE("transcript scan: a large Claude inventory does not shrink the Codex budget",
+          "[engine][introspection_adapters][discovery][skip-not-break]") {
+  auto const        pair  = failed_pair("p", "planar task show 1");
+  std::size_t const share = 2 * pair.size();
+  scratch_dir       scratch;
+  write(scratch.path_ / ".claude" / "projects" / "big.jsonl", many_pairs("big", 20, "planar task show 1"));
+  write(scratch.path_ / ".codex" / "sessions" / "x.jsonl", "not json\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* codex = coverage_for(preview, ia::vendor::codex);
+  REQUIRE(codex != nullptr);
+  CHECK(codex->scanned == 1);
+  CHECK(codex->files_skipped_cap == 0);
+}

@@ -103,13 +103,17 @@ export struct signal_row {
 
 /// @brief One source's scan tally.
 export struct coverage_row {
-  vendor         v;                                     ///< The vendor.
-  coverage_state state      = coverage_state::observed; ///< Overall state.
-  std::uint32_t  scanned    = 0;                        ///< Lines examined.
-  std::uint32_t  malformed  = 0;                        ///< Lines that failed to parse or violated the recognized envelope.
-  std::uint32_t  normalized = 0;                        ///< Lines that produced (or merged into) a signal.
-  std::uint32_t  ignored    = 0;                        ///< Lines that parsed but carried no evidence.
-  std::uint32_t  capped     = 0;                        ///< Lines that would have produced a new bucket past the evidence cap.
+  vendor         v;                                               ///< The vendor.
+  coverage_state state                = coverage_state::observed; ///< Overall state.
+  std::uint32_t  scanned              = 0;                        ///< Lines examined.
+  std::uint32_t  malformed            = 0; ///< Lines that failed to parse or violated the recognized envelope.
+  std::uint32_t  normalized           = 0; ///< Lines that produced (or merged into) a signal.
+  std::uint32_t  ignored              = 0; ///< Lines that parsed but carried no evidence.
+  std::uint32_t  capped               = 0; ///< Lines that would have produced a new bucket past the evidence cap.
+  std::uint64_t  bytes_read           = 0; ///< Transcript bytes read for this vendor (a tail read counts only the tail).
+  std::uint32_t  files_partial        = 0; ///< Files read from their tail because they alone exceeded the byte budget.
+  std::uint32_t  files_skipped_cap    = 0; ///< Files not read because a file, byte or record cap left no room.
+  std::uint32_t  files_skipped_window = 0; ///< Files not read because their modification time is before the window.
 };
 
 /// @brief Preview output. Owns only normalized keys and timestamps —
