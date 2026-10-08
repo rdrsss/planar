@@ -52,7 +52,12 @@ jobs:
           fetch-tags: true
           persist-credentials: false
       - name: Verify the tag, its commit and a clean checkout
-        run: scripts/release-publish.sh --preflight "$TAG"
+        env:
+          TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          scripts/release-publish.sh --preflight "$TAG"
+          resolved=$(git rev-parse "refs/tags/$TAG^{commit}")
+          [ "$resolved" = "$TRIGGER_SHA" ] || { echo "release tag $TAG resolves to $resolved but this run was triggered at $TRIGGER_SHA" >&2; exit 1; }
       - name: Install the build toolchain
         run: brew install cmake ninja llvm
       - name: Build the bundle (make dist)
@@ -93,7 +98,12 @@ jobs:
           fetch-tags: true
           persist-credentials: false
       - name: Verify the tag, its commit and a clean checkout
-        run: scripts/release-publish.sh --preflight "$TAG"
+        env:
+          TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          scripts/release-publish.sh --preflight "$TAG"
+          resolved=$(git rev-parse "refs/tags/$TAG^{commit}")
+          [ "$resolved" = "$TRIGGER_SHA" ] || { echo "release tag $TAG resolves to $resolved but this run was triggered at $TRIGGER_SHA" >&2; exit 1; }
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL

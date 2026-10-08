@@ -494,7 +494,9 @@ re-validates the evidence exactly as `make release-cut` does, so a failed,
 skipped or missing gate on either platform publishes nothing. Releases are cut
 locally until hosted CI returns (decision 1337);
 `scripts/release-workflow.test.py` (ctest label `release_workflow`) lints the
-workflow and runs its steps against fakes.
+workflow and runs its steps against fakes. `scripts/release-workflow-crosscheck.py` is a manual
+check, outside ctest, that compares the reader with PyYAML and runs `actionlint`;
+it fails when either tool is missing.
 
 ## See Also
 

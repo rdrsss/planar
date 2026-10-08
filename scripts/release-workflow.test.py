@@ -135,7 +135,7 @@ class _Reader:
             rest = text[1:].lstrip()
             if not rest or rest.startswith('#'):
                 item, i = self.node(i + 1, indent + 1)
-            elif rest[0] not in '"\'[' and self.KEY.match(_cut_comment_line(rest)):
+            elif rest[0] not in '"\'[' and self.KEY.match(rest):
                 # `- key: value` opens a mapping whose first line is this one.
                 offset = indent + 1 + (len(text) - 1 - len(rest))
                 self.lines[i] = ' ' * offset + rest
@@ -153,7 +153,7 @@ class _Reader:
             text = self.lines[i].strip()
             if text == '-' or text.startswith('- '):
                 return result, i
-            match = self.KEY.match(_cut_comment_line(text))
+            match = self.KEY.match(text)
             if not match:
                 raise YamlError(f'line {i + 1}: not a mapping entry: {text}')
             key = _scalar(match.group(1)) if match.group(1)[0] in '"\'' else match.group(1).strip()
@@ -190,10 +190,6 @@ class _Reader:
             body.pop()
         text = '\n'.join(line[width:] if line else '' for line in body)
         return (text if header == '|-' else text + '\n'), i
-
-
-def _cut_comment_line(text):
-    return text  # comments inside values are cut by _scalar; keys carry none
 
 
 def parse_yaml(text):
@@ -236,6 +232,11 @@ NOT_STABLE = ('v1.2.3-rc1', 'v1.2.3+build', 'v1.2', 'v1.2.3.4', 'v1', 'vv1.2.3',
 # --- the lint ---------------------------------------------------------------
 
 USES = re.compile(r'^(actions/(?:checkout|upload-artifact|download-artifact))@([0-9a-f]{40})$')
+PREFLIGHT_RUN = (
+    'scripts/release-publish.sh --preflight "$TAG"\n'
+    'resolved=$(git rev-parse "refs/tags/$TAG^{commit}")\n'
+    '[ "$resolved" = "$TRIGGER_SHA" ] || { echo "release tag $TAG resolves to $resolved but this run was '
+    'triggered at $TRIGGER_SHA" >&2; exit 1; }')
 PUBLISH_RUN = 'scripts/release-publish.sh "$TAG" release-in/macos-arm64 release-in/linux-x86_64'
 NAMES = {p: f'release-{p}' for p in PLATFORMS}
 BUILD = {'macos-arm64': 'make dist', 'linux-x86_64': 'make linux-dist LINUX_DIST_OUT=release-out/linux-x86_64'}
@@ -312,7 +313,8 @@ def lint(text, root=ROOT):
                      'actions/checkout, upload-artifact and download-artifact are allowed')
             else:
                 need('run' in step, f'{label} neither uses nor runs anything')
-    need(re.search(r'(?m)^\s*(shell|working-directory):', text) is None and 'defaults' not in str(wf),
+    need(re.search(r'(?m)^\s*(shell|working-directory):', text) is None
+         and all('defaults' not in job for job in jobs.values()),
          'no custom shell or working-directory: a step must run in the checkout under the runner default shell -e')
 
     # Permissions: only the publisher writes.
@@ -348,13 +350,12 @@ def lint(text, root=ROOT):
     for name, job in jobs.items():
         checkout = job['steps'][0]
         need(str(checkout.get('uses', '')).startswith('actions/checkout@'), f'job {name} must start with a checkout')
-        if checkout.get('with') is not None or True:
-            w = checkout.get('with') or {}
-            need(w.get('ref') == 'refs/tags/${{ github.ref_name }}',
-                 f'job {name} must check out refs/tags/${{{{ github.ref_name }}}} explicitly, found {w.get("ref")!r}')
-            need(w.get('fetch-depth') == 0 and w.get('fetch-tags') is True,
-                 f'job {name} checkout needs fetch-depth 0 and fetch-tags so the annotated tag object exists')
-            need(w.get('persist-credentials') is False, f'job {name} checkout must not persist credentials')
+        w = checkout.get('with') or {}
+        need(w.get('ref') == 'refs/tags/${{ github.ref_name }}',
+             f'job {name} must check out refs/tags/${{{{ github.ref_name }}}} explicitly, found {w.get("ref")!r}')
+        need(w.get('fetch-depth') == 0 and w.get('fetch-tags') is True,
+             f'job {name} checkout needs fetch-depth 0 and fetch-tags so the annotated tag object exists')
+        need(w.get('persist-credentials') is False, f'job {name} checkout must not persist credentials')
         need((job.get('env') or {}).get('TAG') == '${{ github.ref_name }}', f'job {name} env TAG must be github.ref_name')
 
     # Platform jobs: preflight, build, gates, then (and only then) upload.
@@ -366,14 +367,18 @@ def lint(text, root=ROOT):
              f'{label} must build with PLANAR_RELEASE_VERSION set to the tag')
         runs = [(i, s.get('run', '').strip()) for i, s in enumerate(steps)]
         gate_cmd = f'scripts/release-gates.sh --platform {platform} release-out/{platform}'
-        pre = [i for i, r in runs if r == 'scripts/release-publish.sh --preflight "$TAG"']
+        pre = [i for i, r in runs if r == PREFLIGHT_RUN]
         build = [i for i, r in runs if r == BUILD[platform]]
         stage = [i for i, r in runs if platform == 'macos-arm64' and 'release-out/macos-arm64' in r
                  and r.startswith('set -eu') and 'cp dist/planar-macos-arm64.tar.gz' in r]
         gates = [i for i, r in runs if 'release-gates.sh' in r]
         gate_ok = [i for i, r in runs if r == gate_cmd]
         uploads = [i for i, s in enumerate(steps) if str(s.get('uses', '')).startswith('actions/upload-artifact@')]
-        need(len(pre) == 1, f'{label} needs exactly one preflight step (tag, annotated, HEAD at tag, clean tree)')
+        need(len(pre) == 1, f'{label} needs exactly one preflight step (tag, annotated, HEAD at tag, clean tree, '
+             'tag commit equal to github.sha)')
+        if len(pre) == 1:
+            need(steps[pre[0]].get('env') == {'TRIGGER_SHA': '${{ github.sha }}'},
+                 f'{label} preflight must take github.sha through env TRIGGER_SHA, not interpolate it into the script')
         need(len(build) == 1, f'{label} needs exactly one build step {BUILD[platform]!r}')
         need(len(gates) == 1 and gate_ok == gates,
              f'{label} needs exactly one gate step running exactly {gate_cmd!r}, with no || or ; softening it')
@@ -387,7 +392,7 @@ def lint(text, root=ROOT):
                      f'{label} must stage dist/ into release-out/macos-arm64 between build and gates')
         for step in steps:
             need('gh ' not in step_text(step) and 'release-publish.sh' not in step_text(step).replace(
-                'release-publish.sh --preflight "$TAG"', ''), f'{label} step {step.get("name")!r} publishes')
+                'release-publish.sh --preflight "$TAG"', '', 1), f'{label} step {step.get("name")!r} publishes')
         if len(uploads) == 1:
             up = steps[uploads[0]]
             w = up.get('with') or {}
@@ -462,24 +467,6 @@ class YamlReaderTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(YamlError):
                 parse_yaml(bad)
 
-    def test_agrees_with_pyyaml_on_the_repository_workflows(self):
-        try:
-            import yaml
-        except ImportError:
-            return  # PyYAML is optional; the reader's own cases above are authoritative.
-        for path in sorted((ROOT / '.github/workflows').glob('*.yml')):
-            with self.subTest(workflow=path.name):
-                expected = yaml.load(path.read_text(), Loader=yaml.BaseLoader)
-                got = json.loads(json.dumps(parse_yaml(path.read_text())))
-
-                def norm(v):
-                    if isinstance(v, dict):
-                        return {k: norm(x) for k, x in v.items()}
-                    if isinstance(v, list):
-                        return [norm(x) for x in v]
-                    return '' if v is None else str(v).lower() if isinstance(v, bool) else str(v)
-                self.assertEqual(norm(got), norm(expected))
-
 
 class LintTests(unittest.TestCase):
     """Scenario 3750: the workflow's shape, its gate dependencies, and no drift."""
@@ -535,13 +522,6 @@ class LintTests(unittest.TestCase):
             for step in job['steps']:
                 if 'uses' in step:
                     self.assertRegex(step['uses'], r'^actions/[a-z-]+@[0-9a-f]{40}$')
-
-    def test_workflow_is_actionlint_clean_when_actionlint_is_installed(self):
-        tool = shutil.which('actionlint')
-        if tool is None:
-            return  # reported by the validation profile; the structural lint above does not need it
-        result = subprocess.run([tool, str(WORKFLOW)], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 MUTATIONS = {
@@ -602,7 +582,12 @@ MUTATIONS = {
         r'          ref: refs/tags/\$\{\{ github.ref_name \}\}\n', '', 3, 'must check out refs/tags'),
     'checkout without tag objects': (r'          fetch-tags: true\n', '', 3, 'fetch-tags'),
     'preflight removed': (
-        r'      - name: Verify the tag, its commit and a clean checkout\n        run: [^\n]*\n', '', 2, 'preflight'),
+        r'      - name: Verify the tag, its commit and a clean checkout\n        env:\n          TRIGGER_SHA: [^\n]*\n        run: \|\n(?:          [^\n]*\n){3}',
+        '', 2, 'preflight'),
+    'preflight drops the github.sha comparison': (
+        r'          \[ "\$resolved" = "\$TRIGGER_SHA" \][^\n]*\n', '', 2, 'exactly one preflight step'),
+    'preflight interpolates github.sha into the script': (
+        r'\$TRIGGER_SHA" >&2', '${{ github.sha }}" >&2', 2, 'exactly one preflight step'),
     'build not from the tag version': (
         r'      PLANAR_RELEASE_VERSION: \$\{\{ github.ref_name \}\}\n', '', 2, 'PLANAR_RELEASE_VERSION'),
     'macos on an old runner': (r'runs-on: macos-26', 'runs-on: macos-13', 1, 'macos-arm64 must run on'),
@@ -714,9 +699,9 @@ class PublishStepTests(rp.ReleaseFixture):
     def steps(self, job):
         return parse_yaml(WORKFLOW.read_text())['jobs'][job]['steps']
 
-    def run_step(self, job, name_prefix, tag=rp.TAG):
+    def run_step(self, job, name_prefix, tag=rp.TAG, **env):
         step = next(s for s in self.steps(job) if s.get('name', '').startswith(name_prefix))
-        return self.run_cmd(['bash', '-e', '-c', step['run']], TAG=tag)
+        return self.run_cmd(['bash', '-e', '-c', step['run']], TAG=tag, **env)
 
     def download(self, **knobs):
         """Gate both platforms, then lay them out as the publish job's downloads."""
@@ -747,7 +732,7 @@ class PublishStepTests(rp.ReleaseFixture):
             if job == 'publish':
                 continue
             with self.subTest(job=job):
-                result = self.run_step(job, 'Verify the tag')
+                result = self.run_step(job, 'Verify the tag', TRIGGER_SHA=self.sha)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(result.stdout.strip(), self.sha)
 
@@ -765,6 +750,19 @@ class PublishStepTests(rp.ReleaseFixture):
         moved = self.run_step('linux-x86_64', 'Verify the tag')
         self.assertIn('HEAD is at', moved.stderr)
         self.assertNotEqual(moved.returncode, 0)
+
+    def test_preflight_step_refuses_a_tag_commit_that_is_not_the_triggering_sha(self):
+        other = 'f' * 40
+        for job in ('macos-arm64', 'linux-x86_64'):
+            with self.subTest(job=job):
+                step = next(s for s in self.steps(job) if s.get('name', '').startswith('Verify the tag'))
+                self.assertEqual(step['env'], {'TRIGGER_SHA': '${{ github.sha }}'})
+                run = lambda sha: self.run_cmd(['bash', '-e', '-c', step['run']], TAG=rp.TAG, TRIGGER_SHA=sha)
+                ok = run(self.sha)
+                self.assertEqual(ok.returncode, 0, ok.stdout + ok.stderr)
+                bad = run(other)
+                self.assertNotEqual(bad.returncode, 0, bad.stdout + bad.stderr)
+                self.assertIn(f'resolves to {self.sha} but this run was triggered at {other}', bad.stderr)
 
     def test_missing_platform_download_publishes_nothing(self):
         self.download()
