@@ -1081,3 +1081,27 @@ TEST_CASE("transcript scan: a large Claude inventory does not shrink the Codex b
   CHECK(codex->scanned == 1);
   CHECK(codex->files_skipped_cap == 0);
 }
+
+TEST_CASE("transcript scan: an oversize file that is not the newest is skipped and the older files after it are still read",
+          "[engine][introspection_adapters][discovery][skip-not-break]") {
+  auto const        pair  = failed_pair("p", "planar task show 1");
+  std::size_t const share = 3 * pair.size() + 10;
+  scratch_dir       scratch;
+  auto const        dir = scratch.path_ / ".claude" / "projects";
+  write(dir / "new.jsonl", failed_pair("n", "planar task show 1"));
+  write(dir / "mid_big.jsonl", many_pairs("big", 10, "planar task show 1"));
+  write(dir / "old.jsonl", failed_pair("o", "planar task show 1"));
+  set_age(dir / "new.jsonl", std::chrono::hours{1});
+  set_age(dir / "mid_big.jsonl", std::chrono::hours{2});
+  set_age(dir / "old.jsonl", std::chrono::hours{3});
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->scanned == 4);
+  CHECK(claude->files_skipped_cap == 1);
+  CHECK(claude->files_partial == 0);
+}
