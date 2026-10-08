@@ -506,8 +506,14 @@ Run them through the host queue and never with a validation tag in the real
 repository.
 
 The scripts they ship and the installer have script tests. Each is a ctest case
-registered in `CMakeLists.txt` (or `src/cmd/CMakeLists.txt` for the two that
-need built binaries), so `make test` runs them. They use scratch `HOME`,
+registered with ctest (in `CMakeLists.txt`, `src/cmd/CMakeLists.txt` for the two
+that need built binaries, `src/cmd/planar/CMakeLists.txt` and
+`src/tools/CMakeLists.txt`), so `make test` runs them. The `make test` target
+also depends on three installer tests that are not ctest cases:
+`test-install-manifest`, `test-install-stage` and `test-install-deps`, which run
+`scripts/install-manifest-test.sh`, `install-stage-test.sh` and
+`install-deps-test.sh`. `install-manifest-test.sh` also pins INSTALL.md
+§ Prerequisites. They use scratch `HOME`,
 `TMPDIR` and database paths and fake bundles, and touch nothing real. Select one
 by label, and check the matched count:
 
@@ -532,6 +538,8 @@ ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
 | `install.uninstall` | `install_uninstall` | `scripts/install-uninstall-test.sh` | `scripts/uninstall.sh`: removals, `--purge`, unknown entries, `~/.local/bin`, interrupted-uninstall retry. |
 | `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
 | `install.order` | `install_order` | `scripts/install-order-test.sh` | The order of an install end to end, against bundles of the real built binaries: databases fresh, behind, ahead and faulty, kill-and-resume at every swap point, concurrent owners, the updater handoff. |
+| `queue_retire_reader` | `queue;scripts` | `scripts/install-lib/queue_retire.test.py` | The reader the installer runs to judge the retired queue store's entries, including its `/proc` cases. |
+| `codex_agents_render` | `scripts` | `scripts/render_codex_agents_test.py` | The Codex custom-agent TOML renderer. |
 
 `portable.binaries` and `portable.inspector` (label `portable`) exist only in a
 configuration with `PLANAR_PORTABLE=ON`; see

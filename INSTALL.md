@@ -71,7 +71,7 @@ The release install needs only tools a Unix host already has:
 
 At runtime Planar uses these tools when they are present, and the installer warns when one is missing:
 
-- `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. The full install also needs it to clone the source repository.
+- `git` — required at runtime, **>= 2.31**. Planar runs `git remote get-url origin` for repo discovery (association/project registration) and walks `git log` / `git branch` / `git ls-files` during `planar import` and codeprobe. The 2.31 floor is load-bearing: worktree detection's authoritative fallback (`git rev-parse --path-format=absolute --git-common-dir`) needs the `--path-format=absolute` flag introduced in git 2.31 (see `docs/toolchain-parity.md`'s git row) — below that floor a primary checkout nested two or more levels below the repo root can be misclassified as a secondary worktree. A source install also needs it to clone the repository; a release install needs no clone.
 - `gh` — optional but recommended. Used by the default `gh-cli` auth method for the GitHub adapter (`planar-ext ext register github <slug> --project <owner>/<repo>` with `--auth-env` omitted) and by `planar import` to enumerate existing GitHub Issues. Planar degrades gracefully when `gh` is absent.
 - `jq` — used by the bundled agent specs (`planar-planner`, and the procedures in `agents/methodology.md`) to parse `planar … --json` output in their shell snippets. The binary itself does not depend on `jq`, but skipping it will break those workflows. No `yq` is needed; Planar handles YAML and TOML internally.
 - `ripgrep` (`rg`) — recommended. Planar's agent workflows and the example session in [docs/getting-started.md](docs/getting-started.md#10-capture-hand-off-and-resume) (`planar capture command "rg -l 'v1.client'"`) prefer `rg` over `grep` for fast, gitignore-aware codebase search. Not a hard dependency, but the documented recipes assume it is available.
@@ -198,7 +198,7 @@ rm -f ~/.planar/planar.db ~/.planar/planar.db-wal ~/.planar/planar.db-shm ~/.pla
 rm -rf ~/.planar/queue-logs ~/.planar/retired ~/.planar/workbench ~/.planar/local ~/.planar/workspaces ~/.planar/models ~/.planar/execute ~/.planar/templates
 ```
 
-The by-hand commands name the same twelve paths as the list; `scripts/install-data-paths-test.sh` checks that they match.
+The by-hand commands name the same twelve paths as the list.
 
 ## Installer reference
 
@@ -613,8 +613,10 @@ For a debug build instead, configure and build by hand:
 ```bash
 cmake --preset debug
 cmake --build build/debug
-cmake --install build/debug --prefix ~/.local
+cmake --install build/debug --prefix "$(mktemp -d)"
 ```
+
+The prefix is a scratch directory on purpose: `~/.local/bin` is a retired install location, so installing there would leave binaries the installer no longer manages. A real install goes through `install.sh`.
 
 ### Build from source
 

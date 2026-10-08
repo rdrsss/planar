@@ -943,8 +943,9 @@ planar-<os>-<arch>/
 └── scripts/install-lib/  # the only part of scripts/ that ships
 ```
 
-`release.json` is one `"key": "value"` pair per line so the POSIX bootstrap
-reads it with `sed`. `schema_version` is the bundle's highest migration number,
+`release.json` is one `"key": value` pair per line (string values quoted, and
+`schema_version` an unquoted integer) so the POSIX bootstrap reads it with
+`sed`. `schema_version` is the bundle's highest migration number,
 read from a scratch database at dist time. A release publishes five assets: both
 tarballs, a merged `SHA256SUMS`, `VERSION` and the standalone `get-planar.sh`.
 The cut and its gates are in [operations.md § 6](operations.md#6-release-gate-evidence).

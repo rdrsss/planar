@@ -562,7 +562,8 @@ Steps:
 
 Outputs: each platform's archive, `.gates.json` and gate logs land in
 `build/release-cut/<tag>/<platform>/`, and the staged assets in
-`dist/release/<tag>/`. Rebuilding an archive invalidates its gate evidence, so
+`dist/release/<tag>/`. `DRY_RUN=1` stages nothing under `dist/release/<tag>/`:
+`scripts/release-publish.sh` exits before staging. Rebuilding an archive invalidates its gate evidence, so
 rerun the whole target rather than a single step.
 
 ## See Also
