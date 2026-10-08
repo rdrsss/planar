@@ -142,9 +142,10 @@ export struct handoff_counts {
 
 /// @brief The complete diagnostic bundle returned by `build`.
 ///
-/// Member order is the `--json` wire-format key order the oracle emits:
-/// version, schema_version, health, window, invocations, failures,
-/// actions, sync, claims, claim_failure_categories, handoffs.
+/// Member order is NOT the `--json` key order; `render_json` fixes that:
+/// version, schema_version, health, window, logging_enabled, invocations,
+/// failures, failure_tail, actions, sync, claims, claim_failure_categories,
+/// handoffs, reopens, introspection_preview.
 export struct bundle {
   std::string                               version;                  ///< Build version token (see `build`).
   std::int64_t                              schema_version = 0;       ///< Max applied `schema_migrations` version.

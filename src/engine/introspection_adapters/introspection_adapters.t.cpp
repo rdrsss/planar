@@ -882,6 +882,36 @@ TEST_CASE("collect_preview_from_paths: an adapter read failure raises cli_adapte
   CHECK(coverage_for(unavailable_preview, ia::vendor::cli_log)->state == ia::coverage_state::unavailable);
 }
 
+TEST_CASE("collect_preview_from_paths: a truncated CLI read is observed with a byte_cap warning carrying the omitted count",
+          "[engine][introspection_adapters][discovery]") {
+  scratch_dir                 scratch;
+  ia::transcript_config const config{
+      .home_dir = scratch.path_.string(), .claude_enabled = false, .codex_enabled = false, .copilot_enabled = false};
+
+  ia::cli_log_adapter const truncated{
+      .enabled = true,
+      .read    = [](std::size_t) -> ia::cli_read_result {
+        return ia::cli_read_result{
+            .status = ia::cli_read_status::ok,
+            .bytes =
+                R"({"schema":1,"kind":"cli_invocation","verb_path":"planar task add","exit_code":0,"error_category":"","recorded_at":"2026-01-01T00:00:00Z"})"
+                "\n",
+            .truncated = true,
+            .omitted   = 7};
+      },
+  };
+  auto const preview = ia::collect_preview_from_paths(config, truncated);
+  CHECK(coverage_for(preview, ia::vendor::cli_log)->state == ia::coverage_state::observed);
+  CHECK_FALSE(has_warning(preview.warnings, ia::vendor::cli_log, ia::warning_kind::cli_adapter_failed));
+  std::uint32_t count = 0;
+  for (auto const& w : preview.warnings) {
+    if (w.v == ia::vendor::cli_log && w.kind == ia::warning_kind::byte_cap) {
+      count = w.count;
+    }
+  }
+  CHECK(count == 7);
+}
+
 TEST_CASE("collect_preview_from_paths: a disabled CLI adapter reports coverage disabled",
           "[engine][introspection_adapters][discovery]") {
   scratch_dir                 scratch;

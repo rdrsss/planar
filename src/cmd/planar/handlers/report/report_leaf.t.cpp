@@ -16,7 +16,8 @@
 //
 //     report --days 0   exit 2, "error: --days must be a positive integer (got 0)"
 //     report --tail 0   exit 2, "error: --tail must be a positive integer (got 0)"
-//     report --json     exit 0, {"version":"planar","schema_version":33,"health":"ok","window":30,...}
+//     report --json     exit 0, {"version":"<build version
+//     token>","schema_version":N,"health":"ok","window":30,"logging_enabled":false,...}
 //
 // ## THE POPULATED CASE EXERCISES THE REAL FILESYSTEM WALK
 //
