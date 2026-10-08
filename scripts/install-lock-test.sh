@@ -12,7 +12,17 @@
 #   - the update handoff is accepted once, only in the process that holds the
 #     update record (exec keeps the pid and start time), and refused when
 #     forged, replayed or adopted from another process;
-#   - update temporaries are recognised only under <root>/.planar-update/.
+#   - update temporaries are recognised only under <root>/.planar-update/;
+#   - a killed owner's record survives a change of the host name (records name
+#     the host by its machine identity), while a record from another machine,
+#     from a host with no identity at all, or a host-name-keyed record from an
+#     older Planar naming another name is never reclaimed; a live owner is
+#     recognised across the rename;
+#   - an older updater's record (format 1, a local-time `ps:` or a `psu:` start)
+#     is adopted by the installer it execs, and a mismatched one is still refused;
+#   - a failing link(2) is named by its reason even when the install root's path
+#     contains `exists` or `: File exists`, and such a root locks normally;
+#   - (macOS) an ACL on the lock directory is not read: only the mode bits are.
 # Runs under stock bash 3.2 and Linux bash with base utilities only: PATH holds
 # no python3. Nothing outside a scratch directory is touched.
 # shellcheck disable=SC2016,SC2012,SC2010,SC2015  # literal $ in generated scripts; ls for listings
@@ -39,21 +49,27 @@ mkdir -p "$HOME"
 # A PATH of base utilities only (no python3), as an operator host may have.
 BASEBIN="$TMP/basebin"
 mkdir -p "$BASEBIN"
-for n in od tr uname ps ln rm rmdir mkdir dirname sleep cat ls cut grep sed mv chmod; do
+for n in od tr uname ps ln rm rmdir mkdir dirname sleep cat ls cut grep sed mv chmod readlink; do
   f="$(command -v "$n" || true)"
   case "$f" in /*) ln -s "$f" "$BASEBIN/$n" ;; esac
 done
 export PATH="$BASEBIN"
 [[ -z "$(command -v python3 || true)" ]] || fail "python3 is reachable on the test PATH"
 
+# Test-only identity overrides, applied after sourcing the library (the
+# library itself reads no environment for them): LOCK_TEST_MID names a
+# machine-id file to read instead of /etc/machine-id, and LOCK_TEST_NO_IOREG=1
+# hides the macOS platform UUID.
+OVERRIDES='if [ -n "${LOCK_TEST_MID-}" ]; then _PL_MACHINE_ID_FILE="$LOCK_TEST_MID"; fi; if [ -n "${LOCK_TEST_NO_IOREG-}" ]; then _PL_IOREG=/nonexistent/ioreg; fi'
+
 # lk SCRIPT... -- run a fresh bash that sources the library, then SCRIPT.
-lk() { "$BASH_BIN" -c 'set -eEuo pipefail; trap '\''echo ERR-TRAP-FIRED >&2'\'' ERR; source "$1"; shift; eval "$*"' lk "$LIB" "$@"; }
+lk() { "$BASH_BIN" -c 'set -eEuo pipefail; trap '\''echo ERR-TRAP-FIRED >&2'\'' ERR; source "$1"; eval "$2"; shift 2; eval "$*"' lk "$LIB" "$OVERRIDES" "$@"; }
 
 # hold ROOT OP READY [TMPDIR] -- background holder; sets HOLD_PID.
 hold() {
   local root="$1" op="$2" ready="$3" t="${4:-}"
-  "$BASH_BIN" -c 'source "$1"; planar_lock_acquire "$2" "$3" "$5" || { echo "$PLANAR_LOCK_ERROR" >&2; exit 1; }; echo "$PLANAR_LOCK_GEN" > "$4"; exec sleep 300' \
-    hold "$LIB" "$root" "$op" "$ready" "$t" &
+  "$BASH_BIN" -c 'source "$1"; eval "$6"; planar_lock_acquire "$2" "$3" "$5" || { echo "$PLANAR_LOCK_ERROR" >&2; exit 1; }; echo "$PLANAR_LOCK_GEN" > "$4"; exec sleep 300' \
+    hold "$LIB" "$root" "$op" "$ready" "$t" "$OVERRIDES" &
   HOLD_PID=$!
   PIDS+=("$HOLD_PID")
   local i=0
@@ -73,7 +89,9 @@ out="$(lk 'planar_lock_acquire "'"$R"'" install && echo "gen=$PLANAR_LOCK_GEN di
 [[ -d "$L" && ! -L "$L" ]] || fail "the lock directory is not a directory beside the root"
 [[ "$(ls -ld "$L" | cut -c1-10)" == drwx------ ]] || fail "the lock directory is not mode 0700: $(ls -ld "$L")"
 [[ -f "$L/owner.1" && -f "$L/released.1" && "$L/owner.1" -ef "$L/released.1" ]] || fail "release did not link released.1 to owner.1"
-grep -Fxq 'operation=install' "$L/owner.1" && grep -Eq '^start=(psu|proc):' "$L/owner.1" && grep -Eq '^nonce=[0-9a-f]{32}$' "$L/owner.1" \
+[[ "$(sed -n 1p "$L/owner.1")" == "planar-mutation-lock 2" ]] && grep -Fxq 'operation=install' "$L/owner.1" \
+  && grep -Eq '^start=(psu|proc):' "$L/owner.1" && grep -Eq '^nonce=[0-9a-f]{32}$' "$L/owner.1" \
+  && grep -Eq '^host=.' "$L/owner.1" && grep -Fxq "node=$(uname -n)" "$L/owner.1" \
   || fail "the ownership record is not the documented format: $(cat "$L/owner.1")"
 out="$(lk 'planar_lock_acquire "'"$R"'" uninstall && echo "gen=$PLANAR_LOCK_GEN"')"
 [[ "$out" == "gen=2" ]] || fail "second acquire after a release: $out"
@@ -192,6 +210,106 @@ fi
 kill -9 "$tz_owner_pid"; wait "$tz_owner_pid" 2>/dev/null || true
 pass
 
+# --- a killed owner's record survives a host rename ---------------------------------------------------
+# Test spec 679, "Edge — a crashed owner's record survives a hostname change".
+# A record names its host by the machine's identity, not by `uname -n`: a
+# macOS host is renamed by scutil or DHCP between a crash and the next run, and
+# the dead owner must still be recovered. A record from another machine sharing
+# the filesystem (another identity, whatever its name) is never reclaimed.
+# The identity here is a fixture machine-id file, so every host runs the case;
+# the host's real identity is exercised further down where it has one.
+
+REAL_UNAME="$(PATH=/bin:/usr/bin command -v uname)"
+# mk_uname DIR NAME -- a uname whose -n prints NAME; anything else is the real one.
+mk_uname() {
+  mkdir -p "$1"
+  cat > "$1/uname" <<EOU
+#!/bin/sh
+if [ "\$1" = -n ]; then printf '%s\n' '$2'; exit 0; fi
+exec $REAL_UNAME "\$@"
+EOU
+  chmod 755 "$1/uname"
+}
+mk_uname "$TMP/name-a" host-a.example
+mk_uname "$TMP/name-b" host-b.example
+mk_uname "$TMP/name-none" ""
+MID_A="$TMP/machine-id.a"; printf '0123456789abcdef0123456789abcdef\n' > "$MID_A"
+MID_B="$TMP/machine-id.b"; printf 'fedcba9876543210fedcba9876543210\n' > "$MID_B"
+
+# rename_case ROOT MID -- kill a holder running as host-a.example, then judge it
+# as host-b.example on the same machine (identity MID; empty: the host's own).
+rename_case() {
+  local r="$1" mid="$2" holder out rc
+  mkdir -p "$(dirname "$r")"
+  PATH="$TMP/name-a:$BASEBIN" LOCK_TEST_MID="$mid" hold "$r" install "$r.ready"
+  holder="$HOLD_PID"
+  grep -Fxq 'node=host-a.example' "$r.lock/owner.1" || fail "the holder did not run under the first host name: $(cat "$r.lock/owner.1")"
+  kill -9 "$holder"; wait "$holder" 2>/dev/null || true
+  rc=0; out="$(PATH="$TMP/name-b:$BASEBIN" LOCK_TEST_MID="$mid" lk 'planar_lock_acquire "'"$r"'" install && echo "gen=$PLANAR_LOCK_GEN reclaimed=$PLANAR_LOCK_RECLAIMED" || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+  [[ "$rc" == 0 && "$out" == "gen=2 reclaimed=install pid $holder" ]] \
+    || fail "a killed owner was not recovered after a hostname change ($rc): $out"
+  grep -Fxq 'node=host-b.example' "$r.lock/owner.2" || fail "the new owner did not run under the second host name"
+  # A live owner is still recognised across the rename: never reclaimed.
+  PATH="$TMP/name-a:$BASEBIN" LOCK_TEST_MID="$mid" hold "$r.live" install "$r.live.ready"
+  holder="$HOLD_PID"
+  rc=0; out="$(PATH="$TMP/name-b:$BASEBIN" LOCK_TEST_MID="$mid" lk 'planar_lock_acquire "'"$r.live"'" update || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+  [[ "$rc" == 1 && "$out" == *"another Planar install (pid $holder)"* ]] \
+    || fail "a live owner was not recognised after a hostname change ($rc): $out"
+  kill -9 "$holder"; wait "$holder" 2>/dev/null || true
+}
+rename_case "$TMP/hn1/.planar" "$MID_A"
+
+# Another machine (another identity) under the SAME host name: never reclaimed.
+R="$TMP/hn2/.planar"; mkdir -p "$TMP/hn2"
+PATH="$TMP/name-a:$BASEBIN" LOCK_TEST_MID="$MID_A" hold "$R" install "$TMP/hn2.ready"
+kill -9 "$HOLD_PID"; wait "$HOLD_PID" 2>/dev/null || true
+rc=0; out="$(PATH="$TMP/name-a:$BASEBIN" LOCK_TEST_MID="$MID_B" lk 'planar_lock_acquire "'"$R"'" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+[[ "$rc" == 1 && "$out" == *"recorded on host host-a.example"*"not this host"* ]] \
+  || fail "a dead owner recorded on another machine with the same host name was reclaimed ($rc): $out"
+[[ -f "$R.lock/owner.1" && ! -e "$R.lock/owner.2" ]] || fail "the refusal changed the lock directory: $(ls "$R.lock")"
+
+# A host with no machine identity falls back to its host name, so it keeps the
+# old rule: a rename refuses (never an unsafe reclaim), the same name reclaims.
+R="$TMP/hn3/.planar"; mkdir -p "$TMP/hn3"
+PATH="$TMP/name-a:$BASEBIN" LOCK_TEST_MID=/nonexistent/machine-id LOCK_TEST_NO_IOREG=1 hold "$R" install "$TMP/hn3.ready"
+fallback_pid="$HOLD_PID"
+grep -Eq '^host=node:host-a\.example(/pidns:[0-9]+)?$' "$R.lock/owner.1" \
+  || fail "a host without a machine identity did not fall back to its host name: $(cat "$R.lock/owner.1")"
+kill -9 "$fallback_pid"; wait "$fallback_pid" 2>/dev/null || true
+rc=0; out="$(PATH="$TMP/name-b:$BASEBIN" LOCK_TEST_MID=/nonexistent/machine-id LOCK_TEST_NO_IOREG=1 lk 'planar_lock_acquire "'"$R"'" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+[[ "$rc" == 1 && "$out" == *"recorded on host host-a.example"* ]] || fail "a host-name-keyed record was reclaimed under another name ($rc): $out"
+out="$(PATH="$TMP/name-a:$BASEBIN" LOCK_TEST_MID=/nonexistent/machine-id LOCK_TEST_NO_IOREG=1 lk 'planar_lock_acquire "'"$R"'" install && echo "reclaimed=$PLANAR_LOCK_RECLAIMED"')"
+[[ "$out" == "reclaimed=install pid $fallback_pid" ]] || fail "a host-name-keyed record was not reclaimed under its own name: $out"
+
+# No identity and no host name: the record proves nothing, so even this host
+# refuses to reclaim it.
+R="$TMP/hn4/.planar"; mkdir -p "$TMP/hn4"
+PATH="$TMP/name-none:$BASEBIN" LOCK_TEST_MID=/nonexistent/machine-id LOCK_TEST_NO_IOREG=1 hold "$R" install "$TMP/hn4.ready"
+grep -Fxq 'host=none' "$R.lock/owner.1" || fail "a host with no identity and no name did not record host=none: $(cat "$R.lock/owner.1")"
+kill -9 "$HOLD_PID"; wait "$HOLD_PID" 2>/dev/null || true
+rc=0; out="$(PATH="$TMP/name-none:$BASEBIN" LOCK_TEST_MID=/nonexistent/machine-id LOCK_TEST_NO_IOREG=1 lk 'planar_lock_acquire "'"$R"'" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+[[ "$rc" == 1 && "$out" == *"no host identity"* ]] || fail "a record with no host identity was reclaimed ($rc): $out"
+
+# A host-name-keyed record from an older Planar (format 1) is local only under
+# the same name: renamed, even a dead pid is refused, naming the rename.
+R="$TMP/hn5/.planar"; mkdir -p "$TMP/hn5"; forge "$R" 4 99999999 "psu:Thu Jan 1 00:00:00 1970" renamed-host.invalid
+ambiguous legacy-renamed "recorded on host renamed-host.invalid"
+R="$TMP/hn6/.planar"; mkdir -p "$TMP/hn6"; forge "$R" 4 99999999 "psu:Thu Jan 1 00:00:00 1970"
+out="$(lk 'planar_lock_acquire "'"$R"'" install && echo "gen=$PLANAR_LOCK_GEN"')"
+[[ "$out" == "gen=5" ]] || fail "a dead owner's format-1 record under this host's name was not reclaimed: $out"
+
+# The host's own identity, where it has one (macOS: the platform UUID; Linux: a
+# valid /etc/machine-id): the same rename, with no fixture.
+real_key="$(lk '_pl_host_key')"
+case "$real_key" in
+  machine-id:*|platform-uuid:*)
+    rename_case "$TMP/hn7/.planar" ""
+    grep -Fxq "host=$real_key" "$TMP/hn7/.planar.lock/owner.2" || fail "the record does not carry the host's identity $real_key: $(cat "$TMP/hn7/.planar.lock/owner.2")"
+    ;;
+  *) printf 'install-lock-test: note: this host has no machine identity (%s); the rename case ran with a fixture identity only\n' "$real_key" ;;
+esac
+pass
+
 # --- simultaneous reclaim attempts never make two owners ------------------------------------------
 
 CONTENDER="$TMP/contender.sh"
@@ -279,6 +397,46 @@ out="$(PLANAR_MUTATION_HANDOFF="garbage" "$BASH_BIN" "$ADOPT" "$LIB" "$R")"
 [[ "$out" == "refused: "*"malformed"* ]] || fail "a malformed handoff was accepted: $out"
 pass
 
+# --- an older updater's handoff ---------------------------------------------------------------------
+# `planar update` runs the downloaded (newer) installer, so the record it hands
+# over was written by the OLDER updater: format 1 (`node=<uname -n>`, no host
+# identity) and, before the UTC pin, a `ps:` start in the updater's local zone.
+# exec keeps the pid, the start time and the environment (TZ included), so the
+# installer recomputes its own start in the record's form and adopts it when it
+# matches byte for byte; anything else still refuses.
+
+OLD_UPDATER="$TMP/old-updater.sh"
+cat > "$OLD_UPDATER" <<'EOU'
+lib="$1"; root="$2"; form="$3"; adopt="$4"; bash_bin="$5"
+source "$lib"
+planar_lock_acquire "$root" update "$root/.planar-update/t1" || { echo "$PLANAR_LOCK_ERROR"; exit 1; }
+case "$form" in
+  ps-local) s="$(LC_ALL=C ps -o lstart= -p $$)"; set -f; set -- $s; set +f; start="ps:$*" ;;
+  ps-wrong) start="ps:Thu Jan 1 00:00:00 1970" ;;
+  current)  start="$(planar_lock_start_token $$)" ;;
+esac
+printf 'planar-mutation-lock 1\ngen=%s\noperation=update\npid=%s\nstart=%s\nnode=%s\nnonce=%s\nroot=%s\ntmp=%s\n' \
+  "$PLANAR_LOCK_GEN" "$$" "$start" "$(uname -n)" "$PLANAR_LOCK_NONCE" "$root" "$root/.planar-update/t1" \
+  > "$PLANAR_LOCK_DIR/owner.$PLANAR_LOCK_GEN"
+PLANAR_MUTATION_HANDOFF="$PLANAR_LOCK_GEN:$PLANAR_LOCK_NONCE" exec "$bash_bin" "$adopt" "$lib" "$root"
+EOU
+R="$TMP/ou/.planar"; mkdir -p "$R/.planar-update/t1"
+out="$(TZ="$TZ_OWNER" "$BASH_BIN" "$OLD_UPDATER" "$LIB" "$R" ps-local "$ADOPT" "$BASH_BIN")"
+[[ "$out" == "adopted gen="*" op=update tmp=$R/.planar-update/t1" ]] \
+  || fail "an older updater's handoff (format 1, local-time start) was not adopted: $out"
+out="$(TZ="$TZ_OWNER" "$BASH_BIN" "$OLD_UPDATER" "$LIB" "$R" current "$ADOPT" "$BASH_BIN")"
+[[ "$out" == "adopted gen="*" op=update"* ]] || fail "an older updater's handoff (format 1, current start) was not adopted: $out"
+out="$(TZ="$TZ_OWNER" "$BASH_BIN" "$OLD_UPDATER" "$LIB" "$R" ps-wrong "$ADOPT" "$BASH_BIN")"
+[[ "$out" == "refused: "*"does not match"* ]] || fail "an older-format handoff with another start time was adopted: $out"
+[[ -z "$(ls "$R.lock" | grep '^handoff\.' || true)" ]] || fail "a refused older-format handoff consumed the handoff marker: $(ls "$R.lock")"
+# The zone really matters for the local-time form here (otherwise the first case
+# would prove nothing): the owner's zone prints another lstart than UTC.
+if [[ ! -r /proc/$$/stat ]]; then
+  [[ "$(TZ="$TZ_OWNER" LC_ALL=C ps -o lstart= -p $$)" != "$(TZ=UTC LC_ALL=C ps -o lstart= -p $$)" ]] \
+    || fail "the owner's zone prints the same lstart as UTC; the older-updater case cannot tell"
+fi
+pass
+
 # --- update temporaries ------------------------------------------------------------------------------
 
 R="$TMP/v/.planar"; mkdir -p "$R/.planar-update/ok-1" "$R/workbench" "$TMP/v/elsewhere"
@@ -323,6 +481,39 @@ rc=0; out="$(PATH="$STUBBIN:$BASEBIN" lk 'planar_lock_acquire "'"$R"'" install |
   || fail "a failing link(2) was not reported with its reason ($rc): $out"
 [[ "$out" != *contention* && "$out" != *ERR-TRAP-FIRED* ]] || fail "a failing link(2) was reported as contention: $out"
 [[ -z "$(ls "$R.lock")" ]] || fail "a failed acquire left records behind: $(ls "$R.lock")"
+pass
+
+# --- an install root whose path says `exists` ------------------------------------------------------------
+# The lost-race test reads ln's message, which carries the path: only a message
+# that ENDS in `: File exists` is a lost race. A root whose path contains
+# `exists` (or even `: File exists`) acquires normally, and a link(2) failure
+# under it is still named by its reason, never retried as contention.
+for R in "$TMP/exists/.planar" "$TMP/x: File exists/y/.planar"; do
+  mkdir -p "$(dirname "$R")"
+  out="$(lk 'planar_lock_acquire "'"$R"'" install && g1=$PLANAR_LOCK_GEN && planar_lock_release && planar_lock_acquire "'"$R"'" uninstall && echo "gen=$g1,$PLANAR_LOCK_GEN"')"
+  [[ "$out" == "gen=1,2" ]] || fail "an install root under '$R' did not lock normally: $out"
+  R="$R-stub"; mkdir -p "$(dirname "$R")"
+  rc=0; out="$(PATH="$STUBBIN:$BASEBIN" lk 'planar_lock_acquire "'"$R"'" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+  [[ "$rc" == 1 && "$out" == *"cannot create the ownership record $R.lock/owner.1"*"Operation not permitted"* ]] \
+    || fail "a failing link(2) under a root whose path contains 'exists' was not named by its reason ($rc): $out"
+  [[ "$out" != *contention* ]] || fail "a failing link(2) under '$R' was retried as contention: $out"
+done
+pass
+
+# --- (macOS) the mode check reads the permission bits, not an ACL ------------------------------------------
+# Documented limit (mutation-lock.sh, INSTALL.md): an ACL that lets another user
+# write the lock directory is not detected on macOS; the `+` that `ls -ld`
+# prints after the mode does not disturb the check. (On Linux a POSIX ACL that
+# grants write shows in the group bits, the ACL mask, and is refused.)
+if [[ "$("$REAL_UNAME" -s)" == Darwin ]]; then
+  R="$TMP/acl/.planar"; mkdir -p "$R.lock"; chmod 700 "$R.lock"
+  if /bin/chmod +a "everyone allow add_file,delete_child" "$R.lock" 2>/dev/null; then
+    [[ "$(ls -ld "$R.lock" | cut -c1-11)" == "drwx------+" ]] || fail "the ACL fixture did not take: $(ls -led "$R.lock")"
+    out="$(lk 'planar_lock_acquire "'"$R"'" install && echo "gen=$PLANAR_LOCK_GEN"')"
+    [[ "$out" == "gen=1" ]] || fail "a lock directory carrying an ACL was judged by more than its mode bits: $out"
+    /bin/chmod -N "$R.lock"
+  fi
+fi
 pass
 
 printf 'install lock tests: %s passed (%s reclaim rounds, %s wins)\n' "$PASSED" "$rounds" "$wins"

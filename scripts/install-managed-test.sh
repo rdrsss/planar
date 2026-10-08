@@ -20,7 +20,10 @@
 #     checkout) is refused before any write: it is never a retirement;
 #   - templates are placed missing-only, --force included, and an edited template
 #     or a formerly shipped, renamed one survives even when install-cleanup.txt
-#     names it; no cleanup entry removes a data path.
+#     names it; no cleanup entry removes a data path;
+#   - resuming an interrupted source install refuses the other copy/link mode
+#     and a checkout with uncommitted changes (or one git cannot read), naming
+#     the reason; the clean resume in the original mode completes.
 # Scratch HOME everywhere; the bundles are fakes of tiny executables
 # (scripts/fixtures/prebuilt-bundle.sh) and the source runs use a stub cmake.
 # Runs under stock bash 3.2.
@@ -413,5 +416,78 @@ run_source "$H" --uninstall
 [[ ! -e "$P/bin" && ! -e "$P/workflows" && ! -e "$P/install-manifest.json" ]] || fail "--uninstall from an incomplete checkout left managed trees: $(ls -A "$P" | tr '\n' ' ')"
 REPO="$REPO_GOOD"
 pass "--uninstall from a checkout lacking workflows/ and migrations/ still uninstalls"
+
+# --- 8. a resume never mixes copy and link mode, or resumes from a dirty checkout ---------------------------
+# Test spec 679, "Edge — a crashed owner's record survives a hostname change":
+# a resume from a dirty checkout, or in the other copy/link mode, is refused
+# naming the reason, and nothing changes; the clean resume in the original mode
+# then completes. The checkout is a git repository, as an operator's is.
+
+REPO="$TMP/repo-git"
+cp -R "$REPO_GOOD" "$REPO"
+git -C "$REPO" init -q
+git -C "$REPO" add -A
+git -C "$REPO" -c user.name=fixture -c user.email=fixture@example.invalid commit -qm fixture
+# run_source_env HOME [ENV=V...] -- [args]: run_source with extra environment.
+run_source_env() {
+  local home="$1"; shift
+  local envs=()
+  while [[ $# -gt 0 && "$1" != "--" ]]; do envs+=("$1"); shift; done
+  [[ "${1-}" == "--" ]] && shift
+  RC=0
+  env -u CODEX_HOME -u PLANAR_HOME -u PLANAR_DB -u PLANAR_CONFIG_PATH PATH="$STUBS:$PATH" HOME="$home" NO_COLOR=1 \
+    ${envs[@]+"${envs[@]}"} \
+    "$REPO/install.sh" --build-dir "$home/build" --no-vendor --prefix "$home/.planar" "$@" >"$TMP/out" 2>"$TMP/err" || RC=$?
+}
+# kill_source NAME [args] -- a source install KILLed after its mutating record; sets H, P.
+kill_source() {
+  local name="$1"; shift
+  H="$(new_home "$name")"; P="$H/.planar"
+  run_source_env "$H" PLANAR_INSTALL_TEST_FAULT=kill@after-mutating PLANAR_INSTALL_TEST_FAULT_ARMED=test-only -- "$@"
+  [[ "$RC" -ge 128 ]] || fail "$name: the source install was not killed ($RC): $(cat "$TMP/err")"
+  grep -Fxq 'phase=mutating' "$P/.planar-journal" || fail "$name: no mutating journal: $(cat "$P/.planar-journal" 2>&1)"
+}
+# refused_resume WHAT PHRASE [args] -- the resume is refused at exit 1 naming PHRASE, changing nothing.
+refused_resume() {
+  local what="$1" phrase="$2" before; shift 2
+  before="$(tree_id "$P")"
+  run_source "$H" "$@"
+  [[ "$RC" == 1 ]] || fail "$what was not refused ($RC): $(cat "$TMP/out" "$TMP/err")"
+  grep -Fq "$phrase" "$TMP/err" || fail "$what: the refusal does not say '$phrase': $(cat "$TMP/err")"
+  ! grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "$what: the interrupted install was resumed"
+  [[ "$(tree_id "$P")" == "$before" ]] || fail "$what: the refused run changed the installation"
+  grep -Fxq 'phase=mutating' "$P/.planar-journal" || fail "$what: the refused run did not keep the mutating journal"
+}
+
+kill_source resume-copy
+refused_resume "a link-mode resume of an interrupted copy-mode install" "was interrupted in copy mode and this run is in link mode" --link
+printf 'edited\n' >> "$REPO/templates/a.toml"
+refused_resume "a resume from a checkout with an uncommitted edit" "has uncommitted changes"
+grep -Fq "$REPO" "$TMP/err" || fail "the dirty-checkout refusal does not name the checkout: $(cat "$TMP/err")"
+git -C "$REPO" checkout -q -- templates/a.toml
+: > "$REPO/agents/untracked-note.md"
+refused_resume "a resume from a checkout with an untracked file" "has uncommitted changes"
+rm -f "$REPO/agents/untracked-note.md"
+run_source "$H"
+[[ "$RC" == 0 ]] || fail "the clean resume in the original mode failed ($RC): $(cat "$TMP/err")"
+grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "the clean resume did not resume: $(cat "$TMP/out")"
+for n in scripts workflows migrations; do
+  [[ -d "$P/$n" && ! -L "$P/$n" ]] || fail "the copy-mode resume left $n/ a link"
+done
+no_evidence "$P"
+
+kill_source resume-link --link
+refused_resume "a copy-mode resume of an interrupted link-mode install" "was interrupted in link mode and this run is in copy mode"
+run_source "$H" --link
+[[ "$RC" == 0 ]] || fail "the clean link-mode resume failed ($RC): $(cat "$TMP/err")"
+grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "the clean link-mode resume did not resume: $(cat "$TMP/out")"
+no_evidence "$P"
+
+# A checkout git cannot read (no repository) cannot be shown clean: refused too.
+REPO="$REPO_GOOD"
+kill_source resume-nogit
+refused_resume "a resume from a checkout that is not a git repository" "cannot tell whether the source checkout"
+REPO="$REPO_GOOD"
+pass "a resume refuses the other copy/link mode and a dirty or unreadable checkout, naming the reason; the clean resume completes"
 
 printf 'install managed tests: %s passed\n' "$PASSED"

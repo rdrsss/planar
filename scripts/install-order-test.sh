@@ -22,7 +22,8 @@
 #     refuse without deletion;
 #   - a second concurrent install is refused naming the holder's pid, and a new
 #     run after the holder is killed completes; a killed first installation is
-#     recognized without --force;
+#     recognized without --force; an install killed under one host name is
+#     recovered under another;
 #   - a refused or failed attempt before any live change leaves the completed
 #     install untouched, and a probe failure while recovering keeps the earlier
 #     transaction's evidence;
@@ -464,6 +465,43 @@ run_install "$H" "$B1" --
 [[ -x "$P/bin/planar" && -f "$P/.planar-install" && -f "$P/planar.db" ]] || fail "the resumed first installation is incomplete"
 no_evidence "$P"
 pass "an interrupted first installation is recognized without --force"
+
+# Test spec 679, "Edge — a crashed owner's record survives a hostname change":
+# an install KILLed while it holds the lock, the host renamed (only `uname -n`
+# changes, as a macOS rename by scutil or DHCP does), and the same command again
+# recovers the dead owner and resumes, with nothing removed by hand. The lock
+# names the host by its machine identity, which this host must have (a valid
+# /etc/machine-id, or the macOS platform UUID); install-lock-test.sh runs the
+# same case with a fixture identity on every host.
+host_has_identity() {
+  local id=""
+  if [[ -r /etc/machine-id ]]; then IFS= read -r id < /etc/machine-id || true; fi
+  [[ "$id" =~ ^[0-9a-f]{32}$ ]] && return 0
+  [[ -x /usr/sbin/ioreg ]] && /usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | grep -q '"IOPlatformUUID" = "'
+}
+if host_has_identity; then
+  real_uname="$(command -v uname)"
+  for _nm in host-a host-b; do
+    mkdir -p "$TMP/uname-$_nm"
+    printf '#!/bin/sh\nif [ "$1" = -n ]; then echo %s.example; exit 0; fi\nexec %s "$@"\n' "$_nm" "$real_uname" > "$TMP/uname-$_nm/uname"
+    chmod 755 "$TMP/uname-$_nm/uname"
+  done
+  H="$(healthy renamed)"; P="$H/.planar"
+  run_install "$H" "$B2" "PATH=$TMP/uname-host-a:$BASEBIN" PLANAR_INSTALL_TEST_FAULT=kill@after-mutating --
+  [[ "$RC" -ge 128 && "$(journal_phase "$P")" == mutating ]] || fail "the install under the first host name was not killed mid-mutation ($RC): $(show)"
+  grep -qx 'node=host-a.example' "$P.lock"/owner.* || fail "the killed install did not record the first host name: $(cat "$P.lock"/owner.*)"
+  killed_pid="$(sed -n 's/^pid=//p' "$P.lock"/owner.* | tail -1)"
+  run_install "$H" "$B2" "PATH=$TMP/uname-host-b:$BASEBIN" --
+  [[ "$RC" == 0 ]] || fail "a killed install was not recovered after a hostname change ($RC): $(show)"
+  grep -Fq "reclaimed the mutation lock from an abandoned install pid $killed_pid" "$TMP/out" || fail "the reclaim after the rename was not reported: $(show)"
+  grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "the interrupted install was not resumed after the rename: $(show)"
+  [[ "$(bin_sum "$P/bin")" == "$(bin_sum "$B2/bin")" ]] || fail "the install resumed after the rename is not the pending target"
+  no_evidence "$P"
+  pass "a killed install is recovered after a hostname change, without manual removal"
+else
+  printf 'install-order-test: note: this host has no machine identity; the hostname-change case runs in install-lock-test.sh with a fixture identity\n'
+fi
+
 
 # --prefix needs a writable parent for <root>.lock: an existing root under a
 # parent the operator cannot write refuses before any change, naming the

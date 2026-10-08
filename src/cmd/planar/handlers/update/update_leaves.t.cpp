@@ -889,6 +889,125 @@ TEST_CASE("update lock: a reused pid is reclaimed and ambiguous records refuse o
   }
 }
 
+namespace {
+
+/// This host's identity as the lock header specifies it, derived here with
+/// other tools than either implementation uses: a valid `/etc/machine-id`,
+/// else the macOS `IOPlatformUUID`, else `node:<uname -n>`, else `none`; on
+/// Linux with the pid namespace's inode appended as `/pidns:<inode>`.
+auto oracle_host_key() -> std::string {
+  std::string out;
+  auto const  rc = bash(R"SH(id=""
+[ -r /etc/machine-id ] && id="$(head -n 1 /etc/machine-id)"
+if printf '%s' "$id" | grep -Eqx '[0-9a-f]{32}'; then key="machine-id:$id"
+else
+  u=""
+  [ -x /usr/sbin/ioreg ] && u="$(/usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice | grep -F '"IOPlatformUUID" = "' | head -n 1 | sed 's/.*"IOPlatformUUID" = "//; s/".*//')"
+  if printf '%s' "$u" | grep -Eqx '[0-9A-F-]{36}'; then key="platform-uuid:$u"
+  elif n="$(uname -n)" && [ -n "$n" ]; then key="node:$n"
+  else echo none; exit 0; fi
+fi
+ns="$(readlink /proc/$$/ns/pid 2>/dev/null || true)"
+ns="$(printf '%s' "$ns" | sed -n 's/^pid:\[\([0-9][0-9]*\)\]$/\1/p')"
+[ -z "$ns" ] || key="$key/pidns:$ns"
+printf '%s\n' "$key")SH",
+                        {}, &out);
+  REQUIRE(rc == 0);
+  REQUIRE(out.ends_with('\n'));
+  out.pop_back();
+  return out;
+}
+
+/// A format-2 record (the host named by its identity, the node name informational).
+auto record_v2(std::string_view gen, std::string_view op, std::string_view pid, std::string_view start, std::string_view host,
+               std::string_view node, std::string_view root) -> std::string {
+  return std::format(
+      "planar-mutation-lock 2\ngen={}\noperation={}\npid={}\nstart={}\nhost={}\nnode={}\nnonce={}\nroot={}\ntmp=\n", gen, op, pid,
+      start, host, node, std::string(32, 'a'), root);
+}
+
+} // namespace
+
+TEST_CASE("update lock: a dead owner's record survives a hostname change and another machine's never does, on both sides",
+          "[update][lock]") {
+  // Test spec 679, "Edge — a crashed owner's record survives a hostname change".
+  auto       space = make_arena("lockhost");
+  auto const host  = oracle_host_key();
+  auto const me    = std::to_string(::getpid());
+  auto const mine  = lock::start_token(::getpid()).value();
+  struct shape {
+    std::string name;
+    std::string body;
+    bool        free;     // native and shell both reclaim
+    std::string why = {}; // a phrase both refusals carry
+  };
+  std::vector<shape> const shapes{
+      {"renamed host, dead owner", record_v2("1", "install", k_dead_pid, "psu:x", host, "renamed.invalid", "/r"), true},
+      {"renamed host, live owner", record_v2("1", "install", me, mine, host, "renamed.invalid", "/r"), false,
+       std::format("another Planar install (pid {})", me)},
+      {"another machine, same name, dead owner",
+       record_v2("1", "install", k_dead_pid, "psu:x", "machine-id:" + std::string(32, 'f'), lock::node_name(), "/r"), false,
+       std::format("recorded on host {}", lock::node_name())},
+      {"no host identity, dead owner", record_v2("1", "install", k_dead_pid, "psu:x", "none", lock::node_name(), "/r"), false,
+       "no host identity"},
+      {"older Planar, renamed host, dead owner", record_text("1", "install", k_dead_pid, "psu:x", "renamed.invalid", "/r"), false,
+       "recorded on host renamed.invalid"},
+      {"older Planar, this host, dead owner", record_text("1", "install", k_dead_pid, "psu:x", lock::node_name(), "/r"), true},
+  };
+  int n = 0;
+  for (auto const& s : shapes) {
+    INFO(s.name);
+    for (std::string_view side : {"native", "shell"}) {
+      INFO(side);
+      auto const root = canon(space.cpp_root / std::format("h{}", n++));
+      auto const dir  = root + ".lock";
+      std::filesystem::create_directories(dir);
+      std::filesystem::permissions(dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+      write_file(dir + "/owner.1", s.body);
+      bool        won = false;
+      std::string why;
+      if (side == "native") {
+        auto const got = lock::acquire(root, "update", "");
+        won            = got.has_value();
+        why            = won ? std::string{} : got.error();
+        if (won) {
+          lock::release(*got);
+        }
+      } else {
+        won = bash(R"(source "$1"; planar_lock_acquire "$2" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; })",
+                   {lock_lib(), root}, &why) == 0;
+      }
+      INFO(why);
+      CHECK(won == s.free);
+      if (!s.free) {
+        CHECK(why.contains(s.why));
+        CHECK_FALSE(std::filesystem::exists(dir + "/owner.2"));
+      }
+    }
+  }
+}
+
+TEST_CASE("update lock: both sides write format-2 records that name the host by its identity", "[update][lock]") {
+  auto       space = make_arena("lockfmt2");
+  auto const host  = oracle_host_key();
+  auto const root  = canon(space.cpp_root / "inst");
+  auto const held  = lock::acquire(root, "update", "");
+  REQUIRE(held.has_value());
+  auto const text = read_all(std::format("{}/owner.{}", held->dir, held->gen));
+  INFO(text);
+  CHECK(text.starts_with("planar-mutation-lock 2\n"));
+  CHECK(text.contains(std::format("\nhost={}\n", host)));
+  CHECK(text.contains(std::format("\nnode={}\n", lock::node_name())));
+  lock::release(*held);
+
+  auto const  shell_root = canon(space.cpp_root / "inst2");
+  std::string out;
+  REQUIRE(bash(R"(source "$1"; planar_lock_acquire "$2" install && planar_lock_release && cat "$2.lock/owner.1")",
+               {lock_lib(), shell_root}, &out) == 0);
+  CHECK(out.starts_with("planar-mutation-lock 2\n"));
+  CHECK(out.contains(std::format("\nhost={}\n", host)));
+}
+
 TEST_CASE("update lock: simultaneous reclaims of a dead owner leave exactly one owner", "[update][lock]") {
   auto       space = make_arena("lockrace");
   auto const root  = canon(space.cpp_root / "inst");
