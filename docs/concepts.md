@@ -1156,15 +1156,17 @@ pass — surfaces failures with a classification (`test-wrong-author-error` /
 
 Planar's usage-introspection loop (capture → report → introspect) applies a two-tier privacy model. The two tiers provide different guarantees and must not be conflated.
 
-### Tier 1: Structurally-redacted diagnostic bundle
+### Tier 1: Diagnostic bundle (entity text excluded by query construction)
 
-`planar report [--json]` is **privacy-safe by query construction**. The aggregate queries in `src/engine/introspect/introspect.cpp` select only counts, error categories, verb paths, statuses, and timestamps from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or any column that could carry operator-authored or PII-adjacent text. This guarantee is testable with sentinel fixtures and holds with no human in the loop.
+`planar report [--json]` reads no entity text by query construction. The aggregate queries in `src/engine/introspect/introspect.cpp` select counts, error categories, verb paths, statuses, timestamps and coverage counters from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or the `args_shape` column, so flag lists are never shown. Verb paths are shown only when the live CLI tree names them; a structured operand in the second slot (digits or `word:digits`) is kept as typed at any length. Older stored rows the tree does not name render as `<unrecognized>` and are not purged.
 
-The `cli_invocations` table enforces the same guarantee at the write site: the capture hook serializes flag **names** and positional **arity** only (`args_shape`). There is no code path that writes an argument value into the table. A future query bug cannot leak an argument value from this table because argument values are never there to leak.
+The `cli_invocations` writer records flag **names** (only those the resolved verb declares, else `--<unknown>`), positional **arity**, and verb-path tokens the live tree names (else `<unknown>`). It never writes an argument value.
+
+This is not a claim that the whole report is redacted: transcript-derived `introspection_preview` signals and any finding text are not structurally redacted. The operator's full preview before posting is the boundary.
 
 ### Tier 2: Preview-gated finding text
 
-Findings filed by the introspector (`planar question add` / `planar task add` on the feedback plan) may legitimately reference verb paths and error categories in their body. Their only guarantee is the **mandatory preview gate** in the report-an-issue procedure (the planar skill's `external-sync.md` reference) — the operator personally reviews every byte of issue body text before it posts to GitHub. Skills and docs must present the bundle as machine-safe and the finding embed as operator-reviewed, never the reverse.
+Findings filed by the introspector (`planar question add` / `planar task add` on the feedback plan) may legitimately reference verb paths and error categories in their body. Their only guarantee is the **mandatory preview gate** in the report-an-issue procedure (the planar skill's `external-sync.md` reference) — the operator personally reviews every byte of issue body text before it posts to GitHub. Skills and docs must present the bundle as free of entity text by query construction, name the preview as the only redaction boundary, and never describe the bundle as redacted by construction.
 
 ### Transcript mining: cross-vendor and ephemeral by design
 

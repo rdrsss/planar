@@ -145,7 +145,7 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   }
 
   // Bridges `engine::introspect::cli_preview_jsonl` (the authoritative,
-  // structurally-redacted `cli_invocations` reader) into the adapter's
+  // catalog-masked `cli_invocations` reader) into the adapter's
   // read-only boundary. Mirrors report.zig's `readCliPreview` closure over
   // its `CliContext`.
   ia::cli_log_adapter const cli_adapter{
@@ -178,8 +178,9 @@ auto declare_report(CLI::App& root) -> void {
       "Reads the cli_invocations capture log and the always-on observability\ntables (agent_actions, sync_events, "
       "agent_work_claims, handoffs) and\nrenders a diagnostic bundle.\n\nInvocation and failure sections render \"logging "
       "disabled\" when\n[introspection].cli_log is off; the always-on sections (actions, sync,\nclaims, claim failure "
-      "categories, handoffs, health) render normally in\neither case.\n\nThe bundle is structurally redacted: queries select "
-      "only counts,\ncategories, verb paths, statuses, and timestamps — never entity text.");
+      "categories, handoffs, health) render normally in\neither case.\n\nThe bundle reads no entity text: queries select "
+      "only counts,\ncategories, catalog-checked verb paths, statuses, and timestamps. It is not redacted as a whole;\nreview "
+      "the full output before sharing it.");
   add_int_default(*report, "--days", "30", "Window in days (must be > 0, default 30).");
   add_int_default(*report, "--tail", "20", "Number of failure-tail rows (must be > 0, default 20).");
   add_bool(*report, "--json", "Emit stable machine-readable JSON.");

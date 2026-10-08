@@ -5,7 +5,7 @@
 /// Behavior-preserving port (D2) of zig/src/engine/introspect.zig's
 /// `Bundle`, `build`, `cliPreviewJsonl`, `renderText`, and `renderJson`.
 ///
-/// All queries in this module are structurally redacted BY CONSTRUCTION:
+/// Entity text is excluded by construction:
 /// no query reads an entity-table text column (`tasks.title`,
 /// `plans.title`, `questions.title`, and so on — the full denylist is
 /// below). That IS the boundary this module actually holds, and it is
@@ -120,7 +120,7 @@ export struct sync_outcome {
 };
 
 /// @brief One failure-tail row (most-recent failed invocations, newest
-/// first). Structurally redacted — no entity text, no scope slug.
+/// first). Reads no entity text and no scope slug; the path is masked by the catalog predicate.
 export struct failure_tail_row {
   std::string  verb_path;      ///< The recorded verb path.
   std::string  error_category; ///< The `error_category`, or `"unknown"`.
@@ -205,7 +205,7 @@ export struct cli_preview {
   std::size_t omitted   = 0;     ///< Window rows not in `jsonl` (the oldest ones).
 };
 
-/// @brief Convert authoritative, structurally-redacted `cli_invocations`
+/// @brief Convert authoritative `cli_invocations`
 /// rows into the adapter's private JSONL boundary. Only verb path, exit
 /// code, error category, and timestamp are selected; argument shapes and
 /// entity-bearing tables are never read.
