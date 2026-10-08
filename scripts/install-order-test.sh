@@ -57,7 +57,16 @@ cleanup() {
 trap cleanup EXIT
 fail() { printf 'install-order-test: %s\n' "$*" >&2; exit 1; }
 PASSED=0
-pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s\n' "$PASSED" "$1"; }
+pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s (%ss)\n' "$PASSED" "$1" "$SECONDS"; SECONDS=0; }
+# Test groups (plan 1122 M5, task 7361). The whole file took 757 s on a loaded host, so ctest
+# registers one entry per group (install.order_<group>, label install_order_<group>) and no
+# entry nears the five-minute ceiling. INSTALL_ORDER_GROUP selects one; unset runs all five
+# in file order, as before. An unknown name is a usage error, so a typo cannot pass by
+# running nothing.
+ORDER_GROUPS="db swap recover concurrent handoff"
+GROUP="${INSTALL_ORDER_GROUP:-all}"
+case " all $ORDER_GROUPS " in *" $GROUP "*) ;; *) printf 'install-order-test: unknown INSTALL_ORDER_GROUP %s (want one of: %s)\n' "$GROUP" "$ORDER_GROUPS" >&2; exit 2 ;; esac
+want() { [[ "$GROUP" == all || "$GROUP" == "$1" ]]; }
 # shellcheck source=fixtures/prebuilt-bundle.sh
 source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
 
@@ -140,6 +149,19 @@ healthy() {
   printf '%s' "$h"
 }
 
+# Hoisted out of the swap group: the recover, concurrent and handoff groups use it too.
+# kill_case POINT -- a healthy v1 install, killed at POINT while installing v2.
+kill_case() {
+  local point="$1" h p old_bin
+  h="$(healthy "kill-${point//:/-}")"; p="$h/.planar"
+  old_bin="$(bin_sum "$p/bin")"
+  run_install "$h" "$B2" PLANAR_INSTALL_TEST_FAULT="kill@$point" --
+  [[ "$RC" -ge 128 ]] || fail "kill at $point: the installer was not killed ($RC): $(show)"
+  [[ "$(journal_phase "$p")" == mutating ]] || fail "kill at $point: no mutating journal"
+  grep -Fq '"version": "v1.2.3"' "$p/release.json" || fail "kill at $point: release.json changed before the end"
+  KILL_OLD_BIN="$old_bin"; KILL_HOME="$h"
+}
+if want db; then
 # --- a fresh install creates a current database ---------------------------------------------------
 
 H="$(new_home fresh)"; P="$H/.planar"
@@ -309,20 +331,11 @@ run_install "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "install with no planar-watch failed ($RC): $(show)"
 [[ "$(grep -c 'could not be checked' "$TMP/err")" == 1 ]] || fail "an absent planar-watch did not print exactly one skipped line: $(show)"
 pass "live queue entries are named before the swap; an absent planar-watch is one line"
+fi
 
+if want swap; then
 # --- an interrupted swap is recovered by the next run --------------------------------------------------------------
 
-# kill_case POINT -- a healthy v1 install, killed at POINT while installing v2.
-kill_case() {
-  local point="$1" h p old_bin
-  h="$(healthy "kill-${point//:/-}")"; p="$h/.planar"
-  old_bin="$(bin_sum "$p/bin")"
-  run_install "$h" "$B2" PLANAR_INSTALL_TEST_FAULT="kill@$point" --
-  [[ "$RC" -ge 128 ]] || fail "kill at $point: the installer was not killed ($RC): $(show)"
-  [[ "$(journal_phase "$p")" == mutating ]] || fail "kill at $point: no mutating journal"
-  grep -Fq '"version": "v1.2.3"' "$p/release.json" || fail "kill at $point: release.json changed before the end"
-  KILL_OLD_BIN="$old_bin"; KILL_HOME="$h"
-}
 kill_case backed-up:bin
 P="$KILL_HOME/.planar"
 [[ -d "$P/bin.old" && ! -e "$P/bin" ]] || fail "after the kill bin/ was not moved to bin.old: $(ls -a "$P")"
@@ -357,7 +370,9 @@ run_install "$H" "$B1" --
 grep -Fq "the previous install committed; removing its leftover backups and staging" "$TMP/out" || fail "the committed transaction's cleanup was not reported: $(show)"
 no_evidence "$P"
 pass "a kill after the commit record leaves only owned cleanup for the next run"
+fi
 
+if want recover; then
 # --- recovery precedes failed restaging -----------------------------------------------------------------------------
 
 kill_case backed-up:bin
@@ -432,7 +447,9 @@ run_install "$KILL_HOME" "$B2" --
   || fail "the completed rerun is not the bundle's bin/ and skills/"
 no_evidence "$P"
 pass "a recovery restore is journaled: a kill after it and a later ambiguity both complete on rerun"
+fi
 
+if want concurrent; then
 # --- concurrent installs and an interrupted first installation ------------------------------------------------------
 
 H="$(healthy concurrent)"; P="$H/.planar"
@@ -554,7 +571,9 @@ run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 0 ]] || fail "recovery after the probe failure did not complete ($RC): $(show)"
 no_evidence "$P"
 pass "refused and pre-mutation failures leave the completed install authoritative"
+fi
 
+if want handoff; then
 # --- the update handoff and --cleanup ----------------------------------------------------------------------------------
 
 UPDATER="$TMP/updater.sh"
@@ -704,5 +723,7 @@ RC=0
     /bin/bash "$B1/install.sh" --prebuilt "$B1" >"$TMP/out" 2>"$TMP/err" ) || RC=$?
 [[ "$RC" == 0 ]] || fail "the fault hook fired without PLANAR_INSTALL_TEST_FAULT_ARMED ($RC): $(show)"
 pass "the test fault hook is inert unless armed"
+fi
 
-printf 'install order tests: %s passed\n' "$PASSED"
+[[ "$PASSED" -gt 0 ]] || fail "group $GROUP ran no check"
+printf 'install order tests (group %s): %s passed\n' "$GROUP" "$PASSED"

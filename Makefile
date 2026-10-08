@@ -103,11 +103,11 @@ smoke-reset: ## Delete the throwaway smoke database
 	rm -rf $(dir $(SMOKE_DB))
 
 .PHONY: test-install-manifest
-test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures
+test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures (ctest install.manifest runs them under `make test`)
 	bash scripts/install-manifest-test.sh
 
 .PHONY: test-install-stage
-test-install-stage: ## Run focused installer staging and vendor-surface fixtures (six vendors, nine targets)
+test-install-stage: ## Run focused installer staging and vendor-surface fixtures (ctest install.stage runs them under `make test`)
 	bash scripts/install-stage-test.sh
 
 .PHONY: test-install-prefix-guard
@@ -123,11 +123,11 @@ test-install-prereq: ## Run the prerequisite-listing fixture (ctest install.prer
 	bash scripts/install-prereq-test.sh
 
 .PHONY: test-install-deps
-test-install-deps: ## Run focused installer compiler-preflight fixture
+test-install-deps: ## Run focused installer compiler-preflight fixture (ctest install.deps runs it under `make test`)
 	bash scripts/install-deps-test.sh
 
 .PHONY: test
-test: test-install-manifest test-install-stage test-install-deps ## Run unit tests
+test: ## Run unit tests (the installer script tests are ctest cases)
 	$(configure_debug)
 	cmake --build build/debug --target all planar_tests $(ARGS)
 	ctest --test-dir build/debug --output-on-failure -j $(TEST_JOBS) $(ARGS)

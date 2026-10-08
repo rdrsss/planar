@@ -266,6 +266,10 @@ and the Makefile exports them to
 `status=0`. Read `ctest.log` there rather than the build output: BuildKit
 clips a step's log at 2 MiB.
 
+The image also builds bash 3.2.57 from the GNU source archive (a `bash32`
+stage, copied to `/opt/bash-3.2`) for `install.bash32`'s two-shell comparison;
+see [The two-shell comparison](#the-two-shell-comparison).
+
 Every dependency is committed under `vendor/`, so the gate needs no token, no
 network fetch during configure, and no extra build context.
 
@@ -345,7 +349,9 @@ reports "100% tests passed":
 
 `make ctest-registry-check` compares each binary's own `--list-tests` count
 against the `add_test` lines registered for it. It needs no baseline and
-fails on a mismatch in either direction. Do not quote a ctest total as a
+fails on a mismatch in either direction. It also fails for a
+`scripts/install-*-test.sh` that no registered ctest case names, and prints each
+script it found registered. Do not quote a ctest total as a
 count of distinct tests without it.
 
 Two related traps:
@@ -510,12 +516,19 @@ repository.
 The scripts they ship and the installer have script tests. Each is a ctest case
 registered with ctest (in `CMakeLists.txt`, `src/cmd/CMakeLists.txt` for the two
 that need built binaries, `src/cmd/planar/CMakeLists.txt` and
-`src/tools/CMakeLists.txt`), so `make test` runs them. The `make test` target
-also depends on three installer tests that are not ctest cases:
-`test-install-manifest`, `test-install-stage` and `test-install-deps`, which run
+`src/tools/CMakeLists.txt`), so `make test` runs them. The make targets
+`test-install-manifest`, `test-install-stage` and `test-install-deps` run
 `scripts/install-manifest-test.sh`, `install-stage-test.sh` and
-`install-deps-test.sh`. `install-manifest-test.sh` also pins INSTALL.md
-§ Prerequisites. They use scratch `HOME`,
+`install-deps-test.sh` directly, for a focused run, and are not prerequisites
+of `make test`: ctest runs the same scripts as `install.manifest`,
+`install.stage` and `install.deps`. `install-manifest-test.sh` also pins
+INSTALL.md § Prerequisites. `make ctest-registry-check` fails when any
+`scripts/install-*-test.sh` is named by no registered ctest case. **No installer
+test may run longer than five minutes** (measured on a loaded host); a script
+that grows past that is split into groups, one ctest case each, selected by an
+environment variable the script reads (`INSTALL_ORDER_GROUP`,
+`INSTALL_UNINSTALL_GROUP`; unset runs every group, an unknown name exits 2).
+`ctest -L '^install_'` covers all of them. They use scratch `HOME`,
 `TMPDIR` and database paths and fake bundles, and touch nothing real. Select one
 by label, and check the matched count:
 
@@ -530,7 +543,10 @@ ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
 | `release.publish` | `release_publish` | `scripts/release-publish-test.sh` | `release-gates.sh`, `release-publish.sh` and `make release-cut` against a scratch annotated tag, fake bundles and a fake `gh`, `docker` and `uname`: every refusal runs no `gh`. |
 | `release.workflow` | `release_workflow` | `scripts/release-workflow.test.py` | A lint of `.github/workflows/release.yml` (trigger, `needs`, gate-before-upload, permissions) and its publisher steps run against fakes. Nothing runs on GitHub. |
 | `bootstrap.release` | `bootstrap` | `scripts/get-planar-test.sh` | `get-planar.sh` end to end. See [The release bootstrap test](#the-release-bootstrap-test). |
-| `install.bash32` | `install_bash32` | `scripts/install-bash32-test.sh` | A lint for bash-4-only constructs and unguarded empty-array expansions, and a prebuilt install and uninstall under `/bin/bash`. |
+| `install.bash32_static`, `install.bash32_flag`, `install.bash32_home`, `install.bash32_vendors` | `install_bash32` (all four), `install_bash32_<group>` | `scripts/install-bash32-test.sh` (`INSTALL_BASH32_GROUP`) | A lint for bash-4-only constructs and unguarded empty-array expansions, and a prebuilt install and uninstall under bash 3.2 whose end state (file and directory modes, symlink targets, checksums) is compared with a newer bash's run, with no live mutation-lock owner after the uninstall. See [The two-shell comparison](#the-two-shell-comparison). |
+| `install.manifest` | `install_manifest` | `scripts/install-manifest-test.sh` | Manifest ownership and atomicity fixtures; INSTALL.md § Prerequisites. |
+| `install.stage` | `install_stage` | `scripts/install-stage-test.sh` | Staging and the six vendors' surfaces; its health scenarios run the built `planar` (`PLANAR_BIN`). |
+| `install.deps` | `install_deps` | `scripts/install-deps-test.sh` | The compiler preflight. |
 | `install.prefix_guard` | `install_prefix_guard` | `scripts/install-prefix-guard-test.sh` | The install-root guard for `install.sh` and `--uninstall`. |
 | `install.prereq` | `install_prereq` | `scripts/install-prereq-test.sh` | Every program `planar update` and `get-planar.sh` run is in `install.sh` `RUN_DEPS`/`BASE_DEPS` and INSTALL.md § Prerequisites; `wget` is a test-only prerequisite on the Homebrew line. `scripts/install-prereq-scan.py` pins every spawn call site of the update sources by count (a new `run_inherited`, `runner::start`, `execve` or `capture` fails until reviewed) and reads the word in every command position of `get-planar.sh`. |
 | `install.data_paths` | `install_data_paths` | `scripts/install-data-paths-test.sh` | Data paths are never removed, and INSTALL.md's preserved-paths list matches `scripts/install-lib/data-paths.sh`. |
@@ -538,9 +554,9 @@ ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
 | `install.retired_targets` | `install_retired_targets` | `scripts/install-retired-targets-test.sh` | The retired `make install` targets are gone, and no install doc carries a `make install` recipe. |
 | `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, the missing-only `templates/` rule, and a source resume refusing the other mode or a dirty checkout. |
 | `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, host renames and other hosts, simultaneous reclaims, the update handoff (an older updater's included), install roots whose path says `exists`. |
-| `install.uninstall` | `install_uninstall` | `scripts/install-uninstall-test.sh` | `scripts/uninstall.sh`: removals, `--purge`, unknown entries, `~/.local/bin`, interrupted-uninstall retry. |
+| `install.uninstall_removal`, `install.uninstall_manifest`, `install.uninstall_interrupted` | `install_uninstall` (all three), `install_uninstall_<group>` | `scripts/install-uninstall-test.sh` (`INSTALL_UNINSTALL_GROUP`) | `scripts/uninstall.sh`. `removal`: unknown entries, the removal and its data-path rules, `--purge`, link-mode. `manifest`: escaped and truncated manifest lines, `~/.local/bin`, a missing manifest, a relocated database, the held lock. `interrupted`: the interrupted-uninstall retry and an interrupted upgrade. |
 | `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
-| `install.order` | `install_order` | `scripts/install-order-test.sh` | The order of an install end to end, against bundles of the real built binaries: databases fresh, behind, ahead and faulty, kill-and-resume at every swap point and across a host rename, concurrent owners, the updater handoff. |
+| `install.order_db`, `install.order_swap`, `install.order_recover`, `install.order_concurrent`, `install.order_handoff` | `install_order` (all five), `install_order_<group>` | `scripts/install-order-test.sh` (`INSTALL_ORDER_GROUP`) | The order of an install end to end, against bundles of the real built binaries. `db`: databases fresh, behind, ahead and faulty, the queue warning. `swap`: kill-and-resume at every swap point. `recover`: recovery before restaging and a journaled restore. `concurrent`: concurrent owners, a first-install kill, a host rename, the read-only parent, refused attempts. `handoff`: the updater handoff, `--cleanup`, uninstall over a pending install, the inert fault hook. |
 | `queue_retire_reader` | `queue;scripts` | `scripts/install-lib/queue_retire.test.py` | The reader the installer runs to judge the retired queue store's entries, including its `/proc` cases. |
 | `codex_agents_render` | `scripts` | `scripts/render_codex_agents_test.py` | The Codex custom-agent TOML renderer. |
 
@@ -554,6 +570,31 @@ configuration with `PLANAR_PORTABLE=ON`; see
 compares the workflow reader's result with PyYAML and runs `actionlint`, and it
 fails when either tool is missing. Run it by hand after editing
 `.github/workflows/release.yml`.
+
+### The two-shell comparison
+
+`install.bash32` installs and uninstalls a fake bundle under bash 3.2 and under
+a newer bash and compares the two end states tree for tree: each file's mode and
+checksum, each directory's mode and each symlink's target (BSD `stat -f %Lp` and
+GNU `stat -c %a` are both handled; the HOME path is normalised, the lock records
+are left out). It also asks the mutation lock library (`_pl_owner_state`) after
+every uninstall and fails unless the lock is free or released. Its self-tests
+plant a mode change, a symlink retarget, a live lock holder and a killed one,
+and a planted mode or symlink-target change in the newer shell's run must fail the
+comparison.
+
+- **The Linux gate is the host that must run it.** `docker/linux-gate.Dockerfile`
+  builds bash 3.2.57 (SHA-256 pinned) at `/opt/bash-3.2/bin/bash` and sets
+  `PLANAR_BASH32_OLD` to it and `PLANAR_BASH32_REQUIRE_COMPARE=1`. With the
+  variable set, the test fails if the old shell is not bash 3.x or no newer bash
+  exists, so the comparison cannot pass by comparing nothing.
+- **Elsewhere it runs when it can.** A developer macOS host has bash 3.2 as
+  `/bin/bash` and compares against a newer bash found at
+  `/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, on `PATH` or named by
+  `PLANAR_BASH32_NEW`. With none, it prints `TWO-SHELL COMPARISON NOT RUN` and the
+  reason, and still checks the end state against explicit expectations and a
+  second run of the same shell. It is a note and not a ctest skip: the expected
+  skip tally is zero.
 
 ## Bundle assembler identity checks
 

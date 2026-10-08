@@ -197,10 +197,30 @@ endif()
 # handoff and --cleanup, and uninstall over a pending install.
 if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar_cmd_planar_watch
    AND TARGET planar_cmd_planar_execute AND TARGET planar_cmd_planar_ext)
-  add_test(NAME install.order
-    COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-order-test.sh"
-      "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_agent>"
-      "$<TARGET_FILE:planar_cmd_planar_watch>" "$<TARGET_FILE:planar_cmd_planar_execute>"
-      "$<TARGET_FILE:planar_cmd_planar_ext>")
-  set_tests_properties(install.order PROPERTIES LABELS "install_order" TIMEOUT 2400)
+  # One ctest entry per group of scenarios (INSTALL_ORDER_GROUP; the groups are listed in
+  # the script): the whole file took 757 s on a loaded host and the five-minute ceiling
+  # applies to every installer test. Running the script with no group runs all of them.
+  foreach(_order_group db swap recover concurrent handoff)
+    add_test(NAME install.order_${_order_group}
+      COMMAND "${CMAKE_COMMAND}" -E env "INSTALL_ORDER_GROUP=${_order_group}"
+        /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-order-test.sh"
+        "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_agent>"
+        "$<TARGET_FILE:planar_cmd_planar_watch>" "$<TARGET_FILE:planar_cmd_planar_execute>"
+        "$<TARGET_FILE:planar_cmd_planar_ext>")
+    set_tests_properties(install.order_${_order_group} PROPERTIES LABELS "install_order;install_order_${_order_group}" TIMEOUT 600)
+  endforeach()
+endif()
+
+# --- the installer's staging and vendor-surface fixtures (plan 1122 M5) --------
+#
+# `scripts/install-stage-test.sh` stages the six vendors' surfaces and, for its
+# health scenarios, runs the built `planar` (PLANAR_BIN); without a binary the
+# script skips those scenarios and says so, so it is registered only where the
+# binary is a target, and always with it. `make test-install-stage` runs the same
+# script against build/debug/bin/planar.
+if(TARGET planar_cmd_planar)
+  add_test(NAME install.stage
+    COMMAND "${CMAKE_COMMAND}" -E env "PLANAR_BIN=$<TARGET_FILE:planar_cmd_planar>"
+      /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-stage-test.sh")
+  set_tests_properties(install.stage PROPERTIES LABELS "install_stage" TIMEOUT 900)
 endif()

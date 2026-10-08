@@ -24,7 +24,15 @@ cleanup() {
 trap cleanup EXIT
 fail() { printf 'install-uninstall-test: FAIL: %s\n' "$*" >&2; exit 1; }
 PASSED=0
-pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s\n' "$PASSED" "$1"; }
+pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s (%ss)\n' "$PASSED" "$1" "$SECONDS"; SECONDS=0; }
+# Test groups (plan 1122 M5, task 7361). The whole file took 428 to 510 s on a loaded host,
+# so ctest registers one entry per group (install.uninstall_<group>, label
+# install_uninstall_<group>). INSTALL_UNINSTALL_GROUP selects one; unset runs all three in
+# file order, as before. An unknown name is a usage error.
+UNINSTALL_GROUPS="removal manifest interrupted"
+GROUP="${INSTALL_UNINSTALL_GROUP:-all}"
+case " all $UNINSTALL_GROUPS " in *" $GROUP "*) ;; *) printf 'install-uninstall-test: unknown INSTALL_UNINSTALL_GROUP %s (want one of: %s)\n' "$GROUP" "$UNINSTALL_GROUPS" >&2; exit 2 ;; esac
+want() { [[ "$GROUP" == all || "$GROUP" == "$1" ]]; }
 # shellcheck source=fixtures/prebuilt-bundle.sh
 source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
 
@@ -169,6 +177,16 @@ data_sums() { ( cd "$1" && find planar.db planar.db-wal planar.db-shm queue-logs
   -type f -exec cksum {} + | LC_ALL=C sort ); }
 DATA_NAMES="planar.db planar.db-wal planar.db-shm queue-logs retired workbench config.toml local workspaces models execute templates"
 
+# Hoisted out of the first group: every group builds installed homes with it.
+make_installed() { # make_installed NAME -- an installed, data-seeded home; prints it
+  local h; h="$(new_home "$1")"
+  install_ok "$h"
+  seed_data "$h/.planar"
+  printf 'cleanup list an older install left\n' > "$h/.planar/install-cleanup.txt"
+  printf '%s' "$h"
+}
+
+if want removal; then
 # --- unknown entries beside preserved data are kept and reported ------------------------------
 
 H="$(new_home unknown)"; P="$H/.planar"
@@ -214,13 +232,6 @@ pass "a non-default root left holding only preserved data is reinstalled without
 # install-cleanup.txt, release.json, the stamp and the manifest go, each named;
 # every data path stays byte for byte and is named; the lock is released and
 # kept. install.sh --uninstall on an identical arena gives the same end state.
-make_installed() { # make_installed NAME -- an installed, data-seeded home; prints it
-  local h; h="$(new_home "$1")"
-  install_ok "$h"
-  seed_data "$h/.planar"
-  printf 'cleanup list an older install left\n' > "$h/.planar/install-cleanup.txt"
-  printf '%s' "$h"
-}
 H="$(make_installed happy)"; P="$H/.planar"
 cmp -s "$ROOT/scripts/uninstall.sh" "$P/bin/planar-uninstall" && [[ -x "$P/bin/planar-uninstall" ]] \
   || fail "the install did not place scripts/uninstall.sh as an executable bin/planar-uninstall"
@@ -364,7 +375,9 @@ for n in scripts workflows migrations skills agents; do [[ ! -e "$P/$n" && ! -L 
 [[ ! -e "$H/.claude/agents/planar-coder.md" && ! -L "$H/.claude/agents/planar-coder.md" ]] || fail "uninstall left a link-mode vendor agent"
 [[ "$(sums "$REPO")" == "$repo_before" ]] || fail "the uninstall changed the checkout behind the link-mode install"
 pass "a link-mode install's symlinked subtrees and vendor links are unlinked; the checkout is untouched"
+fi
 
+if want manifest; then
 # --- uninstall reads an escaped path and reports a bad line ------------------------------------
 
 # CODEX_HOME holds a space, a backslash and a double quote; the manifest records
@@ -504,7 +517,9 @@ for args in "" "--purge"; do
   lock_released "$P"
 done
 pass "a paused uninstall or purge holds the lock throughout: a competing install is refused naming it; the lock survives the purge and is then free"
+fi
 
+if want interrupted; then
 # --- an interrupted uninstall finishes on retry and never resurrects binaries -------------------
 
 # Kill after the installed planar-uninstall (bin/) is removed. The journal says
@@ -773,5 +788,7 @@ install "$H" "PLANAR_DB=$EXT/p.db" --
 ! grep -Fq "resuming the interrupted install" "$TMP/out" || fail "the install replayed the cancelled upgrade after --purge"
 [[ "$(sums "$EXT")" == "$ext_before" ]] || fail "the reinstall changed the relocated database"
 pass "--purge ends an interrupted upgrade too, honouring the relocation; the next install adopts the root without --force"
+fi
 
-printf 'install uninstall tests: %s passed\n' "$PASSED"
+[[ "$PASSED" -gt 0 ]] || fail "group $GROUP ran no check"
+printf 'install uninstall tests (group %s): %s passed\n' "$GROUP" "$PASSED"

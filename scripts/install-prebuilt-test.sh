@@ -330,7 +330,14 @@ case "$(uname -s)" in
   Linux) want_floor=2.36 ;;
   *) want_floor=unknown ;;
 esac
-dist_floor="$(sed -n "s/^  $(uname -s)-$(uname -m)) .*floor=\([0-9.]*\) ;;\$/\1/p" "$ROOT/scripts/dist.sh")"
+# The floor is per OS in dist.sh (it builds bundles only for Darwin-arm64 and
+# Linux-x86_64), so the cross-check keys on the OS and not on `uname -m`: matching
+# the exact host pair left it vacuous on Linux arm64, where dist.sh has no row.
+# Every dist.sh row of this OS must agree, and at least one must exist.
+dist_floor="$(sed -n "s/^  $(uname -s)-[A-Za-z0-9_]*) .*floor=\([0-9.]*\) ;;\$/\1/p" "$ROOT/scripts/dist.sh" | sort -u)"
+case "$(uname -s)" in
+  Darwin|Linux) [[ -n "$dist_floor" ]] || fail "scripts/dist.sh has no floor row for $(uname -s); the os_floor cross-check would be vacuous" ;;
+esac
 [[ -z "$dist_floor" || "$dist_floor" == "$want_floor" ]] || fail "this test's floor $want_floor disagrees with scripts/dist.sh ($dist_floor)"
 grep -Fxq "  \"os_floor\": \"$want_floor\"," "$R" || fail "os_floor is not $want_floor: $(cat "$R")"
 H="$TMP/homes/source-tag"; mkdir -p "$H"
