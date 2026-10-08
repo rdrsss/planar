@@ -22,6 +22,15 @@
 #   PLANAR_LOCAL_HOME      local/   (the runtime treats it as a stand-in for
 #                          $HOME, so the location is $PLANAR_LOCAL_HOME/.planar/local)
 #   PLANAR_TEMPLATES_DIR   templates/
+# Two of them also have a config.toml key, read when the variable is unset or
+# empty (the runtime's precedence: variable, then config file, then default):
+#   PLANAR_WORKBENCH_ROOT  `[workbench] root`  (src/engine/workbench/root.cpp)
+#   PLANAR_TEMPLATES_DIR   `[templates] dir`   (src/engine/config/effective.cpp)
+# config.toml is the file PLANAR_CONFIG_PATH names, else $HOME/.planar/config.toml
+# (src/cmd/internal/config_path.cpp). Only quoted string values are read; an
+# absent, unreadable or malformed file relocates nothing. The key's value is
+# tilde-expanded like the variable's. A relocation from the file is reported as
+# `config.toml (workbench.root)` in place of a variable name.
 # A variable that is unset or empty relocates nothing (the runtime ignores an
 # empty PLANAR_CONFIG_PATH and PLANAR_TEMPLATES_DIR the same way; it reads an
 # empty PLANAR_DB as the empty path, so treating it as unset here is a
@@ -108,14 +117,129 @@ EOF
   return 0
 }
 
-# _planar_dp_value VAR -- the variable's value as the runtime reads it: `~`
-# expanded for the variables whose reader expands it (see the header), a relative
-# value made absolute; empty when unset or empty.
+# _planar_dp_trim TEXT -- TEXT without leading and trailing blanks.
+_planar_dp_trim() {
+  local t="$1"
+  t="${t#"${t%%[![:space:]]*}"}"
+  t="${t%"${t##*[![:space:]]}"}"
+  printf '%s' "$t"
+}
+
+# _planar_dp_strip_comment LINE -- LINE up to the first `#` outside quotes (a `#`
+# inside a quoted value is data), as the runtime's strip_comment does.
+_planar_dp_strip_comment() {
+  local line="$1" i c q=""
+  for ((i = 0; i < ${#line}; i++)); do
+    c="${line:i:1}"
+    if [ -n "$q" ]; then
+      [ "$c" = "$q" ] && q=""
+      continue
+    fi
+    case "$c" in
+      \' | '"') q="$c" ;;
+      '#') printf '%s' "${line:0:i}"; return 0 ;;
+    esac
+  done
+  printf '%s' "$line"
+}
+
+# _planar_dp_flatten TEXT -- a table header or key with its quotes and blanks
+# removed: `[ a . "b" ]` -> `a.b`.
+_planar_dp_flatten() {
+  local t="$1"
+  t="${t//\"/}"
+  t="${t//\'/}"
+  t="${t//[[:space:]]/}"
+  printf '%s' "$t"
+}
+
+# _planar_dp_config_file -- where the runtime reads config.toml: PLANAR_CONFIG_PATH
+# (`~` expanded) when set and non-empty, else $HOME/.planar/config.toml. Matches
+# resolve_config_path in src/cmd/internal/config_path.cpp. Empty when neither
+# PLANAR_CONFIG_PATH nor HOME is set.
+_planar_dp_config_file() {
+  local v
+  v="$(_planar_dp_value PLANAR_CONFIG_PATH)"
+  if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  [ -n "${HOME-}" ] || return 0
+  printf '%s/.planar/config.toml' "$HOME"
+}
+
+# _planar_dp_config_get KEY -- the string value of KEY (`section.key`) in
+# config.toml, empty when the file or key is absent, the value is not a quoted
+# string or it is empty. The first match wins. Reads the shapes the runtime
+# reads (src/engine/workbench/root.cpp, read_config_workbench_root): `[a]`
+# sections, `a.b = ...` dotted keys, single or double quoted values, trailing
+# comments. A broken file is skipped silently, as the runtime skips it.
+_planar_dp_config_get() {
+  local want="$1" file line section="" key val first last
+  file="$(_planar_dp_config_file)"
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="$(_planar_dp_trim "$(_planar_dp_strip_comment "$line")")"
+    [ -n "$line" ] || continue
+    case "$line" in
+      \[*)
+        line="${line#\[}"; line="${line%\]*}"
+        section="$(_planar_dp_flatten "$line")"
+        continue ;;
+    esac
+    case "$line" in *=*) ;; *) continue ;; esac
+    key="$(_planar_dp_flatten "$(_planar_dp_trim "${line%%=*}")")"
+    [ -n "$section" ] && key="$section.$key"
+    [ "$key" = "$want" ] || continue
+    val="$(_planar_dp_trim "${line#*=}")"
+    [ "${#val}" -ge 2 ] || return 0
+    first="${val:0:1}"; last="${val: -1}"
+    if [ "$first" = "$last" ] && { [ "$first" = '"' ] || [ "$first" = "'" ]; }; then
+      printf '%s' "${val:1:${#val}-2}"
+    fi
+    return 0
+  done < "$file"
+  return 0
+}
+
+# _planar_dp_config_key VAR -- the config.toml key that relocates the path VAR
+# relocates, when one does (workbench.root, templates.dir); empty otherwise.
+_planar_dp_config_key() {
+  case "$1" in
+    PLANAR_WORKBENCH_ROOT) printf 'workbench.root' ;;
+    PLANAR_TEMPLATES_DIR) printf 'templates.dir' ;;
+  esac
+}
+
+# _planar_dp_raw VAR -- the relocation setting before expansion: the variable, else
+# the config.toml key (the runtime's precedence: variable, then config file).
+# Empty when neither is set.
+_planar_dp_raw() {
+  [ -n "$1" ] || return 0
+  local v="${!1-}" k
+  if [ -z "$v" ]; then
+    k="$(_planar_dp_config_key "$1")"
+    [ -n "$k" ] && v="$(_planar_dp_config_get "$k")"
+  fi
+  printf '%s' "$v"
+}
+
+# _planar_dp_source VAR -- what relocates the path: the variable name, or
+# `config.toml (workbench.root)` when the setting comes from the config file.
+_planar_dp_source() {
+  local k
+  if [ -n "${!1-}" ]; then printf '%s' "$1"; return 0; fi
+  k="$(_planar_dp_config_key "$1")"
+  printf 'config.toml (%s)' "$k"
+}
+
+# _planar_dp_value VAR -- the setting as the runtime reads it: `~` expanded for
+# the variables whose reader expands it (see the header), a relative value made
+# absolute; empty when unset or empty. For the workbench and templates, a
+# non-empty variable wins and otherwise config.toml's key is read.
 _planar_dp_value() {
   # No variable name, no relocation. Bash 4 and later reject `${!1}` for an
   # empty name ("invalid variable name"); bash 3.2 expands it to empty.
   [ -n "$1" ] || return 0
-  local v="${!1-}"
+  local v
+  v="$(_planar_dp_raw "$1")"
   [ -n "$v" ] || return 0
   case "$1" in
     PLANAR_DB|PLANAR_LOCAL_HOME) ;;
@@ -160,7 +284,7 @@ planar_data_paths_list() {
     loc="$(_planar_dp_location "$root" "$name" "$var")"
     by=""
     if [ -n "$var" ] && [ -n "$(_planar_dp_value "$var")" ]; then
-      by="$var"
+      by="$(_planar_dp_source "$var")"
       loc_canon="$(_planar_dp_canon "$loc")"
       for dflt in "${root%/}/$name" "${HOME-}/.planar/$name"; do
         if [ "$loc_canon" = "$(_planar_dp_canon "$dflt")" ]; then by=""; fi
