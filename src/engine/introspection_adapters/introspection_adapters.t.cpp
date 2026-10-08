@@ -989,11 +989,12 @@ TEST_CASE("transcript scan: an oversize lexically-first file is skipped and coun
 
 TEST_CASE("transcript scan: the tail of an oversize newest file is read from a record boundary and counted partial",
           "[engine][introspection_adapters][discovery][skip-not-break]") {
-  auto const        pair  = failed_pair("p", "planar plan show 9");
-  std::size_t const share = 2 * pair.size() + 7; // lands mid-record of the file below
+  auto const        last     = failed_pair("last", "planar plan show 9");
+  auto const        previous = failed_pair("live-7", "planar task show 1");
+  std::size_t const share    = last.size() + previous.size() + 7; // lands mid-record of the pair before those
   scratch_dir       scratch;
   auto const        dir = scratch.path_ / ".claude" / "projects";
-  write(dir / "live.jsonl", many_pairs("live", 8, "planar task show 1") + failed_pair("last", "planar plan show 9"));
+  write(dir / "live.jsonl", many_pairs("live", 8, "planar task show 1") + last);
   set_age(dir / "live.jsonl", std::chrono::hours{1});
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
@@ -1005,14 +1006,53 @@ TEST_CASE("transcript scan: the tail of an oversize newest file is read from a r
   CHECK(claude->files_partial == 1);
   CHECK(claude->files_skipped_cap == 0);
   CHECK(claude->malformed == 0); // the partial first line was dropped
-  CHECK(claude->scanned >= 2);
-  CHECK(claude->bytes_read > 0);
-  CHECK(claude->bytes_read <= share);
+  CHECK(claude->scanned == 4);   // the last two complete pairs; the partial line before them is dropped
+  CHECK(claude->bytes_read == last.size() + previous.size());
   bool saw_final = false;
   for (auto const& signal : preview.signals) {
     saw_final = saw_final || signal.verb_path == "planar plan show";
   }
   CHECK(saw_final);
+}
+
+TEST_CASE("transcript scan: a tail that starts exactly on a record boundary keeps its first record",
+          "[engine][introspection_adapters][discovery][skip-not-break]") {
+  auto const        pair  = failed_pair("p", "planar plan show 9");
+  std::size_t const share = 2 * pair.size(); // exactly the last two complete pairs
+  scratch_dir       scratch;
+  auto const        dir = scratch.path_ / ".claude" / "projects";
+  write(dir / "live.jsonl", many_pairs("live", 6, "planar task show 1") + failed_pair("a", "planar plan show 9") +
+                                failed_pair("b", "planar plan show 9"));
+  set_age(dir / "live.jsonl", std::chrono::hours{1});
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->files_partial == 1);
+  CHECK(claude->scanned == 4);
+  CHECK(claude->malformed == 0);
+  CHECK(claude->bytes_read == share);
+}
+
+TEST_CASE("transcript scan: an oversize newest file with no newline is partial and yields no lines",
+          "[engine][introspection_adapters][discovery][skip-not-break]") {
+  scratch_dir scratch;
+  auto const  dir = scratch.path_ / ".claude" / "projects";
+  write(dir / "live.jsonl", std::string(400, 'x'));
+  set_age(dir / "live.jsonl", std::chrono::hours{1});
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_bytes = 4 * 100};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->files_partial == 1);
+  CHECK(claude->scanned == 0);
+  CHECK(claude->bytes_read == 0);
 }
 
 TEST_CASE("transcript scan: files with identical modification times are read in path order",

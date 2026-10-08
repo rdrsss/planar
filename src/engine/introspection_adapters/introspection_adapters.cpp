@@ -1123,7 +1123,11 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
       auto const newline = window.find('\n');
       bytes              = newline == std::string::npos ? std::string{} : window.substr(newline + 1);
     } else {
-      bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+      // Capped at the stat'd size so a file that grows between stat and read
+      // cannot push the vendor past its share.
+      bytes.resize(static_cast<std::size_t>(entry.size));
+      file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      bytes.resize(static_cast<std::size_t>(file.gcount()));
     }
     auto const record_count = count_records(bytes);
     if (record_count > records_left) {

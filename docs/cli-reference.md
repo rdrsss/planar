@@ -8262,10 +8262,10 @@ Empty windows emit empty arrays, never nulls or missing fields.
 |---------|---------|
 | `bytes_read` | Transcript bytes read for the vendor. A tail read counts only the tail. |
 | `files_partial` | Files read from their tail only. |
-| `files_skipped_cap` | Files not read because the file, byte or record cap left no room. A `byte_cap` warning accompanies a skipped or partial file. |
+| `files_skipped_cap` | Files not read because the file, byte or record cap left no room. The warning matching the cap that stopped it (`byte_cap`, `file_cap` or `record_cap`) accompanies a skipped or partial file. |
 | `files_skipped_window` | Files not read because their modification time is before the window. |
 
-The counters are `0` for `cli_log`, a disabled vendor and an unavailable vendor.
+The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
 
 **Exit codes:**
 
