@@ -765,7 +765,9 @@ auto extract_codex(const extract_state& state, const jd::json_value& obj) -> ext
     if (!string_value(payload->find("call_id")).has_value()) {
       return k_malformed;
     }
-    if (!string_value(payload->find("output")).has_value()) {
+    // Current Codex writes `output` as a string or as an array of content items.
+    auto const* output = payload->find("output");
+    if (output == nullptr || (output->kind != jd::json_kind::string && output->kind != jd::json_kind::array)) {
       return k_malformed;
     }
   }

@@ -1352,3 +1352,22 @@ TEST_CASE("transcript format: Copilot reads only the JSONL files in session-stat
   CHECK(copilot->scanned == 1);
   CHECK_FALSE(has_warning(preview.warnings, ia::vendor::copilot, ia::warning_kind::unsupported_layout));
 }
+
+TEST_CASE("transcript format: a Codex function_call_output may carry an array output, and a missing one is still malformed",
+          "[engine][introspection_adapters][format-fix]") {
+  std::string const jsonl =
+      R"({"type":"response_item","timestamp":"2026-01-01T00:00:00.000Z","payload":{"type":"function_call_output","call_id":"c","output":[{"type":"input_text","text":"t"}]}})"
+      "\n"
+      R"({"type":"response_item","timestamp":"2026-01-01T00:00:00.000Z","payload":{"type":"function_call_output","call_id":"c","output":"o"}})"
+      "\n"
+      R"({"type":"response_item","timestamp":"2026-01-01T00:00:00.000Z","payload":{"type":"function_call_output","call_id":"c","output":7}})"
+      "\n"
+      R"({"type":"response_item","timestamp":"2026-01-01T00:00:00.000Z","payload":{"type":"function_call_output","call_id":"c"}})"
+      "\n";
+  std::vector<ia::raw_source> sources{ia::raw_source{.v = ia::vendor::codex, .jsonl = jsonl}};
+  auto const                  preview = ia::collect_preview(sources, test_catalog);
+
+  CHECK(preview.coverage[0].scanned == 4);
+  CHECK(preview.coverage[0].ignored == 2);
+  CHECK(preview.coverage[0].malformed == 2);
+}
