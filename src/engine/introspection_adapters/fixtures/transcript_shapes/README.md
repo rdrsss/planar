@@ -18,5 +18,8 @@ CLI: no version field in `workspace.yaml`.
 | `codex_current.jsonl` | `session_meta`, `turn_context`, `event_msg` (`task_started`, `item_completed` `CommandExecution` failed and completed, `task_complete`), `response_item` (`function_call`, `function_call_output`, `custom_tool_call`, `custom_tool_call_output`) |
 | `copilot_session_state/session-id/` | the files the installed Copilot CLI writes under `session-state/<id>/`: `workspace.yaml`, `rewind-file-snapshots/tracking.json`, `checkpoints/index.md`. No JSONL event file exists there. |
 
-These are shape references for the recognizer work (task 7367); they are not
-loaded by any test yet.
+Tests that read them (`src/engine/introspection_adapters/introspection_adapters.t.cpp`):
+
+- `claude_current.jsonl`: "the Claude fixture's bare and cd-prefixed planar failures both normalize".
+- `codex_current.jsonl`: "the Codex fixture parses clean and its current records are ignored without malformed lines".
+- `copilot_session_state/`: "a Copilot session-state directory with no JSONL is unsupported, not malformed".

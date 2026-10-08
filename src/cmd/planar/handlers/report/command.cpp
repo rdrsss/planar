@@ -168,7 +168,7 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // Transcript commands resolve to verb paths through the same live-CLI rule
   // the capture log applies, so typed words never reach a signal.
   ia::verb_path_resolver const resolver = [](std::span<const std::string> argv) { return parse_args(argv).verb_path; };
-  bundle->preview                       = ia::collect_preview_from_paths(transcripts, cli_adapter, limits, {}, resolver);
+  bundle->preview                       = ia::collect_preview_from_paths(transcripts, cli_adapter, resolver, limits);
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? intro::render_json(*bundle) : intro::render_text(*bundle));
   return {};

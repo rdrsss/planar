@@ -140,8 +140,8 @@ export struct raw_source {
 /// @brief Maps the argument words that follow a transcript's `planar`
 /// executable to the verb path the live CLI catalog would record for them: a
 /// token the tree names, a structured operand in the second slot, otherwise
-/// `<unknown>`. Injected so this engine imports no `cmd` module. An empty
-/// resolver selects the built-in verb table.
+/// `<unknown>`. Injected so this engine imports no `cmd` module. It is
+/// required: an empty resolver recognizes no transcript command.
 export using verb_path_resolver = std::function<std::string(std::span<const std::string>)>;
 
 /// @brief Collect a no-write preview from raw vendor JSONL.
@@ -158,8 +158,8 @@ export using verb_path_resolver = std::function<std::string(std::span<const std:
 /// iteration.
 /// @param sources The raw per-vendor JSONL to normalize.
 /// @return The aggregated, redacted preview.
-/// @param resolve The transcript verb-path catalog rule; empty selects the built-in table.
-export auto collect_preview(std::span<const raw_source> sources, const verb_path_resolver& resolve = {}) -> preview;
+/// @param resolve The transcript verb-path catalog rule.
+export auto collect_preview(std::span<const raw_source> sources, const verb_path_resolver& resolve) -> preview;
 
 /// @brief Resolve which path a vendor should read: `builtin` when enabled
 /// and no override is set, `override_path` when both enabled and set, or
@@ -256,12 +256,12 @@ export struct cli_log_adapter {
 /// @param config Per-vendor transcript locations.
 /// @param cli The CLI-log adapter, or unset to treat it as unavailable
 /// (mirrors the oracle's `cli: ?CliLogAdapter = null` arm).
+/// @param resolve The transcript verb-path catalog rule (required).
 /// @param limits The file/byte/record caps.
 /// @param fault The fault-injection seam (tests only; empty in production).
-/// @param resolve The transcript verb-path catalog rule; empty selects the built-in table.
 /// @return The aggregated, redacted preview.
 export auto collect_preview_from_paths(const transcript_config& config, const std::optional<cli_log_adapter>& cli,
-                                       const collector_limits& limits = {}, const fs_fault& fault = {},
-                                       const verb_path_resolver& resolve = {}) -> preview;
+                                       const verb_path_resolver& resolve, const collector_limits& limits = {},
+                                       const fs_fault& fault = {}) -> preview;
 
 } // namespace planar::engine::introspection_adapters

@@ -84,102 +84,6 @@ auto string_equals(const jd::json_value* v, std::string_view expected) -> bool {
   return got.has_value() && *got == expected;
 }
 
-// ===========================================================================
-// Verb-path bounding — mirrors boundedPlanarVerbPath and its table.
-// ===========================================================================
-
-struct planar_verb_rule {
-  std::string_view domain;
-  /// Space-separated suffixes after `planar <domain>`; empty is a direct
-  /// root leaf. Every entry corresponds to a leaf in the CLI command tree.
-  std::span<const std::string_view> leaves;
-};
-
-// clang-format off
-constexpr std::string_view k_leaves_annotate[]    = {"add", "show", "list", "update", "remove", "tag", "resolve", "dismiss", "archive", "bulk-resolve", "bulk-dismiss", "bulk-archive", "verify", "sweep"};
-constexpr std::string_view k_leaves_artifact[]    = {"add", "show", "list", "update", "edit", "view", "diff", "review", "link"};
-constexpr std::string_view k_leaves_assoc[]       = {"list", "create", "add", "remove", "members", "detect"};
-constexpr std::string_view k_leaves_audit[]       = {"trail", "commits", "session", "publish-decision", "handoff-readiness"};
-constexpr std::string_view k_leaves_bench[]       = {"start", "event", "touch", "harvest", "finish", "show"};
-constexpr std::string_view k_leaves_capture[]     = {"session", "commits", "end", "note", "command", "file", "snapshot"};
-constexpr std::string_view k_leaves_closure[]     = {"compute", "show"};
-constexpr std::string_view k_leaves_empty[]       = {""};
-constexpr std::string_view k_leaves_config[]      = {"show", "edit", "validate", "init", "path"};
-constexpr std::string_view k_leaves_decision[]    = {"add", "show", "list", "accept", "supersede", "withdraw", "edit", "view", "diff", "review", "link"};
-constexpr std::string_view k_leaves_ext[]         = {"register jira", "register github", "list", "test", "create", "propagate-one", "propagate"};
-constexpr std::string_view k_leaves_feedback[]    = {"triage list", "triage show", "triage set"};
-constexpr std::string_view k_leaves_groups[]      = {"recommend"};
-constexpr std::string_view k_leaves_handoff[]     = {"create", "validate", "consume", "abandon", "list", "show"};
-constexpr std::string_view k_leaves_links[]       = {"add", "list", "remove", "trail"};
-constexpr std::string_view k_leaves_local[]       = {"list", "link", "unlink", "import", "migrate"};
-constexpr std::string_view k_leaves_models[]      = {"list", "refresh", "routing", "apply"};
-constexpr std::string_view k_leaves_plan[]        = {"create", "show", "list", "update", "edit", "view", "diff", "review", "link", "next", "recommend-strategy", "divergence", "recompute-status", "closeout", "step add", "step list", "step done", "step skip", "step link", "descendants"};
-constexpr std::string_view k_leaves_question[]    = {"add", "edit", "view", "diff", "review", "answer", "wontfix", "list", "show", "link"};
-constexpr std::string_view k_leaves_resume[]      = {"validate"};
-constexpr std::string_view k_leaves_run[]         = {"start", "event", "finish", "show"};
-constexpr std::string_view k_leaves_scenario[]    = {"add", "edit", "view", "diff", "review", "verify", "retire", "list", "show", "link"};
-constexpr std::string_view k_leaves_scope[]       = {"show", "suggest", "use", "pop", "clear"};
-constexpr std::string_view k_leaves_skills[]      = {"render", "status", "repair"};
-constexpr std::string_view k_leaves_spec[]        = {"ingest"};
-constexpr std::string_view k_leaves_sync[]        = {"pull", "push", "status", "resolve"};
-constexpr std::string_view k_leaves_task[]        = {"add", "show", "list", "update", "edit", "view", "diff", "review", "done", "cancel", "block", "link", "reopen", "touches add", "touches list", "touches remove"};
-constexpr std::string_view k_leaves_templates[]   = {"list", "show", "render", "validate", "init", "path"};
-constexpr std::string_view k_leaves_test_spec[]   = {"status"};
-constexpr std::string_view k_leaves_workbench[]   = {"pull", "push", "status", "resolve", "sync", "archive", "restore", "gc", "list", "publish", "extract-questions", "edit"};
-constexpr std::string_view k_leaves_workflow[]    = {"list", "show", "run"};
-constexpr std::string_view k_leaves_workspace[]   = {"init", "doctor", "routing build", "routing show", "regenerate"};
-
-constexpr planar_verb_rule k_planar_verb_rules[] = {
-    {"annotate", k_leaves_annotate},
-    {"artifact", k_leaves_artifact},
-    {"assoc", k_leaves_assoc},
-    {"audit", k_leaves_audit},
-    {"bench", k_leaves_bench},
-    {"capture", k_leaves_capture},
-    {"closure", k_leaves_closure},
-    {"completion", k_leaves_empty},
-    {"config", k_leaves_config},
-    {"dashboard", k_leaves_empty},
-    {"decision", k_leaves_decision},
-    {"demote", k_leaves_empty},
-    {"explore", k_leaves_empty},
-    {"ext", k_leaves_ext},
-    {"feedback", k_leaves_feedback},
-    {"groups", k_leaves_groups},
-    {"handoff", k_leaves_handoff},
-    {"health", k_leaves_empty},
-    {"import", k_leaves_empty},
-    {"init", k_leaves_empty},
-    {"link", k_leaves_empty},
-    {"links", k_leaves_links},
-    {"local", k_leaves_local},
-    {"models", k_leaves_models},
-    {"plan", k_leaves_plan},
-    {"promote", k_leaves_empty},
-    {"question", k_leaves_question},
-    {"report", k_leaves_empty},
-    {"resume", k_leaves_resume},
-    {"run", k_leaves_run},
-    {"scenario", k_leaves_scenario},
-    {"schema", k_leaves_empty},
-    {"scope", k_leaves_scope},
-    {"search", k_leaves_empty},
-    {"skills", k_leaves_skills},
-    {"spec", k_leaves_spec},
-    {"sync", k_leaves_sync},
-    {"synthesize", k_leaves_empty},
-    {"task", k_leaves_task},
-    {"templates", k_leaves_templates},
-    {"test-spec", k_leaves_test_spec},
-    {"tree", k_leaves_empty},
-    {"unlink", k_leaves_empty},
-    {"version", k_leaves_empty},
-    {"workbench", k_leaves_workbench},
-    {"workflow", k_leaves_workflow},
-    {"workspace", k_leaves_workspace},
-};
-// clang-format on
-
 /// @brief Split `text` on runs of ASCII whitespace, mirroring
 /// `std.mem.tokenizeAny(u8, text, " \t\r\n")`.
 auto tokenize(std::string_view text) -> std::vector<std::string_view> {
@@ -200,73 +104,6 @@ auto tokenize(std::string_view text) -> std::vector<std::string_view> {
     words.push_back(text.substr(start, i - start));
   }
   return words;
-}
-
-/// @brief Extract a canonical, bounded `planar ...` verb path from a
-/// shell command string, or unset when it does not match the known verb
-/// table exactly.
-auto bounded_planar_verb_path(std::string_view command) -> std::optional<std::string_view> {
-  auto const trim_ws = [](std::string_view s) {
-    std::size_t b     = 0;
-    std::size_t e     = s.size();
-    auto const  is_ws = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    while (b < e && is_ws(s[b])) {
-      ++b;
-    }
-    while (e > b && is_ws(s[e - 1])) {
-      --e;
-    }
-    return s.substr(b, e - b);
-  };
-  std::string_view const trimmed = trim_ws(command);
-  if (trimmed.find_first_of(";&|\n\r") != std::string_view::npos) {
-    return std::nullopt;
-  }
-  auto const words = tokenize(trimmed);
-  if (words.empty()) {
-    return std::nullopt;
-  }
-  std::string_view const executable = words[0];
-  if (executable != "planar") {
-    return std::nullopt;
-  }
-  if (words.size() < 2) {
-    return std::nullopt;
-  }
-  std::string_view const domain = words[1];
-  auto const             base   = reinterpret_cast<std::uintptr_t>(trimmed.data());
-  auto const domain_end = static_cast<std::size_t>(reinterpret_cast<std::uintptr_t>(domain.data()) - base) + domain.size();
-
-  for (auto const& rule : k_planar_verb_rules) {
-    if (rule.domain != domain) {
-      continue;
-    }
-    for (auto const& leaf : rule.leaves) {
-      auto const  leaf_words      = tokenize(leaf);
-      std::size_t candidate_index = 2; // words after `planar <domain>`
-      std::size_t end             = domain_end;
-      bool        matched         = true;
-      for (auto const& expected : leaf_words) {
-        if (candidate_index >= words.size()) {
-          matched = false;
-          break;
-        }
-        std::string_view const actual = words[candidate_index];
-        if (actual != expected) {
-          matched = false;
-          break;
-        }
-        end = static_cast<std::size_t>(reinterpret_cast<std::uintptr_t>(actual.data()) - base) + actual.size();
-        ++candidate_index;
-      }
-      if (matched) {
-        std::string_view const path = trimmed.substr(0, end);
-        return path.size() <= 96 ? std::optional<std::string_view>{path} : std::nullopt;
-      }
-    }
-    return std::nullopt;
-  }
-  return std::nullopt;
 }
 
 /// @brief The final path component of `word`.
@@ -294,21 +131,39 @@ auto is_redirection(std::string_view word) -> bool {
   return i < word.size() && (word[i] == '<' || word[i] == '>');
 }
 
+/// @brief Whether a chain step may precede planar when joined to it by `&&`:
+/// a step that only changes directory or sets the environment cannot fail
+/// the chain with a status of its own that the transcript would then
+/// attribute to planar.
+auto is_trivial_step(const std::vector<std::string_view>& step) -> bool {
+  if (step.empty()) {
+    return false;
+  }
+  if (step[0] == "cd" || step[0] == "pushd" || step[0] == "export") {
+    return true;
+  }
+  return std::ranges::all_of(step, is_env_assignment);
+}
+
 /// @brief The argument words after the `planar` executable in `command`, or
-/// unset when the command is not a single planar invocation whose exit status
-/// is planar's own.
+/// unset when the command is not one whose recorded exit status is planar's.
 ///
-/// Accepts `cd dir && planar ...`, `;` and `&&` chains, `env`/`NAME=value`
-/// prefixes, and an executable spelled `planar` or any path ending in
-/// `/planar`. Rejects pipelines, command substitution, here-documents,
-/// background jobs and commands with more than one planar segment, because
-/// then the status the transcript recorded cannot be attributed to one planar
-/// verb. Only the planar segment's words are returned.
+/// The command is split into steps at `;` and `&&`. Planar must be the LAST
+/// step, so the chain's status is planar's. A step joined to planar by `;`
+/// may be anything; every step joined by `&&` in the run directly before
+/// planar must be trivial (`cd`, `pushd`, `export`, `NAME=value`), because a
+/// failing `make &&` would end the chain with make's status. The planar step
+/// may carry `env`/`NAME=value` prefixes and an executable spelled `planar`
+/// or any path ending in `/planar`. Pipelines, command substitution,
+/// here-documents, background jobs and a second planar step are rejected.
+/// Only the planar step's words are returned.
 auto planar_argv_tail(std::string_view command) -> std::optional<std::vector<std::string>> {
   if (command.find_first_of("|`\n\r") != std::string_view::npos || command.find("$(") != std::string_view::npos ||
       command.find("<<") != std::string_view::npos) {
     return std::nullopt;
   }
+  // `;` for a sequence step, `&` for an `&&` step: the marker word that
+  // introduces each step after the first.
   std::string spaced;
   for (std::size_t i = 0; i < command.size(); ++i) {
     char const c = command[i];
@@ -316,7 +171,7 @@ auto planar_argv_tail(std::string_view command) -> std::optional<std::vector<std
       spaced += " ; ";
     } else if (c == '&') {
       if (i + 1 < command.size() && command[i + 1] == '&') {
-        spaced += " ; ";
+        spaced += " && ";
         ++i;
       } else if (i > 0 && command[i - 1] == '>') {
         spaced += c; // the `&` of `2>&1`
@@ -327,67 +182,66 @@ auto planar_argv_tail(std::string_view command) -> std::optional<std::vector<std
       spaced += c;
     }
   }
-  std::optional<std::vector<std::string>> found;
-  std::vector<std::string_view>           segment;
-  auto const                              flush = [&]() -> bool {
-    std::size_t at = 0;
-    while (at < segment.size() && (segment[at] == "env" || is_env_assignment(segment[at]))) {
+  std::vector<std::vector<std::string_view>> steps(1);
+  std::vector<bool>                          joined_by_and{false}; // how each step is joined to the one before it
+  for (auto const word : tokenize(spaced)) {
+    if (word == ";" || word == "&&") {
+      steps.emplace_back();
+      joined_by_and.push_back(word == "&&");
+    } else {
+      steps.back().push_back(word);
+    }
+  }
+  std::optional<std::size_t> planar_step;
+  std::size_t                executable_at = 0;
+  for (std::size_t index = 0; index < steps.size(); ++index) {
+    auto const& step = steps[index];
+    std::size_t at   = 0;
+    while (at < step.size() && (step[at] == "env" || is_env_assignment(step[at]))) {
       ++at;
     }
-    if (at < segment.size() && path_basename(segment[at]) == "planar") {
-      if (found.has_value()) {
-        return false;
-      }
-      std::vector<std::string> tail;
-      for (std::size_t i = at + 1; i < segment.size() && !is_redirection(segment[i]); ++i) {
-        tail.emplace_back(segment[i]);
-      }
-      found = std::move(tail);
-    }
-    segment.clear();
-    return true;
-  };
-  for (auto const word : tokenize(spaced)) {
-    if (word == ";") {
-      if (!flush()) {
+    if (at < step.size() && path_basename(step[at]) == "planar") {
+      if (planar_step.has_value()) {
         return std::nullopt;
       }
-    } else {
-      segment.push_back(word);
+      planar_step   = index;
+      executable_at = at;
     }
   }
-  if (!flush() || !found.has_value() || found->empty()) {
+  if (!planar_step.has_value() || *planar_step + 1 != steps.size()) {
     return std::nullopt;
   }
-  return found;
+  for (std::size_t index = *planar_step; index > 0 && joined_by_and[index]; --index) {
+    if (!is_trivial_step(steps[index - 1])) {
+      return std::nullopt;
+    }
+  }
+  std::vector<std::string> tail;
+  auto const&              step = steps[*planar_step];
+  for (std::size_t i = executable_at + 1; i < step.size() && !is_redirection(step[i]); ++i) {
+    tail.emplace_back(step[i]);
+  }
+  if (tail.empty()) {
+    return std::nullopt;
+  }
+  return tail;
 }
 
 /// @brief The signal verb path (`planar <verb path>`) for the planar
 /// invocation in `command`, or unset when `command` is not one. The words are
 /// never copied through: the verb path is what `resolve` (the live CLI
 /// catalog rule) returns for them, so operator prose cannot reach a signal.
-/// Without a resolver the built-in verb table decides.
+/// Without a resolver nothing is recognized.
 auto planar_verb_path_from_command(std::string_view command, const verb_path_resolver* resolve) -> std::optional<std::string> {
+  if (resolve == nullptr || !static_cast<bool>(*resolve)) {
+    return std::nullopt;
+  }
   auto const tail = planar_argv_tail(command);
   if (!tail.has_value()) {
     return std::nullopt;
   }
-  std::string path;
-  if (resolve != nullptr && static_cast<bool>(*resolve)) {
-    auto const resolved = (*resolve)(*tail);
-    path                = resolved.empty() ? std::string{"planar"} : "planar " + resolved;
-  } else {
-    std::string joined = "planar";
-    for (auto const& word : *tail) {
-      joined += ' ';
-      joined += word;
-    }
-    auto const table = bounded_planar_verb_path(joined);
-    if (!table.has_value()) {
-      return std::nullopt;
-    }
-    path = std::string{*table};
-  }
+  auto const  resolved = (*resolve)(*tail);
+  std::string path     = resolved.empty() ? std::string{"planar"} : "planar " + resolved;
   if (path.size() > 96) {
     return std::nullopt;
   }
@@ -1379,7 +1233,7 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
 } // namespace
 
 auto collect_preview_from_paths(const transcript_config& config, const std::optional<cli_log_adapter>& cli,
-                                const collector_limits& limits, const fs_fault& fault, const verb_path_resolver& resolve)
+                                const verb_path_resolver& resolve, const collector_limits& limits, const fs_fault& fault)
     -> preview {
   std::vector<raw_source>  owned;
   std::vector<warning_row> extra_warnings;
