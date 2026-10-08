@@ -79,6 +79,8 @@ auto tag_name(ip::warning_kind k) -> std::string_view {
     return "evidence_cap";
   case ip::warning_kind::cli_adapter_failed:
     return "cli_adapter_failed";
+  case ip::warning_kind::unsupported_layout:
+    return "unsupported_layout";
   }
   return "unknown";
 }

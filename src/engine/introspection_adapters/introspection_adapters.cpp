@@ -736,7 +736,8 @@ auto coverage_accounted(const coverage_row& cov) -> bool {
 
 } // namespace
 
-auto collect_preview(std::span<const raw_source> sources) -> preview {
+auto collect_preview(std::span<const raw_source> sources, const verb_path_resolver& resolve) -> preview {
+  static_cast<void>(resolve);
   std::vector<signal_row>   signals;
   std::vector<coverage_row> coverage;
 
@@ -1170,7 +1171,9 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
 } // namespace
 
 auto collect_preview_from_paths(const transcript_config& config, const std::optional<cli_log_adapter>& cli,
-                                const collector_limits& limits, const fs_fault& fault) -> preview {
+                                const collector_limits& limits, const fs_fault& fault, const verb_path_resolver& resolve)
+    -> preview {
+  static_cast<void>(resolve);
   std::vector<raw_source>  owned;
   std::vector<warning_row> extra_warnings;
   std::size_t              files_left   = limits.max_files;

@@ -137,6 +137,13 @@ export struct raw_source {
   std::uint32_t files_skipped_window = 0; ///< Files skipped for a modification time before the window.
 };
 
+/// @brief Maps the argument words that follow a transcript's `planar`
+/// executable to the verb path the live CLI catalog would record for them: a
+/// token the tree names, a structured operand in the second slot, otherwise
+/// `<unknown>`. Injected so this engine imports no `cmd` module. An empty
+/// resolver selects the built-in verb table.
+export using verb_path_resolver = std::function<std::string(std::span<const std::string>)>;
+
 /// @brief Collect a no-write preview from raw vendor JSONL.
 ///
 /// Invalid JSON and malformed recognized envelopes are isolated per line
@@ -151,7 +158,8 @@ export struct raw_source {
 /// iteration.
 /// @param sources The raw per-vendor JSONL to normalize.
 /// @return The aggregated, redacted preview.
-export auto collect_preview(std::span<const raw_source> sources) -> preview;
+/// @param resolve The transcript verb-path catalog rule; empty selects the built-in table.
+export auto collect_preview(std::span<const raw_source> sources, const verb_path_resolver& resolve = {}) -> preview;
 
 /// @brief Resolve which path a vendor should read: `builtin` when enabled
 /// and no override is set, `override_path` when both enabled and set, or
@@ -250,8 +258,10 @@ export struct cli_log_adapter {
 /// (mirrors the oracle's `cli: ?CliLogAdapter = null` arm).
 /// @param limits The file/byte/record caps.
 /// @param fault The fault-injection seam (tests only; empty in production).
+/// @param resolve The transcript verb-path catalog rule; empty selects the built-in table.
 /// @return The aggregated, redacted preview.
 export auto collect_preview_from_paths(const transcript_config& config, const std::optional<cli_log_adapter>& cli,
-                                       const collector_limits& limits = {}, const fs_fault& fault = {}) -> preview;
+                                       const collector_limits& limits = {}, const fs_fault& fault = {},
+                                       const verb_path_resolver& resolve = {}) -> preview;
 
 } // namespace planar::engine::introspection_adapters

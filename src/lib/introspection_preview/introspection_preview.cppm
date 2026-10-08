@@ -77,6 +77,7 @@ export enum class warning_kind : std::uint8_t {
   record_cap,
   evidence_cap,
   cli_adapter_failed,
+  unsupported_layout,
 };
 
 /// @brief One coverage- or cap-driven warning.

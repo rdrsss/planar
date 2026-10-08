@@ -619,21 +619,6 @@ TEST_CASE("collect_preview_from_paths: an override directory with the documented
   CHECK(claude->malformed == 1);
 }
 
-TEST_CASE("collect_preview_from_paths: copilot is NOT jsonl_only — a non-.jsonl file still counts",
-          "[engine][introspection_adapters][discovery]") {
-  scratch_dir scratch;
-  auto const  copilot_dir = scratch.path_ / ".copilot" / "session-state";
-  write(copilot_dir / "session.log", "not json\n");
-
-  ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
-
-  auto const* copilot = coverage_for(preview, ia::vendor::copilot);
-  REQUIRE(copilot != nullptr);
-  CHECK(copilot->state == ia::coverage_state::observed);
-  CHECK(copilot->scanned == 1);
-}
-
 TEST_CASE("collect_preview_from_paths: fault injection on selected_stat marks the vendor unavailable with no warning",
           "[engine][introspection_adapters][discovery]") {
   scratch_dir scratch;
@@ -1144,4 +1129,226 @@ TEST_CASE("transcript scan: an oversize file that is not the newest is skipped a
   CHECK(claude->scanned == 4);
   CHECK(claude->files_skipped_cap == 1);
   CHECK(claude->files_partial == 0);
+}
+
+// ============================================================================
+// --- transcript format fix --- (diagnose-transcript-format-fix)
+// ============================================================================
+
+namespace {
+
+auto fixture_dir() -> std::filesystem::path {
+  return std::filesystem::path{__FILE__}.parent_path() / "fixtures" / "transcript_shapes";
+}
+
+auto read_fixture(std::string_view name) -> std::string {
+  std::ifstream     file(fixture_dir() / name, std::ios::binary);
+  std::stringstream buffer;
+  buffer << file.rdbuf();
+  return buffer.str();
+}
+
+/// A catalog stand-in: the first word must be a known top-level verb, the
+/// second a known subcommand of `task`; everything else is masked.
+auto test_catalog(std::span<const std::string> argv) -> std::string {
+  if (argv.empty()) {
+    return "";
+  }
+  if (argv[0] != "task" && argv[0] != "plan" && argv[0] != "search") {
+    return "<unknown>";
+  }
+  std::string out = argv[0];
+  if (argv.size() > 1 && argv[0] == "task" && (argv[1] == "show" || argv[1] == "add" || argv[1] == "list")) {
+    out += ' ';
+    out += argv[1];
+  }
+  return out;
+}
+
+auto claude_signals(std::string_view command, const ia::verb_path_resolver& resolve = test_catalog)
+    -> std::vector<ia::signal_row> {
+  std::vector<ia::raw_source> sources{ia::raw_source{.v = ia::vendor::claude, .jsonl = failed_pair("t", command)}};
+  return ia::collect_preview(sources, resolve).signals;
+}
+
+auto codex_command_record(std::string_view command_json, std::string_view exit_and_status) -> std::string {
+  return std::format(
+      R"({{"type":"event_msg","timestamp":"2026-01-01T00:00:00.000Z","payload":{{"type":"item_completed","item":{{"type":"CommandExecution","command":{},{}}}}}}})"
+      "\n",
+      command_json, exit_and_status);
+}
+
+auto codex_signals(std::string_view command_json, std::string_view exit_and_status) -> ia::preview {
+  std::vector<ia::raw_source> sources{
+      ia::raw_source{.v = ia::vendor::codex, .jsonl = codex_command_record(command_json, exit_and_status)}};
+  return ia::collect_preview(sources, test_catalog);
+}
+
+} // namespace
+
+TEST_CASE("transcript format: the Claude fixture's bare and cd-prefixed planar failures both normalize",
+          "[engine][introspection_adapters][format-fix]") {
+  std::vector<ia::raw_source> sources{ia::raw_source{.v = ia::vendor::claude, .jsonl = read_fixture("claude_current.jsonl")}};
+  auto const                  preview = ia::collect_preview(sources, test_catalog);
+
+  REQUIRE(preview.signals.size() == 1);
+  CHECK(preview.signals[0].verb_path == "planar task show");
+  CHECK(preview.signals[0].count == 2);
+  CHECK(preview.coverage[0].malformed == 0);
+}
+
+TEST_CASE("transcript format: the Claude recognizer takes the planar segment of prefixed and chained commands",
+          "[engine][introspection_adapters][format-fix]") {
+  for (std::string_view const command : {
+           "planar task show 1",
+           "./bin/planar task show 1",
+           "build/debug/bin/planar task show 1",
+           "/opt/x/bin/planar task show 1",
+           "FOO=1 planar task show 1",
+           "env FOO=1 BAR=2 planar task show 1",
+           "cd somewhere && planar task show 1",
+           "cd somewhere; planar task show 1",
+           "planar task show 1 && echo done",
+           "planar task show 1 2>&1",
+       }) {
+    INFO(command);
+    auto const signals = claude_signals(command);
+    REQUIRE(signals.size() == 1);
+    CHECK(signals[0].verb_path == "planar task show");
+  }
+}
+
+TEST_CASE("transcript format: the Claude recognizer rejects pipelines, substitution and other executables",
+          "[engine][introspection_adapters][format-fix]") {
+  for (std::string_view const command : {
+           "planar task show 1 | head",
+           "cd x && planar task show 1 | head -3",
+           "planar task show $(echo hi)",
+           "planar task show `echo hi`",
+           "echo planar task show 1",
+           "planar-agent queue run -- make",
+           "notplanar task show 1",
+           "planar",
+       }) {
+    INFO(command);
+    CHECK(claude_signals(command).empty());
+  }
+}
+
+TEST_CASE("transcript format: a transcript verb path is whatever the catalog rule returns, never the typed words",
+          "[engine][introspection_adapters][format-fix]") {
+  std::vector<std::string> seen;
+  auto const               masking = [&seen](std::span<const std::string> argv) {
+    seen.assign(argv.begin(), argv.end());
+    return std::string{"masked path"};
+  };
+  auto const signals = claude_signals("cd somewhere && planar task show SECRET-PROSE --plan 7", masking);
+
+  REQUIRE(signals.size() == 1);
+  CHECK(signals[0].verb_path == "planar masked path");
+  CHECK(seen == std::vector<std::string>{"task", "show", "SECRET-PROSE", "--plan", "7"});
+}
+
+TEST_CASE("transcript format: unknown words and prose become <unknown> and never reach a signal",
+          "[engine][introspection_adapters][format-fix]") {
+  auto const unknown = claude_signals("planar bogusverb SECRET-PROSE");
+  REQUIRE(unknown.size() == 1);
+  CHECK(unknown[0].verb_path == "planar <unknown>");
+
+  auto const search = claude_signals("planar search SECRET-PROSE");
+  REQUIRE(search.size() == 1);
+  CHECK(search[0].verb_path == "planar search");
+}
+
+TEST_CASE("transcript format: the Codex fixture parses clean and its current records are ignored without malformed lines",
+          "[engine][introspection_adapters][format-fix]") {
+  std::vector<ia::raw_source> sources{ia::raw_source{.v = ia::vendor::codex, .jsonl = read_fixture("codex_current.jsonl")}};
+  auto const                  preview = ia::collect_preview(sources, test_catalog);
+
+  CHECK(preview.coverage[0].malformed == 0);
+  CHECK(preview.coverage[0].scanned == 11);
+  CHECK(preview.coverage[0].ignored == 11);
+  CHECK(preview.signals.empty());
+}
+
+TEST_CASE("transcript format: a failed Codex CommandExecution of a planar command is a failure signal",
+          "[engine][introspection_adapters][format-fix]") {
+  for (auto const& [command, evidence] : std::vector<std::pair<std::string_view, std::string_view>>{
+           {R"(["planar","task","show","1"])", R"("exit_code":2,"status":"failed")"},
+           {R"(["bash","-lc","cd x && planar task show 1"])", R"("exit_code":1,"status":"failed")"},
+           {R"(["/bin/zsh","-c","./bin/planar task show 1"])", R"("exit_code":1,"status":"completed")"},
+           {R"(["planar","task","show","1"])", R"("status":"failed")"},
+       }) {
+    INFO(command << " " << evidence);
+    auto const preview = codex_signals(command, evidence);
+    REQUIRE(preview.signals.size() == 1);
+    CHECK(preview.signals[0].v == ia::vendor::codex);
+    CHECK(preview.signals[0].cat == ia::category::failure);
+    CHECK(preview.signals[0].verb_path == "planar task show");
+    CHECK(preview.coverage[0].normalized == 1);
+  }
+}
+
+TEST_CASE("transcript format: Codex CommandExecution without planar failure evidence is not a signal",
+          "[engine][introspection_adapters][format-fix]") {
+  for (auto const& [command, evidence] : std::vector<std::pair<std::string_view, std::string_view>>{
+           {R"(["planar","task","show","1"])", R"("exit_code":0,"status":"completed")"},
+           {R"(["ls","-la"])", R"("exit_code":1,"status":"failed")"},
+           {R"(["bash","-lc","planar task show 1 | head"])", R"("exit_code":1,"status":"failed")"},
+       }) {
+    INFO(command << " " << evidence);
+    auto const preview = codex_signals(command, evidence);
+    CHECK(preview.signals.empty());
+    CHECK(preview.coverage[0].malformed == 0);
+  }
+}
+
+TEST_CASE("transcript format: Codex custom tool records are validated, so a broken one is malformed",
+          "[engine][introspection_adapters][format-fix]") {
+  std::string const jsonl =
+      R"({"type":"response_item","timestamp":"2026-01-01T00:00:00.000Z","payload":{"type":"custom_tool_call","name":"x","input":"y","call_id":"c"}})"
+      "\n"
+      R"({"type":"response_item","timestamp":"2026-01-01T00:00:00.000Z","payload":{"type":"custom_tool_call_output","call_id":"c","output":[{"type":"input_text","text":"t"}]}})"
+      "\n"
+      R"({"type":"response_item","timestamp":"2026-01-01T00:00:00.000Z","payload":{"type":"custom_tool_call","name":"x","input":"y"}})"
+      "\n"
+      R"({"type":"response_item","timestamp":"2026-01-01T00:00:00.000Z","payload":{"type":"custom_tool_call_output","output":"o"}})"
+      "\n";
+  std::vector<ia::raw_source> sources{ia::raw_source{.v = ia::vendor::codex, .jsonl = jsonl}};
+  auto const                  preview = ia::collect_preview(sources, test_catalog);
+
+  CHECK(preview.coverage[0].scanned == 4);
+  CHECK(preview.coverage[0].ignored == 2);
+  CHECK(preview.coverage[0].malformed == 2);
+}
+
+TEST_CASE("transcript format: a Copilot session-state directory with no JSONL is unsupported, not malformed",
+          "[engine][introspection_adapters][format-fix]") {
+  ia::transcript_config const config{.home_dir     = "/nonexistent-home",
+                                     .copilot_path = (fixture_dir() / "copilot_session_state").string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
+
+  auto const* copilot = coverage_for(preview, ia::vendor::copilot);
+  REQUIRE(copilot != nullptr);
+  CHECK(copilot->state == ia::coverage_state::unavailable);
+  CHECK(copilot->scanned == 0);
+  CHECK(copilot->malformed == 0);
+  CHECK(has_warning(preview.warnings, ia::vendor::copilot, ia::warning_kind::unsupported_layout));
+}
+
+TEST_CASE("transcript format: Copilot reads only the JSONL files in session-state",
+          "[engine][introspection_adapters][format-fix]") {
+  scratch_dir scratch;
+  auto const  dir = scratch.path_ / ".copilot" / "session-state" / "s1";
+  write(dir / "workspace.yaml", "id: x\ncwd: y\n");
+  write(dir / "events.jsonl", "not json\n");
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt);
+
+  auto const* copilot = coverage_for(preview, ia::vendor::copilot);
+  REQUIRE(copilot != nullptr);
+  CHECK(copilot->state == ia::coverage_state::observed);
+  CHECK(copilot->scanned == 1);
+  CHECK_FALSE(has_warning(preview.warnings, ia::vendor::copilot, ia::warning_kind::unsupported_layout));
 }
