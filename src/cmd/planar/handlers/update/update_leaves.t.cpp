@@ -811,7 +811,7 @@ TEST_CASE("update lock: a live owner is recognised across time zones on both sid
              {lock_lib(), root, k_tz_checker}, &out);
     CHECK(rc == 1);
     CHECK(out.contains(std::format("update (pid {})", ::getpid())));
-    CHECK(highest_gen(owner->dir) == std::to_string(owner->gen));
+    CHECK(highest_gen(owner->dir) == owner->gen);
     lock::release(*owner);
   }
 
