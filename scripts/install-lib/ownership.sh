@@ -25,6 +25,10 @@
 #                           status 0 when INSTALLED is still what Planar placed
 #                           from STAGED; never removes anything.
 
+# The vendor name list is shared with install.sh and the uninstaller.
+# shellcheck source=scripts/install-lib/managed-lists.sh
+source "$(dirname "${BASH_SOURCE[0]}")/managed-lists.sh"
+
 SWEEP_REMOVED=0
 SWEEP_LEFT=0
 
@@ -82,7 +86,7 @@ sweep_agents() {
   local dir="$1" link v
   local -a pats=()
   [[ -d "$dir" ]] || return 0
-  for v in claude codex copilot gemini antigravity opencode; do pats+=("$PLANAR_HOME/agents/$v/*"); done
+  for v in $PLANAR_VENDOR_NAMES; do pats+=("$PLANAR_HOME/agents/$v/*"); done
   while IFS= read -r -d '' link; do
     if sweep_link_into "$link" ${pats[@]+"${pats[@]}"} || sweep_retired_toplevel_agent "$link"; then
       sweep_remove "$link" "agent symlink"

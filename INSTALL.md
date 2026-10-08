@@ -221,10 +221,10 @@ No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor
 | `--prefix DIR` | Install root (default `~/.planar`). See [The install root guard](#the-install-root-guard). |
 | `--vendors LIST` | Comma-separated filter over the vendors found on the host: `claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`. Default is all six. Naming an absent vendor warns. |
 | `--no-vendor` | Skip vendor surfaces entirely; install Planar core only. |
-| `--prebuilt DIR` | Install an unpacked release bundle instead of building: see [Prebuilt install](#prebuilt-install---prebuilt). Refused together with `--link` (exit 2). |
+| `--prebuilt DIR` | Install an unpacked release bundle instead of building: see [Prebuilt install](#prebuilt-install---prebuilt). Refused together with `--link`, `--ignore-live-queue` or `--uninstall` (exit 2, naming both flags); without a directory it is a usage error (exit 64). |
 | `--link` | Symlink the staged skill and the Markdown, Copilot and Codex agent files from the source repo instead of copying. **Dev mode** — edits to the repo propagate immediately. The OpenCode agents are always derived regular files. |
 | `--force` | Overwrite existing symlinks at the destinations (never a preserved path: shipped `templates/` files are still placed only where missing), and adopt a non-empty install root that carries no Planar sign. It does **not** override the install root guard for `$HOME`, `/` or an empty root, and does **not** bypass the live-queue guard on an old queue database (see the upgrade note below). |
-| `--ignore-live-queue` | Retire the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
+| `--ignore-live-queue` | Source install only (refused with `--prebuilt`, exit 2): retire the old queue database even while its queue has live entries, or when `python3` cannot check it. The cost is an orphaned old queue; see the upgrade note below. It never bypasses the old-range checks of the retire step. |
 | `--no-prune` | Skip removal of stale vendor files. |
 | `--preset NAME` | CMake build preset: `debug`\|`release` (default `release`). |
 | `--build-dir DIR` | Where to configure and build (default `build/install-<preset>`). |
@@ -232,7 +232,7 @@ No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor
 | `--verbose`, `-v` | Per-file detail (default prints a summary). |
 | `--version` | Print the installer version and exit. |
 | `--cleanup DIR` | Updater only: remove the updater's temporary directory when the install ends. Accepted only with `--prebuilt` and the updater's handoff; see [the handoff](#the-update-handoff-and---cleanup). |
-| `--uninstall` | Run the standalone uninstaller, `planar-uninstall` (the bundle's `uninstall.sh`, or the checkout's `scripts/uninstall.sh`); see [Uninstall](#uninstall). `--prefix`, `--purge` and `--yes` are passed on; every other install option is ignored. `--uninstall --force` exits 2 naming `--purge`, and `--uninstall --dry-run` exits 64. |
+| `--uninstall` | Run the standalone uninstaller, `planar-uninstall` (the bundle's `uninstall.sh`, or the checkout's `scripts/uninstall.sh`); see [Uninstall](#uninstall). `--prefix`, `--purge` and `--yes` are passed on; every other install option is ignored. `--uninstall --force` exits 2 naming `--purge`, `--uninstall --prebuilt` exits 2 naming both flags, and `--uninstall --dry-run` exits 64. |
 | `--purge` | With `--uninstall` only: remove the [preserved paths](#preserved-paths) too, except a relocated one. |
 | `--yes`, `-y` | With `--uninstall` only: remove Planar binaries left in `~/.local/bin` without asking. |
 

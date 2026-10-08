@@ -864,4 +864,51 @@ run_install "$REPO" "$H" --link || fail "link-mode re-run failed: $(cat "$H/err"
 grep -Fq 'retired 0 previous projection(s); left 0' "$H/out" || fail "the link-mode re-run swept its own links: $(grep -E 'removed|previous projection' "$H/out")"
 [[ -L "$H/.claude/agents/planar-coder.md" ]] || fail "the link-mode re-run lost planar-coder.md"
 
-printf 'install-stage tests: 31 scenarios passed\n'
+
+# --- conflicting installer flags are refused by name (plan 1133, rel-m5-installer-dedup) -------
+# Each refusal exits before anything is created: no prefix appears. --prebuilt
+# with no directory keeps the usage exit 64.
+H="$TMP/h32"; mkdir -p "$H"
+run_install "$REPO" "$H" --prebuilt "$TMP/no-such-bundle" --ignore-live-queue && rc=0 || rc=$?
+[[ "$rc" == 2 ]] || fail "--prebuilt with --ignore-live-queue exited $rc, not 2"
+grep -Fq -- '--ignore-live-queue' "$H/err" || fail "the refusal does not name --ignore-live-queue: $(cat "$H/err")"
+grep -Fq -- '--prebuilt' "$H/err" || fail "the refusal does not name both flags: $(cat "$H/err")"
+[[ ! -e "$H/.planar" ]] || fail "--prebuilt with --ignore-live-queue created the prefix"
+run_install "$REPO" "$H" --ignore-live-queue --prebuilt "$TMP/no-such-bundle" && rc=0 || rc=$?
+[[ "$rc" == 2 ]] || fail "--ignore-live-queue before --prebuilt exited $rc, not 2"
+
+run_install "$REPO" "$H" --uninstall --prebuilt "$TMP/no-such-bundle" && rc=0 || rc=$?
+[[ "$rc" == 2 ]] || fail "--prebuilt with --uninstall exited $rc, not 2: $(cat "$H/err")"
+grep -Fq -- '--uninstall' "$H/err" || fail "the refusal does not name --uninstall: $(cat "$H/err")"
+grep -Fq -- '--prebuilt' "$H/err" || fail "the refusal does not name both flags: $(cat "$H/err")"
+[[ ! -e "$H/.planar" ]] || fail "--prebuilt with --uninstall created the prefix"
+
+for argv in "--prebuilt" "--prebuilt --force" "--prebuilt ''"; do
+  eval "run_install \"\$REPO\" \"\$H\" $argv" && rc=0 || rc=$?
+  [[ "$rc" == 64 ]] || fail "'install.sh $argv' exited $rc, not the usage exit 64"
+  grep -Fq -- '--prebuilt needs a bundle directory' "$H/err" || fail "'install.sh $argv' did not name --prebuilt: $(cat "$H/err")"
+done
+
+# --- one copy of the managed-subtree and vendor lists ------------------------------------------
+# install.sh, the uninstaller and the ownership rules source
+# scripts/install-lib/managed-lists.sh; none keeps a copy of either list.
+LISTS="$ROOT/scripts/install-lib/managed-lists.sh"
+[[ -f "$LISTS" ]] || fail "scripts/install-lib/managed-lists.sh is missing"
+subtrees="$(bash -c 'source "$1"; printf "%s" "$PLANAR_JOURNAL_SUBTREES"' x "$LISTS")"
+vendors="$(bash -c 'source "$1"; printf "%s" "$PLANAR_VENDOR_NAMES"' x "$LISTS")"
+[[ "$subtrees" == "bin skills agents codex-agents workflows scripts migrations" ]] || fail "unexpected managed subtrees: $subtrees"
+[[ "$vendors" == "claude codex copilot gemini antigravity opencode" ]] || fail "unexpected vendor names: $vendors"
+for f in install.sh scripts/uninstall.sh scripts/install-lib/ownership.sh; do
+  grep -Fq 'managed-lists.sh' "$ROOT/$f" || fail "$f does not source managed-lists.sh"
+  ! grep -Eq '^[[:space:]]*(PLANAR_JOURNAL_SUBTREES|PLANAR_VENDOR_NAMES)=' "$ROOT/$f" || fail "$f defines a list of its own"
+  ! grep -Fq 'codex-agents workflows' "$ROOT/$f" || fail "$f spells out the managed-subtree list"
+  ! grep -Eq 'claude,? codex,? copilot|claude codex copilot' "$ROOT/$f" || fail "$f spells out the vendor list"
+done
+# Behaviour, not just text: a vendor added to the one list is known to the installer.
+MUT="$TMP/repo-lists"; make_repo "$MUT"
+printf '%s\n' 'PLANAR_VENDOR_NAMES="$PLANAR_VENDOR_NAMES zzvendor"' >> "$MUT/scripts/install-lib/managed-lists.sh"
+H="$TMP/h33"; mk_home h33 claude
+run_install "$MUT" "$H" --vendors zzvendor || fail "install with the extended vendor list failed: $(cat "$H/err")"
+! grep -Fq 'unknown vendor: zzvendor' "$H/err" || fail "install.sh keeps its own vendor list: it did not see the vendor added to managed-lists.sh"
+
+printf 'install-stage tests: 34 scenarios passed\n'

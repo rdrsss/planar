@@ -64,7 +64,7 @@
 #                                     #   no cmake/ninja/clang/python3 needed
 #   ./install.sh --prefix /opt/planar # override ~/.planar
 #   ./install.sh --force              # overwrite existing symlinks
-#   ./install.sh --ignore-live-queue  # retire agent.db despite live old queue entries
+#   ./install.sh --ignore-live-queue  # source install: retire agent.db despite live old queue entries
 #   ./install.sh --uninstall          # run the uninstaller (~/.planar/bin/planar-uninstall)
 #   ./install.sh --preset debug       # CMake preset (default release)
 #   ./install.sh --dry-run            # preview planned actions without changing anything
@@ -85,7 +85,7 @@ set -eEuo pipefail
 PLANAR_HOME="${PLANAR_HOME-$HOME/.planar}"
 CODEX_HOME_EXPLICIT="${CODEX_HOME:-}"   # non-empty when the operator set CODEX_HOME: Codex's presence marker
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-VENDORS="claude,codex,copilot,gemini,antigravity,opencode"
+VENDORS=""                    # the default (every vendor in PLANAR_VENDOR_NAMES) is set below, after the library is sourced
 VENDORS_EXPLICIT=0            # set with --vendors: naming an absent vendor then warns
 MODE="copy"                   # copy | link
 PREBUILT_DIR=""               # set with --prebuilt DIR: the unpacked release bundle
@@ -121,10 +121,12 @@ source "$REPO_ROOT/scripts/install-lib/data-paths.sh"
 source "$REPO_ROOT/scripts/install-lib/mutation-lock.sh"
 source "$REPO_ROOT/scripts/install-lib/install-state.sh"
 source "$REPO_ROOT/scripts/install-lib/db-probe.sh"
-# The vendor ownership rules and the release-record readers shared with the
-# uninstaller (plan 1122).
+# The managed-subtree and vendor name lists, the vendor ownership rules and the
+# release-record readers shared with the uninstaller (plan 1122, plan 1133).
+source "$REPO_ROOT/scripts/install-lib/managed-lists.sh"
 source "$REPO_ROOT/scripts/install-lib/ownership.sh"
 source "$REPO_ROOT/scripts/install-lib/release.sh"
+VENDORS="${PLANAR_VENDOR_NAMES// /,}"   # comma-separated for --vendors; order is the report order
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -156,10 +158,11 @@ Options:
   --force            Overwrite existing symlinks / adopt a non-Planar prefix.
                      It does NOT bypass the agent.db live-queue guard.
   --ignore-live-queue
-                     Retire (or uninstall) the old agent.db even while its
+                     Source install only: retire the old agent.db even while its
                      queue has live entries, or python3 cannot check it. The
                      old submitters keep an orphaned queue running outside
-                     the new queue's slot count until they drain.
+                     the new queue's slot count until they drain. Refused with
+                     --prebuilt (exit 2); the uninstaller does not read agent.db.
   --no-prune         Skip removal of stale vendor files
   --preset NAME      CMake build preset: debug|release (default: release)
   --build-dir DIR    Where to configure and build (default:
@@ -205,7 +208,7 @@ while [[ $# -gt 0 ]]; do
     --no-vendor)  VENDORS=""; shift ;;
     --link)       MODE="link"; shift ;;
     --prebuilt)
-      if [[ $# -lt 2 ]]; then printf 'install.sh: --prebuilt needs a bundle directory\n' >&2; exit 64; fi
+      if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then printf 'install.sh: --prebuilt needs a bundle directory\n' >&2; exit 64; fi
       PREBUILT=1; PREBUILT_DIR="$2"; shift 2 ;;
     --cleanup)
       if [[ $# -lt 2 ]]; then printf 'install.sh: --cleanup needs a directory\n' >&2; exit 64; fi
@@ -229,6 +232,21 @@ while [[ $# -gt 0 ]]; do
     *) printf 'install.sh: unknown flag: %s\n\n' "$1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+# ---------- flag conflicts ----------
+
+# --prebuilt installs a bundle; --uninstall removes an install; the live-queue
+# override belongs to the source install's agent.db retirement, which a prebuilt
+# install never reads. Each pair is refused by name before anything is touched
+# (and before --uninstall execs the uninstaller), as --link is below.
+if [[ "$PREBUILT" -eq 1 && "$UNINSTALL" -eq 1 ]]; then
+  printf 'install.sh: --prebuilt cannot be used with --uninstall: --prebuilt installs a release bundle and --uninstall removes the install; run them separately. Nothing was changed.\n' >&2
+  exit 2
+fi
+if [[ "$PREBUILT" -eq 1 && "$IGNORE_LIVE_QUEUE" -eq 1 ]]; then
+  printf 'install.sh: --ignore-live-queue cannot be used with --prebuilt: a prebuilt install never reads the old agent.db, so there is no live-queue check to override. Nothing was changed.\n' >&2
+  exit 2
+fi
 
 # ---------- uninstall: a call into the standalone uninstaller ----------
 
@@ -705,7 +723,8 @@ fi
 # placed missing-only after the swap. Every subtree is always shipped (an absent
 # one is refused above); commands/ and copilot/ are retired paths listed in
 # install-cleanup.txt.
-PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
+# PLANAR_JOURNAL_SUBTREES comes from scripts/install-lib/managed-lists.sh, shared
+# with the uninstaller.
 # DEFAULT_RELEASE_BASE, release_field and release_base_valid come from
 # scripts/install-lib/release.sh, shared with the uninstaller.
 
@@ -1252,7 +1271,7 @@ fi
 # Gemini CLI and Antigravity are detected independently. OpenCode has no skill
 # row on purpose: it reads ~/.agents/skills and ~/.claude/skills, and Planar
 # never writes ~/.config/opencode/skills.
-VENDOR_NAMES=(claude codex copilot gemini antigravity opencode)
+read -r -a VENDOR_NAMES <<< "$PLANAR_VENDOR_NAMES"   # the one list: scripts/install-lib/managed-lists.sh
 
 # The target table: owners|format|destination directory. A row is placed when at
 # least one of its owners is present and selected, so the shared skill is placed
@@ -1726,9 +1745,6 @@ agents_n="$(count_glob "$PLANAR_HOME"/agents/planar-*.md)"
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
 log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
 log "surfaces:   planar skill · $agents_n agents · vendors found: ${VENDORS_FOUND[*]:-none}"
-if [[ "$WARN_COUNT" -gt 0 ]]; then
-  printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"
-fi
 printf '\n'
 log "database:   $PLANAR_INSTALL_DB (current)"
 log "next:       planar init  (in a project checkout, to register it)"
@@ -1736,7 +1752,8 @@ log "uninstall:  $PLANAR_HOME/bin/planar-uninstall  (--purge also removes the da
 
 # A planar ahead of the installed one on PATH shadows it: name that binary, and
 # say plainly when it is the one the retired `make install` left in
-# ~/.local/bin. Resolved after the summary so the warning is the last thing read.
+# ~/.local/bin. Resolved after the summary, and the warning count is printed
+# after it, so the count covers every warning.
 PLANAR_BIN_DIR="$PLANAR_HOME/bin"
 _shadow="$(command -v planar 2>/dev/null || true)"
 if [[ -n "$_shadow" && "$_shadow" == /* ]]; then
@@ -1752,6 +1769,11 @@ if [[ -n "$_shadow" && "$_shadow" == /* ]]; then
     fi
     warn "$_shadow_name shadows the installed $PLANAR_BIN_DIR/planar: your shell runs $_shadow_name. Put $PLANAR_BIN_DIR first on PATH, or remove $_shadow_name$_shadow_why."
   fi
+fi
+
+# The count comes after the shadow warning so it includes it.
+if [[ "$WARN_COUNT" -gt 0 ]]; then
+  printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"
 fi
 
 # Print PATH instructions only when ~/.planar/bin is not already on PATH.

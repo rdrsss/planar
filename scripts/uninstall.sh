@@ -128,13 +128,15 @@ source "$LIB/prefix-guard.sh"
 source "$LIB/mutation-lock.sh"
 # shellcheck source=scripts/install-lib/install-state.sh
 source "$LIB/install-state.sh"
+# shellcheck source=scripts/install-lib/managed-lists.sh
+source "$LIB/managed-lists.sh"
 # shellcheck source=scripts/install-lib/ownership.sh
 source "$LIB/ownership.sh"
 # shellcheck source=scripts/install-lib/release.sh
 source "$LIB/release.sh"
 
-# The managed subtrees, as install.sh swaps them (keep the two lists equal).
-PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
+# The managed subtrees (PLANAR_JOURNAL_SUBTREES) come from managed-lists.sh, the
+# one copy install.sh sources too.
 PLANAR_BINARY_NAMES="planar planar-agent planar-watch planar-execute planar-ext"
 
 # ---------- output ----------

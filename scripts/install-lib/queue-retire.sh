@@ -194,13 +194,14 @@ _qr_classify_probe() {
 # The documented cost of overriding the guard (tech spec 656, "Override").
 _QR_OVERRIDE_COST="old submitters keep writing to the unlinked agent.db, their waiting commands still run when their turn comes in that orphaned queue, and those commands run outside the new queue's slot count until every old submitter drains"
 
-# queue_live_guard WHEN -- the live-queue guard (tech spec 656 steps 1 and 4,
-# and uninstall; decisions on questions 1006, 1007, 1009-1011).
+# queue_live_guard WHEN -- the live-queue guard (tech spec 656 steps 1 and 4;
+# decisions on questions 1006, 1007, 1009-1011). Only the source install calls
+# it: a prebuilt install and the uninstaller never read agent.db.
 #
 # Runs only when $PLANAR_HOME/agent.db exists. Asks queue_retire.py `live`
 # for a per-row judgement of the old store and refuses while any row blocks
 # or the store cannot be read. WHEN names the step in the messages
-# (preflight, re-check, uninstall). There is no process signal: a live old
+# (preflight, re-check). There is no process signal: a live old
 # submitter holds its row for its whole run, so the store alone answers.
 #
 # IGNORE_LIVE_QUEUE=1 turns a blocking row, an unreadable store or a missing
