@@ -32,10 +32,11 @@ def scan(lines):
     for no, line in enumerate(lines, 1):
         m = re.match(r"^\s*(`{3,}|~{3,})", line)
         if m:
+            run = m.group(1)
             if fence is None:
-                fence = m.group(1)[0]
-            elif m.group(1)[0] == fence:
-                fence = None
+                fence = run
+            elif run[0] == fence[0] and len(run) >= len(fence) and re.match(r"^\s*[`~]+\s*$", line):
+                fence = None                                  # a closer is as long as the opener and has no info string
             continue
         if fence:
             continue
@@ -43,13 +44,20 @@ def scan(lines):
         if h:
             base = slug(h.group(1))
             n = seen.get(base, 0)
+            cand = base if n == 0 else "%s-%d" % (base, n)
+            while cand in anchors:                           # GitHub keeps counting past a taken slug
+                n += 1
+                cand = "%s-%d" % (base, n)
             seen[base] = n + 1
-            anchors.add(base if n == 0 else "%s-%d" % (base, n))
+            anchors.add(cand)
         for a in re.finditer(r"<a\s[^>]*?(?:id|name)=[\"']([^\"']+)[\"']", line):
             anchors.add(a.group(1))
         stripped = re.sub(r"`[^`]*`", "", line)              # not links inside code spans
         for lk in re.finditer(r"\]\(#([^)\s]*)\)", stripped):
             links.append((no, lk.group(1)))
+        ref = re.match(r"^ {0,3}\[[^\]]+\]:\s*<?#([^>\s]*)>?", line)   # reference-style definition
+        if ref:
+            links.append((no, ref.group(1)))
     return anchors, links
 
 
@@ -67,6 +75,12 @@ def self_test():
     assert broken(doc) == [], broken(doc)
     bad = doc + ["see [e](#deliberately-omitted-flags) and [f](#dup-2) and [g](#not-a-heading)"]
     assert [f for _, f in broken(bad)] == ["deliberately-omitted-flags", "dup-2", "not-a-heading"], broken(bad)
+    longer = ["# A", "````", "```", "# Hidden", "````", "[x](#hidden) [y](#a)"]   # a short run does not close a longer fence
+    assert [f for _, f in broken(longer)] == ["hidden"], broken(longer)
+    refs = ["# A", "[ok]: #a", "[no]: #missing"]
+    assert [f for _, f in broken(refs)] == ["missing"], broken(refs)
+    clash = ["# X", "# X-1", "# X", "[a](#x) [b](#x-1) [c](#x-2)"]                 # the second X cannot take x-1
+    assert broken(clash) == [], broken(clash)
     print("check-md-anchors: self-test passed")
 
 

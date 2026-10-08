@@ -843,11 +843,15 @@ set_target() {
 # untracked (ignored files aside). Status 1 with CHECKOUT_WHY set when it has
 # one, or when git cannot say (not a repository, no git).
 CHECKOUT_WHY=""
-CHECKOUT_NOGIT=0   # 1 when the tree is not a git checkout: no commit can be shown, so it can never resume
+CHECKOUT_NOGIT=0   # 1: the tree is not a git checkout (it can never be shown clean, so never resumes); 2: git is not installed
 checkout_clean() {
   local st n first
   CHECKOUT_NOGIT=0
-  if ! (trap - ERR; git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1); then CHECKOUT_NOGIT=1; fi
+  if ! command -v git >/dev/null 2>&1; then
+    CHECKOUT_NOGIT=2
+  elif ! (trap - ERR; git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1); then
+    CHECKOUT_NOGIT=1
+  fi
   if ! st="$(trap - ERR; git --no-optional-locks -C "$REPO_ROOT" status --porcelain 2>&1)"; then
     CHECKOUT_WHY="cannot tell whether the source checkout $REPO_ROOT has uncommitted changes (git status: ${st%%$'\n'*})"
     return 1
@@ -993,6 +997,9 @@ if [[ -e "$JOURNAL_FILE" || -L "$JOURNAL_FILE" ]]; then
       # A source resume restages from the checkout: only a clean tree at the
       # recorded commit is the tree the interrupted run was building.
       if [[ "$J_source" == checkout ]] && ! checkout_clean; then
+        if [[ "$CHECKOUT_NOGIT" == 2 ]]; then
+          err "git is not installed, so the source checkout $REPO_ROOT cannot be shown to hold the tree the interrupted install of $J_target_sha was building; a resume never stages a tree it cannot show clean. Nothing was changed. Install git, then complete the install: $J_retry"
+        fi
         if [[ "$CHECKOUT_NOGIT" == 1 ]]; then
           err "$CHECKOUT_WHY, so it cannot be shown to hold the tree the interrupted install of $J_target_sha was building; a resume never stages a tree it cannot show clean, and a tree that is not a git checkout never can. Nothing was changed. To give up the interrupted install instead, make sure no Planar install, update or uninstall is running, remove the recovery journal $ROOT_C/.planar-journal by hand, and install again; its .staging-* and *.old entries are then reported and kept, never removed"
         fi
