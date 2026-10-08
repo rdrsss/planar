@@ -133,7 +133,7 @@ lint_selftest() {
 }
 
 # Test groups (plan 1122 M5, task 7361): the whole file took about 250 s on a loaded host with
-# the second shell, so ctest registers one entry per group, install.bash32 (static),
+# the second shell, so ctest registers one entry per group, install.bash32_static,
 # install.bash32_flag, _home and _vendors (label install_bash32[_<group>]), each of
 # which runs one scenario under the old bash, again, and under the newer bash.
 # INSTALL_BASH32_GROUP selects one; unset runs everything in one process. An unknown

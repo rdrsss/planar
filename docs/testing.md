@@ -292,6 +292,33 @@ slot for its whole run:
 planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> -- make linux-gate     # cli-lint-ignore: `--` is the argument terminator
 ```
 
+### Platform-specific tests
+
+The macOS ctest list and the Linux gate's list differ by exactly three
+tests (measured 2026-10-08 on the M5 tree: 4486 listed on macOS, 4483 in
+`make linux-gate`, compared by name). Each is a `TEST_CASE` inside
+`#if defined(__APPLE__)` with a reason comment above the guard. Nothing
+enforces the table: add a row when you add a platform guard, and compare
+`ctest -N` names on both hosts when a count looks off.
+
+| Test | Absent on | Reason |
+|------|-----------|--------|
+| `group_only_zombies: a group whose only member is an exited leader nobody reaped is all zombies, and a signal to it is either accepted or refused as not permitted` (`src/lib/process/identity.t.cpp`) | Linux | macOS answers `kill(-pgid)` with EPERM for a zombie-only group and the probe reads `sysctl(KERN_PROC_PGRP)`; no other kernel does either, and Linux `group_only_zombies` always answers false. |
+| `group_only_zombies: a zombie leader does not make a group with a live member all zombies` (same file) | Linux | Same macOS-only probe. |
+| `terminate: on macOS a real group whose leader exited unreaped is never reported as a failed signal` (`src/engine/hostqueue/terminate.t.cpp`) | Linux | Pins the macOS EPERM refusal; Linux has none. The fake-probe cases in the same file run everywhere. |
+
+Tests that are registered on both platforms but vacuous on a host with no
+release bundle: `update_leaves.t.cpp` has six end-to-end cases (the bootstrap
+end-to-end update, the exec'd-installer lock owner, the KILL case, and
+the SIGINT, SIGTERM and failed-installer-exec cases, the last three
+sharing a helper) that return early with
+`SUCCEED("no release bundle exists for this host")`
+where `release_platform` finds none, which includes the linux-aarch64
+gate. They count on both platforms and pass without exercising the
+updater there; the in-process cases of the same behaviours run
+everywhere. Making them run needs a Linux aarch64 bundle, which is not a
+shipping platform.
+
 ## When every build is a full rebuild
 
 A build with no source change should run zero steps. If it recompiles
@@ -527,7 +554,8 @@ INSTALL.md § Prerequisites. `make ctest-registry-check` fails when any
 test may run longer than five minutes** (measured on a loaded host); a script
 that grows past that is split into groups, one ctest case each, selected by an
 environment variable the script reads (`INSTALL_ORDER_GROUP`,
-`INSTALL_UNINSTALL_GROUP`; unset runs every group, an unknown name exits 2).
+`INSTALL_UNINSTALL_GROUP`, `INSTALL_STAGE_GROUP`, `INSTALL_BASH32_GROUP`; unset
+runs every group, an unknown name is a usage error that exits 2 in all four).
 `ctest -L '^install_'` covers all of them. They use scratch `HOME`,
 `TMPDIR` and database paths and fake bundles, and touch nothing real. Select one
 by label, and check the matched count:

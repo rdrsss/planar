@@ -138,7 +138,7 @@ PY
 # that group creates.
 STAGE_GROUPS="staging vendors placement modes uninstall"
 GROUP="${INSTALL_STAGE_GROUP:-all}"
-case " all $STAGE_GROUPS " in *" $GROUP "*) ;; *) printf 'install-stage-test: unknown INSTALL_STAGE_GROUP %s (want one of: %s)\n' "$GROUP" "$STAGE_GROUPS" >&2; exit 1 ;; esac
+case " all $STAGE_GROUPS " in *" $GROUP "*) ;; *) printf 'install-stage-test: unknown INSTALL_STAGE_GROUP %s (want one of: %s)\n' "$GROUP" "$STAGE_GROUPS" >&2; exit 2 ;; esac
 want() { [[ "$GROUP" == all || "$GROUP" == "$1" ]]; }
 
 REPO="$TMP/repo"; make_repo "$REPO"
@@ -153,7 +153,7 @@ REPO="$TMP/repo"; make_repo "$REPO"
 
 PLANAR_BIN="${PLANAR_BIN:-$ROOT/build/debug/bin/planar}"
 # Without a built planar the health scenarios (22 to 25) are skipped with a printed reason and
-# the others still run. ctest registers install.stage only where the binary is a target.
+# the others still run. ctest registers the install.stage_<group> entries only where the binary is a target.
 HEALTH=1
 if [[ ! -x "$PLANAR_BIN" ]]; then
   HEALTH=0
