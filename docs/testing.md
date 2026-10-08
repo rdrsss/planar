@@ -491,6 +491,59 @@ To check a migration as raw SQL:
 sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
 ```
 
+## Release bundles and installer script tests
+
+`make dist` configures and builds the `dist` preset (`PLANAR_PORTABLE=ON`,
+version metadata, a macOS 26.0 deployment target), runs the portable-binary
+checks on the five staged binaries, and assembles
+`dist/planar-<platform>.tar.gz` with `SHA256SUMS`, `VERSION`, a standalone
+`get-planar.sh` and the archive's `.gates.json` evidence (`scripts/dist.sh`).
+`make linux-dist` does the same for Linux x86_64 in Docker on Debian bookworm.
+Both are release builds and not part of `make test` or `make test-all`; the
+gates they feed are in [operations.md § 6](operations.md#6-release-gate-evidence)
+and [toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
+Run them through the host queue and never with a validation tag in the real
+repository.
+
+The scripts they ship and the installer have script tests. Each is a ctest case
+registered in `CMakeLists.txt` (or `src/cmd/CMakeLists.txt` for the two that
+need built binaries), so `make test` runs them. They use scratch `HOME`,
+`TMPDIR` and database paths and fake bundles, and touch nothing real. Select one
+by label, and check the matched count:
+
+```sh
+ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
+```
+
+| ctest case | Label | Entry point | Covers |
+|------------|-------|-------------|--------|
+| `dist.identity` | `dist_identity` | `scripts/dist-identity.test.py` | Assembler identity and schema refusals. See [Bundle assembler identity checks](#bundle-assembler-identity-checks). |
+| `dist.layout` | `dist_layout` | `scripts/dist-test.sh` | The real assembler over fake binaries: entries, bytes, `release.json`, checksums. |
+| `release.publish` | `release_publish` | `scripts/release-publish-test.sh` | `release-gates.sh`, `release-publish.sh` and `make release-cut` against a scratch annotated tag, fake bundles and a fake `gh`, `docker` and `uname`: every refusal runs no `gh`. |
+| `release.workflow` | `release_workflow` | `scripts/release-workflow.test.py` | A lint of `.github/workflows/release.yml` (trigger, `needs`, gate-before-upload, permissions) and its publisher steps run against fakes. Nothing runs on GitHub. |
+| `bootstrap.release` | `bootstrap` | `scripts/get-planar-test.sh` | `get-planar.sh` end to end. See [The release bootstrap test](#the-release-bootstrap-test). |
+| `install.bash32` | `install_bash32` | `scripts/install-bash32-test.sh` | A lint for bash-4-only constructs and unguarded empty-array expansions, and a prebuilt install and uninstall under `/bin/bash`. |
+| `install.prefix_guard` | `install_prefix_guard` | `scripts/install-prefix-guard-test.sh` | The install-root guard for `install.sh` and `--uninstall`. |
+| `install.data_paths` | `install_data_paths` | `scripts/install-data-paths-test.sh` | Data paths are never removed, and INSTALL.md's preserved-paths list matches `scripts/install-lib/data-paths.sh`. |
+| `install.prebuilt` | `install_prebuilt` | `scripts/install-prebuilt-test.sh` | `install.sh --prebuilt`: an incomplete bundle, `--link`, and the move-aside of the old queue database. |
+| `install.retired_targets` | `install_retired_targets` | `scripts/install-retired-targets-test.sh` | The retired `make install` targets are gone, and no install doc carries a `make install` recipe. |
+| `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, and the missing-only `templates/` rule. |
+| `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, simultaneous reclaims, the update handoff. |
+| `install.uninstall` | `install_uninstall` | `scripts/install-uninstall-test.sh` | `scripts/uninstall.sh`: removals, `--purge`, unknown entries, `~/.local/bin`, interrupted-uninstall retry. |
+| `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
+| `install.order` | `install_order` | `scripts/install-order-test.sh` | The order of an install end to end, against bundles of the real built binaries: databases fresh, behind, ahead and faulty, kill-and-resume at every swap point, concurrent owners, the updater handoff. |
+
+`portable.binaries` and `portable.inspector` (label `portable`) exist only in a
+configuration with `PLANAR_PORTABLE=ON`; see
+[toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
+`planar update` itself is covered by Catch2 cases under
+`src/cmd/planar/handlers/update/` (label `cmd_planar`).
+
+`scripts/release-workflow-crosscheck.py` is a manual check outside ctest. It
+compares the workflow reader's result with PyYAML and runs `actionlint`, and it
+fails when either tool is missing. Run it by hand after editing
+`.github/workflows/release.yml`.
+
 ## Bundle assembler identity checks
 
 The `dist.identity` ctest (label `dist_identity`) runs nine focused controlled

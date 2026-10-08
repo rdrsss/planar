@@ -918,6 +918,71 @@ command: `repair_command` is always the `./install.sh --prefix
 <resolved-prefix>` bootstrap, never a scoped per-row repair. The classifier
 itself never opens SQLite and has no write path of its own.
 
+### Release bundles
+
+A release is one tarball per platform, `planar-<os>-<arch>.tar.gz` with
+`<os>-<arch>` in `{macos-arm64, linux-x86_64}`, built by `make dist` and
+`make linux-dist` (`scripts/dist.sh`). The name carries no version; the version
+is inside, in `release.json`. The bundle is a relocatable image of the managed
+part of `~/.planar`, so a prebuilt install is a copy:
+
+```
+planar-<os>-<arch>/
+├── release.json          # version, sha, date, os, arch, os_floor, schema_version
+├── install.sh            # the repository installer, byte for byte
+├── uninstall.sh          # the uninstaller, byte for byte
+├── get-planar.sh         # the bootstrap, byte for byte
+├── install-cleanup.txt
+├── bin/                  # the five binaries
+├── skills/planar/
+├── agents/
+├── codex-agents/         # rendered at dist time
+├── templates/
+├── workflows/
+├── migrations/
+└── scripts/install-lib/  # the only part of scripts/ that ships
+```
+
+`release.json` is one `"key": "value"` pair per line so the POSIX bootstrap
+reads it with `sed`. `schema_version` is the bundle's highest migration number,
+read from a scratch database at dist time. A release publishes five assets: both
+tarballs, a merged `SHA256SUMS`, `VERSION` and the standalone `get-planar.sh`.
+The cut and its gates are in [operations.md § 6](operations.md#6-release-gate-evidence).
+
+**Install order.** The bootstrap (`get-planar.sh`) and `planar update` both end
+in `install.sh --prebuilt <bundle>`, the same installer a source install runs.
+It takes the mutation lock, validates the recovery journal, stages every managed
+subtree, probes the database with the staged binaries (an ahead database
+refuses), swaps each subtree in by two renames through `<name>.old`, creates or
+migrates the database with the installed `planar init`, places the vendor
+surfaces, and writes `release.json` and then the install stamp last. The full
+order and the failure rules are in
+[INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install).
+
+**Managed subtrees and data paths.** The installer owns `bin/`, `skills/`,
+`agents/`, `codex-agents/`, `workflows/`, `scripts/` and `migrations/` outright
+and replaces each whole. It never removes a data path, and the uninstaller keeps
+them without `--purge`: `planar.db` with `planar.db-wal` and `planar.db-shm`,
+`queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`, `workspaces/`,
+`models/`, `execute/` and `templates/`. They live under `~/.planar` unless
+`PLANAR_DB`, `PLANAR_CONFIG_PATH`, `PLANAR_WORKBENCH_ROOT`, `PLANAR_LOCAL_HOME`
+or `PLANAR_TEMPLATES_DIR` relocates one; `--purge` names a relocated path and
+leaves it. The list exists once, in `scripts/install-lib/data-paths.sh`, and a
+test compares it with INSTALL.md. Two writes to a data path are allowed:
+migrating a `planar.db` that is behind, and placing shipped `templates/` files
+where missing.
+
+**`PLANAR_PORTABLE`.** A shipped binary links the C++ runtime statically and
+carries no rpath into a toolchain prefix, so it starts on a supported host with
+no compiler installed. The CMake option `PLANAR_PORTABLE` (default `OFF`)
+selects that link: `-nostdlib++` with the toolchain's `libc++.a`, `libc++abi.a`
+and, on Linux, `libunwind.a`. The `dist` preset turns it on (with version
+metadata and a macOS 26.0 deployment target); the `debug` and `release` presets
+leave it off. Under it, `portable.binaries` fails a binary that depends on the
+toolchain prefix, carries an rpath, or misses the floor: macOS 26.0, or glibc
+2.36 on Linux. Details are in
+[toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
+
 ### Authored-surface validation
 
 <!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ source this tool was ported from, for history -->
@@ -1034,7 +1099,8 @@ Planar runs a two-tier test model:
 - **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator (`cli_usage_lint`) followed by the semantic authored-surface validator (`surface_lint`), both C++ tools under `src/tools/` (decision 1000, ported from the Zig tree at task 6402 — no `zig build-exe` remains in this gate). `cli_usage_lint` dumps all **five** binaries' `schema` catalogs, `planar`/`planar-agent`/`planar-watch`/`planar-ext`/`planar-execute` (decision 998 adds `planar-ext`'s). `cli_usage_lint` also reads each catalog's `docs.examples` and validates every entry like an authored invocation (an unknown flag is a finding naming the command path and the flag; an example that invokes another command is a finding too), and its summary line counts the examples checked. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 - **C++ format/tidy/doc-comment lint** — `make cpp-lint` (pinned `clang-format`/`clang-tidy`/Doxygen; see [docs/toolchain-parity.md](toolchain-parity.md)). The full target is not composed into `make test-all`: it requires the build already configured and built (clang-tidy needs the module BMIs materialized) and clang-tidy is advisory only, with 105 residual findings (task 6439). Its gating half — `clang-format --Werror` plus the Doxygen pass — runs in `make test-all` as `make cpp-lint-gate`. `make fmt-check` runs the cheap format half with no build precondition.
 
-The binaries produced by `make build` land under `./bin/`. The Makefile has no
+The binaries produced by `make build` land under `./bin/`; `make dist` builds the
+portable release bundle ([Release bundles](#release-bundles)). The Makefile has no
 install target; `cmake --install` places the C++ executables under a prefix you
 choose, and `install.sh` additionally
 stages the skill, agents, workflows, and migrations under `~/.planar` and places

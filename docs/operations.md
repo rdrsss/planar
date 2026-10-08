@@ -476,10 +476,11 @@ Rebuilding an archive writes format 1 again, and any change to an archive's
 bytes breaks its recorded checksum, so either one requires a new gate run.
 `make release-cut TAG=vX.Y.Z [DRY_RUN=1]` runs the whole sequence on a macOS
 arm64 host (only `DRY_RUN=1` is a dry run; any other non-empty value, such as
-`DRY_RUN=0`, is refused before anything runs): tag and clean-checkout preflight, `make dist`, macOS gates,
-`make linux-dist`, Linux gates and the publisher, with outputs under
-`build/release-cut/<tag>/<platform>/` and the staged assets under
-`dist/release/<tag>/`.
+`DRY_RUN=0`, is refused before anything runs): tag and clean-checkout
+preflight, `make dist`, macOS gates, `make linux-dist`, Linux gates and the
+publisher, with outputs under `build/release-cut/<tag>/<platform>/` and the
+staged assets under `dist/release/<tag>/`. The steps to run it are in
+[Cutting a release](#cutting-a-release).
 
 `.github/workflows/release.yml` is the CI path for the same contract. It runs
 only on a pushed stable `vMAJOR.MINOR.PATCH` tag, with `contents: read` in every
@@ -494,9 +495,75 @@ re-validates the evidence exactly as `make release-cut` does, so a failed,
 skipped or missing gate on either platform publishes nothing. Releases are cut
 locally until hosted CI returns (decision 1337);
 `scripts/release-workflow.test.py` (ctest label `release_workflow`) lints the
-workflow and runs its steps against fakes. `scripts/release-workflow-crosscheck.py` is a manual
-check, outside ctest, that compares the reader with PyYAML and runs `actionlint`;
-it fails when either tool is missing.
+workflow and runs its steps against fakes.
+`scripts/release-workflow-crosscheck.py` is a manual check, outside ctest, that
+compares the reader with PyYAML and runs `actionlint`; it fails when either
+tool is missing.
+
+### Cutting a release
+
+A release is a stable annotated tag, two portable bundles built from that tag's
+commit, and the five public assets: both `planar-<platform>.tar.gz` bundles,
+the merged `SHA256SUMS`, `VERSION` and the standalone `get-planar.sh`. Under
+decision 1337 the maintainer cuts it locally with `make release-cut` until
+hosted CI returns; `.github/workflows/release.yml` is the CI path for the same
+contract. The gates, the evidence format and the publisher's checks are the
+ones in [Release Gate Evidence](#6-release-gate-evidence); this recipe does not
+repeat them.
+
+Requirements:
+
+- A macOS arm64 host. The target refuses any other host. Docker builds the
+  Linux x86_64 bundle (`make linux-dist`; amd64 emulation on Apple silicon).
+- A `gh` on `PATH` recent enough to support `gh release create
+  --notes-from-tag`, authenticated for the repository. The publisher takes the
+  release notes from the tag annotation. A dry run does not need `gh`.
+- `HEAD` at the tag's commit, and a clean working tree. The preflight resolves
+  the tag to a full commit SHA and refuses any other `HEAD` or a dirty tree.
+
+Steps:
+
+1. Create an **annotated** stable tag on the commit to release. The tag grammar
+   is `vMAJOR.MINOR.PATCH`; a lightweight tag is refused, and the annotation
+   becomes the release notes.
+
+   ```sh
+   git tag -a vX.Y.Z
+   git checkout vX.Y.Z   # or leave HEAD on the tagged commit
+   ```
+
+   The cut never creates or pushes a tag.
+2. Rehearse. Every build and gate runs, and the publisher validates the whole
+   asset set and prints the `gh release create` command it would run, without
+   running it:
+
+   ```sh
+   make release-cut TAG=vX.Y.Z DRY_RUN=1
+   ```
+
+   Only `DRY_RUN=1` is a dry run; any other non-empty value is refused before
+   anything runs.
+3. Publish:
+
+   ```sh
+   make release-cut TAG=vX.Y.Z
+   ```
+
+   This runs the same sequence and then calls `gh release create <tag>
+   --verify-tag --title <tag> --notes-from-tag` with the five assets. `gh`
+   aborts `--verify-tag` when the tag is not on the remote, so push the tag
+   (`git push origin vX.Y.Z`) before the real run; the dry run needs only the
+   local tag. A failed or missing gate on either platform publishes nothing.
+   Cut a tag one way only: `release.yml` also runs on a pushed stable tag
+   whenever hosted CI is available.
+4. Check the release: `curl -fsSL
+   https://github.com/rdrsss/planar/releases/latest/download/VERSION` prints the
+   tag, and the [bootstrap](../INSTALL.md#install) installs it.
+
+Outputs: each platform's archive, `.gates.json` and gate logs land in
+`build/release-cut/<tag>/<platform>/`, and the staged assets in
+`dist/release/<tag>/`. Rebuilding an archive invalidates its gate evidence, so
+rerun the whole target rather than a single step.
 
 ## See Also
 
