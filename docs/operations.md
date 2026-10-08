@@ -481,6 +481,21 @@ arm64 host (only `DRY_RUN=1` is a dry run; any other non-empty value, such as
 `build/release-cut/<tag>/<platform>/` and the staged assets under
 `dist/release/<tag>/`.
 
+`.github/workflows/release.yml` is the CI path for the same contract. It runs
+only on a pushed stable `vMAJOR.MINOR.PATCH` tag, with `contents: read` in every
+job except the publisher. The `macos-arm64` job (`make dist`) and the
+`linux-x86_64` job (`make linux-dist`, the Docker `dist` stage) each build from
+the checked-out tag commit, verify it with `scripts/release-publish.sh
+--preflight`, run `scripts/release-gates.sh` for their platform and only then
+upload the archive, its `.gates.json`, `get-planar.sh` and the gate logs. The
+`publish` job `needs` both, downloads each platform into its own directory and
+runs `scripts/release-publish.sh`, the only step that calls `gh release`; it
+re-validates the evidence exactly as `make release-cut` does, so a failed,
+skipped or missing gate on either platform publishes nothing. Releases are cut
+locally until hosted CI returns (decision 1337);
+`scripts/release-workflow.test.py` (ctest label `release_workflow`) lints the
+workflow and runs its steps against fakes.
+
 ## See Also
 
 - [Architecture](architecture.md) — storage model, schema contract, binary

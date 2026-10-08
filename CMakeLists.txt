@@ -304,6 +304,15 @@ add_test(NAME release.publish
     bash "${PROJECT_SOURCE_DIR}/scripts/release-publish-test.sh")
 set_tests_properties(release.publish PROPERTIES LABELS "release_publish" TIMEOUT 600)
 
+# The release workflow (.github/workflows/release.yml): a lint of its trigger,
+# jobs, needs wiring, gate-before-upload order and permissions, refusal of
+# mutated copies, and its own publisher steps run against fake gh and bundles
+# (scripts/release-workflow.test.py). Nothing runs on GitHub.
+add_test(NAME release.workflow
+  COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
+    "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/release-workflow.test.py")
+set_tests_properties(release.workflow PROPERTIES LABELS "release_workflow" TIMEOUT 600)
+
 # Stock macOS bash 3.2: a static lint for unguarded empty-array expansions and bash-4-only
 # constructs in install.sh and its sourced scripts, plus a prebuilt install and
 # uninstall run under /bin/bash (3.2 on macOS) in a scratch HOME.
