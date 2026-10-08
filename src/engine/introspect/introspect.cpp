@@ -429,9 +429,11 @@ auto preview_text_block(const std::optional<ip::preview>& preview) -> std::strin
   }
   out += "\n";
   for (auto const& coverage : preview->coverage) {
-    out += std::format("  {}: state={} scanned={} normalized={} ignored={} malformed={} capped={}\n", tag_name(coverage.v),
-                       tag_name(coverage.state), coverage.scanned, coverage.normalized, coverage.ignored, coverage.malformed,
-                       coverage.capped);
+    out += std::format("  {}: state={} scanned={} normalized={} ignored={} malformed={} capped={} bytes_read={} files_partial={} "
+                       "files_skipped_cap={} files_skipped_window={}\n",
+                       tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.normalized, coverage.ignored,
+                       coverage.malformed, coverage.capped, coverage.bytes_read, coverage.files_partial,
+                       coverage.files_skipped_cap, coverage.files_skipped_window);
   }
   for (auto const& signal : preview->signals) {
     out += std::format("  signal {}/{}/{}: count={} first={} last={}\n", tag_name(signal.v), signal.verb_path,
@@ -472,9 +474,11 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
       if (i > 0) {
         out += ',';
       }
-      out += std::format(R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{}}})",
-                         tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.malformed,
-                         coverage.normalized, coverage.capped, coverage.ignored);
+      out += std::format(
+          R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{},"bytes_read":{},"files_partial":{},"files_skipped_cap":{},"files_skipped_window":{}}})",
+          tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.malformed, coverage.normalized,
+          coverage.capped, coverage.ignored, coverage.bytes_read, coverage.files_partial, coverage.files_skipped_cap,
+          coverage.files_skipped_window);
     }
   }
   out += R"(],"warnings":[)";

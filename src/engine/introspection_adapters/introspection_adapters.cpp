@@ -742,7 +742,12 @@ auto collect_preview(std::span<const raw_source> sources) -> preview {
 
   for (auto const& source : sources) {
     extract_state state;
-    coverage_row  cov{.v = source.v, .state = coverage_state::observed};
+    coverage_row  cov{.v                    = source.v,
+                      .state                = coverage_state::observed,
+                      .bytes_read           = source.bytes_read,
+                      .files_partial        = source.files_partial,
+                      .files_skipped_cap    = source.files_skipped_cap,
+                      .files_skipped_window = source.files_skipped_window};
     if (!source.enabled) {
       cov.state = coverage_state::disabled;
       coverage.push_back(cov);
@@ -923,11 +928,13 @@ auto fs_should_fail(const fs_fault& fault, vendor v, fs_operation operation, std
 /// @param files_left Remaining file budget, shared across all three vendors.
 /// @param bytes_left Remaining byte budget, shared across all three vendors.
 /// @param records_left Remaining record budget, shared across all three vendors.
+/// @param byte_share This vendor's share of the byte budget.
+/// @param window_start Files last modified before this are skipped and counted; unset admits all.
 /// @param fault The fault-injection seam (tests only).
 auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row>& warnings, vendor v, bool enabled,
                          std::string_view override_path, std::string_view home, std::string_view builtin_rel, bool jsonl_only,
-                         std::size_t& files_left, std::size_t& bytes_left, std::size_t& records_left, const fs_fault& fault)
-    -> void {
+                         std::size_t& files_left, std::size_t& bytes_left, std::size_t& records_left, std::size_t byte_share,
+                         const std::optional<std::filesystem::file_time_type>& window_start, const fs_fault& fault) -> void {
   if (!enabled) {
     owned.push_back(raw_source{.v = v, .enabled = false});
     return;
@@ -1021,16 +1028,18 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
     return;
   }
 
-  std::ranges::sort(paths);
-
-  std::string combined;
-  std::size_t scanned_files = 0;
-  std::size_t io_failures   = 0;
-  for (auto const& path : paths) {
-    if (files_left == 0) {
-      warnings.push_back(warning_row{.v = v, .kind = warning_kind::file_cap});
-      break;
-    }
+  // Stat every candidate once: size and modification time drive the window
+  // filter and the newest-first order. A stat failure is an I/O failure for
+  // that file only.
+  struct candidate {
+    std::string                     path;
+    std::uintmax_t                  size = 0;
+    std::filesystem::file_time_type mtime;
+  };
+  std::vector<candidate> candidates;
+  std::size_t            io_failures          = 0;
+  std::uint32_t          files_skipped_window = 0;
+  for (auto& path : paths) {
     if (fs_should_fail(fault, v, fs_operation::file_stat, path)) {
       ++io_failures;
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
@@ -1038,45 +1047,120 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
     }
     std::error_code size_ec;
     auto const      size = std::filesystem::file_size(path, size_ec);
-    if (size_ec) {
+    std::error_code time_ec;
+    auto const      mtime = std::filesystem::last_write_time(path, time_ec);
+    if (size_ec || time_ec) {
       ++io_failures;
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
       continue;
     }
-    if (size > bytes_left) {
-      warnings.push_back(warning_row{.v = v, .kind = warning_kind::byte_cap});
-      break;
+    if (window_start.has_value() && mtime < *window_start) {
+      ++files_skipped_window;
+      continue;
     }
-    if (fs_should_fail(fault, v, fs_operation::file_read, path)) {
+    candidates.push_back(candidate{.path = std::move(path), .size = size, .mtime = mtime});
+  }
+
+  // Newest first; equal modification times fall back to path order so two
+  // runs over the same tree read the same files.
+  std::ranges::sort(candidates, [](const candidate& a, const candidate& b) {
+    return a.mtime != b.mtime ? a.mtime > b.mtime : a.path < b.path;
+  });
+
+  // This vendor's share of the byte budget; unspent bytes stay in the shared pool.
+  std::size_t vendor_left = std::min(byte_share, bytes_left);
+  std::size_t used        = 0;
+
+  std::string   combined;
+  std::size_t   scanned_files     = 0;
+  std::uint64_t bytes_read        = 0;
+  std::uint32_t files_partial     = 0;
+  std::uint32_t files_skipped_cap = 0;
+  bool          byte_cap_hit      = false;
+  bool          stop              = false;
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    auto const& entry = candidates[index];
+    if (stop) {
+      ++files_skipped_cap;
+      continue;
+    }
+    if (files_left == 0) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::file_cap});
+      stop = true;
+      ++files_skipped_cap;
+      continue;
+    }
+    // Only the newest file may be read from its tail, and only when it alone
+    // exceeds the budget; every other file that does not fit is skipped whole.
+    bool const oversize = entry.size > vendor_left;
+    bool const partial  = oversize && index == 0 && vendor_left > 0;
+    if (oversize && !partial) {
+      byte_cap_hit = true;
+      ++files_skipped_cap;
+      continue;
+    }
+    if (fs_should_fail(fault, v, fs_operation::file_read, entry.path)) {
       ++io_failures;
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
       continue;
     }
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(entry.path, std::ios::binary);
     if (!file) {
       ++io_failures;
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
       continue;
     }
-    std::string const bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-    auto const        record_count = count_records(bytes);
+    std::string bytes;
+    if (partial) {
+      // Read one byte before the tail so a tail that starts exactly on a
+      // record boundary keeps its first line; otherwise drop the partial
+      // first line so the tail starts at a record boundary.
+      auto const offset = static_cast<std::streamoff>(entry.size - vendor_left - 1);
+      file.seekg(offset);
+      std::string window(vendor_left + 1, '\0');
+      file.read(window.data(), static_cast<std::streamsize>(window.size()));
+      window.resize(static_cast<std::size_t>(file.gcount()));
+      auto const newline = window.find('\n');
+      bytes              = newline == std::string::npos ? std::string{} : window.substr(newline + 1);
+    } else {
+      bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    }
+    auto const record_count = count_records(bytes);
     if (record_count > records_left) {
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::record_cap});
-      break;
+      stop = true;
+      ++files_skipped_cap;
+      continue;
     }
     combined += bytes;
     combined += '\n';
     files_left -= 1;
-    bytes_left -= bytes.size();
+    vendor_left -= std::min(vendor_left, bytes.size());
+    used += bytes.size();
     records_left -= record_count;
+    bytes_read += bytes.size();
     ++scanned_files;
+    if (partial) {
+      ++files_partial;
+      byte_cap_hit = true;
+    }
   }
+  if (byte_cap_hit) {
+    warnings.push_back(warning_row{.v = v, .kind = warning_kind::byte_cap});
+  }
+  bytes_left -= std::min(bytes_left, used);
 
+  raw_source result{.v = v};
   if (scanned_files == 0 && io_failures != 0) {
-    owned.push_back(raw_source{.v = v, .available = false});
+    result.available = false;
   } else {
-    owned.push_back(raw_source{.v = v, .jsonl = std::move(combined)});
+    result.jsonl = std::move(combined);
   }
+  result.bytes_read           = bytes_read;
+  result.files_partial        = files_partial;
+  result.files_skipped_cap    = files_skipped_cap;
+  result.files_skipped_window = files_skipped_window;
+  owned.push_back(std::move(result));
 }
 
 } // namespace
@@ -1088,13 +1172,17 @@ auto collect_preview_from_paths(const transcript_config& config, const std::opti
   std::size_t              files_left   = limits.max_files;
   std::size_t              bytes_left   = limits.max_bytes;
   std::size_t              records_left = limits.max_records;
+  // Each of the three transcript vendors and the CLI log gets a quarter of the
+  // byte budget, so a large inventory for one vendor cannot starve another.
+  std::size_t const byte_share = limits.max_bytes / 4;
 
   collect_vendor_path(owned, extra_warnings, vendor::claude, config.claude_enabled, config.claude_path, config.home_dir,
-                      ".claude/projects", true, files_left, bytes_left, records_left, fault);
+                      ".claude/projects", true, files_left, bytes_left, records_left, byte_share, limits.window_start, fault);
   collect_vendor_path(owned, extra_warnings, vendor::codex, config.codex_enabled, config.codex_path, config.home_dir,
-                      ".codex/sessions", true, files_left, bytes_left, records_left, fault);
+                      ".codex/sessions", true, files_left, bytes_left, records_left, byte_share, limits.window_start, fault);
   collect_vendor_path(owned, extra_warnings, vendor::copilot, config.copilot_enabled, config.copilot_path, config.home_dir,
-                      ".copilot/session-state", false, files_left, bytes_left, records_left, fault);
+                      ".copilot/session-state", false, files_left, bytes_left, records_left, byte_share, limits.window_start,
+                      fault);
 
   if (cli.has_value()) {
     if (!cli->enabled) {

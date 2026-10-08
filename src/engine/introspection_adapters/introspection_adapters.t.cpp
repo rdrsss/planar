@@ -720,7 +720,7 @@ TEST_CASE("collect_preview_from_paths: the byte cap stops scanning and raises by
   // Reviewer finding (iteration 2): no test exercised `byte_cap` at all —
   // a break-probe deleting the whole `if (size > bytes_left) { byte_cap;
   // break; }` block SURVIVED every existing test. `a.jsonl` and `b.jsonl`
-  // are each exactly 10 bytes; a 10-byte budget lets `a.jsonl` (sorted
+  // are each exactly 10 bytes; a 10-byte per-vendor share (a quarter of the 40-byte budget) lets `a.jsonl` (sorted
   // first) exactly exhaust it, so `b.jsonl`'s stat sees `bytes_left == 0`
   // and trips the cap instead of being scanned.
   scratch_dir scratch;
@@ -728,7 +728,7 @@ TEST_CASE("collect_preview_from_paths: the byte cap stops scanning and raises by
   write(scratch.path_ / ".claude" / "projects" / "b.jsonl", "1234567890");
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 10};
+  ia::collector_limits const  limits{.max_bytes = 40};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
@@ -785,30 +785,30 @@ TEST_CASE("collect_preview_from_paths: files are scanned in sorted order, not fi
   CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::file_cap));
 }
 
-TEST_CASE("collect_preview_from_paths: the byte/record budget is SHARED across vendors, not reset per vendor",
+TEST_CASE("collect_preview_from_paths: the record budget is SHARED across vendors, not reset per vendor",
           "[engine][introspection_adapters][discovery][6352][iter2]") {
   // Reviewer finding (iteration 2): every existing cap test uses a single
-  // vendor, so a break-probe neutralizing `bytes_left -=`/`records_left
-  // -=` after each accepted file SURVIVED — nothing observed that the
-  // budget crosses vendor boundaries. Claude's file exactly exhausts a
-  // 10-byte budget; Codex then sees `bytes_left == 0` for ITS file and
-  // must trip its OWN byte_cap, proving the same `bytes_left` counter
-  // carried over rather than resetting.
+  // vendor, so a break-probe neutralizing `records_left -=` after each
+  // accepted file SURVIVED. Claude's file exactly exhausts a two-record
+  // budget; Codex then sees `records_left == 0` for ITS file and must trip
+  // its OWN record_cap, proving the counter carried over rather than
+  // resetting. (The byte budget is split per vendor instead; see the
+  // "skip, don't break" cases below.)
   scratch_dir scratch;
-  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "1234567890");
-  write(scratch.path_ / ".codex" / "sessions" / "b.jsonl", "1234567890");
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "not json\nalso not json\n");
+  write(scratch.path_ / ".codex" / "sessions" / "b.jsonl", "not json\n");
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 10};
+  ia::collector_limits const  limits{.max_records = 2};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
   auto const* codex  = coverage_for(preview, ia::vendor::codex);
   REQUIRE(claude != nullptr);
   REQUIRE(codex != nullptr);
-  CHECK(claude->scanned == 1);
+  CHECK(claude->scanned == 2);
   CHECK(codex->scanned == 0);
-  CHECK(has_warning(preview.warnings, ia::vendor::codex, ia::warning_kind::byte_cap));
+  CHECK(has_warning(preview.warnings, ia::vendor::codex, ia::warning_kind::record_cap));
 }
 
 TEST_CASE("collect_preview_from_paths: an override naming a single FILE is read directly, not treated as a directory",

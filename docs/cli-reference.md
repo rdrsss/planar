@@ -8254,7 +8254,18 @@ When `[introspection].cli_log` is off (the default), the invocation and failure 
 
 Empty windows emit empty arrays, never nulls or missing fields.
 
-**Capture-log byte cap:** The `cli_log` adapter shares a 4 MiB read budget with the transcript adapters. When the window's `cli_invocations` rows would exceed what is left of it, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
+**Capture-log byte cap:** The 4 MiB read budget is split four ways: Claude, Codex and Copilot transcripts each get a quarter, and the `cli_log` adapter gets what the transcript adapters leave, never less than a quarter. When the window's `cli_invocations` rows would exceed its budget, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
+
+**Transcript scan:** Each transcript vendor scans only files modified inside the `--days` window, newest modification time first, with ties broken by path. A file that does not fit the vendor's remaining byte budget is skipped and counted rather than stopping the scan, so one large file no longer hides the files after it. The one exception is the newest file: when it alone exceeds the budget, its tail is read, starting at the first complete line, because the live session is usually the newest and largest file. Each `introspection_preview.coverage` row (and the text report's coverage line) carries four counters:
+
+| Counter | Meaning |
+|---------|---------|
+| `bytes_read` | Transcript bytes read for the vendor. A tail read counts only the tail. |
+| `files_partial` | Files read from their tail only. |
+| `files_skipped_cap` | Files not read because the file, byte or record cap left no room. A `byte_cap` warning accompanies a skipped or partial file. |
+| `files_skipped_window` | Files not read because their modification time is before the window. |
+
+The counters are `0` for `cli_log`, a disabled vendor and an unavailable vendor.
 
 **Exit codes:**
 

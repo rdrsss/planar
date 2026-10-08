@@ -162,7 +162,10 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
       },
   };
 
-  bundle->preview = ia::collect_preview_from_paths(transcripts, cli_adapter);
+  ia::collector_limits limits;
+  limits.window_start =
+      std::filesystem::file_time_type::clock::now() - std::chrono::hours{24 * std::min<std::int64_t>(days, 36500)};
+  bundle->preview = ia::collect_preview_from_paths(transcripts, cli_adapter, limits);
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? intro::render_json(*bundle) : intro::render_text(*bundle));
   return {};
