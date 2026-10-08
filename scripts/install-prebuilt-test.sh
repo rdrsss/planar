@@ -418,6 +418,43 @@ grep -Fq 'resuming the interrupted install' "$TMP/out" "$TMP/err" || fail "expec
 cmp -s "$BUNDLE/release.json" "$KP/release.json" || fail "expect-recovery-matching-journal: release.json is not the bundle's"
 pass
 
+# a journal whose ONLY difference is the recorded release base is not the install the
+# bootstrap pinned: refused, journal kept, nothing changed (tech spec 677, "The bootstrap"
+# step 2; the pin names the release base as well as the operation, tag and commit)
+kill_mutating expect-base-changed
+grep -Fxq 'release_base=https://github.com/rdrsss/planar/releases' "$KP/.planar-journal" \
+  || fail "expect-recovery-base-changed: the journal does not record the default release base: $(cat "$KP/.planar-journal")"
+sed -i.bak 's|^release_base=.*|release_base=https://example.invalid/elsewhere|' "$KP/.planar-journal" && rm -f "$KP/.planar-journal.bak"
+before="$(tree_sum "$KP")"
+run_prebuilt "$KH" "$BUNDLE" PLANAR_EXPECT_RECOVERY="$KOP" --
+[[ "$RC" == 1 ]] || fail "expect-recovery-base-changed: exit $RC, not 1: $(cat "$TMP/err")"
+grep -Fq 'no longer pending' "$TMP/err" || fail "expect-recovery-base-changed: no refusal message: $(cat "$TMP/err")"
+[[ "$(tree_sum "$KP")" == "$before" && ! -e "$KP/release.json" && ! -e "$KP/bin" ]] \
+  || fail "expect-recovery-base-changed: the refused run changed $KP"
+grep -Fxq 'release_base=https://example.invalid/elsewhere' "$KP/.planar-journal" || fail "expect-recovery-base-changed: the journal was not kept as it was"
+pass
+
+# a release base with trailing slashes is the same base: the journal records it without them
+# (as the bootstrap compares it) and a rerun with any number of slashes recovers
+for slashes in '/' '//'; do
+  KH="$(new_home "expect-slash-${#slashes}")"; KP="$KH/.planar"
+  run_prebuilt "$KH" "$BUNDLE" "PLANAR_RELEASE_URL=https://example.invalid/rel$slashes" \
+    PLANAR_INSTALL_TEST_FAULT=kill@after-mutating PLANAR_INSTALL_TEST_FAULT_ARMED=test-only --
+  [[ "$RC" -ge 128 ]] || fail "expect-recovery-slash${slashes}: the installer was not killed ($RC): $(cat "$TMP/err")"
+  grep -Fxq 'release_base=https://example.invalid/rel' "$KP/.planar-journal" \
+    || fail "expect-recovery-slash${slashes}: the journal does not record the base without trailing slashes: $(grep release_base "$KP/.planar-journal")"
+  KOP="$(sed -n 's/^operation_id=//p' "$KP/.planar-journal")"
+  # the bootstrap hands the installer its normalized base; the operator may type either form
+  for again in 'https://example.invalid/rel' 'https://example.invalid/rel/' 'https://example.invalid/rel//'; do
+    cp -R "$KP" "$KH/.planar-copy"
+    run_prebuilt "$KH" "$BUNDLE" PLANAR_EXPECT_RECOVERY="$KOP" "PLANAR_RELEASE_URL=$again" --
+    [[ "$RC" == 0 ]] || fail "expect-recovery-slash${slashes}-again-$again: exit $RC: $(cat "$TMP/err")"
+    grep -Fq 'resuming the interrupted install' "$TMP/out" "$TMP/err" || fail "expect-recovery-slash${slashes}-again-$again: the run did not recover"
+    rm -rf "$KP"; mv "$KH/.planar-copy" "$KP"
+  done
+  pass
+done
+
 # grammar and gating: a bad value or a source install refuses before anything is read
 H="$(new_home expect-grammar)"
 run_prebuilt "$H" "$BUNDLE" 'PLANAR_EXPECT_RECOVERY=$(touch /tmp/x)' --
