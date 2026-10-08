@@ -845,7 +845,8 @@ TEST_CASE("update lock: a reused pid is reclaimed and ambiguous records refuse o
   };
   auto const               me = std::to_string(::getpid());
   std::vector<shape> const shapes{
-      {"reused pid", record_text("1", "install", me, "ps:Thu Jan 1 00:00:00 1970", lock::node_name(), "/r"), true},
+      {"reused pid", record_text("1", "install", me, "psu:Thu Jan 1 00:00:00 1970", lock::node_name(), "/r"), true},
+      {"legacy local-time start", record_text("1", "install", me, "ps:Thu Jan 1 00:00:00 1970", lock::node_name(), "/r"), false},
       {"dead pid", record_text("1", "install", k_dead_pid, "ps:x", lock::node_name(), "/r"), true},
       {"another host", record_text("1", "install", me, "ps:x", "elsewhere.invalid", "/r"), false},
       {"malformed", "planar-mutation-lock 1\ngen=1\noperation=install\n", false},

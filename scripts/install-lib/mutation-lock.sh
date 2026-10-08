@@ -62,8 +62,15 @@
 #          field 22 of /proc/<pid>/stat (clock ticks since boot; the field count
 #          starts after the last `)` so a command name holding spaces or
 #          parentheses cannot shift it).
-#   Other: `ps:<LC_ALL=C ps -o lstart= -p <pid>, runs of blanks squeezed to one
-#          space>` (macOS: e.g. `ps:Tue Oct 6 19:57:57 2026`).
+#   Other: `psu:<TZ=UTC LC_ALL=C ps -o lstart= -p <pid>, runs of blanks squeezed
+#          to one space>` (macOS: e.g. `psu:Tue Oct 6 19:57:57 2026`). `lstart`
+#          is rendered in the caller's zone, so it is pinned to UTC: an owner
+#          and a checker in different zones must read the same bytes for the
+#          same live process.
+#   Legacy: an older release wrote `ps:<lstart in the owner's local zone>`. Its
+#          zone is unknown, so it cannot be compared; for a pid that still
+#          exists it is AMBIGUOUS and refuses (never reclaimed as a reused pid).
+#          A legacy record whose pid is gone is reclaimed like any dead owner.
 #   exec(2) keeps both the PID and the start time, which is what lets the
 #   updater hand its ownership to the installer it execs.
 #
@@ -186,14 +193,14 @@ planar_lock_start_token() {
     printf 'proc:%s:%s\n' "${boot:-none}" "$1"
     return 0
   fi
-  s="$(trap - ERR; LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null)" || return 1
+  s="$(trap - ERR; TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null)" || return 1
   set -f
   # shellcheck disable=SC2086  # squeeze the blanks of ps's date
   set -- $s
   set +f
   [ "$#" -gt 0 ] || return 1
   tok="$*"
-  printf 'ps:%s\n' "$tok"
+  printf 'psu:%s\n' "$tok"
 }
 
 # _pl_node -- this host's node name.
@@ -348,6 +355,11 @@ _pl_owner_state() {
     _PL_WHY="$_PLR_OP pid $_PLR_PID exists but its start time cannot be read, so it cannot be told apart from a reused pid"
     return 0
   fi
+  case "$_PLR_START" in
+    ps:*)
+      _PL_WHY="$_PLR_OP pid $_PLR_PID exists and its record holds a local-time start (written by an older Planar), which cannot be compared across time zones, so it cannot be told apart from a reused pid"
+      return 0 ;;
+  esac
   if [ "$tok" = "$_PLR_START" ]; then
     _PL_STATE="held"; _PL_WHY="$_PLR_OP pid $_PLR_PID"; return 0
   fi

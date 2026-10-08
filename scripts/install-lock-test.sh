@@ -73,7 +73,7 @@ out="$(lk 'planar_lock_acquire "'"$R"'" install && echo "gen=$PLANAR_LOCK_GEN di
 [[ -d "$L" && ! -L "$L" ]] || fail "the lock directory is not a directory beside the root"
 [[ "$(ls -ld "$L" | cut -c1-10)" == drwx------ ]] || fail "the lock directory is not mode 0700: $(ls -ld "$L")"
 [[ -f "$L/owner.1" && -f "$L/released.1" && "$L/owner.1" -ef "$L/released.1" ]] || fail "release did not link released.1 to owner.1"
-grep -Fxq 'operation=install' "$L/owner.1" && grep -Eq '^start=(ps|proc):' "$L/owner.1" && grep -Eq '^nonce=[0-9a-f]{32}$' "$L/owner.1" \
+grep -Fxq 'operation=install' "$L/owner.1" && grep -Eq '^start=(psu|proc):' "$L/owner.1" && grep -Eq '^nonce=[0-9a-f]{32}$' "$L/owner.1" \
   || fail "the ownership record is not the documented format: $(cat "$L/owner.1")"
 out="$(lk 'planar_lock_acquire "'"$R"'" uninstall && echo "gen=$PLANAR_LOCK_GEN"')"
 [[ "$out" == "gen=2" ]] || fail "second acquire after a release: $out"
@@ -117,12 +117,12 @@ forge() {
 sleep 300 &
 SLEEPER=$!; PIDS+=("$SLEEPER")
 real_start="$(lk 'planar_lock_start_token '"$SLEEPER")"
-[[ "$real_start" == ps:* || "$real_start" == proc:* ]] || fail "start token has no documented form: $real_start"
+[[ "$real_start" == psu:* || "$real_start" == proc:* ]] || fail "start token has no documented form: $real_start"
 R="$TMP/d/.planar"; mkdir -p "$TMP/d"
 forge "$R" 7 "$SLEEPER" "$real_start"
 rc=0; out="$(lk 'planar_lock_acquire "'"$R"'" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
 [[ "$rc" == 1 && "$out" == *"pid $SLEEPER"* ]] || fail "a live pid with its own start time was not refused: $out"
-forge "$R" 7 "$SLEEPER" "ps:Thu Jan 1 00:00:00 1970"
+forge "$R" 7 "$SLEEPER" "psu:Thu Jan 1 00:00:00 1970"
 out="$(lk 'planar_lock_acquire "'"$R"'" install && echo "gen=$PLANAR_LOCK_GEN reclaimed=$PLANAR_LOCK_RECLAIMED"')"
 [[ "$out" == "gen=8 reclaimed=install pid $SLEEPER" ]] || fail "a reused pid (other start time) was not reclaimed: $out"
 
@@ -138,6 +138,15 @@ ambiguous() { # ambiguous NAME EXPECT-PHRASE -- the lock at $R must refuse and k
 }
 R="$TMP/e/.planar"; mkdir -p "$TMP/e"; forge "$R" 3 "$SLEEPER" "$real_start" other-host.example
 ambiguous other-host "recorded on host other-host.example"
+# A record from an older release holds a local-zone start (`ps:`): for a live pid it is
+# ambiguous and refuses, whatever its text; for a dead pid it is reclaimed as usual.
+R="$TMP/lg/.planar"; mkdir -p "$TMP/lg"; forge "$R" 5 "$SLEEPER" "ps:Thu Jan 1 00:00:00 1970"
+ambiguous legacy-local-start "local-time start"
+forge "$R" 5 "$SLEEPER" "ps:${real_start#psu:}"
+ambiguous legacy-local-start-equal-text "local-time start"
+R="$TMP/lgd/.planar"; mkdir -p "$TMP/lgd"; forge "$R" 5 99999999 "ps:Thu Jan 1 00:00:00 1970"
+out="$(lk 'planar_lock_acquire "'"$R"'" install && echo "gen=$PLANAR_LOCK_GEN"')"
+[[ "$out" == "gen=6" ]] || fail "a legacy record of a dead pid was not reclaimed: $out"
 R="$TMP/f/.planar"; mkdir -p "$TMP/f/.planar.lock"; chmod 700 "$TMP/f/.planar.lock"; printf 'garbage\n' > "$TMP/f/.planar.lock/owner.4"
 ambiguous malformed "malformed"
 R="$TMP/g/.planar"; mkdir -p "$TMP/g/elsewhere"; ln -s "$TMP/g/elsewhere" "$TMP/g/.planar.lock"
@@ -145,7 +154,7 @@ ambiguous symlinked-dir "is a symlink"
 if [[ ! -r /proc/$$/stat ]]; then
   # No /proc: the start time comes from ps. Without ps a live pid cannot be told
   # apart from a reused one, which refuses.
-  R="$TMP/h/.planar"; mkdir -p "$TMP/h"; forge "$R" 2 "$SLEEPER" "ps:Thu Jan 1 00:00:00 1970"
+  R="$TMP/h/.planar"; mkdir -p "$TMP/h"; forge "$R" 2 "$SLEEPER" "psu:Thu Jan 1 00:00:00 1970"
   rm -f "$BASEBIN/ps"
   ambiguous no-ps "start time cannot be read"
   ln -s "$(PATH=/bin:/usr/bin command -v ps)" "$BASEBIN/ps"

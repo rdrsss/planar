@@ -256,6 +256,13 @@ auto owner_state(const std::string& l, const std::string& g) -> verdict {
                           r.operation, r.pid);
     return out;
   }
+  if (r.start.starts_with("ps:")) {
+    out.why =
+        std::format("{} pid {} exists and its record holds a local-time start (written by an older Planar), which cannot be "
+                    "compared across time zones, so it cannot be told apart from a reused pid",
+                    r.operation, r.pid);
+    return out;
+  }
   if (*tok == r.start) {
     out.kind = state::held;
     out.why  = std::format("{} pid {}", r.operation, r.pid);
@@ -375,7 +382,7 @@ auto start_token(std::int64_t pid) -> std::optional<std::string> {
     return std::format("proc:{}:{}", boot.empty() ? std::string{"none"} : boot, fields[19]);
   }
   auto const                            pid_text = std::to_string(pid);
-  std::array<std::string_view, 6> const args{"LC_ALL=C", "ps", "-o", "lstart=", "-p", pid_text};
+  std::array<std::string_view, 7> const args{"TZ=UTC", "LC_ALL=C", "ps", "-o", "lstart=", "-p", pid_text};
   auto const                            got = process::capture("env", args);
   if (!got.spawned || got.exit_code != 0) {
     return std::nullopt;
@@ -384,7 +391,7 @@ auto start_token(std::int64_t pid) -> std::optional<std::string> {
   if (fields.empty()) {
     return std::nullopt;
   }
-  std::string tok = "ps:";
+  std::string tok = "psu:";
   for (std::size_t i = 0; i < fields.size(); ++i) {
     tok += i == 0 ? "" : " ";
     tok += fields[i];

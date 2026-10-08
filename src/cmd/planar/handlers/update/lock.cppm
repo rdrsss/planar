@@ -22,10 +22,13 @@
 ///     is never stolen from; anything ambiguous refuses and preserves every
 ///     file.
 ///   - The start token is `proc:<boot_id>:<starttime>` where
-///     `/proc/<pid>/stat` is readable, otherwise `ps:<lstart>` from
-///     `LC_ALL=C ps -o lstart= -p <pid>` with blanks squeezed. The `ps` form
-///     is computed by running `ps` exactly as the shell does, so both sides
-///     render the same bytes for the same process in the same environment.
+///     `/proc/<pid>/stat` is readable, otherwise `psu:<lstart>` from
+///     `TZ=UTC LC_ALL=C ps -o lstart= -p <pid>` with blanks squeezed. The
+///     `ps` form is computed by running `ps` exactly as the shell does, in UTC
+///     because `lstart` renders in the caller's zone, so both sides and every
+///     time zone read the same bytes for the same process. A legacy `ps:`
+///     record (local-zone start, written by an older release) naming a live
+///     pid is ambiguous and refuses; it is never reclaimed as a reused pid.
 ///
 /// Refusal texts are the shell library's own, so an operator sees the same
 /// diagnostic whichever program refused.
