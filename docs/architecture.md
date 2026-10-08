@@ -818,7 +818,9 @@ Agent role specs live under `agents/`. The planning-lifecycle files are `agents/
 while they hold its **mutation lock**, a coordination directory beside the
 canonical install root (`<root>.lock`, so removing or purging the root cannot
 split it). Ownership is a generation-numbered record created with `link(2)`,
-naming the operation, the pid and the process start time; the highest
+naming the operation, the pid, the process start time and the host's machine
+identity (`/etc/machine-id` with the pid namespace, or the macOS hardware UUID,
+so a renamed host still recovers a dead owner); the highest
 generation owns the lock until it is released or its process is proven dead,
 and two processes reclaiming a dead owner race for the same generation so at
 most one wins. The update verb hands its generation to the installer it execs

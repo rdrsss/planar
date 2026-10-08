@@ -103,6 +103,41 @@ auto record_text(std::string_view gen, std::string_view op, std::string_view pid
                      op, pid, start, node, std::string(32, 'a'), root, tmp);
 }
 
+/// This host's identity as the lock header specifies it, derived here with
+/// other tools than either implementation uses: a valid `/etc/machine-id`,
+/// else the macOS `IOPlatformUUID`, else `node:<uname -n>`, else `none`; on
+/// Linux with the pid namespace's inode appended as `/pidns:<inode>`.
+auto oracle_host_key() -> std::string {
+  std::string out;
+  auto const  rc = bash(R"SH(id=""
+[ -r /etc/machine-id ] && id="$(head -n 1 /etc/machine-id)"
+if printf '%s' "$id" | grep -Eqx '[0-9a-f]{32}'; then key="machine-id:$id"
+else
+  u=""
+  [ -x /usr/sbin/ioreg ] && u="$(/usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice | grep -F '"IOPlatformUUID" = "' | head -n 1 | sed 's/.*"IOPlatformUUID" = "//; s/".*//')"
+  if printf '%s' "$u" | grep -Eqx '[0-9A-F-]{36}'; then key="platform-uuid:$u"
+  elif n="$(uname -n)" && [ -n "$n" ]; then key="node:$n"
+  else echo none; exit 0; fi
+fi
+ns="$(readlink /proc/$$/ns/pid 2>/dev/null || true)"
+ns="$(printf '%s' "$ns" | sed -n 's/^pid:\[\([0-9][0-9]*\)\]$/\1/p')"
+[ -z "$ns" ] || key="$key/pidns:$ns"
+printf '%s\n' "$key")SH",
+                        {}, &out);
+  REQUIRE(rc == 0);
+  REQUIRE(out.ends_with('\n'));
+  out.pop_back();
+  return out;
+}
+
+/// A format-2 record (the host named by its identity, the node name informational).
+auto record_v2(std::string_view gen, std::string_view op, std::string_view pid, std::string_view start, std::string_view host,
+               std::string_view node, std::string_view root) -> std::string {
+  return std::format(
+      "planar-mutation-lock 2\ngen={}\noperation={}\npid={}\nstart={}\nhost={}\nnode={}\nnonce={}\nroot={}\ntmp=\n", gen, op, pid,
+      start, host, node, std::string(32, 'a'), root);
+}
+
 /// A pid no process has: far above any pid_max on the supported platforms.
 constexpr std::string_view k_dead_pid = "99999999";
 
@@ -711,6 +746,11 @@ TEST_CASE("update lock: the native start token, canonical path and records agree
   std::string out;
   REQUIRE(bash(R"(source "$1"; planar_lock_start_token "$2")", {lock_lib(), std::to_string(::getpid())}, &out) == 0);
   CHECK(lock::start_token(::getpid()).value() + "\n" == out);
+  // The host identity: the same bytes on both sides, and what the header specifies.
+  REQUIRE(bash(R"(source "$1"; _pl_host_key)", {lock_lib()}, &out) == 0);
+  CHECK(lock::host_key() + "\n" == out);
+  CHECK(lock::host_key() == oracle_host_key());
+  CHECK(lock::host_key() != "none");
 
   auto       space = make_arena("lockcanon");
   auto const real  = space.cpp_root / "real";
@@ -729,10 +769,10 @@ TEST_CASE("update lock: the native start token, canonical path and records agree
   REQUIRE(held.has_value());
   REQUIRE(
       bash(
-          R"(source "$1"; _pl_read_record "$2" && echo "$_PLR_GEN|$_PLR_OP|$_PLR_PID|$_PLR_START|$_PLR_NODE|$_PLR_NONCE|$_PLR_ROOT|$_PLR_TMP")",
+          R"(source "$1"; _pl_read_record "$2" && echo "$_PLR_VER|$_PLR_GEN|$_PLR_OP|$_PLR_PID|$_PLR_START|$_PLR_HOST|$_PLR_NODE|$_PLR_NONCE|$_PLR_ROOT|$_PLR_TMP")",
           {lock_lib(), std::format("{}/owner.{}", held->dir, held->gen)}, &out) == 0);
-  CHECK(out == std::format("{}|update|{}|{}|{}|{}|{}|{}\n", held->gen, ::getpid(), lock::start_token(::getpid()).value(),
-                           lock::node_name(), held->nonce, root, root + "/.planar-update/u1"));
+  CHECK(out == std::format("2|{}|update|{}|{}|{}|{}|{}|{}|{}\n", held->gen, ::getpid(), lock::start_token(::getpid()).value(),
+                           lock::host_key(), lock::node_name(), held->nonce, root, root + "/.planar-update/u1"));
   lock::release(*held);
   CHECK(std::filesystem::exists(std::format("{}/released.{}", held->dir, held->gen)));
   // Released: the shell takes the next generation and the native side sees it held.
@@ -888,45 +928,6 @@ TEST_CASE("update lock: a reused pid is reclaimed and ambiguous records refuse o
     }
   }
 }
-
-namespace {
-
-/// This host's identity as the lock header specifies it, derived here with
-/// other tools than either implementation uses: a valid `/etc/machine-id`,
-/// else the macOS `IOPlatformUUID`, else `node:<uname -n>`, else `none`; on
-/// Linux with the pid namespace's inode appended as `/pidns:<inode>`.
-auto oracle_host_key() -> std::string {
-  std::string out;
-  auto const  rc = bash(R"SH(id=""
-[ -r /etc/machine-id ] && id="$(head -n 1 /etc/machine-id)"
-if printf '%s' "$id" | grep -Eqx '[0-9a-f]{32}'; then key="machine-id:$id"
-else
-  u=""
-  [ -x /usr/sbin/ioreg ] && u="$(/usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice | grep -F '"IOPlatformUUID" = "' | head -n 1 | sed 's/.*"IOPlatformUUID" = "//; s/".*//')"
-  if printf '%s' "$u" | grep -Eqx '[0-9A-F-]{36}'; then key="platform-uuid:$u"
-  elif n="$(uname -n)" && [ -n "$n" ]; then key="node:$n"
-  else echo none; exit 0; fi
-fi
-ns="$(readlink /proc/$$/ns/pid 2>/dev/null || true)"
-ns="$(printf '%s' "$ns" | sed -n 's/^pid:\[\([0-9][0-9]*\)\]$/\1/p')"
-[ -z "$ns" ] || key="$key/pidns:$ns"
-printf '%s\n' "$key")SH",
-                        {}, &out);
-  REQUIRE(rc == 0);
-  REQUIRE(out.ends_with('\n'));
-  out.pop_back();
-  return out;
-}
-
-/// A format-2 record (the host named by its identity, the node name informational).
-auto record_v2(std::string_view gen, std::string_view op, std::string_view pid, std::string_view start, std::string_view host,
-               std::string_view node, std::string_view root) -> std::string {
-  return std::format(
-      "planar-mutation-lock 2\ngen={}\noperation={}\npid={}\nstart={}\nhost={}\nnode={}\nnonce={}\nroot={}\ntmp=\n", gen, op, pid,
-      start, host, node, std::string(32, 'a'), root);
-}
-
-} // namespace
 
 TEST_CASE("update lock: a dead owner's record survives a hostname change and another machine's never does, on both sides",
           "[update][lock]") {

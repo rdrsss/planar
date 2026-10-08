@@ -502,13 +502,16 @@ pass
 
 # --- (macOS) the mode check reads the permission bits, not an ACL ------------------------------------------
 # Documented limit (mutation-lock.sh, INSTALL.md): an ACL that lets another user
-# write the lock directory is not detected on macOS; the `+` that `ls -ld`
-# prints after the mode does not disturb the check. (On Linux a POSIX ACL that
+# write the lock directory is not detected on macOS; the mark that `ls -ld`
+# prints after the mode (`+`, or `@`) does not disturb the check. (On Linux a POSIX ACL that
 # grants write shows in the group bits, the ACL mask, and is refused.)
 if [[ "$("$REAL_UNAME" -s)" == Darwin ]]; then
   R="$TMP/acl/.planar"; mkdir -p "$R.lock"; chmod 700 "$R.lock"
   if /bin/chmod +a "everyone allow add_file,delete_child" "$R.lock" 2>/dev/null; then
-    [[ "$(ls -ld "$R.lock" | cut -c1-11)" == "drwx------+" ]] || fail "the ACL fixture did not take: $(ls -led "$R.lock")"
+    # ls -le lists the entry; the mark after the mode is `+`, or `@` when the
+    # directory also carries extended attributes.
+    [[ "$(ls -led "$R.lock")" == *"allow add_file"* && "$(ls -ld "$R.lock" | cut -c1-10)" == drwx------ ]] \
+      || fail "the ACL fixture did not take: $(ls -led "$R.lock")"
     out="$(lk 'planar_lock_acquire "'"$R"'" install && echo "gen=$PLANAR_LOCK_GEN"')"
     [[ "$out" == "gen=1" ]] || fail "a lock directory carrying an ACL was judged by more than its mode bits: $out"
     /bin/chmod -N "$R.lock"

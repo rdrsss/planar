@@ -68,6 +68,7 @@ The release install needs only tools a Unix host already has:
 - `shasum` or `sha256sum`: the bootstrap verifies the bundle with whichever it finds.
 - `tar`: unpacks the bundle (the bootstrap, and [`planar update`](#update-planar-update) with the system `tar`).
 - The base system tools (`cp`, `mv`, `rm`, `mkdir`, `find`, `sed` and the like), which the installer preflights on every install and which any supported host ships; on Linux also `ldd`.
+- On macOS, `/usr/sbin/ioreg` (stock on every Mac): the [install lock](#ownership-recovery-and-the-order-of-an-install) names the Mac by its hardware UUID with it. Without it the lock falls back to the host name and the installer warns. On Linux the lock reads `/etc/machine-id` instead, which needs no tool.
 
 At runtime Planar uses these tools when they are present, and the installer warns when one is missing:
 
@@ -210,7 +211,7 @@ Everything below describes `install.sh`, which the bundle carries and the bootst
 
 - The **toolchain tier** (`cmake`, `ninja`, the pinned LLVM compilers and `python3`, under [Contributor prerequisites](#contributor-prerequisites)) is checked only on a source install.
 - The **base tier** is checked on every install path, `--prebuilt` included: `awk`, `basename`, `cat`, `chmod`, `cmp`, `cp`, `cut`, `date`, `diff`, `dirname`, `find`, `grep`, `head`, `ln`, `ls`, `mkdir`, `mktemp`, `mv`, `od`, `ps`, `readlink`, `realpath`, `rm`, `rmdir`, `sed`, `sleep`, `sort`, `sync`, `tr`, `uname` and `wc`. These ship with supported Unix-like systems; the installer preflights them before making changes.
-- The **runtime tier** (`git`, `jq`, `gh`, `rg`, `tar`) only warns.
+- The **runtime tier** (`git`, `jq`, `gh`, `rg`, `tar`, and on macOS `/usr/sbin/ioreg`) only warns.
 
 No system SQLite is needed. Planar vendors the SQLite amalgamation under `vendor/sqlite/`; the CMake build compiles it into a static library that statically links into every binary but `planar-execute` (which holds no SQLite handle at all) — no platform-specific build flags, no system library dependency.
 
@@ -264,15 +265,48 @@ interrupted install is completed by running the same command again, never by
 `<root>.lock` (`~/.planar.lock` for the default root), keyed by the root's
 canonical path, so no spelling of the root, and no removal or `--purge` of it,
 can split it. It holds small ownership records naming the operation, the
-process id and that process's start time. A second install, update or
-uninstall exits 1 naming the holder's operation and pid and changes nothing. A
-holder that was killed is reclaimed by the next run; a pid that was reused by
-another process is recognized from its start time. When ownership cannot be
-judged (a malformed record, another host's record, a start time that cannot be
-read), the run refuses and keeps every file. It also refuses a `<root>.lock`
+process id, that process's start time and the host it ran on. A second install,
+update or uninstall exits 1 naming the holder's operation and pid and changes
+nothing. A holder that was killed is reclaimed by the next run; a pid that was
+reused by another process is recognized from its start time.
+
+The host is named by its machine identity, not its host name: `/etc/machine-id`
+on Linux (with the process's pid namespace, so a container and its host, or two
+containers sharing a machine id, are different hosts), and the hardware UUID
+(`IOPlatformUUID`, read with `/usr/sbin/ioreg`) on macOS. Renaming the host, by
+hand, with `scutil` or through DHCP, does not change it, so a crashed install's
+record is still reclaimed after a rename. A process's pid is checked only on the
+host that recorded it: another machine sharing the filesystem (a network home)
+never judges an owner dead. A host with neither identity falls back to its host
+name, as earlier builds did; there a rename refuses (it never reclaims).
+
+**When ownership cannot be judged**, the run exits 1, names the cause and keeps
+every file:
+
+- a record that is malformed, not a regular file, or names another generation,
+  or a release marker that is not a link to its record;
+- a record from another host: another machine identity (or another pid
+  namespace), even under the same host name;
+- a record from a host with no identity at all (no machine id and no host
+  name), even on that host;
+- a record from an earlier build, which named hosts by host name, under a name
+  that is not this host's: another machine, or this one before a rename;
+- a record whose process still exists but whose start time cannot be read;
+- a record from an earlier build whose start time is in local time (`ps:`)
+  while its process still exists: the time zone it was written in is unknown,
+  so a reused pid cannot be told apart (once that process is gone, the record
+  is reclaimed);
+- a pid whose existence cannot be checked.
+
+Remove the named `owner.<n>` record by hand only after making sure no Planar
+install, update or uninstall is running. The run also refuses a `<root>.lock`
 that is a symlink, is not owned by you or is writable by its group or by
 others, and a filesystem where a record cannot be hard-linked, naming the
-reason. Nothing removes `<root>.lock`;
+reason (an install root whose path contains `exists` is no exception). The
+permission check reads the mode bits only, never an access control list: on
+macOS an ACL entry (`chmod +a`) that lets another user write `<root>.lock` is
+not detected, so keep ACLs off it (on Linux, a POSIX ACL that grants write
+shows in the group bits and is refused). Nothing removes `<root>.lock`;
 remove it by hand only when no Planar install, update or uninstall can be
 running. The protocol is specified in the header of
 `scripts/install-lib/mutation-lock.sh`.
@@ -289,8 +323,15 @@ running. The protocol is specified in the header of
    and staging: they are removed. A **mutating** one is resumed when this run
    installs the same release (the same bundle version, commit and schema, or
    the same checkout and commit); a different release refuses, naming the
-   command that completes the pending one. An **uninstalling** journal refuses:
-   an interrupted uninstall is finished by uninstalling, never undone.
+   command that completes the pending one. A resume also refuses, naming the
+   reason and changing nothing, when this run is in the other copy or link
+   mode than the interrupted one (`--link` or not), and, for a source install,
+   when the checkout has uncommitted changes, tracked or untracked (or git
+   cannot read it): only a clean checkout at the recorded commit is the tree
+   the interrupted run was building. Stash the changes
+   (`git stash --include-untracked`) and run the printed command. An
+   **uninstalling** journal refuses: an interrupted uninstall is finished by
+   uninstalling, never undone.
 3. When resuming, a subtree whose live name is missing is restored from its
    journal-owned `<name>.old` before anything new is staged. `.staging-*` and
    `*.old` entries no journal owns are reported and kept.
@@ -356,8 +397,12 @@ directory `~/.planar/.planar-update/<name>/`, records it in its ownership
 record, and `exec`s the bundled `install.sh --prebuilt <dir> --cleanup <dir>`
 with `PLANAR_MUTATION_HANDOFF=<generation>:<nonce>`. The installer adopts the
 lock only when that record is the current owner, belongs to the updater, and
-names the installer's own process (exec keeps the pid and start time), and only
-once; a forged or replayed handoff exits 1. `--cleanup` is accepted only with
+names the installer's own process (exec keeps the pid and start time) on this
+host, and only once; a forged or replayed handoff exits 1. The record was
+written by the updater, which is older than the bundle it downloaded, so the
+installer also accepts an earlier build's record (named by host name, with a
+local-time start), comparing its own start time and host in that record's
+form. `--cleanup` is accepted only with
 `--prebuilt` (exit 2 otherwise) and the handoff, and only for exactly the
 directory the updater recorded: the install root, a data path, a managed
 subtree, a symlink, a path through a symlink or an unrelated directory exits 1

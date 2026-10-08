@@ -11,15 +11,26 @@
 ///   - The coordination directory is `<canonical root>.lock`, a sibling of
 ///     the install root that no Planar program ever removes. It is created
 ///     with mode 0700 and refused when it is a symlink, not a directory, not
-///     owned by the effective user, or writable by its group or others.
+///     owned by the effective user, or writable by its group or others. Only
+///     `st_mode`'s permission bits are read, never an ACL: a macOS ACL entry
+///     granting another user write is not detected (a Linux POSIX ACL that
+///     grants write shows in the group bits and is refused).
 ///   - Records are `owner.<G>`, `released.<G>`, `handoff.<G>` and
 ///     `cand.<pid>.<nonce>`. Ownership of generation G is taken by writing a
 ///     candidate and `link(2)`-ing it to `owner.<G>`: of any number of
 ///     racers exactly one link succeeds.
+///   - Records are written in format 2 (`planar-mutation-lock 2`), which
+///     names the host by its identity (`host=`, see host_key()) and keeps
+///     `node=` (`uname -n`) for diagnostics only. Format 1, written by an
+///     older build, has only `node=`; it is read, never written.
 ///   - The current owner is the highest generation. It is free when released
 ///     or when its owner is PROVEN dead on this host (`kill(pid, 0)` gives
-///     `ESRCH`, or the pid exists with a different start token). A live owner
-///     is never stolen from; anything ambiguous refuses and preserves every
+///     `ESRCH`, or the pid exists with a different start token). A record is
+///     on this host when its `host` equals host_key() and is not `none`, or,
+///     in format 1, when its `node` equals `uname -n`: a renamed host keeps
+///     its identity, so a crashed owner's format-2 record is still recovered,
+///     while a format-1 record under another name refuses. A live owner is
+///     never stolen from; anything ambiguous refuses and preserves every
 ///     file.
 ///   - The start token is `proc:<boot_id>:<starttime>` where
 ///     `/proc/<pid>/stat` is readable, otherwise `psu:<lstart>` from
@@ -37,7 +48,8 @@
 /// directory recorded as `tmp`, then execs the installer with
 /// `PLANAR_MUTATION_HANDOFF=<G>:<nonce>`; `exec(2)` keeps the pid and start
 /// time, which is what lets the installer's `planar_lock_adopt` accept the
-/// record as its own. This module never adopts; only the installer does.
+/// record as its own. This module never adopts; only the installer does, and
+/// it accepts an older updater's format-1 record in that record's own forms.
 ///
 /// Thread safety: the functions hold no state between calls. Two acquisitions
 /// in one process are distinct owners only by nonce; the protocol is
@@ -55,11 +67,13 @@ export inline constexpr std::string_view k_update_namespace = ".planar-update";
 
 /// @brief One parsed ownership record.
 export struct record {
+  std::string version;   ///< The record format: "1" or "2".
   std::string gen;       ///< The generation, as written.
   std::string operation; ///< install | update | uninstall.
   std::string pid;       ///< The owning process id, as written.
   std::string start;     ///< The owner's start token.
-  std::string node;      ///< The owner's host node name.
+  std::string host;      ///< The owner's host identity (format 2), else empty.
+  std::string node;      ///< The owner's host node name (format 1: its identity).
   std::string nonce;     ///< 32 lowercase hex digits.
   std::string root;      ///< The canonical install root.
   std::string tmp;       ///< The updater's temporary directory, or empty.
@@ -92,10 +106,21 @@ export auto start_token(std::int64_t pid) -> std::optional<std::string>;
 /// @return The node name.
 export auto node_name() -> std::string;
 
+/// @brief This host's identity, as `scripts/install-lib/mutation-lock.sh`'s
+/// `_pl_host_key` derives it, byte for byte: `machine-id:<id>` from a valid
+/// `/etc/machine-id`, else `platform-uuid:<UUID>` from
+/// `LC_ALL=C /usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice`, else
+/// `node:<uname -n>`, then `/pidns:<inode>` appended when
+/// `/proc/self/ns/pid` reads `pid:[<inode>]`; `none` when none of the three
+/// is available. Read afresh on every call.
+/// @return The identity.
+export auto host_key() -> std::string;
+
 /// @brief Parse an ownership record file: a regular file (not a symlink) of
-/// at most 32 lines, line 1 `planar-mutation-lock 1`, then unique known
-/// `key=value` lines with a numeric gen and pid, a known operation, a 32-hex
-/// nonce and non-empty start, node and root.
+/// at most 32 lines, line 1 `planar-mutation-lock 1` or `planar-mutation-lock
+/// 2`, then unique `key=value` lines known to that format with a numeric gen
+/// and pid, a known operation, a 32-hex nonce and non-empty start, node and
+/// root, and in format 2 a non-empty host.
 /// @param path The record file.
 /// @return The record, or unset when it is not well formed.
 export auto parse_record(const std::filesystem::path& path) -> std::optional<record>;

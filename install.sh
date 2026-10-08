@@ -618,6 +618,13 @@ RUN_DEPS=(
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
   "tar||planar update unpacks a downloaded release bundle"
 )
+# The install lock names a Mac by its hardware UUID, read with ioreg by its
+# absolute path (scripts/install-lib/mutation-lock.sh, HOST IDENTITY; the native
+# lock behind planar update does the same). Without it the lock falls back to the
+# host name, and a renamed Mac then cannot recover a crashed install's lock.
+if [[ "$(uname -s 2>/dev/null || true)" == Darwin ]]; then
+  RUN_DEPS+=("/usr/sbin/ioreg||names this Mac by its hardware UUID in the install lock (falls back to the host name without it)")
+fi
 
 if [[ "$PREBUILT" -eq 1 ]]; then
   check_deps "base" 1 "${BASE_DEPS[@]}"  # bash32: nonempty
@@ -819,6 +826,23 @@ set_target() {
   fi
 }
 
+# checkout_clean -- the source checkout has no uncommitted change, tracked or
+# untracked (ignored files aside). Status 1 with CHECKOUT_WHY set when it has
+# one, or when git cannot say (not a repository, no git).
+CHECKOUT_WHY=""
+checkout_clean() {
+  local st n first
+  if ! st="$(trap - ERR; git --no-optional-locks -C "$REPO_ROOT" status --porcelain 2>&1)"; then
+    CHECKOUT_WHY="cannot tell whether the source checkout $REPO_ROOT has uncommitted changes (git status: ${st%%$'\n'*})"
+    return 1
+  fi
+  [[ -n "$st" ]] || return 0
+  n="$(printf '%s\n' "$st" | wc -l | tr -d ' ')"
+  first="${st%%$'\n'*}"
+  CHECKOUT_WHY="the source checkout $REPO_ROOT has uncommitted changes ($n path(s); first: ${first:3})"
+  return 1
+}
+
 # same_target -- the loaded journal's transaction installs what this run would.
 same_target() {
   local v="$J_target_version" s="$J_target_sha" c="$J_target_schema" src="$J_source" p="$J_target_path"
@@ -910,7 +934,7 @@ title "Checking for an interrupted install"
 JOURNAL_FILE="$ROOT_C/.planar-journal"
 set_target
 _want_source="$J_source"; _want_version="$J_target_version"; _want_sha="$J_target_sha"
-_want_schema="$J_target_schema"; _want_path="$J_target_path"; _want_base="$J_release_base"
+_want_schema="$J_target_schema"; _want_path="$J_target_path"; _want_base="$J_release_base"; _want_mode="$MODE"
 # The release bootstrap pins the interrupted install it will finish. The journal
 # is read here, under the lock: anything but that same mutating attempt refuses.
 _expect_stale="the interrupted install the bootstrap pinned (operation ${PLANAR_EXPECT_RECOVERY-}) is no longer pending in $ROOT_C; nothing was changed. Run the command again"
@@ -946,6 +970,15 @@ if [[ -e "$JOURNAL_FILE" || -L "$JOURNAL_FILE" ]]; then
       fi
       same_target "$_want_source" "$_want_version" "$_want_sha" "$_want_schema" "$_want_path" \
         || err "an install of $J_target_version ($J_target_sha) into $ROOT_C was interrupted after it changed the installation; finish that one first, then install another release: $J_retry"
+      # A resume never mixes copy and link mode: the subtrees already swapped
+      # in have the interrupted run's form.
+      [[ "$J_mode" == "$_want_mode" ]] \
+        || err "the install of $J_target_version ($J_target_sha) into $ROOT_C was interrupted in ${J_mode:-an unrecorded} mode and this run is in $_want_mode mode; a resume never mixes copy and link mode. Nothing was changed. Complete it in its own mode: $J_retry"
+      # A source resume restages from the checkout: only a clean tree at the
+      # recorded commit is the tree the interrupted run was building.
+      if [[ "$J_source" == checkout ]] && ! checkout_clean; then
+        err "$CHECKOUT_WHY, so it cannot be shown to hold the tree the interrupted install of $J_target_sha was building; a resume never stages a dirty checkout. Nothing was changed. Make the checkout clean at that commit (git stash --include-untracked keeps your changes), then complete the install: $J_retry"
+      fi
       planar_state_reconcile "$ROOT_C" || err "the interrupted install cannot be resumed safely: $INSTALL_STATE_ERROR"
       log "resuming the interrupted install of $J_target_version"
       INSTALL_ATTEMPT=recovery

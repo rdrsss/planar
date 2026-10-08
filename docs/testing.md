@@ -535,11 +535,11 @@ ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
 | `install.data_paths` | `install_data_paths` | `scripts/install-data-paths-test.sh` | Data paths are never removed, and INSTALL.md's preserved-paths list matches `scripts/install-lib/data-paths.sh`. |
 | `install.prebuilt` | `install_prebuilt` | `scripts/install-prebuilt-test.sh` | `install.sh --prebuilt`: an incomplete bundle, `--link`, and the move-aside of the old queue database. |
 | `install.retired_targets` | `install_retired_targets` | `scripts/install-retired-targets-test.sh` | The retired `make install` targets are gone, and no install doc carries a `make install` recipe. |
-| `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, and the missing-only `templates/` rule. |
-| `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, simultaneous reclaims, the update handoff. |
+| `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, the missing-only `templates/` rule, and a source resume refusing the other mode or a dirty checkout. |
+| `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, host renames and other hosts, simultaneous reclaims, the update handoff (an older updater's included), install roots whose path says `exists`. |
 | `install.uninstall` | `install_uninstall` | `scripts/install-uninstall-test.sh` | `scripts/uninstall.sh`: removals, `--purge`, unknown entries, `~/.local/bin`, interrupted-uninstall retry. |
 | `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
-| `install.order` | `install_order` | `scripts/install-order-test.sh` | The order of an install end to end, against bundles of the real built binaries: databases fresh, behind, ahead and faulty, kill-and-resume at every swap point, concurrent owners, the updater handoff. |
+| `install.order` | `install_order` | `scripts/install-order-test.sh` | The order of an install end to end, against bundles of the real built binaries: databases fresh, behind, ahead and faulty, kill-and-resume at every swap point and across a host rename, concurrent owners, the updater handoff. |
 | `queue_retire_reader` | `queue;scripts` | `scripts/install-lib/queue_retire.test.py` | The reader the installer runs to judge the retired queue store's entries, including its `/proc` cases. |
 | `codex_agents_render` | `scripts` | `scripts/render_codex_agents_test.py` | The Codex custom-agent TOML renderer. |
 
