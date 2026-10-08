@@ -15,7 +15,8 @@
 //     runs on, including ones no bundle exists for.
 //   - The built binary, black-box, with the real `install.sh --prebuilt`
 //     behind the exec, a `bash` stand-in that inspects the lock from inside
-//     the exec'd process, and a KILL in the middle of a download.
+//     the exec'd process, a KILL, a SIGINT and a SIGTERM in the middle of
+//     a download, and an installer exec that fails.
 //
 // Every release is a fake one (`release_fixture.sh`, which builds on
 // `scripts/fixtures/prebuilt-bundle.sh`) served through `file://` or the
@@ -25,6 +26,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <signal.h>
+#include <spawn.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -45,6 +47,9 @@ import planar.db.migrate;
 
 #include "../lib/http/fixture_server.hpp"
 #include "parity_harness.hpp"
+
+// The process environment, inherited by the spawned binary.
+extern "C" char** environ; // NOLINT(readability-redundant-declaration)
 
 namespace {
 
@@ -1396,6 +1401,189 @@ TEST_CASE("update: a KILLed update leaves nothing the next update cannot reclaim
   CHECK(next.code == 0);
   CHECK(next.out.contains(std::format("reclaimed the mutation lock from an abandoned update pid {}", rec->pid)));
   CHECK_FALSE(std::filesystem::exists(rec->tmp));
+  CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
+  CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.1.0\""));
+  CHECK(lock_free(dir));
+}
+
+namespace {
+
+/// Start `bin args` from `work/proj` under `env`, stdout and stderr into
+/// `work/<tag>.out` and `work/<tag>.err`, and return its pid. SIGINT and
+/// SIGTERM start at their default dispositions with nothing blocked: a
+/// shell's `&` would start the child with SIGINT ignored, and an ignored
+/// SIGINT is one `planar update` deliberately leaves alone. `sh` execs `env`,
+/// which execs the binary, so the pid is the binary's own.
+auto spawn_pinned(const std::filesystem::path& bin, const std::vector<std::string>& args, const std::filesystem::path& work,
+                  std::string_view tag, std::span<const pinned_var> env) -> pid_t {
+  std::string line = std::format("cd {} && exec {}{}", shell_quote((work / "proj").string()),
+                                 planar::cmd::parity::pinned_env_prefix(env), shell_quote(bin.string()));
+  for (auto const& a : args) {
+    line += " " + shell_quote(a);
+  }
+  line += std::format(" > {} 2> {}", shell_quote((work / std::format("{}.out", tag)).string()),
+                      shell_quote((work / std::format("{}.err", tag)).string()));
+  posix_spawnattr_t attr{};
+  REQUIRE(::posix_spawnattr_init(&attr) == 0);
+  sigset_t defaults{};
+  sigset_t none{};
+  sigemptyset(&defaults);
+  sigaddset(&defaults, SIGINT);
+  sigaddset(&defaults, SIGTERM);
+  sigemptyset(&none);
+  ::posix_spawnattr_setsigdefault(&attr, &defaults);
+  ::posix_spawnattr_setsigmask(&attr, &none);
+  ::posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+  std::string        sh = "/bin/sh";
+  std::string        c  = "-c";
+  std::vector<char*> argv{sh.data(), c.data(), line.data(), nullptr};
+  pid_t              pid = -1;
+  int const          rc  = ::posix_spawn(&pid, "/bin/sh", nullptr, &attr, argv.data(), environ);
+  ::posix_spawnattr_destroy(&attr);
+  REQUIRE(rc == 0);
+  return pid;
+}
+
+/// Wait up to `budget` for `pid` to end; its wait status, or unset (after a
+/// KILL and reap) when it did not end in time.
+auto reap_within(pid_t pid, std::chrono::milliseconds budget) -> std::optional<int> {
+  auto const deadline = std::chrono::steady_clock::now() + budget;
+  int        status   = 0;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto const got = ::waitpid(pid, &status, WNOHANG);
+    if (got == pid) {
+      return status;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ::kill(pid, SIGKILL);
+  ::waitpid(pid, &status, 0);
+  return std::nullopt;
+}
+
+/// Interrupt a real `planar update` with `sig` while its asset download is
+/// stalled on the loopback fixture, then check that it removed its download
+/// directory, released the lock through the protocol and exited 128+sig, and
+/// that the next update starts clean.
+auto interrupt_a_download(int sig, std::string_view name) -> void {
+  auto       space = make_arena(std::format("upsig{}", sig));
+  auto const work  = space.cpp_root;
+  auto const rel   = work / "rel";
+  auto const plat  = host_platform();
+  if (!plat.has_value()) {
+    SUCCEED("no release bundle exists for this host");
+    return;
+  }
+  std::string out;
+  REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
+               {source_root().string(), rel.string(), "v1.1.0", *plat}, &out) == 0);
+  auto const inst = work / "home";
+  write_file(inst / "release.json", "{\"version\": \"v1.0.0\", \"schema_version\": 41}\n");
+  write_file(inst / ".planar-install", "x\ny\n");
+  write_file(inst / "bin/planar", "#!/bin/sh\n");
+  // Every file is served whole except the asset: one 16-byte piece, then a
+  // stall far longer than the interrupted run may take.
+  planar::http::fixture::server server([&](const planar::http::fixture::captured_request& req) {
+    auto const body = read_all(rel / req.target.substr(1));
+    if (req.target.ends_with(".tar.gz")) {
+      return planar::http::fixture::canned_response{.status                  = 200,
+                                                    .body                    = body,
+                                                    .content_type            = "application/octet-stream",
+                                                    .chunk_bytes             = 16,
+                                                    .stall_after_first_chunk = true,
+                                                    .stall_delay             = std::chrono::seconds{60}};
+    }
+    return planar::http::fixture::canned_response{.status = 200, .body = body, .content_type = "text/plain"};
+  });
+  auto const                    pid = spawn_pinned(cpp_bin(), {"update"}, work, name, env_with(work, server.base_url()));
+  auto const                    dir = canon(inst) + ".lock";
+  REQUIRE(planar::cmd::parity::await_sentinel(dir + "/owner.1", true, std::chrono::seconds{30}).has_value());
+  auto const rec = lock::parse_record(dir + "/owner.1");
+  REQUIRE(rec.has_value());
+  REQUIRE(rec->pid == std::to_string(pid));
+  // VERSION, SHA256SUMS, then the asset: the third request means the
+  // download into the temporary directory is in flight.
+  for (int i = 0; i < 3000 && server.request_count() < 3; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  REQUIRE(server.request_count() >= 3);
+  REQUIRE(std::filesystem::is_directory(rec->tmp));
+  auto const sent = std::chrono::steady_clock::now();
+  REQUIRE(::kill(pid, sig) == 0);
+  auto const status = reap_within(pid, std::chrono::seconds{20});
+  auto const err    = read_all(work / std::format("{}.err", name));
+  INFO(err);
+  REQUIRE(status.has_value());
+  // It stopped the stalled transfer, not waited it out.
+  CHECK(std::chrono::steady_clock::now() - sent < std::chrono::seconds{15});
+  CHECK_FALSE(WIFSIGNALED(*status));
+  REQUIRE(WIFEXITED(*status));
+  CHECK(WEXITSTATUS(*status) == 128 + sig);
+  CHECK(err.contains(std::format("planar update was interrupted by {}", name)));
+  CHECK_FALSE(std::filesystem::exists(rec->tmp));
+  CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
+  // Released through the protocol (`released.<G>`), not left to a reclaim.
+  CHECK(std::filesystem::exists(dir + "/released.1"));
+  CHECK(lock_free(dir));
+  CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.0.0\""));
+
+  auto const next =
+      run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "next", env_with(work, "file://" + canon(rel)));
+  INFO(next.out << next.err);
+  CHECK(next.code == 0);
+  CHECK_FALSE(next.out.contains("reclaimed"));
+  CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
+  CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.1.0\""));
+  CHECK(lock_free(dir));
+}
+
+} // namespace
+
+TEST_CASE("update: SIGINT during a slowed download removes the download directory and releases the lock", "[update][e2e]") {
+  interrupt_a_download(SIGINT, "SIGINT");
+}
+
+TEST_CASE("update: SIGTERM during a slowed download removes the download directory and releases the lock", "[update][e2e]") {
+  interrupt_a_download(SIGTERM, "SIGTERM");
+}
+
+TEST_CASE("update: a failed installer exec removes the download directory and releases the lock", "[update][e2e]") {
+  auto       space = make_arena("upexecbad");
+  auto const work  = space.cpp_root;
+  auto const rel   = work / "rel";
+  auto const base  = "file://" + canon(rel);
+  auto const plat  = host_platform();
+  if (!plat.has_value()) {
+    SUCCEED("no release bundle exists for this host; the in-process failed-exec case covers the cleanup");
+    return;
+  }
+  std::string out;
+  REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
+               {source_root().string(), rel.string(), "v1.1.0", *plat}, &out) == 0);
+  auto const inst = work / "home";
+  write_file(inst / "release.json", "{\"version\": \"v1.0.0\", \"schema_version\": 41}\n");
+  write_file(inst / ".planar-install", "x\ny\n");
+  write_file(inst / "bin/planar", "#!/bin/sh\n");
+  // A `bash` the verb resolves (it is executable) but the kernel cannot run:
+  // its interpreter does not exist, so execve fails with ENOENT.
+  auto const fake = work / "fakebin";
+  write_file(fake / "bash", "#!/nonexistent/interpreter\n");
+  std::filesystem::permissions(fake / "bash", std::filesystem::perms::owner_all);
+  auto const path = std::format("{}:{}", fake.string(), std::getenv("PATH"));
+  auto const got  = run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "badexec",
+                               env_with(work, base, {{.name = "PATH", .value = path}}));
+  INFO(got.out << got.err);
+  CHECK(got.code == 1);
+  CHECK(got.err.contains("cannot run the installer"));
+  auto const dir = canon(inst) + ".lock";
+  CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
+  CHECK(std::filesystem::exists(dir + "/released.1"));
+  CHECK(lock_free(dir));
+
+  auto const next = run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "next", env_with(work, base));
+  INFO(next.out << next.err);
+  CHECK(next.code == 0);
+  CHECK_FALSE(next.out.contains("reclaimed"));
   CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
   CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.1.0\""));
   CHECK(lock_free(dir));
