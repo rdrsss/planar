@@ -273,7 +273,7 @@ lock_selftest() {
   lock_clear "$(lock_state "$BASH_BIN" "$root")" || fail "lock self-test: a root with no lock directory was not clear"
   ( /usr/bin/env -i HOME="$root" PATH="$BASEBIN" LC_ALL=C "$BASH_BIN" -c 'source "$1"; planar_lock_acquire "$2" install || exit 1; : > "$3"; sleep 120' lk "$LOCKLIB" "$root/.planar" "$root/ready" >/dev/null 2>&1 ) &
   holder=$!
-  local i; for i in $(seq 1 100); do [[ -f "$root/ready" ]] && break; sleep 0.1; done
+  local _; for _ in $(seq 1 100); do [[ -f "$root/ready" ]] && break; sleep 0.1; done
   [[ -f "$root/ready" ]] || { kill "$holder" 2>/dev/null; fail "lock self-test: the holder never acquired the lock"; }
   [[ "$(lock_state "$BASH_BIN" "$root")" == held ]] || { pkill -P "$holder" 2>/dev/null; kill "$holder" 2>/dev/null; fail "lock self-test: a live holder was judged $(lock_state "$BASH_BIN" "$root"), not held"; }
   ! lock_clear held || fail "lock self-test: lock_clear accepted a held owner"

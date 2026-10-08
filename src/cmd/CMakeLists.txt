@@ -219,8 +219,14 @@ endif()
 # binary is a target, and always with it. `make test-install-stage` runs the same
 # script against build/debug/bin/planar.
 if(TARGET planar_cmd_planar)
-  add_test(NAME install.stage
-    COMMAND "${CMAKE_COMMAND}" -E env "PLANAR_BIN=$<TARGET_FILE:planar_cmd_planar>"
-      /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-stage-test.sh")
-  set_tests_properties(install.stage PROPERTIES LABELS "install_stage" TIMEOUT 900)
+  # One ctest entry per group of scenarios (INSTALL_STAGE_GROUP; the groups are listed in
+  # the script): the whole file took 843 s on a loaded host and the ceiling for an
+  # installer test is five minutes.
+  foreach(_stage_group staging vendors placement modes uninstall)
+    add_test(NAME install.stage_${_stage_group}
+      COMMAND "${CMAKE_COMMAND}" -E env "PLANAR_BIN=$<TARGET_FILE:planar_cmd_planar>"
+        "INSTALL_STAGE_GROUP=${_stage_group}"
+        /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-stage-test.sh")
+    set_tests_properties(install.stage_${_stage_group} PROPERTIES LABELS "install_stage;install_stage_${_stage_group}" TIMEOUT 600)
+  endforeach()
 endif()
