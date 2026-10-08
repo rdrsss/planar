@@ -1208,7 +1208,10 @@ TEST_CASE("transcript format: the Claude recognizer takes the planar segment of 
            "env FOO=1 BAR=2 planar task show 1",
            "cd somewhere && planar task show 1",
            "cd somewhere; planar task show 1",
-           "planar task show 1 && echo done",
+           "export A=1 && planar task show 1",
+           "A=1 && pushd somewhere && planar task show 1",
+           "make test; planar task show 1",
+           "make test; cd somewhere && planar task show 1",
            "planar task show 1 2>&1",
        }) {
     INFO(command);
@@ -1216,6 +1219,26 @@ TEST_CASE("transcript format: the Claude recognizer takes the planar segment of 
     REQUIRE(signals.size() == 1);
     CHECK(signals[0].verb_path == "planar task show");
   }
+}
+
+TEST_CASE("transcript format: planar must be the last command of a chain, after only trivial && steps",
+          "[engine][introspection_adapters][format-fix][chain]") {
+  for (std::string_view const command : {
+           "planar task show 1 && echo done",
+           "planar task show 1; false",
+           "planar task show 1 && make test",
+           "make && ./bin/planar task show 1",
+           "cmake --build build/debug && ./bin/planar task show 1",
+           "make test && cd somewhere && planar task show 1",
+           "planar task show 1 && planar plan show 2",
+           "planar task show 1; planar plan show 2",
+       }) {
+    INFO(command);
+    CHECK(claude_signals(command).empty());
+  }
+  // The same recognizer reads a Codex shell wrapper.
+  CHECK(
+      codex_signals(R"(["bash","-lc","planar task show 1 && make test"])", R"("exit_code":1,"status":"failed")").signals.empty());
 }
 
 TEST_CASE("transcript format: the Claude recognizer rejects pipelines, substitution and other executables",
