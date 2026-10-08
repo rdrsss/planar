@@ -43,6 +43,27 @@ constexpr std::string_view unknown_verb = "<unknown>";
 /// declare.
 constexpr std::string_view unknown_flag = "--<unknown>";
 
+/// @brief Whether `t` is a structured operand: a bare id (`6073`) or an
+/// entity ref (`plan:42`), the only shapes recorded verbatim in slot 2.
+/// @param t The token.
+/// @return `true` for digits, or `word:digits`.
+auto structured_operand(std::string_view t) -> bool {
+  if (t.empty()) {
+    return false;
+  }
+  auto const colon  = t.find(':');
+  auto const digits = [](std::string_view v) {
+    return !v.empty() && std::ranges::all_of(v, [](unsigned char c) { return std::isdigit(c) != 0; });
+  };
+  if (colon == std::string_view::npos) {
+    return digits(t);
+  }
+  auto const kind = t.substr(0, colon);
+  return !kind.empty() &&
+         std::ranges::all_of(kind, [](unsigned char c) { return std::isalpha(c) != 0 || c == '-' || c == '_'; }) &&
+         digits(t.substr(colon + 1));
+}
+
 /// @brief The live CLI tree, built once for membership checks.
 /// @return The root node; borrowed and valid for the process lifetime.
 auto live_root() -> const CLI::App& {
@@ -206,22 +227,6 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
     // the VALUE is safe by default, and `resume`/`tree` keep the verbatim
     // capture cli_log.cppm's header documents as the oracle's boundary.
     // `parent_verbs` is derived from the live CLI tree for the same reason.
-    auto const structured_operand = [](std::string_view t) {
-      if (t.empty()) {
-        return false;
-      }
-      auto const colon  = t.find(':');
-      auto const digits = [](std::string_view v) {
-        return !v.empty() && std::ranges::all_of(v, [](unsigned char c) { return std::isdigit(c) != 0; });
-      };
-      if (colon == std::string_view::npos) {
-        return digits(t);
-      }
-      auto const kind = t.substr(0, colon);
-      return !kind.empty() &&
-             std::ranges::all_of(kind, [](unsigned char c) { return std::isalpha(c) != 0 || c == '-' || c == '_'; }) &&
-             digits(t.substr(colon + 1));
-    };
     const bool verb_slot_open =
         !past_verbs && (verb_parts.empty() || (verb_parts.size() < max_verb_depth &&
                                                (parent_verbs.contains(verb_parts.front()) || structured_operand(token))));
@@ -280,8 +285,33 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
   return shape;
 }
 
-auto verb_path_recognized(std::string_view) -> bool {
-  return true;
+auto verb_path_recognized(std::string_view verb_path) -> bool {
+  if (verb_path.empty()) {
+    return true; // A bare `planar` records no verb.
+  }
+  std::vector<std::string_view> parts;
+  for (auto const part : std::views::split(verb_path, ' ')) {
+    parts.emplace_back(part.begin(), part.end());
+  }
+  if (parts.size() > max_verb_depth) {
+    return false;
+  }
+  auto const& root = live_root();
+
+  // Slot 1: a top-level verb, or the writer's own placeholder.
+  const CLI::App* top = nullptr;
+  if (parts[0] != unknown_verb) {
+    top = named_child(root, parts[0]);
+    if (top == nullptr) {
+      return false;
+    }
+  }
+  if (parts.size() == 1) {
+    return true;
+  }
+
+  // Slot 2: the placeholder, a structured operand, or a subcommand of slot 1.
+  return parts[1] == unknown_verb || structured_operand(parts[1]) || (top != nullptr && named_child(*top, parts[1]) != nullptr);
 }
 
 auto category_for(domain_error_kind kind) -> std::optional<std::string_view> {

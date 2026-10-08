@@ -218,7 +218,10 @@ TEST_CASE("report's cli_log adapter reports a single row larger than the budget 
   // mapping is pinned by the adapter module's own test.)
   auto const fx = make_fixture("cli_single_row_over_budget");
   enable_cli_log(fx);
-  std::string const huge_verb_path(4 * 1024 * 1024 + 4096, 'x');
+  // The catalog mask shortens any unrecognised `verb_path`, so the size
+  // has to come from a path the catalog accepts: a structured operand, here
+  // a 4 MiB run of digits (`error_category` is a closed set).
+  std::string const huge_verb_path = "resume " + std::string(4 * 1024 * 1024 + 4096, '9');
   seed(fx,
        "insert into cli_invocations (verb_path, exit_code, recorded_at) values ('" + huge_verb_path + "', 0, datetime('now'))");
 
@@ -251,16 +254,17 @@ TEST_CASE("report --json walks a real transcript directory under the fixture's s
 
 TEST_CASE("report --json reads an oversize capture log newest first and warns byte_cap instead of failing",
           "[cmd][report][7364]") {
-  // 20000 failed rows of roughly 230 bytes of JSONL each exceed the 4 MiB
-  // budget but stay under the 50000-record cap. The newest ten rows carry a
-  // recognizable verb path and so do the oldest ten; the middle is filler.
+  // 45000 failed rows of roughly 150 bytes of JSONL each exceed the 4 MiB
+  // budget but stay under the 50000-record cap. The verb paths are catalog
+  // names so the read mask leaves their size alone: the newest ten rows are
+  // `task add`, the oldest ten `task show`, and the middle is filler.
   auto const fx = make_fixture("cli_byte_cap");
   enable_cli_log(fx);
-  seed(fx, R"(with recursive n(i) as (select 0 union all select i + 1 from n where i < 19999)
+  seed(fx, R"(with recursive n(i) as (select 0 union all select i + 1 from n where i < 44999)
 insert into cli_invocations (verb_path, exit_code, error_category, recorded_at)
-select case when i < 10 then 'newest-marker'
-            when i >= 19990 then 'oldest-marker'
-            else 'filler-' || printf('%05d', i) || '-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' end,
+select case when i < 10 then 'task add'
+            when i >= 44990 then 'task show'
+            else 'task <unknown>' end,
        2, 'usage', datetime('now', '-' || i || ' seconds')
 from n)");
 
@@ -269,8 +273,8 @@ from n)");
   CHECK(result.out.find(R"("kind":"cli_adapter_failed")") == std::string::npos);
   CHECK(result.out.find(R"({"vendor":"cli_log","state":"observed")") != std::string::npos);
   CHECK(result.out.find(R"({"vendor":"cli_log","kind":"byte_cap","count":)") != std::string::npos);
-  CHECK(result.out.find("planar newest-marker") != std::string::npos);
-  CHECK(result.out.find("planar oldest-marker") == std::string::npos);
+  CHECK(result.out.find("planar task add") != std::string::npos);
+  CHECK(result.out.find("planar task show") == std::string::npos);
 }
 
 TEST_CASE("report --json carries failure_tail, logging_enabled and the real version", "[cmd][report][7368]") {

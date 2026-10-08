@@ -170,7 +170,18 @@ auto health_summary(db::connection& conn) -> std::string {
   return "ok";
 }
 
-auto query_invocations(db::connection& conn, std::int64_t window_days)
+/// @brief The value to render for a stored `verb_path`.
+/// @param recognized The injected catalog predicate.
+/// @param stored The stored value.
+/// @return `stored` when recognized, else `unrecognized_verb_path`.
+auto masked_verb_path(const verb_path_predicate& recognized, std::string stored) -> std::string {
+  if (recognized(stored)) {
+    return stored;
+  }
+  return std::string{unrecognized_verb_path};
+}
+
+auto query_invocations(db::connection& conn, std::int64_t window_days, const verb_path_predicate& recognized)
     -> std::expected<std::vector<verb_count>, introspect_error> {
   auto stmt = conn.prepare("select verb_path,"
                            " count(*) as total,"
@@ -191,10 +202,21 @@ auto query_invocations(db::connection& conn, std::int64_t window_days)
       return std::unexpected(introspect_error::query_failed);
     }
     if (*step != db::step_result::row) {
+      std::ranges::stable_sort(rows, [](verb_count const& a, verb_count const& b) { return a.count > b.count; });
       return rows;
     }
+    // Rejected paths all render the same placeholder, so they aggregate
+    // into one row rather than listing "<unrecognized>" several times.
+    auto       path = masked_verb_path(recognized, stmt->column_text(0));
+    auto const it   = std::ranges::find(rows, path, &verb_count::verb_path);
+    if (it != rows.end()) {
+      it->count += stmt->column_int64(1);
+      it->success_count += stmt->column_int64(2);
+      it->failure_count += stmt->column_int64(3);
+      continue;
+    }
     rows.push_back(verb_count{
-        .verb_path     = stmt->column_text(0),
+        .verb_path     = std::move(path),
         .count         = stmt->column_int64(1),
         .success_count = stmt->column_int64(2),
         .failure_count = stmt->column_int64(3),
@@ -227,8 +249,8 @@ auto query_failure_categories(db::connection& conn, std::int64_t window_days)
   }
 }
 
-auto query_failure_tail(db::connection& conn, std::int64_t window_days, std::int64_t tail_n)
-    -> std::expected<std::vector<failure_tail_row>, introspect_error> {
+auto query_failure_tail(db::connection& conn, std::int64_t window_days, std::int64_t tail_n,
+                        const verb_path_predicate& recognized) -> std::expected<std::vector<failure_tail_row>, introspect_error> {
   auto stmt = conn.prepare("select verb_path, coalesce(error_category,'unknown'), exit_code, recorded_at"
                            " from cli_invocations"
                            " where exit_code != 0"
@@ -249,7 +271,7 @@ auto query_failure_tail(db::connection& conn, std::int64_t window_days, std::int
       return rows;
     }
     rows.push_back(failure_tail_row{
-        .verb_path      = stmt->column_text(0),
+        .verb_path      = masked_verb_path(recognized, stmt->column_text(0)),
         .error_category = stmt->column_text(1),
         .exit_code      = stmt->column_int64(2),
         .recorded_at    = stmt->column_text(3),
@@ -466,7 +488,7 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
 } // namespace
 
 auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled, std::string_view version,
-           const verb_path_predicate& /*recognized*/) -> std::expected<bundle, introspect_error> {
+           const verb_path_predicate& recognized) -> std::expected<bundle, introspect_error> {
   bundle result;
   result.version         = std::string{version};
   result.schema_version  = count_query_unwindowed(conn, "select coalesce(max(version), 0) from schema_migrations", 0);
@@ -475,7 +497,7 @@ auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, 
   result.logging_enabled = logging_enabled;
 
   if (logging_enabled) {
-    auto invocations = query_invocations(conn, window_days);
+    auto invocations = query_invocations(conn, window_days, recognized);
     if (!invocations) {
       return std::unexpected(invocations.error());
     }
@@ -483,7 +505,7 @@ auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, 
     if (!failures) {
       return std::unexpected(failures.error());
     }
-    auto tail = query_failure_tail(conn, window_days, tail_n);
+    auto tail = query_failure_tail(conn, window_days, tail_n, recognized);
     if (!tail) {
       return std::unexpected(tail.error());
     }
@@ -509,14 +531,15 @@ auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, 
 }
 
 auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes,
-                       const verb_path_predicate& /*recognized*/) -> std::expected<cli_preview, introspect_error> {
+                       const verb_path_predicate& recognized) -> std::expected<cli_preview, introspect_error> {
   auto stmt = conn.prepare("select"
                            " case when verb_path like 'planar %' then verb_path else 'planar ' || verb_path end,"
                            " exit_code,"
                            " coalesce(error_category,''),"
                            " case when substr(recorded_at,-1)='Z' or substr(recorded_at,-6,1) in ('+','-')"
                            "      then replace(recorded_at,' ','T')"
-                           "      else replace(recorded_at,' ','T') || 'Z' end"
+                           "      else replace(recorded_at,' ','T') || 'Z' end,"
+                           " verb_path"
                            " from cli_invocations"
                            " where recorded_at >= datetime('now', ?)"
                            " order by recorded_at desc, id desc");
@@ -542,7 +565,15 @@ auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size
       continue;
     }
     std::string row = R"({"schema":1,"kind":"cli_invocation","verb_path":)";
-    append_json_string(row, stmt->column_text(0));
+    // The predicate sees the stored value, not the `planar `-prefixed form
+    // the boundary needs; a legacy stored prefix is looked through.
+    auto const stored = stmt->column_text(4);
+    auto const bare   = stored.starts_with("planar ") ? stored.substr(7) : stored;
+    if (recognized(bare)) {
+      append_json_string(row, stmt->column_text(0));
+    } else {
+      append_json_string(row, std::format("planar {}", unrecognized_verb_path));
+    }
     row += std::format(",\"exit_code\":{},\"error_category\":", stmt->column_int64(1));
     append_json_string(row, stmt->column_text(2));
     row += ",\"recorded_at\":";
