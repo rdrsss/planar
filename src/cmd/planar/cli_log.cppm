@@ -15,7 +15,10 @@
 /// true and it is load-bearing, but on its own it does not tell a porter
 /// where the line actually falls. The boundary below was derived by
 /// running the built oracle against a scratch database with logging on and
-/// reading `cli_invocations` back, argv by argv:
+/// reading `cli_invocations` back, argv by argv. This table is the
+/// PRE-CHANGE oracle transcript, kept as history: since task 7369 the verb
+/// slot records only tokens the live CLI tree names (or a structured
+/// operand in slot 2), so `resume SENTINEL` now records `resume <unknown>`.
 ///
 ///     argv                                    verb_path        args_shape
 ///     -------------------------------------   --------------   ----------------
@@ -45,14 +48,14 @@
 ///      first up to `max_verb_depth` (2) non-flag tokens appearing BEFORE
 ///      any flag are joined into `verb_path`. A token is recorded as typed
 ///      only when the live tree names it at that depth (`task`, then
-///      `add`) or when it is a structured operand (a bare id such as
+///      `add`) or, in slot 2 only, when it is a structured operand (a bare id such as
 ///      `resume 6073`, an entity ref such as `tree plan:42`); any other
 ///      token is recorded as `<unknown>`. Flag NAMES follow the same rule:
 ///      a name is recorded only when the resolved verb (or an ancestor)
 ///      declares it, else `--<unknown>` (task 7369).
 ///
-/// Structured operands stay verbatim because the oracle recorded them and
-/// their shape cannot carry prose. `cli_log.t.cpp` pins the guarantee and the
+/// Structured operands in slot 2 stay verbatim because the oracle recorded
+/// them and the shape is bounded to one `word:digits` or digits token. `cli_log.t.cpp` pins the guarantee and the
 /// kept exception.
 ///
 /// ## Fail-open, and what that costs

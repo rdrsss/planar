@@ -97,8 +97,7 @@ auto flag_declared(std::span<const CLI::App* const> chain, std::string const& na
 auto parent_verb_set() -> const std::set<std::string, std::less<>>& {
   static const std::set<std::string, std::less<>> verbs = [] {
     std::set<std::string, std::less<>> out;
-    auto const                         root = root_app();
-    for (auto const* child : cliapp::children(*root)) {
+    for (auto const* child : cliapp::children(live_root())) {
       if (!cliapp::children(*child).empty()) {
         out.insert(child->get_name());
       }
@@ -126,6 +125,12 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
   // than recorded.
   bool past_verbs = false;
 
+  // Set by the first flag. Until then a token past the recorded verb depth
+  // can still name a third-level subcommand (`feedback triage set`), which
+  // only widens the chain flags are checked against; it is still counted as
+  // a positional and never recorded.
+  bool flag_seen = false;
+
   for (std::size_t i = 0; i < argv_tail.size(); ++i) {
     std::string_view const token = argv_tail[i];
 
@@ -138,6 +143,7 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
 
     if (is_long_flag(token) || is_short_flag(token)) {
       past_verbs = true;
+      flag_seen  = true;
 
       // The inline form `--flag=value`. Record the NAME only, `=` excluded
       // (this is what the Zig code does and what the oracle's rows show --
@@ -174,10 +180,14 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
       continue;
     }
 
-    // The verb slot. Token 2 is RECORDED VERBATIM only when it is
-    // STRUCTURED — a bare id (`resume 6073`) or an entity ref
-    // (`tree plan:42`) — or when token 1 is a verb that has subcommands
-    // (`task add`). Free-text operands are dropped (task 6351).
+    // The verb slot, three cases (tasks 6351 and 7369):
+    //   - Slot 1 is recorded only when the live CLI tree names it at the top
+    //     level; anything else, structured-looking or not, is `<unknown>`.
+    //   - Slot 2 is recorded when the tree names it under the resolved
+    //     slot 1 (`task add`), or when it is a structured operand: a bare
+    //     id (`resume 6073`) or an entity ref (`tree plan:42`).
+    //   - Any other slot-2 token is `<unknown>` after a parent verb, and a
+    //     counted positional otherwise.
     //
     // Three top-level verbs carry operator prose in that slot, and the leak
     // was measured with cli_log enabled, not reasoned about:
@@ -219,13 +229,13 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
       const CLI::App* resolved = nullptr;
       if (verb_parts.empty()) {
         resolved = named_child(root, token);
-      } else if (chain.size() == 2) {
+      } else if (chain.size() == verb_parts.size() + 1) {
         resolved = named_child(*chain.back(), token);
       }
       if (resolved != nullptr) {
         chain.push_back(resolved);
         recorded_parts.emplace_back(token);
-      } else if (structured_operand(token)) {
+      } else if (!verb_parts.empty() && structured_operand(token)) {
         recorded_parts.emplace_back(token);
       } else {
         recorded_parts.emplace_back(unknown_verb);
@@ -234,7 +244,14 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
       continue;
     }
 
-    // A positional: past the verb depth, or after the first flag.
+    // A positional: past the verb depth, or after the first flag. A token
+    // past the depth that names a subcommand of the resolved leaf widens the
+    // flag chain; it is not recorded.
+    if (!flag_seen && chain.size() == verb_parts.size() + 1) {
+      if (auto const* deeper = named_child(*chain.back(), token); deeper != nullptr) {
+        chain.push_back(deeper);
+      }
+    }
     past_verbs = true;
     ++positional_count;
   }

@@ -204,21 +204,11 @@ TEST_CASE("a hostile value cannot reach the cli_invocations ROW", "[cmd][cli_log
 }
 
 TEST_CASE("structured operands in the verb slot are recorded as typed", "[cmd][cli_log][privacy]") {
-  // Pinned in the OPPOSITE direction from the cases above, on purpose.
-  //
-  // The stated invariant is "flag VALUES are never recorded", and it says
-  // nothing about the verb slot. Running the oracle shows why that wording
-  // is exact: a ONE-level verb that takes a positional puts the operator's
-  // argument straight into verb_path.
-  //
-  //     $ planar resume SENTINEL   -> verb_path 'resume SENTINEL'
-  //     $ planar tree SENTINEL     -> verb_path 'tree SENTINEL'
-  //
-  // A porter who read the invariant as "no values are ever recorded" would
-  // suppress these and diverge from the oracle on every `resume` and
-  // `tree`. This case exists so that neither reading can drift silently: if
-  // the project ever decides the oracle is wrong here, this test is where
-  // the decision gets made, rather than somewhere a shape quietly changed.
+  // The rule (task 7369): slot 2 records a token as typed when the live
+  // CLI tree names it under slot 1, or when it is a structured operand, a
+  // single bare id or `word:digits` ref. That shape is bounded and cannot
+  // carry prose, so `resume 6073` and `tree plan:42` keep their rows. Free
+  // text in slot 2 is `<unknown>` and is pinned in the redaction cases below.
   auto const resumed = shape_of({"resume", "6073"});
   CHECK(resumed.verb_path == "resume 6073");
   CHECK(resumed.args_shape.empty());
@@ -241,6 +231,10 @@ TEST_CASE("a mistyped top-level token is recorded as <unknown>", "[cmd][cli_log]
   auto const bogus = shape_of({"SENTINEL_MUST_NOT_LEAK"});
   CHECK(bogus.verb_path == "<unknown>");
   CHECK_FALSE(bogus.verb_path.contains("SENTINEL"));
+
+  // Structured-looking tokens are legitimate only in slot 2.
+  CHECK(shape_of({"5551234567"}).verb_path == "<unknown>");
+  CHECK(shape_of({"acme:7"}).verb_path == "<unknown>");
 
   // The unknown token is not a parent verb, so a following word is a counted positional.
   auto const with_prose = shape_of({"SENTINEL_MUST_NOT_LEAK", "more", "prose"});
@@ -280,6 +274,16 @@ TEST_CASE("a flag the resolved verb does not declare is recorded as --<unknown>"
   for (auto const& shape : {separate, inline_form, short_form, mixed, unresolved}) {
     CHECK_FALSE(shape.args_shape.contains("SENTINEL"));
   }
+}
+
+TEST_CASE("flags on a three-level verb are checked against the leaf", "[cmd][cli_log][privacy][redaction]") {
+  auto const declared = shape_of({"feedback", "triage", "set", "--severity", "high"});
+  CHECK(declared.verb_path == "feedback triage");
+  CHECK(declared.args_shape == "<pos:1> --severity");
+
+  auto const undeclared = shape_of({"feedback", "triage", "set", "--SENTINEL_MUST_NOT_LEAK", "high"});
+  CHECK(undeclared.verb_path == "feedback triage");
+  CHECK(undeclared.args_shape == "<pos:1> --<unknown>");
 }
 
 TEST_CASE("real verbs and structured operands are still recorded", "[cmd][cli_log][redaction]") {
