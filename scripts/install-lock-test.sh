@@ -152,6 +152,37 @@ if [[ ! -r /proc/$$/stat ]]; then
 fi
 pass
 
+# --- a live owner is recognised across time zones ----------------------------------------------------
+# `ps -o lstart` renders in the caller's local zone; the start token must not,
+# or a checker in another zone would call a live owner a reused pid and take the
+# lock (test spec 679, "the lock recognises a live owner across time zones").
+# Kiritimati is UTC+14 and Adak UTC-10 (-9 in summer): the same instant never
+# prints the same lstart in both, whatever the date.
+
+TZ_OWNER=Pacific/Kiritimati
+TZ_CHECKER=America/Adak
+R="$TMP/tz/.planar"; mkdir -p "$R"; L="$R.lock"
+TZ="$TZ_OWNER" hold "$R" install "$TMP/tz.ready"
+tz_owner_pid="$HOLD_PID"
+rc=0; out="$(TZ="$TZ_CHECKER" lk 'planar_lock_acquire "'"$R"'" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+[[ "$rc" == 1 && "$out" == *"install (pid $tz_owner_pid)"* ]] \
+  || fail "a live owner in $TZ_OWNER was not recognised by a checker in $TZ_CHECKER ($rc): $out"
+rc=0; out="$(TZ="$TZ_CHECKER" lk 'planar_lock_acquire "'"$R"'" update || { echo "$PLANAR_LOCK_ERROR"; exit 1; }' 2>&1)" || rc=$?
+[[ "$rc" == 1 && "$out" == *"install (pid $tz_owner_pid)"* ]] \
+  || fail "a second checker in $TZ_CHECKER reclaimed a live owner ($rc): $out"
+[[ -f "$L/owner.1" && ! -e "$L/owner.2" && ! -e "$L/released.1" ]] || fail "a time-zone-skewed checker disturbed the lock: $(ls "$L")"
+# The token itself is the same in every zone, and the zones really do differ in
+# what ps prints (otherwise this test proves nothing on this platform).
+t_owner="$(TZ="$TZ_OWNER" lk 'planar_lock_start_token '"$tz_owner_pid")"
+t_check="$(TZ="$TZ_CHECKER" lk 'planar_lock_start_token '"$tz_owner_pid")"
+[[ "$t_owner" == "$t_check" ]] || fail "the start token depends on the time zone: '$t_owner' vs '$t_check'"
+if [[ ! -r /proc/$$/stat ]]; then
+  [[ "$(TZ="$TZ_OWNER" LC_ALL=C ps -o lstart= -p "$tz_owner_pid")" != "$(TZ="$TZ_CHECKER" LC_ALL=C ps -o lstart= -p "$tz_owner_pid")" ]] \
+    || fail "the chosen zones print the same lstart; the test cannot tell"
+fi
+kill -9 "$tz_owner_pid"; wait "$tz_owner_pid" 2>/dev/null || true
+pass
+
 # --- simultaneous reclaim attempts never make two owners ------------------------------------------
 
 CONTENDER="$TMP/contender.sh"
