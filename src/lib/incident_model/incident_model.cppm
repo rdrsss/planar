@@ -172,14 +172,38 @@ export auto parse_entity_ref(std::string_view text) -> std::optional<entity_ref>
 /// @return The ordering.
 export auto compare_entity_refs(const entity_ref& a, const entity_ref& b) -> std::strong_ordering;
 
+/// @brief The grouping key of a cluster finding (`claim-failure-cluster`, `cli-failure-cluster`).
+///
+/// A cluster fingerprints on its grouping key and scope only, never on its members, so a wider or
+/// narrower run over the same members keeps one fingerprint.
+export struct grouping {
+  std::vector<std::string>
+              key_parts; ///< Key parts in order, for example `{"failure_category=tool_failure"}` or `{"task add", "usage"}`.
+  std::string scope;     ///< The members' common scope as `repo:<slug>` or `assoc:<slug>`, else `global`.
+};
+
+/// @brief One member of a cluster finding: a claim or a CLI invocation and its timestamp.
+export struct cluster_member {
+  entity_ref  ref;  ///< The member entity, for example `claim:4469`.
+  std::string time; ///< The member's own row timestamp.
+};
+
 /// @brief One violation of one check in one run.
+///
+/// Every timestamp in `evidence_times` and in `members` must be a timestamp of a database row (a
+/// lease expiry, a heartbeat, a started-at). Never derive one from the evaluation instant: it would
+/// change on every run and defeat the evidence digest, which exists so that two observations of
+/// the same evidence share a digest.
 export struct finding {
   std::string              check_id;                             ///< Stable kebab-case check id.
   diagnostic_severity      severity = diagnostic_severity::info; ///< The reported severity.
-  entity_ref               primary;                              ///< The entity the finding is about.
-  std::vector<entity_ref>  evidence;       ///< Entity refs that define the problem; list `primary` here too.
-  std::vector<std::string> evidence_times; ///< Violation-defining timestamps, in the check's fixed order.
+  entity_ref               primary;        ///< The entity the finding is about; the engine adds it to `evidence` when missing.
+  std::vector<entity_ref>  evidence;       ///< Entity refs that define the problem.
+  std::vector<std::string> evidence_times; ///< Row timestamps that define the violation, in the check's fixed order. The earliest
+                                           ///< is the occurrence's `violation_at`.
   std::string              recovery;       ///< The recovery command or hint; empty when none.
+  std::optional<grouping>  group;          ///< Set for a cluster finding; replaces the evidence refs in the fingerprint.
+  std::vector<cluster_member> members;     ///< A cluster's members; each is its own occurrence.
 };
 
 /// @brief One input's coverage in one run.
@@ -227,10 +251,26 @@ export struct occurrence {
 /// @return The fingerprint.
 export auto fingerprint(std::string_view check_id, std::span<const entity_ref> refs) -> std::string;
 
-/// @brief The fingerprint of a finding: its check id and evidence references.
+/// @brief The fingerprint of a finding: the cluster fingerprint when `group` is set, otherwise its
+/// check id and evidence references.
 /// @param f The finding.
 /// @return The fingerprint.
 export auto finding_fingerprint(const finding& f) -> std::string;
+
+/// @brief Builds a cluster fingerprint: `<check-id>|<key part>|...|<scope>`, for example
+/// `claim-failure-cluster|failure_category=tool_failure|repo:planar` or
+/// `cli-failure-cluster|task add|usage|global`.
+/// @param check_id The check id.
+/// @param group The grouping key and scope.
+/// @return The fingerprint.
+export auto cluster_fingerprint(std::string_view check_id, const grouping& group) -> std::string;
+
+/// @brief The digest of one cluster member: SHA-256 (lowercase hex) of the fingerprint, the
+/// member's id and its timestamp. A member already recorded has the same digest in any run.
+/// @param fingerprint_text The cluster's fingerprint.
+/// @param member The member.
+/// @return 64 lowercase hex characters.
+export auto member_digest(std::string_view fingerprint_text, const cluster_member& member) -> std::string;
 
 /// @brief The evidence digest: SHA-256 (lowercase hex) of the fingerprint and the
 /// violation-defining timestamps, in the order given. Two observations of the same
@@ -246,7 +286,8 @@ export auto evidence_digest(std::string_view fingerprint_text, std::span<const s
 /// @return 64 lowercase hex characters.
 export auto finding_digest(const finding& f) -> std::string;
 
-/// @brief The earliest timestamp among a finding's evidence times.
+/// @brief The earliest timestamp among a finding's evidence times and cluster member times; this
+/// is the instant recorded as an occurrence's `violation_at`.
 /// @param f The finding.
 /// @return The smallest time by text order (ISO-8601 sorts chronologically), or empty when it has none.
 export auto earliest_evidence(const finding& f) -> std::string;

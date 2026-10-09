@@ -35,20 +35,25 @@ class busy_timeout_guard {
 private:
   db::connection& _conn;
   int             _previous;
+  std::int64_t    _previous_query_only;
 
 public:
-  busy_timeout_guard(db::connection& conn, int previous) : _conn(conn), _previous(previous) {
+  busy_timeout_guard(db::connection& conn, int previous, std::int64_t previous_query_only)
+      : _conn(conn), _previous(previous), _previous_query_only(previous_query_only) {
     _conn.set_busy_timeout(k_busy_timeout_ms);
+    // The run issues only reads; let SQLite refuse anything else on a read-write connection.
+    (void)_conn.execute("pragma query_only = 1");
   }
   busy_timeout_guard(const busy_timeout_guard&)            = delete;
   busy_timeout_guard& operator=(const busy_timeout_guard&) = delete;
   ~busy_timeout_guard() {
     _conn.set_busy_timeout(_previous);
+    (void)_conn.execute(_previous_query_only != 0 ? "pragma query_only = 1" : "pragma query_only = 0");
   }
 };
 
-auto read_busy_timeout(db::connection& conn) -> std::expected<int, db::db_error> {
-  auto stmt = conn.prepare("pragma busy_timeout");
+auto read_pragma(db::connection& conn, std::string_view sql) -> std::expected<std::int64_t, db::db_error> {
+  auto stmt = conn.prepare(sql);
   if (!stmt) {
     return std::unexpected(stmt.error());
   }
@@ -56,7 +61,7 @@ auto read_busy_timeout(db::connection& conn) -> std::expected<int, db::db_error>
   if (!step) {
     return std::unexpected(step.error());
   }
-  return step.value() == db::step_result::row ? static_cast<int>(stmt->column_int64(0)) : 0;
+  return step.value() == db::step_result::row ? stmt->column_int64(0) : 0;
 }
 
 auto is_digits(std::string_view text, std::size_t from, std::size_t count) -> bool {
@@ -76,6 +81,29 @@ auto valid_instant_shape(std::string_view t) -> bool {
     return false;
   }
   return t.size() == 20 || (t[19] == '.' && is_digits(t, 20, 3));
+}
+
+auto leap_year(int y) -> bool {
+  return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+}
+
+/// The instant with millisecond precision, or nullopt when its shape or calendar value is invalid.
+auto canonical_instant(std::string_view t) -> std::optional<std::string> {
+  if (!valid_instant_shape(t)) {
+    return std::nullopt;
+  }
+  auto num = [&](std::size_t at, std::size_t n) {
+    int v = 0;
+    std::from_chars(t.data() + at, t.data() + at + n, v);
+    return v;
+  };
+  int  year = num(0, 4), month = num(5, 2), day = num(8, 2), hour = num(11, 2), minute = num(14, 2), second = num(17, 2);
+  auto days = std::to_array<int>({31, leap_year(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31});
+  if (month < 1 || month > 12 || day < 1 || day > days[static_cast<std::size_t>(month - 1)] || hour > 23 || minute > 59 ||
+      second > 59) {
+    return std::nullopt;
+  }
+  return t.size() == 20 ? std::string{t.substr(0, 19)} + ".000Z" : std::string{t};
 }
 
 auto unknown_plan_error(std::int64_t id) -> run_error {
@@ -171,16 +199,11 @@ auto evaluate(db::connection& conn, const run_request& request, const catalog& c
   if (!from_days) {
     return std::unexpected(from_days.error());
   }
-  auto same_binds = std::to_array<std::string_view>({request.evaluated_at});
-  auto canonical  = scalar_text(conn, "select strftime('%Y-%m-%dT%H:%M:%fZ', ?1)", same_binds);
-  if (!canonical) {
-    return std::unexpected(canonical.error());
-  }
-  if (!canonical->has_value() || !from_days->has_value()) {
+  if (!from_days->has_value()) {
     return std::unexpected(stop{run_error{.code    = run_error_code::invalid_instant,
                                           .message = std::format("invalid evaluation instant '{}'", request.evaluated_at)}});
   }
-  d.evaluated_at = **canonical;
+  d.evaluated_at = request.evaluated_at;
 
   if (request.plan_id) {
     auto scope = resolve_plan_scope(conn, *request.plan_id);
@@ -226,8 +249,9 @@ auto evaluate(db::connection& conn, const run_request& request, const catalog& c
     }
     im::coverage_row row{.input  = input.name,
                          .state  = im::coverage_state::not_applicable,
-                         .reason = needed_by_unbuilt ? "check-not-built" : "not-selected"};
+                         .reason = (needed_by_unbuilt || !input.built) ? "check-not-built" : "not-selected"};
     if (needed_by_runnable) {
+      check(static_cast<bool>(input.probe), "an input a runnable check needs has a probe");
       auto probed = input.probe(ctx);
       if (!probed) {
         return std::unexpected(from_db(probed.error()));
@@ -274,6 +298,9 @@ auto evaluate(db::connection& conn, const run_request& request, const catalog& c
         }
         for (auto& f : *found) {
           f.check_id = def.id;
+          if (!std::ranges::contains(f.evidence, f.primary)) {
+            f.evidence.push_back(f.primary);
+          }
           if (f.recovery.empty()) {
             f.recovery = def.recovery;
           }
@@ -323,7 +350,14 @@ auto plan_filter_sql(const plan_scope& scope, std::string_view column) -> std::s
 }
 
 auto builtin_catalog() -> catalog {
-  return catalog{};
+  catalog cat;
+  for (auto make :
+       {detail::claims_family, detail::dispatch_family, detail::cli_family, detail::records_family, detail::queue_family}) {
+    auto fam = make();
+    std::ranges::move(fam.inputs, std::back_inserter(cat.inputs));
+    std::ranges::move(fam.checks, std::back_inserter(cat.checks));
+  }
+  return cat;
 }
 
 auto window_source_name(window_source s) noexcept -> std::string_view {
@@ -381,10 +415,13 @@ auto run(db::connection& conn, const run_request& request) -> std::expected<diag
 }
 
 auto run(db::connection& conn, const run_request& request, const catalog& cat) -> std::expected<diagnosis, run_error> {
-  if (!valid_instant_shape(request.evaluated_at)) {
+  auto instant = canonical_instant(request.evaluated_at);
+  if (!instant) {
     return std::unexpected(run_error{.code    = run_error_code::invalid_instant,
                                      .message = std::format("invalid evaluation instant '{}'", request.evaluated_at)});
   }
+  run_request normalised  = request;
+  normalised.evaluated_at = *instant;
   if (request.days && *request.days < 1) {
     return std::unexpected(run_error{.code    = run_error_code::invalid_days,
                                      .message = std::format("--days must be at least 1, got {}", *request.days)});
@@ -403,14 +440,18 @@ auto run(db::connection& conn, const run_request& request, const catalog& cat) -
     }
   }
 
-  auto previous = read_busy_timeout(conn);
+  auto previous = read_pragma(conn, "pragma busy_timeout");
   if (!previous) {
-    return unavailable_diagnosis(reason_of(previous.error()), request.evaluated_at);
+    return unavailable_diagnosis(reason_of(previous.error()), *instant);
+  }
+  auto previous_query_only = read_pragma(conn, "pragma query_only");
+  if (!previous_query_only) {
+    return unavailable_diagnosis(reason_of(previous_query_only.error()), *instant);
   }
   diagnosis d;
   {
-    busy_timeout_guard guard{conn, *previous};
-    auto               done = evaluate(conn, request, cat, selected, d);
+    busy_timeout_guard guard{conn, static_cast<int>(*previous), *previous_query_only};
+    auto               done = evaluate(conn, normalised, cat, selected, d);
     if (!done) {
       const auto& why = done.error();
       if (const auto* bad = std::get_if<run_error>(&why)) {
@@ -418,7 +459,7 @@ auto run(db::connection& conn, const run_request& request, const catalog& cat) -
       }
       auto reason = std::holds_alternative<unavailable_reason>(why) ? std::get<unavailable_reason>(why)
                                                                     : reason_of(std::get<db::db_error>(why));
-      return unavailable_diagnosis(reason, request.evaluated_at);
+      return unavailable_diagnosis(reason, *instant);
     }
   }
   return d;

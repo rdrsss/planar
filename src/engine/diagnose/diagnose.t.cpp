@@ -173,16 +173,100 @@ auto build_forty_day_fixture(planar::db::connection& conn) -> void {
 
 } // namespace
 
-TEST_CASE("the shipped catalog is the framework with no checks", "[diagnose]") {
+TEST_CASE("the shipped catalog declares only unbuilt checks and reads clean", "[diagnose]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   auto            cat  = dg::builtin_catalog();
-  CHECK(cat.checks.empty());
+  REQUIRE(cat.checks.size() == 1);
+  CHECK(cat.checks[0].id == "queue-ended-unobserved");
+  CHECK(cat.checks[0].kind == im::check_kind::state);
+  CHECK(cat.checks[0].severity == im::diagnostic_severity::warning);
+  CHECK(cat.checks[0].category == "queue_unobserved");
+  CHECK_FALSE(cat.checks[0].built);
+
   auto d = dg::run(conn, request(std::nullopt));
   REQUIRE(d.has_value());
   CHECK(d->result == dg::run_outcome::ok);
   CHECK(d->findings.empty());
   CHECK(d->catalog_version == dg::k_catalog_version);
+  REQUIRE(d->checks.size() == 1);
+  CHECK(d->checks[0].state == dg::check_state::not_built);
+  for (std::string_view name : {"run_identity", "queue_observation"}) {
+    auto it = std::ranges::find(d->coverage, name, &im::coverage_row::input);
+    REQUIRE(it != d->coverage.end());
+    CHECK(it->state == im::coverage_state::not_applicable);
+    CHECK(it->reason == "check-not-built");
+  }
+}
+
+TEST_CASE("a finding's primary entity is always part of its evidence", "[diagnose]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  dg::check_def   def;
+  def.id       = "forgetful";
+  def.evaluate = [](const dg::check_context&) -> std::expected<std::vector<im::finding>, planar::db::db_error> {
+    im::finding missing;
+    missing.primary  = im::entity_ref{.kind = "claim", .id = 7};
+    missing.evidence = {im::entity_ref{.kind = "task", .id = 3}};
+    im::finding present;
+    present.primary  = im::entity_ref{.kind = "claim", .id = 8};
+    present.evidence = {present.primary};
+    return std::vector<im::finding>{missing, present};
+  };
+  auto d = dg::run(conn, request(std::nullopt), catalog_of({def}));
+  REQUIRE(d.has_value());
+  REQUIRE(d->findings.size() == 2);
+  CHECK(im::finding_fingerprint(d->findings[0]) == "forgetful|claim:7,task:3");
+  CHECK(d->findings[0].evidence.size() == 2);
+  CHECK(im::finding_fingerprint(d->findings[1]) == "forgetful|claim:8");
+  CHECK(d->findings[1].evidence.size() == 1);
+}
+
+TEST_CASE("a cluster finding prints its grouping fingerprint in text and JSON", "[diagnose]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  dg::check_def   def;
+  def.id       = "claim-failure-cluster";
+  def.evaluate = [](const dg::check_context&) -> std::expected<std::vector<im::finding>, planar::db::db_error> {
+    im::finding f;
+    f.primary  = im::entity_ref{.kind = "claim", .id = 1};
+    f.evidence = {f.primary, im::entity_ref{.kind = "claim", .id = 2}, im::entity_ref{.kind = "claim", .id = 3}};
+    f.group    = im::grouping{.key_parts = {"failure_category=tool_failure"}, .scope = "global"};
+    f.members  = {{f.evidence[0], "2026-05-01T00:00:00.000Z"}};
+    return std::vector<im::finding>{f};
+  };
+  auto d = dg::run(conn, request(std::nullopt), catalog_of({def}));
+  REQUIRE(d.has_value());
+  auto parsed = planar::json_dom::parse_json(dg::render_json(*d));
+  REQUIRE(parsed.has_value());
+  REQUIRE(parsed->find("findings")->array.size() == 1);
+  CHECK(parsed->find("findings")->array[0].find("fingerprint")->string ==
+        "claim-failure-cluster|failure_category=tool_failure|global");
+}
+
+TEST_CASE("a run is read-only on a read-write connection and restores query_only", "[diagnose]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  add_plan(conn, 1, std::nullopt, "2026-05-01T00:00:00.000Z");
+  dg::check_def def;
+  def.id       = "writer";
+  def.evaluate = [](const dg::check_context& ctx) -> std::expected<std::vector<im::finding>, planar::db::db_error> {
+    auto wrote = ctx.conn.execute("update plans set title = 'changed'");
+    if (!wrote) {
+      return std::unexpected(wrote.error());
+    }
+    return std::vector<im::finding>{};
+  };
+  auto d = dg::run(conn, request(std::nullopt), catalog_of({def}));
+  REQUIRE(d.has_value());
+  CHECK(d->result == dg::run_outcome::unavailable);
+  CHECK(d->reason == dg::unavailable_reason::query_failed);
+  auto stmt = conn.prepare("select title from plans where id = 1");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  CHECK(stmt->column_text(0) == "p1");
+  // The connection can write again afterwards.
+  exec(conn, "update plans set title = 'later' where id = 1");
 }
 
 TEST_CASE("a plan scope defaults to the plan lifetime and --days overrides it", "[diagnose]") {
@@ -274,7 +358,8 @@ TEST_CASE("bad input is a run_error and never an unavailable diagnosis", "[diagn
   REQUIRE_FALSE(zero_days.has_value());
   CHECK(zero_days.error().code == dg::run_error_code::invalid_days);
 
-  for (const char* bad : {"yesterday", "2026-06-01", "2026-06-01 00:00:00Z", "2026-13-01T00:00:00Z", "2026-06-01T00:00:00.5Z"}) {
+  for (const char* bad : {"yesterday", "2026-06-01", "2026-06-01 00:00:00Z", "2026-13-01T00:00:00Z", "2026-06-01T00:00:00.5Z",
+                          "2026-02-30T00:00:00Z", "2026-06-31T00:00:00Z", "2026-06-01T24:00:00Z", "2026-06-01T00:60:00Z"}) {
     INFO(bad);
     auto d = dg::run(conn, request(1, std::nullopt, bad), cat);
     REQUIRE_FALSE(d.has_value());
@@ -471,13 +556,18 @@ TEST_CASE("a lock held past 250 ms ends the run unavailable (busy) and the previ
 
   exec(writer, "begin exclusive");
   auto start = std::chrono::steady_clock::now();
-  auto d     = dg::run(*reader, request(1), cat);
+  auto d     = dg::run(*reader, request(1, std::nullopt, "2026-06-01T00:00:00Z"), cat);
   auto took  = std::chrono::steady_clock::now() - start;
   REQUIRE(d.has_value());
   CHECK(d->result == dg::run_outcome::unavailable);
   REQUIRE(d->reason.has_value());
   CHECK(*d->reason == dg::unavailable_reason::busy);
+  CHECK(d->evaluated_at == k_now);
   CHECK(d->findings.empty());
+  // An impossible calendar date is bad input even while the database is busy.
+  auto impossible = dg::run(*reader, request(1, std::nullopt, "2026-02-30T00:00:00Z"), cat);
+  REQUIRE_FALSE(impossible.has_value());
+  CHECK(impossible.error().code == dg::run_error_code::invalid_instant);
   // The bound is 250 ms, not the connection's 4.3 s.
   CHECK(took < std::chrono::milliseconds(3000));
   CHECK(busy_timeout_of(*reader) == 4321);

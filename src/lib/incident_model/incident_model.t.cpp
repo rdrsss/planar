@@ -179,3 +179,52 @@ TEST_CASE("earliest evidence is the smallest time wherever it sits, and empty wi
   CHECK(im::earliest_evidence(last) == "2026-05-01T00:00:00.000Z");
   CHECK(im::earliest_evidence(mid) == "2026-05-01T00:00:00.000Z");
 }
+
+TEST_CASE("a cluster fingerprint is its grouping key and scope, never its members", "[incident_model]") {
+  im::finding claims;
+  claims.check_id = "claim-failure-cluster";
+  claims.primary  = ref("claim", 1);
+  claims.evidence = {ref("claim", 1), ref("claim", 2), ref("claim", 3)};
+  claims.group    = im::grouping{.key_parts = {"failure_category=tool_failure"}, .scope = "repo:planar"};
+  CHECK(im::finding_fingerprint(claims) == "claim-failure-cluster|failure_category=tool_failure|repo:planar");
+
+  im::finding cli;
+  cli.check_id = "cli-failure-cluster";
+  cli.primary  = ref("cli_invocation", 9);
+  cli.evidence = {ref("cli_invocation", 9)};
+  cli.group    = im::grouping{.key_parts = {"task add", "usage"}, .scope = "global"};
+  CHECK(im::finding_fingerprint(cli) == "cli-failure-cluster|task add|usage|global");
+
+  // A narrower run over a subset of the members keeps the fingerprint.
+  auto narrower     = claims;
+  narrower.evidence = {ref("claim", 1)};
+  CHECK(im::finding_fingerprint(narrower) == im::finding_fingerprint(claims));
+  // A different scope or key is a different incident.
+  auto other_scope         = claims;
+  other_scope.group->scope = "global";
+  CHECK(im::finding_fingerprint(other_scope) != im::finding_fingerprint(claims));
+  auto other_key             = claims;
+  other_key.group->key_parts = {"failure_category=timeout"};
+  CHECK(im::finding_fingerprint(other_key) != im::finding_fingerprint(claims));
+}
+
+TEST_CASE("a member digest follows the fingerprint, the member id and the member time", "[incident_model]") {
+  im::cluster_member m{.ref = ref("claim", 4469), .time = "2026-06-01T00:00:00.000Z"};
+  auto               d = im::member_digest("claim-failure-cluster|failure_category=timeout|global", m);
+  REQUIRE(d.size() == 64);
+  CHECK(im::member_digest("claim-failure-cluster|failure_category=timeout|global", m) == d);
+  CHECK(im::member_digest("claim-failure-cluster|failure_category=timeout|repo:x", m) != d);
+  auto other_id = m;
+  other_id.ref  = ref("claim", 4470);
+  CHECK(im::member_digest("claim-failure-cluster|failure_category=timeout|global", other_id) != d);
+  auto other_time = m;
+  other_time.time = "2026-06-01T00:00:01.000Z";
+  CHECK(im::member_digest("claim-failure-cluster|failure_category=timeout|global", other_time) != d);
+}
+
+TEST_CASE("earliest evidence of a cluster includes its member times", "[incident_model]") {
+  im::finding f;
+  f.check_id = "claim-failure-cluster";
+  f.members  = {{ref("claim", 1), "2026-06-03T00:00:00.000Z"}, {ref("claim", 2), "2026-06-01T00:00:00.000Z"}};
+  CHECK(im::earliest_evidence(f) == "2026-06-01T00:00:00.000Z");
+}

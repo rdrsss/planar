@@ -8,11 +8,17 @@
 # any other `engine_*` bucket, to `engine_incidents_*` or to a `cmd_*` target
 # (D15/D18); plan descendants and claim liveness are resolved with its own SQL.
 # Individual checks (plan 1132 M1 tasks 7374 onward) are added to the catalog in
-# `builtin_catalog()` (diagnose.cpp); this bucket's tests use synthetic catalogs.
+# its family's `checks_<family>.cpp`; this bucket's tests use synthetic catalogs.
 
 planar_module(engine_diagnose
   INTERFACE diagnose.cppm
-  SOURCES diagnose.cpp
+  SOURCES
+    diagnose.cpp
+    checks_claims.cpp
+    checks_dispatch.cpp
+    checks_cli.cpp
+    checks_records.cpp
+    checks_queue.cpp
   DEPENDS
     core
     db

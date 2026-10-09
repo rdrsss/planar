@@ -14,10 +14,23 @@ import std;
 
 namespace {
 
-auto read_source(const char* name) -> std::string {
-  std::ifstream in{std::filesystem::path{PLANAR_DIAGNOSE_SOURCE_DIR} / name, std::ios::binary};
+auto read_file(const std::filesystem::path& path) -> std::string {
+  std::ifstream in{path, std::ios::binary};
   REQUIRE(in.good());
   return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
+
+/// Every non-test `*.cpp` and `*.cppm` under the engine's directory, so a later check's own file is covered.
+auto engine_sources() -> std::vector<std::filesystem::path> {
+  std::vector<std::filesystem::path> out;
+  for (const auto& entry : std::filesystem::directory_iterator{PLANAR_DIAGNOSE_SOURCE_DIR}) {
+    auto name = entry.path().filename().string();
+    if ((name.ends_with(".cpp") || name.ends_with(".cppm")) && !name.ends_with(".t.cpp")) {
+      out.push_back(entry.path());
+    }
+  }
+  std::ranges::sort(out);
+  return out;
 }
 
 auto lower(std::string text) -> std::string {
@@ -28,21 +41,30 @@ auto lower(std::string text) -> std::string {
 } // namespace
 
 TEST_CASE("the diagnose engine never limits before filtering", "[diagnose_sources]") {
-  for (const char* name : {"diagnose.cpp"}) {
-    auto text = lower(read_source(name));
-    INFO(name);
-    CHECK(text.find("list_actions") == std::string::npos);
+  auto sources = engine_sources();
+  // diagnose.cpp, diagnose.cppm and the five family files; a later check adds its own file here.
+  REQUIRE(sources.size() >= 7);
+  for (const auto& path : sources) {
+    auto text = lower(read_file(path));
+    INFO(path.filename().string());
+    // The ban on a bare `limit` is deliberately blunt; a check that really needs a bound adds a
+    // filtered subquery and changes this guard on purpose.
     CHECK(text.find(" limit ") == std::string::npos);
     CHECK(text.find(" limit?") == std::string::npos);
     CHECK(text.find("\nlimit ") == std::string::npos);
+    if (!path.string().ends_with(".cppm")) {
+      CHECK(text.find("list_actions") == std::string::npos);
+    }
   }
 }
 
 TEST_CASE("the diagnose engine issues only select and pragma reads", "[diagnose_sources]") {
-  auto text = lower(read_source("diagnose.cpp"));
-  for (const char* verb : {"insert into", "update ", "delete from", "create table", "drop table", "replace into"}) {
-    INFO(verb);
-    // "update" appears only in no SQL literal; ensure none is quoted.
-    CHECK(text.find(std::string{"\""} + verb) == std::string::npos);
+  for (const auto& path : engine_sources()) {
+    auto text = lower(read_file(path));
+    INFO(path.filename().string());
+    for (const char* verb : {"insert into", "update ", "delete from", "create table", "drop table", "replace into"}) {
+      INFO(verb);
+      CHECK(text.find(std::string{"\""} + verb) == std::string::npos);
+    }
   }
 }

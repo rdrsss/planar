@@ -261,7 +261,30 @@ auto fingerprint(std::string_view check_id, std::span<const entity_ref> refs) ->
   return out;
 }
 
+auto cluster_fingerprint(std::string_view check_id, const grouping& group) -> std::string {
+  std::string out{check_id};
+  for (const auto& part : group.key_parts) {
+    out += '|';
+    out += part;
+  }
+  out += '|';
+  out += group.scope;
+  return out;
+}
+
+auto member_digest(std::string_view fingerprint_text, const cluster_member& member) -> std::string {
+  std::string material{fingerprint_text};
+  material += '\n';
+  material += entity_ref_text(member.ref);
+  material += '\n';
+  material += member.time;
+  return sha256::hex(material);
+}
+
 auto finding_fingerprint(const finding& f) -> std::string {
+  if (f.group) {
+    return cluster_fingerprint(f.check_id, *f.group);
+  }
   return fingerprint(f.check_id, f.evidence);
 }
 
@@ -279,10 +302,14 @@ auto finding_digest(const finding& f) -> std::string {
 }
 
 auto earliest_evidence(const finding& f) -> std::string {
-  if (f.evidence_times.empty()) {
+  std::vector<std::string> all = f.evidence_times;
+  for (const auto& m : f.members) {
+    all.push_back(m.time);
+  }
+  if (all.empty()) {
     return {};
   }
-  return *std::ranges::min_element(f.evidence_times);
+  return *std::ranges::min_element(all);
 }
 
 auto compare_findings(const finding& a, const finding& b) -> std::strong_ordering {

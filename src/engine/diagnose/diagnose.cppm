@@ -8,7 +8,8 @@
 /// is the shipped catalog. A check is a `check_def`: a stable id, kind,
 /// severity, category, recovery hint, the inputs it needs, a `built` flag and a
 /// function over a `check_context`. Adding a check is appending one
-/// `check_def` (and any `input_def` it needs) to `builtin_catalog()`.
+/// `check_def` (and any `input_def` it needs) to its family's factory, one
+/// `checks_<family>.cpp` per family, which `builtin_catalog()` concatenates.
 ///
 /// Reads only. Every read runs in one deferred read transaction on a
 /// connection whose busy timeout is lowered to 250 ms for the run and restored
@@ -21,8 +22,8 @@
 /// run_error>`; the error is bad caller input only (an unknown check or plan, an
 /// invalid instant or day count). A database that is busy past 250 ms, fails a
 /// query or lacks the planning tables yields a `diagnosis` whose `result` is
-/// `run_outcome::unavailable` with an `unavailable_reason`, not an error, so a
-/// caller that prints it still exits 0 (question 1046). An input that a
+/// `run_outcome::unavailable` with an `unavailable_reason`, not an error; what
+/// exit status that earns is the caller's decision. An input that a
 /// selected, built check needs and that reads `unavailable` or `disabled` makes
 /// the result `partial`; an input that no selected, built check needs reads
 /// `not_applicable` and never degrades it (decision 1346).
@@ -123,13 +124,21 @@ export using input_probe = std::function<std::expected<input_status, db::db_erro
 /// @brief A named input a check can depend on, with its probe.
 export struct input_def {
   std::string name;  ///< The coverage row's name.
-  input_probe probe; ///< Called only when a selected, built check needs the input.
+  input_probe probe; ///< Called only when a selected, built check needs the input; may be empty while `built` is false.
+  bool built = true; ///< `false` for an input whose reader is not implemented yet; it reads `not_applicable` (`check-not-built`)
+                     ///< on every run.
 };
 
 /// @brief A check's evaluation: its findings, or the database failure that stopped it.
 export using check_fn = std::function<std::expected<std::vector<incident_model::finding>, db::db_error>(const check_context&)>;
 
 /// @brief One catalog check.
+///
+/// A finding's evidence times must be timestamps of database rows (a lease expiry, a gap's start
+/// and end), never derived from the evaluation instant: the evidence digest depends on them, and a
+/// time that moves with every run would make each run a new occurrence. The earliest evidence time
+/// of a finding becomes its occurrence's `violation_at`. The engine adds a finding's `primary` to
+/// its `evidence` when the check left it out, so the fingerprint always names the primary entity.
 export struct check_def {
   std::string                         id;                                           ///< Stable kebab-case id; never reused.
   incident_model::check_kind          kind     = incident_model::check_kind::state; ///< `state` or `event`.
@@ -147,10 +156,41 @@ export struct catalog {
   std::vector<check_def> checks; ///< The checks, in catalog order.
 };
 
-/// @brief The shipped catalog. This task ships the framework with no checks; each later
-/// task appends one `check_def`.
+/// @brief The shipped catalog: the concatenation of every family's checks and inputs. Only
+/// `queue-ended-unobserved` is declared so far, as an unbuilt check; the later check tasks
+/// fill in the families.
 /// @return The catalog.
 export auto builtin_catalog() -> catalog;
+
+/// @brief The checks and inputs one family contributes to `builtin_catalog()`.
+export struct family {
+  std::vector<input_def> inputs; ///< Inputs the family's checks need.
+  std::vector<check_def> checks; ///< The family's checks.
+};
+
+namespace detail {
+
+/// @brief The claim-liveness family (lease, process death, supersession, unclaimed `doing`, reconcile closes, heartbeat gaps, unended actions).
+/// @return The family.
+auto claims_family() -> family;
+
+/// @brief The dispatch family (no role action, unconfirmed, confirmed late).
+/// @return The family.
+auto dispatch_family() -> family;
+
+/// @brief The CLI and failure-cluster family (`apply-without-preview`, the two cluster checks).
+/// @return The family.
+auto cli_family() -> family;
+
+/// @brief The remaining state family (stale handoffs, unresolved sync conflicts).
+/// @return The family.
+auto records_family() -> family;
+
+/// @brief The queue family (`queue-ended-unobserved`) and the run-scope input.
+/// @return The family.
+auto queue_family() -> family;
+
+} // namespace detail
 
 /// @brief What to evaluate.
 export struct run_request {
