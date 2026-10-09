@@ -7436,7 +7436,12 @@ open; the rest start closed. Keys: `↑`/`↓` (`j`/`k`) move, `→`/`←` (`l`/
 open or close a row and step in or out, `enter` or `space` toggles, `s` shows
 or hides stopped agents, `r` refreshes now, `q` or `esc` quits. Clicking a
 row selects it and opens or closes it when it has children; the mouse wheel
-moves the selection. The view
+moves the selection.
+
+On a terminal that reports 24-bit colour, in-progress marks pulse from dark
+to bright green: the glyph of a `doing` task, and the `>` of a task held by a
+working agent. Waiting and stopped marks stay steady. `p` turns the pulse
+off and on. Other terminals show the marks without the pulse. The view
 refreshes once a second, each time in one short read transaction.
 
 ### Verbs

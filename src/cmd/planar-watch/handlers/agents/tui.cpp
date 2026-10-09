@@ -6,6 +6,7 @@ module;
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
+#include <ftxui/screen/terminal.hpp>
 #include <unistd.h>
 module planar.cmd.planar_watch.handlers.agents.tui;
 import std;
@@ -20,8 +21,22 @@ namespace {
 /// How long a stopped agent stays listed.
 constexpr std::int64_t k_stopped_window_secs = 3600;
 
-/// Time between refreshes.
+/// Time between database refreshes.
 constexpr auto k_refresh_interval = std::chrono::milliseconds{1000};
+
+/// Time between animation frames while something pulses (20 per second).
+constexpr auto k_frame_interval = std::chrono::milliseconds{50};
+
+/// The event the ticker posts to draw one animation frame without rereading the database.
+auto frame_event() -> const ftxui::Event& {
+  static const auto event = ftxui::Event::Special("planar-watch:frame");
+  return event;
+}
+
+/// The pulse's colour at brightness `level`.
+auto pulse_color(float level) -> ftxui::Color {
+  return ftxui::Color::Interpolate(level, ftxui::Color::RGB(0, 90, 30), ftxui::Color::RGB(110, 255, 140));
+}
 
 auto state_color(agent_state state) -> ftxui::Color {
   switch (state) {
@@ -47,15 +62,17 @@ auto task_glyph(std::string_view status) -> std::string {
   return "·";
 }
 
-auto draw_row(const row& r, bool selected, ftxui::Box& box) -> ftxui::Element {
+/// Draw one row. `pulse` is the current pulse brightness, unset while the pulse is off.
+auto draw_row(const row& r, bool selected, ftxui::Box& box, std::optional<float> pulse) -> ftxui::Element {
   using namespace ftxui;
   Elements parts;
   parts.push_back(text(std::string(static_cast<std::size_t>(r.depth) * 2, ' ')));
 
   // The caret column: `>` in the holder's colour on a held task.
-  if (r.caret.has_value())
-    parts.push_back(text("> ") | bold | color(state_color(*r.caret)));
-  else
+  if (r.caret.has_value()) {
+    bool const pulsing = pulse.has_value() && *r.caret == agent_state::working;
+    parts.push_back(text("> ") | bold | color(pulsing ? pulse_color(*pulse) : state_color(*r.caret)));
+  } else
     parts.push_back(text("  "));
 
   if (r.expandable)
@@ -69,6 +86,8 @@ auto draw_row(const row& r, bool selected, ftxui::Box& box) -> ftxui::Element {
     auto glyph = text(task_glyph(r.status) + " ");
     if (r.status == "done")
       glyph = glyph | color(Color::Green);
+    else if (r.status == "doing" && pulse.has_value())
+      glyph = glyph | color(pulse_color(*pulse));
     parts.push_back(glyph);
   }
 
@@ -104,14 +123,18 @@ auto error_text(const domain_error& err) -> std::string {
 
 /// The interactive session's state. Touched only on the UI thread.
 struct session {
-  context&                ctx;
-  snapshot                snap;
-  view_state              view;
-  std::vector<row>        rows;
-  std::vector<ftxui::Box> row_boxes; ///< Each row's screen area from the last frame.
-  std::size_t             selected = 0;
-  std::string             selected_key;
-  std::string             error;
+  context&                              ctx;
+  snapshot                              snap;
+  view_state                            view;
+  std::vector<row>                      rows;
+  std::vector<ftxui::Box>               row_boxes; ///< Each row's screen area from the last frame.
+  std::size_t                           selected        = 0;
+  bool                                  pulse_supported = false; ///< The terminal reports 24-bit colour.
+  bool                                  pulse_on        = false; ///< The operator has not turned the pulse off.
+  std::chrono::steady_clock::time_point started         = std::chrono::steady_clock::now();
+  std::atomic<bool>*                    animating       = nullptr; ///< Tells the ticker whether to post frames.
+  std::string                           selected_key;
+  std::string                           error;
 
   auto reload() -> void {
     auto conn = ctx.db().ensure_db();
@@ -224,12 +247,19 @@ struct session {
     Elements lines;
     if (rows.empty())
       lines.push_back(text(view.show_stopped ? "  no agents in the last hour" : "  no live agents") | dim);
+    std::optional<float> pulse;
+    if (pulse_on && std::ranges::any_of(rows, row_pulses))
+      pulse = pulse_level(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started));
+    if (animating != nullptr)
+      animating->store(pulse.has_value());
+
     row_boxes.assign(rows.size(), ftxui::Box{});
     for (std::size_t i = 0; i < rows.size(); ++i)
-      lines.push_back(draw_row(rows[i], i == selected, row_boxes[i]));
+      lines.push_back(draw_row(rows[i], i == selected, row_boxes[i], pulse));
 
-    auto footer = error.empty() ? text(std::format(" ↑↓ move  ←→ fold  enter/click toggle  s {} stopped  q quit",
-                                                   view.show_stopped ? "hide" : "show")) |
+    auto footer = error.empty() ? text(std::format(" ↑↓ move  ←→ fold  enter/click toggle  s {} stopped{}  q quit",
+                                                   view.show_stopped ? "hide" : "show",
+                                                   pulse_supported ? (pulse_on ? "  p stop pulse" : "  p pulse") : "")) |
                                       dim
                                 : text(" " + error) | color(Color::Red);
     return vbox({header, separator(), vbox(std::move(lines)) | vscroll_indicator | yframe | flex, separator(), footer});
@@ -270,6 +300,8 @@ struct session {
       reload();
       return true;
     }
+    if (event == frame_event())
+      return true; // redraw only
     if (event.is_mouse())
       return on_mouse(ftxui::Event{event}.mouse()); // FTXUI's `mouse()` is non-const
     if (event == Event::ArrowDown || event == Event::Character('j')) {
@@ -308,6 +340,10 @@ struct session {
       relayout();
       return true;
     }
+    if (event == Event::Character('p') && pulse_supported) {
+      pulse_on = !pulse_on;
+      return true;
+    }
     if (event == Event::Character('r')) {
       reload();
       return true;
@@ -325,6 +361,16 @@ auto wants_interactive(std::span<const std::string> argv, bool stdin_tty, bool s
   return !term.has_value() || (!term->empty() && *term != "dumb");
 }
 
+auto pulse_level(std::chrono::milliseconds elapsed) -> float {
+  auto const period = pulse_period.count();
+  auto const phase  = static_cast<double>(((elapsed.count() % period) + period) % period) / static_cast<double>(period);
+  return static_cast<float>(0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * phase));
+}
+
+auto row_pulses(const row& r) -> bool {
+  return (r.kind == row_kind::task && r.status == "doing") || r.caret == agent_state::working;
+}
+
 auto stdin_is_tty() -> bool {
   return ::isatty(STDIN_FILENO) == 1;
 }
@@ -334,7 +380,9 @@ auto stdout_is_tty(std::ostream& out) -> bool {
 }
 
 auto run_interactive(context& ctx) -> int {
-  session state{.ctx = ctx, .snap = {}, .view = {}, .rows = {}, .selected = 0, .selected_key = {}, .error = {}};
+  std::atomic<bool> animating{false};
+  session state{.ctx = ctx, .snap = {}, .view = {}, .rows = {}, .row_boxes = {}, .selected = 0, .selected_key = {}, .error = {}};
+  state.animating = &animating;
   state.reload();
   if (!state.error.empty() && state.snap.generated_at.empty()) {
     // Nothing to show at all: report the failure the way the other verbs do.
@@ -347,18 +395,30 @@ auto run_interactive(context& ctx) -> int {
     return exit_generic_failure;
   }
 
-  auto screen   = ftxui::ScreenInteractive::Fullscreen();
-  auto renderer = ftxui::Renderer([&] { return state.render(); });
-  auto root     = ftxui::CatchEvent(renderer, [&](const ftxui::Event& event) { return state.on_event(event, screen); });
+  auto screen = ftxui::ScreenInteractive::Fullscreen();
+  // A pulse on a 256-colour terminal steps through a few shades instead of
+  // fading, so it is only offered where colour is 24-bit.
+  state.pulse_supported = ftxui::Terminal::ColorSupport() == ftxui::Terminal::TrueColor;
+  state.pulse_on        = state.pulse_supported;
+  auto renderer         = ftxui::Renderer([&] { return state.render(); });
+  auto root             = ftxui::CatchEvent(renderer, [&](const ftxui::Event& event) { return state.on_event(event, screen); });
 
-  // The ticker only posts an event; every database read happens on the UI thread.
-  std::jthread ticker([&screen](std::stop_token stop) {
+  // The ticker only posts events; every database read happens on the UI
+  // thread. A refresh every second, and an animation frame every 50ms while
+  // the last frame drew a pulse.
+  std::jthread ticker([&screen, &animating](std::stop_token stop) {
+    auto since_refresh = std::chrono::milliseconds{0};
     while (!stop.stop_requested()) {
-      for (auto waited = std::chrono::milliseconds{0}; waited < k_refresh_interval && !stop.stop_requested();
-           waited += std::chrono::milliseconds{100})
-        std::this_thread::sleep_for(std::chrono::milliseconds{100});
-      if (!stop.stop_requested())
+      std::this_thread::sleep_for(k_frame_interval);
+      since_refresh += k_frame_interval;
+      if (stop.stop_requested())
+        break;
+      if (since_refresh >= k_refresh_interval) {
+        since_refresh = std::chrono::milliseconds{0};
         screen.PostEvent(ftxui::Event::Custom);
+      } else if (animating.load()) {
+        screen.PostEvent(frame_event());
+      }
     }
   });
   screen.Loop(root);

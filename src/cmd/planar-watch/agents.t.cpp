@@ -305,3 +305,33 @@ TEST_CASE("agents: only a bare invocation on a capable terminal opens the view",
   std::ostringstream out;
   CHECK_FALSE(ag::stdout_is_tty(out));
 }
+
+TEST_CASE("agents: the pulse fades dark to bright and back once per period", "[cmd][watch][agents]") {
+  using std::chrono::milliseconds;
+  auto const period = ag::pulse_period;
+  CHECK(ag::pulse_level(milliseconds{0}) < 0.001F);
+  CHECK(ag::pulse_level(period / 2) > 0.999F);
+  CHECK(ag::pulse_level(period) < 0.001F);
+  CHECK(ag::pulse_level(period / 4) > 0.45F);
+  CHECK(ag::pulse_level(period / 4) < 0.55F);
+  for (auto ms = milliseconds{0}; ms < period * 3; ms += milliseconds{37}) {
+    auto const level = ag::pulse_level(ms);
+    CHECK(level >= 0.0F);
+    CHECK(level <= 1.0F);
+  }
+}
+
+TEST_CASE("agents: only in-progress tasks and working carets pulse", "[cmd][watch][agents]") {
+  ag::row doing{.kind = ag::row_kind::task, .status = "doing"};
+  ag::row todo{.kind = ag::row_kind::task, .status = "todo"};
+  ag::row held_working{.kind = ag::row_kind::task, .caret = ag::agent_state::working, .status = "todo"};
+  ag::row held_waiting{.kind = ag::row_kind::task, .caret = ag::agent_state::waiting, .status = "todo"};
+  ag::row held_stopped{.kind = ag::row_kind::task, .caret = ag::agent_state::stopped, .status = "todo"};
+  ag::row agent{.kind = ag::row_kind::agent, .dot = ag::agent_state::working, .status = "doing"};
+  CHECK(ag::row_pulses(doing));
+  CHECK_FALSE(ag::row_pulses(todo));
+  CHECK(ag::row_pulses(held_working));
+  CHECK_FALSE(ag::row_pulses(held_waiting));
+  CHECK_FALSE(ag::row_pulses(held_stopped));
+  CHECK_FALSE(ag::row_pulses(agent)); // a claim's status column is not a task status
+}
