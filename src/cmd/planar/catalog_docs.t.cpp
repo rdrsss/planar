@@ -45,7 +45,7 @@ struct binary_under_test {
 };
 
 auto binaries() -> std::vector<binary_under_test> {
-  return {{"planar", PLANAR_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 8, 10, 64}, true},
+  return {{"planar", PLANAR_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 8, 10, 64, 130, 143}, true},
           {"planar-agent", PLANAR_AGENT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64, 124, 125, 126, 127, 130, 143}, true},
           {"planar-watch", PLANAR_WATCH_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true},
           {"planar-ext", PLANAR_EXT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true},
