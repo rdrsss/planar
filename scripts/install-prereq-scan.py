@@ -16,17 +16,19 @@ first argument, an env-wrapped argv head, or a resolve_program literal), and
 an API that is not pinned, or a count that moved, fails until reviewed. The
 spawn APIs are every way the process library and libc start a program:
 process::capture, run_inherited, runner::start, execv*, posix_spawn*, fork,
-popen, system.
+popen, system. Calls are found however the namespace is spelled (qualified, aliased,
+or bare after a using-declaration).
 
 bootstrap. A small lexer, not a shell: it follows quotes, `$(...)`, `${...}`,
-`$((...))`, `( )` subshells, `case` patterns, here-documents and comments, and
+`$((...))`, `( )` subshells, `case` patterns, here-documents (an unquoted one is expanded, so its `$(...)` and backticks
+are scanned; a quoted one is skipped) and comments, and
 reports the word in each command position (line start, after `|` `&&` `||` `;`
 `&` `(` `$(` `then` `do` `else` `elif` `if` `while` `until` `!` `{`, after
 leading assignments, and after the command wrappers `command`, `exec`, `env`,
 `nohup`, `xargs`, `time`, `nice`, `sudo`). Keywords are dropped. Words built
 from a variable or a quote are not names and are dropped. Builtins and the
 script's own functions are the caller's to filter. An unsupported construct
-(a backtick) stops the scan loudly.
+(a backtick outside a here-document) stops the scan loudly.
 """
 import glob
 import re
@@ -51,6 +53,49 @@ class Frame:
         self.saved = None
 
 
+def heredoc_substitutions(body):
+    """The command names run by $(...) and `...` in the body of an unquoted here-document."""
+    names = []
+    i, n = 0, len(body)
+    while i < n:
+        c = body[i]
+        if c == "\\":
+            i += 2
+        elif body.startswith("$((", i):
+            depth, i = 0, i + 3
+            while i < n and not (depth == 0 and body[i] == ")"):
+                depth += {"(": 1, ")": -1}.get(body[i], 0)
+                i += 1
+            i += 2
+        elif body.startswith("$(", i):
+            depth, j, quote = 0, i + 2, ""
+            while j < n:
+                ch = body[j]
+                if quote:
+                    quote = "" if ch == quote else quote
+                elif ch in "'\"":
+                    quote = ch
+                elif ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                j += 1
+            names.extend(scan_sh(body[i + 2:j]))
+            i = j + 1
+        elif c == "`":
+            j = i + 1
+            while j < n and body[j] != "`":
+                j += 2 if body[j] == "\\" else 1
+            inner = re.sub(r"\\([$`\\])", r"\1", body[i + 1:j])
+            names.extend(scan_sh(inner))
+            i = j + 1
+        else:
+            i += 1
+    return names
+
+
 def scan_sh(text):
     names = []
     stack = [Frame("top")]        # entries are Frame, or a str for dq / brace / arith / arith:N
@@ -73,12 +118,12 @@ def scan_sh(text):
             delim = m.group(1)
             if delim == "":
                 f.skip_redir = True
-                heredocs.append("")      # delimiter arrives with the next word
+                heredocs.append(["", True])      # delimiter arrives with the next word
             else:
-                heredocs.append(delim.strip("'\""))
+                heredocs.append([delim.strip("'\"\\"), not re.search(r"['\"\\]", delim)])
             return
-        if heredocs and heredocs[-1] == "":
-            heredocs[-1] = w.strip("'\"")
+        if heredocs and heredocs[-1][0] == "":
+            heredocs[-1] = [r.strip("'\"\\"), not re.search(r"['\"\\]", r)]
             f.skip_redir = False
             return
         if f.skip_redir:
@@ -160,6 +205,7 @@ def scan_sh(text):
                 i += 2
             elif c == '"':
                 stack.pop()
+                raw.append(c)
                 i += 1
             elif c == "$" and nxt == "(" and text[i + 2:i + 3] == "(":
                 stack.append("arith:0")
@@ -173,6 +219,7 @@ def scan_sh(text):
             elif c == "`":
                 raise SystemExit("unsupported construct: backtick command substitution")
             else:
+                raw.append(c)
                 i += 1
             continue
         # ---- inside ${...} ----
@@ -273,15 +320,20 @@ def scan_sh(text):
         if c == "\n":
             finish_word()
             i += 1
-            if heredocs and heredocs[-1] != "":
+            if heredocs and heredocs[-1][0] != "":
                 pending, heredocs[:] = list(heredocs), []
-                for delim in pending:
+                for delim, expands in pending:
+                    body = []
                     while i < n:
                         j = text.find("\n", i)
                         line = text[i:] if j < 0 else text[i:j]
                         i = n if j < 0 else j + 1
                         if line.strip("\t") == delim:
                             break
+                        body.append(line)
+                    # An unquoted delimiter expands the body: $(...) and `...` run.
+                    if expands:
+                        names.extend(heredoc_substitutions("\n".join(body)))
             to_cmd()
             continue
         if c == ";":
@@ -344,13 +396,31 @@ def scan_sh(text):
     return names
 
 
+# A call is a call however its namespace is spelled: `process::capture(`,
+# `planar::process::capture(`, an alias `pr::capture(`, or bare `capture(` after a
+# using-declaration. A member call (`x.capture(`, `p->capture(`) is not one.
+QUAL = r"(?<![\w.>])(?:\w+::)*"
+
+
+def runner_start_regex(src):
+    """`runner::start(` under any alias of the runner namespace, and a bare
+    `start(` when a using-declaration or using-directive brought it in."""
+    names = {"runner"}
+    names.update(re.findall(r"namespace\s+(\w+)\s*=\s*[\w:]*\brunner\s*;", src))
+    alt = "|".join(sorted(names))
+    rx = r"(?<![\w.>])(?:\w+::)*(?:%s)::start\s*\(" % alt
+    if re.search(r"using\s+namespace\s+[\w:]*\brunner\s*;|using\s+[\w:]*\brunner::start\s*;", src):
+        rx = r"(?:%s)|(?<![\w.>:])start\s*\(" % rx
+    return rx
+
+
 def scan_update(directory):
     programs = set()
     sites = {}
     apis = [
-        ("capture", r"process::capture\s*\("),
+        ("capture", QUAL + r"capture\s*\("),
         ("run_inherited", r"\brun_inherited\s*\("),
-        ("runner_start", r"\brunner::start\s*\("),
+        ("runner_start", None),
         ("execv", r"\bexecv[a-z]*\s*\("),
         ("posix_spawn", r"\bposix_spawn[a-z]*\s*\("),
         ("fork", r"\b(?:vfork|fork)\s*\("),
@@ -365,6 +435,8 @@ def scan_update(directory):
         src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
         src = re.sub(r"//[^\n]*", "", src)
         for name, rx in apis:
+            if rx is None:
+                rx = runner_start_regex(src)
             for m in re.finditer(rx, src):
                 sites[name] = sites.get(name, 0) + 1
                 rest = src[m.end():]
@@ -377,7 +449,7 @@ def scan_update(directory):
                     if not lit:
                         programs.add("<non-literal resolve_program program>")
         consts = dict(re.findall(r'constexpr\s+std::string_view\s+(\w+)\s*=\s*"([^"]+)"', src))
-        for rx in (r'process::capture\(\s*"([^"]+)"',
+        for rx in (QUAL + r'capture\(\s*"([^"]+)"',
                    r'resolve_program\([^,()]*(?:\([^()]*\))?[^,()]*,\s*"([^"]+)"',
                    r'\.argv\s*=\s*\{\s*"([^"]+)"',
                    r'\{\s*(?:"[A-Za-z_]+=[^"]*",\s*)+"([^"]+)"'):
@@ -418,6 +490,12 @@ n=$((n + 1)); FOO=1 mkdir "$d/x" || die "x $(id -u)"
     want = {"printf", "exit", "uname", "sw_vers", "tar", "command", "ldd", "find", "wc", "sha256sum", "cd", "read", "echo", "tr", "cat", "mkdir", "die", "id", "["}
     assert set(got) == want, (sorted(set(got) ^ want))
     assert "curl" not in got and "not-a-command" not in got
+    # An unquoted here-document expands its body, so its $( ) and backticks run; a quoted one does not.
+    got = scan_sh("cat <<EOF\nhello $(hd_sub --x) and `hd_tick` \\$(hd_escaped)\nEOF\n"
+                  "cat <<'EOF'\n$(q_single)\nEOF\ncat <<\"EOF\"\n$(q_double)\nEOF\n"
+                  "cat <<\\EOF\n$(q_back)\nEOF\ncat << 'EOF'\n$(q_spaced)\nEOF\n"
+                  "cat <<-EOF\n\t$(hd_dash)\n\tEOF\n")
+    assert sorted(got) == ["cat"] * 6 + ["hd_dash", "hd_sub", "hd_tick"], got
     print("install-prereq-scan: self-test passed")
 
 
