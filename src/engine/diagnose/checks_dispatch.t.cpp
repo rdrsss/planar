@@ -145,15 +145,15 @@ struct fixture {
   /// One dispatch preview for a task, bound to `token` (empty for none), created at `created`. A
   /// non-zero `consumed_by` marks it spent by that snapshot at `consumed_at`.
   auto preview(int id, int task_id, std::string_view token, std::string_view created, int consumed_by = 0,
-               std::string_view consumed_at = {}) -> void {
+               std::string_view consumed_at = {}, std::string_view expires = "2099-01-01T00:00:00.000Z") -> void {
     exec(conn, std::format("insert into routing_dispatch_previews (id, preview_token, task_id, logical_work_item_id, project_id, "
                            "validation_policy_version, routing_policy_version, profile_rule_version, vendor, role, tier, "
                            "work_type, complexity, packet_digest, profile_digest, policy_digest, capability_digest, "
                            "requested_candidate_id, host_id, assignment_class, claim_token, evidence_state, created_at, "
                            "expires_at, consumed_at, consumed_dispatch_id) values ({}, 'ptok{}', {}, 'w{}', 1, 'v1', 'r1', 'p1', "
                            "'test', 'coder', 'medium', 'feature', 'standard', 'pk', 'pf', 'po', 'cp', 1, 'host', 'default', {}, "
-                           "'evidential', '{}', '2099-01-01T00:00:00.000Z', {}, {})",
-                           id, id, task_id, id, quoted_or_null(token), created, quoted_or_null(consumed_at),
+                           "'evidential', '{}', '{}', {}, {})",
+                           id, id, task_id, id, quoted_or_null(token), created, expires, quoted_or_null(consumed_at),
                            consumed_by == 0 ? std::string{"null"} : std::to_string(consumed_by)));
   }
 
@@ -804,4 +804,46 @@ TEST_CASE("dispatch-confirmed-late evidence does not move with the evaluation in
   REQUIRE(first.findings.size() == 1);
   REQUIRE(later.findings.size() == 1);
   CHECK(im::finding_digest(first.findings[0]) == im::finding_digest(later.findings[0]));
+}
+
+TEST_CASE("a snapshot spent from a token-less preview on the same task binds to a claim whose lifetime the preview overlaps",
+          "[engine][diagnose][dispatch]") {
+  // Previewed with no claim token and confirmed at 08:59:50, before the claim was taken at 09:00.
+  fixture fx;
+  fx.task(1, "done");
+  fx.completed_claim(1, 1); // lifetime 09:00 through 10:00
+  fx.snapshot(1, 1, "2026-06-01T08:59:50Z");
+  fx.preview(1, 1, "", "2026-06-01T08:59:00.000Z", 1, "2026-06-01T08:59:50Z");
+  CHECK(ids_of(fx.run(k_no_role)) == std::vector<std::string>{"dispatch-no-role-action claim:1"});
+  CHECK(fx.run(k_unconfirmed).findings.empty());
+
+  // A later re-dispatch snapshot does not become the earliest: the first confirm preceded the action.
+  fx.action(1, 1, "coder", 1, "2026-06-01T09:10:00.000Z");
+  fx.snapshot(2, 1, "2026-06-01T09:20:00.000Z");
+  fx.preview(2, 1, "tok1", "2026-06-01T09:15:00.000Z", 2, "2026-06-01T09:20:00.000Z");
+  CHECK(fx.run(k_late).findings.empty());
+}
+
+TEST_CASE("a token-less preview binds only while its window overlaps the claim, and only on the same task",
+          "[engine][diagnose][dispatch]") {
+  fixture fx;
+  fx.task(1, "done");
+  fx.task(2, "done");
+  fx.task(3, "done");
+  fx.task(4, "done");
+  fx.completed_claim(1, 1); // lifetime 09:00 through 10:00
+  fx.completed_claim(2, 2);
+  fx.completed_claim(3, 3);
+  fx.completed_claim(4, 4);
+  // Task 1: the preview expired before the claim began.
+  fx.snapshot(1, 1, "2026-06-01T08:00:30Z");
+  fx.preview(1, 1, "", "2026-06-01T08:00:00.000Z", 1, "2026-06-01T08:00:30Z", "2026-06-01T08:30:00Z");
+  // Task 2: the preview was created after the claim ended.
+  fx.snapshot(2, 2, "2026-06-01T10:30:30Z");
+  fx.preview(2, 2, "", "2026-06-01T10:30:00.000Z", 2, "2026-06-01T10:30:30Z");
+  // Task 3: a token-less preview for a different task (4) spent on a snapshot of task 4 does not bind task 3.
+  fx.snapshot(3, 4, "2026-06-01T08:59:50Z");
+  fx.preview(3, 4, "", "2026-06-01T08:59:00.000Z", 3, "2026-06-01T08:59:50Z");
+  // Task 4's own claim does bind to it.
+  CHECK(ids_of(fx.run(k_no_role)) == std::vector<std::string>{"dispatch-no-role-action claim:4"});
 }

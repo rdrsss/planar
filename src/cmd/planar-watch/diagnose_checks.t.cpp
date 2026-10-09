@@ -151,8 +151,9 @@ struct world {
   }
 
   /// The current instant as the whole-second RFC 3339 text a caller passes to `dispatch confirm --now`.
-  static auto now_text() -> std::string {
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+  static auto now_text(int offset_seconds = 0) -> std::string {
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now() +
+                                                                                         std::chrono::seconds{offset_seconds}));
   }
 
   /// `planar-agent dispatch preview` for a task, bound to `claim_token` when given, with consistent synthetic digests.
@@ -631,4 +632,36 @@ TEST_CASE("with the capture log off the apply check is partial, not clean", "[cm
 
   // The same holds for a run that selects every check: a host that does not log reads `partial`.
   CHECK(w.diagnose_any({}).find("outcome")->string == "partial");
+}
+
+TEST_CASE("a dispatch previewed and confirmed without a claim token, then claimed, is still that claim's dispatch",
+          "[cmd][watch][diagnose][workflow][dispatch]") {
+  // Real orchestrator runs preview with no claim token, confirm, and only then claim. The snapshot is
+  // confirmed (the caller's text, a minute in the past here) before the claim row exists.
+  {
+    world w;
+    w.seed_routing();
+    auto preview = w.dispatch_preview(1, "");
+    w.dispatch_confirm(preview, world::now_text(-60));
+    auto token = w.claim(1);
+    w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
+    // The claim is a dispatch through the spent preview, and it ended with no role action.
+    CHECK(w.findings(k_dispatch_checks) == std::vector<std::string>{"dispatch-no-role-action claim:1 error"});
+  }
+  {
+    world w;
+    w.seed_routing();
+    auto first = w.dispatch_preview(1, "");
+    w.dispatch_confirm(first, world::now_text(-60));
+    auto token = w.claim(1);
+    w.planar_agent({"action", "start", "--claim", token, "--kind", "coder", "--entity", "task:1", "--no-locality-probe"});
+    // A re-dispatch, bound to the claim, is confirmed after the coder action started.
+    auto second = w.dispatch_preview(1, token);
+    w.dispatch_confirm(second, world::now_text(), token);
+    // TIME TRAVEL: the coder action started between the two confirms.
+    w.move_time(std::format("update agent_actions set started_at = '{}.000Z' where action_kind = 'coder'",
+                            world::now_text(-30).substr(0, 19)));
+    // The first confirm came before the action, so the dispatch was not confirmed late.
+    CHECK(w.findings(k_dispatch_checks).empty());
+  }
 }
