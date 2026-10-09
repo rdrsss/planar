@@ -157,8 +157,10 @@ export struct catalog {
 };
 
 /// @brief The shipped catalog: the concatenation of every family's checks and inputs. Built so
-/// far: the claim-liveness checks. `queue-ended-unobserved` is declared as an unbuilt check; the
-/// later check tasks fill in the remaining families.
+/// far: the claim-liveness checks (`claim-lease-lapsed`, `claim-process-died`,
+/// `claim-superseded-active`, `task-doing-unclaimed`, `claim-closed-by-reconcile`,
+/// `heartbeat-gap`) and `handoff-stale`. `queue-ended-unobserved` is declared as an unbuilt check;
+/// the later check tasks fill in the remaining families.
 /// @return The catalog.
 export auto builtin_catalog() -> catalog;
 
