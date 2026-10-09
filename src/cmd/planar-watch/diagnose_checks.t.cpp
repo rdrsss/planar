@@ -20,6 +20,7 @@
 //     and `abort` clears it.
 //   * A healthy claim, before and after `complete`, gives no claim finding.
 //   * `heartbeat-gap` reads the heartbeat action rows the verb writes.
+//   * `handoff-stale` agrees with the stale-handoff count `planar report` prints.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -206,4 +207,35 @@ TEST_CASE("heartbeat gaps are read from the heartbeat rows the verb writes", "[c
               "where action_kind = 'heartbeat' and summary = 'two'");
   CHECK(w.findings({"heartbeat-gap"}, "36500") ==
         std::vector<std::string>{"heartbeat-gap claim:1 warning", "heartbeat-gap claim:1 info"});
+}
+
+TEST_CASE("handoff-stale agrees with the stale-handoff count planar report prints", "[cmd][watch][diagnose][workflow][handoff]") {
+  world w;
+  // Handoffs need an open session; the pinned environment is extended with its identity.
+  auto env = parity::pinned_env(w.root);
+  env.push_back(parity::pinned_var{.name = "PLANAR_VENDOR", .value = "claude"});
+  env.push_back(parity::pinned_var{.name = "PLANAR_VENDOR_SESSION_ID", .value = "s1"});
+  auto op = [&](std::vector<std::string> args) {
+    auto got = parity::run_pinned(w.op, args, w.root, w.tag(), env);
+    INFO("planar " << args.front() << ": " << got.err);
+    REQUIRE(got.code == 0);
+    return got;
+  };
+  op({"capture", "session", "--task", "1"});
+  op({"handoff", "1"});
+  op({"handoff", "2"});
+  op({"handoff", "1"});
+  op({"handoff", "consume", "3"});
+  CHECK(w.findings({"handoff-stale"}).empty());
+
+  // TIME TRAVEL: age the handoffs, since a stale handoff is a day old. 1 is 25 h old and pending
+  // review, 2 is 23 h old, 3 is 25 h old but consumed.
+  w.move_time("update handoffs set created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-25 hours') where id in (1, 3)");
+  w.move_time("update handoffs set created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-23 hours') where id = 2");
+  CHECK(w.findings({"handoff-stale"}) == std::vector<std::string>{"handoff-stale handoff:1 warning"});
+
+  auto report = op({"report", "--json"});
+  auto parsed = planar::json_dom::parse_json(report.out);
+  REQUIRE(parsed.has_value());
+  CHECK(parsed->find("handoffs")->find("stale_handoffs")->integer == 1);
 }
