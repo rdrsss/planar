@@ -751,7 +751,9 @@ five minutes plus the margin fails under ctest as `***Timeout`, naming the case.
 exists because the host queue's machine runs other sessions' work and single runs move by 10 to 20
 percent; it is not room to grow into. A test that nears 300 s on a quiet host is split or sped
 up, not given a larger limit. The configure step fails if any `install.*` case carries another
-`TIMEOUT`, so a new installer test cannot register without the limit. To try the limit,
+`TIMEOUT` in any directory, so a new installer test cannot register without the limit, and it
+rejects a limit that is not a positive integer or a margin that is not a non-negative one (a
+`TIMEOUT` of 0 means no timeout to ctest). To try the limit,
 `cmake --preset debug -DPLANAR_INSTALLER_TEST_LIMIT=5 -DPLANAR_INSTALLER_TEST_MARGIN=0` and run one
 case; put the defaults back afterwards (`-DPLANAR_INSTALLER_TEST_LIMIT=300
 -DPLANAR_INSTALLER_TEST_MARGIN=60`).
@@ -760,7 +762,7 @@ Measured times per case are in [Installer test speed](#installer-test-speed). Th
 installer case on 2026-10-09 (macOS arm64, a loaded host, `ctest -L` through the host queue) was
 `install.prefix_guard` at 211 s, then `install.prebuilt` and `install.managed` at 163 and 162 s,
 `install.data_paths` at 143 s, `install.uninstall_manifest` at 125 s, and the rest below 120 s;
-all 32 ran inside the limit. `bootstrap.release`, outside the limit, took 143 s.
+all 28 ran inside the limit. `bootstrap.release`, outside the limit, took 143 s.
 
 ### The two-shell comparison
 

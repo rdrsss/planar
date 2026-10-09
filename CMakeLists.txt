@@ -112,6 +112,12 @@ enable_testing()
 # not carry exactly that TIMEOUT.
 set(PLANAR_INSTALLER_TEST_LIMIT 300 CACHE STRING "Seconds an installer test (ctest install.*) may take")
 set(PLANAR_INSTALLER_TEST_MARGIN 60 CACHE STRING "Extra seconds on top of the installer test limit before ctest times it out")
+if(NOT PLANAR_INSTALLER_TEST_LIMIT MATCHES "^[0-9]+$" OR PLANAR_INSTALLER_TEST_LIMIT EQUAL 0)
+  message(FATAL_ERROR "planar: PLANAR_INSTALLER_TEST_LIMIT must be a positive integer, got '${PLANAR_INSTALLER_TEST_LIMIT}'")
+endif()
+if(NOT PLANAR_INSTALLER_TEST_MARGIN MATCHES "^[0-9]+$")
+  message(FATAL_ERROR "planar: PLANAR_INSTALLER_TEST_MARGIN must be a non-negative integer, got '${PLANAR_INSTALLER_TEST_MARGIN}'")
+endif()
 math(EXPR PLANAR_INSTALLER_TEST_TIMEOUT "${PLANAR_INSTALLER_TEST_LIMIT} + ${PLANAR_INSTALLER_TEST_MARGIN}")
 
 # D15 guard standing tests (plan 996 task 6050, M2 pre-work;
@@ -438,9 +444,13 @@ foreach(_uninstall_group removal manifest interrupted)
 endforeach()
 
 # Fail the configure when an installer test (ctest install.*) lacks the common TIMEOUT. Deferred
-# so it sees the cases registered here and in src/cmd.
+# so it sees every case registered in the top directory and in any subdirectory.
 function(planar_check_installer_test_timeouts)
-  foreach(_dir "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/src/cmd")
+  set(_pending "${PROJECT_SOURCE_DIR}")
+  while(_pending)
+    list(POP_FRONT _pending _dir)
+    get_property(_subdirs DIRECTORY "${_dir}" PROPERTY SUBDIRECTORIES)
+    list(APPEND _pending ${_subdirs})
     get_property(_tests DIRECTORY "${_dir}" PROPERTY TESTS)
     foreach(_t IN LISTS _tests)
       if(_t MATCHES "^install\\.")
@@ -451,6 +461,6 @@ function(planar_check_installer_test_timeouts)
         endif()
       endif()
     endforeach()
-  endforeach()
+  endwhile()
 endfunction()
 cmake_language(DEFER CALL planar_check_installer_test_timeouts)
