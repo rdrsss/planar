@@ -61,11 +61,17 @@ auto not_live(std::string_view now) -> std::string {
   return std::format("(c.status != 'active' or c.lease_expires_at < {})", now);
 }
 
-/// True when snapshot `s` confirms claim `c`: it is for the claim's task and either one of the claim's previews was spent
-/// on it or it was confirmed inside the claim's lifetime.
+/// True when snapshot `s` confirms claim `c`: it is for the claim's task and one of these holds. A preview bound to the claim's
+/// token was spent on it. A preview with no claim token, for the same task, was spent on it and its `[created_at, expires_at]`
+/// window overlaps the claim's lifetime: orchestrator runs often preview with no token, confirm, and only then claim, so the
+/// confirm precedes `claimed_at`. Or it was confirmed inside the claim's lifetime. `expires_at` is stored without a fraction,
+/// so it is compared as an instant.
 auto snapshot_match() -> std::string {
   return std::format("(s.task_id = c.entity_id and (s.id in (select p.consumed_dispatch_id from routing_dispatch_previews p"
                      "                                       where {0})"
+                     "   or s.id in (select p.consumed_dispatch_id from routing_dispatch_previews p"
+                     "               where p.task_id = c.entity_id and p.claim_token is null"
+                     "                 and strftime({1}, p.created_at) <= {2} and strftime({1}, p.expires_at) >= c.claimed_at)"
                      "   or (strftime({1}, s.confirmed_at) >= c.claimed_at and strftime({1}, s.confirmed_at) <= {2})))",
                      k_preview_match, k_format, k_ends);
 }
@@ -99,14 +105,14 @@ auto no_role_action(const check_context& ctx) -> std::expected<std::vector<im::f
   // `?1` is the window start and `?2` its end, which is the evaluation instant. Columns: claim,
   // task, the claim's end, the lowest preview bound to it (0 for none) and the lowest snapshot (0 for none).
   auto now = std::format("strftime({}, ?2)", k_format);
-  auto sql = std::format("select c.id, c.entity_id, {1},"
-                         "       coalesce((select min(p.id) from routing_dispatch_previews p where {2}), 0),"
-                         "       coalesce((select min(s.id) from routing_dispatch_snapshots s where {3}), 0)"
+  auto sql = std::format("select c.id, c.entity_id, {0},"
+                         "       coalesce((select min(p.id) from routing_dispatch_previews p where {1}), 0),"
+                         "       coalesce((select min(s.id) from routing_dispatch_snapshots s where {2}), 0)"
                          " from agent_work_claims c"
-                         " where {4} and {5} and not {6}"
-                         "   and {1} >= ?1 and {1} <= ?2 and {7}"
+                         " where {3} and {4} and not {5}"
+                         "   and {0} >= ?1 and {0} <= ?2 and {6}"
                          " order by c.id",
-                         "", k_ends, k_preview_match, snapshot_match(), is_dispatch(), not_live(now), has_role_action(),
+                         k_ends, k_preview_match, snapshot_match(), is_dispatch(), not_live(now), has_role_action(),
                          plan_filter_sql(ctx.scope, k_claim_plan));
   return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
     im::finding f;
