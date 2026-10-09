@@ -28,6 +28,10 @@
 //   * `dispatch-no-role-action`: the 7335 shape (a preview bound to a claim, a confirm, a complete,
 //     no coder action) is one finding and nothing else; a direct claim doing its own work is none.
 //   * `action-unended`: an action left open under a claim that lapsed.
+//   * `apply-without-preview` (task 7379): the capture log is turned on through `[introspection]
+//     cli_log` in the pinned config file, and `planar spec ingest` runs with and without `--apply`.
+//     There is no workbench spec, so the ingest exits 2, which the log records all the same. With
+//     the log off the check's input is `disabled` and the outcome `partial`.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -101,6 +105,43 @@ struct world {
     auto ok = conn->execute(sql);
     INFO(sql);
     REQUIRE(ok.has_value());
+  }
+
+  /// Turns the capture log on in the pinned config file every binary here reads (`PLANAR_CONFIG_PATH`).
+  auto enable_cli_log() -> void {
+    std::ofstream config{root / "config.toml", std::ios::binary};
+    config << "[introspection]\ncli_log = true\n";
+    REQUIRE(config.good());
+  }
+
+  /// Runs `planar` and returns its exit code without requiring success: an ingest with no spec fails, and is logged.
+  auto planar_status(std::vector<std::string> args) -> int {
+    return parity::run_pinned(op, args, root, tag()).code;
+  }
+
+  /// One integer from a read-only query over the scratch database.
+  auto scalar(std::string_view sql) -> std::int64_t {
+    auto conn = planar::db::connection::open((root / "planar.db").string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare(sql);
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    return stmt->column_int64(0);
+  }
+
+  /// `planar-watch diagnose --plan 1 --json`, parsed, without requiring the outcome to be `ok`.
+  auto diagnose_any(std::vector<std::string> checks) -> planar::json_dom::json_value {
+    std::vector<std::string> args{"diagnose", "--plan", "1", "--json"};
+    for (auto& c : checks) {
+      args.push_back("--check");
+      args.push_back(std::move(c));
+    }
+    auto got = parity::run_pinned(watch, args, root, tag());
+    INFO("diagnose stderr: " << got.err);
+    REQUIRE(got.code == 0);
+    auto parsed = planar::json_dom::parse_json(got.out);
+    REQUIRE(parsed.has_value());
+    return std::move(*parsed);
   }
 
   /// Rows no verb creates, written with a plain INSERT: the project and routing candidate a dispatch preview names.
@@ -541,4 +582,50 @@ TEST_CASE("a snapshot confirmed after the role action started is late, and not u
   // The action starting at the instant of the confirm is not late.
   w.move_time(std::format("update agent_actions set started_at = '{}' where action_kind = 'coder'", normalised));
   CHECK(w.findings(k_dispatch_checks, "36500").empty());
+}
+
+TEST_CASE("an ingest apply with no preview before it is reported, and one after a preview is not",
+          "[cmd][watch][diagnose][workflow][cli]") {
+  {
+    world w;
+    w.enable_cli_log();
+    CHECK(w.planar_status({"spec", "ingest", "1", "--apply"}) != 0);
+    auto parsed = w.diagnose_any({"apply-without-preview"});
+    CHECK(parsed.find("outcome")->string == "ok");
+    const auto& found = parsed.find("findings")->array;
+    REQUIRE(found.size() == 1);
+    CHECK(found[0].find("check")->string == "apply-without-preview");
+    CHECK(found[0].find("severity")->string == "warning");
+    // The finding names the logged apply.
+    auto apply_id = w.scalar("select id from cli_invocations where verb_path = 'spec ingest'");
+    CHECK(found[0].find("entity")->string == std::format("cli_invocation:{}", apply_id));
+  }
+  {
+    world w;
+    w.enable_cli_log();
+    CHECK(w.planar_status({"spec", "ingest", "1"}) != 0);
+    CHECK(w.planar_status({"spec", "ingest", "1", "--apply"}) != 0);
+    CHECK(w.scalar("select count(*) from cli_invocations where verb_path = 'spec ingest'") == 2);
+    auto parsed = w.diagnose_any({"apply-without-preview"});
+    CHECK(parsed.find("outcome")->string == "ok");
+    CHECK(parsed.find("findings")->array.empty());
+  }
+}
+
+TEST_CASE("with the capture log off the apply check is partial, not clean", "[cmd][watch][diagnose][workflow][cli]") {
+  world w;
+  // The default config leaves cli_log off, so the apply is not logged at all.
+  CHECK(w.planar_status({"spec", "ingest", "1", "--apply"}) != 0);
+  auto parsed = w.diagnose_any({"apply-without-preview"});
+  CHECK(parsed.find("outcome")->string == "partial");
+  CHECK(parsed.find("findings")->array.empty());
+  bool seen = false;
+  for (const auto& row : parsed.find("coverage")->array) {
+    if (row.find("input")->string == "cli_log") {
+      seen = true;
+      CHECK(row.find("state")->string == "disabled");
+      CHECK(row.find("reason")->string == "cli_log-off");
+    }
+  }
+  CHECK(seen);
 }
