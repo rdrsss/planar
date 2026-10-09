@@ -479,6 +479,44 @@ grep -Fq "purging data path $P/workbench" "$TMP/out" && grep -Fq "purging data p
 [[ ! -e "$P" ]] || fail "--purge left the install root: $(ls -A "$P" | tr '\n' ' ')"
 pass "--purge names a relocated database and leaves it, removes nothing outside the root, removes the in-tree data paths"
 
+# --- --purge keeps the config that relocates data inside the root -------------------------------
+# A config.toml key relocating the workbench or templates into a managed subtree: the uninstall
+# leaves that subtree (it holds a data path), so --purge must leave the config too, or the next
+# install no longer sees the relocation and replaces the subtree with the data in it.
+
+for key in workbench.root templates.dir; do
+  case "$key" in workbench.root) sect=workbench; k=root ;; *) sect=templates; k=dir ;; esac
+  H="$(new_home "purgecfg-$sect")"; P="$H/.planar"
+  install_ok "$H"
+  mkdir -p "$P/agents/relocated/sub"
+  printf 'plan notes\n' > "$P/agents/relocated/sub/notes.md"; printf 'two\n' > "$P/agents/relocated/b.txt"
+  printf '[%s]\n%s = "%s"\n' "$sect" "$k" "$P/agents/../agents/relocated/" > "$P/config.toml"
+  data_before="$(sums "$P/agents/relocated")"
+  uninstall "$H" -- --purge
+  [[ "$RC" == 0 ]] || fail "--purge with $key under a managed tree failed ($RC): $(show)"
+  [[ -f "$P/config.toml" ]] || fail "--purge removed config.toml although $key relocates data inside the install root: $(show)"
+  grep -Fq "kept $P/config.toml" "$TMP/out" && grep -Fq "config.toml ($key)" "$TMP/out" || fail "--purge did not name the kept config.toml and the relocation ($key): $(show)"
+  [[ "$(sums "$P/agents/relocated")" == "$data_before" ]] || fail "--purge changed the relocated $key data"
+  install "$H"
+  [[ "$RC" != 0 ]] || fail "the install after --purge replaced the subtree holding the relocated $key data: $(show)"
+  grep -Fq "refusing to replace" "$TMP/err" && grep -Fq "agents" "$TMP/err" || fail "the following install did not report the relocation into agents ($key): $(show)"
+  [[ "$(sums "$P/agents/relocated")" == "$data_before" ]] || fail "the following install changed the relocated $key data"
+done
+# A relocation outside the root, or into a sibling that shares only the root's name as a prefix,
+# is not inside it: --purge removes config.toml as before.
+for n in outside sibling; do
+  H="$(new_home "purgecfg-$n")"; P="$H/.planar"
+  if [[ $n == outside ]]; then rel="$H/ext-wb"; else rel="${P}2/wb"; fi
+  mkdir -p "$rel"; printf 'keep\n' > "$rel/f"
+  install_ok "$H"
+  printf '[workbench]\nroot = "%s"\n' "$rel" > "$P/config.toml"
+  uninstall "$H" -- --purge
+  [[ "$RC" == 0 ]] || fail "--purge with a relocation outside the root failed ($RC): $(show)"
+  [[ ! -e "$P/config.toml" ]] || fail "--purge kept config.toml for a relocation outside the root ($rel)"
+  [[ "$(cat "$rel/f")" == keep ]] || fail "--purge touched $rel"
+done
+pass "--purge keeps and names config.toml while workbench.root or templates.dir lies inside the root, the next install refuses to replace the holding subtree, and the data is byte-identical; outside the root it removes config.toml"
+
 # --- a competing owner is refused before anything is removed ----------------------------------
 
 H="$(make_installed held)"; P="$H/.planar"
