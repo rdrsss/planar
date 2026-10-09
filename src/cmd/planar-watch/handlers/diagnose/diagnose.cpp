@@ -32,8 +32,9 @@ auto diagnose_with_catalog(context& ctx, const cliapp::parsed_args& args, const 
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  // The viewer's whole contract: this handle cannot write.
-  if (!(*conn)->is_read_only()) {
+  // The viewer's whole contract: this handle cannot write. SQLite's own answer is asked, not
+  // the flag the connection was opened with.
+  if (!(*conn)->is_write_protected()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "diagnose: refusing a writable database handle"));
   }
 

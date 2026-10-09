@@ -21,8 +21,12 @@
 ///
 /// Verified against the reference binaries rather than inferred:
 ///
-///     parse_error            exit 2 on `planar`, exit 1 HERE.
+///     parse_error            exit 2 on `planar`, exit 1 HERE (except `diagnose`, below).
 ///     schema_version_behind  exit 1 on `planar`, exit 7 HERE.
+///
+/// `planar-watch diagnose` is the one exception to the parse_error row: its spec (689 § Output
+/// contract) makes bad input, an unknown flag included, exit 2. `dispatch.cpp` applies that where
+/// it handles a parse failure; this switch still maps `parse_error` to 1 for every other verb.
 ///
 /// `planar-watch nosuchverb` exits 1 while `planar nosuchverb` exits 2,
 /// from the same argv shape; `planar-watch completion badshell` exits 2
