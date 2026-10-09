@@ -298,9 +298,9 @@ client_failure() {
       ;;
     certificate)
       if [ "$F_RC" = 58 ]; then
-        _cf_what="curl could not use the local client certificate; check any client certificate curl is configured to use"
+        _cf_what="curl reported a local client-certificate problem although the bootstrap supplies no client certificate; check curl's own build and environment"
       else
-        _cf_what="curl could not read the CA certificate file; check that CURL_CA_BUNDLE or SSL_CERT_FILE, if set, names a readable file, and that the system CA certificates are readable"
+        _cf_what="curl could not read the CA certificate file; check that CURL_CA_BUNDLE, SSL_CERT_FILE or SSL_CERT_DIR, if set, names a readable file or directory, and that the system CA certificates are readable"
       fi
       F_REASON="local certificate problem (curl exit status $F_RC): $_cf_what: $_cf_err"
       ;;
