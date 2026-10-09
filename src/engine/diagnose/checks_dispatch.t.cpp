@@ -844,6 +844,12 @@ TEST_CASE("a token-less preview binds only while its window overlaps the claim, 
   // Task 3: a token-less preview for a different task (4) spent on a snapshot of task 4 does not bind task 3.
   fx.snapshot(3, 4, "2026-06-01T08:59:50Z");
   fx.preview(3, 4, "", "2026-06-01T08:59:00.000Z", 3, "2026-06-01T08:59:50Z");
+  // Task 5: the preview expired at 09:00:00, half a second before the claim began; expiry is stored without a fraction.
+  fx.task(5, "done");
+  fx.claim(5, 5, "completed", "2026-06-01T09:00:00.500Z", "2026-06-01T09:30:00.000Z", "2026-06-01T09:40:00.000Z",
+           "2026-06-01T10:00:00.000Z");
+  fx.snapshot(4, 5, "2026-06-01T08:59:50Z");
+  fx.preview(4, 5, "", "2026-06-01T08:59:00.000Z", 4, "2026-06-01T08:59:50Z", "2026-06-01T09:00:00Z");
   // Task 4's own claim does bind to it.
   CHECK(ids_of(fx.run(k_no_role)) == std::vector<std::string>{"dispatch-no-role-action claim:4"});
 }
