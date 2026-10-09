@@ -484,13 +484,23 @@ TEST_CASE("heartbeat-gap is bounded by the window and the plan scope", "[engine]
   fx.heartbeat_action(1, 1, at_offset(900s));
   fx.claim(2, 2, "completed", at_offset(0ms), at_offset(900s), at_offset(1500s), at_offset(1000s));
   fx.heartbeat_action(2, 2, at_offset(900s));
+  // A second heartbeat row gives the out-of-scope claim a gap between heartbeat rows alone.
+  fx.heartbeat_action(3, 2, at_offset(1800s));
 
-  CHECK(fx.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z").findings.size() == 2);
+  CHECK(fx.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z").findings.size() == 3);
   auto scoped = fx.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z", 1);
   REQUIRE(scoped.findings.size() == 1);
   CHECK(im::entity_ref_text(scoped.findings[0].primary) == "claim:1");
   // The gap ended 2026-06-01T09:15; a window that starts after it excludes it.
   CHECK(fx.run({"heartbeat-gap"}, "2026-06-09T00:00:00.000Z", std::nullopt, 3).findings.empty());
+}
+
+TEST_CASE("heartbeat-gap skips a claim whose lease length is not positive", "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture fx;
+  fx.task(1, "doing");
+  fx.claim(1, 1, "completed", at_offset(0ms), at_offset(900s), at_offset(900s), at_offset(1000s));
+  fx.heartbeat_action(1, 1, at_offset(900s));
+  CHECK(gap_findings(fx).findings.empty());
 }
 
 TEST_CASE("heartbeat-gap evidence does not move with the evaluation instant", "[engine][diagnose][claims][heartbeat-gap]") {

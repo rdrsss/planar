@@ -1,7 +1,7 @@
 /// @file checks_claims.cpp
 /// @brief The claim-liveness family of the diagnose catalog (see diagnose.cppm).
 ///
-/// Five checks over `agent_work_claims`, `tasks`, `plans`, `plan_steps` and `agent_actions`
+/// Six checks over `agent_work_claims`, `tasks`, `plans`, `plan_steps` and `agent_actions`
 /// (plan 1132, task 7374; tech spec 689 § Check catalog):
 ///
 ///  - `claim-lease-lapsed`: an `active` claim past its lease that heartbeated, on a `doing` task.
@@ -11,6 +11,13 @@
 ///    exclusive claim on the same entity that is no longer `active`.
 ///  - `task-doing-unclaimed`: a `doing` task with no `active` claim whose lease runs to now or later.
 ///  - `claim-closed-by-reconcile`: an event for a claim that ended `stale`, inside the window.
+///  - `heartbeat-gap` (task 7375, decision 1345): an event per gap between consecutive points of
+///    a claim, the points being `claimed_at` and each `heartbeat` action row's `started_at`. The
+///    claim's lease is `lease_expires_at - last_heartbeat_at`. A gap strictly beyond the lease is
+///    a `warning`; one strictly beyond half of it is `info`; one at or below half is not reported.
+///    The stretch after the last heartbeat is not a gap here: a live lease is healthy and a lapsed
+///    one is `claim-lease-lapsed`. Only gaps that end inside the window are reported. Gaps are
+///    measured in whole milliseconds so the half and full boundaries are exact.
 ///
 /// The four state checks describe the world as of the evaluation instant, so they read every
 /// matching row regardless of the window start; only the event is bounded by the window. A lease
@@ -130,6 +137,41 @@ auto closed_by_reconcile(const check_context& ctx) -> std::expected<std::vector<
                         [](const db::statement& row) { return claim_finding(im::diagnostic_severity::info, row); });
 }
 
+auto heartbeat_gap(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
+  auto filter = plan_filter_sql(ctx.scope, k_claim_plan);
+  auto sql    = std::format(
+      "with points as ("
+      "  select c.id as claim_id, c.entity_kind, c.entity_id, c.claimed_at as at, 0 as ord,"
+      "         cast(round((julianday(c.lease_expires_at) - julianday(c.last_heartbeat_at)) * 86400000) as integer) as lease_ms"
+      "  from agent_work_claims c where {0}"
+      "  union all"
+      "  select c.id, c.entity_kind, c.entity_id, a.started_at, 1,"
+      "         cast(round((julianday(c.lease_expires_at) - julianday(c.last_heartbeat_at)) * 86400000) as integer)"
+      "  from agent_actions a join agent_work_claims c on c.id = a.claim_id"
+      "  where a.action_kind = 'heartbeat' and {0}"
+      "), spans as ("
+      "  select claim_id, entity_kind, entity_id, lease_ms, at as cur,"
+      "         lag(at) over (partition by claim_id order by at, ord) as prev"
+      "  from points"
+      "), gaps as ("
+      "  select claim_id, entity_kind, entity_id, lease_ms, prev, cur,"
+      "         cast(round((julianday(cur) - julianday(prev)) * 86400000) as integer) as gap_ms"
+      "  from spans where prev is not null"
+      ")"
+      " select claim_id, entity_kind, entity_id, prev, cur, lease_ms, gap_ms from gaps"
+      " where lease_ms > 0 and gap_ms * 2 > lease_ms and cur >= ?1 and cur <= ?2"
+      " order by cur, claim_id",
+      filter);
+  return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
+    im::finding f;
+    f.severity = row.column_int64(6) > row.column_int64(5) ? im::diagnostic_severity::warning : im::diagnostic_severity::info;
+    f.primary  = im::entity_ref{.kind = "claim", .id = row.column_int64(0)};
+    f.evidence = {f.primary, im::entity_ref{.kind = row.column_text(1), .id = row.column_int64(2)}};
+    f.evidence_times = {row.column_text(3), row.column_text(4)};
+    return f;
+  });
+}
+
 } // namespace
 
 auto claims_family() -> family {
@@ -175,6 +217,14 @@ auto claims_family() -> family {
                                .inputs   = {},
                                .built    = true,
                                .evaluate = closed_by_reconcile});
+  f.checks.push_back(check_def{.id       = "heartbeat-gap",
+                               .kind     = im::check_kind::event,
+                               .severity = im::diagnostic_severity::warning,
+                               .category = "heartbeat_gap",
+                               .recovery = "heartbeat at half the TTL",
+                               .inputs   = {},
+                               .built    = true,
+                               .evaluate = heartbeat_gap});
   return f;
 }
 

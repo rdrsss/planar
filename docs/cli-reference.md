@@ -7697,6 +7697,8 @@ Evaluates the recorded state against Planar's documented orchestration rules and
 
 **Claim checks.** `claim-lease-lapsed` (an `active` claim past its lease that heartbeated, on a `doing` task), `claim-process-died` (an `active` claim past its lease that never heartbeated after `claimed_at`), `claim-superseded-active` (an `active` claim on a terminal task, plan or step, or behind a later exclusive claim on the same entity that is no longer `active`; `error`), `task-doing-unclaimed` (a `doing` task with no `active` claim whose lease runs to the evaluation instant or later) and `claim-closed-by-reconcile` (a claim that ended `stale` inside the window; `info`). The first four describe the state at the evaluation instant and ignore the window start; only the event is bounded by the window. A lease expiring exactly at the evaluation instant is still live.
 
+**Heartbeat gaps.** `heartbeat-gap` is an event per gap between consecutive points of a claim (`claimed_at` and each `heartbeat` action row), reported when the gap ends inside the window. The lease is the claim's `lease_expires_at - last_heartbeat_at`: a gap strictly beyond the whole lease is a `warning`, one strictly beyond half of it is `info`, and one at or below half is not reported (decision 1345). The stretch after the last heartbeat is not a gap; it is `claim-lease-lapsed` once the lease lapses.
+
 **Synopsis:**
 ```
 planar-watch diagnose [--plan <id>] [--days <n>] [--check <id>]... [--json]
