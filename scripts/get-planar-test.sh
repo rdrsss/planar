@@ -138,6 +138,8 @@ STUB
 cat > "$SHIMC/curl" <<'STUB'
 #!/bin/sh
 for a in "$@"; do url=$a; done
+# FAKE_CURL_EXIT=N: curl fails with exit status N before any request, as for a bad certificate setup.
+if [ -n "${FAKE_CURL_EXIT:-}" ]; then echo "curl: ($FAKE_CURL_EXIT) fake failure" >&2; exit "$FAKE_CURL_EXIT"; fi
 fire=no
 if [ -n "${FAKE_HOOK_MATCH:-}" ]; then
   case "$url" in $FAKE_HOOK_MATCH) fire=yes ;; esac
@@ -738,6 +740,18 @@ for client in curl wget; do
   end_case
 done
 kill "$TRUNC_PID" 2>/dev/null; wait "$TRUNC_PID" 2>/dev/null
+
+# =====================================================================================
+# task rel-m6-bootstrap-cert-errors: curl exit 58 and 77 are local certificate problems
+# =====================================================================================
+for code in 58 77; do
+  new_case "cause-certificate-curl-$code"
+  boot PLANAR_RELEASE_URL="$BASE" FAKE_CURL_EXIT="$code"
+  refusal 1 "local certificate problem (curl exit status $code)"
+  expect_not_err "cannot reach"
+  expect_no_requests
+  end_case
+done
 
 # =====================================================================================
 # task rel-m5-bootstrap-gaps: one trailing-slash rule in the bootstrap and install.sh
