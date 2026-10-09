@@ -41,11 +41,11 @@ source "$ROOT/scripts/fixtures/scenario-runner.sh"
 scen_init mini "$SCEN_TABLE" "$SCEN_SERIAL"
 if [[ -n "${INSTALL_TEST_SHARED-}" ]]; then FIX="$INSTALL_TEST_SHARED/fix"; else FIX="$TMP/fix"; mkdir -p "$FIX"; echo fixture > "$FIX/file"; fi
 scen_dispatch "$TMP/fix" "$ROOT"
-live() { # live NAME -- record this scenario as live for a second and print the count seen
-  local n; mkdir -p "$MINI_LIVE"
+live() { # live NAME -- stay live for a second; print the live count at the start and at the end
+  local n m; mkdir -p "$MINI_LIVE"
   : > "$MINI_LIVE/$1"; n="$(ls "$MINI_LIVE" | wc -l | tr -d ' ')"
-  printf 'ran %s live=%s scratch=%s\n' "$1" "$n" "$TMP"
-  sleep 1; rm -f "$MINI_LIVE/$1"
+  sleep 1; m="$(ls "$MINI_LIVE" | wc -l | tr -d ' ')"; rm -f "$MINI_LIVE/$1"
+  printf 'ran %s live=%s end=%s scratch=%s\n' "$1" "$n" "$m" "$TMP"
 }
 if scen a; then live a; fi
 if scen b; then live b; [[ -z "${MINI_BREAK-}" ]] || { echo "b: an assertion failed" >&2; exit 1; }; fi
@@ -83,8 +83,8 @@ mini INSTALL_TEST_JOBS=2
 [[ "$RC" == 0 ]] || fail "the parallel run failed ($RC): $(cat "$TMP/out" "$TMP/err")"
 for s in a b c d e; do grep -Fq "=== scenario $s: ok" "$TMP/out" || fail "scenario $s was not reported under its name: $(cat "$TMP/out")"; done
 [[ "$(live_max)" == 2 ]] || fail "INSTALL_TEST_JOBS=2 did not run exactly two at a time (max live $(live_max)): $(cat "$TMP/out")"
-[[ "$(sed -n 's/^ran e live=\([0-9]*\) .*/\1/p' "$TMP/out")" == 1 ]] || fail "the serial scenario did not run alone: $(cat "$TMP/out")"
-[[ "$(sed -n 's/^ran [a-e] live=[0-9]* scratch=//p' "$TMP/out" | sort -u | wc -l | tr -d ' ')" == 5 ]] || fail "the scenarios did not each get their own scratch directory: $(cat "$TMP/out")"
+[[ "$(sed -n 's/^ran e live=\([0-9]*\) end=\([0-9]*\) .*/\1/p' "$TMP/out")$(sed -n 's/^ran e live=[0-9]* end=\([0-9]*\) .*/\1/p' "$TMP/out")" == 11 ]] || fail "the serial scenario did not run alone: $(cat "$TMP/out")"
+[[ "$(sed -n 's/^ran [a-e] live=[0-9]* end=[0-9]* scratch=//p' "$TMP/out" | sort -u | wc -l | tr -d ' ')" == 5 ]] || fail "the scenarios did not each get their own scratch directory: $(cat "$TMP/out")"
 mini INSTALL_TEST_JOBS=4
 [[ "$RC" == 0 && "$(live_max)" -gt 2 && "$(live_max)" -le 4 ]] || fail "INSTALL_TEST_JOBS=4 ran $(live_max) at a time ($RC)"
 pass "a parallel run reports every scenario by name, bounds the job count, gives each its own scratch and runs the serial one alone"
