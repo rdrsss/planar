@@ -524,12 +524,18 @@ auto stopped() -> std::unexpected<domain_error> {
 
 /// @brief The report of a plain run stopped by `sig`: exit 128+`sig`, as a
 /// shell reports a command a signal ended and as the bootstrap's own `INT`
-/// and `TERM` traps exit.
-auto interrupted(int sig) -> std::unexpected<domain_error> {
-  auto err = error_from_body(domain_error_kind::generic_failure,
-                             std::format("planar update was interrupted by {}; nothing was installed, its download directory "
-                                         "was removed and the mutation lock released",
-                                         sig == SIGINT ? "SIGINT" : "SIGTERM"));
+/// and `TERM` traps exit. It claims a release only when `held_lock` says this
+/// run took the mutation lock (and `update_session` has released it).
+auto interrupted(int sig, bool held_lock) -> std::unexpected<domain_error> {
+  auto const name = sig == SIGINT ? "SIGINT" : "SIGTERM";
+  auto       err  = error_from_body(
+      domain_error_kind::generic_failure,
+      held_lock ? std::format("planar update was interrupted by {}; nothing was installed, its download directory was removed "
+                              "and the mutation lock released",
+                              name)
+                : std::format("planar update was interrupted by {} before it took the mutation lock; nothing was installed "
+                              "and no lock was held",
+                              name));
   err.passthrough_code = 128 + sig;
   return std::unexpected(std::move(err));
 }
@@ -538,11 +544,14 @@ auto interrupted(int sig) -> std::unexpected<domain_error> {
 /// `guard`. Every return except a successful exec removes the download
 /// directory and releases ownership (`update_session`).
 auto replace_installation(context& ctx, const std::string& canon, const std::string& base, const up::base_parts& parts,
-                          const std::optional<std::string>& want_tag, const update_host& host, interrupt_guard& guard)
-    -> handler_result {
+                          const std::optional<std::string>& want_tag, const update_host& host, interrupt_guard& guard,
+                          bool& took_lock) -> handler_result {
   auto const platform = host.platform();
   if (!platform) {
     return failure(platform.error());
+  }
+  if (interrupt_guard::caught() != 0) {
+    return stopped();
   }
   auto const      asset       = std::format("planar-{}.tar.gz", *platform);
   auto const      bundle_name = std::format("planar-{}", *platform);
@@ -559,6 +568,7 @@ auto replace_installation(context& ctx, const std::string& canon, const std::str
   if (!held) {
     return failure(held.error());
   }
+  took_lock = true;
   update_session session(canon, std::move(*held));
   if (!session.held().reclaimed.empty()) {
     ctx.out() << std::format("planar update: reclaimed the mutation lock from an abandoned {}\n", session.held().reclaimed);
@@ -788,11 +798,13 @@ auto run_update(context& ctx, const cliapp::parsed_args& args, const update_host
   }
 
   interrupt_guard guard;
-  auto            result = replace_installation(ctx, *canon, base, parts, want_tag, host, guard);
+  bool            took_lock = false;
+  auto            result    = replace_installation(ctx, *canon, base, parts, want_tag, host, guard, took_lock);
   if (auto const sig = interrupt_guard::caught(); sig != 0) {
-    // Whatever the run was doing, the operator asked it to stop, and
-    // `update_session` has already removed the download and released ownership.
-    return interrupted(sig);
+    // Whatever the run was doing, the operator asked it to stop. When it took
+    // the lock, `update_session` has already removed the download and released
+    // ownership; when it did not, there is nothing to release.
+    return interrupted(sig, took_lock);
   }
   return result;
 }
