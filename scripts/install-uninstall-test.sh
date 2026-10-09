@@ -499,8 +499,33 @@ for key in workbench.root templates.dir; do
   [[ "$(sums "$P/agents/relocated")" == "$data_before" ]] || fail "--purge changed the relocated $key data"
   install "$H"
   [[ "$RC" != 0 ]] || fail "the install after --purge replaced the subtree holding the relocated $key data: $(show)"
-  grep -Fq "refusing to replace" "$TMP/err" && grep -Fq "agents" "$TMP/err" || fail "the following install did not report the relocation into agents ($key): $(show)"
+  grep -Fq "refusing to replace" "$TMP/err" && grep -Fq "agents" "$TMP/err" && grep -Fq "data path '$sect'" "$TMP/err" || fail "the following install did not report the relocation into agents ($key): $(show)"
   [[ "$(sums "$P/agents/relocated")" == "$data_before" ]] || fail "the following install changed the relocated $key data"
+done
+# Spellings that only canonicalisation resolves: a symlink into a managed subtree and a ~ path
+# land inside the root (kept); a .. that climbs out of the root lands outside it (removed).
+for sp in symlink tilde escape; do
+  H="$(new_home "purgecfg-sp-$sp")"; P="$H/.planar"
+  install_ok "$H"
+  case "$sp" in
+    symlink) mkdir -p "$P/agents/relocated"; ln -s "$P/agents" "$H/lnk"; spell="$H/lnk/relocated"; dir="$P/agents/relocated" ;;
+    tilde) mkdir -p "$P/agents/relocated"; spell="~/.planar/agents/relocated"; dir="$P/agents/relocated" ;;
+    escape) mkdir -p "$H/ext-wb"; spell="$P/agents/../../ext-wb"; dir="$H/ext-wb" ;;
+  esac
+  printf 'plan notes\n' > "$dir/notes.md"; printf 'two\n' > "$dir/b.txt"
+  printf '[workbench]\nroot = "%s"\n' "$spell" > "$P/config.toml"
+  data_before="$(sums "$dir")"
+  uninstall "$H" -- --purge
+  [[ "$RC" == 0 ]] || fail "--purge with a $sp-spelled workbench.root failed ($RC): $(show)"
+  if [[ $sp == escape ]]; then
+    [[ ! -e "$P/config.toml" ]] || fail "--purge kept config.toml for a .. spelling that escapes the root ($spell)"
+  else
+    [[ -f "$P/config.toml" ]] || fail "--purge removed config.toml for the $sp spelling of a workbench.root inside the root ($spell): $(show)"
+    grep -Fq "kept $P/config.toml" "$TMP/out" && grep -Fq "config.toml (workbench.root)" "$TMP/out" || fail "--purge did not name the kept config.toml for the $sp spelling: $(show)"
+    install "$H"
+    [[ "$RC" != 0 ]] || fail "the install after --purge replaced the subtree holding the $sp-spelled workbench data: $(show)"
+  fi
+  [[ "$(sums "$dir")" == "$data_before" ]] || fail "the $sp-spelled workbench data changed"
 done
 # A relocation outside the root, or into a sibling that shares only the root's name as a prefix,
 # is not inside it: --purge removes config.toml as before.
