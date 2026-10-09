@@ -625,7 +625,7 @@ and a planted mode or symlink-target change in the newer shell's run must fail t
 comparison.
 
 - **The Linux gate is the host that must run it.** `docker/linux-gate.Dockerfile`
-  builds bash 3.2.57 (SHA-256 pinned) at `/opt/bash-3.2/bin/bash` and sets
+  builds bash 3.2.57 (SHA-256 pinned; fetched from ftp.gnu.org, falling back to two GNU mirrors) at `/opt/bash-3.2/bin/bash` and sets
   `PLANAR_BASH32_OLD` to it and `PLANAR_BASH32_REQUIRE_COMPARE=1`. With the
   variable set, the test fails if the old shell is not bash 3.x or no newer bash
   exists, so the comparison cannot pass by comparing nothing.

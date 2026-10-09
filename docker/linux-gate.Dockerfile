@@ -42,7 +42,7 @@ ARG CMAKE_SHA256_X86_64=3ada9a3f5d8a85413579bdd0ea6aa8e8da86efdd6d15c91a1afa517f
 # Debian ships bash 5, so the gate cannot otherwise run the scenarios of
 # scripts/install-bash32-test.sh under the shell stock macOS ships. This stage builds
 # bash 3.2.57 (the last 3.2 patch level, which is what macOS's /bin/bash is) from the GNU
-# source archive, verified by SHA-256, with its 2007 config.guess/config.sub replaced (they do not know aarch64) and the old K&R-era code accepted by a modern
+# source archive (ftp.gnu.org, then two mirrors if it is unreachable), verified by SHA-256 (the checksum is what makes a mirror safe), with its 2007 config.guess/config.sub replaced (they do not know aarch64) and the old K&R-era code accepted by a modern
 # compiler (-std=gnu89, implicit declarations and int allowed). It builds serially (bash's
 # Makefiles are not parallel-safe). Nothing else uses it.
 FROM debian:trixie-slim AS bash32
@@ -53,7 +53,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl build-essential bison autotools-dev \
  && rm -rf /var/lib/apt/lists/*
 RUN set -eu; \
-    curl -fsSL -o /tmp/bash.tar.gz "https://ftp.gnu.org/gnu/bash/bash-${BASH32_VERSION}.tar.gz"; \
+    fetched=; \
+    for base in https://ftp.gnu.org/gnu https://mirrors.kernel.org/gnu https://mirrors.ocf.berkeley.edu/gnu; do \
+      echo "bash32: fetching ${base}/bash/bash-${BASH32_VERSION}.tar.gz"; \
+      if curl -fsSL --connect-timeout 20 --max-time 300 --retry 2 -o /tmp/bash.tar.gz "${base}/bash/bash-${BASH32_VERSION}.tar.gz"; then fetched=1; echo "bash32: downloaded from ${base}"; break; fi; \
+    done; \
+    [ -n "${fetched}" ] || { echo "bash32: every source failed" >&2; exit 1; }; \
     echo "${BASH32_SHA256}  /tmp/bash.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/bash.tar.gz -C /tmp; \
     cd "/tmp/bash-${BASH32_VERSION}"; \
