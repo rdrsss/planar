@@ -524,6 +524,7 @@ for sp in symlink tilde escape; do
     grep -Fq "kept $P/config.toml" "$TMP/out" && grep -Fq "config.toml (workbench.root)" "$TMP/out" || fail "--purge did not name the kept config.toml for the $sp spelling: $(show)"
     install "$H"
     [[ "$RC" != 0 ]] || fail "the install after --purge replaced the subtree holding the $sp-spelled workbench data: $(show)"
+    grep -Fq "refusing to replace" "$TMP/err" && grep -Fq "data path 'workbench'" "$TMP/err" || fail "the following install did not report the relocation for the $sp spelling: $(show)"
   fi
   [[ "$(sums "$dir")" == "$data_before" ]] || fail "the $sp-spelled workbench data changed"
 done
