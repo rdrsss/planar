@@ -21,6 +21,13 @@
 //   * A healthy claim, before and after `complete`, gives no claim finding.
 //   * `heartbeat-gap` reads the heartbeat action rows the verb writes.
 //   * `handoff-stale` agrees with the stale-handoff count `planar report` prints.
+//   * Dispatch checks (plan 1132, tasks 7376 and 7377): the dispatch records come from
+//     `planar-agent dispatch preview` and `confirm`, which take caller-supplied digests (GitHub
+//     issue #247), so a test passes consistent synthetic ones. The project and routing candidate a
+//     preview names are the only rows seeded by hand; no verb creates them.
+//   * `dispatch-no-role-action`: the 7335 shape (a preview bound to a claim, a confirm, a complete,
+//     no coder action) is one finding and nothing else; a direct claim doing its own work is none.
+//   * `action-unended`: an action left open under a claim that lapsed.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -94,6 +101,119 @@ struct world {
     auto ok = conn->execute(sql);
     INFO(sql);
     REQUIRE(ok.has_value());
+  }
+
+  /// Rows no verb creates, written with a plain INSERT: the project and routing candidate a dispatch preview names.
+  auto seed_routing() -> void {
+    move_time("insert into projects (slug, name) values ('routing-project', 'Routing Project')");
+    move_time("insert into routing_candidates (vendor, candidate_id, fallback_order) values ('claude', 'candidate', 0)");
+  }
+
+  /// The current instant as the whole-second RFC 3339 text a caller passes to `dispatch confirm --now`.
+  static auto now_text() -> std::string {
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now()));
+  }
+
+  /// `planar-agent dispatch preview` for a task, bound to `claim_token` when given, with consistent synthetic digests.
+  /// Returns the preview token.
+  auto dispatch_preview(int task_id, std::string_view claim_token) -> std::string {
+    std::vector<std::string> args{"dispatch",
+                                  "preview",
+                                  "--task",
+                                  std::to_string(task_id),
+                                  "--work-item",
+                                  std::format("w{}", task_id),
+                                  "--project",
+                                  "1",
+                                  "--validation-policy",
+                                  "v1",
+                                  "--routing-policy",
+                                  "r1",
+                                  "--profile-rule",
+                                  "p1",
+                                  "--vendor",
+                                  "claude",
+                                  "--role",
+                                  "coder",
+                                  "--tier",
+                                  "medium",
+                                  "--work-type",
+                                  "feature",
+                                  "--complexity",
+                                  "standard",
+                                  "--packet-digest",
+                                  "pk",
+                                  "--profile-digest",
+                                  "pf",
+                                  "--policy-digest",
+                                  "po",
+                                  "--capability-digest",
+                                  "cp",
+                                  "--candidate",
+                                  "1",
+                                  "--host",
+                                  "host",
+                                  "--class",
+                                  "default",
+                                  "--evidence-state",
+                                  "evidential",
+                                  "--expires-at",
+                                  "2099-01-01T00:00:00Z"};
+    if (!claim_token.empty()) {
+      args.push_back("--claim");
+      args.emplace_back(claim_token);
+      args.push_back("--claim-status");
+      args.push_back("active");
+    }
+    auto        got  = planar_agent(args);
+    std::string text = got.out;
+    auto        at   = text.find("preview:");
+    REQUIRE(at != std::string::npos);
+    auto start = text.find_first_not_of(' ', at + 8);
+    return text.substr(start, text.find_first_of(" \n", start) - start);
+  }
+
+  /// `planar-agent dispatch confirm` of a preview, at `now` (RFC 3339), against the values the preview froze.
+  auto dispatch_confirm(std::string_view preview_token, std::string_view now, std::string_view claim_token = {}) -> void {
+    std::vector<std::string> args{"dispatch",
+                                  "confirm",
+                                  "--token",
+                                  std::string{preview_token},
+                                  "--dispatch-key",
+                                  std::format("key-{}", preview_token),
+                                  "--now",
+                                  std::string{now},
+                                  "--packet-digest",
+                                  "pk",
+                                  "--profile-digest",
+                                  "pf",
+                                  "--policy-digest",
+                                  "po",
+                                  "--capability-digest",
+                                  "cp",
+                                  "--candidate",
+                                  "1",
+                                  "--vendor",
+                                  "claude",
+                                  "--role",
+                                  "coder",
+                                  "--tier",
+                                  "medium",
+                                  "--work-type",
+                                  "feature",
+                                  "--complexity",
+                                  "standard",
+                                  "--validation-policy",
+                                  "v1",
+                                  "--routing-policy",
+                                  "r1"};
+    if (!claim_token.empty()) {
+      args.push_back("--claim");
+      args.emplace_back(claim_token);
+      args.push_back("--claim-status");
+      args.push_back("active");
+    }
+    planar_agent(args);
   }
 
   /// `planar-watch diagnose --plan 1 --json`, parsed.
@@ -278,4 +398,92 @@ TEST_CASE("handoff-stale agrees with the stale-handoff count planar report print
   auto parsed = planar::json_dom::parse_json(report.out);
   REQUIRE(parsed.has_value());
   CHECK(parsed->find("handoffs")->find("stale_handoffs")->integer == 1);
+}
+
+const std::vector<std::string> k_dispatch_checks{"dispatch-no-role-action", "action-unended"};
+
+TEST_CASE("a previewed and confirmed dispatch that completes with no role action is one finding",
+          "[cmd][watch][diagnose][workflow][dispatch]") {
+  world w;
+  w.seed_routing();
+  // The 7335 shape: the dispatch record binds the claim, the claim completes, no coder action ever ran.
+  auto token   = w.claim(1);
+  auto preview = w.dispatch_preview(1, token);
+  w.dispatch_confirm(preview, world::now_text(), token);
+  CHECK(w.findings(k_dispatch_checks).empty()); // the claim is live and may still start its action
+  w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
+
+  auto        parsed = w.diagnose_json(k_dispatch_checks);
+  const auto& found  = parsed.find("findings")->array;
+  REQUIRE(found.size() == 1);
+  CHECK(found[0].find("check")->string == "dispatch-no-role-action");
+  CHECK(found[0].find("entity")->string == "claim:1");
+  CHECK(found[0].find("severity")->string == "error");
+  std::vector<std::string> evidence;
+  for (const auto& e : found[0].find("evidence")->array) {
+    evidence.push_back(e.string);
+  }
+  CHECK(std::ranges::is_permutation(evidence,
+                                    std::vector<std::string>{"claim:1", "task:1", "dispatch_preview:1", "dispatch_snapshot:1"}));
+}
+
+TEST_CASE("a dispatch with a task-tied coder action under its claim produces no finding",
+          "[cmd][watch][diagnose][workflow][dispatch]") {
+  world w;
+  w.seed_routing();
+  auto token   = w.claim(1);
+  auto preview = w.dispatch_preview(1, token);
+  w.dispatch_confirm(preview, world::now_text(), token);
+  w.planar_agent({"action", "start", "--claim", token, "--kind", "coder", "--entity", "task:1", "--no-locality-probe"});
+  w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
+  CHECK(w.findings(k_dispatch_checks).empty());
+}
+
+TEST_CASE("a direct claim doing its own work yields no dispatch finding, with or without a coder action",
+          "[cmd][watch][diagnose][workflow][dispatch]") {
+  {
+    world w;
+    auto  token = w.claim(1);
+    w.planar_agent({"action", "start", "--claim", token, "--kind", "coder", "--entity", "task:1", "--no-locality-probe"});
+    w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
+    CHECK(w.findings(k_dispatch_checks).empty());
+  }
+  {
+    world w;
+    auto  token = w.claim(1);
+    w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
+    CHECK(w.findings(k_dispatch_checks).empty());
+  }
+}
+
+TEST_CASE("an action left open under a lapsed claim is reported, and not before the lease runs out",
+          "[cmd][watch][diagnose][workflow][dispatch]") {
+  world w;
+  auto  token = w.claim(1);
+  w.planar_agent({"action", "start", "--claim", token, "--kind", "tool_call", "--entity", "task:1", "--no-locality-probe"});
+  CHECK(w.findings({"action-unended"}).empty());
+
+  // TIME TRAVEL: the lease lapsed long ago, with no terminal verb.
+  w.move_time("update agent_work_claims set lease_expires_at = '2020-01-01T00:10:00.000Z'");
+  auto        parsed = w.diagnose_json({"action-unended"});
+  const auto& found  = parsed.find("findings")->array;
+  // The claim's own claim_check action is open too; both are named, each with the claim.
+  REQUIRE(found.size() == 2);
+  std::vector<std::string> entities;
+  for (const auto& f : found) {
+    CHECK(f.find("check")->string == "action-unended");
+    CHECK(f.find("severity")->string == "warning");
+    entities.push_back(f.find("entity")->string);
+    bool names_claim = false;
+    for (const auto& e : f.find("evidence")->array) {
+      names_claim = names_claim || e.string == "claim:1";
+    }
+    CHECK(names_claim);
+  }
+  CHECK(std::ranges::is_permutation(entities, std::vector<std::string>{"action:1", "action:2"}));
+
+  // Reconcile marks the claim stale and closes only its claim_check marker, so the tool call is
+  // still an action left open under an ended claim.
+  w.planar_agent({"reconcile"});
+  CHECK(w.findings({"action-unended"}) == std::vector<std::string>{"action-unended action:2 warning"});
 }
