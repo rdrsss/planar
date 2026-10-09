@@ -25,7 +25,8 @@ PASSED=0
 pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s\n' "$PASSED" "$1"; }
 
 # --- the stand-in script ------------------------------------------------------------------
-# Five scenarios in three groups; e is serial. a-d record how many scenarios are live while
+# Five scenarios in three groups; e is serial and first in the table, so a run that did not hold it
+# back would start it beside the others. a-d record how many scenarios are live while
 # they run (MINI_LIVE is a directory of one file per live scenario).
 cat > "$TMP/mini.sh" <<'MINI'
 #!/usr/bin/env bash
@@ -34,7 +35,7 @@ ROOT="$1"; shift
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 GROUP="${MINI_GROUP:-all}"
-SCEN_TABLE="a:g1 b:g1 c:g2 d:g2 e:g3"
+SCEN_TABLE="e:g3 a:g1 b:g1 c:g2 d:g2"
 SCEN_SERIAL=" e "
 source "$ROOT/scripts/fixtures/scenario-runner.sh"
 scen_init mini "$SCEN_TABLE" "$SCEN_SERIAL"
