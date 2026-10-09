@@ -5,7 +5,9 @@ module planar.cmd.planar_watch.handlers.diagnose;
 
 import std;
 import planar.cliapp.args;
+import planar.cmd.internal.config_path;
 import planar.db;
+import planar.engine.config.effective;
 import planar.engine.diagnose;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
@@ -13,6 +15,33 @@ import planar.cmd.planar_watch.handler;
 import planar.cmd.planar_watch.handlers.format;
 
 namespace planar::cmd::watch::handlers {
+
+namespace {
+
+/// @brief `[introspection].cli_log` as the config file resolves it. A missing file is the embedded
+/// default (off); no resolvable path or an unparseable file is unknown, which the run reports as an
+/// unavailable capture-log input rather than a guess.
+/// @param ctx The invocation context.
+/// @return The setting, or empty when it cannot be determined.
+auto cli_log_setting(context& ctx) -> std::optional<bool> {
+  auto const path = internal::resolve_config_path(ctx.env());
+  if (!path.has_value()) {
+    return std::nullopt;
+  }
+  std::optional<std::string> content;
+  if (std::ifstream file(*path, std::ios::binary); file) {
+    content = std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+  }
+  // `cli_log` is resolved without the environment (the capture path reads it the same way).
+  auto const resolved = engine::config::resolve(content.has_value() ? std::optional<std::string_view>{*content} : std::nullopt,
+                                                engine::config::env_view::empty(), std::nullopt);
+  if (!resolved.has_value()) {
+    return std::nullopt;
+  }
+  return resolved->cfg.introspection.cli_log;
+}
+
+} // namespace
 
 auto diagnose(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   return diagnose_with_catalog(ctx, args, engine::diagnose::builtin_catalog());
@@ -38,10 +67,11 @@ auto diagnose_with_catalog(context& ctx, const cliapp::parsed_args& args, const 
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "diagnose: refusing a writable database handle"));
   }
 
-  dg::run_request request{.plan_id      = cliapp::flag_int(args, "--plan"),
-                          .days         = days ? std::optional<int>{static_cast<int>(*days)} : std::nullopt,
-                          .checks       = cliapp::flag_strings(args, "--check"),
-                          .evaluated_at = format::now_iso()};
+  dg::run_request request{.plan_id         = cliapp::flag_int(args, "--plan"),
+                          .days            = days ? std::optional<int>{static_cast<int>(*days)} : std::nullopt,
+                          .checks          = cliapp::flag_strings(args, "--check"),
+                          .evaluated_at    = format::now_iso(),
+                          .cli_log_enabled = cli_log_setting(ctx)};
 
   auto diagnosis = dg::run(**conn, request, cat);
   if (!diagnosis) {

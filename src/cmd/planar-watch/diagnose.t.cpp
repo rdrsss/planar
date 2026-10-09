@@ -242,6 +242,13 @@ TEST_CASE("a plan built with the operator binary diagnoses clean through planar-
   step({"plan", "create", "Demo plan"}, "s3");
   step({"task", "add", "First task", "--plan", "1"}, "s4");
   step({"plan", "update", "1", "--status", "active"}, "s5");
+  // The capture log is on: with it off the whole catalog reads `partial` (a selected check cannot read its input),
+  // which `diagnose_checks.t.cpp` pins. The pinned environment names this config file.
+  {
+    std::ofstream config{root / "config.toml", std::ios::binary};
+    config << "[introspection]\ncli_log = true\n";
+    REQUIRE(config.good());
+  }
 
   auto json = run_pinned(watch, std::vector<std::string>{"diagnose", "--plan", "1", "--json"}, root, "d1");
   INFO("stderr: " << json.err);
@@ -255,7 +262,8 @@ TEST_CASE("a plan built with the operator binary diagnoses clean through planar-
   CHECK(parsed->find("scope")->find("window")->find("source")->string == "plan-lifetime");
   bool saw_run_identity = false;
   for (auto const& row : parsed->find("coverage")->array) {
-    CHECK(row.find("state")->string == "not_applicable");
+    // The capture log is the one input a built check reads here; the others are for unbuilt checks.
+    CHECK(row.find("state")->string == (row.find("input")->string == "cli_log" ? "observed" : "not_applicable"));
     saw_run_identity = saw_run_identity || row.find("input")->string == "run_identity";
   }
   CHECK(saw_run_identity);

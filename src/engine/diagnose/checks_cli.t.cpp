@@ -165,6 +165,18 @@ TEST_CASE("a preview before the apply satisfies it, a preview after does not", "
   CHECK(twice.run(k_apply).findings.empty());
 }
 
+TEST_CASE("invocations stamped with the same instant are ordered by their row ids", "[engine][diagnose][cli]") {
+  fixture preview_first;
+  preview_first.invocation(1, "spec ingest", "<pos:1>", "2026-06-01T09:00:00.000Z");
+  preview_first.invocation(2, "spec ingest", "<pos:1> --apply", "2026-06-01T09:00:00.000Z");
+  CHECK(preview_first.run(k_apply).findings.empty());
+
+  fixture apply_first;
+  apply_first.invocation(1, "spec ingest", "<pos:1> --apply", "2026-06-01T09:00:00.000Z");
+  apply_first.invocation(2, "spec ingest", "<pos:1>", "2026-06-01T09:00:00.000Z");
+  CHECK(ids_of(apply_first.run(k_apply)) == std::vector<std::string>{"apply-without-preview cli_invocation:1"});
+}
+
 TEST_CASE("a preview of any plan satisfies an apply of another: the positional-shape limit", "[engine][diagnose][cli]") {
   // args_shape keeps only `<pos:1>`, so these two rows are indistinguishable from a preview and an
   // apply of the same plan. docs/cli-reference.md states the limit.

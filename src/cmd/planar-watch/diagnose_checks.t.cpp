@@ -628,4 +628,7 @@ TEST_CASE("with the capture log off the apply check is partial, not clean", "[cm
     }
   }
   CHECK(seen);
+
+  // The same holds for a run that selects every check: a host that does not log reads `partial`.
+  CHECK(w.diagnose_any({}).find("outcome")->string == "partial");
 }

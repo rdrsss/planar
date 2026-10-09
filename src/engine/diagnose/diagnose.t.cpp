@@ -137,7 +137,8 @@ auto catalog_of(std::vector<dg::check_def> checks, std::vector<dg::input_def> in
 
 auto request(std::optional<int> plan, std::optional<int> days = std::nullopt, std::string at = std::string{k_now})
     -> dg::run_request {
-  return dg::run_request{.plan_id = plan, .days = days, .checks = {}, .evaluated_at = std::move(at)};
+  // The capture log is on, so the whole shipped catalog can read `ok`; `checks_cli.t.cpp` covers it off and unknown.
+  return dg::run_request{.plan_id = plan, .days = days, .checks = {}, .evaluated_at = std::move(at), .cli_log_enabled = true};
 }
 
 auto task_ids(const dg::diagnosis& d) -> std::vector<std::int64_t> {
