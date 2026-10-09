@@ -99,21 +99,30 @@ auto process_died(const check_context& ctx) -> std::expected<std::vector<im::fin
 }
 
 auto superseded_active(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
-  // `later` is the newest later exclusive claim on the entity that is no longer active, or 0.
-  auto sql = std::format("select c.id, c.entity_kind, c.entity_id, c.lease_expires_at,"
+  // `later` is the newest later exclusive claim on the entity that is no longer active, or 0, and
+  // `later_at` its release time.
+  auto sql = std::format("select s.id, s.entity_kind, s.entity_id, s.lease_expires_at, s.later,"
+                         "       (select l2.released_at from agent_work_claims l2 where l2.id = s.later)"
+                         " from (select c.id, c.entity_kind, c.entity_id, c.lease_expires_at,"
                          "       coalesce((select max(l.id) from agent_work_claims l"
                          "                 where l.entity_kind = c.entity_kind and l.entity_id = c.entity_id"
                          "                   and l.id > c.id and l.status != 'active'"
-                         "                   and l.claim_scope = 'exclusive' and c.claim_scope = 'exclusive'), 0) as later"
-                         " from agent_work_claims c"
-                         " where c.status = 'active' and {}"
-                         "   and (coalesce({}, 0) or later != 0)"
-                         " order by c.id",
+                         "                   and l.claim_scope = 'exclusive' and c.claim_scope = 'exclusive'), 0) as later,"
+                         "       coalesce({1}, 0) as terminal"
+                         "       from agent_work_claims c where c.status = 'active' and {0}) s"
+                         " where s.terminal != 0 or s.later != 0"
+                         " order by s.id",
                          plan_filter_sql(ctx.scope, k_claim_plan), k_entity_terminal);
   return query_findings(ctx, sql, {}, {}, [](const db::statement& row) {
     auto f = claim_finding(im::diagnostic_severity::error, row);
+    // A state check: the fingerprint names the active claim and its entity only, so the later
+    // claim appearing after the first observation is the same incident. The later claim and its
+    // release time stay in the evidence, which moves the evidence digest (a new occurrence).
+    // The grouping key is how the model fixes a fingerprint independent of the evidence refs.
+    f.group = im::grouping{.key_parts = {im::entity_ref_text(f.primary), im::entity_ref_text(f.evidence[1])}, .scope = "global"};
     if (row.column_int64(4) != 0) {
       f.evidence.push_back(im::entity_ref{.kind = "claim", .id = row.column_int64(4)});
+      f.evidence_times.push_back(row.column_text(5));
     }
     return f;
   });

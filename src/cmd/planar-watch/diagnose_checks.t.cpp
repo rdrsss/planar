@@ -209,8 +209,10 @@ TEST_CASE("a lapsed claim left active behind a recovery claim is superseded and 
     evidence.push_back(e.string);
   }
   CHECK(std::ranges::is_permutation(evidence, std::vector<std::string>{"claim:1", "claim:2", "task:1"}));
-  REQUIRE(found[0].find("evidence_times")->array.size() == 1);
+  // A's lease expiry, then B's release time (a row timestamp, so it is later than 2020).
+  REQUIRE(found[0].find("evidence_times")->array.size() == 2);
   CHECK(found[0].find("evidence_times")->array[0].string == "2020-01-01T00:10:00.000Z");
+  CHECK(found[0].find("fingerprint")->string == "claim-superseded-active|claim:1|task:1|global");
 }
 
 TEST_CASE("a healthy claim gives no claim finding before or after complete", "[cmd][watch][diagnose][workflow][claims]") {

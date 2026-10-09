@@ -291,7 +291,9 @@ TEST_CASE("claim-superseded-active reports an active claim behind a later claim 
   CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "task", .id = 1}));
   CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "claim", .id = 2}));
   CHECK(d.findings[0].evidence.size() == 3);
-  CHECK(d.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T12:05:00.000Z"});
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T12:05:00.000Z", "2026-06-01T10:05:00.000Z"});
+  // The fingerprint names the active claim and its entity only.
+  CHECK(im::finding_fingerprint(d.findings[0]) == "claim-superseded-active|claim:1|task:1|global");
 
   // The later claim being active too is not supersession.
   fixture other;
@@ -307,6 +309,26 @@ TEST_CASE("claim-superseded-active reports an active claim behind a later claim 
                 "2026-06-01T09:05:00.000Z");
   history.claim(2, 1, "active", "2026-06-01T10:00:00.000Z", "2026-06-01T11:55:00.000Z", "2026-06-01T12:05:00.000Z");
   CHECK(history.run({"claim-superseded-active"}).findings.empty());
+}
+
+TEST_CASE("claim-superseded-active keeps one fingerprint when the later claim appears, and a new evidence digest",
+          "[engine][diagnose][claims]") {
+  fixture fx;
+  fx.task(1, "done");
+  fx.claim(1, 1, "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z", "2026-06-01T12:05:00.000Z");
+  auto before = fx.run({"claim-superseded-active"});
+  REQUIRE(before.findings.size() == 1);
+  CHECK(before.findings[0].evidence.size() == 2);
+
+  // The recovery claim B is taken and ends afterwards.
+  fx.claim(2, 1, "completed", "2026-06-01T10:00:00.000Z", "2026-06-01T10:00:00.000Z", "2026-06-01T10:10:00.000Z",
+           "2026-06-01T10:05:00.000Z");
+  auto after = fx.run({"claim-superseded-active"});
+  REQUIRE(after.findings.size() == 1);
+  CHECK(after.findings[0].evidence.size() == 3);
+
+  CHECK(im::finding_fingerprint(before.findings[0]) == im::finding_fingerprint(after.findings[0]));
+  CHECK(im::finding_digest(before.findings[0]) != im::finding_digest(after.findings[0]));
 }
 
 TEST_CASE("claim-superseded-active does not treat a later shared claim as supersession", "[engine][diagnose][claims]") {
