@@ -8273,9 +8273,9 @@ Each `introspection_preview.coverage` row (and the text report's coverage line) 
 | `bytes_scanned` | Bytes streamed from disk for the vendor, kept or not. A tail read counts the tail. |
 | `bytes_retained` | Bytes of the lines kept, newlines excluded. At most the vendor's share of the retained budget. |
 | `lines_oversize` | Lines longer than 1 MiB, skipped unread. |
-| `results_unpaired` | Results whose call was not kept: the call fell before the start of a tail read, or its id was past the pending cap. A result for a call that was seen and is not a planar call is not counted. |
+| `results_unpaired` | Results whose call was not kept: the call fell before the start of a tail read, or its id was past the pending cap. Only a tail read can miss a call, so a whole-file read never counts one. A result for a call that was seen and is not a planar call is not counted. |
 
-The `scanned`, `normalized`, `ignored`, `malformed` and `capped` counters describe the kept lines only; a discarded line is in none of them. The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
+The `scanned`, `normalized`, `ignored`, `malformed` and `capped` counters describe the kept lines, plus one more class: a line that mentions `planar` but is not valid JSON or is a broken envelope of the vendor's format is dropped, not stored, and counted in `scanned` and `malformed` (with the `malformed` warning), so a changed vendor format does not read as a clean scan. Any other discarded line is in none of them. The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
 
 **Transcript recognition:** A transcript signal is a failed `planar` command, and its verb path comes from the same live-CLI catalog rule the capture log uses (a token the tree names, a structured operand in the second slot, otherwise `<unknown>`), so typed words, flag values and prose never reach a signal.
 

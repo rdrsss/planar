@@ -1614,8 +1614,8 @@ TEST_CASE("transcript scan: discarded lines are never stored, copied or reported
           "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
   constexpr std::string_view marker = "DISCARDED_LINE_MARKER_7f3a91";
   scratch_dir                scratch;
-  // Non-planar lines of every vendor carry the marker; so do a non-planar call with its
-  // result and a planar-mentioning line that is not a call.
+  // Non-planar lines of every vendor carry the marker, as does a planar-mentioning line
+  // that is not a call. The non-planar `ls` call and its result carry no marker.
   write(scratch.path_ / ".claude" / "projects" / "s.jsonl", claude_filler_line(500, marker) + failed_pair("ls1", "ls -la") +
                                                                 failed_pair("p1", "planar task show 1") +
                                                                 claude_filler_line(500, marker));
@@ -1755,4 +1755,94 @@ TEST_CASE("transcript scan: pending ids are capped per file and the overflow is 
   CHECK(pending_high == ia::k_max_pending_ids);
   CHECK(claude->results_unpaired == 100);
   CHECK(claude->normalized == 1);
+}
+
+TEST_CASE("transcript scan: a planar-bearing line in an unrecognised format is dropped, counted malformed and never shown",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  constexpr std::string_view marker = "BROKEN_ENVELOPE_MARKER_91be";
+  scratch_dir                scratch;
+  // One line is not JSON, one is an assistant record whose envelope lacks its timestamp; both mention planar.
+  write(scratch.path_ / ".claude" / "projects" / "s.jsonl",
+        failed_pair("p1", "planar task show 1") + std::format("planar is mentioned here {} not json\n", marker) +
+            std::format(R"({{"type":"assistant","message":{{"role":"assistant","content":[]}},"note":"planar {}"}})"
+                        "\n",
+                        marker));
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits        limits;
+  bool                        marker_kept = false;
+  limits.retain_hook                      = [&](ia::vendor, std::string_view line) {
+    marker_kept = marker_kept || line.find(marker) != std::string_view::npos;
+  };
+  auto const preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->malformed == 2);
+  CHECK(claude->scanned == 4); // the pair, plus the two dropped lines
+  CHECK(claude->normalized == 1);
+  CHECK(coverage_accounted(*claude));
+  CHECK(claude->bytes_retained < 600); // neither dropped line was stored
+  CHECK_FALSE(marker_kept);
+  CHECK_FALSE(preview_leaks(preview, marker));
+  bool warned = false;
+  for (auto const& w : preview.warnings) {
+    warned = warned || (w.v == ia::vendor::claude && w.kind == ia::warning_kind::malformed && w.count == 2);
+  }
+  CHECK(warned);
+}
+
+TEST_CASE("transcript scan: a whole-file read never counts an orphan result unpaired",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  auto const orphan =
+      R"({"type":"user","timestamp":"2026-07-12T12:00:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"never-seen","is_error":true,"content":"x"}]}})"
+      "\n";
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "s.jsonl", std::string{orphan} + failed_pair("p1", "planar task show 1"));
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog);
+  auto const*                 claude  = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->files_partial == 0);
+  CHECK(claude->results_unpaired == 0);
+  CHECK(claude->normalized == 1);
+}
+
+TEST_CASE("transcript scan: the last line is read without a trailing newline, with CRLF endings, and across a chunk boundary",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  auto const pair = failed_pair("p1", "planar task show 1");
+  auto const scan = [&](const std::string& body) {
+    scratch_dir scratch;
+    write(scratch.path_ / ".claude" / "projects" / "s.jsonl", body);
+    ia::transcript_config const config{.home_dir = scratch.path_.string()};
+    auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog);
+    auto const*                 claude  = coverage_for(preview, ia::vendor::claude);
+    REQUIRE(claude != nullptr);
+    return *claude;
+  };
+
+  // The result is the last line and has no trailing newline.
+  auto const unterminated = scan(pair.substr(0, pair.size() - 1));
+  CHECK(unterminated.scanned == 2);
+  CHECK(unterminated.normalized == 1);
+
+  // CRLF endings.
+  std::string crlf;
+  for (char const c : pair) {
+    crlf += c == '\n' ? std::string{"\r\n"} : std::string(1, c);
+  }
+  auto const with_crlf = scan(crlf);
+  CHECK(with_crlf.scanned == 2);
+  CHECK(with_crlf.normalized == 1);
+
+  // The pair straddles byte 65536 of the 64 KiB read buffer: the first line spans it, then the second does.
+  auto const base = claude_filler_line(0).size();
+  for (std::size_t const lead : {std::size_t{100}, std::size_t{pair.size() / 2 + 200}, std::size_t{pair.size() - 50}}) {
+    INFO(lead);
+    auto const straddle = scan(claude_filler_line(65536 - lead - base) + pair);
+    CHECK(straddle.scanned == 2);
+    CHECK(straddle.normalized == 1);
+    CHECK(straddle.malformed == 0);
+  }
 }

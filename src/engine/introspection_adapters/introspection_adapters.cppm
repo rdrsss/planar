@@ -153,6 +153,8 @@ export struct raw_source {
   std::uint64_t bytes_scanned        = 0; ///< Transcript bytes streamed from disk, kept or not.
   std::uint32_t lines_oversize       = 0; ///< Lines longer than `k_max_line_bytes`, skipped unread.
   std::uint32_t results_unpaired = 0; ///< Results whose call was not retained (before the tail start, or past the pending cap).
+  std::uint32_t prefilter_malformed =
+      0; ///< Lines that mention `planar` but are unparseable or a broken envelope; dropped, counted malformed.
 };
 
 /// @brief Maps the argument words that follow a transcript's `planar`

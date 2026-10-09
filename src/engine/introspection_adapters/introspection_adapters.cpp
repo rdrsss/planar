@@ -859,6 +859,10 @@ auto collect_preview(std::span<const raw_source> sources, const verb_path_resolv
         break;
       }
     }
+    // Lines that mention planar but are no recognizable record were dropped by the
+    // scan, not stored; they still count, so a changed vendor format shows as malformed.
+    saturating_add(cov.scanned, source.prefilter_malformed);
+    saturating_add(cov.malformed, source.prefilter_malformed);
     check(coverage_accounted(cov), "coverage_accounted(cov)");
     coverage.push_back(cov);
   }
@@ -970,7 +974,8 @@ class file_filter {
 public:
   /// @param v The vendor whose line shapes apply.
   /// @param resolve The verb-path catalog rule that decides what a planar command is.
-  file_filter(vendor v, const verb_path_resolver& resolve) : _v(v), _resolve(&resolve) {
+  /// @param tail Whether the file is read from its tail, so a result may belong to a call before the start.
+  file_filter(vendor v, const verb_path_resolver& resolve, bool tail) : _v(v), _resolve(&resolve), _tail(tail) {
   }
 
   /// @brief Decide whether `line` is kept. Registers the ids of a kept call as
@@ -1000,6 +1005,10 @@ public:
   /// @return Results seen whose call was not kept.
   [[nodiscard]] auto results_unpaired() const -> std::uint32_t {
     return _results_unpaired;
+  }
+  /// @return Lines that mention `planar` but are not parseable or are a broken envelope of the vendor's format.
+  [[nodiscard]] auto malformed() const -> std::uint32_t {
+    return _malformed;
   }
   /// @return The most ids pending at once so far.
   [[nodiscard]] auto pending_high_water() const -> std::size_t {
@@ -1043,7 +1052,10 @@ private:
       std::erase(_other_order, std::string{id});
       return;
     }
-    saturating_add(_results_unpaired);
+    // Only a tail read can miss a call: the whole file is read from its first line.
+    if (_tail) {
+      saturating_add(_results_unpaired);
+    }
   }
 
   /// Every quoted value that follows `key` (which ends in `":"`), up to 256 bytes each.
@@ -1110,6 +1122,7 @@ private:
   auto is_call(std::string_view line) -> bool {
     auto parsed = jd::parse_json(line);
     if (!parsed.has_value() || parsed->kind != jd::json_kind::object) {
+      saturating_add(_malformed);
       return false;
     }
     extract_state scratch;
@@ -1123,6 +1136,10 @@ private:
     }
     if (result.kind == extract_kind::normalized) {
       return true;
+    }
+    if (result.kind == extract_kind::malformed) {
+      saturating_add(_malformed);
+      return false;
     }
     if (_v == vendor::codex) {
       return codex_function_call(*parsed);
@@ -1210,6 +1227,8 @@ private:
   std::vector<pending_id>         _pending;
   std::unordered_set<std::string> _other;
   std::deque<std::string>         _other_order;
+  bool                            _tail;
+  std::uint32_t                   _malformed          = 0;
   std::uint32_t                   _results_unpaired   = 0;
   std::size_t                     _pending_high_water = 0;
 };
@@ -1552,18 +1571,19 @@ auto scan_vendor(vendor_plan& plan, std::uint64_t scan_budget, std::uint64_t& sc
   std::uint64_t scan_left     = scan_budget;
 
   std::string   combined;
-  std::size_t   scanned_files     = 0;
-  std::uint64_t bytes_retained    = 0;
-  std::uint64_t bytes_scanned     = 0;
-  std::uint32_t lines_oversize    = 0;
-  std::uint32_t results_unpaired  = 0;
-  std::uint32_t files_partial     = 0;
-  std::uint32_t files_skipped_cap = 0;
-  std::size_t   io_failures       = plan.io_failures;
-  bool          scan_cap_hit      = false;
-  bool          retained_cap_hit  = false;
-  bool          record_cap_hit    = false;
-  bool          stop              = false;
+  std::size_t   scanned_files       = 0;
+  std::uint64_t bytes_retained      = 0;
+  std::uint64_t bytes_scanned       = 0;
+  std::uint32_t lines_oversize      = 0;
+  std::uint32_t results_unpaired    = 0;
+  std::uint32_t prefilter_malformed = 0;
+  std::uint32_t files_partial       = 0;
+  std::uint32_t files_skipped_cap   = 0;
+  std::size_t   io_failures         = plan.io_failures;
+  bool          scan_cap_hit        = false;
+  bool          retained_cap_hit    = false;
+  bool          record_cap_hit      = false;
+  bool          stop                = false;
 
   for (std::size_t index = 0; index < plan.candidates.size(); ++index) {
     auto const& entry = plan.candidates[index];
@@ -1606,7 +1626,7 @@ auto scan_vendor(vendor_plan& plan, std::uint64_t scan_budget, std::uint64_t& sc
       limit = scan_left + 1;
     }
 
-    file_filter     filter(v, resolve);
+    file_filter     filter(v, resolve, partial);
     scan_high_water high_water;
     auto const      streamed =
         stream_lines(file, limit, partial, lines_oversize, high_water.line_buffer, [&](std::string_view line) -> bool {
@@ -1635,6 +1655,7 @@ auto scan_vendor(vendor_plan& plan, std::uint64_t scan_budget, std::uint64_t& sc
     bytes_scanned += streamed;
     scan_left -= std::min<std::uint64_t>(scan_left, streamed);
     saturating_add(results_unpaired, filter.results_unpaired());
+    saturating_add(prefilter_malformed, filter.malformed());
     if (limits.file_hook) {
       high_water.pending_ids = filter.pending_high_water();
       limits.file_hook(v, high_water);
@@ -1671,6 +1692,7 @@ auto scan_vendor(vendor_plan& plan, std::uint64_t scan_budget, std::uint64_t& sc
   result.bytes_scanned        = bytes_scanned;
   result.lines_oversize       = lines_oversize;
   result.results_unpaired     = results_unpaired;
+  result.prefilter_malformed  = prefilter_malformed;
   result.files_partial        = files_partial;
   result.files_skipped_cap    = files_skipped_cap;
   result.files_skipped_window = plan.files_skipped_window;

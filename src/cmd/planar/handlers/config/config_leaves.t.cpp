@@ -872,6 +872,21 @@ TEST_CASE("config validate cross-checks the github-issues auth value", "[cmd][co
   cleanup(fx);
 }
 
+TEST_CASE("config validate refuses an invalid [introspection].transcript_scan_bytes, naming the key",
+          "[cmd][config][validate][wide-keep-narrow]") {
+  auto const fx = make_fixture("valscan");
+  for (std::string_view const value : {"0", "-3", "\"big\""}) {
+    INFO(value);
+    write_config(fx, std::format("[introspection]\ntranscript_scan_bytes = {}\n", value));
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.find("error: introspection.transcript_scan_bytes: ") == 0);
+  }
+  write_config(fx, "[introspection]\ntranscript_scan_bytes = 1048576\n");
+  CHECK(dispatch(fx, {"config", "validate"}).code == 0);
+  cleanup(fx);
+}
+
 TEST_CASE("config validate reads auth from the FILE, never from the embedded defaults", "[cmd][config][validate]") {
   // `external.github-issues.auth` defaults to `gh-cli`, so an empty config
   // has a resolved value — and neither check fires, because the checks read
