@@ -132,6 +132,8 @@ planar_binary(planar_watch
     handlers/queue/render.cppm
     handlers/queue/queue.cppm
     handlers/queue/history.cppm
+    handlers/agents/model.cppm
+    handlers/agents/tui.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -149,6 +151,8 @@ planar_binary(planar_watch
     handlers/queue/render.cpp
     handlers/queue/queue.cpp
     handlers/queue/history.cpp
+    handlers/agents/model.cpp
+    handlers/agents/tui.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal
@@ -169,6 +173,14 @@ planar_binary(planar_watch
 target_link_libraries(planar_cmd_planar_watch PRIVATE CLI11::CLI11_Module)
 if(TARGET planar_cmd_planar_watch_tests)
   target_link_libraries(planar_cmd_planar_watch_tests PRIVATE CLI11::CLI11_Module)
+endif()
+
+# FTXUI draws the interactive agent view a bare `planar-watch` opens on a
+# terminal (`handlers/agents/tui.cpp`, the only unit that includes it).
+set(_planar_watch_ftxui ftxui::component ftxui::dom ftxui::screen)
+target_link_libraries(planar_cmd_planar_watch PRIVATE ${_planar_watch_ftxui})
+if(TARGET planar_cmd_planar_watch_tests)
+  target_link_libraries(planar_cmd_planar_watch_tests PRIVATE ${_planar_watch_ftxui})
 endif()
 
 if(TARGET planar_cmd_planar_watch_tests)

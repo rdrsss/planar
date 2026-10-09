@@ -12,6 +12,7 @@ import planar.cliapp.walk;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
+import planar.cmd.planar_watch.handlers.agents.tui;
 import planar.cmd.planar_watch.handlers.completion;
 import planar.cmd.planar_watch.handlers.feed;
 import planar.cmd.planar_watch.handlers.ledger;
@@ -149,6 +150,12 @@ auto inject_default_verb(std::span<std::string const> argv) -> std::vector<std::
 }
 
 auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
+  // A bare invocation on a terminal opens the interactive agent view. Every
+  // other invocation, including a bare one through a pipe, keeps the
+  // `feed` default below.
+  if (agents::wants_interactive(ctx.argv(), agents::stdin_is_tty(), agents::stdout_is_tty(ctx.out()), ctx.env()))
+    return agents::run_interactive(ctx);
+
   auto const argv = cliapp::hoist_subcommands(root, inject_default_verb(ctx.argv()));
   // CLI11's vector overload consumes argv[1..] in REVERSE order and never
   // sees argv[0] (see CLI::App::parse_char_t, which builds exactly this).

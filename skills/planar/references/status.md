@@ -95,6 +95,10 @@ How to read them:
 - These views are snapshots. For continuous watching, hand the operator a following
   command such as `planar-watch feed --plan <id> --follow` instead of following inside a
   report. `log` and `sync-events` have no `--follow`.
+- Always name a verb. A bare `planar-watch` on a terminal opens the operator's
+  interactive agent view; through a pipe it falls back to `feed`, but scripted reads
+  should not rely on that. To point an operator at the live view, hand them the bare
+  `planar-watch` command.
 
 ## Empty versus unavailable
 

@@ -7410,12 +7410,38 @@ A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
 
+### Interactive agent view
+
+A bare `planar-watch` whose stdin and stdout are both terminals opens a
+full-screen, live view of the agents at work. Every other invocation is
+unchanged: a bare `planar-watch` through a pipe, with any flag, or under
+`TERM=dumb` renders `planar-watch feed` exactly as before, so scripts and
+agents never enter the interactive view.
+
+Each claim is one agent. A plan claim (an orchestrator) is a row whose tree is
+that plan's milestones and tasks. A task claim nests under the nearest plan
+claim at or above its task's plan, as a marker on that task. A task claim with
+no plan claim above it is a row of its own, rooted at its task's plan.
+
+| Mark | Meaning |
+|------|---------|
+| green `●` | Working: the claim is active and its lease is live. |
+| yellow `●` | Waiting: as working, and the latest heartbeat `--status` starts with `awaiting:`. |
+| red `●` | Stopped: the lease expired, or the claim was completed, released, aborted or marked stale. |
+| `>` | On a task: the task a claim holds, in that claim's colour. |
+| `✓ ◐ · ⊘ ✗` | Task status: done, doing, todo, blocked, cancelled. |
+
+Stopped agents stay listed for an hour. Rows holding a claimed task start
+open; the rest start closed. Keys: `↑`/`↓` (`j`/`k`) move, `→`/`←` (`l`/`h`)
+open or close a row and step in or out, `enter` or `space` toggles, `s` shows
+or hides stopped agents, `r` refreshes now, `q` or `esc` quits. The view
+refreshes once a second, each time in one short read transaction.
+
 ### Verbs
 
 ```
-# Cross-cutting activity feed (default invocation; `planar-watch` with no
-# args routes here).
-planar-watch              # alias for `planar-watch feed`
+# Interactive agent view on a terminal; the activity feed everywhere else.
+planar-watch              # see "Interactive agent view" below
 planar-watch feed     [--follow]  [--vendor <v>] [--plan <id>] [--task <id>] [--since <ISO>] [--limit N] [--tail N] [--json] [--interval <D>]
 
 # Snapshot: active (and stale) claims.

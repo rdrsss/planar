@@ -372,3 +372,30 @@ if(tree_sitter_zig_ADDED)
   target_link_libraries(tree_sitter_zig_static PUBLIC tree_sitter::tree_sitter)
   add_library(tree_sitter::zig ALIAS tree_sitter_zig_static)
 endif()
+
+# --- FTXUI 7.0.3 (planar-watch interactive agent view) -----------------------
+#
+# The terminal UI library behind the bare `planar-watch` interactive view: a
+# live, collapsible tree of agents and the plans and tasks they hold. Linked
+# by `planar-watch` only, and only by the one implementation unit that draws
+# the screen (`handlers/agents/tui.cpp`); every other unit, including the
+# snapshot model the tests drive, compiles without it. MIT licensed.
+#
+# Pinned by the codeload tag archive per the dependency rule. SHA256 computed
+# with `shasum -a 256` over the downloaded archive (released 2026-08-06).
+CPMAddPackage(
+  NAME ftxui
+  VERSION 7.0.3
+  URL https://codeload.github.com/ArthurSonzogni/FTXUI/tar.gz/refs/tags/v7.0.3
+  URL_HASH SHA256=e7c62ffe19009759821b4f0f8df7f2a6fb83784c3a9f1477d81f56d3ee723c88
+  SYSTEM YES
+  EXCLUDE_FROM_ALL YES
+  OPTIONS
+    "FTXUI_BUILD_DOCS OFF"
+    "FTXUI_BUILD_EXAMPLES OFF"
+    "FTXUI_BUILD_MODULES OFF"
+    "FTXUI_BUILD_TESTS OFF"
+    "FTXUI_ENABLE_INSTALL OFF"
+    "FTXUI_ENABLE_CCACHE OFF"
+    "FTXUI_QUIET ON"
+)
