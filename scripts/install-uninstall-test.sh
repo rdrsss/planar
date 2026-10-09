@@ -38,10 +38,10 @@ case " all $UNINSTALL_GROUPS " in *" $GROUP "*) ;; *) printf 'install-uninstall-
 # (default 4), each as a child of this script with its own scratch directory, homes and HOME-
 # derived roots, locks and databases. The three loops of the --purge config scenario are
 # separate names (purgecfg-keys, purgecfg-spellings, purgecfg-outside). The table is the dispatch
-# order, name:group. The serial scenarios hold a mutation lock from a second process or pause an
+# order, longest first, name:group. The serial scenarios hold a mutation lock from a second process or pause an
 # uninstaller while an install is refused, and run alone after the parallel batch (decision 1328:
 # the lock serializes mutation of one root, and these scenarios test that serialization).
-SCEN_TABLE="purgecfg-spellings:manifest purgecfg-keys:manifest purgecfg-outside:manifest verify:interrupted source-retry:interrupted happy:removal killed:interrupted upgrade-terminate:interrupted upgrade-purge:interrupted nomanifest:manifest link:removal unowned:removal purge:removal escaped:manifest truncated:manifest localbin:manifest reloc:manifest unknown:removal alt-root:removal force:removal reinstall:removal killed-vendor:interrupted held:manifest paused:manifest"
+SCEN_TABLE="purgecfg-spellings:manifest verify:interrupted purgecfg-keys:manifest purgecfg-outside:manifest happy:removal upgrade-purge:interrupted upgrade-terminate:interrupted killed:interrupted reinstall:removal alt-root:removal nomanifest:manifest source-retry:interrupted localbin:manifest unknown:removal link:removal unowned:removal purge:removal reloc:manifest killed-vendor:interrupted escaped:manifest truncated:manifest force:removal held:manifest paused:manifest"
 SCEN_SERIAL=" held paused "
 # shellcheck source=fixtures/scenario-runner.sh
 source "$ROOT/scripts/fixtures/scenario-runner.sh"

@@ -70,12 +70,12 @@ case " all $ORDER_GROUPS " in *" $GROUP "*) ;; *) printf 'install-order-test: un
 # INSTALL_TEST_SCENARIO=<name> runs only that scenario, inside or outside its group; an unknown
 # name exits 2. A run that selects several scenarios runs INSTALL_TEST_JOBS of them at a time
 # (default 4), each as a child of this script with its own scratch directory and homes. The table
-# is the dispatch order, name:group. The kill points of the swap scenario are separate names
+# is the dispatch order, longest first, name:group. The kill points of the swap scenario are separate names
 # (swap-bin for the first, swap-<point> for each point of its loop). The serial scenarios hold a
 # mutation lock from a second process while another run is refused, or wait on a paused
 # installer, and run alone after the parallel batch (decision 1328: the lock serializes mutation
 # of one root, and these scenarios test that serialization).
-SCEN_TABLE="uninstall-pending:handoff updater:handoff refused:concurrent migfail:db behind:db queue:db faults:db recover-restage:recover recover-journaled:recover swap-bin:swap swap-backup-bin:swap swap-swap-bin:swap swap-swap-skills:swap swap-after-mutating:swap swap-complete:swap postprobe:db ahead:db fresh:db relocated:db durable:db roparent:concurrent firstkill:concurrent inert:handoff concurrent-refused:concurrent renamed:concurrent uninstall-refused:handoff"
+SCEN_TABLE="recover-journaled:recover refused:concurrent recover-restage:recover updater:handoff faults:db uninstall-pending:handoff queue:db swap-complete:swap swap-bin:swap migfail:db swap-backup-bin:swap swap-swap-skills:swap postprobe:db swap-swap-bin:swap swap-after-mutating:swap roparent:concurrent ahead:db behind:db fresh:db relocated:db durable:db firstkill:concurrent inert:handoff concurrent-refused:concurrent renamed:concurrent uninstall-refused:handoff"
 SCEN_SERIAL=" concurrent-refused renamed uninstall-refused "
 # shellcheck source=fixtures/scenario-runner.sh
 source "$ROOT/scripts/fixtures/scenario-runner.sh"
