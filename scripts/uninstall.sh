@@ -36,7 +36,9 @@
 #      stamp and the manifest.
 #   6. Keeps and names every data path (data-paths.sh) and the legacy agent.db.
 #      With --purge it names and removes them instead, except a relocated one,
-#      which is named and left where it is.
+#      which is named and left where it is. config.toml is kept too, and
+#      named, while its workbench.root or templates.dir lies inside the root:
+#      it is the only record a later install has of that relocation.
 #   7. Keeps and reports every other entry it does not know.
 #   8. Writes the uninstalled marker (journal.sh) when the root is kept, so the
 #      next install adopts it without --force, removes the journal last, and
@@ -69,7 +71,9 @@ Options:
                  templates/, ...) and the legacy agent.db, then the install root
                  when it is empty. A data path relocated by PLANAR_DB,
                  PLANAR_CONFIG_PATH, PLANAR_WORKBENCH_ROOT, PLANAR_LOCAL_HOME or
-                 PLANAR_TEMPLATES_DIR is named and left where it is.
+                 PLANAR_TEMPLATES_DIR is named and left where it is. config.toml
+                 is kept, and named, while its workbench.root or templates.dir
+                 points inside the install root.
   --yes, -y      Remove Planar binaries found in ~/.local/bin without asking.
   -h, --help     Show this help and exit.
 
@@ -521,6 +525,10 @@ handle_data() {
     [ -e "$ROOT_C/$name" ] || [ -L "$ROOT_C/$name" ] || continue
     if [ "$PURGE" -eq 0 ]; then
       log "kept data path $ROOT_C/$name"
+      continue
+    fi
+    if [ "$name" = config.toml ] && planar_config_relocates_into_root "$ROOT_C"; then
+      log "kept $ROOT_C/$name: it relocates data inside the install root ($PLANAR_CONFIG_RELOC_HIT), and a later install needs it to find that data; remove it by hand once the data is moved"
       continue
     fi
     if holds_relocated "$ROOT_C/$name"; then

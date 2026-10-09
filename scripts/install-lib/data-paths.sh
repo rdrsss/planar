@@ -78,6 +78,16 @@
 #   planar_removal_blocked ROOT PATH
 #       Status 0 when removing PATH is not allowed: either predicate above.
 #       Sets PLANAR_DATA_PATH_HIT to the data path's name.
+#   planar_config_relocates_into_root ROOT
+#       Status 0 when config.toml relocates a data path to ROOT or inside it
+#       (workbench.root or templates.dir, resolved like the runtime and
+#       canonicalised, so a trailing slash, `..`, a symlink or `~` cannot hide
+#       it, and a sibling such as ROOT2 is not inside ROOT). An uninstall keeps
+#       such a path, and the config is the only record a later install has of
+#       it, so --purge must keep config.toml. A location that cannot be
+#       resolved counts as inside. Sets PLANAR_CONFIG_RELOC_HIT to
+#       `NAME (config.toml (KEY)) at LOCATION`. A variable-relocated path never
+#       counts: the environment is not durable. Only reads.
 #   planar_data_paths_markdown
 #       Print INSTALL.md's preserved-paths list, one bullet per path.
 #
@@ -348,6 +358,25 @@ planar_root_has_data_path() {
   done <<EOF2
 $(planar_data_paths_list "$root")
 EOF2
+  return 1
+}
+
+planar_config_relocates_into_root() {
+  local inside name kind loc by lc rc
+  PLANAR_CONFIG_RELOC_HIT=""
+  rc="$(_planar_dp_canon "$1")"
+  while IFS='|' read -r name kind loc by; do
+    case "$by" in "config.toml ("*) ;; *) continue ;; esac
+    if ! lc="$(planar_canonical_path "$loc" 2>/dev/null)"; then lc="$rc"; fi
+    if [ "$lc" = "$rc" ]; then inside=1; else inside=""; fi
+    case "$lc" in "${rc%/}"/*) inside=1 ;; esac
+    if [ -n "$inside" ]; then
+      PLANAR_CONFIG_RELOC_HIT="$name ($by) at $loc"
+      return 0
+    fi
+  done <<EOF3
+$(planar_data_paths_list "$1")
+EOF3
   return 1
 }
 
