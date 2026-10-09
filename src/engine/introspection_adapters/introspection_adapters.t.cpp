@@ -550,6 +550,74 @@ auto write(const std::filesystem::path& path, std::string_view content) -> void 
   file << content;
 }
 
+/// A failed Claude Bash invocation: one tool_use record and one errored
+/// tool_result record, each on its own line, newline-terminated.
+auto failed_pair(std::string_view id, std::string_view command) -> std::string {
+  return std::format(
+      R"({{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{0}","name":"Bash","input":{{"command":"{1}"}}}}]}},"timestamp":"2026-07-12T12:00:00.000Z"}})"
+      "\n"
+      R"({{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{0}","is_error":true,"content":"x"}}]}},"timestamp":"2026-07-12T12:00:01.000Z"}})"
+      "\n",
+      id, command);
+}
+
+/// `count` distinct failed pairs of `command`.
+auto many_pairs(std::string_view prefix, std::size_t count, std::string_view command) -> std::string {
+  std::string out;
+  for (std::size_t i = 0; i < count; ++i) {
+    out += failed_pair(std::format("{}-{}", prefix, i), command);
+  }
+  return out;
+}
+
+auto set_age(const std::filesystem::path& path, std::chrono::hours age) -> void {
+  std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() - age);
+}
+
+auto codex_command_record(std::string_view command_json, std::string_view exit_and_status) -> std::string {
+  return std::format(
+      R"({{"type":"event_msg","timestamp":"2026-01-01T00:00:00.000Z","payload":{{"type":"item_completed","item":{{"type":"CommandExecution","command":{},{}}}}}}})"
+      "\n",
+      command_json, exit_and_status);
+}
+
+/// A Claude assistant record that calls `planar task show 1`: the scan keeps it
+/// and it normalizes to nothing (the result decides the signal).
+auto planar_call_line(std::string_view id) -> std::string {
+  return std::format(
+      R"({{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{}","name":"Bash","input":{{"command":"planar task show 1"}}}}]}},"timestamp":"2026-07-12T12:00:00.000Z"}})"
+      "\n",
+      id);
+}
+
+/// A Copilot `tool.execution_start` record that runs `planar task show 1`.
+auto copilot_call_line(std::string_view id) -> std::string {
+  return std::format(
+      R"({{"type":"tool.execution_start","timestamp":"2026-07-12T12:00:00.000Z","data":{{"toolCallId":"{}","toolName":"bash","arguments":{{"command":"planar task show 1"}}}}}})"
+      "\n",
+      id);
+}
+
+/// Give every file under `dir` one modification time, so only the path orders them.
+auto set_same_age(const std::filesystem::path& dir) -> void {
+  auto const same = std::filesystem::file_time_type::clock::now() - std::chrono::hours{1};
+  for (auto const& entry : std::filesystem::recursive_directory_iterator(dir)) {
+    if (entry.is_regular_file()) {
+      std::filesystem::last_write_time(entry.path(), same);
+    }
+  }
+}
+
+/// Whether a `byte_cap` warning for `v` carries `reason`.
+auto has_byte_cap(const std::vector<ia::warning_row>& warnings, ia::vendor v, ia::warning_reason reason) -> bool {
+  for (auto const& w : warnings) {
+    if (w.v == v && w.kind == ia::warning_kind::byte_cap && w.reason == reason) {
+      return true;
+    }
+  }
+  return false;
+}
+
 auto coverage_for(const ia::preview& p, ia::vendor v) -> const ia::coverage_row* {
   for (auto const& c : p.coverage) {
     if (c.v == v) {
@@ -600,10 +668,7 @@ TEST_CASE("collect_preview_from_paths: a real directory of transcripts is scanne
           "[engine][introspection_adapters][discovery]") {
   scratch_dir scratch;
   auto const  claude_dir = scratch.path_ / ".claude" / "projects";
-  write(claude_dir / "session1.jsonl",
-        "{\"schema\":1,\"kind\":\"cli_invocation\",\"verb_path\":\"planar task show\",\"exit_code\":1,"
-        "\"error_category\":\"not_found\",\"recorded_at\":\"2026-07-12T12:00:01Z\"}\n"
-        "not json at all\n");
+  write(claude_dir / "session1.jsonl", failed_pair("a", "planar task show 1") + "not json at all\nunrelated text\n");
   // A non-.jsonl file must be SKIPPED for claude (jsonl_only == true).
   write(claude_dir / "notes.txt", "irrelevant");
 
@@ -613,11 +678,13 @@ TEST_CASE("collect_preview_from_paths: a real directory of transcripts is scanne
   auto const* claude = coverage_for(preview, ia::vendor::claude);
   REQUIRE(claude != nullptr);
   CHECK(claude->state == ia::coverage_state::observed);
-  // Two lines scanned: the malformed non-json line is counted, and the
-  // legacy cli_invocation-shaped record parses as JSON but is not a
-  // recognized Claude envelope (no "version"/"type": tool_result/
-  // assistant/user) — malformed too, under extract_claude's own rules.
+  // Only the call and its result are kept: the two lines that cannot be a planar
+  // call are streamed past and never stored, so they are not counted malformed.
   CHECK(claude->scanned == 2);
+  CHECK(claude->normalized == 1);
+  CHECK(claude->malformed == 0);
+  CHECK(claude->bytes_scanned > claude->bytes_retained);
+  CHECK(claude->bytes_read == claude->bytes_retained);
   CHECK(coverage_accounted(*claude));
 }
 
@@ -625,7 +692,7 @@ TEST_CASE("collect_preview_from_paths: an override directory with the documented
           "[engine][introspection_adapters][discovery]") {
   scratch_dir scratch;
   auto const  override_dir = scratch.path_ / "custom_claude_logs";
-  write(override_dir / "a.jsonl", "not json\n");
+  write(override_dir / "a.jsonl", planar_call_line("a"));
 
   ia::transcript_config const config{.home_dir    = scratch.path_.string(),
                                      .claude_path = (override_dir / "**" / "*.jsonl").string()};
@@ -635,7 +702,7 @@ TEST_CASE("collect_preview_from_paths: an override directory with the documented
   REQUIRE(claude != nullptr);
   CHECK(claude->state == ia::coverage_state::observed);
   CHECK(claude->scanned == 1);
-  CHECK(claude->malformed == 1);
+  CHECK(claude->ignored == 1);
 }
 
 TEST_CASE("collect_preview_from_paths: fault injection on selected_stat marks the vendor unavailable with no warning",
@@ -705,8 +772,9 @@ TEST_CASE("collect_preview_from_paths: fault injection on directory_walk raises 
 TEST_CASE("collect_preview_from_paths: the file cap stops scanning and raises file_cap, not a crash",
           "[engine][introspection_adapters][discovery]") {
   scratch_dir scratch;
-  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "not json\n");
-  write(scratch.path_ / ".claude" / "projects" / "b.jsonl", "also not json\n");
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", planar_call_line("a"));
+  write(scratch.path_ / ".claude" / "projects" / "b.jsonl", planar_call_line("b"));
+  set_same_age(scratch.path_ / ".claude" / "projects");
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
   ia::collector_limits const  limits{.max_files = 1};
@@ -719,26 +787,27 @@ TEST_CASE("collect_preview_from_paths: the file cap stops scanning and raises fi
   CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::file_cap));
 }
 
-TEST_CASE("collect_preview_from_paths: the byte cap stops scanning and raises byte_cap, not a crash",
+TEST_CASE("collect_preview_from_paths: the read budget stops scanning and raises byte_cap with reason scanned",
           "[engine][introspection_adapters][discovery][6352][iter2]") {
-  // Reviewer finding (iteration 2): no test exercised `byte_cap` at all —
-  // a break-probe deleting the whole `if (size > bytes_left) { byte_cap;
-  // break; }` block SURVIVED every existing test. `a.jsonl` and `b.jsonl`
-  // are each exactly 10 bytes; a 10-byte per-vendor share (a quarter of the 40-byte budget) lets `a.jsonl` (sorted
-  // first) exactly exhaust it, so `b.jsonl`'s stat sees `bytes_left == 0`
-  // and trips the cap instead of being scanned.
+  // `a.jsonl` and `b.jsonl` are each exactly 10 bytes; a 10-byte read budget lets
+  // `a.jsonl` (sorted first on equal times) exactly exhaust it, so `b.jsonl` finds
+  // no budget left and trips the cap instead of being read.
   scratch_dir scratch;
   write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "1234567890");
   write(scratch.path_ / ".claude" / "projects" / "b.jsonl", "1234567890");
+  set_same_age(scratch.path_ / ".claude" / "projects");
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 40};
+  ia::collector_limits const  limits{.max_scan_bytes = 10};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
   REQUIRE(claude != nullptr);
-  CHECK(claude->scanned == 1);
+  CHECK(claude->bytes_scanned == 10);
+  CHECK(claude->files_skipped_cap == 1);
   CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::byte_cap));
+  CHECK(has_byte_cap(preview.warnings, ia::vendor::claude, ia::warning_reason::scanned));
+  CHECK_FALSE(has_byte_cap(preview.warnings, ia::vendor::claude, ia::warning_reason::retained));
 }
 
 TEST_CASE("collect_preview_from_paths: the record cap stops scanning and raises record_cap, not a crash",
@@ -747,10 +816,9 @@ TEST_CASE("collect_preview_from_paths: the record cap stops scanning and raises 
   // all — a break-probe deleting the whole `if (record_count >
   // records_left) { record_cap; break; }` block SURVIVED every existing
   // test. The file holds two non-empty (record-bearing) lines; a
-  // one-record budget cannot admit it, so it is skipped rather than
-  // scanned, and the coverage row's `scanned` count stays 0.
+  // one-record budget keeps the first and stops the vendor at the second.
   scratch_dir scratch;
-  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "not json\nalso not json\n");
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", planar_call_line("a") + planar_call_line("b"));
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
   ia::collector_limits const  limits{.max_records = 1};
@@ -758,7 +826,7 @@ TEST_CASE("collect_preview_from_paths: the record cap stops scanning and raises 
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
   REQUIRE(claude != nullptr);
-  CHECK(claude->scanned == 0);
+  CHECK(claude->scanned == 1);
   CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::record_cap));
 }
 
@@ -774,8 +842,9 @@ TEST_CASE("collect_preview_from_paths: files are scanned in sorted order, not fi
   // envelope (ignored, not malformed); `z.jsonl` is a bare unparseable
   // line (malformed). Sorted order must pick `a.jsonl`.
   scratch_dir scratch;
-  write(scratch.path_ / ".claude" / "projects" / "z.jsonl", "not json at all\n");
-  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "{\"type\":\"summary\",\"other\":\"irrelevant-record-shape\"}\n");
+  write(scratch.path_ / ".claude" / "projects" / "z.jsonl", failed_pair("z", "planar plan show 4"));
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", planar_call_line("a"));
+  set_same_age(scratch.path_ / ".claude" / "projects");
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
   ia::collector_limits const  limits{.max_files = 1};
@@ -799,8 +868,9 @@ TEST_CASE("collect_preview_from_paths: the record budget is SHARED across vendor
   // resetting. (The byte budget is split per vendor instead; see the
   // "skip, don't break" cases below.)
   scratch_dir scratch;
-  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", "not json\nalso not json\n");
-  write(scratch.path_ / ".codex" / "sessions" / "b.jsonl", "not json\n");
+  write(scratch.path_ / ".claude" / "projects" / "a.jsonl", planar_call_line("a") + planar_call_line("b"));
+  write(scratch.path_ / ".codex" / "sessions" / "b.jsonl",
+        codex_command_record(R"(["planar","task","show","1"])", R"("exit_code":1,"status":"failed")"));
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
   ia::collector_limits const  limits{.max_records = 2};
@@ -826,7 +896,7 @@ TEST_CASE("collect_preview_from_paths: an override naming a single FILE is read 
   // reports `observed`.
   scratch_dir scratch;
   auto const  single_file = scratch.path_ / "custom" / "one.jsonl";
-  write(single_file, "not json\n");
+  write(single_file, planar_call_line("a"));
 
   ia::transcript_config const config{.home_dir = scratch.path_.string(), .claude_path = single_file.string()};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog);
@@ -933,34 +1003,6 @@ TEST_CASE("collect_preview_from_paths: a disabled CLI adapter reports coverage d
 // --- transcript scan: skip, don't break --- (diagnose-transcript-scan-skip-not-break)
 // ============================================================================
 
-namespace {
-
-/// A failed Claude Bash invocation: one tool_use record and one errored
-/// tool_result record, each on its own line, newline-terminated.
-auto failed_pair(std::string_view id, std::string_view command) -> std::string {
-  return std::format(
-      R"({{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"{0}","name":"Bash","input":{{"command":"{1}"}}}}]}},"timestamp":"2026-07-12T12:00:00.000Z"}})"
-      "\n"
-      R"({{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{0}","is_error":true,"content":"x"}}]}},"timestamp":"2026-07-12T12:00:01.000Z"}})"
-      "\n",
-      id, command);
-}
-
-/// `count` distinct failed pairs of `command`.
-auto many_pairs(std::string_view prefix, std::size_t count, std::string_view command) -> std::string {
-  std::string out;
-  for (std::size_t i = 0; i < count; ++i) {
-    out += failed_pair(std::format("{}-{}", prefix, i), command);
-  }
-  return out;
-}
-
-auto set_age(const std::filesystem::path& path, std::chrono::hours age) -> void {
-  std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() - age);
-}
-
-} // namespace
-
 TEST_CASE("transcript scan: an oversize lexically-first file is skipped and counted, the rest are scanned",
           "[engine][introspection_adapters][discovery][skip-not-break]") {
   auto const        pair  = failed_pair("p", "planar task show 1");
@@ -977,7 +1019,7 @@ TEST_CASE("transcript scan: an oversize lexically-first file is skipped and coun
   set_age(dir / "d.jsonl", std::chrono::hours{1});
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  ia::collector_limits const  limits{.max_scan_bytes = share};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
@@ -985,7 +1027,7 @@ TEST_CASE("transcript scan: an oversize lexically-first file is skipped and coun
   CHECK(claude->scanned == 6);
   CHECK(claude->files_skipped_cap == 1);
   CHECK(claude->files_partial == 0);
-  CHECK(claude->bytes_read == 3 * pair.size());
+  CHECK(claude->bytes_scanned == 3 * pair.size());
   REQUIRE(preview.signals.size() == 1);
   CHECK(preview.signals[0].count == 3);
   CHECK(has_warning(preview.warnings, ia::vendor::claude, ia::warning_kind::byte_cap));
@@ -1002,7 +1044,7 @@ TEST_CASE("transcript scan: the tail of an oversize newest file is read from a r
   set_age(dir / "live.jsonl", std::chrono::hours{1});
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  ia::collector_limits const  limits{.max_scan_bytes = share};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
@@ -1011,7 +1053,7 @@ TEST_CASE("transcript scan: the tail of an oversize newest file is read from a r
   CHECK(claude->files_skipped_cap == 0);
   CHECK(claude->malformed == 0); // the partial first line was dropped
   CHECK(claude->scanned == 4);   // the last two complete pairs; the partial line before them is dropped
-  CHECK(claude->bytes_read == last.size() + previous.size());
+  CHECK(claude->bytes_scanned == last.size() + previous.size());
   bool saw_final = false;
   for (auto const& signal : preview.signals) {
     saw_final = saw_final || signal.verb_path == "planar plan show";
@@ -1030,7 +1072,7 @@ TEST_CASE("transcript scan: a tail that starts exactly on a record boundary keep
   set_age(dir / "live.jsonl", std::chrono::hours{1});
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  ia::collector_limits const  limits{.max_scan_bytes = share};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
@@ -1038,7 +1080,7 @@ TEST_CASE("transcript scan: a tail that starts exactly on a record boundary keep
   CHECK(claude->files_partial == 1);
   CHECK(claude->scanned == 4);
   CHECK(claude->malformed == 0);
-  CHECK(claude->bytes_read == share);
+  CHECK(claude->bytes_scanned == share);
 }
 
 TEST_CASE("transcript scan: an oversize newest file with no newline is partial and yields no lines",
@@ -1049,14 +1091,14 @@ TEST_CASE("transcript scan: an oversize newest file with no newline is partial a
   set_age(dir / "live.jsonl", std::chrono::hours{1});
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 4 * 100};
+  ia::collector_limits const  limits{.max_scan_bytes = 100};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
   REQUIRE(claude != nullptr);
   CHECK(claude->files_partial == 1);
   CHECK(claude->scanned == 0);
-  CHECK(claude->bytes_read == 0);
+  CHECK(claude->bytes_scanned == 0);
 }
 
 TEST_CASE("transcript scan: files with identical modification times are read in path order",
@@ -1072,7 +1114,7 @@ TEST_CASE("transcript scan: files with identical modification times are read in 
   std::filesystem::last_write_time(dir / "b.jsonl", same);
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  ia::collector_limits const  limits{.max_scan_bytes = share};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
@@ -1096,7 +1138,7 @@ TEST_CASE("transcript scan: out-of-window files are counted and not read, newest
   set_age(dir / "new.jsonl", std::chrono::hours{1});
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits        limits{.max_bytes = 4 * share};
+  ia::collector_limits        limits{.max_scan_bytes = share};
   limits.window_start = std::filesystem::file_time_type::clock::now() - std::chrono::hours{24 * 7};
   auto const preview  = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
@@ -1110,20 +1152,50 @@ TEST_CASE("transcript scan: out-of-window files are counted and not read, newest
 
 TEST_CASE("transcript scan: a large Claude inventory does not shrink the Codex budget",
           "[engine][introspection_adapters][discovery][skip-not-break]") {
-  auto const        pair  = failed_pair("p", "planar task show 1");
-  std::size_t const share = 2 * pair.size();
+  auto const        record = codex_command_record(R"(["planar","task","show","1"])", R"("exit_code":1,"status":"failed")");
+  std::size_t const total  = 3 * record.size(); // an even three-way split would leave Codex 1 byte short of its file
   scratch_dir       scratch;
   write(scratch.path_ / ".claude" / "projects" / "big.jsonl", many_pairs("big", 20, "planar task show 1"));
-  write(scratch.path_ / ".codex" / "sessions" / "x.jsonl", "not json\n");
+  write(scratch.path_ / ".codex" / "sessions" / "x.jsonl", record);
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  ia::collector_limits const  limits{.max_scan_bytes = total - 1};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
   auto const* codex = coverage_for(preview, ia::vendor::codex);
   REQUIRE(codex != nullptr);
   CHECK(codex->scanned == 1);
+  CHECK(codex->normalized == 1);
   CHECK(codex->files_skipped_cap == 0);
+  CHECK(codex->files_partial == 0);
+}
+
+TEST_CASE("transcript scan: a share a vendor does not use flows to the others",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  auto const        claude_file = failed_pair("c", "planar task show 1");
+  auto const        record      = codex_command_record(R"(["planar","task","show","1"])", R"("exit_code":1,"status":"failed")");
+  std::string const codex_file  = record + record + record;
+  // Claude and Codex split the budget evenly (Copilot has nothing to read), so Codex's
+  // even share is `total / 2`; Codex's file needs more than that, and Claude leaves the rest.
+  std::size_t const total = claude_file.size() + codex_file.size();
+  REQUIRE(codex_file.size() > total / 2);
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "c.jsonl", claude_file);
+  write(scratch.path_ / ".codex" / "sessions" / "x.jsonl", codex_file);
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits const  limits{.max_scan_bytes = total};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  auto const* codex  = coverage_for(preview, ia::vendor::codex);
+  REQUIRE(claude != nullptr);
+  REQUIRE(codex != nullptr);
+  CHECK(claude->normalized == 1);
+  CHECK(codex->files_partial == 0);
+  CHECK(codex->files_skipped_cap == 0);
+  CHECK(codex->bytes_scanned == codex_file.size());
+  CHECK(codex->normalized == 3);
 }
 
 TEST_CASE("transcript scan: an oversize file that is not the newest is skipped and the older files after it are still read",
@@ -1140,7 +1212,7 @@ TEST_CASE("transcript scan: an oversize file that is not the newest is skipped a
   set_age(dir / "old.jsonl", std::chrono::hours{3});
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
-  ia::collector_limits const  limits{.max_bytes = 4 * share};
+  ia::collector_limits const  limits{.max_scan_bytes = share};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
 
   auto const* claude = coverage_for(preview, ia::vendor::claude);
@@ -1171,13 +1243,6 @@ auto claude_signals(std::string_view command, const ia::verb_path_resolver& reso
     -> std::vector<ia::signal_row> {
   std::vector<ia::raw_source> sources{ia::raw_source{.v = ia::vendor::claude, .jsonl = failed_pair("t", command)}};
   return ia::collect_preview(sources, resolve).signals;
-}
-
-auto codex_command_record(std::string_view command_json, std::string_view exit_and_status) -> std::string {
-  return std::format(
-      R"({{"type":"event_msg","timestamp":"2026-01-01T00:00:00.000Z","payload":{{"type":"item_completed","item":{{"type":"CommandExecution","command":{},{}}}}}}})"
-      "\n",
-      command_json, exit_and_status);
 }
 
 auto codex_signals(std::string_view command_json, std::string_view exit_and_status) -> ia::preview {
@@ -1366,7 +1431,7 @@ TEST_CASE("transcript format: Copilot reads only the JSONL files in session-stat
   scratch_dir scratch;
   auto const  dir = scratch.path_ / ".copilot" / "session-state" / "s1";
   write(dir / "workspace.yaml", "id: x\ncwd: y\n");
-  write(dir / "events.jsonl", "not json\n");
+  write(dir / "events.jsonl", copilot_call_line("c1"));
 
   ia::transcript_config const config{.home_dir = scratch.path_.string()};
   auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog);
@@ -1411,12 +1476,14 @@ auto claude_filler_line(std::size_t bytes, std::string_view marker = "") -> std:
       marker, std::string(bytes, 'f'));
 }
 
-/// A non-planar Codex function_call_output record of roughly `bytes` bytes.
+/// A non-planar Codex `function_call` and its `function_call_output`, roughly `bytes` bytes together.
 auto codex_filler_line(std::size_t index, std::size_t bytes, std::string_view marker = "") -> std::string {
   return std::format(
-      R"({{"type":"response_item","timestamp":"2026-07-12T12:00:00.000Z","payload":{{"type":"function_call_output","call_id":"other-{}","output":"{}{}"}}}})"
+      R"({{"type":"response_item","timestamp":"2026-07-12T12:00:00.000Z","payload":{{"type":"function_call","call_id":"other-{0}","name":"shell","arguments":"{{\"cmd\":\"ls {2}\"}}"}}}})"
+      "\n"
+      R"({{"type":"response_item","timestamp":"2026-07-12T12:00:00.000Z","payload":{{"type":"function_call_output","call_id":"other-{0}","output":"{1}{2}"}}}})"
       "\n",
-      index, marker, std::string(bytes, 'o'));
+      index, std::string(bytes / 2, 'o'), marker);
 }
 
 /// `total` bytes of Codex filler lines.
@@ -1446,7 +1513,7 @@ TEST_CASE("transcript scan: a failing command several MB before the end of the n
   for (int i = 0; i < 39; ++i) {
     auto const  name = std::format("new{:02}.jsonl", i);
     std::string body;
-    while (body.size() < 100'000) {
+    while (body.size() < 130'000) {
       body += claude_filler_line(1000);
     }
     write(claude_dir / name, body);
@@ -1471,4 +1538,221 @@ TEST_CASE("transcript scan: a failing command several MB before the end of the n
   }
   CHECK(saw_codex);
   CHECK(saw_claude);
+
+  // The scan reads far more than it keeps: every non-planar line is streamed past.
+  auto const* codex = coverage_for(preview, ia::vendor::codex);
+  REQUIRE(codex != nullptr);
+  CHECK(codex->bytes_scanned > 3'500'000);
+  CHECK(codex->bytes_retained < 4 * 1024);
+  CHECK(codex->bytes_read == codex->bytes_retained);
+  CHECK(codex->files_partial == 0);
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->bytes_scanned > ia::k_default_max_bytes);
+  CHECK(claude->bytes_retained < ia::k_default_max_bytes);
+  CHECK(claude->files_skipped_cap == 0);
+}
+
+TEST_CASE("transcript scan: retained bytes never exceed the retained budget and stop the vendor with reason retained",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  // Every tenth line is a planar call (with its result a few lines on); the rest is filler.
+  std::string body;
+  for (int i = 0; body.size() < 2'000'000; ++i) {
+    body += i % 10 == 0 ? failed_pair(std::format("p{}", i), "planar task show 1") : claude_filler_line(1000);
+  }
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "live.jsonl", body);
+
+  std::size_t const           retained_share = 20'000;
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits        limits{.max_bytes = 4 * retained_share};
+  std::size_t                 line_high    = 0;
+  std::size_t                 pending_high = 0;
+  limits.file_hook                         = [&](ia::vendor, const ia::scan_high_water& high) {
+    line_high    = std::max(line_high, high.line_buffer);
+    pending_high = std::max(pending_high, high.pending_ids);
+  };
+  auto const preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->bytes_retained <= retained_share);
+  CHECK(claude->bytes_retained > retained_share / 2);
+  CHECK(claude->bytes_read == claude->bytes_retained);
+  CHECK(claude->bytes_scanned < body.size()); // the vendor stopped; the rest of the file went unread
+  CHECK(has_byte_cap(preview.warnings, ia::vendor::claude, ia::warning_reason::retained));
+  CHECK_FALSE(has_byte_cap(preview.warnings, ia::vendor::claude, ia::warning_reason::scanned));
+  CHECK(line_high <= ia::k_max_line_bytes);
+  CHECK(pending_high <= ia::k_max_pending_ids);
+}
+
+TEST_CASE("transcript scan: a line past the line cap is skipped unread and counted",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  // The huge line mentions planar and is a valid call shape, so only its length excludes it.
+  std::string huge = planar_call_line("huge");
+  huge.insert(huge.size() - 3, std::string(ia::k_max_line_bytes, 'h'));
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "live.jsonl", huge + failed_pair("ok", "planar task show 1") + huge);
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits        limits;
+  std::size_t                 line_high = 0;
+  limits.file_hook                      = [&](ia::vendor, const ia::scan_high_water& high) { line_high = high.line_buffer; };
+  auto const preview                    = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->lines_oversize == 2);
+  CHECK(claude->scanned == 2); // the pair after the first huge line
+  CHECK(claude->normalized == 1);
+  CHECK(claude->malformed == 0);
+  CHECK(claude->bytes_scanned > 2 * ia::k_max_line_bytes);
+  CHECK(line_high <= ia::k_max_line_bytes);
+}
+
+TEST_CASE("transcript scan: discarded lines are never stored, copied or reported",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  constexpr std::string_view marker = "DISCARDED_LINE_MARKER_7f3a91";
+  scratch_dir                scratch;
+  // Non-planar lines of every vendor carry the marker; so do a non-planar call with its
+  // result and a planar-mentioning line that is not a call.
+  write(scratch.path_ / ".claude" / "projects" / "s.jsonl", claude_filler_line(500, marker) + failed_pair("ls1", "ls -la") +
+                                                                failed_pair("p1", "planar task show 1") +
+                                                                claude_filler_line(500, marker));
+  write(scratch.path_ / ".codex" / "sessions" / "s.jsonl",
+        codex_filler(10'000, marker) +
+            codex_command_record(R"(["planar","task","show","1"])", R"("exit_code":1,"status":"failed")"));
+  write(scratch.path_ / ".copilot" / "session-state" / "s" / "events.jsonl",
+        copilot_call_line("c1") + std::format(R"({{"type":"note","timestamp":"2026-07-12T12:00:00.000Z","text":"planar {}"}})"
+                                              "\n",
+                                              marker));
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits        limits;
+  std::size_t                 kept        = 0;
+  bool                        marker_kept = false;
+  limits.retain_hook                      = [&](ia::vendor, std::string_view line) {
+    ++kept;
+    marker_kept = marker_kept || line.find(marker) != std::string_view::npos;
+  };
+  auto const preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
+
+  CHECK(kept > 0);
+  CHECK_FALSE(marker_kept);
+  CHECK_FALSE(preview_leaks(preview, marker));
+  for (auto const& row : preview.signals) {
+    CHECK(row.verb_path.find("DISCARDED") == std::string::npos);
+  }
+  // The marker-bearing Claude call and its result are not planar calls, so neither is kept.
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->scanned == 2);
+  CHECK(claude->normalized == 1);
+}
+
+TEST_CASE("transcript scan: results pair with kept calls across the prefilter",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  // A Claude result with no `planar` in it, 50 lines after its call.
+  std::string claude_body = planar_call_line("call-1");
+  for (int i = 0; i < 50; ++i) {
+    claude_body += claude_filler_line(200);
+  }
+  claude_body +=
+      R"({"type":"user","timestamp":"2026-07-12T12:00:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","is_error":true,"content":"boom"}]}})"
+      "\n";
+  // A Codex function_call and its function_call_output through `call_id`, plus a CommandExecution alone.
+  std::string codex_body =
+      R"({"type":"response_item","timestamp":"2026-07-12T12:00:00.000Z","payload":{"type":"function_call","call_id":"cx-1","name":"shell","arguments":"{\"cmd\":\"planar task show 1\"}"}})"
+      "\n" +
+      codex_filler(6000) +
+      R"({"type":"response_item","timestamp":"2026-07-12T12:00:01.000Z","payload":{"type":"function_call_output","call_id":"cx-1","output":"no mention of the tool here"}})"
+      "\n" +
+      codex_command_record(R"(["planar","task","add","x"])", R"("exit_code":1,"status":"failed")");
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "s.jsonl", claude_body);
+  write(scratch.path_ / ".codex" / "sessions" / "s.jsonl", codex_body);
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  std::vector<std::string>    kept;
+  ia::collector_limits        limits;
+  limits.retain_hook = [&](ia::vendor, std::string_view line) { kept.emplace_back(line); };
+  auto const preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
+
+  auto const keeps = [&](std::string_view needle) {
+    return std::ranges::any_of(kept, [&](const std::string& line) { return line.find(needle) != std::string::npos; });
+  };
+  CHECK(keeps(R"("tool_use_id":"call-1")"));
+  CHECK(keeps(R"("call_id":"cx-1","output")"));
+  CHECK_FALSE(keeps("other-"));
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  auto const* codex  = coverage_for(preview, ia::vendor::codex);
+  REQUIRE(claude != nullptr);
+  REQUIRE(codex != nullptr);
+  CHECK(claude->scanned == 2);
+  CHECK(claude->normalized == 1);
+  CHECK(claude->results_unpaired == 0);
+  CHECK(codex->scanned == 3); // the call, its output and the CommandExecution
+  CHECK(codex->normalized == 1);
+  CHECK(codex->results_unpaired == 0);
+}
+
+TEST_CASE("transcript scan: a result whose call fell before the tail start is counted unpaired, one for a non-planar call is not",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  auto const result = [](std::string_view id) {
+    return std::format(
+        R"({{"type":"user","timestamp":"2026-07-12T12:00:01.000Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"{}","is_error":true,"content":"x"}}]}}}})"
+        "\n",
+        id);
+  };
+  auto const  tail_part = failed_pair("ls1", "ls -la") + result("early-1");
+  std::string body      = planar_call_line("early-1");
+  for (int i = 0; i < 6; ++i) {
+    body += claude_filler_line(1000);
+  }
+  body += tail_part;
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "live.jsonl", body);
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  // The tail starts inside the last filler line, so the planar call is far before it.
+  ia::collector_limits const limits{.max_scan_bytes = tail_part.size() + 400};
+  auto const                 preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(claude->files_partial == 1);
+  CHECK(claude->scanned == 0);          // neither result is kept
+  CHECK(claude->results_unpaired == 1); // `early-1`'s; `ls1`'s call is in the tail and is not planar
+  CHECK(preview.signals.empty());
+}
+
+TEST_CASE("transcript scan: pending ids are capped per file and the overflow is counted unpaired",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  std::string body;
+  for (std::size_t i = 0; i < ia::k_max_pending_ids + 100; ++i) {
+    body += planar_call_line(std::format("id-{}", i));
+  }
+  // The first call's result pairs; the last call's id was dropped, so its result is not kept
+  // but it is not counted a second time.
+  body +=
+      R"({"type":"user","timestamp":"2026-07-12T12:00:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"id-0","is_error":true,"content":"x"}]}})"
+      "\n";
+  body += std::format(
+      R"({{"type":"user","timestamp":"2026-07-12T12:00:01.000Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"id-{}","is_error":true,"content":"x"}}]}}}})"
+      "\n",
+      ia::k_max_pending_ids + 99);
+  scratch_dir scratch;
+  write(scratch.path_ / ".claude" / "projects" / "live.jsonl", body);
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  ia::collector_limits        limits{.max_bytes = 64 * 1024 * 1024};
+  std::size_t                 pending_high = 0;
+  limits.file_hook   = [&](ia::vendor, const ia::scan_high_water& high) { pending_high = high.pending_ids; };
+  auto const preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog, limits);
+
+  auto const* claude = coverage_for(preview, ia::vendor::claude);
+  REQUIRE(claude != nullptr);
+  CHECK(pending_high == ia::k_max_pending_ids);
+  CHECK(claude->results_unpaired == 100);
+  CHECK(claude->normalized == 1);
 }

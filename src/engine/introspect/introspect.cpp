@@ -85,6 +85,18 @@ auto tag_name(ip::warning_kind k) -> std::string_view {
   return "unknown";
 }
 
+auto reason_name(ip::warning_reason r) -> std::string_view {
+  switch (r) {
+  case ip::warning_reason::none:
+    return "none";
+  case ip::warning_reason::retained:
+    return "retained";
+  case ip::warning_reason::scanned:
+    return "scanned";
+  }
+  return "unknown";
+}
+
 /// @brief `-{window_days} days`, the SQLite `datetime()` modifier bound at
 /// every windowed query below (a bind parameter, not string-formatted SQL —
 /// C++-idiomatic replacement for the oracle's stack-buffered
@@ -432,17 +444,23 @@ auto preview_text_block(const std::optional<ip::preview>& preview) -> std::strin
   out += "\n";
   for (auto const& coverage : preview->coverage) {
     out += std::format("  {}: state={} scanned={} normalized={} ignored={} malformed={} capped={} bytes_read={} files_partial={} "
-                       "files_skipped_cap={} files_skipped_window={}\n",
+                       "files_skipped_cap={} files_skipped_window={} bytes_scanned={} bytes_retained={} lines_oversize={} "
+                       "results_unpaired={}\n",
                        tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.normalized, coverage.ignored,
                        coverage.malformed, coverage.capped, coverage.bytes_read, coverage.files_partial,
-                       coverage.files_skipped_cap, coverage.files_skipped_window);
+                       coverage.files_skipped_cap, coverage.files_skipped_window, coverage.bytes_scanned, coverage.bytes_retained,
+                       coverage.lines_oversize, coverage.results_unpaired);
   }
   for (auto const& signal : preview->signals) {
     out += std::format("  signal {}/{}/{}: count={} first={} last={}\n", tag_name(signal.v), signal.verb_path,
                        tag_name(signal.cat), signal.count, signal.first_seen, signal.last_seen);
   }
   for (auto const& warning : preview->warnings) {
-    out += std::format("  warning {}/{}: count={}\n", tag_name(warning.v), tag_name(warning.kind), warning.count);
+    out += std::format("  warning {}/{}: count={}", tag_name(warning.v), tag_name(warning.kind), warning.count);
+    if (warning.reason != ip::warning_reason::none) {
+      out += std::format(" reason={}", reason_name(warning.reason));
+    }
+    out += '\n';
   }
   return out;
 }
@@ -477,10 +495,11 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
         out += ',';
       }
       out += std::format(
-          R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{},"bytes_read":{},"files_partial":{},"files_skipped_cap":{},"files_skipped_window":{}}})",
+          R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{},"bytes_read":{},"files_partial":{},"files_skipped_cap":{},"files_skipped_window":{},"bytes_scanned":{},"bytes_retained":{},"lines_oversize":{},"results_unpaired":{}}})",
           tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.malformed, coverage.normalized,
           coverage.capped, coverage.ignored, coverage.bytes_read, coverage.files_partial, coverage.files_skipped_cap,
-          coverage.files_skipped_window);
+          coverage.files_skipped_window, coverage.bytes_scanned, coverage.bytes_retained, coverage.lines_oversize,
+          coverage.results_unpaired);
     }
   }
   out += R"(],"warnings":[)";
@@ -490,8 +509,11 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
       if (i > 0) {
         out += ',';
       }
-      out +=
-          std::format(R"({{"vendor":"{}","kind":"{}","count":{}}})", tag_name(warning.v), tag_name(warning.kind), warning.count);
+      out += std::format(R"({{"vendor":"{}","kind":"{}","count":{})", tag_name(warning.v), tag_name(warning.kind), warning.count);
+      if (warning.reason != ip::warning_reason::none) {
+        out += std::format(R"(,"reason":"{}")", reason_name(warning.reason));
+      }
+      out += '}';
     }
   }
   out += "]}";

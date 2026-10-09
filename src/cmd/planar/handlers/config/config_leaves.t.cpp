@@ -466,13 +466,14 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   CHECK(r.code == 0);
   CHECK(r.err.empty());
   CHECK_FALSE(r.db_open);
-  // A file-free HOME still lists the embedded defaults — 28 keys, and the
+  // A file-free HOME still lists the embedded defaults — 29 keys, and the
   // count is asserted so a resolver that silently stopped emitting a family
   // cannot pass on the two keys the case happens to name. (22 until plan 1033
   // task 6485 added `execute.engine`, which `planar-execute` reads from this
   // very listing; 28 since plan 1080 task hq-config added the five
-  // `queue.*` keys.)
-  CHECK(lines_of(r.out).size() == 28);
+  // `queue.*` keys; 29 since `introspection.transcript_scan_bytes`.)
+  CHECK(lines_of(r.out).size() == 29);
+  CHECK(line_for(r.out, "introspection.transcript_scan_bytes") == "introspection.transcript_scan_bytes = 67108864");
   CHECK(line_for(r.out, "queue.slots") == "queue.slots = 1");
   CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s");
   CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s");
@@ -681,8 +682,8 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   // plan 1033 task 6485 added, and the content markers that prove it is the
   // DEFAULTS file rather than the operator's (which is what `--raw` would
   // have printed). Plus the 781-byte `[queue]` block plan 1080 task
-  // hq-config added (4147 in all).
-  CHECK(r.out.size() == 4147);
+  // hq-config added, and the `transcript_scan_bytes` key and its comment (4476 in all).
+  CHECK(r.out.size() == 4476);
   CHECK(r.out.contains("[queue]\n"));
   CHECK(r.out.contains("[execute]\n"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
@@ -700,7 +701,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 4147);
+  CHECK(r.out.size() == 4476);
   cleanup(fx);
 }
 

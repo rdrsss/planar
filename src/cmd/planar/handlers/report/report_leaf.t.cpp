@@ -235,21 +235,88 @@ TEST_CASE("report's cli_log adapter reports a single row larger than the budget 
 TEST_CASE("report --json walks a real transcript directory under the fixture's scratch $HOME", "[cmd][report]") {
   auto const fx = make_fixture("populated");
   // `.claude/projects` is the built-in Claude path this handler resolves
-  // relative to `$HOME` — populate it with one recognized malformed-ish
-  // record and one genuinely unparseable line, so the coverage counts are
-  // non-zero and this case is not vacuously satisfied by "nothing there"
-  // the way every other case in this file legitimately is.
+  // relative to `$HOME`. The file holds a failed planar call with its result
+  // and a line that is not a planar call, so the coverage counts are non-zero
+  // and this case is not vacuously satisfied by "nothing there".
   auto const claude_dir = fx.root / "fakehome" / ".claude" / "projects";
   std::filesystem::create_directories(claude_dir);
   {
     std::ofstream file(claude_dir / "session1.jsonl", std::ios::binary);
-    file << "not json at all\n";
+    file
+        << R"({"type":"assistant","timestamp":"2026-07-12T12:00:00.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"planar task show 1"}}]}})"
+           "\n"
+           R"({"type":"user","timestamp":"2026-07-12T12:00:01.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","is_error":true,"content":"x"}]}})"
+           "\nnot json at all\n";
   }
 
   auto const result = dispatch(fx, {"report", "--json"});
   CHECK(result.code == 0);
-  CHECK(result.out.find(R"({"vendor":"claude","state":"observed","scanned":1,"malformed":1)") != std::string::npos);
-  CHECK(result.out.find(R"({"vendor":"claude","kind":"malformed","count":1})") != std::string::npos);
+  // Only the call and its result are kept; the third line is streamed past, never stored, so it is not malformed.
+  CHECK(result.out.find(R"({"vendor":"claude","state":"observed","scanned":2,"malformed":0,"normalized":1)") !=
+        std::string::npos);
+  CHECK(result.out.find(R"("bytes_scanned":)") != std::string::npos);
+  CHECK(result.out.find(R"("bytes_retained":)") != std::string::npos);
+  CHECK(result.out.find(R"("lines_oversize":0,"results_unpaired":0})") != std::string::npos);
+  CHECK(result.out.find(R"("verb_path":"planar task show","category":"failure","count":1)") != std::string::npos);
+}
+
+TEST_CASE("report refuses an invalid [introspection].transcript_scan_bytes, naming the key", "[cmd][report][wide-keep-narrow]") {
+  for (std::string_view const value : {"0", "-5", "\"big\""}) {
+    INFO(value);
+    auto const fx = make_fixture("bad_scan_bytes");
+    std::filesystem::create_directories(fx.root / "fakehome" / ".planar");
+    {
+      std::ofstream file(fx.root / "fakehome" / ".planar" / "config.toml", std::ios::binary);
+      file << "[introspection]\ntranscript_scan_bytes = " << value << "\n";
+    }
+    auto const result = dispatch(fx, {"report", "--json"});
+    CHECK(result.code == 2);
+    CHECK(result.err.find("introspection.transcript_scan_bytes") != std::string::npos);
+    auto const shown = dispatch(fx, {"config", "show", "--effective"});
+    CHECK(shown.code == 2);
+    CHECK(shown.err.find("introspection.transcript_scan_bytes") != std::string::npos);
+  }
+}
+
+TEST_CASE("report reads a failing planar command far behind the tail, within the configured read budget",
+          "[cmd][report][wide-keep-narrow]") {
+  constexpr std::string_view marker = "NEVER_REPORTED_MARKER_52c1";
+  auto const                 fx     = make_fixture("wide_scan");
+  auto const                 dir    = fx.root / "fakehome" / ".codex" / "sessions";
+  std::filesystem::create_directories(dir);
+  {
+    std::ofstream file(dir / "live.jsonl", std::ios::binary);
+    file
+        << R"({"type":"event_msg","timestamp":"2026-07-12T12:00:00.000Z","payload":{"type":"item_completed","item":{"type":"CommandExecution","command":["planar","task","show","1"],"exit_code":1,"status":"failed"}}})"
+           "\n";
+    for (int i = 0; i < 1500; ++i) {
+      file << std::format(
+          R"({{"type":"response_item","timestamp":"2026-07-12T12:00:00.000Z","payload":{{"type":"message","text":"{} {}"}}}})"
+          "\n",
+          marker, std::string(1000, 'x'));
+    }
+  }
+  std::filesystem::create_directories(fx.root / "fakehome" / ".planar");
+
+  // Default read budget: the failure 1.5 MB before the end of the file is found.
+  auto const wide = dispatch(fx, {"report", "--json"});
+  CHECK(wide.code == 0);
+  CHECK(wide.out.find(R"("verb_path":"planar task show","category":"failure")") != std::string::npos);
+  CHECK(wide.out.find(R"("files_partial":0)") != std::string::npos);
+  CHECK(wide.out.find(marker) == std::string::npos);
+  CHECK(dispatch(fx, {"report"}).out.find(marker) == std::string::npos);
+
+  // A read budget smaller than the file reads only its tail, and says so.
+  {
+    std::ofstream file(fx.root / "fakehome" / ".planar" / "config.toml", std::ios::binary);
+    file << "[introspection]\ntranscript_scan_bytes = 200000\n";
+  }
+  auto const narrow = dispatch(fx, {"report", "--json"});
+  CHECK(narrow.code == 0);
+  CHECK(narrow.out.find(R"("category":"failure")") == std::string::npos);
+  CHECK(narrow.out.find(R"("files_partial":1)") != std::string::npos);
+  CHECK(narrow.out.find(R"({"vendor":"codex","kind":"byte_cap","count":1,"reason":"scanned"})") != std::string::npos);
+  CHECK(narrow.out.find(marker) == std::string::npos);
 }
 
 TEST_CASE("report --json reads an oversize capture log newest first and warns byte_cap instead of failing",

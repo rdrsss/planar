@@ -8254,23 +8254,33 @@ When `[introspection].cli_log` is off (the default), the invocation and failure 
 
 Empty windows emit empty arrays, never nulls or missing fields.
 
-**Capture-log byte cap:** The 4 MiB read budget is split four ways: Claude, Codex and Copilot transcripts each get a quarter, and the `cli_log` adapter gets what the transcript adapters leave, never less than a quarter. When the window's `cli_invocations` rows would exceed its budget, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
+**Capture-log byte cap:** The 4 MiB retained budget (what the preview keeps and normalizes; the transcript read budget is separate, below) is split four ways: Claude, Codex and Copilot transcripts each get a quarter, and the `cli_log` adapter gets what the transcript adapters leave, never less than a quarter. When the window's `cli_invocations` rows would exceed its budget, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
 
-**Transcript scan:** Each transcript vendor scans only files modified inside the `--days` window, newest modification time first, with ties broken by path. A file that does not fit the vendor's remaining byte budget is skipped and counted rather than stopping the scan, so one large file no longer hides the files after it. The one exception is the newest file: when it alone exceeds the budget, its tail is read, starting at the first complete line, because the live session is usually the newest and largest file. Each `introspection_preview.coverage` row (and the text report's coverage line) carries four counters:
+**Transcript scan (read wide, keep narrow):** Two budgets apply. The **read budget**, `[introspection].transcript_scan_bytes` (an integer above 0; default `67108864`, 64 MiB), bounds the bytes streamed from disk across the enabled transcript vendors. It is split evenly among them; a vendor with less to read than its share leaves the rest to the others. The **retained budget** is the fixed 4 MiB above and bounds what is kept and normalized. A value that is not an integer above 0 is a configuration error naming the key: `planar report`, `planar config show` and `planar config validate` refuse it (exit 2 for the first two).
+
+Each vendor scans only files modified inside the `--days` window, newest modification time first, ties broken by path, each file forward one line at a time. A file that does not fit the vendor's remaining read budget is skipped and counted rather than stopping the scan, so one large file does not hide the files after it. The one exception is the newest file: when it alone exceeds the read budget, its tail is read, starting at the first complete line, because the live session is usually the newest and largest file. The file-count cap is unchanged.
+
+A line is **kept** only if it contains `planar` and is that vendor's call shape (a Claude assistant `tool_use` or a Codex `function_call` whose command is a planar invocation, a failed Codex `CommandExecution` of one, a Copilot `tool.execution_start` of one), or if it carries the call id of a call kept earlier in the same file (a Claude `tool_result`, a Codex `function_call_output`, a Copilot `tool.execution_complete`). Every other line is discarded without being stored, copied or logged. A line longer than 1 MiB is skipped unread. Up to 4096 call ids are pending per file; a call past that is still kept, but its result cannot be paired. Reaching the retained budget stops that vendor's scan with a `byte_cap` warning carrying `"reason":"retained"`; reaching the read budget (a file skipped or the newest read from its tail) adds a `byte_cap` warning with `"reason":"scanned"`. Warnings without a reason carry no `reason` key.
+
+Each `introspection_preview.coverage` row (and the text report's coverage line) carries these counters, in this order, after `bytes_read`:
 
 | Counter | Meaning |
 |---------|---------|
-| `bytes_read` | Transcript bytes read for the vendor. A tail read counts only the tail. |
+| `bytes_read` | Alias of `bytes_retained`, which is what it measured when every byte read was kept. |
 | `files_partial` | Files read from their tail only. |
-| `files_skipped_cap` | Files not read because the file, byte or record cap left no room. The warning matching the cap that stopped it (`byte_cap`, `file_cap` or `record_cap`) accompanies a skipped or partial file. |
+| `files_skipped_cap` | Files not read because the file, read-budget or record cap left no room, or the vendor's scan had stopped. The warning matching the cap that stopped it (`byte_cap`, `file_cap` or `record_cap`) accompanies a skipped or partial file. |
 | `files_skipped_window` | Files not read because their modification time is before the window. |
+| `bytes_scanned` | Bytes streamed from disk for the vendor, kept or not. A tail read counts the tail. |
+| `bytes_retained` | Bytes of the lines kept, newlines excluded. At most the vendor's share of the retained budget. |
+| `lines_oversize` | Lines longer than 1 MiB, skipped unread. |
+| `results_unpaired` | Results whose call was not kept: the call fell before the start of a tail read, or its id was past the pending cap. A result for a call that was seen and is not a planar call is not counted. |
 
-The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
+The `scanned`, `normalized`, `ignored`, `malformed` and `capped` counters describe the kept lines only; a discarded line is in none of them. The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
 
 **Transcript recognition:** A transcript signal is a failed `planar` command, and its verb path comes from the same live-CLI catalog rule the capture log uses (a token the tree names, a structured operand in the second slot, otherwise `<unknown>`), so typed words, flag values and prose never reach a signal.
 
 - **Claude:** a `Bash` `tool_use` paired with an `is_error: true` `tool_result`.
-- **Codex:** an `event_msg` `item_completed` of type `CommandExecution` with a non-zero `exit_code` or `status: "failed"`. The `command` array is either an argv or a shell wrapper (`bash -lc "<script>"`). The older `schema_version`/`command_execution` records are still read. `custom_tool_call` and `custom_tool_call_output` records are validated and otherwise ignored.
+- **Codex:** an `event_msg` `item_completed` of type `CommandExecution` with a non-zero `exit_code` or `status: "failed"`. The `command` array is either an argv or a shell wrapper (`bash -lc "<script>"`). The older `schema_version`/`command_execution` records are still read. `custom_tool_call` and `custom_tool_call_output` records are validated and otherwise ignored. A `function_call` of a planar command and its `function_call_output` are kept by the scan (so they count in `scanned` and `ignored`) but yield no signal; a successful `CommandExecution` is discarded by the scan.
 - **Recognized command shapes:** `planar ...`, `./bin/planar ...`, `build/*/bin/planar ...` and any path ending in `/planar`, with `env`/`NAME=value` prefixes. The command may be a chain, but planar must be its last step, so the recorded exit status is planar's: a step joined by `;` may be anything, and every step joined to planar by `&&` must be `cd`, `pushd`, `export` or `NAME=value` only. A pipeline (`|`), command substitution, a here-document, a background job, a second planar step, or planar followed by another step (`planar ... && make test`) is not attributed to a verb.
 - **Copilot:** only `*.jsonl` files under the session-state path are read. When the directory holds none (the installed Copilot CLI writes YAML, Markdown and JSON metadata there), the Copilot row is `unavailable` and `warnings` carries `{"vendor":"copilot","kind":"unsupported_layout","count":1}`. Copilot's `session-store.db` and logs are not read.
 
@@ -8279,7 +8289,7 @@ The counters are `0` for `cli_log` and for a disabled vendor. An unavailable ven
 | Code | Meaning |
 |------|---------|
 | 0 | Bundle rendered successfully (including "logging disabled" path). |
-| 2 | Invalid flag value — `--days` or `--tail` must be a positive integer; no partial bundle is emitted. |
+| 2 | Invalid flag value (`--days` or `--tail` must be a positive integer) or an invalid `[introspection].transcript_scan_bytes`; no partial bundle is emitted. |
 | 1 | Database error. |
 
 **Example:**

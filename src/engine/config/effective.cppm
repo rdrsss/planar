@@ -165,9 +165,11 @@ export struct transcripts_config {
 
 /// @brief `[introspection]` — opt-in CLI usage logging.
 export struct introspection_config {
-  bool               cli_log = false;     ///< Opt-in; default off (recording behavior without consent violates least surprise).
-  std::int64_t       retention_days = 90; ///< How many days of cli_invocations rows to retain.
-  transcripts_config transcripts;         ///< `[introspection.transcripts]`.
+  bool         cli_log        = false; ///< Opt-in; default off (recording behavior without consent violates least surprise).
+  std::int64_t retention_days = 90;    ///< How many days of cli_invocations rows to retain.
+  std::int64_t transcript_scan_bytes =
+      67'108'864;                 ///< `planar report`'s transcript read budget, bytes; above 0 (a validated key).
+  transcripts_config transcripts; ///< `[introspection.transcripts]`.
 };
 
 /// @brief `[defaults]`.
@@ -206,6 +208,22 @@ export struct resolved {
   config        cfg;       ///< The resolved, typed configuration.
   effective_map effective; ///< Flat dotted-key → value + provenance, for `config show --effective`.
 };
+
+/// @brief One refused `[introspection]` value.
+export struct introspection_finding {
+  std::string key;     ///< The dotted key, for example `introspection.transcript_scan_bytes`.
+  std::string message; ///< What is wrong and what would be accepted.
+};
+
+/// @brief Check the `[introspection]` keys that carry a range: today
+/// `introspection.transcript_scan_bytes`, which must be an integer above 0.
+/// Reads the operator's file only; a value inherited from the embedded defaults
+/// is not something the operator wrote. `resolve()` does not refuse these values
+/// (it falls back to the default for a wrong type), so the callers that must
+/// fail on one (`planar report`, `config show`, `config validate`) call this.
+/// @param file_map The flattened user config file (from `parse_toml`).
+/// @return Every refused value, in key order; empty when all are valid or absent.
+export auto validate_introspection(const toml_map& file_map) -> std::vector<introspection_finding>;
 
 /// @brief Error surface for `resolve()`.
 export enum class effective_error : std::uint8_t {

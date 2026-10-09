@@ -12,14 +12,17 @@
 
 import std;
 import planar.engine.config.effective;
+import planar.engine.config.toml;
 
 using planar::engine::config::effective_error;
 using planar::engine::config::env_view;
+using planar::engine::config::parse_toml;
 using planar::engine::config::provenance;
 using planar::engine::config::resolve;
 using planar::engine::config::sensitive_name;
 using planar::engine::config::sorted_keys;
 using planar::engine::config::tiers;
+using planar::engine::config::validate_introspection;
 using planar::engine::config::vendors;
 using planar::engine::config::work_types;
 
@@ -150,6 +153,39 @@ TEST_CASE("resolve: introspection — config file overrides cli_log and retentio
   CHECK(res->cfg.introspection.retention_days == 30);
   CHECK(res->effective.at("introspection.cli_log").source_ == provenance::config_file);
   CHECK(res->effective.at("introspection.cli_log").value == "true");
+}
+
+TEST_CASE("resolve: introspection — transcript_scan_bytes defaults to 64 MiB and a file value overrides it", "[effective]") {
+  auto const unset = resolve(std::nullopt, env_view{}, std::nullopt);
+  REQUIRE(unset.has_value());
+  CHECK(unset->cfg.introspection.transcript_scan_bytes == 67'108'864);
+  CHECK(unset->effective.at("introspection.transcript_scan_bytes").value == "67108864");
+  CHECK(unset->effective.at("introspection.transcript_scan_bytes").source_ == provenance::embedded_default);
+
+  constexpr std::string_view file = "[introspection]\ntranscript_scan_bytes = 1048576\n";
+  auto const                 set  = resolve(file, env_view{}, std::nullopt);
+  REQUIRE(set.has_value());
+  CHECK(set->cfg.introspection.transcript_scan_bytes == 1'048'576);
+  CHECK(set->effective.at("introspection.transcript_scan_bytes").source_ == provenance::config_file);
+}
+
+TEST_CASE("validate_introspection: transcript_scan_bytes must be an integer above 0", "[effective]") {
+  auto const findings = [](std::string_view doc) {
+    auto const parsed = parse_toml(doc);
+    REQUIRE(parsed.has_value());
+    return validate_introspection(*parsed);
+  };
+  CHECK(findings("").empty());
+  CHECK(findings("[introspection]\ncli_log = true\n").empty());
+  CHECK(findings("[introspection]\ntranscript_scan_bytes = 1\n").empty());
+  CHECK(findings("[introspection]\ntranscript_scan_bytes = 67108864\n").empty());
+  for (std::string_view const value : {"0", "-1", "\"64MiB\"", "true"}) {
+    INFO(value);
+    auto const refused = findings(std::format("[introspection]\ntranscript_scan_bytes = {}\n", value));
+    REQUIRE(refused.size() == 1);
+    CHECK(refused[0].key == "introspection.transcript_scan_bytes");
+    CHECK_FALSE(refused[0].message.empty());
+  }
 }
 
 TEST_CASE("resolve: introspection transcripts — independent per-adapter enable/path overrides", "[effective]") {

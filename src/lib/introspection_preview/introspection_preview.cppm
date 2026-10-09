@@ -80,11 +80,19 @@ export enum class warning_kind : std::uint8_t {
   unsupported_layout,
 };
 
+/// @brief Which budget a `warning_kind::byte_cap` warning ran into.
+export enum class warning_reason : std::uint8_t {
+  none,     ///< The warning carries no reason.
+  retained, ///< The retained-bytes budget was reached, so the scan of the vendor stopped.
+  scanned,  ///< The read budget was reached, so files or the head of a file went unread.
+};
+
 /// @brief One coverage- or cap-driven warning.
 export struct warning_row {
-  vendor        v;         ///< The affected vendor.
-  warning_kind  kind;      ///< Why it was raised.
-  std::uint32_t count = 1; ///< Occurrence count (1 for a state warning).
+  vendor         v;                             ///< The affected vendor.
+  warning_kind   kind;                          ///< Why it was raised.
+  std::uint32_t  count  = 1;                    ///< Occurrence count (1 for a state warning).
+  warning_reason reason = warning_reason::none; ///< Which budget a `byte_cap` warning hit; `none` otherwise.
 };
 
 /// @brief One aggregated evidence bucket: (vendor, verb_path, category,
@@ -111,10 +119,14 @@ export struct coverage_row {
   std::uint32_t  normalized           = 0; ///< Lines that produced (or merged into) a signal.
   std::uint32_t  ignored              = 0; ///< Lines that parsed but carried no evidence.
   std::uint32_t  capped               = 0; ///< Lines that would have produced a new bucket past the evidence cap.
-  std::uint64_t  bytes_read           = 0; ///< Transcript bytes read for this vendor (a tail read counts only the tail).
-  std::uint32_t  files_partial        = 0; ///< Files read from their tail because they alone exceeded the byte budget.
+  std::uint64_t  bytes_read           = 0; ///< Alias of `bytes_retained`: what it measured when every byte read was kept.
+  std::uint32_t  files_partial        = 0; ///< Files read from their tail because they alone exceeded the read budget.
   std::uint32_t  files_skipped_cap    = 0; ///< Files not read because a file, byte or record cap left no room.
   std::uint32_t  files_skipped_window = 0; ///< Files not read because their modification time is before the window.
+  std::uint64_t  bytes_scanned        = 0; ///< Transcript bytes streamed from disk for this vendor (a tail read counts the tail).
+  std::uint64_t  bytes_retained       = 0; ///< Bytes of the lines kept and normalized, newlines excluded.
+  std::uint32_t  lines_oversize       = 0; ///< Lines longer than the line cap, skipped unread.
+  std::uint32_t  results_unpaired = 0; ///< Results whose call was not retained: before the tail start or past the pending cap.
 };
 
 /// @brief Preview output. Owns only normalized keys and timestamps —

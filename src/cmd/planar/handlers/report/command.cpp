@@ -9,6 +9,7 @@ import planar.cliapp.args;
 import planar.cliapp.version;
 import planar.db;
 import planar.engine.config.effective;
+import planar.engine.config.toml;
 import planar.engine.introspect;
 import planar.engine.introspection_adapters;
 import planar.cmd.planar.cli_log;
@@ -55,6 +56,16 @@ auto resolved_config(context& ctx) -> std::expected<cfg::config, domain_error> {
   auto resolved = cfg::resolve(content.has_value() ? std::optional<std::string_view>{*content} : std::nullopt, env, std::nullopt);
   if (!resolved.has_value()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving report config"));
+  }
+  // `resolve` falls back to the default for a wrong-typed value; a range-checked key is refused here, by name.
+  if (content.has_value()) {
+    if (auto const file_map = cfg::parse_toml(*content); file_map.has_value()) {
+      if (auto const findings = cfg::validate_introspection(*file_map); !findings.empty()) {
+        return std::unexpected(
+            error_from_body(domain_error_kind::invalid_input,
+                            std::format("invalid configuration: {}: {}", findings.front().key, findings.front().message)));
+      }
+    }
   }
   return resolved->cfg;
 }
@@ -165,6 +176,7 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   ia::collector_limits limits;
   limits.window_start =
       std::filesystem::file_time_type::clock::now() - std::chrono::hours{24 * std::min<std::int64_t>(days, 36500)};
+  limits.max_scan_bytes = static_cast<std::size_t>(cfg_result->introspection.transcript_scan_bytes);
   // Transcript commands resolve to verb paths through the same live-CLI rule
   // the capture log applies, so typed words never reach a signal.
   ia::verb_path_resolver const resolver = [](std::span<const std::string> argv) { return parse_args(argv).verb_path; };
