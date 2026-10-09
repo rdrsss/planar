@@ -1547,6 +1547,44 @@ TEST_CASE("update: SIGTERM during a slowed download removes the download directo
   interrupt_a_download(SIGTERM, "SIGTERM");
 }
 
+namespace {
+
+/// A plain run interrupted by `sig` before it takes the mutation lock: the
+/// platform check, the first thing the run does, raises the signal in this
+/// process. The report must not claim a lock it never held, and no lock
+/// directory may appear.
+auto interrupt_before_the_lock(int sig, std::string_view name) -> void {
+  auto w = make_world(std::format("upearly{}", sig));
+  publish(w, "v1.1.0", "macos-arm64");
+  seed_install(w, "v1.0.0");
+  recorder rec;
+  auto     host = host_for("macos-arm64", std::nullopt, rec);
+  host.platform = [sig]() -> std::expected<std::string, std::string> {
+    ::raise(sig);
+    return "macos-arm64";
+  };
+  auto const got = invoke(w, {}, host);
+  INFO(got.out << got.err);
+  CHECK(got.code == 128 + sig);
+  CHECK(got.err.contains(std::format("planar update was interrupted by {}", name)));
+  CHECK(got.err.contains("before it took the mutation lock"));
+  CHECK_FALSE(got.err.contains("lock released"));
+  CHECK_FALSE(got.err.contains("released the mutation lock"));
+  CHECK_FALSE(rec.request.has_value());
+  CHECK_FALSE(std::filesystem::exists(canon(w.inst) + ".lock"));
+  CHECK_FALSE(std::filesystem::exists(update_ns(w)));
+}
+
+} // namespace
+
+TEST_CASE("update: SIGINT before the lock is taken does not claim a release", "[update]") {
+  interrupt_before_the_lock(SIGINT, "SIGINT");
+}
+
+TEST_CASE("update: SIGTERM before the lock is taken does not claim a release", "[update]") {
+  interrupt_before_the_lock(SIGTERM, "SIGTERM");
+}
+
 TEST_CASE("update: a failed installer exec removes the download directory and releases the lock", "[update][e2e]") {
   auto       space = make_arena("upexecbad");
   auto const work  = space.cpp_root;
