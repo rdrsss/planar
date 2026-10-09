@@ -494,8 +494,9 @@ n=$((n + 1)); FOO=1 mkdir "$d/x" || die "x $(id -u)"
     got = scan_sh("cat <<EOF\nhello $(hd_sub --x) and `hd_tick` \\$(hd_escaped)\nEOF\n"
                   "cat <<'EOF'\n$(q_single)\nEOF\ncat <<\"EOF\"\n$(q_double)\nEOF\n"
                   "cat <<\\EOF\n$(q_back)\nEOF\ncat << 'EOF'\n$(q_spaced)\nEOF\n"
-                  "cat <<-EOF\n\t$(hd_dash)\n\tEOF\n")
-    assert sorted(got) == ["cat"] * 6 + ["hd_dash", "hd_sub", "hd_tick"], got
+                  "cat <<-EOF\n\t$(hd_dash)\n\tEOF\n"
+                  "cat << EOF\n$(hd_spaced)\nEOF\n")
+    assert sorted(got) == ["cat"] * 7 + ["hd_dash", "hd_spaced", "hd_sub", "hd_tick"], got
     print("install-prereq-scan: self-test passed")
 
 

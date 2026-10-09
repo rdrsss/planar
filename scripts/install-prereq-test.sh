@@ -25,7 +25,7 @@
 #     in install.sh's manifests, or on the named BOOTSTRAP_BASE allowlist.
 # Probes (the end of this script): mutated copies of the update sources and of
 # get-planar.sh, each hiding an unlisted program (an unqualified spawn call; a
-# command in an unquoted here-document, as $(...) and as backticks), must fail
+# command in an unquoted here-document, as $(...) and as backticks, and with a spaced delimiter), must fail
 # this test naming the program, and a quoted here-document must still pass.
 # Every pin is also checked the other way against the sources so it cannot rot.
 # bash 3.2: no associative arrays, no mapfile.
@@ -76,6 +76,7 @@ in_prereq() { # in_prereq NAME -- NAME is a code span (or the tail of a path in 
 
 # --- 1. what planar update spawns -------------------------------------------------
 SCAN="$ROOT/scripts/install-prereq-scan.py"
+python3 "$SCAN" --self-test >/dev/null || fail "the scanner's own --self-test failed ($SCAN --self-test)"
 UPDATE_SCAN="$(python3 "$SCAN" update "$UPDATE_DIR")" || fail "scanning $UPDATE_DIR failed"
 SEEN_UPDATE="$(printf '%s\n' "$UPDATE_SCAN" | sed -n 's/^program //p' | tr '\n' ' ')"
 SEEN_SITES="$(printf '%s\n' "$UPDATE_SCAN" | sed -n 's/^site \([a-z_]*\) \([0-9]*\)$/\1=\2/p' | tr '\n' ' ')"
@@ -125,7 +126,10 @@ grep -Fq 'GNU wget is a declared dependency of this test' "$ROOT/scripts/get-pla
 printf 'install-prereq-test: every program planar update (%s) and the bootstrap (%s) run is listed\n' "$UPDATE_PROGRAMS" "$BOOTSTRAP_PROGRAMS"
 
 # --- 4. probes: the scanner must catch a program hidden in a way the real sources avoid ---
-[[ -z "${PREREQ_NO_PROBES:-}" ]] || exit 0
+if [[ -n "${PREREQ_NO_PROBES:-}" ]]; then
+  printf 'install-prereq-test: probes skipped (PREREQ_NO_PROBES)\n'
+  exit 0
+fi
 PROBE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/install-prereq-probe.XXXXXX")"
 trap 'rm -rf "$PROBE_TMP"' EXIT
 rerun() { # rerun VAR=PATH -- run this test (probes off) against a mutated copy; output in $PROBE_OUT, status in $PROBE_RC
@@ -152,11 +156,34 @@ EOF
 rerun "PREREQ_UPDATE_DIR=$PROBE_TMP/update"
 expect_caught unqualified-spawn zzprobe-unqualified
 
+# update sources: a runner::start call, whose argv is a variable so no program name shows, written
+# bare after a using-directive and through a namespace alias; only the site pin can catch it
+for kind in bare alias; do
+  mkdir "$PROBE_TMP/update-$kind"
+  cp "$UPDATE_DIR"/*.cpp "$UPDATE_DIR"/*.cppm "$PROBE_TMP/update-$kind/"
+  if [[ "$kind" == bare ]]; then
+    printf 'namespace probe_runner_bare {\nusing namespace planar::process::runner;\nauto hidden(const spec& s) { return start(s); }\n}\n' >> "$PROBE_TMP/update-$kind/command.cpp"
+  else
+    printf 'namespace probe_runner_alias {\nnamespace rr = planar::process::runner;\nauto hidden(const rr::spec& s) { return rr::start(s); }\n}\n' >> "$PROBE_TMP/update-$kind/command.cpp"
+  fi
+  rerun "PREREQ_UPDATE_DIR=$PROBE_TMP/update-$kind"
+  [[ "$PROBE_RC" -ne 0 ]] || fail "probe 'runner-$kind': the test passed although an unpinned runner::start call was added"
+  case "$PROBE_OUT" in
+    *runner_start=1*) printf 'install-prereq-test: probe runner-%s: caught: runner_start site reported\n' "$kind" ;;
+    *) fail "probe 'runner-$kind': failed without reporting the runner_start site: $PROBE_OUT" ;;
+  esac
+done
+
 # get-planar.sh: an unlisted program run inside an unquoted here-document, as $(...) and as backticks
-for kind in subst tick; do
+for kind in subst tick spaced; do
   cp "$BOOTSTRAP" "$PROBE_TMP/boot-$kind.sh"
-  if [[ "$kind" == subst ]]; then body='$(zzprobe-heredoc-subst --version)'; else body='`zzprobe-heredoc-tick --version`'; fi
-  printf 'cat <<EOF\n%s\nEOF\n' "$body" >> "$PROBE_TMP/boot-$kind.sh"
+  op='<<'
+  case "$kind" in
+    subst) body='$(zzprobe-heredoc-subst --version)' ;;
+    tick) body='`zzprobe-heredoc-tick --version`' ;;
+    spaced) body='$(zzprobe-heredoc-spaced --version)'; op='<< ' ;;
+  esac
+  printf 'cat %sEOF\n%s\nEOF\n' "$op" "$body" >> "$PROBE_TMP/boot-$kind.sh"
   rerun "PREREQ_BOOTSTRAP=$PROBE_TMP/boot-$kind.sh"
   expect_caught "heredoc-$kind" "zzprobe-heredoc-$kind"
 done
