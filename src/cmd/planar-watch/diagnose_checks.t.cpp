@@ -520,23 +520,25 @@ TEST_CASE("a snapshot confirmed after the role action started is late, and not u
   auto token   = w.claim(1);
   auto preview = w.dispatch_preview(1, token);
   w.planar_agent({"action", "start", "--claim", token, "--kind", "coder", "--entity", "task:1", "--no-locality-probe"});
-  w.dispatch_confirm(preview, world::now_text(), token);
+  auto confirmed = world::now_text();
+  w.dispatch_confirm(preview, confirmed, token);
 
-  // TIME TRAVEL: the verbs write the real clock, and a confirm is stamped with the caller's
-  // whole-second text, so the order of a started action and a confirm is not under the test's
-  // control. The action is moved to 2020-01-01T00:00:00.000Z and the snapshot to a minute later.
+  // TIME TRAVEL: a snapshot is immutable and stamped with the caller's whole-second text, and the
+  // verbs write the real clock for the action, so the order of the two is not under the test's
+  // control. The action is moved to 2020-01-01, long before the confirm.
   w.move_time("update agent_actions set started_at = '2020-01-01T00:00:00.000Z' where action_kind = 'coder'");
-  w.move_time("update routing_dispatch_snapshots set confirmed_at = '2020-01-01T00:01:00Z'");
-  CHECK(w.findings(k_dispatch_checks, "36500") == std::vector<std::string>{"dispatch-confirmed-late claim:1 warning"});
-
   auto        parsed = w.diagnose_json(k_dispatch_checks, "36500");
   const auto& found  = parsed.find("findings")->array;
   REQUIRE(found.size() == 1);
+  CHECK(found[0].find("check")->string == "dispatch-confirmed-late");
+  CHECK(found[0].find("entity")->string == "claim:1");
   REQUIRE(found[0].find("evidence_times")->array.size() == 2);
   CHECK(found[0].find("evidence_times")->array[0].string == "2020-01-01T00:00:00.000Z");
-  CHECK(found[0].find("evidence_times")->array[1].string == "2020-01-01T00:01:00.000Z");
+  // The snapshot's confirmed_at, normalised to the stored format.
+  auto normalised = confirmed.substr(0, confirmed.size() - 1) + ".000Z";
+  CHECK(found[0].find("evidence_times")->array[1].string == normalised);
 
-  // The same instant is not late.
-  w.move_time("update routing_dispatch_snapshots set confirmed_at = '2020-01-01T00:00:00Z'");
+  // The action starting at the instant of the confirm is not late.
+  w.move_time(std::format("update agent_actions set started_at = '{}' where action_kind = 'coder'", normalised));
   CHECK(w.findings(k_dispatch_checks, "36500").empty());
 }

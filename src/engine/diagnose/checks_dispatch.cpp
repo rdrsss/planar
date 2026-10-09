@@ -7,6 +7,10 @@
 ///  - `dispatch-no-role-action` (event, error): a dispatch whose claim is no longer live and that
 ///    has no `coder`, `reviewer` or `test_coder` action tied to the claim, or tied to its task
 ///    inside the claim's lifetime.
+///  - `dispatch-unconfirmed` (event, warning): a dispatch with a preview bound to its claim and no
+///    snapshot confirming it, reported once its claim has ended or a role action has started.
+///  - `dispatch-confirmed-late` (event, warning): a dispatch whose earliest snapshot was confirmed
+///    strictly after its first role action started.
 ///  - `action-unended` (state, warning): an action with no `ended_at` whose claim is terminal or
 ///    past its lease.
 ///
@@ -73,11 +77,17 @@ auto is_dispatch() -> std::string {
                      k_preview_match, snapshot_match());
 }
 
-/// True when a role action is tied to claim `c`, or to its task inside its lifetime.
-constexpr std::string_view k_has_role_action =
-    "exists (select 1 from agent_actions a where a.action_kind in ('coder', 'reviewer', 'test_coder')"
+/// The condition that action `a` is a role action tied to claim `c`: a `coder`, `reviewer` or `test_coder` action on the
+/// claim, or on its task and started inside the claim's lifetime.
+constexpr std::string_view k_role_action =
+    "a.action_kind in ('coder', 'reviewer', 'test_coder')"
     " and (a.claim_id = c.id or (a.entity_kind = 'task' and a.entity_id = c.entity_id"
-    "      and a.started_at >= c.claimed_at and a.started_at <= coalesce(c.released_at, c.lease_expires_at))))";
+    "      and a.started_at >= c.claimed_at and a.started_at <= coalesce(c.released_at, c.lease_expires_at)))";
+
+/// True when a role action is tied to claim `c`.
+auto has_role_action() -> std::string {
+  return std::format("exists (select 1 from agent_actions a where {})", k_role_action);
+}
 
 /// The grouping that fixes a dispatch finding's fingerprint on the claim and its task, so a record that
 /// appears in the evidence later does not make a new incident.
@@ -96,7 +106,7 @@ auto no_role_action(const check_context& ctx) -> std::expected<std::vector<im::f
                          " where {4} and {5} and not {6}"
                          "   and {1} >= ?1 and {1} <= ?2 and {7}"
                          " order by c.id",
-                         "", k_ends, k_preview_match, snapshot_match(), is_dispatch(), not_live(now), k_has_role_action,
+                         "", k_ends, k_preview_match, snapshot_match(), is_dispatch(), not_live(now), has_role_action(),
                          plan_filter_sql(ctx.scope, k_claim_plan));
   return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
     im::finding f;
@@ -110,6 +120,69 @@ auto no_role_action(const check_context& ctx) -> std::expected<std::vector<im::f
       f.evidence.push_back(im::entity_ref{.kind = "dispatch_snapshot", .id = row.column_int64(4)});
     }
     f.evidence_times = {row.column_text(2)};
+    f.group          = dispatch_group(f);
+    return f;
+  });
+}
+
+auto unconfirmed(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
+  // `?1` is the window start and `?2` its end, the evaluation instant. A dispatch here is a claim with a
+  // preview bound to it (`pid` is the newest) and no snapshot confirming it; it is reported once its claim has
+  // ended or a role action has started, because a live claim that has only been previewed may still be confirmed.
+  auto now = std::format("strftime({}, ?2)", k_format);
+  auto sql =
+      std::format("select q.id, q.task_id, q.pid, p.created_at"
+                  " from (select c.id, c.entity_id as task_id,"
+                  "              (select max(p.id) from routing_dispatch_previews p where {0}) as pid"
+                  "       from agent_work_claims c"
+                  "       where c.entity_kind = 'task'"
+                  "         and exists (select 1 from routing_dispatch_previews p where {0})"
+                  "         and not exists (select 1 from routing_dispatch_snapshots s where {1})"
+                  "         and ({2} or {3}) and {4}) q"
+                  " join routing_dispatch_previews p on p.id = q.pid"
+                  " where p.created_at >= ?1 and p.created_at <= ?2"
+                  " order by q.id",
+                  k_preview_match, snapshot_match(), not_live(now), has_role_action(), plan_filter_sql(ctx.scope, k_claim_plan));
+  return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
+    im::finding f;
+    f.severity       = im::diagnostic_severity::warning;
+    f.primary        = im::entity_ref{.kind = "claim", .id = row.column_int64(0)};
+    f.evidence       = {f.primary, im::entity_ref{.kind = "task", .id = row.column_int64(1)},
+                        im::entity_ref{.kind = "dispatch_preview", .id = row.column_int64(2)}};
+    f.evidence_times = {row.column_text(3)};
+    f.group          = dispatch_group(f);
+    return f;
+  });
+}
+
+auto confirmed_late(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
+  // `fa_at` is the start of the claim's first role action and `sc_at` its earliest confirmation, normalised to
+  // the stored format. Late is strictly after: a confirm at the instant the action started is in time.
+  auto sql = std::format("with cand as ("
+                         "  select c.id as claim_id, c.entity_id as task_id,"
+                         "         (select min(a.started_at) from agent_actions a where {0}) as fa_at,"
+                         "         (select min(strftime({2}, s.confirmed_at)) from routing_dispatch_snapshots s"
+                         "          where {1}) as sc_at"
+                         "  from agent_work_claims c where {3} and {4})"
+                         " select cand.claim_id, cand.task_id, cand.fa_at, cand.sc_at,"
+                         "        (select min(a.id) from agent_actions a join agent_work_claims c on c.id = cand.claim_id"
+                         "         where {0} and a.started_at = cand.fa_at),"
+                         "        (select min(s.id) from routing_dispatch_snapshots s"
+                         "         join agent_work_claims c on c.id = cand.claim_id"
+                         "         where {1} and strftime({2}, s.confirmed_at) = cand.sc_at)"
+                         " from cand"
+                         " where cand.fa_at is not null and cand.sc_at is not null and cand.sc_at > cand.fa_at"
+                         "   and cand.sc_at >= ?1 and cand.sc_at <= ?2"
+                         " order by cand.claim_id",
+                         k_role_action, snapshot_match(), k_format, is_dispatch(), plan_filter_sql(ctx.scope, k_claim_plan));
+  return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
+    im::finding f;
+    f.severity       = im::diagnostic_severity::warning;
+    f.primary        = im::entity_ref{.kind = "claim", .id = row.column_int64(0)};
+    f.evidence       = {f.primary, im::entity_ref{.kind = "task", .id = row.column_int64(1)},
+                        im::entity_ref{.kind = "dispatch_snapshot", .id = row.column_int64(5)},
+                        im::entity_ref{.kind = "action", .id = row.column_int64(4)}};
+    f.evidence_times = {row.column_text(2), row.column_text(3)};
     f.group          = dispatch_group(f);
     return f;
   });
@@ -145,6 +218,22 @@ auto dispatch_family() -> family {
                                .inputs   = {},
                                .built    = true,
                                .evaluate = no_role_action});
+  f.checks.push_back(check_def{.id       = "dispatch-unconfirmed",
+                               .kind     = im::check_kind::event,
+                               .severity = im::diagnostic_severity::warning,
+                               .category = "dispatch_unconfirmed",
+                               .recovery = "planar-agent dispatch confirm before spawning",
+                               .inputs   = {},
+                               .built    = true,
+                               .evaluate = unconfirmed});
+  f.checks.push_back(check_def{.id       = "dispatch-confirmed-late",
+                               .kind     = im::check_kind::event,
+                               .severity = im::diagnostic_severity::warning,
+                               .category = "dispatch_confirmed_late",
+                               .recovery = "confirm before spawning",
+                               .inputs   = {},
+                               .built    = true,
+                               .evaluate = confirmed_late});
   f.checks.push_back(check_def{.id       = "action-unended",
                                .kind     = im::check_kind::state,
                                .severity = im::diagnostic_severity::warning,
