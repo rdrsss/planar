@@ -230,7 +230,11 @@ auto evaluate(db::connection& conn, const run_request& request, const catalog& c
     d.window.days   = request.days.value_or(k_default_days);
   }
 
-  check_context ctx{.conn = conn, .scope = d.scope, .window = d.window, .evaluated_at = d.evaluated_at};
+  check_context ctx{.conn            = conn,
+                    .scope           = d.scope,
+                    .window          = d.window,
+                    .evaluated_at    = d.evaluated_at,
+                    .cli_log_enabled = request.cli_log_enabled};
 
   // Which inputs does a selected, built check need?
   for (const auto& input : cat.inputs) {

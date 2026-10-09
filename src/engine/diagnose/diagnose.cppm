@@ -106,10 +106,11 @@ export auto plan_filter_sql(const plan_scope& scope, std::string_view column) ->
 
 /// @brief What a check or an input probe sees. Every reference outlives the call.
 export struct check_context {
-  db::connection&    conn;         ///< The run's connection, inside the read transaction.
-  const plan_scope&  scope;        ///< The plan scope.
-  const time_window& window;       ///< The window; a check filters its evidence by it.
-  std::string_view   evaluated_at; ///< The injected evaluation instant; never read from the clock.
+  db::connection&     conn;            ///< The run's connection, inside the read transaction.
+  const plan_scope&   scope;           ///< The plan scope.
+  const time_window&  window;          ///< The window; a check filters its evidence by it.
+  std::string_view    evaluated_at;    ///< The injected evaluation instant; never read from the clock.
+  std::optional<bool> cli_log_enabled; ///< `[introspection].cli_log` as the caller read it; empty when the caller does not know.
 };
 
 /// @brief One input's observed state, as an input probe reports it.
@@ -211,10 +212,12 @@ auto queue_family() -> family;
 
 /// @brief What to evaluate.
 export struct run_request {
-  std::optional<std::int64_t> plan_id;      ///< `--plan`: the plan and its descendants.
-  std::optional<int>          days;         ///< `--days`: overrides the plan-lifetime window; at least 1.
-  std::vector<std::string>    checks;       ///< `--check`: selected ids; empty selects every check.
-  std::string                 evaluated_at; ///< The injected instant, `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
+  std::optional<std::int64_t> plan_id;         ///< `--plan`: the plan and its descendants.
+  std::optional<int>          days;            ///< `--days`: overrides the plan-lifetime window; at least 1.
+  std::vector<std::string>    checks;          ///< `--check`: selected ids; empty selects every check.
+  std::string                 evaluated_at;    ///< The injected instant, `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
+  std::optional<bool>         cli_log_enabled; ///< `[introspection].cli_log`, read by the caller (this module reads no config);
+                                               ///< empty when unknown, which reads as an `unavailable` capture-log input.
 };
 
 /// @brief What happened to one catalog check in a run.
