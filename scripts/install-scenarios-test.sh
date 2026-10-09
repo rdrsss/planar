@@ -35,7 +35,7 @@ ROOT="$1"; shift
 TMP="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$TMP"' EXIT
 GROUP="${MINI_GROUP:-all}"
-SCEN_TABLE="e:g3 a:g1 b:g1 c:g2 d:g2"
+SCEN_TABLE="e:g3 a:g1 b:g1 c:g2 d:g2 ${MINI_EXTRA-}"
 SCEN_SERIAL=" e "
 source "$ROOT/scripts/fixtures/scenario-runner.sh"
 scen_init mini "$SCEN_TABLE" "$SCEN_SERIAL"
@@ -46,12 +46,23 @@ live() { # live NAME -- stay live for a second; print the live count at the star
   : > "$MINI_LIVE/$1"; n="$(ls "$MINI_LIVE" | wc -l | tr -d ' ')"
   sleep 1; m="$(ls "$MINI_LIVE" | wc -l | tr -d ' ')"; rm -f "$MINI_LIVE/$1"
   printf 'ran %s live=%s end=%s scratch=%s\n' "$1" "$n" "$m" "$TMP"
+  CHECKS=$((CHECKS + 1))
 }
+CHECKS=0
 if scen a; then live a; fi
 if scen b; then live b; [[ -z "${MINI_BREAK-}" ]] || { echo "b: an assertion failed" >&2; exit 1; }; fi
 if scen c; then live c; fi
 if scen d; then live d; [[ -z "${MINI_MUTATE-}" ]] || echo changed >> "$FIX/file"; fi
 if scen e; then live e; fi
+# (has N: only a scenario named in MINI_EXTRA exists; scen alone selects every name under group all)
+has() { [[ " ${MINI_EXTRA-} " == *" $1:"* ]]; }
+# f declares a skip and nothing else; g neither asserts nor declares; h's wrapper is killed
+# from inside; s starts a long sleeper and records its pid (the abort test kills the run).
+if has f && scen f; then scen_skip "no widget on this host"; fi
+if has g && scen g; then :; fi
+if has h && scen h; then kill -KILL "$PPID"; sleep 0.2; echo "h: ran on after its wrapper was killed"; CHECKS=$((CHECKS + 1)); fi
+if has s && scen s; then sleep 300 & echo $! > "$MINI_LIVE.sleeper"; CHECKS=$((CHECKS + 1)); wait; fi
+[[ "$CHECKS" -gt 0 ]] || { scen_none_ran; echo "mini: FAIL: group $GROUP ran no check" >&2; exit 1; }
 MINI
 
 # mini [ENV=V...] -- run the stand-in; RC, $TMP/out (stdout), $TMP/err (stderr).
@@ -88,6 +99,54 @@ for s in a b c d e; do grep -Fq "=== scenario $s: ok" "$TMP/out" || fail "scenar
 mini INSTALL_TEST_JOBS=4
 [[ "$RC" == 0 && "$(live_max)" -gt 2 && "$(live_max)" -le 4 ]] || fail "INSTALL_TEST_JOBS=4 ran $(live_max) at a time ($RC)"
 pass "a parallel run reports every scenario by name, bounds the job count, gives each its own scratch and runs the serial one alone"
+
+# INSTALL_TEST_JOBS=08 is eight, not an invalid octal number; 00 is still not a positive count
+mini INSTALL_TEST_JOBS=08
+[[ "$RC" == 0 ]] && grep -Fq 'mini: 5 scenarios, 8 at a time' "$TMP/out" || fail "INSTALL_TEST_JOBS=08 was not read as 8 ($RC): $(cat "$TMP/out" "$TMP/err")"
+mini INSTALL_TEST_JOBS=09
+[[ "$RC" == 0 ]] && grep -Fq '9 at a time' "$TMP/out" || fail "INSTALL_TEST_JOBS=09 was not read as 9 ($RC): $(cat "$TMP/err")"
+mini INSTALL_TEST_JOBS=00
+[[ "$RC" == 2 ]] || fail "INSTALL_TEST_JOBS=00 did not exit 2 ($RC)"
+pass "INSTALL_TEST_JOBS with a leading zero is decimal; zero in any spelling is refused"
+
+# --- declared skips and silent scenarios -----------------------------------------------------
+mini INSTALL_TEST_JOBS=4 MINI_EXTRA="f:g4"
+[[ "$RC" == 0 ]] || fail "a run with a declared skip failed ($RC): $(cat "$TMP/out" "$TMP/err")"
+grep -Fq '=== scenario f: skipped (no widget on this host)' "$TMP/out" || fail "the declared skip was not reported as skipped: $(cat "$TMP/out")"
+! grep -Fq 'scenario f: ok' "$TMP/out" || fail "a skipped scenario was reported ok"
+grep -Fq '=== scenario a: ok' "$TMP/out" || fail "the other scenarios did not run beside the skip"
+mini INSTALL_TEST_SCENARIO=f MINI_EXTRA="f:g4"
+[[ "$RC" == 0 ]] && grep -Fq 'scenario-skipped: no widget on this host' "$TMP/out" || fail "a lone skipped scenario did not pass as skipped ($RC): $(cat "$TMP/out" "$TMP/err")"
+mini INSTALL_TEST_JOBS=4 MINI_EXTRA="g:g5"
+[[ "$RC" == 1 ]] && grep -Fq 'mini: FAIL: scenario g exited 1' "$TMP/err" && grep -Fq 'ran no check' "$TMP/err" \
+  || fail "a scenario that neither asserted nor declared a skip did not fail ($RC): $(cat "$TMP/err")"
+mini INSTALL_TEST_SCENARIO=g MINI_EXTRA="g:g5"
+[[ "$RC" == 1 ]] || fail "a lone silent scenario did not fail ($RC)"
+pass "a declared skip passes and is reported as skipped; a scenario that asserts nothing and declares nothing fails"
+
+# --- a child that dies without a status -----------------------------------------------------
+# h kills its own wrapper, so no status file is written: the run must name it and end, not wait.
+T0=$SECONDS
+RC=0
+perl -e 'alarm 90; exec @ARGV' env MINI_LIVE="$TMP/live" INSTALL_TEST_JOBS=4 MINI_EXTRA="h:g6" /bin/bash "$TMP/mini.sh" "$ROOT" >"$TMP/out" 2>"$TMP/err" || RC=$?
+[[ "$RC" == 1 ]] || fail "a child killed without a status did not fail the run, or the run hung ($RC): $(cat "$TMP/err")"
+grep -Fq 'mini: FAIL: scenario h exited without a status' "$TMP/err" || fail "the child killed without a status was not named: $(cat "$TMP/err")"
+[[ $((SECONDS - T0)) -lt 30 ]] || fail "the run took $((SECONDS - T0))s to notice the dead child"
+pass "a child that exits without a status fails by name within a bounded time"
+
+# --- an interrupted dispatcher stops its children ---------------------------------------------
+rm -f "$TMP/live.sleeper"
+env MINI_LIVE="$TMP/live" INSTALL_TEST_JOBS=4 MINI_EXTRA="s:g7" /bin/bash "$TMP/mini.sh" "$ROOT" >"$TMP/out" 2>"$TMP/err" &
+DISP=$!
+for _ in $(seq 1 100); do [[ -s "$TMP/live.sleeper" ]] && break; sleep 0.1; done
+[[ -s "$TMP/live.sleeper" ]] || { kill -KILL "$DISP" 2>/dev/null || true; fail "the long scenario never started"; }
+SLEEPER="$(cat "$TMP/live.sleeper")"
+kill -TERM "$DISP"
+RC=0; wait "$DISP" || RC=$?
+[[ "$RC" == 143 ]] || fail "an interrupted dispatcher exited $RC, not 143"
+for _ in $(seq 1 50); do kill -0 "$SLEEPER" 2>/dev/null || break; sleep 0.1; done
+! kill -0 "$SLEEPER" 2>/dev/null || { kill -KILL "$SLEEPER" 2>/dev/null || true; fail "an interrupted dispatcher left a scenario's process running"; }
+pass "an interrupted dispatcher stops its children and what they started, without pkill"
 
 # --- failure attribution ---------------------------------------------------------------------
 mini INSTALL_TEST_JOBS=4 MINI_BREAK=1

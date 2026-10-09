@@ -576,7 +576,7 @@ if host_has_identity; then
   no_evidence "$P"
   pass "a killed install is recovered after a hostname change, without manual removal"
 else
-  printf 'install-order-test: note: this host has no machine identity; the hostname-change case runs in install-lock-test.sh with a fixture identity\n'
+  scen_skip "this host has no machine identity; the hostname-change case runs in install-lock-test.sh with a fixture identity"
 fi
 fi
 
@@ -795,5 +795,5 @@ RC=0
 pass "the test fault hook is inert unless armed"
 fi
 
-[[ "$PASSED" -gt 0 ]] || fail "group $GROUP ran no check"
+[[ "$PASSED" -gt 0 ]] || { scen_none_ran; fail "group $GROUP ran no check"; }
 printf 'install order tests (group %s%s): %s passed\n' "$GROUP" "${SCEN_FILTER:+, scenario $SCEN_FILTER}" "$PASSED"

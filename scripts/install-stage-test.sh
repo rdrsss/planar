@@ -175,6 +175,8 @@ if [[ ! -x "$PLANAR_BIN" ]]; then
   HEALTH=0
   printf 'install-stage tests: health scenarios SKIPPED (no planar binary at %s; set PLANAR_BIN)\n' "$PLANAR_BIN"
 fi
+# skip_health -- the health scenario about to be left out declares it (scen_skip), once.
+skip_health() { scen_skip "scenario $1 needs a built planar (no binary at $PLANAR_BIN; set PLANAR_BIN)"; }
 
 # health_json HOME -- `planar health --json` for a scratch install. The install
 # initialized $HOME/planar.db with the stub planar (a placeholder, not SQLite),
@@ -545,6 +547,8 @@ mark 23
   || fail "the link-mode skill is not a symlink into the staged tree"
 [[ "$(freshness "$TMP/h12")" == "current fresh 93 93 0 0" ]] || fail "link install is not fresh in health: $(freshness "$TMP/h12")"
 
+else
+  skip_health 23
 fi
 
 if [[ "$HEALTH" == 1 ]]; then
@@ -555,6 +559,8 @@ for d in .codex .copilot .gemini .config; do rm -rf "${TMP:?}/h8/$d"; done
 [[ "$(freshness "$TMP/h8")" == "current fresh 16 16 0 0" ]] || fail "absent vendors still produced rows: $(freshness "$TMP/h8")"
 [[ "$(freshness "$TMP/h9")" == "current fresh 16 16 0 0" ]] || fail "the claude-only install is not 16 fresh rows: $(freshness "$TMP/h9")"
 
+else
+  skip_health 24
 fi
 fi
 
@@ -803,6 +809,8 @@ cp "$TMP/skill.bak" "$SKILLMD"
 rm -rf "$TMP/h21/.agents/skills/planar"
 [[ "$(freshness "$TMP/h21")" == "current degraded 93 92 0 1" ]] || fail "a removed skill directory is not one missing row: $(freshness "$TMP/h21")"
 
+else
+  skip_health 22
 fi
 fi
 
@@ -820,6 +828,8 @@ printf '{"version": 1, "build_id": "old", "install_mode": "copy", "vendors": ["c
   > "$TMP/hold/.planar/install-manifest.json"
 [[ "$(freshness "$TMP/hold")" == "legacy degraded 0 0 0 0" ]] || fail "a version 1 manifest with old rows is not legacy: $(freshness "$TMP/hold")"
 
+else
+  skip_health 25
 fi
 fi
 
@@ -1058,5 +1068,5 @@ run_install "$MUT" "$H" --vendors zzvendor || fail "install with the extended ve
 ! grep -Fq 'unknown vendor: zzvendor' "$H/err" || fail "install.sh keeps its own vendor list: it did not see the vendor added to managed-lists.sh"
 fi
 
-[[ "$MARKED" -gt 0 ]] || fail "group $GROUP ran no scenario"
+[[ "$MARKED" -gt 0 ]] || { scen_none_ran; fail "group $GROUP ran no scenario"; }
 printf 'install-stage tests (group %s%s): %s scenarios run\n' "$GROUP" "${SCEN_FILTER:+, scenario $SCEN_FILTER}" "$MARKED"

@@ -24,6 +24,7 @@ SCEN_FILTER=""
 SCEN_JOBS=4
 SCEN_RUNNING=""
 SCEN_FAILED=""
+SCEN_SKIPPED=""
 
 # scen_group_of NAME -- the group a scenario belongs to; empty if NAME is not in the table.
 scen_group_of() {
@@ -47,8 +48,30 @@ scen_init() {
   fi
   SCEN_JOBS="${INSTALL_TEST_JOBS:-4}"
   case "$SCEN_JOBS" in
-    ''|*[!0-9]*|0) printf '%s: INSTALL_TEST_JOBS must be a positive integer, got %s\n' "$SCEN_TOOL" "$SCEN_JOBS" >&2; exit 2 ;;
+    ''|*[!0-9]*) printf '%s: INSTALL_TEST_JOBS must be a positive integer, got %s\n' "$SCEN_TOOL" "$SCEN_JOBS" >&2; exit 2 ;;
   esac
+  # a leading zero is decimal here (08 is 8), never octal
+  SCEN_JOBS="$((10#$SCEN_JOBS))"
+  if [[ "$SCEN_JOBS" -lt 1 ]]; then
+    printf '%s: INSTALL_TEST_JOBS must be a positive integer, got %s\n' "$SCEN_TOOL" "${INSTALL_TEST_JOBS:-4}" >&2; exit 2
+  fi
+}
+
+# scen_skip REASON -- the running scenario cannot run on this host (a missing capability, tool or
+# binary) and says so. Prints a `skip:` line and records the declaration. A run whose only outcome
+# is such a declaration passes as skipped (see scen_none_ran); a scenario that runs nothing without
+# declaring a skip still fails.
+scen_skip() {
+  SCEN_SKIPPED="${SCEN_SKIPPED:+$SCEN_SKIPPED; }$1"
+  printf 'skip: %s\n' "$1"
+}
+
+# scen_none_ran -- call when the run made no check. A declared skip ends the run as passed with a
+# `scenario-skipped:` line (the dispatcher reports it as skipped); otherwise returns, and the
+# caller fails.
+scen_none_ran() {
+  [[ -z "$SCEN_SKIPPED" ]] || { printf 'scenario-skipped: %s\n' "$SCEN_SKIPPED"; exit 0; }
+  return 0
 }
 
 # scen NAME -- is this scenario selected? A scenario filter wins over the group filter.
@@ -82,13 +105,22 @@ _scen_start() {
   local name="$1" logdir="$2"; shift 2
   local t0=$SECONDS pid
   rm -f "$logdir/$name.rc"
+  # job control gives the child its own process group, so an abort can stop everything it started
+  set -m
   (
     rc=0
     INSTALL_TEST_SCENARIO="$name" INSTALL_TEST_SHARED="$TMP" "$BASH" "$SCEN_SCRIPT" ${@+"$@"} >"$logdir/$name.log" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$logdir/$name.rc.tmp" && mv "$logdir/$name.rc.tmp" "$logdir/$name.rc"
   ) &
   pid=$!
+  set +m
   SCEN_RUNNING="$SCEN_RUNNING $pid:$name:$t0"
+}
+
+# _scen_alive PID -- is the child still running (a zombie that was not reaped is not)?
+_scen_alive() {
+  kill -0 "$1" 2>/dev/null || return 1
+  [[ "$(ps -o stat= -p "$1" 2>/dev/null | cut -c1)" != Z ]]
 }
 
 # _scen_reap LOGDIR -- report every child that has finished; returns 0 when at least one did.
@@ -96,10 +128,23 @@ _scen_reap() {
   local logdir="$1" still="" e pid rest name t0 rc any=1
   for e in $SCEN_RUNNING; do
     pid="${e%%:*}"; rest="${e#*:}"; name="${rest%%:*}"; t0="${rest#*:}"
-    if [[ ! -e "$logdir/$name.rc" ]]; then still="$still $e"; continue; fi
+    if [[ ! -e "$logdir/$name.rc" ]]; then
+      # the wrapper writes the status before it exits, so a dead wrapper with no status file was
+      # killed; test liveness first and the file second, so a status written in between is seen
+      if _scen_alive "$pid" || [[ -e "$logdir/$name.rc" ]]; then still="$still $e"; continue; fi
+      printf '=== scenario %s: FAILED, exited without a status (%ss)\n' "$name" "$((SECONDS - t0))" >&2
+      cat "$logdir/$name.log" >&2
+      printf '%s: FAIL: scenario %s exited without a status\n' "$SCEN_TOOL" "$name" >&2
+      SCEN_FAILED="$SCEN_FAILED $name"
+      any=0
+      continue
+    fi
     wait "$pid" 2>/dev/null || true
     rc="$(cat "$logdir/$name.rc")"
-    if [[ "$rc" == 0 ]]; then
+    if [[ "$rc" == 0 ]] && grep -q '^scenario-skipped: ' "$logdir/$name.log"; then
+      printf '=== scenario %s: skipped (%s) (%ss)\n' "$name" "$(sed -n 's/^scenario-skipped: //p' "$logdir/$name.log" | head -n 1)" "$((SECONDS - t0))"
+      cat "$logdir/$name.log"
+    elif [[ "$rc" == 0 ]]; then
       printf '=== scenario %s: ok (%ss)\n' "$name" "$((SECONDS - t0))"
       cat "$logdir/$name.log"
     else
@@ -118,8 +163,9 @@ _scen_reap() {
 _scen_abort() {
   local e
   for e in $SCEN_RUNNING; do
-    pkill -TERM -P "${e%%:*}" 2>/dev/null || true
-    kill -TERM "${e%%:*}" 2>/dev/null || true
+    # the child's whole process group (see _scen_start), then the wrapper itself
+    kill -s TERM -- "-${e%%:*}" 2>/dev/null || true
+    kill -s TERM "${e%%:*}" 2>/dev/null || true
   done
   exit 143
 }
