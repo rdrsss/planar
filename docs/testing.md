@@ -728,6 +728,40 @@ above, as the file order ran them); after, one run of the same script:
 To measure again, run each family's label through the queue on a quiet host and compare with the
 table; do not compare a run against numbers taken under a different load.
 
+### The installer test limit
+
+No installer test runs longer than five minutes (the release-bundles test spec). An installer
+test is every ctest case named `install.*`: the `install.order_*`, `install.stage_*`,
+`install.uninstall_*` and `install.bash32_*` group cases, `install.manifest`, `install.deps`,
+`install.prefix_guard`, `install.data_paths`, `install.prereq`, `install.prebuilt`,
+`install.retired_targets`, `install.managed`, `install.lock`, `install.scenarios` and
+`install.queue_probe`. `bootstrap.release`, `dist.*` and `release.*` are not installer tests:
+they test `get-planar.sh`, the bundle assembler and the publisher, which the spec's limit does
+not name, so they keep their own `TIMEOUT` values.
+
+The limit is two CMake cache variables in the top `CMakeLists.txt`:
+
+| Variable | Default | Meaning |
+|----------|--------:|---------|
+| `PLANAR_INSTALLER_TEST_LIMIT` | 300 | Seconds an installer test may take. |
+| `PLANAR_INSTALLER_TEST_MARGIN` | 60 | Slack for a loaded host, on top of the limit. |
+
+Every `install.*` case sets `TIMEOUT` to their sum, 360 s, so a test that runs past
+five minutes plus the margin fails under ctest as `***Timeout`, naming the case. The margin
+exists because the host queue's machine runs other sessions' work and single runs move by 10 to 20
+percent; it is not room to grow into. A test that nears 300 s on a quiet host is split or sped
+up, not given a larger limit. The configure step fails if any `install.*` case carries another
+`TIMEOUT`, so a new installer test cannot register without the limit. To try the limit,
+`cmake --preset debug -DPLANAR_INSTALLER_TEST_LIMIT=5 -DPLANAR_INSTALLER_TEST_MARGIN=0` and run one
+case; put the defaults back afterwards (`-DPLANAR_INSTALLER_TEST_LIMIT=300
+-DPLANAR_INSTALLER_TEST_MARGIN=60`).
+
+Measured times per case are in [Installer test speed](#installer-test-speed). The longest
+installer case on 2026-10-09 (macOS arm64, a loaded host, `ctest -L` through the host queue) was
+`install.prefix_guard` at 211 s, then `install.prebuilt` and `install.managed` at 163 and 162 s,
+`install.data_paths` at 143 s, `install.uninstall_manifest` at 125 s, and the rest below 120 s;
+all 32 ran inside the limit. `bootstrap.release`, outside the limit, took 143 s.
+
 ### The two-shell comparison
 
 The `install.bash32_*` tests install and uninstall a fake bundle under bash 3.2 and under
