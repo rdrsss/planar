@@ -109,7 +109,7 @@ _scen_start() {
   set -m
   (
     rc=0
-    INSTALL_TEST_SCENARIO="$name" INSTALL_TEST_SHARED="$TMP" "$BASH" "$SCEN_SCRIPT" ${@+"$@"} >"$logdir/$name.log" 2>&1 || rc=$?
+    INSTALL_TEST_SCENARIO="$name" INSTALL_TEST_SHARED="$TMP" "$BASH" "$SCEN_SCRIPT" ${@+"$@"} </dev/null >"$logdir/$name.log" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$logdir/$name.rc.tmp" && mv "$logdir/$name.rc.tmp" "$logdir/$name.rc"
   ) &
   pid=$!
