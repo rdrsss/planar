@@ -7429,12 +7429,14 @@ no plan claim above it is a row of its own, rooted at its task's plan.
 | yellow `●` | Waiting: as working, and the latest heartbeat `--status` starts with `awaiting:`. |
 | red `●` | Stopped: the lease expired, or the claim was completed, released, aborted or marked stale. |
 | `>` | On a task: the task a claim holds, in that claim's colour. |
-| `✓ ◐ · ⊘ ✗` | Task status: done, doing, todo, blocked, cancelled. |
+| `✓ ◐ · ⊘ ✗` | Task status: done, doing, todo, blocked, cancelled. A done task has a green `✓` and stays listed in dark grey, as do finished plans and cancelled tasks. |
 
 Stopped agents stay listed for an hour. Rows holding a claimed task start
 open; the rest start closed. Keys: `↑`/`↓` (`j`/`k`) move, `→`/`←` (`l`/`h`)
 open or close a row and step in or out, `enter` or `space` toggles, `s` shows
-or hides stopped agents, `r` refreshes now, `q` or `esc` quits. The view
+or hides stopped agents, `r` refreshes now, `q` or `esc` quits. Clicking a
+row selects it and opens or closes it when it has children; the mouse wheel
+moves the selection. The view
 refreshes once a second, each time in one short read transaction.
 
 ### Verbs

@@ -47,7 +47,7 @@ auto task_glyph(std::string_view status) -> std::string {
   return "·";
 }
 
-auto draw_row(const row& r, bool selected) -> ftxui::Element {
+auto draw_row(const row& r, bool selected, ftxui::Box& box) -> ftxui::Element {
   using namespace ftxui;
   Elements parts;
   parts.push_back(text(std::string(static_cast<std::size_t>(r.depth) * 2, ' ')));
@@ -65,14 +65,19 @@ auto draw_row(const row& r, bool selected) -> ftxui::Element {
 
   if (r.dot.has_value())
     parts.push_back(text("● ") | color(state_color(*r.dot)));
-  if (r.kind == row_kind::task)
-    parts.push_back(text(task_glyph(r.status) + " "));
+  if (r.kind == row_kind::task) {
+    auto glyph = text(task_glyph(r.status) + " ");
+    if (r.status == "done")
+      glyph = glyph | color(Color::Green);
+    parts.push_back(glyph);
+  }
 
+  // Finished work stays listed, in dark grey.
   auto label = text(r.text);
   if (r.kind == row_kind::agent)
     label = label | bold;
   if (r.dim)
-    label = label | dim;
+    label = label | color(Color::GrayDark);
   // The columns to the left keep their width; a long label or detail is
   // clipped at the screen edge instead of squeezing them.
   // An agent row keeps its name whole and lets the status text give way.
@@ -83,7 +88,9 @@ auto draw_row(const row& r, bool selected) -> ftxui::Element {
   auto line = hbox(std::move(line_parts));
   if (selected)
     line = line | inverted | focus;
-  return line;
+  // Where the row landed on screen, for mouse hit-testing. A row scrolled
+  // out of the frame gets an empty box.
+  return line | reflect(box);
 }
 
 auto error_text(const domain_error& err) -> std::string {
@@ -97,13 +104,14 @@ auto error_text(const domain_error& err) -> std::string {
 
 /// The interactive session's state. Touched only on the UI thread.
 struct session {
-  context&         ctx;
-  snapshot         snap;
-  view_state       view;
-  std::vector<row> rows;
-  std::size_t      selected = 0;
-  std::string      selected_key;
-  std::string      error;
+  context&                ctx;
+  snapshot                snap;
+  view_state              view;
+  std::vector<row>        rows;
+  std::vector<ftxui::Box> row_boxes; ///< Each row's screen area from the last frame.
+  std::size_t             selected = 0;
+  std::string             selected_key;
+  std::string             error;
 
   auto reload() -> void {
     auto conn = ctx.db().ensure_db();
@@ -216,15 +224,40 @@ struct session {
     Elements lines;
     if (rows.empty())
       lines.push_back(text(view.show_stopped ? "  no agents in the last hour" : "  no live agents") | dim);
+    row_boxes.assign(rows.size(), ftxui::Box{});
     for (std::size_t i = 0; i < rows.size(); ++i)
-      lines.push_back(draw_row(rows[i], i == selected));
+      lines.push_back(draw_row(rows[i], i == selected, row_boxes[i]));
 
-    auto footer =
-        error.empty()
-            ? text(std::format(" ↑↓ move  ←→ fold  enter toggle  s {} stopped  q quit", view.show_stopped ? "hide" : "show")) |
-                  dim
-            : text(" " + error) | color(Color::Red);
+    auto footer = error.empty() ? text(std::format(" ↑↓ move  ←→ fold  enter/click toggle  s {} stopped  q quit",
+                                                   view.show_stopped ? "hide" : "show")) |
+                                      dim
+                                : text(" " + error) | color(Color::Red);
     return vbox({header, separator(), vbox(std::move(lines)) | vscroll_indicator | yframe | flex, separator(), footer});
+  }
+
+  /// Left click selects a row and toggles it when it folds; the wheel moves the selection.
+  auto on_mouse(const ftxui::Mouse& mouse) -> bool {
+    using ftxui::Mouse;
+    if (mouse.button == Mouse::WheelDown) {
+      select(selected + 1);
+      return true;
+    }
+    if (mouse.button == Mouse::WheelUp) {
+      if (selected > 0)
+        select(selected - 1);
+      return true;
+    }
+    if (mouse.button != Mouse::Left || mouse.motion != Mouse::Pressed)
+      return false;
+    for (std::size_t i = 0; i < row_boxes.size() && i < rows.size(); ++i) {
+      if (!row_boxes[i].Contain(mouse.x, mouse.y))
+        continue;
+      select(i);
+      if (rows[i].expandable)
+        toggle(rows[i]);
+      return true;
+    }
+    return false;
   }
 
   auto on_event(const ftxui::Event& event, ftxui::ScreenInteractive& screen) -> bool {
@@ -237,6 +270,8 @@ struct session {
       reload();
       return true;
     }
+    if (event.is_mouse())
+      return on_mouse(ftxui::Event{event}.mouse()); // FTXUI's `mouse()` is non-const
     if (event == Event::ArrowDown || event == Event::Character('j')) {
       select(selected + 1);
       return true;
