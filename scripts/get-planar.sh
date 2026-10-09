@@ -264,9 +264,11 @@ http_get() {
 # client's stderr in client-err) into F_KIND and F_REASON by cause, so that only
 # a failure to reach the server says the server is unreachable.
 #   curl (man curl, EXIT CODES): 5 6 7 are proxy/host resolution and connection
-#     failures, 28 a timeout, 35 51 58 59 60 77 82 83 90 91 a failed TLS
-#     handshake or certificate check: unreachable. 18 is a partial file: truncated.
-#     23 is a write error: write.
+#     failures, 28 a timeout, 35 51 59 60 82 83 90 91 a failed TLS handshake or
+#     certificate check: unreachable. 58 (problem with the local client
+#     certificate) and 77 (problem reading the SSL CA cert) are faults in this
+#     host's certificate setup, not in reaching the server: certificate.
+#     18 is a partial file: truncated. 23 is a write error: write.
 #   wget (man wget, EXIT STATUS): 4 is a network failure and 5 an SSL
 #     verification failure: unreachable, unless a 200 had already arrived, which
 #     makes the 4 a transfer cut short. 3 is a file I/O error: write.
@@ -276,7 +278,8 @@ client_failure() {
   _cf_cause=other
   if [ "$CLIENT" = curl ]; then
     case $F_RC in
-      5|6|7|28|35|51|58|59|60|77|82|83|90|91) _cf_cause=unreachable ;;
+      5|6|7|28|35|51|59|60|82|83|90|91) _cf_cause=unreachable ;;
+      58|77) _cf_cause=certificate ;;
       18) _cf_cause=truncated ;;
       23) _cf_cause="write" ;;
     esac
@@ -292,6 +295,14 @@ client_failure() {
     unreachable)
       F_KIND=unreachable
       F_REASON="the $CLIENT client failed: $_cf_err"
+      ;;
+    certificate)
+      if [ "$F_RC" = 58 ]; then
+        _cf_what="curl could not use the local client certificate; check any client certificate curl is configured to use"
+      else
+        _cf_what="curl could not read the CA certificate file; check that CURL_CA_BUNDLE or SSL_CERT_FILE, if set, names a readable file, and that the system CA certificates are readable"
+      fi
+      F_REASON="local certificate problem (curl exit status $F_RC): $_cf_what: $_cf_err"
       ;;
     truncated)
       F_REASON="the transfer was cut short; the connection ended before the whole file arrived ($CLIENT exit status $F_RC): $_cf_err"
