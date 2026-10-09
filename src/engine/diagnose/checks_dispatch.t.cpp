@@ -639,6 +639,23 @@ TEST_CASE("dispatch-unconfirmed keeps one fingerprint when the dispatch is previ
   REQUIRE(before.findings.size() == 1);
   REQUIRE(after.findings.size() == 1);
   CHECK(im::finding_fingerprint(before.findings[0]) == im::finding_fingerprint(after.findings[0]));
+  // The evidence names the newest preview and is timed by it, which makes a new occurrence.
+  CHECK(std::ranges::contains(after.findings[0].evidence, im::entity_ref{.kind = "dispatch_preview", .id = 2}));
+  CHECK(after.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T09:02:00.000Z"});
+  CHECK(im::finding_digest(before.findings[0]) != im::finding_digest(after.findings[0]));
+}
+
+TEST_CASE("a snapshot a preview was spent on confirms the dispatch even outside the claim's lifetime",
+          "[engine][diagnose][dispatch]") {
+  fixture fx;
+  fx.task(1, "done");
+  fx.completed_claim(1, 1); // lifetime 09:00 through 10:00
+  fx.action(1, 1, "coder", 1, "2026-06-01T09:10:00.000Z", "2026-06-01T09:50:00.000Z");
+  fx.snapshot(1, 1, "2026-06-01T10:30:00.000Z"); // confirmed after the claim ended
+  fx.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z", 1, "2026-06-01T10:30:00.000Z");
+  CHECK(fx.run(k_unconfirmed).findings.empty());
+  // It is a dispatch with a snapshot, confirmed after its coder action started.
+  CHECK(ids_of(fx.run(k_late)) == std::vector<std::string>{"dispatch-confirmed-late claim:1"});
 }
 
 TEST_CASE("dispatch-confirmed-late reports a snapshot confirmed after the first role action started",
