@@ -5,6 +5,7 @@
 module planar.engine.introspect;
 
 import std;
+import planar.core.thresholds;
 import planar.db;
 import planar.json_text;
 import planar.introspection_preview;
@@ -173,9 +174,10 @@ auto health_summary(db::connection& conn) -> std::string {
   auto const not_resumable = inflight - resumable;
 
   auto const stale_handoffs = count_query_unwindowed(conn,
-                                                     "select count(*) from handoffs"
-                                                     " where status in ('pending','validated')"
-                                                     "   and (julianday('now') - julianday(created_at)) * 24 > 24",
+                                                     std::format("select count(*) from handoffs"
+                                                                 " where status in ('pending','validated')"
+                                                                 "   and (julianday('now') - julianday(created_at)) * 24 > {}",
+                                                                 core::stale_handoff_threshold_hours),
                                                      0);
 
   if (not_resumable > 0 || stale_handoffs > 0) {
@@ -405,13 +407,14 @@ auto query_claim_failure_categories(db::connection& conn, std::int64_t window_da
 
 auto query_handoff_counts(db::connection& conn, std::int64_t window_days) -> handoff_counts {
   auto const stale = count_query(conn,
-                                 "select count(*) from handoffs"
-                                 " where status in ('pending','validated')"
-                                 "   and (julianday('now') - julianday(created_at)) * 24 > 24"
-                                 "   and created_at >= datetime('now', ?)",
+                                 std::format("select count(*) from handoffs"
+                                             " where status in ('pending','validated')"
+                                             "   and (julianday('now') - julianday(created_at)) * 24 > {}"
+                                             "   and created_at >= datetime('now', ?)",
+                                             core::stale_handoff_threshold_hours),
                                  window_days, 0);
   // "never consumed" = status is not 'consumed', regardless of staleness —
-  // distinct from `stale` above, which requires age > 24h.
+  // distinct from `stale` above, which requires age beyond the shared threshold.
   auto const never_consumed = count_query(conn,
                                           "select count(*) from handoffs"
                                           " where status != 'consumed'"

@@ -31,6 +31,7 @@ planar_module(engine_health
   INTERFACE health.cppm
   SOURCES health.cpp
   DEPENDS
+    core
     db
     scope_ref
     installed_surface)

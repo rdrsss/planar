@@ -7699,6 +7699,8 @@ Evaluates the recorded state against Planar's documented orchestration rules and
 
 **Heartbeat gaps.** `heartbeat-gap` is an event per gap between consecutive points of a claim (`claimed_at` and each `heartbeat` action row), reported when the gap ends inside the window. The lease is the claim's `lease_expires_at - last_heartbeat_at`: a gap strictly beyond the whole lease is a `warning`, one strictly beyond half of it is `info`, and one at or below half is not reported (decision 1345). The stretch after the last heartbeat is not a gap; it is `claim-lease-lapsed` once the lease lapses.
 
+**Stale handoffs.** `handoff-stale` reports a `pending` or `validated` handoff more than 24 hours old at the evaluation instant (a handoff exactly 24 hours old is not stale). The cutoff is the one `planar health` and `planar report` apply, shared through `planar.core.thresholds`. It describes the state at the evaluation instant and ignores the window start; `--plan` reaches a handoff through its snapshot's task, so a handoff whose snapshot has no task appears only without `--plan`.
+
 **Synopsis:**
 ```
 planar-watch diagnose [--plan <id>] [--days <n>] [--check <id>]... [--json]
