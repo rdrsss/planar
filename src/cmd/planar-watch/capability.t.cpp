@@ -212,8 +212,8 @@ TEST_CASE("planar-watch's declared verb set is exactly the oracle's", "[cmd][wat
   // OBSERVES workflow runs; the case above would still fail if `ingest`,
   // `pull` or `capture` appeared here.
   CHECK(names == std::set<std::string, std::less<>>{"actions", "claims", "completion", "feed", "list", "log", "plans", "ps",
-                                                    "queue", "run", "schema", "show", "sync-events", "tree", "version",
-                                                    "history"});
+                                                    "queue", "run", "schema", "show", "sync-events", "tree", "version", "history",
+                                                    "diagnose"});
 }
 
 TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cmd][watch][capability]") {
@@ -238,7 +238,7 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
   auto const leaves = planar::cliapp::leaf_keys(*root);
   // `queue` stopped being a leaf when `queue history` was added beneath it
   // (task hq-watch-history): the leaf count is unchanged, its membership is not.
-  CHECK(leaves.size() == 14);
+  CHECK(leaves.size() == 15);
   CHECK(std::ranges::find(leaves, "queue") == leaves.end());
   CHECK(std::ranges::find(leaves, "queue history") != leaves.end());
   // It is still a verb of its own: a group with a handler, deliberately.
@@ -248,7 +248,7 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
     CHECK(table.contains(leaf));
   }
   for (auto const& implemented : {"feed", "ps", "claims", "actions", "plans", "log", "tree", "version", "schema", "completion",
-                                  "run list", "run show", "sync-events", "queue", "queue history"}) {
+                                  "run list", "run show", "sync-events", "queue", "queue history", "diagnose"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
@@ -616,4 +616,58 @@ TEST_CASE("no planar-watch source reaches the agent database", "[cmd][watch][cap
   }
   CHECK_FALSE(std::filesystem::exists(watch_source_dir() / "agentstore.cppm"));
   CHECK_FALSE(std::filesystem::exists(watch_source_dir() / "agentstore.cpp"));
+}
+
+TEST_CASE("planar-watch diagnose reads through the read-only handle and writes nothing", "[cmd][watch][capability][diagnose]") {
+  seeded_main_database fixture;
+  auto const           before_bytes   = fixture.bytes();
+  auto const           before_time    = std::filesystem::last_write_time(fixture.db);
+  auto const           before_listing = fixture.listing();
+
+  auto const tree  = planar::cmd::watch::root_app();
+  auto const table = planar::cmd::watch::handlers(*tree);
+  for (auto const& verb : std::vector<std::vector<std::string>>{{"planar-watch", "diagnose"},
+                                                                {"planar-watch", "diagnose", "--json"},
+                                                                {"planar-watch", "diagnose", "--days", "30", "--json"}}) {
+    std::ostringstream          out;
+    std::ostringstream          err;
+    planar::cmd::watch::context ctx{verb,        planar::cmd::watch::map_env({{"PLANAR_DB", fixture.db.string()}}),
+                                    fixture.dir, std::make_shared<planar::cmd::watch::database>(fixture.db, err),
+                                    out,         err};
+    auto const                  fresh = planar::cmd::watch::root_app();
+    INFO("verb: " << verb.back());
+    REQUIRE(planar::cmd::watch::run(ctx, *fresh, table) == 0);
+    CHECK(err.str().empty());
+    REQUIRE(ctx.db().opened());
+    auto conn = ctx.db().ensure_db();
+    REQUIRE(conn.has_value());
+    // The handle the verb read through is read-only, and still refuses a write after the run
+    // (the engine's `query_only` pragma was restored, not left to mask a writable handle).
+    CHECK((*conn)->is_read_only());
+    CHECK_FALSE((*conn)->execute("delete from plans").has_value());
+    CHECK_FALSE((*conn)->execute("create table watch_diagnose_probe (id integer)").has_value());
+  }
+  CHECK(fixture.bytes() == before_bytes);
+  CHECK((std::filesystem::last_write_time(fixture.db) == before_time));
+  CHECK(fixture.listing() == before_listing);
+}
+
+TEST_CASE("the planar-watch diagnose handler names no write or open call", "[cmd][watch][capability][diagnose]") {
+  // The handler gets its handle from the context; it must not open a database of its own, begin a
+  // transaction or execute a statement. The scanner is exercised before it is trusted.
+  auto const writes = [](std::string_view text) {
+    return text.contains("connection::open") || text.contains("open_existing") || text.contains("begin_transaction") ||
+           text.contains(".execute(") || text.contains("->execute(") || text.contains("restrict_writes_to");
+  };
+  CHECK(writes("auto c = db::connection::open(path);"));
+  CHECK(writes("conn->execute(\"delete from plans\")"));
+  CHECK_FALSE(writes("auto conn = ctx.db().ensure_db();"));
+
+  auto const dir   = watch_source_dir() / "handlers" / "diagnose";
+  auto const files = production_sources(dir);
+  REQUIRE(files.size() == 3);
+  for (auto const& file : files) {
+    INFO("the diagnose handler must not write or open a database: " << file.string());
+    CHECK_FALSE(writes(read_file(file)));
+  }
 }

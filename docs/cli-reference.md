@@ -7405,7 +7405,7 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/`) registers exactly ten read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `queue` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
+1. The command tree (`src/cmd/planar-watch/`) registers exactly eleven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `queue`, `diagnose` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
 2. The bootstrap calls `db::connection::open_read_only` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`. The `queue` verb reads a second store, the agent database, through the same kind of handle (`planar.db.agentdb::open_agent_db_read_only_at`); `capability.t.cpp` asserts that handle refuses a write and that running the verb leaves the store's bytes and modification time unchanged.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
@@ -7446,6 +7446,9 @@ planar-watch sync-events [--plan <id>] [--system <slug>] [--entity <kind:id>] [-
 # Host build and test queue (plan 1080 — read-only view over the queue tables in planar.db).
 planar-watch queue [--json]
 planar-watch queue history [--since <duration>] [--json]
+
+# Orchestration diagnosis (plan 1132 — read-only checks over recorded state).
+planar-watch diagnose [--plan <id>] [--days <n>] [--check <id>]... [--json]
 
 # Conventional helpers.
 planar-watch version
@@ -7685,6 +7688,49 @@ SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES            
 - `7` — `planar.db` is behind or ahead of this binary's schema; both versions are named.
 
 Like `queue`, this verb follows every other `planar-watch` verb's main-database rules: it needs `PLANAR_DB` or `HOME` to locate `planar.db`, and exits `7` on a version mismatch in either direction.
+
+---
+
+### `planar-watch diagnose` — check recorded orchestration state (plan 1132)
+
+Evaluates the recorded state against Planar's documented orchestration rules and prints what it finds. It reads only: the handle is `SQLITE_OPEN_READONLY`, and the verb refuses to run on a writable one. It records nothing; persisting findings as incidents is a separate `planar-agent` step. The checks are a closed, versioned catalog (`catalog_version`), each with a stable id; this release ships the framework, and checks are added one at a time.
+
+**Synopsis:**
+```
+planar-watch diagnose [--plan <id>] [--days <n>] [--check <id>]... [--json]
+```
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--plan <id>` | Scope to this plan, its descendant plans and the tasks attached to it directly. | no entity filter |
+| `--days <n>` | Window of `n` days ending at the evaluation instant; at least 1. With `--plan` it replaces the plan-lifetime window. | plan lifetime with `--plan`, else 7 |
+| `--check <id>` | Run only this check; repeat the flag to select several. | every check |
+| `--json` | One `planar.diagnose/1` object. | text |
+
+`--session` and `--run` are not flags of this release; either is an unknown flag and exits `2`.
+
+**Window.** With `--plan` the window runs from the plan's `created_at` to the evaluation instant (`window.source` is `plan-lifetime`); `--days` replaces it (`days`). Without `--plan` it is the last `--days` days, default 7 (`default-days`). The evaluation instant is the current time.
+
+**Outcome.** `ok` when every input a selected check needs was read. `partial` when such an input was `unavailable` or `disabled`: the checks that need it report nothing, so an absence of findings is then not "clean". An input that no selected, built check needs is `not_applicable` and never degrades the outcome. `unavailable` when the run could not read the database: it stayed locked past 250 ms (`busy`), a query failed (`query-failed`) or the planning tables are missing (`schema-unsupported`).
+
+**Human output.** A header (scope, window, outcome), one line per input that was `unavailable` or `disabled`, then one line per finding, `<severity> <check-id> <entity> -> <recovery>`. An unavailable run is the single line `diagnose: unavailable (<reason>)`. Findings are ordered by severity (`error`, `warning`, `info`), then check id, then primary entity (by kind, then numeric id), then earliest evidence time.
+
+```
+diagnose: plan 7 (3 plan(s)), window 2026-09-20T09:00:00.000Z to 2026-10-09T12:00:00.000Z (plan-lifetime), outcome ok
+error claim-superseded-active claim:4469 -> planar-agent abort --claim <token>
+```
+
+**JSON output.** One object, `planar.diagnose/1`: `schema`, `catalog_version`, `evaluated_at`, `scope` (`plan_id`, `plan_ids`, `window` with `from`, `to`, `source`, `days`), `outcome`, `reason` (`null` unless unavailable), `coverage` (one row per input: `input`, `state`, `reason`), `checks` (one row per catalog check: `id`, `kind`, `severity`, `category`, `state`, `findings`), `findings` and `would_resolve`. A finding has `check`, `severity`, `entity`, `evidence` (entity refs), `evidence_times`, `fingerprint`, `recovery` and `incident` (`null` until the incident ledger lands). Evidence holds ids and timestamps only: never a claim token, title, body or path.
+
+**Schema effects:** Reads the planning and claim tables. No writes. All reads run in one deferred read transaction with a 250 ms busy timeout.
+
+**Exit codes:**
+- `0` — the run completed, whatever it found; findings never change the exit status. A `partial` outcome is still `0`.
+- `1` — the run did not complete: `diagnose: unavailable (<reason>)` is printed and nothing else; or `planar.db` is missing or cannot be read; or neither `PLANAR_DB` nor `HOME` is set.
+- `2` — bad input: an unknown `--check` or plan id, `--days` below 1, an unknown flag (unlike the other `planar-watch` verbs, where a usage error exits `1`); the message names the value and nothing is printed on standard output.
+- `7` — `planar.db` is behind or ahead of this binary's schema.
 
 ---
 
