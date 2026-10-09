@@ -569,6 +569,8 @@ that grows past that is split into groups, one ctest case each, selected by an
 environment variable the script reads (`INSTALL_ORDER_GROUP`,
 `INSTALL_UNINSTALL_GROUP`, `INSTALL_STAGE_GROUP`, `INSTALL_BASH32_GROUP`; unset
 runs every group, an unknown name is a usage error that exits 2 in all four).
+Below a group, one named scenario runs on its own and the scenarios of a run go in parallel
+(`INSTALL_TEST_SCENARIO`, `INSTALL_TEST_JOBS`; see [Installer test speed](#installer-test-speed)).
 `ctest -L '^install_'` covers all of them. They use scratch `HOME`,
 `TMPDIR` and database paths and fake bundles, and touch nothing real. Select one
 by label, and check the matched count:
@@ -595,6 +597,7 @@ ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
 | `install.retired_targets` | `install_retired_targets` | `scripts/install-retired-targets-test.sh` | The retired `make install` targets are gone, and no install doc carries a `make install` recipe. |
 | `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, the missing-only `templates/` rule, and a source resume refusing the other mode or a dirty checkout. |
 | `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, host renames and other hosts, simultaneous reclaims, the update handoff (an older updater's included), install roots whose path says `exists`. |
+| `install.scenarios` | `install_scenarios` | `scripts/install-scenarios-test.sh` | The scenario filter and the parallel dispatch of the installer scripts: a stand-in script for the runner, and the usage paths of the four real scripts. See [Installer test speed](#installer-test-speed). |
 | `install.uninstall_removal`, `install.uninstall_manifest`, `install.uninstall_interrupted` | `install_uninstall` (all three), `install_uninstall_<group>` | `scripts/install-uninstall-test.sh` (`INSTALL_UNINSTALL_GROUP`) | `scripts/uninstall.sh`. `removal`: unknown entries, the removal and its data-path rules, `--purge`, link-mode. `manifest`: escaped and truncated manifest lines, `~/.local/bin`, a missing manifest, a relocated database, the held lock. `interrupted`: the interrupted-uninstall retry and an interrupted upgrade. |
 | `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
 | `install.order_db`, `install.order_swap`, `install.order_recover`, `install.order_concurrent`, `install.order_handoff` | `install_order` (all five), `install_order_<group>` | `scripts/install-order-test.sh` (`INSTALL_ORDER_GROUP`) | The order of an install end to end, against bundles of the real built binaries. `db`: databases fresh, behind, ahead and faulty, the queue warning. `swap`: kill-and-resume at every swap point. `recover`: recovery before restaging and a journaled restore. `concurrent`: concurrent owners, a first-install kill, a host rename, the read-only parent, refused attempts. `handoff`: the updater handoff, `--cleanup`, uninstall over a pending install, the inert fault hook. |
@@ -611,6 +614,110 @@ configuration with `PLANAR_PORTABLE=ON`; see
 compares the workflow reader's result with PyYAML and runs `actionlint`, and it
 fails when either tool is missing. Run it by hand after editing
 `.github/workflows/release.yml`.
+
+### Installer test speed
+
+The four long installer scripts (`install-order-test.sh`, `install-uninstall-test.sh`,
+`install-stage-test.sh`, `install-bash32-test.sh`) run their scenarios on their own and in
+parallel. Three environment variables, read by all four, work below the existing
+`INSTALL_<TOOL>_GROUP` filters:
+
+| Variable | Meaning |
+|----------|---------|
+| `INSTALL_TEST_SCENARIO=<name>` | Run only that scenario and report it, inside or outside its group (the group variable is then not consulted). An unknown name exits 2 and lists the known ones, as an unknown group does. |
+| `INSTALL_TEST_JOBS=<n>` | How many scenarios run at once when a run selects more than one. Default 4; `1` runs them in one process in file order. Anything but a positive integer exits 2. |
+| `INSTALL_TEST_SHARED` | Internal. The dispatching run sets it for its children; do not set it by hand. |
+
+```sh
+INSTALL_TEST_SCENARIO=reinstall bash scripts/install-uninstall-test.sh
+INSTALL_TEST_JOBS=2 INSTALL_STAGE_GROUP=modes bash scripts/install-stage-test.sh
+```
+
+How it works (`scripts/fixtures/scenario-runner.sh`, sourced by the four scripts; bash 3.2 safe,
+so no `wait -n`, associative arrays or `mapfile`):
+
+- **A scenario is a block that touches only homes it makes.** Each script wraps its blocks in
+  `if scen <name>; then ... fi`. Numbered or looped scenarios that share a home stay one name
+  (stage `all-vendors` is scenarios 8, 9, 12, 13, 23 and 24); looped scenarios whose iterations
+  make homes of their own are one name per iteration (order `swap-<point>`, uninstall
+  `purgecfg-keys`/`-spellings`/`-outside`, stage `no-change-copy`/`-link` and
+  `uninstall-copy`/`-link`).
+- **Parallel runs are processes.** The dispatching run re-runs the script once per selected
+  scenario (`INSTALL_TEST_SCENARIO=<name>`), at most `INSTALL_TEST_JOBS` at a time, each in
+  its own `mktemp` scratch directory. Every `HOME`, install root, mutation lock, `PLANAR_DB`,
+  fault directory and `$TMP/out` and `$TMP/err` are under that directory, so scenarios share
+  nothing. Output is collected per scenario and printed as `=== scenario <name>: ok|FAILED`
+  followed by its log.
+- **Failures keep their name.** A failing scenario prints its own message, then
+  `<script>: FAIL: scenario <name> exited <n>`; the run finishes the other scenarios, prints
+  `<script>: FAIL: <k> of <n> scenarios failed: <names>` and exits 1.
+- **Serial scenarios.** Scenarios that hold the mutation lock from a second process while
+  another run is refused, or that pause an installer or uninstaller and poll for it, test the
+  serialization of decision 1328 and run alone, one at a time, after the parallel batch. They
+  are order `concurrent-refused`, `renamed` and `uninstall-refused`, and uninstall `held` and
+  `paused`. Stage and bash32 have none.
+- **One staged fixture.** The dispatching run stages the fake bundles (order: three bundles
+  of the built binaries, the second and third copied from the first; uninstall: two fake
+  bundles; stage: the scratch checkout) once and passes the directory to its children, which use
+  it read-only. The dispatcher checksums the shared tree before and after and fails the run if a
+  scenario changed it; a scenario that must change one makes its own copy (stage `BAD`,
+  `QUOTE`, `MUT`). A single scenario, or `INSTALL_TEST_JOBS=1`, stages its own, as before.
+- **Assertions are unchanged.** The refactor only wrapped, moved and split blocks;
+  `git diff -U0 <base>.. -- scripts/install-*-test.sh | grep '^-'` shows no `fail` line removed.
+- `install.scenarios` (`scripts/install-scenarios-test.sh`, label `install_scenarios`) tests the
+  runner with a five-scenario stand-in script (one scenario alone inside and outside its group,
+  unknown names and job counts, the job bound, the serial scenario alone, per-scenario scratch,
+  a named failure, a changed shared fixture) and the usage paths of the four real scripts.
+
+Measured wall times, `ctest --test-dir build/debug -L '^install_<family>$'` through the host queue,
+2026-10-09, macOS arm64 (8 cores), a debug build, `INSTALL_TEST_JOBS` at its default of 4.
+The host also ran other sessions' queued work: its load average was 5 to 10 during all
+runs, before and after, so single numbers move by 10 to 20 percent between runs (the bash32
+family measured 132.8, 128.7 and 154.1 seconds with the same scripts). The "after" times are
+the last run of the final scripts, and the "before" times are the scripts at the cycle base.
+
+| ctest case | Before (s) | After (s) |
+|------------|-----------:|----------:|
+| `install.order_db` | 193.81 | 66.92 |
+| `install.order_swap` | 191.64 | 85.78 |
+| `install.order_recover` | 154.23 | 105.92 |
+| `install.order_concurrent` | 131.65 | 114.15 |
+| `install.order_handoff` | 132.85 | 105.26 |
+| **`install_order`, five cases** | **804.20** | **478.07** |
+| `install.uninstall_removal` | 178.50 | 66.39 |
+| `install.uninstall_manifest` | 302.41 | 145.82 |
+| `install.uninstall_interrupted` | 202.40 | 77.45 |
+| **`install_uninstall`, three cases** | **683.34** | **289.69** |
+| `install.stage_staging` | 182.13 | 72.97 |
+| `install.stage_vendors` | 153.49 | 113.76 |
+| `install.stage_placement` | 154.74 | 57.45 |
+| `install.stage_modes` | 146.53 | 88.42 |
+| `install.stage_uninstall` | 122.94 | 73.95 |
+| **`install_stage`, five cases** | **759.86** | **406.59** |
+| `install.bash32_static` | 0.40 | 0.39 |
+| `install.bash32_flag` | 38.15 | 43.39 |
+| `install.bash32_home` | 36.96 | 42.86 |
+| `install.bash32_vendors` | 57.21 | 67.44 |
+| **`install_bash32`, four cases** | **132.76** | **154.11** |
+
+The bash32 cases did not get faster: each group is one scenario, so there is nothing to run in
+parallel inside it, and the measured difference is the host's load. They are unchanged apart
+from the filter. `install.stage_vendors` is bounded by its one chain of scenarios that share
+homes (`all-vendors`, 137 s of a run).
+
+The unfiltered script, with no group and no scenario, runs every scenario in one parallel run.
+Before, that was the groups one after another in one process (the sum of the group times
+above, as the file order ran them); after, one run of the same script:
+
+| Script, no filter | Before (s, sum of groups) | After (s) |
+|-------------------|--------------------------:|----------:|
+| `install-order-test.sh` (26 scenarios) | 804 | 333 |
+| `install-uninstall-test.sh` (24 scenarios) | 683 | 281 |
+| `install-stage-test.sh` (25 scenarios) | 760 | 263 |
+| `install-bash32-test.sh` (4 scenarios) | 133 | 79 |
+
+To measure again, run each family's label through the queue on a quiet host and compare with the
+table; do not compare a run against numbers taken under a different load.
 
 ### The two-shell comparison
 
