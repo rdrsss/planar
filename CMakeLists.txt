@@ -394,6 +394,14 @@ add_test(NAME install.lock
   COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-lock-test.sh")
 set_tests_properties(install.lock PROPERTIES LABELS "install_lock" TIMEOUT 300)
 
+# The scenario filter and the parallel dispatch of the installer tests above
+# (scripts/fixtures/scenario-runner.sh, INSTALL_TEST_SCENARIO and INSTALL_TEST_JOBS): a
+# stand-in script with five scenarios, and the usage paths of the four real scripts.
+# Builds and installs nothing.
+add_test(NAME install.scenarios
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-scenarios-test.sh")
+set_tests_properties(install.scenarios PROPERTIES LABELS "install_scenarios" TIMEOUT 300)
+
 # The release bootstrap (scripts/get-planar.sh) against a loopback release server
 # (`python3 -m http.server`, a test-only dependency; GNU wget is another) in a
 # scratch HOME: install, pinned install, refusals, the mid-run publish, the
