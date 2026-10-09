@@ -1396,3 +1396,79 @@ TEST_CASE("transcript format: a Codex function_call_output may carry an array ou
   CHECK(preview.coverage[0].ignored == 2);
   CHECK(preview.coverage[0].malformed == 2);
 }
+
+// ============================================================================
+// --- transcript scan: read wide, keep narrow --- (diagnose-transcript-scan-wide-keep-narrow)
+// ============================================================================
+
+namespace {
+
+/// A non-planar Claude assistant text record of roughly `bytes` bytes.
+auto claude_filler_line(std::size_t bytes, std::string_view marker = "") -> std::string {
+  return std::format(
+      R"({{"type":"assistant","timestamp":"2026-07-12T12:00:00.000Z","message":{{"role":"assistant","content":[{{"type":"text","text":"{}{}"}}]}}}})"
+      "\n",
+      marker, std::string(bytes, 'f'));
+}
+
+/// A non-planar Codex function_call_output record of roughly `bytes` bytes.
+auto codex_filler_line(std::size_t index, std::size_t bytes, std::string_view marker = "") -> std::string {
+  return std::format(
+      R"({{"type":"response_item","timestamp":"2026-07-12T12:00:00.000Z","payload":{{"type":"function_call_output","call_id":"other-{}","output":"{}{}"}}}})"
+      "\n",
+      index, marker, std::string(bytes, 'o'));
+}
+
+/// `total` bytes of Codex filler lines.
+auto codex_filler(std::size_t total, std::string_view marker = "") -> std::string {
+  std::string out;
+  for (std::size_t i = 0; out.size() < total; ++i) {
+    out += codex_filler_line(i, 2000, marker);
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("transcript scan: a failing command several MB before the end of the newest file and several files back is found",
+          "[engine][introspection_adapters][discovery][wide-keep-narrow]") {
+  scratch_dir scratch;
+
+  // Codex: a failing planar call, then 3.5 MB of non-planar traffic.
+  auto const codex_dir = scratch.path_ / ".codex" / "sessions";
+  write(codex_dir / "live.jsonl",
+        codex_command_record(R"(["bash","-lc","planar task add x"])", R"("exit_code":1,"status":"failed")") +
+            codex_filler(3'500'000));
+  set_age(codex_dir / "live.jsonl", std::chrono::hours{1});
+
+  // Claude: 39 newer files of non-planar traffic (100 KB each), the failure in the 40th.
+  auto const claude_dir = scratch.path_ / ".claude" / "projects";
+  for (int i = 0; i < 39; ++i) {
+    auto const  name = std::format("new{:02}.jsonl", i);
+    std::string body;
+    while (body.size() < 100'000) {
+      body += claude_filler_line(1000);
+    }
+    write(claude_dir / name, body);
+    set_age(claude_dir / name, std::chrono::hours{1 + i});
+  }
+  // The 40th file is itself larger than the tail of the budget the first ten files leave over.
+  std::string old_body = failed_pair("old-1", "planar plan show 4");
+  while (old_body.size() < 150'000) {
+    old_body += claude_filler_line(1000);
+  }
+  write(claude_dir / "old.jsonl", old_body);
+  set_age(claude_dir / "old.jsonl", std::chrono::hours{100});
+
+  ia::transcript_config const config{.home_dir = scratch.path_.string()};
+  auto const                  preview = ia::collect_preview_from_paths(config, std::nullopt, test_catalog);
+
+  bool saw_codex  = false;
+  bool saw_claude = false;
+  for (auto const& signal : preview.signals) {
+    saw_codex  = saw_codex || (signal.v == ia::vendor::codex && signal.verb_path == "planar task add");
+    saw_claude = saw_claude || (signal.v == ia::vendor::claude && signal.verb_path == "planar plan show");
+  }
+  CHECK(saw_codex);
+  CHECK(saw_claude);
+}
