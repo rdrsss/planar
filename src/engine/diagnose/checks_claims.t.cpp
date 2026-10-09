@@ -16,9 +16,14 @@
 //   * `claim-closed-by-reconcile`: a claim that ended `stale`, inside the window.
 //   * A healthy fixture yields no finding from any claim check.
 //   * Evidence times are row timestamps: moving the evaluation instant does not move them.
-//   * `heartbeat-gap` (task 7375, decision 1345): over the gaps between a claim's heartbeat action
-//     rows, `warning` strictly beyond the full lease, `info` strictly beyond half of it and
-//     nothing at or below half; the lease is `lease_expires_at - last_heartbeat_at`.
+//   * `heartbeat-gap` (task 7375, decisions 1345 and 1381): the points of a claim are `claimed_at`,
+//     each heartbeat action row and `last_heartbeat_at`. A gap between two points is `info` when
+//     strictly beyond half the lease and never more; a `warning` is the trailing stretch from the
+//     last point to the release (terminal claim) or the evaluation instant (active claim) strictly
+//     beyond the lease. The lease is `lease_expires_at - last_heartbeat_at`.
+//   * `claim-superseded-active` evidence (claim, entity, later ended claim, the lease expiry), the
+//     exclusive-only rule, and the plan and plan-step branches; `task-doing-unclaimed` times its
+//     evidence from the latest claim, not from the task's `updated_at`.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -87,14 +92,30 @@ struct fixture {
                            id, plan, id, status));
   }
 
-  /// One claim row. `released` is empty for an unended claim.
+  /// One claim row on any entity kind (`task`, `plan` or `plan_step`) and claim scope.
+  auto entity_claim(int id, std::string_view kind, int entity_id, std::string_view scope, std::string_view status,
+                    std::string_view claimed, std::string_view last_heartbeat, std::string_view lease_expires,
+                    std::string_view released = {}) -> void {
+    exec(conn, std::format("insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, claim_scope, "
+                           "status, vendor, claimed_at, last_heartbeat_at, lease_expires_at, released_at) values ({}, 'tok{}', "
+                           "1, '{}', {}, '{}', '{}', 'test', '{}', '{}', '{}', {})",
+                           id, id, kind, entity_id, scope, status, claimed, last_heartbeat, lease_expires,
+                           released.empty() ? std::string{"null"} : std::format("'{}'", released)));
+  }
+
+  /// One exclusive claim row on a task. `released` is empty for an unended claim.
   auto claim(int id, int task_id, std::string_view status, std::string_view claimed, std::string_view last_heartbeat,
              std::string_view lease_expires, std::string_view released = {}) -> void {
-    exec(conn, std::format("insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, status, vendor, "
-                           "claimed_at, last_heartbeat_at, lease_expires_at, released_at) values ({}, 'tok{}', 1, 'task', {}, "
-                           "'{}', 'test', '{}', '{}', '{}', {})",
-                           id, id, task_id, status, claimed, last_heartbeat, lease_expires,
-                           released.empty() ? std::string{"null"} : std::format("'{}'", released)));
+    entity_claim(id, "task", task_id, "exclusive", status, claimed, last_heartbeat, lease_expires, released);
+  }
+
+  auto set_plan_status(int id, std::string_view status) -> void {
+    exec(conn, std::format("update plans set status = '{}' where id = {}", status, id));
+  }
+
+  auto step(int id, int plan, std::string_view status) -> void {
+    exec(conn, std::format("insert into plan_steps (id, plan_id, ordinal, body, status) values ({}, {}, {}, 'step', '{}')", id,
+                           plan, id, status));
   }
 
   auto heartbeat_action(int id, int claim_id, std::string_view at) -> void {
@@ -250,7 +271,10 @@ TEST_CASE("claim-superseded-active reports an active claim on a terminal task", 
     CHECK(f.severity == im::diagnostic_severity::error);
     CHECK(f.recovery.contains("planar-agent abort --claim"));
   }
-  CHECK(d.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T09:00:00.000Z"});
+  // The evidence is the claim, its task and the active claim's own lease expiry.
+  CHECK(d.findings[0].evidence ==
+        std::vector<im::entity_ref>{im::entity_ref{.kind = "claim", .id = 1}, im::entity_ref{.kind = "task", .id = 1}});
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T12:05:00.000Z"});
 }
 
 TEST_CASE("claim-superseded-active reports an active claim behind a later claim that ended", "[engine][diagnose][claims]") {
@@ -259,7 +283,15 @@ TEST_CASE("claim-superseded-active reports an active claim behind a later claim 
   fx.claim(1, 1, "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z", "2026-06-01T12:05:00.000Z");
   fx.claim(2, 1, "aborted", "2026-06-01T10:00:00.000Z", "2026-06-01T10:00:00.000Z", "2026-06-01T10:10:00.000Z",
            "2026-06-01T10:05:00.000Z");
-  CHECK(ids_of(fx.run({"claim-superseded-active"})) == std::vector<std::string>{"claim-superseded-active claim:1"});
+  auto d = fx.run({"claim-superseded-active"});
+  CHECK(ids_of(d) == std::vector<std::string>{"claim-superseded-active claim:1"});
+  // The evidence names the active claim, its task and the later ended claim, and times the lease.
+  REQUIRE(d.findings.size() == 1);
+  CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "claim", .id = 1}));
+  CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "task", .id = 1}));
+  CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "claim", .id = 2}));
+  CHECK(d.findings[0].evidence.size() == 3);
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T12:05:00.000Z"});
 
   // The later claim being active too is not supersession.
   fixture other;
@@ -275,6 +307,76 @@ TEST_CASE("claim-superseded-active reports an active claim behind a later claim 
                 "2026-06-01T09:05:00.000Z");
   history.claim(2, 1, "active", "2026-06-01T10:00:00.000Z", "2026-06-01T11:55:00.000Z", "2026-06-01T12:05:00.000Z");
   CHECK(history.run({"claim-superseded-active"}).findings.empty());
+}
+
+TEST_CASE("claim-superseded-active does not treat a later shared claim as supersession", "[engine][diagnose][claims]") {
+  fixture fx;
+  fx.task(1, "doing");
+  fx.entity_claim(1, "task", 1, "shared", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z",
+                  "2026-06-01T12:05:00.000Z");
+  fx.entity_claim(2, "task", 1, "shared", "completed", "2026-06-01T10:00:00.000Z", "2026-06-01T10:00:00.000Z",
+                  "2026-06-01T10:10:00.000Z", "2026-06-01T10:05:00.000Z");
+  CHECK(fx.run({"claim-superseded-active"}).findings.empty());
+
+  // One side shared is not supersession either.
+  fixture mixed;
+  mixed.task(1, "doing");
+  mixed.entity_claim(1, "task", 1, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z",
+                     "2026-06-01T12:05:00.000Z");
+  mixed.entity_claim(2, "task", 1, "shared", "completed", "2026-06-01T10:00:00.000Z", "2026-06-01T10:00:00.000Z",
+                     "2026-06-01T10:10:00.000Z", "2026-06-01T10:05:00.000Z");
+  CHECK(mixed.run({"claim-superseded-active"}).findings.empty());
+}
+
+TEST_CASE("claims on plans and plan steps follow their own entity status and plan scope", "[engine][diagnose][claims]") {
+  fixture fx;
+  fx.set_plan_status(1, "done");
+  fx.set_plan_status(2, "active");
+  fx.step(10, 1, "done");
+  fx.step(11, 1, "pending");
+  fx.step(20, 2, "skipped");
+  // A plan claim on a done plan, one on an active plan, a step claim on a done step, a pending one,
+  // and a step claim in the other plan on a skipped step.
+  fx.entity_claim(1, "plan", 1, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z",
+                  "2026-06-01T12:05:00.000Z");
+  fx.entity_claim(2, "plan", 2, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z",
+                  "2026-06-01T12:05:00.000Z");
+  fx.entity_claim(3, "plan_step", 10, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z",
+                  "2026-06-01T12:05:00.000Z");
+  fx.entity_claim(4, "plan_step", 11, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z",
+                  "2026-06-01T12:05:00.000Z");
+  fx.entity_claim(5, "plan_step", 20, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z",
+                  "2026-06-01T12:05:00.000Z");
+
+  auto all = fx.run({"claim-superseded-active"});
+  CHECK(ids_of(all) == std::vector<std::string>{"claim-superseded-active claim:1", "claim-superseded-active claim:3",
+                                                "claim-superseded-active claim:5"});
+  REQUIRE(all.findings.size() == 3);
+  CHECK(std::ranges::contains(all.findings[0].evidence, im::entity_ref{.kind = "plan", .id = 1}));
+  CHECK(std::ranges::contains(all.findings[1].evidence, im::entity_ref{.kind = "plan_step", .id = 10}));
+
+  // The plan scope reaches a step claim through its step's plan.
+  auto scoped = fx.run({"claim-superseded-active"}, k_now, 1);
+  CHECK(ids_of(scoped) == std::vector<std::string>{"claim-superseded-active claim:1", "claim-superseded-active claim:3"});
+  auto other = fx.run({"claim-superseded-active"}, k_now, 2);
+  CHECK(ids_of(other) == std::vector<std::string>{"claim-superseded-active claim:5"});
+}
+
+TEST_CASE("claim-process-died scopes plan and plan-step claims through their plan", "[engine][diagnose][claims]") {
+  fixture fx;
+  fx.step(10, 1, "pending");
+  fx.step(20, 2, "pending");
+  fx.entity_claim(1, "plan", 1, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T09:00:00.000Z",
+                  "2026-06-01T09:10:00.000Z");
+  fx.entity_claim(2, "plan", 2, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T09:00:00.000Z",
+                  "2026-06-01T09:10:00.000Z");
+  fx.entity_claim(3, "plan_step", 10, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T09:00:00.000Z",
+                  "2026-06-01T09:10:00.000Z");
+  fx.entity_claim(4, "plan_step", 20, "exclusive", "active", "2026-06-01T09:00:00.000Z", "2026-06-01T09:00:00.000Z",
+                  "2026-06-01T09:10:00.000Z");
+  CHECK(ids_of(fx.run({"claim-process-died"}, k_now, 1)) ==
+        std::vector<std::string>{"claim-process-died claim:1", "claim-process-died claim:3"});
+  CHECK(fx.run({"claim-process-died"}).findings.size() == 4);
 }
 
 TEST_CASE("task-doing-unclaimed reports a doing task with no active unexpired claim", "[engine][diagnose][claims]") {
@@ -295,11 +397,30 @@ TEST_CASE("task-doing-unclaimed reports a doing task with no active unexpired cl
   auto d = fx.run({"task-doing-unclaimed"});
   CHECK(ids_of(d) == std::vector<std::string>{"task-doing-unclaimed task:1", "task-doing-unclaimed task:2",
                                               "task-doing-unclaimed task:3", "task-doing-unclaimed task:6"});
+  REQUIRE(d.findings.size() == 4);
   for (const auto& f : d.findings) {
     CHECK(f.severity == im::diagnostic_severity::warning);
     CHECK(f.recovery.contains("--no-transition"));
-    CHECK(f.evidence_times == std::vector<std::string>{"2026-05-02T00:00:00.000Z"});
   }
+  // The evidence time is the latest claim's release time, else its lease expiry, else (no claim ever)
+  // the task's own updated_at.
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{"2026-05-02T00:00:00.000Z"});
+  CHECK(d.findings[1].evidence_times == std::vector<std::string>{"2026-06-01T09:40:00.000Z"});
+  CHECK(d.findings[2].evidence_times == std::vector<std::string>{"2026-06-01T10:00:00.000Z"});
+  CHECK(d.findings[3].evidence_times == std::vector<std::string>{"2026-06-01T11:56:00.000Z"});
+}
+
+TEST_CASE("task-doing-unclaimed keeps its digest when the task is edited", "[engine][diagnose][claims]") {
+  fixture fx;
+  fx.task(1, "doing");
+  fx.claim(1, 1, "stale", "2026-06-01T09:00:00.000Z", "2026-06-01T09:00:00.000Z", "2026-06-01T09:10:00.000Z",
+           "2026-06-01T10:00:00.000Z");
+  auto before = fx.run({"task-doing-unclaimed"});
+  exec(fx.conn, "update tasks set updated_at = '2026-06-01T11:00:00.000Z', title = 'edited' where id = 1");
+  auto after = fx.run({"task-doing-unclaimed"});
+  REQUIRE(before.findings.size() == 1);
+  REQUIRE(after.findings.size() == 1);
+  CHECK(im::finding_digest(before.findings[0]) == im::finding_digest(after.findings[0]));
 }
 
 TEST_CASE("claim-closed-by-reconcile reports a stale claim inside the window as info", "[engine][diagnose][claims]") {
@@ -417,19 +538,93 @@ TEST_CASE("heartbeat-gap is silent at exactly half the lease and reports info ju
   CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "task", .id = 1}));
 }
 
-TEST_CASE("heartbeat-gap reports info at exactly the full lease and a warning just beyond it",
+TEST_CASE("a gap between recorded heartbeats is never more than info, however long",
           "[engine][diagnose][claims][heartbeat-gap]") {
-  fixture full;
-  gap_fixture(full, 600s);
-  auto d = gap_findings(full);
-  REQUIRE(d.findings.size() == 1);
-  CHECK(d.findings[0].severity == im::diagnostic_severity::info);
+  for (std::chrono::milliseconds gap :
+       {std::chrono::milliseconds{600s}, 600s + 1ms, std::chrono::milliseconds{900s}, std::chrono::milliseconds{5000s}}) {
+    fixture fx;
+    gap_fixture(fx, gap);
+    auto d = gap_findings(fx);
+    INFO(gap.count());
+    REQUIRE(d.findings.size() == 1);
+    CHECK(d.findings[0].severity == im::diagnostic_severity::info);
+  }
+}
+
+namespace {
+
+/// A claim with a 600 s lease and one heartbeat at +100 s, which is also its `last_heartbeat_at`.
+/// It ends `trailing` after that heartbeat: released then (a terminal claim), or still active and
+/// evaluated then.
+auto trailing_fixture(fixture& fx, std::chrono::milliseconds trailing, bool terminal) -> std::string {
+  fx.task(1, "doing");
+  if (terminal) {
+    fx.claim(1, 1, "completed", at_offset(0ms), at_offset(100s), at_offset(700s), at_offset(100s + trailing));
+  } else {
+    fx.claim(1, 1, "active", at_offset(0ms), at_offset(100s), at_offset(700s));
+  }
+  fx.heartbeat_action(1, 1, at_offset(100s));
+  return at_offset(100s + trailing);
+}
+
+} // namespace
+
+TEST_CASE("heartbeat-gap warns for a terminal claim only when the trailing stretch is beyond the lease",
+          "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture at;
+  auto    end = trailing_fixture(at, 600s, true);
+  CHECK(at.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z").findings.empty());
 
   fixture beyond;
-  gap_fixture(beyond, 600s + 1ms);
-  d = gap_findings(beyond);
+  end    = trailing_fixture(beyond, 600s + 1ms, true);
+  auto d = beyond.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z");
   REQUIRE(d.findings.size() == 1);
   CHECK(d.findings[0].severity == im::diagnostic_severity::warning);
+  CHECK(im::entity_ref_text(d.findings[0].primary) == "claim:1");
+  // The stretch runs from the last heartbeat to the release.
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{at_offset(100s), end});
+}
+
+TEST_CASE("heartbeat-gap warns for an active claim when the stretch to now is beyond the lease",
+          "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture at;
+  auto    end = trailing_fixture(at, 600s, false);
+  CHECK(at.run({"heartbeat-gap"}, end).findings.empty());
+
+  fixture beyond;
+  trailing_fixture(beyond, 600s, false);
+  auto d = beyond.run({"heartbeat-gap"}, at_offset(100s + 600s + 1ms));
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::warning);
+  // The evidence is row timestamps: the last heartbeat and the lease expiry, not the instant.
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{at_offset(100s), at_offset(700s)});
+  auto later = beyond.run({"heartbeat-gap"}, at_offset(100s + 900s));
+  REQUIRE(later.findings.size() == 1);
+  CHECK(im::finding_digest(later.findings[0]) == im::finding_digest(d.findings[0]));
+}
+
+TEST_CASE("heartbeat-gap measures the trailing stretch from claiming when there was never a heartbeat",
+          "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture fx;
+  fx.task(1, "doing");
+  fx.claim(1, 1, "active", at_offset(0ms), at_offset(0ms), at_offset(600s));
+  CHECK(fx.run({"heartbeat-gap"}, at_offset(600s)).findings.empty());
+  auto d = fx.run({"heartbeat-gap"}, at_offset(600s + 1ms));
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::warning);
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{at_offset(0ms), at_offset(600s)});
+}
+
+TEST_CASE("heartbeat-gap counts last_heartbeat_at as a heartbeat point", "[engine][diagnose][claims][heartbeat-gap]") {
+  // Plain heartbeats write no action row, only last_heartbeat_at: 500 s after claiming on a 600 s
+  // lease is beyond half (info), and the stretch after it is short.
+  fixture fx;
+  fx.task(1, "doing");
+  fx.claim(1, 1, "completed", at_offset(0ms), at_offset(500s), at_offset(1100s), at_offset(550s));
+  auto d = gap_findings(fx);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::info);
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{at_offset(0ms), at_offset(500s)});
 }
 
 TEST_CASE("heartbeat-gap measures between consecutive heartbeats and derives the lease from the claim row",
@@ -454,7 +649,7 @@ TEST_CASE("heartbeat-gap counts the stretch from claiming to the first heartbeat
   gap_fixture(fx, 900s);
   auto d = gap_findings(fx);
   REQUIRE(d.findings.size() == 1);
-  CHECK(d.findings[0].severity == im::diagnostic_severity::warning);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::info);
   CHECK(d.findings[0].evidence_times == std::vector<std::string>{at_offset(0ms), at_offset(900s)});
 }
 

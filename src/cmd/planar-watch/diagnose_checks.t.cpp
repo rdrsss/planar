@@ -96,8 +96,8 @@ struct world {
     REQUIRE(ok.has_value());
   }
 
-  /// Findings of `planar-watch diagnose --plan 1 --json` as `check-id entity severity` strings.
-  auto findings(std::vector<std::string> checks, std::string_view days = {}) -> std::vector<std::string> {
+  /// `planar-watch diagnose --plan 1 --json`, parsed.
+  auto diagnose_json(std::vector<std::string> checks, std::string_view days = {}) -> planar::json_dom::json_value {
     std::vector<std::string> args{"diagnose", "--plan", "1", "--json"};
     if (!days.empty()) {
       args.push_back("--days");
@@ -113,8 +113,14 @@ struct world {
     auto parsed = planar::json_dom::parse_json(got.out);
     REQUIRE(parsed.has_value());
     CHECK(parsed->find("outcome")->string == "ok");
+    return std::move(*parsed);
+  }
+
+  /// Findings of `planar-watch diagnose --plan 1 --json` as `check-id entity severity` strings.
+  auto findings(std::vector<std::string> checks, std::string_view days = {}) -> std::vector<std::string> {
+    auto                     parsed = diagnose_json(std::move(checks), days);
     std::vector<std::string> out;
-    for (const auto& f : parsed->find("findings")->array) {
+    for (const auto& f : parsed.find("findings")->array) {
       out.push_back(std::format("{} {} {}", f.find("check")->string, f.find("entity")->string, f.find("severity")->string));
     }
     return out;
@@ -130,7 +136,9 @@ TEST_CASE("a claim reconciled stale while its task stays doing is seen from proc
           "[cmd][watch][diagnose][workflow][claims]") {
   world w;
   // The operator moves the task to doing; the claim is taken with --no-transition and never
-  // heartbeats, so it has no action row and reconcile cannot prove it flipped the task.
+  // heartbeats, so it has no action row and reconcile cannot prove it flipped the task. (Reconcile
+  // returns a task to todo only when the swept claim has an action row AND no other active,
+  // unexpired claim holds the task; either condition failing leaves the task doing.)
   w.planar({"task", "update", "1", "--status", "doing"});
   w.claim(1, true);
   CHECK(w.findings(k_claim_checks).empty());
@@ -165,7 +173,8 @@ TEST_CASE("a claim that heartbeated and lapsed is a lapsed lease until reconcile
   CHECK(lapsed.size() == 2);
   CHECK(w.findings({"claim-process-died"}).empty());
 
-  // Reconcile marks the claim stale and, with an action row on it, returns the task to todo.
+  // Reconcile marks the claim stale and, with an action row on it and no other live claim on the
+  // task, returns the task to todo.
   w.planar_agent({"reconcile"});
   CHECK(w.findings(k_claim_checks) == std::vector<std::string>{"claim-closed-by-reconcile claim:1 info"});
 }
@@ -180,6 +189,30 @@ TEST_CASE("a claim stranded on a task forced to done is superseded until aborted
   CHECK(w.findings(k_claim_checks).empty());
 }
 
+TEST_CASE("a lapsed claim left active behind a recovery claim is superseded and names the later claim",
+          "[cmd][watch][diagnose][workflow][claims]") {
+  world w;
+  // A is taken and its lease lapses (TIME TRAVEL below); recovery takes B with --no-transition
+  // (--force would mark A stale) and B finishes the task, leaving A active.
+  auto first = w.claim(1);
+  w.move_time("update agent_work_claims set lease_expires_at = '2020-01-01T00:10:00.000Z'");
+  auto second = w.claim(1, true);
+  w.planar_agent({"complete", "--claim", second, "--no-locality-probe"});
+  (void)first;
+
+  auto        parsed = w.diagnose_json({"claim-superseded-active"});
+  const auto& found  = parsed.find("findings")->array;
+  REQUIRE(found.size() == 1);
+  CHECK(found[0].find("entity")->string == "claim:1");
+  std::vector<std::string> evidence;
+  for (const auto& e : found[0].find("evidence")->array) {
+    evidence.push_back(e.string);
+  }
+  CHECK(std::ranges::is_permutation(evidence, std::vector<std::string>{"claim:1", "claim:2", "task:1"}));
+  REQUIRE(found[0].find("evidence_times")->array.size() == 1);
+  CHECK(found[0].find("evidence_times")->array[0].string == "2020-01-01T00:10:00.000Z");
+}
+
 TEST_CASE("a healthy claim gives no claim finding before or after complete", "[cmd][watch][diagnose][workflow][claims]") {
   world w;
   auto  token = w.claim(1);
@@ -189,24 +222,29 @@ TEST_CASE("a healthy claim gives no claim finding before or after complete", "[c
   CHECK(w.findings(k_claim_checks).empty());
 }
 
-TEST_CASE("heartbeat gaps are read from the heartbeat rows the verb writes", "[cmd][watch][diagnose][workflow][claims]") {
+TEST_CASE("heartbeat gaps: info between recorded heartbeats, a warning for the trailing stretch",
+          "[cmd][watch][diagnose][workflow][claims]") {
   world w;
   auto  token = w.claim(1);
   w.planar_agent({"heartbeat", "--claim", token, "--status", "one"});
   w.planar_agent({"heartbeat", "--claim", token, "--status", "two"});
-  // Back to back, the real heartbeats leave no gap.
+  // Back to back, the real heartbeats leave no gap and the lease is live.
   CHECK(w.findings({"heartbeat-gap"}).empty());
 
-  // TIME TRAVEL: the verbs cannot wait out a lease. The claim was taken with a 30 minute lease; the
-  // heartbeats are moved to 20 and then 60 minutes after claiming, so the first gap (20 minutes)
-  // is beyond half the lease (info) and the second (40 minutes) is beyond the whole lease (warning).
-  w.move_time("update agent_work_claims set claimed_at = '2020-01-01T00:00:00.000Z'");
+  // TIME TRAVEL: the verbs cannot wait out a lease. The claim has a 30 minute lease. It is moved
+  // to a history a successful heartbeat sequence could have produced: claimed at 00:00, heartbeats
+  // recorded at 00:20 and 00:45 (gaps of 20 and 25 minutes, each beyond half the lease but within
+  // it), the last one renewing the lease to 01:15, and then silence.
+  w.move_time("update agent_work_claims set claimed_at = '2020-01-01T00:00:00.000Z', "
+              "last_heartbeat_at = '2020-01-01T00:45:00.000Z', lease_expires_at = '2020-01-01T01:15:00.000Z'");
   w.move_time("update agent_actions set started_at = '2020-01-01T00:20:00.000Z', ended_at = '2020-01-01T00:20:00.000Z' "
               "where action_kind = 'heartbeat' and summary = 'one'");
-  w.move_time("update agent_actions set started_at = '2020-01-01T01:00:00.000Z', ended_at = '2020-01-01T01:00:00.000Z' "
+  w.move_time("update agent_actions set started_at = '2020-01-01T00:45:00.000Z', ended_at = '2020-01-01T00:45:00.000Z' "
               "where action_kind = 'heartbeat' and summary = 'two'");
+  // The two gaps between recorded points are info; the silence after the last heartbeat, past the
+  // lease, is the one warning.
   CHECK(w.findings({"heartbeat-gap"}, "36500") ==
-        std::vector<std::string>{"heartbeat-gap claim:1 warning", "heartbeat-gap claim:1 info"});
+        std::vector<std::string>{"heartbeat-gap claim:1 warning", "heartbeat-gap claim:1 info", "heartbeat-gap claim:1 info"});
 }
 
 TEST_CASE("handoff-stale agrees with the stale-handoff count planar report prints", "[cmd][watch][diagnose][workflow][handoff]") {
