@@ -167,6 +167,28 @@ TEST_CASE("claim-lease-lapsed reports an active, heartbeated claim past its leas
   CHECK(fx.run({"claim-process-died"}).findings.empty());
 }
 
+TEST_CASE("a heartbeat action row alone counts as a heartbeat after claiming", "[engine][diagnose][claims]") {
+  fixture fx;
+  fx.task(1, "doing");
+  fx.claim(1, 1, "active", "2026-06-01T09:00:00.000Z", "2026-06-01T09:00:00.000Z", "2026-06-01T09:40:00.000Z");
+  fx.heartbeat_action(1, 1, "2026-06-01T09:20:00.000Z");
+  CHECK(ids_of(fx.run({"claim-lease-lapsed", "claim-process-died"})) == std::vector<std::string>{"claim-lease-lapsed claim:1"});
+}
+
+TEST_CASE("a last_heartbeat_at past claimed_at alone counts as a heartbeat", "[engine][diagnose][claims]") {
+  fixture fx;
+  fx.task(1, "doing");
+  fx.claim(1, 1, "active", "2026-06-01T09:00:00.000Z", "2026-06-01T09:20:00.000Z", "2026-06-01T09:40:00.000Z");
+  CHECK(ids_of(fx.run({"claim-lease-lapsed", "claim-process-died"})) == std::vector<std::string>{"claim-lease-lapsed claim:1"});
+}
+
+TEST_CASE("a freshly taken claim that has not heartbeated yet is not a dead process", "[engine][diagnose][claims]") {
+  fixture fx;
+  fx.task(1, "doing");
+  fx.claim(1, 1, "active", "2026-06-01T11:58:00.000Z", "2026-06-01T11:58:00.000Z", "2026-06-01T12:08:00.000Z");
+  CHECK(fx.run(k_claim_checks).findings.empty());
+}
+
 TEST_CASE("claim-lease-lapsed treats a lease expiring exactly now as still live", "[engine][diagnose][claims]") {
   fixture fx;
   fx.task(1, "doing");
@@ -219,6 +241,7 @@ TEST_CASE("claim-superseded-active reports an active claim on a terminal task", 
   fx.claim(3, 3, "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z", "2026-06-01T12:05:00.000Z");
 
   auto d = fx.run({"claim-superseded-active"});
+  REQUIRE(d.findings.size() == 2);
   CHECK(ids_of(d) == std::vector<std::string>{"claim-superseded-active claim:1", "claim-superseded-active claim:2"});
   for (const auto& f : d.findings) {
     CHECK(f.severity == im::diagnostic_severity::error);
@@ -258,14 +281,17 @@ TEST_CASE("task-doing-unclaimed reports a doing task with no active unexpired cl
   fx.task(3, "doing"); // only a stale claim
   fx.task(4, "doing"); // a live claim
   fx.task(5, "todo");  // not doing
+  fx.task(6, "doing"); // a stale claim whose lease timestamp is still in the future
   fx.claim(2, 2, "active", "2026-06-01T09:00:00.000Z", "2026-06-01T09:30:00.000Z", "2026-06-01T09:40:00.000Z");
   fx.claim(3, 3, "stale", "2026-06-01T09:00:00.000Z", "2026-06-01T09:00:00.000Z", "2026-06-01T09:10:00.000Z",
            "2026-06-01T10:00:00.000Z");
   fx.claim(4, 4, "active", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z", "2026-06-01T12:05:00.000Z");
+  fx.claim(6, 6, "stale", "2026-06-01T09:00:00.000Z", "2026-06-01T11:55:00.000Z", "2026-06-01T12:05:00.000Z",
+           "2026-06-01T11:56:00.000Z");
 
   auto d = fx.run({"task-doing-unclaimed"});
-  CHECK(ids_of(d) ==
-        std::vector<std::string>{"task-doing-unclaimed task:1", "task-doing-unclaimed task:2", "task-doing-unclaimed task:3"});
+  CHECK(ids_of(d) == std::vector<std::string>{"task-doing-unclaimed task:1", "task-doing-unclaimed task:2",
+                                              "task-doing-unclaimed task:3", "task-doing-unclaimed task:6"});
   for (const auto& f : d.findings) {
     CHECK(f.severity == im::diagnostic_severity::warning);
     CHECK(f.recovery.contains("--no-transition"));
@@ -311,7 +337,7 @@ TEST_CASE("a healthy claim, a finished claim and a todo task give no claim findi
   CHECK(d.findings.empty());
   CHECK(d.result == dg::run_outcome::ok);
   for (const auto& c : d.checks) {
-    CHECK(c.state == dg::check_state::ran);
+    CHECK((c.state == dg::check_state::ran) == std::ranges::contains(k_claim_checks, c.id));
   }
 }
 

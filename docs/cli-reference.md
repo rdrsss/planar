@@ -7693,7 +7693,9 @@ Like `queue`, this verb follows every other `planar-watch` verb's main-database 
 
 ### `planar-watch diagnose` — check recorded orchestration state (plan 1132)
 
-Evaluates the recorded state against Planar's documented orchestration rules and prints what it finds. It reads only: the handle is `SQLITE_OPEN_READONLY`, and the verb refuses to run on a writable one. It records nothing; persisting findings as incidents is a separate `planar-agent` step. The checks are a closed, versioned catalog (`catalog_version`), each with a stable id; this release ships the framework, and checks are added one at a time.
+Evaluates the recorded state against Planar's documented orchestration rules and prints what it finds. It reads only: the handle is `SQLITE_OPEN_READONLY`, and the verb refuses to run on a writable one. It records nothing; persisting findings as incidents is a separate `planar-agent` step. The checks are a closed, versioned catalog (`catalog_version`), each with a stable id; this release ships the framework and the claim-liveness checks, and further checks are added one at a time.
+
+**Claim checks.** `claim-lease-lapsed` (an `active` claim past its lease that heartbeated, on a `doing` task), `claim-process-died` (an `active` claim past its lease that never heartbeated after `claimed_at`), `claim-superseded-active` (an `active` claim on a terminal task, plan or step, or behind a later exclusive claim on the same entity that is no longer `active`; `error`), `task-doing-unclaimed` (a `doing` task with no `active` claim whose lease runs to the evaluation instant or later) and `claim-closed-by-reconcile` (a claim that ended `stale` inside the window; `info`). The first four describe the state at the evaluation instant and ignore the window start; only the event is bounded by the window. A lease expiring exactly at the evaluation instant is still live.
 
 **Synopsis:**
 ```

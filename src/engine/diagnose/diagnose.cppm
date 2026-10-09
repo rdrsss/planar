@@ -156,9 +156,9 @@ export struct catalog {
   std::vector<check_def> checks; ///< The checks, in catalog order.
 };
 
-/// @brief The shipped catalog: the concatenation of every family's checks and inputs. Only
-/// `queue-ended-unobserved` is declared so far, as an unbuilt check; the later check tasks
-/// fill in the families.
+/// @brief The shipped catalog: the concatenation of every family's checks and inputs. Built so
+/// far: the claim-liveness checks. `queue-ended-unobserved` is declared as an unbuilt check; the
+/// later check tasks fill in the remaining families.
 /// @return The catalog.
 export auto builtin_catalog() -> catalog;
 
@@ -169,6 +169,20 @@ export struct family {
 };
 
 namespace detail {
+
+/// @brief Reads one finding from the current row of a statement.
+using finding_reader = std::function<incident_model::finding(const db::statement&)>;
+
+/// @brief Runs a read-only query and turns each row into a finding with `read`. The caller
+/// applies its filters in `sql` itself; this helper adds no bound of its own.
+/// @param ctx The check context; its connection runs the query.
+/// @param sql The query. It may use the numbered text parameters `?1` and `?2`.
+/// @param first Bound to `?1` when the query uses it; empty skips the bind.
+/// @param second Bound to `?2` when the query uses it; empty skips the bind.
+/// @param read Builds the finding from a row.
+/// @return The findings in row order, or the database failure.
+auto query_findings(const check_context& ctx, std::string_view sql, std::string_view first, std::string_view second,
+                    const finding_reader& read) -> std::expected<std::vector<incident_model::finding>, db::db_error>;
 
 /// @brief The claim-liveness family (lease, process death, supersession, unclaimed `doing`, reconcile closes, heartbeat gaps, unended actions).
 /// @return The family.

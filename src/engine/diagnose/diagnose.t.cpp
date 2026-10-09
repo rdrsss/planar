@@ -173,29 +173,31 @@ auto build_forty_day_fixture(planar::db::connection& conn) -> void {
 
 } // namespace
 
-TEST_CASE("the shipped catalog declares only unbuilt checks and reads clean", "[diagnose]") {
+TEST_CASE("the shipped catalog reads clean over an empty database and keeps unbuilt checks unbuilt", "[diagnose]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   auto            cat  = dg::builtin_catalog();
-  REQUIRE(cat.checks.size() == 1);
-  CHECK(cat.checks[0].id == "queue-ended-unobserved");
-  CHECK(cat.checks[0].kind == im::check_kind::state);
-  CHECK(cat.checks[0].severity == im::diagnostic_severity::warning);
-  CHECK(cat.checks[0].category == "queue_unobserved");
-  CHECK_FALSE(cat.checks[0].built);
+  auto            it   = std::ranges::find(cat.checks, "queue-ended-unobserved", &dg::check_def::id);
+  REQUIRE(it != cat.checks.end());
+  CHECK(it->kind == im::check_kind::state);
+  CHECK(it->severity == im::diagnostic_severity::warning);
+  CHECK(it->category == "queue_unobserved");
+  CHECK_FALSE(it->built);
 
   auto d = dg::run(conn, request(std::nullopt));
   REQUIRE(d.has_value());
   CHECK(d->result == dg::run_outcome::ok);
   CHECK(d->findings.empty());
   CHECK(d->catalog_version == dg::k_catalog_version);
-  REQUIRE(d->checks.size() == 1);
-  CHECK(d->checks[0].state == dg::check_state::not_built);
+  REQUIRE(d->checks.size() == cat.checks.size());
+  auto summary = std::ranges::find(d->checks, "queue-ended-unobserved", &dg::check_summary::id);
+  REQUIRE(summary != d->checks.end());
+  CHECK(summary->state == dg::check_state::not_built);
   for (std::string_view name : {"run_identity", "queue_observation"}) {
-    auto it = std::ranges::find(d->coverage, name, &im::coverage_row::input);
-    REQUIRE(it != d->coverage.end());
-    CHECK(it->state == im::coverage_state::not_applicable);
-    CHECK(it->reason == "check-not-built");
+    auto row = std::ranges::find(d->coverage, name, &im::coverage_row::input);
+    REQUIRE(row != d->coverage.end());
+    CHECK(row->state == im::coverage_state::not_applicable);
+    CHECK(row->reason == "check-not-built");
   }
 }
 

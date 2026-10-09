@@ -331,6 +331,39 @@ void append_string(std::string& out, std::string_view text) {
 
 } // namespace
 
+namespace detail {
+
+auto query_findings(const check_context& ctx, std::string_view sql, std::string_view first, std::string_view second,
+                    const finding_reader& read) -> std::expected<std::vector<incident_model::finding>, db::db_error> {
+  auto stmt = ctx.conn.prepare(sql);
+  if (!stmt) {
+    return std::unexpected(stmt.error());
+  }
+  if (!first.empty()) {
+    if (auto ok = stmt->bind_text(1, first); !ok) {
+      return std::unexpected(ok.error());
+    }
+  }
+  if (!second.empty()) {
+    if (auto ok = stmt->bind_text(2, second); !ok) {
+      return std::unexpected(ok.error());
+    }
+  }
+  std::vector<im::finding> out;
+  while (true) {
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(step.error());
+    }
+    if (step.value() == db::step_result::done) {
+      return out;
+    }
+    out.push_back(read(*stmt));
+  }
+}
+
+} // namespace detail
+
 auto plan_filter_sql(const plan_scope& scope, std::string_view column) -> std::string {
   if (!scope.plan_id) {
     return "1 = 1";

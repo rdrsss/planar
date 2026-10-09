@@ -10,10 +10,12 @@
 //
 // What is pinned:
 //
-//   * A claim that heartbeated and then lapsed is `claim-lease-lapsed`; after `reconcile` marks
-//     it stale while its task stays `doing`, the finding becomes `task-doing-unclaimed` plus the
-//     info event `claim-closed-by-reconcile`.
-//   * A claim that never heartbeated and lapsed is `claim-process-died`.
+//   * A claim that never heartbeated and lapsed is `claim-process-died`; after `reconcile` marks
+//     it stale while its task stays `doing` (a `--no-transition` claim has no action row to prove
+//     it flipped the task), the findings become `task-doing-unclaimed` plus the info event
+//     `claim-closed-by-reconcile`.
+//   * A claim that heartbeated and then lapsed is `claim-lease-lapsed`; `reconcile` then returns
+//     the task to `todo` and leaves only the info event.
 //   * A claim stranded on a task the operator forced to `done` is `claim-superseded-active`,
 //     and `abort` clears it.
 //   * A healthy claim, before and after `complete`, gives no claim finding.
@@ -119,41 +121,48 @@ const std::vector<std::string> k_claim_checks{"claim-lease-lapsed", "claim-proce
 
 } // namespace
 
-TEST_CASE("a claim reconciled stale while its task stays doing is seen from lease lapse to unclaimed task",
+TEST_CASE("a claim reconciled stale while its task stays doing is seen from process death to unclaimed task",
           "[cmd][watch][diagnose][workflow][claims]") {
   world w;
-  // The operator moves the task to doing; the claim is taken with --no-transition, so reconcile
-  // has no action row proving it flipped the task and leaves the task doing.
+  // The operator moves the task to doing; the claim is taken with --no-transition and never
+  // heartbeats, so it has no action row and reconcile cannot prove it flipped the task.
   w.planar({"task", "update", "1", "--status", "doing"});
-  auto token = w.claim(1, true);
+  w.claim(1, true);
+  CHECK(w.findings(k_claim_checks).empty());
+
+  // TIME TRAVEL: the lease lapsed long ago.
+  w.move_time("update agent_work_claims set lease_expires_at = '2020-01-01T00:10:00.000Z'");
+  // The lapsed lease also leaves the doing task without an unexpired claim.
+  auto dead = w.findings(k_claim_checks);
+  CHECK(std::ranges::contains(dead, std::string{"claim-process-died claim:1 warning"}));
+  CHECK(std::ranges::contains(dead, std::string{"task-doing-unclaimed task:1 warning"}));
+  CHECK(dead.size() == 2);
+
+  w.planar_agent({"reconcile"});
+  auto after = w.findings(k_claim_checks);
+  CHECK(std::ranges::contains(after, std::string{"task-doing-unclaimed task:1 warning"}));
+  CHECK(std::ranges::contains(after, std::string{"claim-closed-by-reconcile claim:1 info"}));
+  CHECK(after.size() == 2);
+}
+
+TEST_CASE("a claim that heartbeated and lapsed is a lapsed lease until reconcile returns the task",
+          "[cmd][watch][diagnose][workflow][claims]") {
+  world w;
+  auto  token = w.claim(1);
   w.planar_agent({"heartbeat", "--claim", token, "--status", "editing"});
   CHECK(w.findings(k_claim_checks).empty());
 
+  // TIME TRAVEL: the lease lapsed long ago.
   w.move_time("update agent_work_claims set lease_expires_at = '2020-01-01T00:10:00.000Z'");
-  // The lapsed lease also leaves the doing task without an unexpired claim.
   auto lapsed = w.findings(k_claim_checks);
   CHECK(std::ranges::contains(lapsed, std::string{"claim-lease-lapsed claim:1 warning"}));
   CHECK(std::ranges::contains(lapsed, std::string{"task-doing-unclaimed task:1 warning"}));
   CHECK(lapsed.size() == 2);
   CHECK(w.findings({"claim-process-died"}).empty());
 
+  // Reconcile marks the claim stale and, with an action row on it, returns the task to todo.
   w.planar_agent({"reconcile"});
-  auto after = w.findings(k_claim_checks);
-  CHECK(std::ranges::contains(after, std::string{"task-doing-unclaimed task:1 warning"}));
-  CHECK(std::ranges::contains(after, std::string{"claim-closed-by-reconcile claim:1 info"}));
-  CHECK_FALSE(std::ranges::contains(after, std::string{"claim-lease-lapsed claim:1 warning"}));
-  CHECK(after.size() == 2);
-}
-
-TEST_CASE("a claim that never heartbeated and lapsed is a dead process", "[cmd][watch][diagnose][workflow][claims]") {
-  world w;
-  w.claim(1);
-  CHECK(w.findings(k_claim_checks).empty());
-
-  // TIME TRAVEL: the lease lapsed long ago.
-  w.move_time("update agent_work_claims set lease_expires_at = '2020-01-01T00:10:00.000Z'");
-  CHECK(w.findings({"claim-process-died", "claim-lease-lapsed"}) ==
-        std::vector<std::string>{"claim-process-died claim:1 warning"});
+  CHECK(w.findings(k_claim_checks) == std::vector<std::string>{"claim-closed-by-reconcile claim:1 info"});
 }
 
 TEST_CASE("a claim stranded on a task forced to done is superseded until aborted", "[cmd][watch][diagnose][workflow][claims]") {
