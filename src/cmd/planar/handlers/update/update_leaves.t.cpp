@@ -1578,7 +1578,11 @@ auto installer_inherits_unblocked_signals(int sig, std::string_view name) -> voi
 r={}
 m=""
 if [ -r "/proc/$$/status" ]; then
-  m="$(sed -n 's/^SigBlk:[[:space:]]*//p' "/proc/$$/status")"
+  while IFS= read -r l; do
+    case $l in
+      SigBlk:*) m=${{l#SigBlk:}}; m=${{m#"${{m%%[![:space:]]*}}"}} ;;
+    esac
+  done < "/proc/$$/status"
 else
   m="$(python3 -c 'import signal; print(format(sum(1 << (n - 1) for n in signal.pthread_sigmask(signal.SIG_BLOCK, [])), "x"))')"
 fi
