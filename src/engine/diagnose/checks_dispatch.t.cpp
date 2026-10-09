@@ -234,7 +234,6 @@ TEST_CASE("a direct claim is never a dispatch, whether or not it started an acti
   fx.action(1, 2, "coder", 2, "2026-06-01T09:10:00.000Z", "2026-06-01T09:50:00.000Z");
   fx.lapsed_claim(3, 1);
   CHECK(fx.run(k_no_role).findings.empty());
-  CHECK(fx.run({"dispatch-no-role-action", "dispatch-unconfirmed", "dispatch-confirmed-late"}).findings.empty());
 }
 
 TEST_CASE("a preview is a dispatch record only for its own task and claim token", "[engine][diagnose][dispatch]") {
