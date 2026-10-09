@@ -244,8 +244,8 @@ auto json_string_field(std::string_view line, std::string_view key) -> std::stri
 // -------------------------------------------------------------------------
 // The concurrency scenario's tunables, carried over from the Zig scenario
 // they replace (`scenarios/scenario_multi_agent_session_test.zig`): three
-// workers against six tasks, so every worker contends and the expected
-// spread (two each) is meaningful without combinatorial runtime.
+// workers against six tasks, which gives contention a window across several
+// claims without combinatorial runtime.
 // -------------------------------------------------------------------------
 constexpr int k_workers = 3;
 constexpr int k_tasks   = 6;
