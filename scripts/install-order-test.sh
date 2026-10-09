@@ -70,11 +70,12 @@ case " all $ORDER_GROUPS " in *" $GROUP "*) ;; *) printf 'install-order-test: un
 # INSTALL_TEST_SCENARIO=<name> runs only that scenario, inside or outside its group; an unknown
 # name exits 2. A run that selects several scenarios runs INSTALL_TEST_JOBS of them at a time
 # (default 4), each as a child of this script with its own scratch directory and homes. The table
-# is the dispatch order, longest first, name:group. The serial scenarios hold a mutation lock from
-# a second process while another run is refused, or wait on a paused installer, and run alone
-# after the parallel batch (decision 1328: the lock serializes mutation of one root, and these
-# scenarios test that serialization).
-SCEN_TABLE="uninstall-pending:handoff updater:handoff refused:concurrent migfail:db behind:db queue:db faults:db recover-restage:recover recover-journaled:recover swap-points:swap swap-complete:swap postprobe:db ahead:db fresh:db relocated:db durable:db roparent:concurrent firstkill:concurrent inert:handoff concurrent-refused:concurrent renamed:concurrent uninstall-refused:handoff"
+# is the dispatch order, name:group. The kill points of the swap scenario are separate names
+# (swap-bin for the first, swap-<point> for each point of its loop). The serial scenarios hold a
+# mutation lock from a second process while another run is refused, or wait on a paused
+# installer, and run alone after the parallel batch (decision 1328: the lock serializes mutation
+# of one root, and these scenarios test that serialization).
+SCEN_TABLE="uninstall-pending:handoff updater:handoff refused:concurrent migfail:db behind:db queue:db faults:db recover-restage:recover recover-journaled:recover swap-bin:swap swap-backup-bin:swap swap-swap-bin:swap swap-swap-skills:swap swap-after-mutating:swap swap-complete:swap postprobe:db ahead:db fresh:db relocated:db durable:db roparent:concurrent firstkill:concurrent inert:handoff concurrent-refused:concurrent renamed:concurrent uninstall-refused:handoff"
 SCEN_SERIAL=" concurrent-refused renamed uninstall-refused "
 # shellcheck source=fixtures/scenario-runner.sh
 source "$ROOT/scripts/fixtures/scenario-runner.sh"
@@ -381,9 +382,10 @@ run_install "$H" "$B2" --
 pass "live queue entries are named before the swap; an absent planar-watch is one line"
 fi
 
-if scen swap-points; then
+if scen swap-bin || scen swap-backup-bin || scen swap-swap-bin || scen swap-swap-skills || scen swap-after-mutating; then
 # --- an interrupted swap is recovered by the next run --------------------------------------------------------------
 
+if scen swap-bin; then
 kill_case backed-up:bin
 P="$KILL_HOME/.planar"
 [[ -d "$P/bin.old" && ! -e "$P/bin" ]] || fail "after the kill bin/ was not moved to bin.old: $(ls -a "$P")"
@@ -397,7 +399,9 @@ done
 grep -Fq '"version": "v1.2.4"' "$P/release.json" || fail "release.json is not new after recovery"
 grep -Fq "restored $P/bin from $P/bin.old" "$TMP/out" || fail "recovery did not restore bin/ before restaging: $(show)"
 no_evidence "$P"
+fi
 for point in backup:bin swap:bin swap:skills after-mutating; do
+  scen "swap-${point//:/-}" || continue
   kill_case "$point"
   run_install "$KILL_HOME" "$B2" --
   [[ "$RC" == 0 ]] || fail "recovery after a kill at $point failed ($RC): $(show)"

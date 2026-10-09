@@ -144,9 +144,11 @@ case " all $STAGE_GROUPS " in *" $GROUP "*) ;; *) printf 'install-stage-test: un
 # name exits 2. A run that selects several scenarios runs INSTALL_TEST_JOBS of them at a time
 # (default 4), each as a child of this script with its own scratch directory and homes. A name
 # covers the numbered scenarios that share homes (all-vendors: 8, 9, 12, 13, 23, 24; copy-reinstall:
-# 1, 2, 6; mode-switch: 21, 22; upgrade-layout: 26, 30). The table is the dispatch order,
-# name:group. No scenario here tests the mutation lock, so none is serial.
-SCEN_TABLE="all-vendors:vendors no-change-rerun:placement uninstall-modes:uninstall mode-switch:modes mid-run-failure:placement manifest-rename-failure:placement upgrade-layout:modes copy-reinstall:staging old-agent-layout:staging foreign-destination:staging vendors-filter:staging claude-vendor:staging link-mode:staging malformed-agent:staging opencode-only:vendors gemini-antigravity:vendors opencode-quoting:staging unprovable-evidence:modes foreign-entries:modes legacy-manifest:modes flags:staging lists:staging doc-urls:staging"
+# 1, 2, 6; mode-switch: 21, 22; upgrade-layout: 26, 30). Scenarios 18 and 29 loop over the copy
+# and link modes with homes of their own, so each mode is a name (no-change-copy, no-change-link,
+# uninstall-copy, uninstall-link). The table is the dispatch order, name:group. No scenario here
+# tests the mutation lock, so none is serial.
+SCEN_TABLE="all-vendors:vendors no-change-copy:placement no-change-link:placement uninstall-copy:uninstall uninstall-link:uninstall mode-switch:modes mid-run-failure:placement manifest-rename-failure:placement upgrade-layout:modes copy-reinstall:staging old-agent-layout:staging foreign-destination:staging vendors-filter:staging claude-vendor:staging link-mode:staging malformed-agent:staging opencode-only:vendors gemini-antigravity:vendors opencode-quoting:staging unprovable-evidence:modes foreign-entries:modes legacy-manifest:modes flags:staging lists:staging doc-urls:staging"
 SCEN_SERIAL=""
 # shellcheck source=fixtures/scenario-runner.sh
 source "$ROOT/scripts/fixtures/scenario-runner.sh"
@@ -648,13 +650,14 @@ for e in json.load(open(sys.argv[1]))['extras']:
 PY
 }
 
-if scen no-change-rerun; then
+if scen no-change-copy || scen no-change-link; then
 mark 18
 # 18. A second run in the same mode changes nothing: the no-changes summary,
 # the manifest byte-identical, and nothing outside the prefix (plus the
 # manifest itself) with a newer mtime. The prefix's staged trees are rewritten
 # by the staging step on every run, so they are not part of this claim.
 for mode in copy link; do
+  scen "no-change-$mode" || continue
   flag=(); [[ "$mode" == link ]] && flag=(--link)
   mk_home "h18$mode" "${ALL6[@]}"
   run_install "$REPO" "$TMP/h18$mode" ${flag[@]+"${flag[@]}"} || fail "first $mode install failed: $(cat "$TMP/h18$mode/err")"
@@ -927,12 +930,13 @@ done
 
 fi
 
-if scen uninstall-modes; then
+if scen uninstall-copy || scen uninstall-link; then
 mark 29
 # 29. --uninstall: every recorded target and the prefix contents go; the vendor
 # directories, an unrecorded foreign file and a recorded target that was
 # replaced by someone else stay, and the leftovers are reported.
 for mode in copy link; do
+  scen "uninstall-$mode" || continue
   flag=(); [[ "$mode" == link ]] && flag=(--link)
   H="$TMP/h29$mode"; P="$H/.planar"
   mk_home "h29$mode" "${ALL6[@]}"

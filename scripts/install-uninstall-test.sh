@@ -36,11 +36,12 @@ case " all $UNINSTALL_GROUPS " in *" $GROUP "*) ;; *) printf 'install-uninstall-
 # INSTALL_TEST_SCENARIO=<name> runs only that scenario, inside or outside its group; an unknown
 # name exits 2. A run that selects several scenarios runs INSTALL_TEST_JOBS of them at a time
 # (default 4), each as a child of this script with its own scratch directory, homes and HOME-
-# derived roots, locks and databases. The table is the dispatch order, name:group. The serial
-# scenarios hold a mutation lock from a second process or pause an uninstaller while an install
-# is refused, and run alone after the parallel batch (decision 1328: the lock serializes
-# mutation of one root, and these scenarios test that serialization).
-SCEN_TABLE="purgecfg:manifest verify:interrupted source-retry:interrupted happy:removal killed:interrupted upgrade-terminate:interrupted upgrade-purge:interrupted nomanifest:manifest link:removal unowned:removal purge:removal escaped:manifest truncated:manifest localbin:manifest reloc:manifest unknown:removal alt-root:removal force:removal reinstall:removal killed-vendor:interrupted held:manifest paused:manifest"
+# derived roots, locks and databases. The three loops of the --purge config scenario are
+# separate names (purgecfg-keys, purgecfg-spellings, purgecfg-outside). The table is the dispatch
+# order, name:group. The serial scenarios hold a mutation lock from a second process or pause an
+# uninstaller while an install is refused, and run alone after the parallel batch (decision 1328:
+# the lock serializes mutation of one root, and these scenarios test that serialization).
+SCEN_TABLE="purgecfg-spellings:manifest purgecfg-keys:manifest purgecfg-outside:manifest verify:interrupted source-retry:interrupted happy:removal killed:interrupted upgrade-terminate:interrupted upgrade-purge:interrupted nomanifest:manifest link:removal unowned:removal purge:removal escaped:manifest truncated:manifest localbin:manifest reloc:manifest unknown:removal alt-root:removal force:removal reinstall:removal killed-vendor:interrupted held:manifest paused:manifest"
 SCEN_SERIAL=" held paused "
 # shellcheck source=fixtures/scenario-runner.sh
 source "$ROOT/scripts/fixtures/scenario-runner.sh"
@@ -526,12 +527,13 @@ grep -Fq "purging data path $P/workbench" "$TMP/out" && grep -Fq "purging data p
 pass "--purge names a relocated database and leaves it, removes nothing outside the root, removes the in-tree data paths"
 fi
 
-if scen purgecfg; then
+if scen purgecfg-keys || scen purgecfg-spellings || scen purgecfg-outside; then
 # --- --purge keeps the config that relocates data inside the root -------------------------------
 # A config.toml key relocating the workbench or templates into a managed subtree: the uninstall
 # leaves that subtree (it holds a data path), so --purge must leave the config too, or the next
 # install no longer sees the relocation and replaces the subtree with the data in it.
 
+if scen purgecfg-keys; then
 for key in workbench.root templates.dir; do
   case "$key" in workbench.root) sect=workbench; k=root ;; *) sect=templates; k=dir ;; esac
   H="$(new_home "purgecfg-$sect")"; P="$H/.planar"
@@ -550,8 +552,10 @@ for key in workbench.root templates.dir; do
   grep -Fq "refusing to replace" "$TMP/err" && grep -Fq "agents" "$TMP/err" && grep -Fq "data path '$sect'" "$TMP/err" || fail "the following install did not report the relocation into agents ($key): $(show)"
   [[ "$(sums "$P/agents/relocated")" == "$data_before" ]] || fail "the following install changed the relocated $key data"
 done
+fi
 # Spellings that only canonicalisation resolves: a symlink into a managed subtree and a ~ path
 # land inside the root (kept); a .. that climbs out of the root lands outside it (removed).
+if scen purgecfg-spellings; then
 for sp in symlink tilde escape; do
   H="$(new_home "purgecfg-sp-$sp")"; P="$H/.planar"
   install_ok "$H"
@@ -576,8 +580,10 @@ for sp in symlink tilde escape; do
   fi
   [[ "$(sums "$dir")" == "$data_before" ]] || fail "the $sp-spelled workbench data changed"
 done
+fi
 # A relocation outside the root, or into a sibling that shares only the root's name as a prefix,
 # is not inside it: --purge removes config.toml as before.
+if scen purgecfg-outside; then
 for n in outside sibling; do
   H="$(new_home "purgecfg-$n")"; P="$H/.planar"
   if [[ $n == outside ]]; then rel="$H/ext-wb"; else rel="${P}2/wb"; fi
@@ -589,6 +595,7 @@ for n in outside sibling; do
   [[ ! -e "$P/config.toml" ]] || fail "--purge kept config.toml for a relocation outside the root ($rel)"
   [[ "$(cat "$rel/f")" == keep ]] || fail "--purge touched $rel"
 done
+fi
 pass "--purge keeps and names config.toml while workbench.root or templates.dir lies inside the root, the next install refuses to replace the holding subtree, and the data is byte-identical; outside the root it removes config.toml"
 fi
 
