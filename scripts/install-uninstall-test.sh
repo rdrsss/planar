@@ -32,7 +32,19 @@ pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s (%ss)\n' "$PASSED" "$1" "$SECO
 UNINSTALL_GROUPS="removal manifest interrupted"
 GROUP="${INSTALL_UNINSTALL_GROUP:-all}"
 case " all $UNINSTALL_GROUPS " in *" $GROUP "*) ;; *) printf 'install-uninstall-test: unknown INSTALL_UNINSTALL_GROUP %s (want one of: %s)\n' "$GROUP" "$UNINSTALL_GROUPS" >&2; exit 2 ;; esac
-want() { [[ "$GROUP" == all || "$GROUP" == "$1" ]]; }
+# Scenario selection and parallel dispatch (plan 1122 M6, task 7434; scripts/fixtures/scenario-runner.sh).
+# INSTALL_TEST_SCENARIO=<name> runs only that scenario, inside or outside its group; an unknown
+# name exits 2. A run that selects several scenarios runs INSTALL_TEST_JOBS of them at a time
+# (default 4), each as a child of this script with its own scratch directory, homes and HOME-
+# derived roots, locks and databases. The table is the dispatch order, name:group. The serial
+# scenarios hold a mutation lock from a second process or pause an uninstaller while an install
+# is refused, and run alone after the parallel batch (decision 1328: the lock serializes
+# mutation of one root, and these scenarios test that serialization).
+SCEN_TABLE="purgecfg:manifest verify:interrupted source-retry:interrupted happy:removal killed:interrupted upgrade-terminate:interrupted upgrade-purge:interrupted nomanifest:manifest link:removal unowned:removal purge:removal escaped:manifest truncated:manifest localbin:manifest reloc:manifest unknown:removal alt-root:removal force:removal reinstall:removal killed-vendor:interrupted held:manifest paused:manifest"
+SCEN_SERIAL=" held paused "
+# shellcheck source=fixtures/scenario-runner.sh
+source "$ROOT/scripts/fixtures/scenario-runner.sh"
+scen_init install-uninstall-test "$SCEN_TABLE" "$SCEN_SERIAL"
 # shellcheck source=fixtures/prebuilt-bundle.sh
 source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
 
@@ -52,8 +64,20 @@ ln -s /bin/bash "$BASEBIN/bash"
 
 # --- the fake bundle ----------------------------------------------------------------------
 
-BUNDLE="$TMP/bundles/planar-fake"
-fake_bundle_make "$ROOT" "$BUNDLE"
+if [[ -n "${INSTALL_TEST_SHARED-}" ]]; then
+  # A parallel child: the dispatching run staged both bundles; they are read-only here.
+  BUNDLE="$INSTALL_TEST_SHARED/bundles/planar-fake"
+  B2="$INSTALL_TEST_SHARED/bundles/planar-fake-2"
+else
+  BUNDLE="$TMP/bundles/planar-fake"
+  fake_bundle_make "$ROOT" "$BUNDLE"
+  # A second bundle, release v1.2.4, whose binaries differ.
+  B2="$TMP/bundles/planar-fake-2"
+  fake_bundle_make "$ROOT" "$B2"
+  for b in planar planar-agent planar-watch planar-execute planar-ext; do stub_binary_write "$B2/bin/$b" v1.2.4 fedcba987654; done
+  sed -i.bak 's/"version": "v1.2.3"/"version": "v1.2.4"/' "$B2/release.json" && rm -f "$B2/release.json.bak"
+fi
+scen_dispatch "$TMP/bundles" "$@"
 
 # --- arena helpers --------------------------------------------------------------------------
 
@@ -186,7 +210,7 @@ make_installed() { # make_installed NAME -- an installed, data-seeded home; prin
   printf '%s' "$h"
 }
 
-if want removal; then
+if scen unknown; then
 # --- unknown entries beside preserved data are kept and reported ------------------------------
 
 H="$(new_home unknown)"; P="$H/.planar"
@@ -207,7 +231,9 @@ done
 [[ "$before" == "$(sums "$P/bin.old")$(sums "$P/.staging-foreign")$(sums "$P/research")$(cksum < "$P/notes.txt")" ]] \
   || fail "uninstall changed the bytes of an unknown entry"
 pass "uninstall keeps and reports unknown entries, unknown .old and .staging-* included"
+fi
 
+if scen alt-root; then
 # --- a non-default root left holding only preserved data is adopted again ------------------
 
 H="$(new_home alt-root)"; ALT="$H/alt/inst"; EXT="$H/ext"
@@ -224,7 +250,9 @@ install "$H" "PLANAR_DB=$EXT/p.db" -- --prefix "$ALT"
 [[ -x "$ALT/bin/planar" && -f "$ALT/.planar-install" ]] || fail "the reinstall at the non-default root did not install"
 [[ "$tpl_before" == "$(cksum < "$ALT/templates/a.toml")" ]] || fail "the reinstall changed a preserved template"
 pass "a non-default root left holding only preserved data is reinstalled without --force"
+fi
 
+if scen happy; then
 # --- the installed uninstaller removes the install and names what it keeps -----------------
 
 # A prebuilt install with Claude and Codex present, no python3 on PATH. Every path
@@ -270,7 +298,9 @@ legacy_uninstall "$H2"
 diff <(tree_state "$H" | sed "s#/happy/#/X/#g") <(tree_state "$H2" | sed "s#/happy-legacy/#/X/#g") > "$TMP/diff.out" \
   || fail "install.sh --uninstall and planar-uninstall end differently: $(cat "$TMP/diff.out")"
 pass "planar-uninstall removes every recorded vendor path, managed subtree and install record, keeps and names every data path; install.sh --uninstall ends the same"
+fi
 
+if scen force; then
 # --force is refused, by both, at exit 2 naming --purge, before anything changes.
 H="$(make_installed force)"; P="$H/.planar"
 before="$(tree_state "$H")"
@@ -286,7 +316,9 @@ uninstall "$H" -- --help
 [[ "$RC" == 0 ]] && grep -Fq -- "--purge" "$TMP/out" || fail "--help did not print the usage ($RC)"
 [[ "$(tree_state "$H")" == "$before" ]] || fail "a usage error or --help changed the arena"
 pass "--force is refused at exit 2 naming --purge, by planar-uninstall and install.sh --uninstall, with nothing changed"
+fi
 
+if scen reinstall; then
 # --- a reinstall after uninstall is accepted --------------------------------------------------
 
 H="$(make_installed reinstall)"; P="$H/.planar"
@@ -298,7 +330,9 @@ install "$H"
 [[ -x "$P/bin/planar" && -f "$P/.planar-install" && ! -e "$P/.planar-uninstalled" ]] || fail "the reinstall did not complete, or left the uninstalled marker"
 [[ "$(data_sums "$P")" == "$dbefore" ]] || fail "the reinstall changed a data path"
 pass "a reinstall after uninstall completes without --force and keeps the data paths"
+fi
 
+if scen purge; then
 # --- purge removes the data paths and the empty home -------------------------------------------
 
 H="$(make_installed purge)"; P="$H/.planar"
@@ -314,7 +348,9 @@ while IFS= read -r f; do
 done < "$TMP/retired.files"
 lock_released "$P"
 pass "--purge names and removes every data path, the retired legacy databases and logs by name, then the empty root; the lock stays and is free"
+fi
 
+if scen unowned; then
 # --- uninstall skips a vendor file it does not own -----------------------------------------------
 
 H="$(make_installed unowned)"; P="$H/.planar"
@@ -329,7 +365,9 @@ while IFS= read -r t; do
   [[ ! -e "$t" && ! -L "$t" ]] || fail "uninstall left the recorded target $t"
 done < "$TMP/recorded.unowned"
 pass "a vendor file the operator replaced is left and reported; every other recorded path is removed"
+fi
 
+if scen link; then
 # A link-mode source install: the managed subtrees are symlinks into the checkout.
 # The uninstall unlinks them and the checkout behind them is untouched.
 REPO="$TMP/repo"
@@ -377,7 +415,7 @@ for n in scripts workflows migrations skills agents; do [[ ! -e "$P/$n" && ! -L 
 pass "a link-mode install's symlinked subtrees and vendor links are unlinked; the checkout is untouched"
 fi
 
-if want manifest; then
+if scen escaped; then
 # --- uninstall reads an escaped path and reports a bad line ------------------------------------
 
 # CODEX_HOME holds a space, a backslash and a double quote; the manifest records
@@ -394,7 +432,9 @@ uninstall "$H"
 [[ -z "$(ls -A "$CX/agents")" ]] || fail "uninstall left Codex agents under the escaped CODEX_HOME: $(ls -A "$CX/agents")"
 [[ "$(grep -Fc "removed recorded codex agent $CX/agents/" "$TMP/out")" == "$cx_n" ]] || fail "uninstall did not name each escaped-path removal: $(show)"
 pass "a manifest path with a space, a backslash and a double quote is read and its target removed"
+fi
 
+if scen truncated; then
 # One projection line truncated mid-object: reported by number, left in place;
 # the others are removed.
 H="$(new_home truncated)"; P="$H/.planar"
@@ -414,7 +454,9 @@ while IFS= read -r t; do
   [[ ! -e "$t" && ! -L "$t" ]] || fail "uninstall left $t, recorded on an intact line"
 done < "$TMP/recorded.truncated"
 pass "a projection line truncated mid-object is reported by number and its target kept; the other targets go"
+fi
 
+if scen localbin; then
 # --- uninstall offers to remove a binary in the local bin ----------------------------------------
 
 H="$(make_installed localbin)"; P="$H/.planar"
@@ -434,7 +476,9 @@ in_arena "$H" -- "$ROOT/scripts/uninstall.sh" --yes
 grep -Fq "removed binary $H/.local/bin/planar" "$TMP/out" || fail "uninstall --yes did not name the removal"
 [[ "$(cat "$H/.local/bin/other-tool")" == "not planar" ]] || fail "uninstall --yes removed a file that is not a Planar binary"
 pass "~/.local/bin binaries are named and left on a closed stdin, removed with --yes; other files stay"
+fi
 
+if scen nomanifest; then
 # --- no manifest, or a version 1 manifest: nothing under the vendors ---------------------------
 
 for kind in none v1; do
@@ -462,7 +506,9 @@ in_arena "$H" -- "$ROOT/scripts/uninstall.sh"
   || fail "uninstall of a root holding only planar.db did not exit 0 keeping the database and the vendor file ($RC): $(show)"
 grep -Fq "no install-manifest.json" "$TMP/out" || fail "the no-manifest case was not reported"
 pass "with no manifest or a version 1 manifest nothing under the vendor directories is touched, the data is kept, exit 0"
+fi
 
+if scen reloc; then
 # --- a relocated database is left where it is, --purge included ---------------------------------
 
 H="$(new_home reloc)"; P="$H/.planar"; EXT="$H/ext"
@@ -478,7 +524,9 @@ grep -Fq "kept relocated data path planar.db at $EXT/p.db (relocated by PLANAR_D
 grep -Fq "purging data path $P/workbench" "$TMP/out" && grep -Fq "purging data path $P/templates" "$TMP/out" || fail "--purge did not remove the in-tree data paths: $(show)"
 [[ ! -e "$P" ]] || fail "--purge left the install root: $(ls -A "$P" | tr '\n' ' ')"
 pass "--purge names a relocated database and leaves it, removes nothing outside the root, removes the in-tree data paths"
+fi
 
+if scen purgecfg; then
 # --- --purge keeps the config that relocates data inside the root -------------------------------
 # A config.toml key relocating the workbench or templates into a managed subtree: the uninstall
 # leaves that subtree (it holds a data path), so --purge must leave the config too, or the next
@@ -542,7 +590,9 @@ for n in outside sibling; do
   [[ "$(cat "$rel/f")" == keep ]] || fail "--purge touched $rel"
 done
 pass "--purge keeps and names config.toml while workbench.root or templates.dir lies inside the root, the next install refuses to replace the holding subtree, and the data is byte-identical; outside the root it removes config.toml"
+fi
 
+if scen held; then
 # --- a competing owner is refused before anything is removed ----------------------------------
 
 H="$(make_installed held)"; P="$H/.planar"
@@ -556,7 +606,9 @@ for args in "" "--purge"; do
   kill -9 "$LOCK_HOLDER"; wait "$LOCK_HOLDER" 2>/dev/null || true
 done
 pass "uninstall and --purge refuse a held mutation lock, naming its owner, before removing anything"
+fi
 
+if scen paused; then
 # While an uninstall or a purge is paused mid-removal, an install is refused
 # naming it; purging the root never removes the lock, so no second owner gets in.
 for args in "" "--purge"; do
@@ -583,9 +635,9 @@ done
 pass "a paused uninstall or purge holds the lock throughout: a competing install is refused naming it; the lock survives the purge and is then free"
 fi
 
-if want interrupted; then
 # --- an interrupted uninstall finishes on retry and never resurrects binaries -------------------
 
+if scen killed || scen verify || scen source-retry; then
 # Kill after the installed planar-uninstall (bin/) is removed. The journal says
 # uninstalling: an install refuses, naming the retry. The printed retry for a
 # release install downloads that release's bundle afresh and runs its
@@ -617,6 +669,8 @@ run_retry() {
   ( cd "$1/work" && /usr/bin/env -i HOME="$1" PATH="$NETBIN" NO_COLOR=1 LC_ALL=C TMPDIR="$2" PLANAR_DB="$1/.planar/planar.db" \
       /bin/bash -c "$3" </dev/null >"$TMP/out" 2>"$TMP/err" ) || RC=$?
 }
+fi
+if scen killed; then
 H="$(make_installed killed)"; P="$H/.planar"
 recorded "$H" > "$TMP/recorded.killed"
 dbefore="$(data_sums "$P")"
@@ -643,7 +697,9 @@ install "$H"
 [[ "$RC" == 0 ]] || fail "a fresh install after the finished uninstall failed ($RC): $(show)"
 ! grep -Fq "resuming" "$TMP/out" || fail "the install resumed something after the uninstall"
 pass "a killed uninstall leaves an uninstalling journal; installs refuse naming the durable retry, which downloads the release's uninstaller and finishes; a fresh install then succeeds"
+fi
 
+if scen verify; then
 # The printed retry verifies before it extracts (test spec 679, "Error -- the
 # printed uninstall retry verifies before it extracts"). Kill an uninstall of a
 # release install, then serve an archive that no longer matches SHA256SUMS: the
@@ -706,7 +762,9 @@ retry_slash="$(sed -n 's/^  if this uninstall is interrupted, finish it with: //
 [[ "$retry_slash" == *"u=https://releases.example.test/planar/download/"* ]] \
   || fail "the retry for a base with trailing slashes does not name the base without them: $retry_slash"
 pass "the printed release retry downloads SHA256SUMS and refuses a mismatched or unrecorded archive naming the asset, extracting nothing; the genuine archive finishes it"
+fi
 
+if scen source-retry; then
 # A source install records its checkout, so the installed copy's retry names it
 # (quoted: the checkout path holds a space) and completes the uninstall from it.
 SRC="$TMP/my checkout"
@@ -776,7 +834,9 @@ mkdir -p "$TMP/rt-tagged"
 run_retry "$H" "$TMP/rt-tagged" "$retry"
 [[ "$RC" == 0 && ! -e "$P/skills" && ! -e "$P/.planar-journal" ]] || fail "the tagged source retry did not finish the uninstall ($RC): $(show)"
 pass "a source install of a tagged build still prints the recorded-checkout retry, not a release download"
+fi
 
+if scen killed-vendor; then
 # A kill in the middle of the vendor removals: the installed copy is still there
 # and the next run finishes every recorded removal.
 H="$(make_installed killed-vendor)"; P="$H/.planar"
@@ -788,14 +848,11 @@ uninstall "$H"
 [[ "$RC" == 0 ]] || fail "the rerun after the vendor-stage kill failed ($RC): $(show)"
 while IFS= read -r t; do [[ ! -e "$t" ]] || fail "the rerun left the recorded target $t"; done < "$TMP/recorded.kv"
 pass "a kill during the vendor removals is finished by the next run"
+fi
 
 # --- uninstall terminates an interrupted upgrade --------------------------------------------------
 
-# A second bundle, release v1.2.4, whose binaries differ.
-B2="$TMP/bundles/planar-fake-2"
-fake_bundle_make "$ROOT" "$B2"
-for b in planar planar-agent planar-watch planar-execute planar-ext; do stub_binary_write "$B2/bin/$b" v1.2.4 fedcba987654; done
-sed -i.bak 's/"version": "v1.2.3"/"version": "v1.2.4"/' "$B2/release.json" && rm -f "$B2/release.json.bak"
+if scen upgrade-terminate || scen upgrade-purge; then
 upgrade_killed() { # upgrade_killed NAME [ENV=V...] -- an install of v1.2.3 whose upgrade to v1.2.4 is killed mid-swap
   local name="$1"; shift
   H="$(new_home "$name")"; P="$H/.planar"
@@ -812,6 +869,8 @@ upgrade_killed() { # upgrade_killed NAME [ENV=V...] -- an install of v1.2.3 whos
   printf 'x\n' > "$P/.staging-not-ours/f"; printf 'y\n' > "$P/research.old/f"
   printf 'notes\n' > "$P/notes.txt"
 }
+fi
+if scen upgrade-terminate; then
 UPG_EXT=""
 upgrade_killed upgrade
 owned_staging="$(sed -n 's/^staging=//p' "$P/.planar-journal")"
@@ -834,7 +893,9 @@ install "$H"
 ! grep -Fq "resuming the interrupted install" "$TMP/out" || fail "the install replayed the cancelled upgrade"
 cmp -s "$BUNDLE/bin/planar" "$P/bin/planar" || fail "the fresh install is not the bundle's release (a cancelled backup was restored?)"
 pass "uninstall ends an interrupted upgrade: owned staging and backups go, unknown look-alikes stay and are reported, data stays, a fresh install follows"
+fi
 
+if scen upgrade-purge; then
 # The same with --purge and a relocated database; the next install, with the
 # relocated database, needs no --force.
 EXT="$TMP/homes/ext-upgrade"; mkdir -p "$EXT"
@@ -855,4 +916,4 @@ pass "--purge ends an interrupted upgrade too, honouring the relocation; the nex
 fi
 
 [[ "$PASSED" -gt 0 ]] || fail "group $GROUP ran no check"
-printf 'install uninstall tests (group %s): %s passed\n' "$GROUP" "$PASSED"
+printf 'install uninstall tests (group %s%s): %s passed\n' "$GROUP" "${SCEN_FILTER:+, scenario $SCEN_FILTER}" "$PASSED"

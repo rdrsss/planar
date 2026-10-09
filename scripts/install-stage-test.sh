@@ -139,9 +139,23 @@ PY
 STAGE_GROUPS="staging vendors placement modes uninstall"
 GROUP="${INSTALL_STAGE_GROUP:-all}"
 case " all $STAGE_GROUPS " in *" $GROUP "*) ;; *) printf 'install-stage-test: unknown INSTALL_STAGE_GROUP %s (want one of: %s)\n' "$GROUP" "$STAGE_GROUPS" >&2; exit 2 ;; esac
-want() { [[ "$GROUP" == all || "$GROUP" == "$1" ]]; }
+# Scenario selection and parallel dispatch (plan 1122 M6, task 7434; scripts/fixtures/scenario-runner.sh).
+# INSTALL_TEST_SCENARIO=<name> runs only that scenario, inside or outside its group; an unknown
+# name exits 2. A run that selects several scenarios runs INSTALL_TEST_JOBS of them at a time
+# (default 4), each as a child of this script with its own scratch directory and homes. A name
+# covers the numbered scenarios that share homes (all-vendors: 8, 9, 12, 13, 23, 24; copy-reinstall:
+# 1, 2, 6; mode-switch: 21, 22; upgrade-layout: 26, 30). The table is the dispatch order,
+# name:group. No scenario here tests the mutation lock, so none is serial.
+SCEN_TABLE="all-vendors:vendors no-change-rerun:placement uninstall-modes:uninstall mode-switch:modes mid-run-failure:placement manifest-rename-failure:placement upgrade-layout:modes copy-reinstall:staging old-agent-layout:staging foreign-destination:staging vendors-filter:staging claude-vendor:staging link-mode:staging malformed-agent:staging opencode-only:vendors gemini-antigravity:vendors opencode-quoting:staging unprovable-evidence:modes foreign-entries:modes legacy-manifest:modes flags:staging lists:staging doc-urls:staging"
+SCEN_SERIAL=""
+# shellcheck source=fixtures/scenario-runner.sh
+source "$ROOT/scripts/fixtures/scenario-runner.sh"
+scen_init install-stage-test "$SCEN_TABLE" "$SCEN_SERIAL"
 
-REPO="$TMP/repo"; make_repo "$REPO"
+# The staged scratch checkout is read-only to the scenarios (those that change one make their own
+# copy: BAD, QUOTE, MUT), so a parallel child uses the dispatching run's instead of staging another.
+if [[ -n "${INSTALL_TEST_SHARED-}" ]]; then REPO="$INSTALL_TEST_SHARED/repo"; else REPO="$TMP/repo"; make_repo "$REPO"; fi
+scen_dispatch "$TMP/repo" "$@"
 
 # ---------------------------------------------------------------------------
 # `planar health` against a scratch install (task 7219): the installed-surface
@@ -176,7 +190,7 @@ print(f["manifest_status"], f["state"], f["managed"], f["fresh"], f["stale"], f[
 }
 
 
-if want staging; then
+if scen copy-reinstall; then
 mark 1
 # 1. Copy mode, no vendor: everything is staged and no renderer runs.
 run_install "$REPO" "$TMP/h1" --no-vendor || fail "install failed: $(cat "$TMP/h1/err")"
@@ -196,6 +210,8 @@ run_install "$REPO" "$TMP/h1" --no-vendor || fail "re-install failed: $(cat "$TM
 [[ ! -e "$TMP/h1/.planar/codex-agents/stale.toml" ]] || fail "a re-install kept a stale TOML"
 check_staged "$REPO" "$TMP/h1"
 
+fi
+if scen claude-vendor; then
 mark 3
 # 3. With a vendor present and selected the installer stays runnable end to
 # end; each placed target is one projection row, its files also in `extras`.
@@ -207,6 +223,8 @@ check_staged "$REPO" "$TMP/h3"
 grep -Fq '"vendors": ["claude"]' "$TMP/h3/.planar/install-manifest.json" || fail "the claude placement was not recorded as a vendor"
 grep -Fq '"vendor": "claude", "kind": "skill", "name": "planar"' "$TMP/h3/.planar/install-manifest.json" || fail "the claude skill has no projection row"
 
+fi
+if scen link-mode; then
 mark 4
 # 4. Link mode: the staged trees point into the checkout.
 run_install "$REPO" "$TMP/h4" --no-vendor --link || fail "link install failed: $(cat "$TMP/h4/err")"
@@ -214,6 +232,8 @@ run_install "$REPO" "$TMP/h4" --no-vendor --link || fail "link install failed: $
 [[ -L "$TMP/h4/.planar/agents/planar-coder.md" ]] || fail "link mode did not link the agents"
 check_staged "$REPO" "$TMP/h4"
 
+fi
+if scen malformed-agent; then
 mark 5
 # 5. A malformed agent stops the installer at the staging step, naming the
 # file, before the render, and leaves no codex-agents/.
@@ -226,6 +246,8 @@ grep -Fq 'Staging the planar skill and agents' "$TMP/h5/out" || fail "the failur
 [[ ! -e "$TMP/h5/.planar/codex-agents" && ! -e "$TMP/h5/.planar/codex-agents.new" ]] || fail "a failed render left codex-agents/"
 [[ ! -e "$TMP/h5/.planar/install-manifest.json" ]] || fail "a failed staging step still wrote the manifest"
 
+fi
+if scen copy-reinstall; then
 mark 6
 # 6. The staged recorder, directly: it adds extras only, never projection rows
 # (no vendor owns a staged path).
@@ -422,7 +444,7 @@ PY
 
 ALL6=(claude codex copilot gemini antigravity opencode)
 
-if want vendors; then
+if scen all-vendors; then
 mark 8
 # 8. All six markers: every target, in the right format.
 mk_home h8 "${ALL6[@]}"
@@ -449,6 +471,8 @@ assert_placed "$TMP/h9" claude
 grep -Fq 'vendors skipped: codex (no $CODEX_HOME or ~/.codex/), copilot' "$TMP/h9/out" || fail "the skipped vendors were not printed: $(grep skipped "$TMP/h9/out")"
 assert_manifest "$TMP/h9" claude
 
+fi
+if scen opencode-only; then
 mark 10
 # 10. Only ~/.config/opencode/: the shared skill and the OpenCode agents.
 mk_home h10 opencode
@@ -458,6 +482,8 @@ assert_placed "$TMP/h10" opencode
 check_formats "$REPO" "$TMP/h10" opencode
 [[ ! -e "$TMP/h10/.config/opencode/skills" && ! -e "$TMP/h10/.claude" ]] || fail "OpenCode install wrote a private skill dir or ~/.claude"
 
+fi
+if scen gemini-antigravity; then
 mark 11
 # 11. Gemini CLI and Antigravity are detected independently.
 mk_home h11a gemini antigravity
@@ -475,6 +501,8 @@ assert_found "$TMP/h11c" "antigravity"
 assert_placed "$TMP/h11c" antigravity
 [[ ! -e "$TMP/h11c/.gemini/agents" && ! -e "$TMP/h11c/.agents" ]] || fail "antigravity-cli/ alone wrote ~/.gemini/agents or the shared skill"
 
+fi
+if scen all-vendors; then
 mark 12
 # 12. Link vs copy: same path set; link mode links skills and Markdown agents;
 # the derived OpenCode file is a regular file in both modes.
@@ -526,10 +554,10 @@ for d in .codex .copilot .gemini .config; do rm -rf "${TMP:?}/h8/$d"; done
 [[ "$(freshness "$TMP/h9")" == "current fresh 16 16 0 0" ]] || fail "the claude-only install is not 16 fresh rows: $(freshness "$TMP/h9")"
 
 fi
-
 fi
 
-if want staging; then
+
+if scen foreign-destination; then
 mark 14
 # 14. A foreign destination no manifest records: the installer errs naming the
 # path and places nothing, and the foreign file is untouched.
@@ -550,6 +578,8 @@ grep -Fq "$TMP/h14b/.claude/agents/planar-coder.md" "$TMP/h14b/err" || fail "the
 [[ "$(cat "$TMP/h14b/.claude/agents/planar-coder.md")" == foreign ]] || fail "the foreign agent was changed"
 grep -Fq 'no Planar manifest records it' "$TMP/h14b/err" || fail "the agent error does not say no manifest records it: $(cat "$TMP/h14b/err")"
 
+fi
+if scen vendors-filter; then
 mark 15
 # 15. --vendors is a filter: naming an absent vendor warns, an unknown one
 # warns, neither is an error; CODEX_HOME set is Codex's marker.
@@ -565,6 +595,8 @@ assert_found "$TMP/h15b" "codex"
 [[ -f "$TMP/h15b/custom-codex/agents/planar-coder.toml" && -f "$TMP/h15b/.agents/skills/planar/SKILL.md" ]] || fail "CODEX_HOME did not select Codex"
 [[ ! -e "$TMP/h15b/.codex" ]] || fail "the default ~/.codex was written when CODEX_HOME is set"
 
+fi
+if scen opencode-quoting; then
 mark 16
 # 16. An OpenCode description YAML would misread is quoted, body unchanged.
 QUOTE="$TMP/quoterepo"; make_repo "$QUOTE"
@@ -575,6 +607,8 @@ run_install "$QUOTE" "$TMP/h16" || fail "quirky install failed: $(cat "$TMP/h16/
   || fail "the quirky description was not quoted: $(head -5 "$TMP/h16/.config/opencode/agents/planar-quirky.md")"
 [[ "$(tail -4 "$TMP/h16/.config/opencode/agents/planar-quirky.md" | tr '\n' '|')" == '|# Body|---|kept|' ]] || fail "the OpenCode body changed"
 
+fi
+if scen doc-urls; then
 mark 17
 # 17. Every one of the nine target rows in install.sh carries an adjacent
 # documentation URL and the date it was checked.
@@ -614,7 +648,7 @@ for e in json.load(open(sys.argv[1]))['extras']:
 PY
 }
 
-if want placement; then
+if scen no-change-rerun; then
 mark 18
 # 18. A second run in the same mode changes nothing: the no-changes summary,
 # the manifest byte-identical, and nothing outside the prefix (plus the
@@ -639,6 +673,8 @@ for mode in copy link; do
   assert_placed "$TMP/h18$mode" "${ALL6[@]}"
 done
 
+fi
+if scen mid-run-failure; then
 mark 19
 # 19. A failure in the middle: the fourth target (the first Claude agent) cannot
 # be created because a regular file sits where its parent directory must go.
@@ -677,6 +713,8 @@ assert_placed "$TMP/h19" "${ALL6[@]}"
 check_formats "$REPO" "$TMP/h19" "${ALL6[@]}"
 assert_manifest "$TMP/h19"
 
+fi
+if scen manifest-rename-failure; then
 mark 20
 # 20. A crash between the manifest's temp write and its rename. A `mv` shim in
 # front of the installer's PATH fails the third rename of install-manifest.json
@@ -717,7 +755,7 @@ assert_manifest "$TMP/h20"
 
 fi
 
-if want modes; then
+if scen mode-switch; then
 mark 21
 # 21. Switching mode replaces the prior form of every target and records the
 # new mode; the path set is identical; OpenCode's derived files are the same
@@ -745,7 +783,7 @@ check_formats "$REPO" "$TMP/h21" "${ALL6[@]}"
 
 fi
 
-if want modes; then
+if scen mode-switch; then
 if [[ "$HEALTH" == 1 ]]; then
 mark 22
 # 22. A copy install across all six vendors: nine roots, 3 skill directories and
@@ -763,7 +801,9 @@ rm -rf "$TMP/h21/.agents/skills/planar"
 [[ "$(freshness "$TMP/h21")" == "current degraded 93 92 0 1" ]] || fail "a removed skill directory is not one missing row: $(freshness "$TMP/h21")"
 
 fi
+fi
 
+if scen legacy-manifest; then
 if [[ "$HEALTH" == 1 ]]; then
 mark 25
 # 25. A manifest in the previous shape (version 1: the four retired vendors, or
@@ -778,8 +818,8 @@ printf '{"version": 1, "build_id": "old", "install_mode": "copy", "vendors": ["c
 [[ "$(freshness "$TMP/hold")" == "legacy degraded 0 0 0 0" ]] || fail "a version 1 manifest with old rows is not legacy: $(freshness "$TMP/hold")"
 
 fi
-
 fi
+
 
 # ---------------------------------------------------------------------------
 # Retiring the previous projections (task 7223): the sweep removes only what it
@@ -788,7 +828,7 @@ fi
 # --uninstall removes the new targets and nothing else.
 # ---------------------------------------------------------------------------
 
-if want modes; then
+if scen upgrade-layout; then
 mark 26
 # 26. Upgrade from the previous layout: seven artifacts, all retired and
 # reported; the sweep title comes before the cleanup output; the staged
@@ -849,6 +889,8 @@ run_install "$REPO" "$H" || fail "re-run after the upgrade failed: $(cat "$H/err
 grep -Fq 'retired 0 previous projection(s); left 0' "$H/out" || fail "the re-run sweep summary: $(grep 'previous projection' "$H/out")"
 grep -Fq 'no changes: all' "$H/out" || fail "the re-run changed vendor targets: $(grep -E 'vendor target|no changes' "$H/out")"
 
+fi
+if scen unprovable-evidence; then
 mark 27
 # 27. Missing or differing evidence: the candidate stays, with its path and why.
 H="$TMP/h27"; P="$H/.planar"
@@ -864,6 +906,8 @@ grep -Fq "$H/.config/opencode/skills/pl-task: could not prove ownership" "$H/err
 grep -Fq "$H/.codex/skills/pl-task: could not prove ownership" "$H/err" || fail "the codex candidate is not reported with its path"
 grep -Fq 'retired 0 previous projection(s); left 2' "$H/out" || fail "the sweep summary does not count the two left"
 
+fi
+if scen foreign-entries; then
 mark 28
 # 28. Foreign entries are never touched and never removed.
 H="$TMP/h28"
@@ -883,7 +927,7 @@ done
 
 fi
 
-if want uninstall; then
+if scen uninstall-modes; then
 mark 29
 # 29. --uninstall: every recorded target and the prefix contents go; the vendor
 # directories, an unrecorded foreign file and a recorded target that was
@@ -915,7 +959,7 @@ done
 
 fi
 
-if want staging; then
+if scen old-agent-layout; then
 mark 31
 # 31. Upgrade from the older top-level agent layout. An older release linked
 # vendor agents straight to $PLANAR_HOME/agents/<role>.md (no <vendor>/ level).
@@ -957,6 +1001,8 @@ grep -Fq 'retired 0 previous projection(s); left 0' "$H/out" || fail "the link-m
 [[ -L "$H/.claude/agents/planar-coder.md" ]] || fail "the link-mode re-run lost planar-coder.md"
 
 
+fi
+if scen flags; then
 mark flags
 # --- conflicting installer flags are refused by name (plan 1133, rel-m5-installer-dedup) -------
 # Each refusal exits before anything is created: no prefix appears. --prebuilt
@@ -982,6 +1028,8 @@ for argv in "--prebuilt" "--prebuilt --force" "--prebuilt ''"; do
   grep -Fq -- '--prebuilt needs a bundle directory' "$H/err" || fail "'install.sh $argv' did not name --prebuilt: $(cat "$H/err")"
 done
 
+fi
+if scen lists; then
 mark lists
 # --- one copy of the managed-subtree and vendor lists ------------------------------------------
 # install.sh, the uninstaller and the ownership rules source
@@ -1007,4 +1055,4 @@ run_install "$MUT" "$H" --vendors zzvendor || fail "install with the extended ve
 fi
 
 [[ "$MARKED" -gt 0 ]] || fail "group $GROUP ran no scenario"
-printf 'install-stage tests (group %s): %s scenarios run\n' "$GROUP" "$MARKED"
+printf 'install-stage tests (group %s%s): %s scenarios run\n' "$GROUP" "${SCEN_FILTER:+, scenario $SCEN_FILTER}" "$MARKED"
