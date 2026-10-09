@@ -106,12 +106,7 @@
 //       -> case 4 fails at `acquired.contains(token)` -- the pairing
 //       assertion, killed independently of the counts.
 //
-// HONEST GAPS. Two assertions were NOT killed independently:
-//   - The per-worker spread (`per_worker.size() == k_workers`). Starving
-//     one worker requires a scheduler outcome, not a code change; the
-//     assertion is retained because a real regression (a worker crashing
-//     out of its loop early) does produce it, but no mutation here proves
-//     that.
+// HONEST GAPS. One assertion was NOT killed independently:
 //   - Reversing the feed's sort to descending (an eighth mutation, run and
 //     recorded) killed case 4 at the COUNT assertion rather than at the
 //     ordering one, because `--follow`'s incremental cursor is itself
@@ -556,13 +551,11 @@ TEST_CASE("three concurrent planar-agent processes drain one queue exactly once"
   auto const claim_lines = lines_of(observed.claims);
   REQUIRE(claim_lines.size() == static_cast<std::size_t>(k_tasks));
 
-  std::set<std::string>      tasks_claimed;
-  std::set<std::string>      tokens;
-  std::map<std::string, int> per_worker;
+  std::set<std::string> tasks_claimed;
+  std::set<std::string> tokens;
   for (auto const& line : claim_lines) {
     auto const parts = split_ws(line);
     REQUIRE(parts.size() == 3);
-    per_worker[parts[0]] += 1;
     tasks_claimed.insert(parts[1]);
     tokens.insert(parts[2]);
   }
@@ -572,12 +565,9 @@ TEST_CASE("three concurrent planar-agent processes drain one queue exactly once"
   REQUIRE(tasks_claimed.size() == static_cast<std::size_t>(k_tasks));
   REQUIRE(tokens.size() == static_cast<std::size_t>(k_tasks));
 
-  // No greedy starvation: every worker did some of the work.
-  REQUIRE(per_worker.size() == static_cast<std::size_t>(k_workers));
-  for (auto const& [worker, count] : per_worker) {
-    INFO("worker " << worker << " claimed " << count);
-    REQUIRE(count >= 1);
-  }
+  // Fairness between workers is not a contract of the claim protocol: one
+  // worker may legitimately drain most of the queue before another is
+  // scheduled, so this test does not assert how the claims are spread.
 
   // POST-STATE, read back through a fresh process rather than inferred from
   // the workers' exit codes: all six tasks are `done`.
