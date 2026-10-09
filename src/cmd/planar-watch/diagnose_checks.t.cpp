@@ -95,9 +95,13 @@ struct world {
     REQUIRE(ok.has_value());
   }
 
-  /// Findings of `planar-watch diagnose --plan 1 --json` as `check-id entity` strings.
-  auto findings(std::vector<std::string> checks) -> std::vector<std::string> {
+  /// Findings of `planar-watch diagnose --plan 1 --json` as `check-id entity severity` strings.
+  auto findings(std::vector<std::string> checks, std::string_view days = {}) -> std::vector<std::string> {
     std::vector<std::string> args{"diagnose", "--plan", "1", "--json"};
+    if (!days.empty()) {
+      args.push_back("--days");
+      args.emplace_back(days);
+    }
     for (auto& c : checks) {
       args.push_back("--check");
       args.push_back(std::move(c));
@@ -182,4 +186,24 @@ TEST_CASE("a healthy claim gives no claim finding before or after complete", "[c
   CHECK(w.findings(k_claim_checks).empty());
   w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
   CHECK(w.findings(k_claim_checks).empty());
+}
+
+TEST_CASE("heartbeat gaps are read from the heartbeat rows the verb writes", "[cmd][watch][diagnose][workflow][claims]") {
+  world w;
+  auto  token = w.claim(1);
+  w.planar_agent({"heartbeat", "--claim", token, "--status", "one"});
+  w.planar_agent({"heartbeat", "--claim", token, "--status", "two"});
+  // Back to back, the real heartbeats leave no gap.
+  CHECK(w.findings({"heartbeat-gap"}).empty());
+
+  // TIME TRAVEL: the verbs cannot wait out a lease. The claim was taken with a 30 minute lease; the
+  // heartbeats are moved to 20 and then 60 minutes after claiming, so the first gap (20 minutes)
+  // is beyond half the lease (info) and the second (40 minutes) is beyond the whole lease (warning).
+  w.move_time("update agent_work_claims set claimed_at = '2020-01-01T00:00:00.000Z'");
+  w.move_time("update agent_actions set started_at = '2020-01-01T00:20:00.000Z', ended_at = '2020-01-01T00:20:00.000Z' "
+              "where action_kind = 'heartbeat' and summary = 'one'");
+  w.move_time("update agent_actions set started_at = '2020-01-01T01:00:00.000Z', ended_at = '2020-01-01T01:00:00.000Z' "
+              "where action_kind = 'heartbeat' and summary = 'two'");
+  CHECK(w.findings({"heartbeat-gap"}, "36500") ==
+        std::vector<std::string>{"heartbeat-gap claim:1 warning", "heartbeat-gap claim:1 info"});
 }

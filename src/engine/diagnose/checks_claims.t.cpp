@@ -16,6 +16,9 @@
 //   * `claim-closed-by-reconcile`: a claim that ended `stale`, inside the window.
 //   * A healthy fixture yields no finding from any claim check.
 //   * Evidence times are row timestamps: moving the evaluation instant does not move them.
+//   * `heartbeat-gap` (task 7375, decision 1345): over the gaps between a claim's heartbeat action
+//     rows, `warning` strictly beyond the full lease, `info` strictly beyond half of it and
+//     nothing at or below half; the lease is `lease_expires_at - last_heartbeat_at`.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -362,4 +365,140 @@ TEST_CASE("evidence times are row timestamps and do not move with the evaluation
     CHECK(first.findings[i].evidence_times == second.findings[i].evidence_times);
     CHECK(im::finding_digest(first.findings[i]) == im::finding_digest(second.findings[i]));
   }
+}
+
+namespace {
+
+using namespace std::chrono_literals;
+
+/// A timestamp `offset` after 09:00:00.000 on the fixture day, in the stored format.
+auto at_offset(std::chrono::milliseconds offset) -> std::string {
+  auto base = std::chrono::sys_time<std::chrono::milliseconds>{std::chrono::sys_days{std::chrono::year{2026} / 6 / 1}} + 9h;
+  return std::format("{:%FT%T}Z", base + offset);
+}
+
+/// A claim with a 600 s lease, claimed at `at_offset(0)`, with one heartbeat action `gap` later.
+auto gap_fixture(fixture& fx, std::chrono::milliseconds gap) -> void {
+  fx.task(1, "doing");
+  fx.claim(1, 1, "completed", at_offset(0ms), at_offset(gap), at_offset(gap + 600s), at_offset(gap + 1s));
+  fx.heartbeat_action(1, 1, at_offset(gap));
+}
+
+auto gap_findings(fixture& fx) -> dg::diagnosis {
+  return fx.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z");
+}
+
+} // namespace
+
+TEST_CASE("heartbeat-gap is catalogued as a warning event", "[engine][diagnose][claims][heartbeat-gap]") {
+  auto cat = dg::builtin_catalog();
+  auto it  = std::ranges::find(cat.checks, "heartbeat-gap", &dg::check_def::id);
+  REQUIRE(it != cat.checks.end());
+  CHECK(it->built);
+  CHECK(it->kind == im::check_kind::event);
+  CHECK(it->severity == im::diagnostic_severity::warning);
+  CHECK(it->category == "heartbeat_gap");
+  CHECK(it->recovery.contains("half"));
+}
+
+TEST_CASE("heartbeat-gap is silent at exactly half the lease and reports info just beyond it",
+          "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture half;
+  gap_fixture(half, 300s);
+  CHECK(gap_findings(half).findings.empty());
+
+  fixture beyond;
+  gap_fixture(beyond, 300s + 1ms);
+  auto d = gap_findings(beyond);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::info);
+  CHECK(d.findings[0].check_id == "heartbeat-gap");
+  CHECK(im::entity_ref_text(d.findings[0].primary) == "claim:1");
+  CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "task", .id = 1}));
+}
+
+TEST_CASE("heartbeat-gap reports info at exactly the full lease and a warning just beyond it",
+          "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture full;
+  gap_fixture(full, 600s);
+  auto d = gap_findings(full);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::info);
+
+  fixture beyond;
+  gap_fixture(beyond, 600s + 1ms);
+  d = gap_findings(beyond);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::warning);
+}
+
+TEST_CASE("heartbeat-gap measures between consecutive heartbeats and derives the lease from the claim row",
+          "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture fx;
+  fx.task(1, "doing");
+  // A 1200 s lease: a 700 s gap is beyond half but not beyond the full lease.
+  fx.claim(1, 1, "completed", at_offset(0ms), at_offset(1500s), at_offset(1500s + 1200s), at_offset(1600s));
+  fx.heartbeat_action(1, 1, at_offset(100s));  // 100 s after claiming
+  fx.heartbeat_action(2, 1, at_offset(800s));  // 700 s gap: info
+  fx.heartbeat_action(3, 1, at_offset(1000s)); // 200 s gap: nothing
+  fx.heartbeat_action(4, 1, at_offset(1500s)); // 500 s gap: nothing
+  auto d = gap_findings(fx);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::info);
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{at_offset(100s), at_offset(800s)});
+  CHECK(d.findings[0].recovery.contains("half"));
+}
+
+TEST_CASE("heartbeat-gap counts the stretch from claiming to the first heartbeat", "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture fx;
+  gap_fixture(fx, 900s);
+  auto d = gap_findings(fx);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::warning);
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{at_offset(0ms), at_offset(900s)});
+}
+
+TEST_CASE("heartbeat-gap keeps one finding per gap and lets a steady cadence pass", "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture steady;
+  steady.task(1, "doing");
+  steady.claim(1, 1, "completed", at_offset(0ms), at_offset(1200s), at_offset(1800s), at_offset(1300s));
+  for (int i = 1; i <= 4; ++i) {
+    steady.heartbeat_action(i, 1, at_offset(std::chrono::seconds{300 * i}));
+  }
+  CHECK(gap_findings(steady).findings.empty());
+
+  fixture gappy;
+  gappy.task(1, "doing");
+  gappy.claim(1, 1, "completed", at_offset(0ms), at_offset(2400s), at_offset(3000s), at_offset(2500s));
+  gappy.heartbeat_action(1, 1, at_offset(700s));
+  gappy.heartbeat_action(2, 1, at_offset(1500s));
+  gappy.heartbeat_action(3, 1, at_offset(2400s));
+  CHECK(gap_findings(gappy).findings.size() == 3);
+}
+
+TEST_CASE("heartbeat-gap is bounded by the window and the plan scope", "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture fx;
+  fx.task(1, "doing", 1);
+  fx.task(2, "doing", 2);
+  fx.claim(1, 1, "completed", at_offset(0ms), at_offset(900s), at_offset(1500s), at_offset(1000s));
+  fx.heartbeat_action(1, 1, at_offset(900s));
+  fx.claim(2, 2, "completed", at_offset(0ms), at_offset(900s), at_offset(1500s), at_offset(1000s));
+  fx.heartbeat_action(2, 2, at_offset(900s));
+
+  CHECK(fx.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z").findings.size() == 2);
+  auto scoped = fx.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z", 1);
+  REQUIRE(scoped.findings.size() == 1);
+  CHECK(im::entity_ref_text(scoped.findings[0].primary) == "claim:1");
+  // The gap ended 2026-06-01T09:15; a window that starts after it excludes it.
+  CHECK(fx.run({"heartbeat-gap"}, "2026-06-09T00:00:00.000Z", std::nullopt, 3).findings.empty());
+}
+
+TEST_CASE("heartbeat-gap evidence does not move with the evaluation instant", "[engine][diagnose][claims][heartbeat-gap]") {
+  fixture fx;
+  gap_fixture(fx, 900s);
+  auto first  = fx.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z");
+  auto second = fx.run({"heartbeat-gap"}, "2026-06-03T00:00:00.000Z");
+  REQUIRE(first.findings.size() == 1);
+  REQUIRE(second.findings.size() == 1);
+  CHECK(im::finding_digest(first.findings[0]) == im::finding_digest(second.findings[0]));
 }
