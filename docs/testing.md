@@ -625,7 +625,7 @@ parallel. Three environment variables, read by all four, work below the existing
 | Variable | Meaning |
 |----------|---------|
 | `INSTALL_TEST_SCENARIO=<name>` | Run only that scenario and report it, inside or outside its group (the group variable is then not consulted). An unknown name exits 2 and lists the known ones, as an unknown group does. |
-| `INSTALL_TEST_JOBS=<n>` | How many scenarios run at once when a run selects more than one. Default 4; `1` runs them in one process in file order. Anything but a positive integer exits 2. |
+| `INSTALL_TEST_JOBS=<n>` | How many scenarios run at once when a run selects more than one. Default 4; `1` runs them in one process in file order. A leading zero is decimal (`08` is 8); anything but a positive integer exits 2. |
 | `INSTALL_TEST_SHARED` | Internal. The dispatching run sets it for its children; do not set it by hand. |
 
 ```sh
@@ -648,6 +648,14 @@ so no `wait -n`, associative arrays or `mapfile`):
   fault directory and `$TMP/out` and `$TMP/err` are under that directory, so scenarios share
   nothing. Output is collected per scenario and printed as `=== scenario <name>: ok|FAILED`
   followed by its log.
+- **Skips are declared.** A scenario that cannot run on the host (order `renamed` without a
+  machine identity; the stage health scenarios 22 to 25 without a built `planar`) calls
+  `scen_skip "<reason>"`. A run whose only outcome is a declared skip passes and the dispatcher
+  prints `=== scenario <name>: skipped (<reason>)`; the "ran no check" guards still fail a
+  scenario that asserts nothing and declares nothing.
+- **A dead child is a failure.** A child whose wrapper dies before it writes its status is
+  reported as `scenario <name> exited without a status` instead of waited on, and an interrupted
+  dispatcher stops each child's process group (no `pkill`, which slim images lack).
 - **Failures keep their name.** A failing scenario prints its own message, then
   `<script>: FAIL: scenario <name> exited <n>`; the run finishes the other scenarios, prints
   `<script>: FAIL: <k> of <n> scenarios failed: <names>` and exits 1.
@@ -658,7 +666,7 @@ so no `wait -n`, associative arrays or `mapfile`):
   `paused`. Stage and bash32 have none.
 - **One staged fixture.** The dispatching run stages the fake bundles (order: three bundles
   of the built binaries, the second and third copied from the first; uninstall: two fake
-  bundles; stage: the scratch checkout) once and passes the directory to its children, which use
+  bundles; bash32: its one fake bundle; stage: the scratch checkout) once and passes the directory to its children, which use
   it read-only. The dispatcher checksums the shared tree before and after and fails the run if a
   scenario changed it; a scenario that must change one makes its own copy (stage `BAD`,
   `QUOTE`, `MUT`). A single scenario, or `INSTALL_TEST_JOBS=1`, stages its own, as before.
@@ -667,7 +675,8 @@ so no `wait -n`, associative arrays or `mapfile`):
 - `install.scenarios` (`scripts/install-scenarios-test.sh`, label `install_scenarios`) tests the
   runner with a five-scenario stand-in script (one scenario alone inside and outside its group,
   unknown names and job counts, the job bound, the serial scenario alone, per-scenario scratch,
-  a named failure, a changed shared fixture) and the usage paths of the four real scripts.
+  a named failure, a changed shared fixture, a declared skip, a child that dies without a status,
+  an interrupted dispatcher, `INSTALL_TEST_JOBS=08`) and the usage paths of the four real scripts.
 
 Measured wall times, `ctest --test-dir build/debug -L '^install_<family>$'` through the host queue,
 2026-10-09, macOS arm64 (8 cores), a debug build, `INSTALL_TEST_JOBS` at its default of 4.
@@ -709,7 +718,7 @@ The unfiltered script, with no group and no scenario, runs every scenario in one
 Before, that was the groups one after another in one process (the sum of the group times
 above, as the file order ran them); after, one run of the same script:
 
-| Script, no filter | Before (s, sum of groups) | After (s) |
+| Script, no filter | Before (s, derived: the sum of the group runs above, not measured) | After (s, measured) |
 |-------------------|--------------------------:|----------:|
 | `install-order-test.sh` (26 scenarios) | 804 | 333 |
 | `install-uninstall-test.sh` (24 scenarios) | 683 | 281 |

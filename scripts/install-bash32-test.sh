@@ -166,8 +166,17 @@ if [[ -n "$SCEN_FILTER" ]]; then
     *)       SCEN_NAMES="" ;;
   esac
 fi
+# The fixture bundle is staged once, here, and every scenario reads it: a parallel child uses the
+# dispatching run's (read-only to it, guarded by scen_dispatch's checksum), a lone run stages its
+# own. The static group and --static-only need none.
+if [[ -n "${INSTALL_TEST_SHARED-}" ]]; then
+  BUNDLE="$INSTALL_TEST_SHARED/bundle/planar-fake"
+else
+  BUNDLE="$TMP/bundle/planar-fake"
+  if [[ -n "$SCEN_NAMES" && "${1-}" != "--static-only" ]]; then fake_bundle_make "$ROOT" "$BUNDLE"; fi
+fi
 # The probe flags (--static-only, --dynamic-only) run one half in this process.
-[[ $# -gt 0 ]] || scen_dispatch ""
+[[ $# -gt 0 ]] || scen_dispatch "$TMP/bundle"
 
 if [[ "${1-}" != "--dynamic-only" && ( "$GROUP" == all || "$GROUP" == static ) ]]; then
   lint_selftest
@@ -224,8 +233,7 @@ for n in $base_names; do
   ln -s "$found" "$BASEBIN/$n"
 done
 
-BUNDLE="$TMP/bundle/planar-fake"
-fake_bundle_make "$ROOT" "$BUNDLE"
+[[ -d "$BUNDLE" ]] || fake_bundle_make "$ROOT" "$BUNDLE"
 
 # install_run BASH HOME [ARGS...] and uninstall_run BASH HOME: the commands under
 # test, run from a scratch HOME with a scrubbed environment. Output in $TMP/out, $TMP/err.
