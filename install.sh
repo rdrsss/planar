@@ -9,9 +9,6 @@
 #     bin/planar-agent                # the agent-callable coordination binary
 #     bin/planar-watch                # the human-facing read-only viewer
 #                                     # (opens DB read-only, zero write verbs)
-#     bin/planar-execute              # deterministic spawn-free Lua workflow
-#                                     # engine (run <wf.lua> --phase; shells
-#                                     #  planar for state, holds no DB handle)
 #     bin/planar-ext                  # operational-plane binary (Jira, GitHub
 #                                     # Issues adapters; read-only on planning
 #                                     # tables, read-write on external_links /
@@ -29,7 +26,6 @@
 #     skills/planar/                  # staged planar skill (SKILL.md + references/)
 #     codex-agents/planar-*.toml      # Codex custom agents rendered from agents/
 #     templates/                      # operator-editable defaults
-#     workflows/                      # Lua workflows
 #     scripts/validate-{barrel-modes,plan-status}-acceptance
 #
 # Then places the staged skill and agents into each vendor that is present on
@@ -290,11 +286,11 @@ fi
 # SRC_ROOT is where every staged input is read from: the source checkout, or,
 # with --prebuilt, the unpacked release bundle (tech spec 677, "Prebuilt install
 # mode"). Everything below that reads skills/, agents/, migrations/,
-# templates/, workflows/, scripts/ or install-cleanup.txt reads SRC_ROOT.
+# templates/, scripts/ or install-cleanup.txt reads SRC_ROOT.
 # The bundle is validated here, before the prefix guard and before anything is
 # created: a refusal leaves no ~/.planar behind.
 SRC_ROOT="$REPO_ROOT"
-PLANAR_BINARIES=(planar planar-agent planar-watch planar-execute planar-ext)
+PLANAR_BINARIES=(planar planar-agent planar-watch planar-ext)
 if [[ "$PREBUILT" -eq 0 && ( -n "$CLEANUP_DIR" || -n "${PLANAR_MUTATION_HANDOFF-}" ) ]]; then
   printf 'install.sh: --cleanup and the updater handoff (PLANAR_MUTATION_HANDOFF) are accepted only with --prebuilt\n' >&2
   exit 2
@@ -329,7 +325,7 @@ if [[ "$PREBUILT" -eq 1 ]]; then
   for _b in "$SRC_ROOT"/codex-agents/planar-*.toml; do [[ -f "$_b" ]] && _bundle_toml=1; done
   [[ "$_bundle_toml" -eq 1 ]] || _bundle_missing+=("codex-agents/planar-*.toml")
   # Every managed subtree is always shipped; an absent one is a broken bundle.
-  for _b in workflows migrations scripts/install-lib; do
+  for _b in migrations scripts/install-lib; do
     [[ -d "$SRC_ROOT/$_b" ]] || _bundle_missing+=("$_b/")
   done
   if [[ ${#_bundle_missing[@]} -gt 0 ]]; then
@@ -341,7 +337,7 @@ else
   # A source install stages every managed subtree from the checkout; one whose
   # source directory is absent is an incomplete checkout, refused before any write.
   _src_missing=()
-  for _b in skills/planar agents scripts/install-lib workflows migrations; do
+  for _b in skills/planar agents scripts/install-lib migrations; do
     [[ -d "$SRC_ROOT/$_b" ]] || _src_missing+=("$_b/")
   done
   [[ -f "$SRC_ROOT/scripts/uninstall.sh" ]] || _src_missing+=("scripts/uninstall.sh")
@@ -571,7 +567,7 @@ fi
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
 TOOLCHAIN_DEPS=(
-  "cmake|cmake|configures, builds, and installs the five Planar binaries"
+  "cmake|cmake|configures, builds, and installs the four Planar binaries"
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
@@ -697,9 +693,9 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$SRC_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
   if [[ "$PREBUILT" -eq 1 ]]; then
-    log "copy 5 Planar binaries from $SRC_ROOT/bin → $PLANAR_HOME/bin  [prebuilt: nothing is built]"
+    log "copy 4 Planar binaries from $SRC_ROOT/bin → $PLANAR_HOME/bin  [prebuilt: nothing is built]"
   else
-    log "build 5 Planar binaries → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
+    log "build 4 Planar binaries → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   fi
   log "take the mutation lock $(planar_lock_dir "$ROOT_C") and record a recovery journal in $ROOT_C/.planar-journal"
   if [[ -e "$ROOT_C/.planar-journal" ]]; then
@@ -711,7 +707,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   fi
   log "stage every managed subtree under $ROOT_C/.staging-<token>/, then probe the database with the staged binaries (an ahead or unusable database stops the install before any change)"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
-  log "swap bin/, skills/, agents/, codex-agents/, workflows/, scripts/ and migrations/ in through <name>.old"
+  log "swap bin/, skills/, agents/, codex-agents/, scripts/ and migrations/ in through <name>.old"
   log "create a missing database, or migrate a behind one, with the installed planar init --skip-project --allow-no-repo"
   if [[ -e "$PLANAR_HOME/agent.db" && "$PREBUILT" -eq 1 ]]; then
     log "move $PLANAR_HOME/agent.db, its sidecars and the old numbered queue logs, unread, into $PLANAR_HOME/retired/<date>/"
@@ -1058,30 +1054,27 @@ stage_prebuilt() {
   cp -R "$SRC_ROOT/skills/planar" "$STAGE/skills/planar"
   find "$SRC_ROOT/agents" -maxdepth 1 -type f -exec cp -f {} "$STAGE/agents/" \;
   cp -R "$SRC_ROOT/codex-agents" "$STAGE/codex-agents"
-  for d in workflows scripts migrations; do
+  for d in scripts migrations; do
     cp -R "$SRC_ROOT/$d" "$STAGE/$d"
   done
   [[ -d "$STAGE/scripts" ]] && chmod +x "$STAGE/scripts/"* 2>/dev/null
-  log "staged the bundle's bin/, skills/, agents/, codex-agents/, workflows/, scripts/ and migrations/ (prebuilt: nothing is built)"
+  log "staged the bundle's bin/, skills/, agents/, codex-agents/, scripts/ and migrations/ (prebuilt: nothing is built)"
 }
 
-# stage_source -- build the five binaries and stage every managed subtree from
-# the checkout into $STAGE. In link mode scripts/, workflows/, migrations/ and
+# stage_source -- build the four binaries and stage every managed subtree from
+# the checkout into $STAGE. In link mode scripts/, migrations/ and
 # skills/planar are symlinks into the checkout and agents/ holds links to the
-# authored files (models.md is copied: the prefix owns its tier table).
+# authored files.
 stage_source() {
   local d f
   title "Building the Planar binaries"
-  # CMake configures, builds, and installs all FIVE executable targets:
+  # CMake configures, builds, and installs all FOUR executable targets:
   #
   #   planar         — operator surface
   #   planar-agent   — agent-callable coordination (atomic claim ops,
   #                    nested actions, ingest, operator recovery)
   #   planar-watch   — human-facing read-only viewer (no write verbs,
   #                    strict SQLITE_OPEN_READONLY handle)
-  #   planar-execute — deterministic spawn-free Lua workflow engine
-  #                    (run <wf.lua> --phase; shells planar for state,
-  #                    holds no DB handle, no model-spawn host fn)
   #   planar-ext     — operational-plane binary (Jira, GitHub Issues adapters;
   #                    read-only on planning tables, read-write on exactly
   #                    external_links / external_systems / sync_events)
@@ -1107,7 +1100,7 @@ stage_source() {
   mkdir -p "$STAGE/skills" "$STAGE/agents"
   place "$SRC_ROOT/skills/planar" "$STAGE/skills/planar"
   while IFS= read -r -d '' f; do
-    if [[ "$MODE" == "link" && "$(basename "$f")" != "models.md" ]]; then
+    if [[ "$MODE" == "link" ]]; then
       ln -s "$f" "$STAGE/agents/$(basename "$f")"
     else
       cp -f "$f" "$STAGE/agents/$(basename "$f")"
@@ -1118,13 +1111,13 @@ stage_source() {
   if ! out="$(python3 "$SRC_ROOT/scripts/render-codex-agents.py" "$SRC_ROOT/agents" "$STAGE/codex-agents" 2>&1)"; then
     err "rendering the Codex agents failed: $out"
   fi
-  for d in workflows scripts migrations; do
+  for d in scripts migrations; do
     place "$SRC_ROOT/$d" "$STAGE/$d"
   done
   # Copied script tooling is executable. In link mode the path resolves into the
   # checkout, whose modes are left alone.
   [[ "$MODE" != "link" && -d "$STAGE/scripts" ]] && chmod +x "$STAGE/scripts/"* 2>/dev/null
-  log "staged skills/planar/, agents/, codex-agents/, workflows/, scripts/ and migrations/ ($MODE)"
+  log "staged skills/planar/, agents/, codex-agents/, scripts/ and migrations/ ($MODE)"
 }
 
 title "Staging into $STAGE"
@@ -1143,7 +1136,7 @@ PLANAR_VERSION_LINE="$("$STAGE/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
   err "$STAGE/bin/planar was staged but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
-ok "5 Planar binaries staged  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+ok "4 Planar binaries staged  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
 planar_install_fault after-staging || err "test fault after staging"
 
 # ---------- probe the database ----------
@@ -1807,11 +1800,11 @@ planar_state_finish "$ROOT_C"
 title "Install complete"
 
 # The staged role set (planar-*.md), not the top-level agents/ dir — the latter
-# mixes in shared docs (doctrine, methodology, models).
+# mixes in shared docs (doctrine, methodology).
 agents_n="$(count_glob "$PLANAR_HOME"/agents/planar-*.md)"
 
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
-log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
+log "binaries:   planar, planar-agent, planar-watch, planar-ext"
 log "surfaces:   planar skill · $agents_n agents · vendors found: ${VENDORS_FOUND[*]:-none}"
 printf '\n'
 log "database:   $PLANAR_INSTALL_DB (current)"

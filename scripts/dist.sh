@@ -75,8 +75,10 @@ import pathlib, shutil, sys
 stage = pathlib.Path(sys.argv[1])
 ignore = shutil.ignore_patterns('__pycache__', '*.pyc', '.DS_Store')
 for source, destination in [('skills/planar', 'skills/planar'), ('scripts/install-lib', 'scripts/install-lib'),
-                            *[(name, name) for name in ('agents', 'templates', 'workflows', 'migrations')]]:
+                            *[(name, name) for name in ('agents', 'templates', 'migrations')]]:
     shutil.copytree(source, stage / destination, symlinks=True, ignore=ignore)
+# The bundle does not ship agents/models.md (plan 1142): the Lua tier table is gone.
+(stage / 'agents' / 'models.md').unlink(missing_ok=True)
 PYTHON
 cp install.sh install-cleanup.txt "$stage/"
 # The standalone uninstaller ships at the bundle root, byte-identical to
@@ -148,7 +150,7 @@ digest = hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest() if hasatt
 release = json.loads((stage / 'release.json').read_text())
 evidence = dict(format_version=1, archive=archive.name, sha256=digest, release=release,
                 gates=dict(portable=dict(result='pass', matched_count=2,
-                                         staged_binaries=5)))
+                                         staged_binaries=4)))
 # Smoke/CA gates are deliberately absent; this alone cannot authorize publication.
 archive.replace(output / archive.name)
 (output / (archive.name + '.gates.json')).write_text(json.dumps(evidence, indent=2) + '\n')

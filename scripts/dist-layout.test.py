@@ -12,7 +12,7 @@ import tarfile
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-BINARIES = {'planar', 'planar-agent', 'planar-watch', 'planar-execute', 'planar-ext'}
+BINARIES = {'planar', 'planar-agent', 'planar-watch', 'planar-ext'}
 FIELDS = {'version', 'sha', 'date', 'os', 'arch', 'os_floor', 'schema_version'}
 spec = importlib.util.spec_from_file_location('dist_identity', ROOT / 'scripts/dist-identity.test.py')
 identity = importlib.util.module_from_spec(spec)
@@ -46,7 +46,7 @@ def check_checksums(directory, asset):
 
 def check_layout(stage, source, fake_bin, expected):
     entries = {'release.json', 'install.sh', 'uninstall.sh', 'get-planar.sh', 'install-cleanup.txt', 'bin', 'skills',
-               'agents', 'codex-agents', 'templates', 'workflows', 'migrations', 'scripts'}
+               'agents', 'codex-agents', 'templates', 'migrations', 'scripts'}
     require({p.name for p in stage.iterdir()} == entries, 'top-level entries differ')
     for name in ('install.sh', 'install-cleanup.txt'):
         require((stage / name).read_bytes() == (source / name).read_bytes(),
@@ -69,15 +69,19 @@ def check_layout(stage, source, fake_bin, expected):
             'scripts must contain install-lib only')
     require({p.name for p in (stage / 'skills').iterdir()} == {'planar'}, 'skills entries differ')
     # Verify authored content, including nested files, rather than directory presence alone.
-    for name in ('skills/planar', 'agents', 'templates', 'workflows', 'migrations', 'scripts/install-lib'):
-        def snapshot(directory):
+    require(not (stage / 'agents' / 'models.md').exists(), 'agents/models.md is shipped')
+    for name in ('skills/planar', 'agents', 'templates', 'migrations', 'scripts/install-lib'):
+        def snapshot(directory, skip=()):
             return {p.relative_to(directory).as_posix():
                     ('link', os.readlink(p)) if p.is_symlink() else
                     ('file', p.read_bytes()) if p.is_file() else ('directory', None)
                     for p in directory.rglob('*')
+                    if p.relative_to(directory).as_posix() not in skip
                     if not any(part == '__pycache__' or part == '.DS_Store' or part.endswith('.pyc')
                                for part in p.relative_to(directory).parts)}
-        require(snapshot(stage / name) == snapshot(source / name), f'{name}: authored content differs')
+        # The bundle drops agents/models.md from the authored agents tree (plan 1142).
+        skip = {'models.md'} if name == 'agents' else ()
+        require(snapshot(stage / name) == snapshot(source / name, skip), f'{name}: authored content differs')
     authored = {p.stem for p in (source / 'agents').glob('planar-*.md')}
     require(authored, 'no authored agents')
     require({p.name for p in (stage / 'codex-agents').iterdir()} ==
@@ -115,7 +119,7 @@ class LayoutTests(unittest.TestCase):
         self.fake_bin.mkdir()
         for name in BINARIES:
             shutil.copy2(self.root / 'build/fixture-tools/fixture-binary', self.fake_bin / name)
-        require({p.name for p in self.fake_bin.iterdir()} == BINARIES, 'fake bin must have five products')
+        require({p.name for p in self.fake_bin.iterdir()} == BINARIES, 'fake bin must have four products')
         self.schema = max(int(p.name.split('_', 1)[0]) for p in (self.root / 'migrations').glob('*.up.sql'))
         self.fixture.env['HEALTH_JSON'] = json.dumps(dict(schema_current=True,
                                                         schema_version=self.schema, schema_target=self.schema))

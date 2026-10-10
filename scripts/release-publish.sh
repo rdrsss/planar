@@ -22,7 +22,7 @@
 #     SHA-256 now, whose release identity is the bundled release.json, and whose
 #     required gates (portable and smoke; ca_debian and ca_redhat on Linux) all
 #     passed with a matched count no smaller than the gate's complete size, which
-#     this script owns (portable 2, smoke 7, ca_debian 2, ca_redhat 1). smoke and
+#     this script owns (portable 2, smoke 6, ca_debian 2, ca_redhat 1). smoke and
 #     both CA gates must record an expected_count equal to the matched count, and
 #     the CA gates exactly the cases debian+removed and redhat;
 #   - both bundled get-planar.sh copies, and every standalone copy found, are
@@ -104,11 +104,11 @@ mode, tag, tag_sha, stage, scratch, *dirs = sys.argv[1:]
 stage, scratch = pathlib.Path(stage), pathlib.Path(scratch)
 # Each platform's required gates and the size of each: the number of checks a
 # complete run performs. portable is the two portable ctest cases scripts/dist.sh
-# requires; smoke is the seven checks of scripts/release-smoke.sh; ca_debian is
+# requires; smoke is the six checks of scripts/release-smoke.sh; ca_debian is
 # trusted plus refused-once-removed and ca_redhat is one trusted case, both from
 # scripts/release-gates.sh. The publisher owns these numbers so that evidence
 # which ran fewer checks than a complete run is refused even when it says pass.
-PORTABLE, SMOKE = dict(size=2), dict(size=7, expected=True)
+PORTABLE, SMOKE = dict(size=2), dict(size=6, expected=True)
 CA_DEBIAN = dict(size=2, expected=True, cases=['debian', 'removed'])
 CA_REDHAT = dict(size=1, expected=True, cases=['redhat'])
 PLATFORMS = {'macos-arm64': dict(floor='26.0', gates=dict(portable=PORTABLE, smoke=SMOKE)),
@@ -219,8 +219,8 @@ for platform in order:
             fail(f'{archive}: {platform} {name} gate ran cases {gate.get("cases")!r}, not {need["cases"]!r} '
                  f'(matched {count} of {expected} expected checks); missing checks')
         summary.append(f'{name}={count}' if expected is None else f'{name}={count}/{expected}')
-    if gates['portable'].get('staged_binaries') != 5:
-        fail(f'{archive}: portable gate inspected {gates["portable"].get("staged_binaries")!r} staged binaries, not 5')
+    if gates['portable'].get('staged_binaries') != 4:
+        fail(f'{archive}: portable gate inspected {gates["portable"].get("staged_binaries")!r} staged binaries, not 4')
     bundle['summary'] = summary
     bundle['digest'] = digest
 

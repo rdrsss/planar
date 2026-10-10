@@ -15,5 +15,5 @@
 # Both are space-separated words (bash 3.2: no associative arrays). Sourced,
 # never executed.
 
-PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
+PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents scripts migrations"
 PLANAR_VENDOR_NAMES="claude codex copilot gemini antigravity opencode"

@@ -29,7 +29,7 @@ PASSED=0
 pass() { PASSED=$((PASSED + 1)); }
 
 REPO="$TMP/repo"
-mkdir -p "$REPO/skills" "$REPO/workflows" "$REPO/migrations"
+mkdir -p "$REPO/skills" "$REPO/migrations"
 cp "$ROOT/install.sh" "$REPO/install.sh"
 cp -R "$ROOT/scripts" "$REPO/scripts"
 cp -R "$ROOT/agents" "$REPO/agents"
@@ -43,12 +43,12 @@ STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
 cat > "$STUBS/cmake" <<STUB
 #!/usr/bin/env bash
-# A stub cmake: \`cmake --install D --prefix P\` writes the five fake binaries of
+# A stub cmake: \`cmake --install D --prefix P\` writes the four fake binaries of
 # scripts/fixtures/prebuilt-bundle.sh (stub_binary_write) into P/bin.
 if [[ "\$1" == "--install" ]]; then
   source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
   mkdir -p "\$4/bin"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"
   done
 fi

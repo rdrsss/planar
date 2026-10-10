@@ -249,14 +249,13 @@ release_version() { sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' "$H/.planar/rel
 tree_sum() { ( cd "$1" && find . -type f | LC_ALL=C sort | while IFS= read -r f; do cksum "$f"; done ); }
 expect_matches_bundle() { # expect_matches_bundle BUNDLE_DIR -- every managed subtree is the bundle's
   local b="$1" p="$H/.planar" n
-  for n in planar planar-agent planar-watch planar-execute planar-ext; do
+  for n in planar planar-agent planar-watch planar-ext; do
     cmp -s "$b/bin/$n" "$p/bin/$n" || fail "bin/$n is not the bundle's"
   done
   cmp -s "$b/release.json" "$p/release.json" || fail "release.json is not the bundle's"
   [[ "$(tree_sum "$b/codex-agents")" == "$(tree_sum "$p/codex-agents")" ]] || fail "codex-agents/ differs from the bundle's"
   [[ "$(tree_sum "$b/skills/planar")" == "$(tree_sum "$p/skills/planar")" ]] || fail "skills/planar differs from the bundle's"
   [[ "$(tree_sum "$b/templates")" == "$(tree_sum "$p/templates")" ]] || fail "templates/ differs from the bundle's"
-  [[ "$(tree_sum "$b/workflows")" == "$(tree_sum "$p/workflows")" ]] || fail "workflows/ differs from the bundle's"
   [[ "$(tree_sum "$b/migrations")" == "$(tree_sum "$p/migrations")" ]] || fail "migrations/ differs from the bundle's"
   [[ ! -e "$p/.planar-journal" ]] || fail "a recovery journal is left behind"
 }

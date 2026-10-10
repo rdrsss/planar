@@ -38,7 +38,7 @@ unset GIT_DIR GIT_WORK_TREE PLANAR_HOME
 mkdir -p "$HOME" || exit 1
 out="$arena/out"
 
-expected=7
+expected=6
 passed=0
 echo "smoke_expected=$expected"
 record() { # record NAME STATUS
@@ -60,10 +60,6 @@ for name in planar planar-agent planar-watch planar-ext; do
   fi
   record "version-$name" "$rc"
 done
-
-rc=0
-"$bundle/bin/planar-execute" --help > "$out" 2>&1 || rc=$?
-record help-planar-execute "$rc"
 
 rc=0
 (cd "$HOME" && "$bundle/bin/planar" init --skip-project --allow-no-repo) > "$out" 2>&1 || rc=$?

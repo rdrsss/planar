@@ -22,10 +22,13 @@ mark() { MARKED=$((MARKED + 1)); printf 'stage: scenario %s (previous took %ss)\
 # at a missing one.
 make_repo() {
   local repo="$1"
-  mkdir -p "$repo/skills" "$repo/workflows" "$repo/migrations"
+  mkdir -p "$repo/skills" "$repo/migrations"
   cp "$ROOT/install.sh" "$repo/install.sh"
   cp -R "$ROOT/scripts" "$repo/scripts"
   cp -R "$ROOT/agents" "$repo/agents"
+  # agents/models.md leaves the release tree (plan 1142); install-cleanup.txt removes
+  # an installed copy on every run, so the checkout fixture does not carry it.
+  rm -f "$repo/agents/models.md"
   cp -R "$ROOT/skills/planar" "$repo/skills/planar"
   cp "$ROOT/install-cleanup.txt" "$repo/install-cleanup.txt"
   : > "$repo/CMakeLists.txt"
@@ -40,19 +43,19 @@ make_repo() {
 }
 
 # Stub cmake and binaries. `cmake --install D --prefix P` puts the stubs in
-# P/bin. Only the five binaries are stubbed: the installer builds and installs
+# P/bin. Only the four binaries are stubbed: the installer builds and installs
 # no other executable, and bin/scriptorium from an older install is removed by
 # the cleanup manifest.
 STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
 cat > "$STUBS/cmake" <<STUB
 #!/usr/bin/env bash
-# A stub cmake: \`cmake --install D --prefix P\` writes the five fake binaries of
+# A stub cmake: \`cmake --install D --prefix P\` writes the four fake binaries of
 # scripts/fixtures/prebuilt-bundle.sh (stub_binary_write) into P/bin.
 if [[ "\$1" == "--install" ]]; then
   source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
   mkdir -p "\$4/bin"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"
   done
 fi
@@ -75,7 +78,7 @@ run_install() {
 }
 
 ROLES=(coder ext-sync feedback-triager importer ingestor introspector janitor orchestrator planner research reviewer spec-reviewer sync-reconciler synthesizer test-coder)
-DOCS=(cross-scope-writes doctrine methodology models)
+DOCS=(cross-scope-writes doctrine methodology)
 
 check_staged() {
   local repo="$1" home="$2" prefix="$2/.planar" r d f
@@ -86,7 +89,7 @@ check_staged() {
   done
   [[ "$(find "$prefix/skills/planar/" -type f | grep -c .)" == "$(find "$repo/skills/planar/" -type f | grep -c .)" ]] \
     || fail "the staged skill has a different file count than the checkout"
-  [[ "${#ROLES[@]}" == 15 && "${#DOCS[@]}" == 4 ]] || fail "role/doc fixtures are not 15 + 4"
+  [[ "${#ROLES[@]}" == 15 && "${#DOCS[@]}" == 3 ]] || fail "role/doc fixtures are not 15 + 3"
   for r in "${ROLES[@]}"; do
     cmp -s "$repo/agents/planar-$r.md" "$prefix/agents/planar-$r.md" || fail "agents/planar-$r.md was not staged"
     [[ -f "$prefix/codex-agents/planar-$r.toml" ]] || fail "codex-agents/planar-$r.toml was not rendered"
@@ -262,7 +265,7 @@ install_manifest_record_staged "$TMP/h1/.planar" "$REPO"
 install_manifest_write "$TMP/staged-manifest.json"
 grep -Fq '"projections": [' "$TMP/staged-manifest.json" || fail "the manifest lost its projections array"
 [[ "${#INSTALL_MANIFEST_ROW_VENDOR[@]}" == 0 ]] || fail "staged paths were recorded as projection rows"
-[[ "${#INSTALL_MANIFEST_EXTRAS[@]}" == $(( $(find "$REPO/skills/planar" -type f | grep -c .) + 19 + 15 )) ]] \
+[[ "${#INSTALL_MANIFEST_EXTRAS[@]}" == $(( $(find "$REPO/skills/planar" -type f | grep -c .) + 15 + 3 + 15 )) ]] \
   || fail "unexpected extras count: ${#INSTALL_MANIFEST_EXTRAS[@]}"
 
 
@@ -1052,12 +1055,12 @@ LISTS="$ROOT/scripts/install-lib/managed-lists.sh"
 [[ -f "$LISTS" ]] || fail "scripts/install-lib/managed-lists.sh is missing"
 subtrees="$(bash -c 'source "$1"; printf "%s" "$PLANAR_JOURNAL_SUBTREES"' x "$LISTS")"
 vendors="$(bash -c 'source "$1"; printf "%s" "$PLANAR_VENDOR_NAMES"' x "$LISTS")"
-[[ "$subtrees" == "bin skills agents codex-agents workflows scripts migrations" ]] || fail "unexpected managed subtrees: $subtrees"
+[[ "$subtrees" == "bin skills agents codex-agents scripts migrations" ]] || fail "unexpected managed subtrees: $subtrees"
 [[ "$vendors" == "claude codex copilot gemini antigravity opencode" ]] || fail "unexpected vendor names: $vendors"
 for f in install.sh scripts/uninstall.sh scripts/install-lib/ownership.sh; do
   grep -Fq 'managed-lists.sh' "$ROOT/$f" || fail "$f does not source managed-lists.sh"
   ! grep -Eq '^[[:space:]]*(PLANAR_JOURNAL_SUBTREES|PLANAR_VENDOR_NAMES)=' "$ROOT/$f" || fail "$f defines a list of its own"
-  ! grep -Fq 'codex-agents workflows' "$ROOT/$f" || fail "$f spells out the managed-subtree list"
+  ! grep -Fq 'codex-agents scripts' "$ROOT/$f" || fail "$f spells out the managed-subtree list"
   ! grep -Eq 'claude,? ?codex,? ?copilot' "$ROOT/$f" || fail "$f spells out the vendor list"
 done
 # Behaviour, not just text: a vendor added to the one list is known to the installer.

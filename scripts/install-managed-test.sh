@@ -95,7 +95,7 @@ bundle_tree() {
 no_evidence() { # no_evidence ROOT -- no staging, backup or journal is left
   [[ -z "$(ls -d "$1"/*.old "$1"/.staging-* "$1/.planar-journal" 2>/dev/null)" ]] || fail "recovery evidence is left: $(ls -a "$1")"
 }
-MANAGED="bin skills agents codex-agents workflows scripts migrations"
+MANAGED="bin skills agents codex-agents scripts migrations"
 
 # --- 1. an install of unknown age becomes clean ----------------------------------------------
 
@@ -106,7 +106,7 @@ P="$H/.planar"
 mkdir -p "$P/bin" "$P/lib" "$P/opt/mtkahypar" "$P/commands" "$P/copilot/prompts" "$P/skills/codex" "$P/skills/planar" \
          "$P/agents/claude" "$P/codex-skills/x" "$P/workflows" "$P/scripts/old" "$P/codex-agents" "$P/migrations" \
          "$P/templates/doc-prompts" "$P/queue-logs" "$P/retired/2026-01-01" "$P/workbench/x" "$P/local" "$P/models" "$P/execute" "$P/workspaces"
-for f in bin/planar bin/scriptorium bin/mtkahypar lib/libmtkahypar.dylib opt/mtkahypar/wheel commands/pl-old.md copilot/prompts/p.md \
+for f in bin/planar bin/planar-execute agents/models.md bin/scriptorium bin/mtkahypar lib/libmtkahypar.dylib opt/mtkahypar/wheel commands/pl-old.md copilot/prompts/p.md \
          skills/codex/s.md skills/planar/OLD.md agents/claude/c.md codex-skills/x/s.md workflows/old.lua scripts/old/gone.sh \
          scripts/stray.sh codex-agents/planar-gone.toml migrations/00001_ancient.sql; do
   printf 'old %s\n' "$f" > "$P/$f"
@@ -120,19 +120,21 @@ printf 'readme\n' > "$P/workbench/x/README.md"
 printf '[cfg]\n' > "$P/config.toml"
 printf 'SQLite format 3\n' > "$P/planar.db"
 chmod 600 "$P/planar.db"
-DATA="queue-logs retired workbench config.toml"
+mkdir -p "$P/execute/default"; printf 'p\n' > "$P/execute/default/profile.toml"
+printf '{}\n' > "$P/models/catalog.json"
+DATA="queue-logs retired workbench config.toml models execute"
 data_before="$(cd "$P" && for d in $DATA; do tree_id "$d" 2>/dev/null || cksum "$d"; done)"
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "the install over an install of unknown age failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
-for n in bin skills agents codex-agents workflows scripts migrations; do
+for n in bin skills agents codex-agents scripts migrations; do
   same_tree "$(bundle_tree "$BUNDLE" "$n")" "$P/$n" || fail "$n/ is not the bundle's: $(diff -r "$(bundle_tree "$BUNDLE" "$n")" "$P/$n" | head)"
 done
-for b in planar planar-agent planar-watch planar-execute planar-ext; do
+for b in planar planar-agent planar-watch planar-ext; do
   cmp -s "$BUNDLE/bin/$b" "$P/bin/$b" && [[ -x "$P/bin/$b" ]] || fail "bin/$b is not the bundle's executable"
 done
 cmp -s "$BUNDLE/uninstall.sh" "$P/bin/planar-uninstall" && [[ -x "$P/bin/planar-uninstall" ]] \
   || fail "bin/planar-uninstall is not the bundle's uninstall.sh, executable"
-for gone in bin/scriptorium bin/mtkahypar lib/libmtkahypar.dylib opt/mtkahypar commands copilot skills/codex agents/claude codex-skills \
+for gone in bin/planar-execute agents/models.md workflows bin/scriptorium bin/mtkahypar lib/libmtkahypar.dylib opt/mtkahypar commands copilot skills/codex agents/claude codex-skills \
             scripts/stray.sh scripts/old workflows/old.lua codex-agents/planar-gone.toml migrations/00001_ancient.sql skills/planar/OLD.md; do
   [[ ! -e "$P/$gone" && ! -L "$P/$gone" ]] || fail "$gone survived the install"
 done
@@ -154,21 +156,21 @@ pass "an install of unknown age becomes clean: subtrees equal the bundle's, reti
 H="$(new_home links)"
 P="$H/.planar"
 OUT="$TMP/outside"
-mkdir -p "$P" "$OUT/scripts-target" "$OUT/workflows-target" "$OUT/commands-target" "$OUT/copilot-target"
+mkdir -p "$P" "$OUT/scripts-target" "$OUT/codex-agents-target" "$OUT/commands-target" "$OUT/copilot-target"
 printf 'precious\n' > "$OUT/scripts-target/keep.sh"
-printf 'precious\n' > "$OUT/workflows-target/keep.lua"
+printf 'precious\n' > "$OUT/codex-agents-target/keep.toml"
 printf 'precious\n' > "$OUT/commands-target/keep.md"
 printf 'precious\n' > "$OUT/copilot-target/keep.md"
 mkdir -p "$P/bin"; printf 'old\n' > "$P/bin/planar"; chmod 755 "$P/bin/planar"
 ln -s "$OUT/scripts-target" "$P/scripts"
-ln -s "$OUT/workflows-target" "$P/workflows"
+ln -s "$OUT/codex-agents-target" "$P/codex-agents"
 ln -s "$OUT/commands-target" "$P/commands"
 ln -s "$OUT/copilot-target" "$P/copilot"
 out_before="$(tree_id "$OUT")"
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "install over symlinked subtrees failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
 [[ "$(tree_id "$OUT")" == "$out_before" ]] || fail "a symlink target was changed: $(tree_id "$OUT" | diff - <(printf '%s\n' "$out_before"))"
-for n in scripts workflows; do
+for n in scripts codex-agents; do
   [[ -d "$P/$n" && ! -L "$P/$n" ]] || fail "$n/ is still a symlink after the install"
   same_tree "$BUNDLE/$n" "$P/$n" || fail "$n/ is not the bundle's after replacing a symlink"
 done
@@ -180,29 +182,29 @@ pass "a symlinked managed subtree is replaced by a directory and a symlinked ret
 
 B1="$TMP/bundle/rel1"; B2="$TMP/bundle/rel2"
 fake_bundle_make "$ROOT" "$B1"; fake_bundle_make "$ROOT" "$B2"
-mkdir -p "$B1/workflows/sub" "$B1/migrations/x" "$B2/migrations"
-printf 'a\n' > "$B1/workflows/run.sh";  chmod 644 "$B1/workflows/run.sh"
-printf 'b\n' > "$B1/workflows/tool.sh"; chmod 755 "$B1/workflows/tool.sh"
-printf 'c\n' > "$B1/workflows/sub/f"          # a directory in release 1 ...
-printf 'x\n' > "$B1/workflows/link-me"        # ... a file that becomes a symlink in release 2
-printf 'a\n' > "$B2/workflows/run.sh";  chmod 755 "$B2/workflows/run.sh"
-printf 'b\n' > "$B2/workflows/tool.sh"; chmod 644 "$B2/workflows/tool.sh"
-printf 'now a file\n' > "$B2/workflows/sub"  # ... and a file in release 2
-printf 'target\n' > "$B2/workflows/real"
-ln -s real "$B2/workflows/link-me"
+mkdir -p "$B1/codex-agents/sub" "$B1/migrations/x" "$B2/migrations"
+printf 'a\n' > "$B1/codex-agents/run.sh";  chmod 644 "$B1/codex-agents/run.sh"
+printf 'b\n' > "$B1/codex-agents/tool.sh"; chmod 755 "$B1/codex-agents/tool.sh"
+printf 'c\n' > "$B1/codex-agents/sub/f"          # a directory in release 1 ...
+printf 'x\n' > "$B1/codex-agents/link-me"        # ... a file that becomes a symlink in release 2
+printf 'a\n' > "$B2/codex-agents/run.sh";  chmod 755 "$B2/codex-agents/run.sh"
+printf 'b\n' > "$B2/codex-agents/tool.sh"; chmod 644 "$B2/codex-agents/tool.sh"
+printf 'now a file\n' > "$B2/codex-agents/sub"  # ... and a file in release 2
+printf 'target\n' > "$B2/codex-agents/real"
+ln -s real "$B2/codex-agents/link-me"
 printf 'y\n' > "$B1/migrations/x/m.sql"; printf 'file now\n' > "$B2/migrations/x"
 H="$(new_home types)"; P="$H/.planar"
 run_prebuilt "$H" "$B1" --
 [[ "$RC" == 0 ]] || fail "release 1 failed ($RC): $(cat "$TMP/err")"
-[[ -d "$P/workflows/sub" && ! -x "$P/workflows/run.sh" && -x "$P/workflows/tool.sh" && -f "$P/workflows/link-me" && ! -L "$P/workflows/link-me" ]] || fail "release 1 was not installed as built"
+[[ -d "$P/codex-agents/sub" && ! -x "$P/codex-agents/run.sh" && -x "$P/codex-agents/tool.sh" && -f "$P/codex-agents/link-me" && ! -L "$P/codex-agents/link-me" ]] || fail "release 1 was not installed as built"
 run_prebuilt "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "release 2 failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
-[[ -x "$P/workflows/run.sh" ]] || fail "an executable bit added by the release was not applied"
-[[ ! -x "$P/workflows/tool.sh" ]] || fail "an executable bit removed by the release was kept"
-[[ -f "$P/workflows/sub" && ! -d "$P/workflows/sub" ]] || fail "a directory that became a file was not replaced"
-[[ -L "$P/workflows/link-me" && "$(readlink "$P/workflows/link-me")" == real ]] || fail "a file that became a symlink was not replaced"
+[[ -x "$P/codex-agents/run.sh" ]] || fail "an executable bit added by the release was not applied"
+[[ ! -x "$P/codex-agents/tool.sh" ]] || fail "an executable bit removed by the release was kept"
+[[ -f "$P/codex-agents/sub" && ! -d "$P/codex-agents/sub" ]] || fail "a directory that became a file was not replaced"
+[[ -L "$P/codex-agents/link-me" && "$(readlink "$P/codex-agents/link-me")" == real ]] || fail "a file that became a symlink was not replaced"
 [[ -f "$P/migrations/x" && ! -d "$P/migrations/x" ]] || fail "migrations/x did not change type"
-same_tree "$B2/workflows" "$P/workflows" && same_tree "$B2/migrations" "$P/migrations" || fail "the subtrees are not release 2's"
+same_tree "$B2/codex-agents" "$P/codex-agents" && same_tree "$B2/migrations" "$P/migrations" || fail "the subtrees are not release 2's"
 no_evidence "$P"
 pass "executable-bit and type changes between releases are applied (directory to file, file to symlink)"
 
@@ -214,7 +216,7 @@ H="$(new_home incomplete)"; P="$H/.planar"
 run_prebuilt "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "release 2 failed ($RC): $(cat "$TMP/err")"
 arena_before="$(tree_id "$P")"
-for missing in workflows migrations scripts/install-lib scripts skills/planar codex-agents uninstall.sh; do
+for missing in migrations scripts/install-lib scripts skills/planar codex-agents uninstall.sh; do
   BM="$TMP/bundle/missing-${missing//\//-}"
   fake_bundle_make "$ROOT" "$BM"
   rm -rf "${BM:?}/$missing"
@@ -226,7 +228,7 @@ for missing in workflows migrations scripts/install-lib scripts skills/planar co
 done
 # On a fresh home nothing is created either.
 H2="$(new_home incomplete-fresh)"
-for missing in workflows migrations scripts/install-lib; do
+for missing in migrations scripts/install-lib; do
   BM="$TMP/bundle/missing-fresh"
   rm -rf "$BM"
   fake_bundle_make "$ROOT" "$BM"
@@ -256,22 +258,22 @@ pass "a prebuilt bundle missing a managed subtree is refused, naming it, with th
 # (Its fixture checkout is built in section 6; that case is section 7.)
 
 # The swap itself refuses a subtree with no staged copy and renames nothing.
-SWAP="$TMP/swap"; mkdir -p "$SWAP/root/workflows" "$SWAP/stage"
-printf 'live\n' > "$SWAP/root/workflows/w.lua"
+SWAP="$TMP/swap"; mkdir -p "$SWAP/root/migrations" "$SWAP/stage"
+printf 'live\n' > "$SWAP/root/migrations/w.sql"
 swap_before="$(tree_id "$SWAP")"
 swap_out="$( cd "$SWAP" && /bin/bash -c '
   set -u
   for l in journal mutation-lock prefix-guard data-paths install-state; do
     [ -f "$1/scripts/install-lib/$l.sh" ] && source "$1/scripts/install-lib/$l.sh"
   done
-  PLANAR_JOURNAL_SUBTREES="workflows"
+  PLANAR_JOURNAL_SUBTREES="migrations"
   planar_journal_clear
-  J_phase=mutating; J_sub_workflows=pending
-  if planar_state_swap "$2/root" "$2/stage" workflows; then echo SWAPPED; else echo "REFUSED: $INSTALL_STATE_ERROR"; fi
+  J_phase=mutating; J_sub_migrations=pending
+  if planar_state_swap "$2/root" "$2/stage" migrations; then echo SWAPPED; else echo "REFUSED: $INSTALL_STATE_ERROR"; fi
 ' _ "$ROOT" "$SWAP" 2>&1 )"
 [[ "$swap_out" == REFUSED:*missing* ]] || fail "planar_state_swap did not refuse a missing staged copy: $swap_out"
 [[ "$(tree_id "$SWAP" | grep -v journal)" == "$(printf '%s\n' "$swap_before" | grep -v journal)" ]] || fail "a refused swap renamed something: $(tree_id "$SWAP")"
-[[ -f "$SWAP/root/workflows/w.lua" && ! -e "$SWAP/root/workflows.old" ]] || fail "a refused swap moved the live subtree"
+[[ -f "$SWAP/root/migrations/w.sql" && ! -e "$SWAP/root/migrations.old" ]] || fail "a refused swap moved the live subtree"
 pass "planar_state_swap refuses a subtree with no staged copy and renames nothing"
 
 # --- 5. templates are missing-only, with or without --force --------------------------------------------
@@ -323,7 +325,7 @@ pass "templates stay missing-only under --force; no cleanup entry removes a data
 # --- 6. link and copy mode replace each other, the checkout is never touched ------------------------
 
 REPO="$TMP/repo"
-mkdir -p "$REPO/skills" "$REPO/templates" "$REPO/workflows" "$REPO/migrations"
+mkdir -p "$REPO/skills" "$REPO/templates" "$REPO/migrations"
 cp "$ROOT/install.sh" "$REPO/install.sh"
 cp -R "$ROOT/scripts" "$REPO/scripts"
 rm -rf "$REPO/scripts/__pycache__" "$REPO/scripts/install-lib/__pycache__"
@@ -331,7 +333,6 @@ cp -R "$ROOT/agents" "$REPO/agents"
 cp -R "$ROOT/skills/planar" "$REPO/skills/planar"
 cp "$ROOT/install-cleanup.txt" "$REPO/install-cleanup.txt"
 printf 'shipped a\n' > "$REPO/templates/a.toml"
-printf -- '-- wf\n' > "$REPO/workflows/w.lua"
 printf -- '-- m\n' > "$REPO/migrations/00001_x.up.sql"
 : > "$REPO/CMakeLists.txt"
 : > "$REPO/CMakePresets.json"
@@ -343,7 +344,7 @@ cat > "$STUBS/cmake" <<STUB
 if [[ "\$1" == "--install" ]]; then
   source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
   mkdir -p "\$4/bin"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"
   done
 fi
@@ -360,13 +361,13 @@ H="$(new_home mode)"; P="$H/.planar"
 repo_before="$(tree_id "$REPO")"
 run_source "$H" --link
 [[ "$RC" == 0 ]] || fail "--link install failed ($RC): $(cat "$TMP/err")"
-for n in scripts workflows migrations; do
+for n in scripts migrations; do
   [[ -L "$P/$n" && "$(readlink "$P/$n")" == "$REPO/$n" ]] || fail "--link: $n/ is not a symlink into the checkout"
 done
 no_evidence "$P"
 run_source "$H"
 [[ "$RC" == 0 ]] || fail "the copy install over a link install failed ($RC): $(cat "$TMP/err")"
-for n in scripts workflows migrations; do
+for n in scripts migrations; do
   [[ -d "$P/$n" && ! -L "$P/$n" ]] || fail "copy mode: $n/ is still a link"
   same_tree "$REPO/$n" "$P/$n" || fail "copy mode: $n/ is not a copy of the checkout: $(diff -r "$REPO/$n" "$P/$n" | head)"
 done
@@ -374,7 +375,7 @@ done
 no_evidence "$P"
 run_source "$H" --link
 [[ "$RC" == 0 ]] || fail "the link install over a copy install failed ($RC): $(cat "$TMP/err")"
-for n in scripts workflows migrations; do
+for n in scripts migrations; do
   [[ -L "$P/$n" && "$(readlink "$P/$n")" == "$REPO/$n" ]] || fail "--link again: $n/ is not a symlink into the checkout"
 done
 [[ "$(tree_id "$REPO")" == "$repo_before" ]] || fail "the checkout changed when copy mode gave way to link mode"
@@ -384,7 +385,7 @@ pass "switching between link and copy mode replaces the subtree's form and leave
 # --- 7. a checkout without a managed subtree's source is refused before any write -----------------------
 
 REPO_GOOD="$REPO"
-for missing in workflows migrations scripts/install-lib skills/planar agents; do
+for missing in migrations scripts/install-lib skills/planar agents; do
   REPO="$TMP/repo-missing-${missing//\//-}"
   cp -R "$REPO_GOOD" "$REPO"
   rm -rf "${REPO:?}/$missing"
@@ -401,21 +402,20 @@ run_source "$H"
 [[ "$RC" == 0 ]] || fail "the baseline source install failed ($RC): $(cat "$TMP/err")"
 arena_before="$(tree_id "$P")"
 REPO="$TMP/repo-missing-live"
-cp -R "$REPO_GOOD" "$REPO"; rm -rf "$REPO/workflows"
+cp -R "$REPO_GOOD" "$REPO"; rm -rf "$REPO/migrations"
 run_source "$H"
-[[ "$RC" != 0 && "$(tree_id "$P")" == "$arena_before" ]] || fail "a source install without workflows/ changed an installed tree ($RC)"
+[[ "$RC" != 0 && "$(tree_id "$P")" == "$arena_before" ]] || fail "a source install without migrations/ changed an installed tree ($RC)"
 REPO="$REPO_GOOD"
 pass "a source install whose checkout lacks a managed subtree's directory is refused, naming it, before any write"
 
-# --uninstall needs no workflows/ or migrations/, so a checkout lacking them
-# still uninstalls (the completeness check is for installs only).
+# --uninstall needs no migrations/, so a checkout lacking it still uninstalls (the completeness check is for installs only).
 REPO="$TMP/repo-uninstall-incomplete"
-cp -R "$REPO_GOOD" "$REPO"; rm -rf "$REPO/workflows" "$REPO/migrations"
+cp -R "$REPO_GOOD" "$REPO"; rm -rf "$REPO/migrations"
 run_source "$H" --uninstall
-[[ "$RC" == 0 ]] || fail "--uninstall from a checkout lacking workflows/ and migrations/ failed ($RC): $(cat "$TMP/err")"
-[[ ! -e "$P/bin" && ! -e "$P/workflows" && ! -e "$P/install-manifest.json" ]] || fail "--uninstall from an incomplete checkout left managed trees: $(ls -A "$P" | tr '\n' ' ')"
+[[ "$RC" == 0 ]] || fail "--uninstall from a checkout lacking migrations/ failed ($RC): $(cat "$TMP/err")"
+[[ ! -e "$P/bin" && ! -e "$P/install-manifest.json" ]] || fail "--uninstall from an incomplete checkout left managed trees: $(ls -A "$P" | tr '\n' ' ')"
 REPO="$REPO_GOOD"
-pass "--uninstall from a checkout lacking workflows/ and migrations/ still uninstalls"
+pass "--uninstall from a checkout lacking migrations/ still uninstalls"
 
 # --- 8. a resume never mixes copy and link mode, or resumes from a dirty checkout ---------------------------
 # Test spec 679, "Edge — a crashed owner's record survives a hostname change":
@@ -465,13 +465,13 @@ printf 'edited\n' >> "$REPO/templates/a.toml"
 refused_resume "a resume from a checkout with an uncommitted edit" "has uncommitted changes"
 grep -Fq "$REPO" "$TMP/err" || fail "the dirty-checkout refusal does not name the checkout: $(cat "$TMP/err")"
 git -C "$REPO" checkout -q -- templates/a.toml
-printf -- '-- untracked\n' > "$REPO/workflows/untracked.lua"
+printf -- '-- untracked\n' > "$REPO/migrations/untracked.sql"
 refused_resume "a resume from a checkout with an untracked file" "has uncommitted changes"
-rm -f "$REPO/workflows/untracked.lua"
+rm -f "$REPO/migrations/untracked.sql"
 run_source "$H"
 [[ "$RC" == 0 ]] || fail "the clean resume in the original mode failed ($RC): $(cat "$TMP/err")"
 grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "the clean resume did not resume: $(cat "$TMP/out")"
-for n in scripts workflows migrations; do
+for n in scripts migrations; do
   [[ -d "$P/$n" && ! -L "$P/$n" ]] || fail "the copy-mode resume left $n/ a link"
 done
 no_evidence "$P"

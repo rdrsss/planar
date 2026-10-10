@@ -17,7 +17,7 @@ class IdentityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='planar-dist-identity-')
         self.root = Path(self.temp.name)
-        for name in ('skills', 'agents', 'templates', 'workflows', 'migrations'):
+        for name in ('skills', 'agents', 'templates', 'migrations'):
             shutil.copytree(ROOT / name, self.root / name)
         (self.root / 'scripts').mkdir()
         for name in ('dist.sh', 'get-planar.sh', 'render-codex-agents.py', 'uninstall.sh'):
@@ -157,7 +157,7 @@ if '--preset' in sys.argv:
 if '--install' in sys.argv:
     target = pathlib.Path(sys.argv[sys.argv.index('--prefix') + 1]) / 'bin'
     target.mkdir(parents=True)
-    for name in ('planar', 'planar-agent', 'planar-watch', 'planar-ext', 'planar-execute'):
+    for name in ('planar', 'planar-agent', 'planar-watch', 'planar-ext'):
         shutil.copy2(root / 'build/fixture-tools/fixture-binary', target / name)
 ''')
         cmake.chmod(0o755)

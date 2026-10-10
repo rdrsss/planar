@@ -36,12 +36,12 @@
 # (no python3, no flock), against a bundle assembled from the built binaries.
 # python3 seeds and reads the scratch databases; it is test tooling only.
 #
-# Usage: install-order-test.sh PLANAR PLANAR-AGENT PLANAR-WATCH PLANAR-EXECUTE PLANAR-EXT
+# Usage: install-order-test.sh PLANAR PLANAR-AGENT PLANAR-WATCH PLANAR-EXT
 # shellcheck disable=SC2016,SC2012,SC2010,SC2015,SC1091  # literal $ in fixtures; ls for messages; A && B || fail is intended
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-[[ $# -eq 5 ]] || { printf 'usage: install-order-test.sh PLANAR PLANAR-AGENT PLANAR-WATCH PLANAR-EXECUTE PLANAR-EXT\n' >&2; exit 2; }
+[[ $# -eq 4 ]] || { printf 'usage: install-order-test.sh PLANAR PLANAR-AGENT PLANAR-WATCH PLANAR-EXT\n' >&2; exit 2; }
 REAL_BINS=("$@")
 for b in "${REAL_BINS[@]}"; do [[ -x "$b" ]] || { printf 'install-order-test: not executable: %s\n' "$b" >&2; exit 2; }; done
 PYTHON="$(command -v python3)"
@@ -110,7 +110,7 @@ release_json_write() {
 }
 # make_bundle DIR TAG -- the repository's bundle layout around the built binaries.
 make_bundle() {
-  local dest="$1" tag="$2" i names=(planar planar-agent planar-watch planar-execute planar-ext)
+  local dest="$1" tag="$2" i names=(planar planar-agent planar-watch planar-ext)
   fake_bundle_make "$ROOT" "$dest"
   for i in 0 1 2 3 4; do cp -f "${REAL_BINS[$i]}" "$dest/bin/${names[$i]}"; chmod 755 "$dest/bin/${names[$i]}"; done
   release_json_write "$dest" "$tag"
@@ -169,7 +169,7 @@ mkdir -p "$TMP/nohome"
 planar_at() { local db="$1"; shift; ( cd / && env -i HOME="$TMP/nohome" PATH=/usr/bin:/bin PLANAR_DB="$db" PLANAR_CONFIG_PATH="$TMP/nohome/c.toml" "${REAL_BINS[0]}" "$@" </dev/null ); }
 # tree_sum DIR -- every path and file checksum under DIR, planar.db excluded.
 tree_sum() { ( cd "$1" && find . ! -name 'planar.db*' -print | LC_ALL=C sort && find . -type f ! -name 'planar.db*' -exec cksum {} + | LC_ALL=C sort ); }
-bin_sum() { ( cd "$1" && cksum planar planar-agent planar-watch planar-execute planar-ext ); }
+bin_sum() { ( cd "$1" && cksum planar planar-agent planar-watch planar-ext ); }
 no_evidence() { # no_evidence ROOT -- no journal, staging or backup is left.
   [[ ! -e "$1/.planar-journal" && -z "$(ls -d "$1"/.staging-* "$1"/*.old 2>/dev/null)" ]] \
     || fail "recovery evidence was left in $1: $(ls -a "$1" | tr '\n' ' ')"
@@ -393,7 +393,7 @@ P="$KILL_HOME/.planar"
 run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 0 ]] || fail "the same command did not recover ($RC): $(show)"
 [[ "$(bin_sum "$P/bin")" == "$(bin_sum "$B2/bin")" ]] || fail "bin/ is not the bundle's after recovery"
-for d in skills agents codex-agents workflows scripts migrations; do
+for d in skills agents codex-agents scripts migrations; do
   diff -r "$B2/$d" "$P/$d" >/dev/null 2>&1 || [[ "$d" == agents ]] || fail "$d/ does not match the bundle after recovery"
 done
 grep -Fq '"version": "v1.2.4"' "$P/release.json" || fail "release.json is not new after recovery"
@@ -723,12 +723,12 @@ fi
 if scen uninstall-pending; then
 # --- uninstalling journals and uninstall over a pending install ------------------------------------------------------
 
-kill_case backed-up:workflows
+kill_case backed-up:migrations
 P="$KILL_HOME/.planar"
 RC=0
 ( /usr/bin/env -i HOME="$KILL_HOME" PATH="$BASEBIN" NO_COLOR=1 LC_ALL=C /bin/bash "$B2/install.sh" --uninstall >"$TMP/out" 2>"$TMP/err" ) || RC=$?
 [[ "$RC" == 0 ]] || fail "uninstall over a pending install failed ($RC): $(show)"
-[[ ! -e "$P/.planar-journal" && ! -e "$P/bin" && ! -e "$P/workflows.old" && -f "$P/planar.db" ]] || fail "uninstall did not end the pending install: $(ls -a "$P")"
+[[ ! -e "$P/.planar-journal" && ! -e "$P/bin" && ! -e "$P/migrations.old" && -f "$P/planar.db" ]] || fail "uninstall did not end the pending install: $(ls -a "$P")"
 run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 0 ]] || fail "a fresh install after uninstall failed ($RC): $(show)"
 ! grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "the install replayed a cancelled transaction"

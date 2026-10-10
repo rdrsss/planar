@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 
-BINARIES = ('planar', 'planar-agent', 'planar-watch', 'planar-execute', 'planar-ext')
+BINARIES = ('planar', 'planar-agent', 'planar-watch', 'planar-ext')
 GLIBC_LIBS = {'libc.so.6', 'libm.so.6', 'libpthread.so.0', 'libdl.so.2',
               'librt.so.1', 'libresolv.so.2', 'libutil.so.1', 'libanl.so.1',
               'ld-linux-x86-64.so.2', 'ld-linux-aarch64.so.1'}

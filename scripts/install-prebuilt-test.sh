@@ -90,14 +90,14 @@ P="$H/.planar"
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "prebuilt install failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
 no_python
-for b in planar planar-agent planar-watch planar-execute planar-ext; do
+for b in planar planar-agent planar-watch planar-ext; do
   cmp -s "$BUNDLE/bin/$b" "$P/bin/$b" || fail "bin/$b is not byte-identical to the bundle's"
   [[ -x "$P/bin/$b" ]] || fail "bin/$b is not executable"
 done
 [[ "$(tree_sum "$BUNDLE/codex-agents")" == "$(tree_sum "$P/codex-agents")" ]] || fail "codex-agents/ differs from the bundle's"
 cmp -s "$BUNDLE/release.json" "$P/release.json" || fail "release.json differs from the bundle's"
 [[ -f "$P/skills/planar/SKILL.md" && -f "$P/agents/planar-coder.md" && -f "$P/templates/a.toml" ]] || fail "staged trees are missing"
-[[ -d "$P/migrations" && -f "$P/workflows/w.lua" && -d "$P/scripts/install-lib" ]] || fail "migrations/workflows/scripts were not placed from the bundle"
+[[ -d "$P/migrations" && -d "$P/scripts/install-lib" ]] || fail "migrations/scripts were not placed from the bundle"
 [[ -f "$H/.claude/skills/planar/SKILL.md" && -f "$H/.claude/agents/planar-coder.md" ]] || fail "the Claude surfaces were not placed"
 [[ -f "$H/.codex/agents/planar-coder.toml" ]] || fail "the Codex agent was not placed from the bundled TOML"
 cmp -s "$BUNDLE/codex-agents/planar-coder.toml" "$H/.codex/agents/planar-coder.toml" || fail "the Codex agent is not the bundle's pre-rendered TOML"
@@ -119,7 +119,7 @@ grep -Eq 'no changes: all [0-9]+ vendor target\(s\) already match' "$TMP/out" ||
 # bin/ is a managed subtree, swapped in whole on every install (tech spec 677,
 # "Order of an install"): the second run's binaries are the bundle's again and no
 # backup or staging directory is left behind.
-for b in planar planar-agent planar-watch planar-execute planar-ext; do
+for b in planar planar-agent planar-watch planar-ext; do
   cmp -s "$BUNDLE/bin/$b" "$P/bin/$b" || fail "the second run left a bin/$b that is not the bundle's"
 done
 [[ -z "$(ls -d "$P"/*.old "$P"/.staging-* "$P/.planar-journal" 2>/dev/null)" ]] || fail "the second run left recovery evidence: $(ls -a "$P")"
@@ -255,7 +255,7 @@ pass
 
 # --- a bundle missing a required file is refused before any write ---------------------------------
 
-for missing in bin/planar bin/planar-agent bin/planar-watch bin/planar-execute bin/planar-ext release.json skills/planar/SKILL.md codex-agents; do
+for missing in bin/planar bin/planar-agent bin/planar-watch bin/planar-ext release.json skills/planar/SKILL.md codex-agents; do
   B="$TMP/broken/$(echo "$missing" | tr / _)"
   mkdir -p "$TMP/broken"
   cp -R "$BUNDLE" "$B"
@@ -277,7 +277,7 @@ pass
 # --- a source install writes a release record ---------------------------------------------------------
 
 REPO="$TMP/repo"
-mkdir -p "$REPO/skills" "$REPO/templates" "$REPO/workflows"
+mkdir -p "$REPO/skills" "$REPO/templates"
 cp "$ROOT/install.sh" "$REPO/install.sh"
 cp -R "$ROOT/scripts" "$REPO/scripts"
 rm -rf "$REPO/scripts/install-lib/__pycache__"
@@ -292,12 +292,12 @@ STUBS="$TMP/stubs"
 mkdir -p "$STUBS"
 cat > "$STUBS/cmake" <<STUB
 #!/usr/bin/env bash
-# A stub cmake: \`cmake --install D --prefix P\` writes the five fake binaries of
+# A stub cmake: \`cmake --install D --prefix P\` writes the four fake binaries of
 # scripts/fixtures/prebuilt-bundle.sh (stub_binary_write) into P/bin.
 if [[ "\$1" == "--install" ]]; then
   source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
   mkdir -p "\$4/bin"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     stub_binary_write "\$4/bin/\$b" "\${STUB_TAG:-dev}"
   done
 fi
@@ -478,7 +478,7 @@ if [[ -n "${PLANAR_REAL_BUNDLE:-}" ]]; then
   H="$(new_home real)"
   run_prebuilt "$H" "$PLANAR_REAL_BUNDLE" PLANAR_DB="$H/.planar/planar.db" PLANAR_CONFIG_PATH="$H/.planar/config.toml" --
   [[ "$RC" == 0 ]] || fail "real-bundle install failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     cmp -s "$PLANAR_REAL_BUNDLE/bin/$b" "$H/.planar/bin/$b" || fail "real bin/$b differs"
   done
   cmp -s "$PLANAR_REAL_BUNDLE/release.json" "$H/.planar/release.json" || fail "real release.json differs"

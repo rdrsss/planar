@@ -15,11 +15,13 @@
 # agent links and pl-* skill directories, are removed by install.sh's sweep
 # "Retiring the previous skill and agent projections", not by this manifest.)
 #
-# (No active entries. `bin/planar-execute` was listed here when the Lua harness
-# was extracted to a separate external project (2026-06); plan 633 revived
-# planar-execute as a shipped fifth binary — the deterministic spawn-free
-# workflow engine — so the cleanup line was removed (a re-install must keep,
-# not delete, it).)
+# planar-execute, its Lua workflows and the model tier table left the bundle
+# with plan 1142: the bundle ships four binaries, no workflows/ and no
+# agents/models.md. A re-install over a tree from an older release removes
+# these copies.
+bin/planar-execute
+workflows/
+agents/models.md
 # The retired agent.db (plan 1089) is NOT listed here: it is data, and
 # removing it needs the live-queue guard and the old-range checks, so the
 # installer's retire step (scripts/install-lib/queue-retire.sh,

@@ -322,7 +322,7 @@ scenario() {
   [[ "$RC" == 0 ]] || fail "[$tag/$name] prebuilt install exited $RC: $(cat "$TMP/err") $(cat "$TMP/out")"
   grep -Eqi 'unbound variable|syntax error|bad substitution|command not found' "$TMP/err" "$TMP/out" && fail "[$tag/$name] install printed a shell error: $(cat "$TMP/err")"
   local b
-  for b in planar planar-agent planar-watch planar-execute planar-ext; do
+  for b in planar planar-agent planar-watch planar-ext; do
     cmp -s "$BUNDLE/bin/$b" "$p/bin/$b" || fail "[$tag/$name] bin/$b is not the bundle's"
   done
   [[ -f "$p/install-manifest.json" && -f "$p/release.json" && -f "$p/skills/planar/SKILL.md" ]] || fail "[$tag/$name] the install left no manifest, release.json or skill"

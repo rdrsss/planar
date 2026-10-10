@@ -159,13 +159,13 @@ mini INSTALL_TEST_JOBS=4 MINI_MUTATE=1
 pass "a failing scenario is named and fails the run; a changed shared fixture fails it too"
 
 # --- the real scripts: usage paths ---------------------------------------------------------
-# The order script wants five executables; the usage errors come before any use of them.
+# The order script wants four executables; the usage errors come before any use of them.
 FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
-for b in planar planar-agent planar-watch planar-execute planar-ext; do ln -s /usr/bin/true "$FAKEBIN/$b"; done
+for b in planar planar-agent planar-watch planar-ext; do ln -s /usr/bin/true "$FAKEBIN/$b"; done
 real() { # real SCRIPT [ENV=V...] -- run a real installer test script; RC, $TMP/out, $TMP/err
   local script="$1"; shift
   local args=()
-  [[ "$script" != install-order-test.sh ]] || args=("$FAKEBIN/planar" "$FAKEBIN/planar-agent" "$FAKEBIN/planar-watch" "$FAKEBIN/planar-execute" "$FAKEBIN/planar-ext")
+  [[ "$script" != install-order-test.sh ]] || args=("$FAKEBIN/planar" "$FAKEBIN/planar-agent" "$FAKEBIN/planar-watch" "$FAKEBIN/planar-ext")
   RC=0
   env "$@" /bin/bash "$ROOT/scripts/$script" ${args[@]+"${args[@]}"} >"$TMP/out" 2>"$TMP/err" || RC=$?
 }
