@@ -701,7 +701,7 @@ TEST_CASE("a dispatch previewed and confirmed without a claim token, then claime
     auto token = w.claim(1);
     w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
     // The claim is a dispatch through the spent preview, and it ended with no role action.
-    CHECK(w.findings(k_dispatch_checks) == std::vector<std::string>{"dispatch-no-role-action claim:1 error"});
+    CHECK(w.findings(k_dispatch_checks) == std::vector<std::string>{"dispatch-no-role-action claim:1 warning"});
   }
   {
     world w;

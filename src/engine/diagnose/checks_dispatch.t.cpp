@@ -9,7 +9,7 @@
 // with its task and claim token, or a dispatch snapshot for its task overlapping the claim,
 // exists; a direct claim is never considered):
 //
-//   * `dispatch-no-role-action` (event, error): a dispatch whose claim is no longer live and that
+//   * `dispatch-no-role-action` (event, warning; decision 1384): a dispatch whose claim is no longer live and that
 //     has no `coder`, `reviewer` or `test_coder` action tied to the claim, or to its task inside
 //     the claim's lifetime.
 //   * `action-unended` (state, warning): an action with no `ended_at` whose claim is terminal or
@@ -188,7 +188,7 @@ TEST_CASE("the dispatch and action checks are catalogued with the spec's kind, s
     std::string_view        category;
   };
   for (const auto& want : std::vector<row>{
-           {"dispatch-no-role-action", im::check_kind::event, im::diagnostic_severity::error, "dispatch_no_role_action"},
+           {"dispatch-no-role-action", im::check_kind::event, im::diagnostic_severity::warning, "dispatch_no_role_action"},
            {"dispatch-unconfirmed", im::check_kind::event, im::diagnostic_severity::warning, "dispatch_unconfirmed"},
            {"dispatch-confirmed-late", im::check_kind::event, im::diagnostic_severity::warning, "dispatch_confirmed_late"},
            {"action-unended", im::check_kind::state, im::diagnostic_severity::warning, "claim_action_unended"}}) {
@@ -218,7 +218,8 @@ TEST_CASE("dispatch-no-role-action reports a previewed dispatch whose claim ende
   REQUIRE(d.findings.size() == 1);
   const auto& f = d.findings[0];
   CHECK(f.check_id == "dispatch-no-role-action");
-  CHECK(f.severity == im::diagnostic_severity::error);
+  // Decision 1384: the work happened, only the role row is missing, so this is a warning and not an error.
+  CHECK(f.severity == im::diagnostic_severity::warning);
   CHECK(im::entity_ref_text(f.primary) == "claim:1");
   // The evidence names the claim, its task, the preview and the snapshot.
   CHECK(std::ranges::contains(f.evidence, im::entity_ref{.kind = "claim", .id = 1}));
