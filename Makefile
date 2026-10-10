@@ -20,13 +20,11 @@ MAKEFLAGS += --no-builtin-rules
 BINARY        := planar
 AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
-EXECUTE_BINARY := planar-execute
 EXT_BINARY    := planar-ext
 BIN_DIR       := bin
 BIN           := $(BIN_DIR)/$(BINARY)
 AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
-EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
 
 # CMake build output — binaries land under `build/<preset>/bin` per
@@ -67,14 +65,13 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the five Planar binaries into ./bin/
+build: ## Build the four Planar binaries into ./bin/
 	@mkdir -p $(BIN_DIR)
 	cmake --preset release -DPLANAR_VERSION_META=OFF
 	cmake --build build/release $(ARGS)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(BINARY) $(BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(AGENT_BINARY) $(AGENT_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
-	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
 
 # Scratch database for hand-run smoke tests, kept in the build dir.
@@ -396,8 +393,8 @@ ctest-registry-check: ## Prove ctest runs every case the test binaries contain (
 .PHONY: cli-usage-check
 cli-usage-check: ## Validate authored surfaces and catalog docs.examples against the live CLI schema and semantic contracts
 	$(configure_debug)
-	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext planar_cmd_planar_execute
-	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY) $(CPP_BIN_ABS)/$(EXECUTE_BINARY)
+	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext
+	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY)
 	$(CLI_DOCS_COVERAGE) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY)
 	$(SURFACE_LINT) $(CURDIR) --enable-pending-retired
 	python3 scripts/check-md-anchors.py --self-test

@@ -26,7 +26,6 @@ add_subdirectory(internal)
 add_subdirectory(planar)
 add_subdirectory(planar-agent)
 add_subdirectory(planar-watch)
-add_subdirectory(planar-execute)
 add_subdirectory(planar-ext)
 add_subdirectory(integration_tests)
 
@@ -53,12 +52,10 @@ if(TARGET planar_cmd_planar_tests)
   target_compile_definitions(planar_cmd_planar_tests PRIVATE
     "PLANAR_AGENT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
     "PLANAR_WATCH_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_watch>\""
-    "PLANAR_EXECUTE_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_execute>\""
     "PLANAR_EXT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_ext>\"")
   add_dependencies(planar_cmd_planar_tests
     planar_cmd_planar_agent
     planar_cmd_planar_watch
-    planar_cmd_planar_execute
     planar_cmd_planar_ext)
 endif()
 
@@ -87,19 +84,6 @@ if(TARGET planar_cmd_planar_watch_tests)
     planar_cmd_planar
     planar_cmd_planar_agent
     planar_cmd_planar_ext)
-endif()
-
-# --- planar-execute's golden flow.result fixtures (plan 1033 M0, task 6484) --
-#
-# `planar-execute/golden.t.cpp` seeds its scratch database with the OPERATOR
-# binary, and every workflow it runs shells `planar` beside the built
-# `planar-execute` — so the operator binary must be built first. Same
-# placement reason and the same absence of a link edge as the two blocks
-# above.
-if(TARGET planar_cmd_planar_execute_tests)
-  target_compile_definitions(planar_cmd_planar_execute_tests PRIVATE
-    "PLANAR_OPERATOR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\"")
-  add_dependencies(planar_cmd_planar_execute_tests planar_cmd_planar)
 endif()
 
 # --- compile-fail check for the flag-declaration helpers (plan 1104, task 7200)
@@ -199,7 +183,7 @@ endif()
 # warning, kill-and-resume at every swap point, concurrent owners, the updater
 # handoff and --cleanup, and uninstall over a pending install.
 if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar_cmd_planar_watch
-   AND TARGET planar_cmd_planar_execute AND TARGET planar_cmd_planar_ext)
+   AND TARGET planar_cmd_planar_ext)
   # One ctest entry per group of scenarios (INSTALL_ORDER_GROUP; the groups are listed in
   # the script): the whole file took 757 s on a loaded host and the five-minute ceiling
   # applies to every installer test. Running the script with no group runs all of them.
@@ -208,7 +192,7 @@ if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar
       COMMAND "${CMAKE_COMMAND}" -E env "INSTALL_ORDER_GROUP=${_order_group}"
         /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-order-test.sh"
         "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_agent>"
-        "$<TARGET_FILE:planar_cmd_planar_watch>" "$<TARGET_FILE:planar_cmd_planar_execute>"
+        "$<TARGET_FILE:planar_cmd_planar_watch>"
         "$<TARGET_FILE:planar_cmd_planar_ext>")
     set_tests_properties(install.order_${_order_group} PROPERTIES LABELS "install_order;install_order_${_order_group}" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
   endforeach()
