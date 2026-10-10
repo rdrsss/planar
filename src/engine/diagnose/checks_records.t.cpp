@@ -1,5 +1,5 @@
 // @file checks_records.t.cpp
-// @brief Tests for the handoff check of `planar.engine.diagnose` (plan 1132, task 7378).
+// @brief Tests for the handoff and sync-conflict checks of `planar.engine.diagnose` (plan 1132, tasks 7378 and 7381).
 //
 // The cases drive the shipped catalog over a scratch database with rows written directly, so the
 // evaluation instant and the 24 hour boundary are exact. The same check is exercised against
@@ -14,6 +14,14 @@
 //   * A `consumed` or `abandoned` handoff is never stale, however old.
 //   * The plan scope reaches a handoff through its snapshot's task.
 //   * The evidence time is the handoff's `created_at`, and does not move with the instant.
+//   * `sync-conflict-unresolved` (state, warning; task 7381): a `sync_events` row with outcome
+//     `conflict` and no later event for the same link that ends the conflict: a successful or no-op
+//     sync (`ok`, `noop`, `success`; `planar-ext sync resolve` writes an `ok` event) or a
+//     `resolved-fs`/`resolved-db` outcome. A later `error` ends nothing; of several conflicts on one
+//     link only the latest is reported. A conflict without a link (a workbench conflict, settled in
+//     place) is reported while its outcome is still `conflict`. The evidence is the event and its link,
+//     timed by the event's `at`; the check ignores the window start; the plan scope reaches a link
+//     through its task or plan, and a link that belongs to no plan appears only without `--plan`.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -100,6 +108,36 @@ struct fixture {
                            id, snapshot, status, ago(age)));
   }
 
+  /// An external system and `count` links to it: link 1 on task 1 (plan 1), link 2 on task 2 (plan 2),
+  /// link 3 on plan 1 itself, link 4 on an artifact (no plan).
+  auto links() -> void {
+    exec(conn, "insert into external_systems (id, kind, slug, base_url, auth_method, auth_ref) values (1, 'jira', 'jira-demo', "
+               "'http://127.0.0.1:1', 'token-env', 'DEMO_TOKEN')");
+    exec(conn, "insert into artifacts (id, scope_kind, kind, title, body, created_at, updated_at) values (1, 'global', 'other', "
+               "'a', 'b', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')");
+    exec(
+        conn,
+        "insert into external_links (id, entity_kind, entity_id, system_id, external_id) values "
+        "(1, 'task', 1, 1, 'DEMO-1'), (2, 'task', 2, 1, 'DEMO-2'), (3, 'plan', 1, 1, 'DEMO-3'), (4, 'artifact', 1, 1, 'DEMO-4')");
+  }
+
+  /// One sync event; `link` 0 is a workbench event with no link.
+  auto event(int id, int link, std::string_view outcome, std::string_view at, std::string_view direction = "pull") -> void {
+    exec(conn, std::format("insert into sync_events (id, link_id, scope, direction, outcome, at) values ({}, {}, '{}', '{}', "
+                           "'{}', '{}')",
+                           id, link == 0 ? std::string{"null"} : std::to_string(link), link == 0 ? "workbench" : "external",
+                           direction, outcome, at));
+  }
+
+  auto run_sync(std::string_view at = k_now, std::optional<int> plan = std::nullopt, std::optional<int> days = std::nullopt)
+      -> dg::diagnosis {
+    auto result = dg::run(
+        conn,
+        dg::run_request{.plan_id = plan, .days = days, .checks = {"sync-conflict-unresolved"}, .evaluated_at = std::string{at}});
+    REQUIRE(result.has_value());
+    return std::move(*result);
+  }
+
   auto run(std::string_view at = k_now, std::optional<int> plan = std::nullopt) -> dg::diagnosis {
     auto result = dg::run(
         conn,
@@ -172,4 +210,133 @@ TEST_CASE("handoff-stale follows the plan scope through the snapshot's task", "[
   REQUIRE(scoped.findings.size() == 1);
   CHECK(im::entity_ref_text(scoped.findings[0].primary) == "handoff:1");
   CHECK(std::ranges::contains(scoped.findings[0].evidence, im::entity_ref{.kind = "task", .id = 1}));
+}
+
+// ---- sync-conflict-unresolved (plan 1132, task 7381) ----
+
+namespace {
+
+auto primaries_of(const dg::diagnosis& d) -> std::vector<std::string> {
+  std::vector<std::string> out;
+  for (const auto& f : d.findings) {
+    out.push_back(im::entity_ref_text(f.primary));
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("sync-conflict-unresolved is catalogued as a warning state check without inputs", "[engine][diagnose][sync]") {
+  auto cat = dg::builtin_catalog();
+  auto it  = std::ranges::find(cat.checks, "sync-conflict-unresolved", &dg::check_def::id);
+  REQUIRE(it != cat.checks.end());
+  CHECK(it->built);
+  CHECK(it->kind == im::check_kind::state);
+  CHECK(it->severity == im::diagnostic_severity::warning);
+  CHECK(it->category == "sync_conflict");
+  CHECK(it->inputs.empty());
+  CHECK(it->recovery.contains("planar-ext sync resolve"));
+}
+
+TEST_CASE("a conflict with no later event is reported with its link and event", "[engine][diagnose][sync]") {
+  fixture fx;
+  fx.links();
+  fx.event(1, 1, "ok", "2026-06-01T08:00:00.000Z");
+  fx.event(2, 1, "conflict", "2026-06-01T09:00:00.000Z");
+  auto d = fx.run_sync();
+  CHECK(d.result == dg::run_outcome::ok);
+  REQUIRE(d.findings.size() == 1);
+  const auto& f = d.findings[0];
+  CHECK(f.check_id == "sync-conflict-unresolved");
+  CHECK(f.severity == im::diagnostic_severity::warning);
+  CHECK(im::entity_ref_text(f.primary) == "sync_event:2");
+  CHECK(std::ranges::contains(f.evidence, im::entity_ref{.kind = "external_link", .id = 1}));
+  CHECK(f.evidence_times == std::vector<std::string>{"2026-06-01T09:00:00.000Z"});
+  CHECK(im::finding_fingerprint(f) == "sync-conflict-unresolved|external_link:1,sync_event:2");
+  CHECK(f.recovery.contains("planar-ext sync resolve"));
+}
+
+TEST_CASE("a later event that ends the conflict resolves it, and one that does not leaves it", "[engine][diagnose][sync]") {
+  // `planar-ext sync resolve` writes an `ok` event; a settled workbench outcome and a clean later sync end it too.
+  for (const auto* ends : {"ok", "noop", "success", "resolved-fs", "resolved-db"}) {
+    fixture fx;
+    fx.links();
+    fx.event(1, 1, "conflict", "2026-06-01T09:00:00.000Z");
+    fx.event(2, 1, ends, "2026-06-01T09:30:00.000Z", "push");
+    INFO(ends);
+    CHECK(fx.run_sync().findings.empty());
+  }
+  // A failed later attempt, or a partial one, ends nothing.
+  for (const auto* open : {"error", "partial", "failure", "strategy-abandoned", "counterpart-missing"}) {
+    fixture fx;
+    fx.links();
+    fx.event(1, 1, "conflict", "2026-06-01T09:00:00.000Z");
+    fx.event(2, 1, open, "2026-06-01T09:30:00.000Z");
+    INFO(open);
+    CHECK(primaries_of(fx.run_sync()) == std::vector<std::string>{"sync_event:1"});
+  }
+}
+
+TEST_CASE("only an event after the conflict, on the same link, resolves it", "[engine][diagnose][sync]") {
+  fixture fx;
+  fx.links();
+  fx.event(1, 1, "ok", "2026-06-01T08:00:00.000Z"); // before the conflict
+  fx.event(2, 1, "conflict", "2026-06-01T09:00:00.000Z");
+  fx.event(3, 2, "ok", "2026-06-01T09:30:00.000Z"); // another link
+  CHECK(primaries_of(fx.run_sync()) == std::vector<std::string>{"sync_event:2"});
+}
+
+TEST_CASE("of several conflicts on one link only the latest is reported, and a resolution clears them all",
+          "[engine][diagnose][sync]") {
+  fixture fx;
+  fx.links();
+  fx.event(1, 1, "conflict", "2026-06-01T09:00:00.000Z");
+  fx.event(2, 1, "conflict", "2026-06-01T09:10:00.000Z");
+  CHECK(primaries_of(fx.run_sync()) == std::vector<std::string>{"sync_event:2"});
+  fx.event(3, 1, "ok", "2026-06-01T09:20:00.000Z");
+  CHECK(fx.run_sync().findings.empty());
+  // Two links in conflict are two findings.
+  fx.event(4, 2, "conflict", "2026-06-01T10:00:00.000Z");
+  fx.event(5, 3, "conflict", "2026-06-01T10:05:00.000Z");
+  CHECK(primaries_of(fx.run_sync()) == std::vector<std::string>{"sync_event:4", "sync_event:5"});
+}
+
+TEST_CASE("an unresolved conflict is reported whatever its age: the check ignores the window start", "[engine][diagnose][sync]") {
+  fixture fx;
+  fx.links();
+  fx.event(1, 1, "conflict", "2026-01-05T09:00:00.000Z");
+  auto narrow = fx.run_sync(k_now, std::nullopt, 1);
+  REQUIRE(narrow.findings.size() == 1);
+  // The evidence is the event's own row time, so a later evaluation instant changes nothing about it.
+  auto later = fx.run_sync("2026-07-10T12:00:00.000Z", std::nullopt, 1);
+  REQUIRE(later.findings.size() == 1);
+  CHECK(im::finding_digest(narrow.findings[0]) == im::finding_digest(later.findings[0]));
+}
+
+TEST_CASE("a workbench conflict has no link and is reported until it is settled in place", "[engine][diagnose][sync]") {
+  fixture fx;
+  fx.event(1, 0, "conflict", "2026-06-01T09:00:00.000Z");
+  fx.event(2, 0, "resolved-fs", "2026-06-01T09:10:00.000Z");
+  fx.event(3, 0, "conflict", "2026-06-01T09:20:00.000Z");
+  // A conflict event without a link has no later event "for the same link", so every conflict row stays reported.
+  auto d = fx.run_sync();
+  REQUIRE(d.findings.size() == 2);
+  CHECK(primaries_of(d) == std::vector<std::string>{"sync_event:1", "sync_event:3"});
+  CHECK(d.findings[0].evidence == std::vector<im::entity_ref>{im::entity_ref{.kind = "sync_event", .id = 1}});
+  // Settled in place (the workbench resolver updates the row's outcome), it is no conflict.
+  exec(fx.conn, "update sync_events set outcome = 'resolved-db' where id = 1");
+  CHECK(primaries_of(fx.run_sync()) == std::vector<std::string>{"sync_event:3"});
+}
+
+TEST_CASE("the plan scope reaches a link through its task or plan", "[engine][diagnose][sync]") {
+  fixture fx;
+  fx.links();
+  fx.event(1, 1, "conflict", "2026-06-01T09:00:00.000Z"); // task 1, plan 1
+  fx.event(2, 2, "conflict", "2026-06-01T09:00:00.000Z"); // task 2, plan 2
+  fx.event(3, 3, "conflict", "2026-06-01T09:00:00.000Z"); // plan 1 itself
+  fx.event(4, 4, "conflict", "2026-06-01T09:00:00.000Z"); // an artifact: no plan
+  fx.event(5, 0, "conflict", "2026-06-01T09:00:00.000Z"); // workbench: no link, no plan
+  CHECK(fx.run_sync().findings.size() == 5);
+  CHECK(primaries_of(fx.run_sync(k_now, 1)) == std::vector<std::string>{"sync_event:1", "sync_event:3"});
+  CHECK(primaries_of(fx.run_sync(k_now, 2)) == std::vector<std::string>{"sync_event:2"});
 }
