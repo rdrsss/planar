@@ -122,9 +122,8 @@ TEST_CASE("planar-agent's declared verb set includes the bounded queue observer"
                                                     // (task hq-queue-cancel), `status` and `rule` (task
                                                     // hq-queue-rule-verb) are new.
                                                     "queue", "cancel", "status", "rule", "wait",
-                                                    // The nine declared by task 6065, which refuse at 64.
-                                                    "add", "capsule", "confirm", "context", "dispatch", "ingest", "list",
-                                                    "preview", "resolve", "run"});
+                                                    // Dispatch's preview and confirm, ingest, and the queue's `run`.
+                                                    "confirm", "dispatch", "ingest", "preview", "run"});
 }
 
 TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cmd][agent][capability]") {
@@ -143,15 +142,15 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  CHECK(leaves.size() == 29);
+  CHECK(leaves.size() == 22);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
   // Non-vacuous: the inventory must not have swallowed a verb that has a
   // real handler, which is the failure mode a bulk registration invites.
-  for (auto const& implemented : {"pull", "complete", "action start", "run start", "run end", "queue run", "queue cancel",
-                                  "queue rule", "queue wait", "schema", "version"}) {
+  for (auto const& implemented :
+       {"pull", "complete", "action start", "queue run", "queue cancel", "queue rule", "queue wait", "schema", "version"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
@@ -264,7 +263,7 @@ TEST_CASE("no planar-agent handler is unreachable from argv", "[cmd][agent][disp
 }
 
 TEST_CASE("planar-agent path_key joins segments with single spaces", "[cmd][agent][dispatch]") {
-  std::vector<std::string> const path{"run", "start"};
-  CHECK(planar::cliapp::path_key(path) == "run start");
+  std::vector<std::string> const path{"queue", "run"};
+  CHECK(planar::cliapp::path_key(path) == "queue run");
   CHECK(planar::cliapp::path_key(std::vector<std::string>{}).empty());
 }

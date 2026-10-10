@@ -134,14 +134,14 @@ TEST_CASE("planar-agent: pass-through statuses that collide with this binary's o
 }
 
 TEST_CASE("planar-agent: a pass-through status never writes the domain-error formats", "[cmd][agent][exit][passthrough]") {
-  // `context list` takes `--json`, so a domain error from it writes BOTH the
+  // `peek` takes `--json`, so a domain error from it writes BOTH the
   // stderr line and the stdout JSON envelope. A pass-through 2 must write
   // neither, though 2 is exactly the code an `invalid_input` error maps to.
-  std::vector<std::string> const argv{"context", "list", "--run", "1", "--json"};
+  std::vector<std::string> const argv{"peek", "1", "--json"};
 
   auto const passed = dispatch_with("nofmt", argv, [](handler_table& table) {
     table.insert_or_assign(
-        "context list", [](context&, const planar::cliapp::parsed_args&) -> handler_outcome { return exit_status{.code = 2}; });
+        "peek", [](context&, const planar::cliapp::parsed_args&) -> handler_outcome { return exit_status{.code = 2}; });
   });
   CHECK(passed.code == 2);
   CHECK(passed.out.empty());
@@ -150,13 +150,13 @@ TEST_CASE("planar-agent: a pass-through status never writes the domain-error for
   // The same leaf refusing with a domain error that maps to 2 writes both:
   // the contrast that shows the case above is not vacuous.
   auto const refused = dispatch_with("fmt", argv, [](handler_table& table) {
-    table.insert_or_assign("context list", [](context&, const planar::cliapp::parsed_args&) -> handler_outcome {
-      return handler_result{std::unexpected(error_from_body(domain_error_kind::invalid_input, "context list: BadRun"))};
+    table.insert_or_assign("peek", [](context&, const planar::cliapp::parsed_args&) -> handler_outcome {
+      return handler_result{std::unexpected(error_from_body(domain_error_kind::invalid_input, "peek: BadRun"))};
     });
   });
   CHECK(refused.code == 2);
-  CHECK(refused.err == "error: context list: BadRun\n");
-  CHECK(refused.out == "{\"error\":{\"verb\":\"context list\",\"tag\":\"BadRun\"}}\n");
+  CHECK(refused.err == "error: peek: BadRun\n");
+  CHECK(refused.out == "{\"error\":{\"verb\":\"peek\",\"tag\":\"BadRun\"}}\n");
 }
 
 TEST_CASE("planar-agent: a domain error still exits with its mapped code beside the pass-through path",

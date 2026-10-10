@@ -14,8 +14,7 @@
 ///   `abort`     force-releases ONE claim by token, from ANY session, in
 ///               ANY state. No ownership check, no lease check.
 ///   `reconcile` sweeps EVERY claim whose lease has passed, returns their
-///               tasks to `todo` where the claim owns that transition, and
-///               abandons `workflow_runs` rows whose recorded pid is gone.
+///               tasks to `todo` where the claim owns that transition.
 ///
 /// `--dry-run` on `reconcile` is not a courtesy: the sweep is destructive
 /// across an entire database by default, and the dry-run form writes
@@ -35,9 +34,9 @@ namespace planar::cmd::agent::handlers {
 
 /// @brief Handle `planar-agent reconcile [flags]`.
 ///
-/// Wraps both sweeps — claims and runs — in ONE transaction when applying,
-/// and in none at all when `--dry-run`, so a partially-applied sweep is
-/// not a state the database can reach.
+/// Wraps the claim sweep in ONE transaction when applying, and in none at
+/// all when `--dry-run`, so a partially-applied sweep is not a state the
+/// database can reach.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or the failure to report.

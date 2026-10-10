@@ -21,9 +21,7 @@ import planar.cmd.planar_agent.handlers.ingest.command;
 import planar.cmd.planar_agent.handlers.reconcile.command;
 import planar.cmd.planar_agent.handlers.abort.command;
 import planar.cmd.planar_agent.handlers.schema.command;
-import planar.cmd.planar_agent.handlers.run.command;
 import planar.cmd.planar_agent.handlers.dispatch.command;
-import planar.cmd.planar_agent.handlers.context.command;
 import planar.cmd.planar_agent.handlers.queue.command;
 
 namespace planar::cmd::agent {
@@ -55,9 +53,7 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::reconcile_cli::add(*app);
   handlers::abort_cli::add(*app);
   handlers::schema_cli::add(*app);
-  handlers::run_cli::add(*app);
   handlers::dispatch_cli::add(*app);
-  handlers::context_cli::add(*app);
   handlers::queue_cli::add(*app);
 
   // Help renders the same page it rendered before every bool flag gained

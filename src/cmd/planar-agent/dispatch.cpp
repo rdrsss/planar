@@ -7,7 +7,7 @@ import std;
 import cli11;
 import planar.db;
 import planar.cmd.planar_agent.handlers.dispatch;
-import planar.cmd.planar_agent.handlers.context;
+import planar.cmd.planar_agent.handlers.ingest;
 import planar.cliapp.args;
 import planar.cliapp.surface;
 import planar.cmd.planar_agent.surface;
@@ -22,7 +22,6 @@ import planar.cmd.planar_agent.handlers.queue.rule;
 import planar.cmd.planar_agent.handlers.queue.status;
 import planar.cmd.planar_agent.handlers.queue.wait;
 import planar.cmd.planar_agent.handlers.recovery;
-import planar.cmd.planar_agent.handlers.runs;
 import planar.cmd.planar_agent.handlers.schema;
 import planar.cmd.planar_agent.handlers.terminal;
 import planar.cmd.planar_agent.handlers.version;
@@ -133,14 +132,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("abort", handlers::abort);
   table.emplace("dispatch preview", handlers::dispatch_preview);
   table.emplace("dispatch confirm", handlers::dispatch_confirm);
-  table.emplace("context add", handlers::context_add);
-  table.emplace("context capsule", handlers::context_capsule);
-  table.emplace("context list", handlers::context_list);
-  table.emplace("context resolve", handlers::context_resolve);
   table.emplace("ingest", handlers::ingest);
-  table.emplace("run start", handlers::run_start);
-  table.emplace("run end", handlers::run_end);
-  table.emplace("run heartbeat", handlers::run_heartbeat);
   // The host-wide build and test queue (plan 1080). Its handler returns the
   // command's exit status, which dispatch passes through unchanged.
   table.emplace("queue run", handlers::queue_run);
