@@ -408,6 +408,88 @@ TEST_CASE("claims on plans and plan steps follow their own entity status and pla
   CHECK(ids_of(other) == std::vector<std::string>{"claim-superseded-active claim:5"});
 }
 
+TEST_CASE("claim-lease-lapsed also reports a heartbeated plan or plan-step claim past its lease",
+          "[engine][diagnose][claims][calibration]") {
+  // Decision 1384: coordination claims (an orchestrator holds a plan) are not on a `doing` task, so the check
+  // missed them; four such claims on the operator's database were reported by no lapse check.
+  constexpr auto claimed = "2026-06-01T09:00:00.000Z";
+  constexpr auto beat    = "2026-06-01T09:30:00.000Z";
+  constexpr auto expired = "2026-06-01T09:40:00.000Z";
+  fixture        fx;
+  fx.set_plan_status(1, "active");
+  fx.set_plan_status(2, "paused");
+  fx.step(10, 1, "pending");
+  fx.step(20, 2, "pending");
+  fx.entity_claim(1, "plan", 1, "exclusive", "active", claimed, beat, expired);
+  fx.entity_claim(2, "plan_step", 10, "exclusive", "active", claimed, beat, expired);
+  fx.entity_claim(3, "plan", 2, "exclusive", "active", claimed, beat, expired);
+  auto all = fx.run({"claim-lease-lapsed"});
+  CHECK(ids_of(all) ==
+        std::vector<std::string>{"claim-lease-lapsed claim:1", "claim-lease-lapsed claim:2", "claim-lease-lapsed claim:3"});
+  REQUIRE(all.findings.size() == 3);
+  CHECK(all.findings[0].severity == im::diagnostic_severity::warning);
+  CHECK(std::ranges::contains(all.findings[0].evidence, im::entity_ref{.kind = "plan", .id = 1}));
+  CHECK(std::ranges::contains(all.findings[1].evidence, im::entity_ref{.kind = "plan_step", .id = 10}));
+  CHECK(all.findings[0].evidence_times == std::vector<std::string>{expired});
+  CHECK(im::finding_fingerprint(all.findings[0]) == "claim-lease-lapsed|claim:1,plan:1");
+
+  // The plan scope reaches a step claim through its step's plan.
+  CHECK(ids_of(fx.run({"claim-lease-lapsed"}, k_now, 1)) ==
+        std::vector<std::string>{"claim-lease-lapsed claim:1", "claim-lease-lapsed claim:2"});
+  CHECK(ids_of(fx.run({"claim-lease-lapsed"}, k_now, 2)) == std::vector<std::string>{"claim-lease-lapsed claim:3"});
+
+  // Not lapsed: a lease still running, one that expires exactly now, a claim that never heartbeated (that is
+  // `claim-process-died`), a released claim, and a claim on a finished plan or step (that is superseded).
+  fixture quiet;
+  quiet.set_plan_status(1, "active");
+  quiet.set_plan_status(2, "done");
+  quiet.step(10, 1, "pending");
+  quiet.step(11, 1, "done");
+  quiet.step(12, 1, "skipped");
+  quiet.entity_claim(1, "plan", 1, "exclusive", "active", claimed, "2026-06-01T11:55:00.000Z", "2026-06-01T12:05:00.000Z");
+  quiet.entity_claim(2, "plan_step", 10, "exclusive", "active", claimed, "2026-06-01T11:50:00.000Z", std::string{k_now});
+  quiet.entity_claim(3, "plan", 1, "exclusive", "active", claimed, claimed, expired);
+  quiet.entity_claim(4, "plan", 1, "exclusive", "completed", claimed, beat, expired, "2026-06-01T09:35:00.000Z");
+  quiet.entity_claim(5, "plan", 2, "exclusive", "active", claimed, beat, expired);
+  quiet.entity_claim(6, "plan_step", 11, "exclusive", "active", claimed, beat, expired);
+  quiet.entity_claim(7, "plan_step", 12, "exclusive", "active", claimed, beat, expired);
+  CHECK(quiet.run({"claim-lease-lapsed"}).findings.empty());
+  CHECK(ids_of(quiet.run({"claim-process-died"})) == std::vector<std::string>{"claim-process-died claim:3"});
+}
+
+TEST_CASE("a lapsed plan or plan-step claim behind a later ended claim is lapsed, not superseded",
+          "[engine][diagnose][claims][calibration]") {
+  // Decision 1384: orchestrator sessions re-claim a plan one after another, so an earlier lapsed claim behind a
+  // later ended one is a lapsed coordination claim. Only a finished plan or step supersedes a plan-level claim;
+  // a task claim behind a later ended claim is still superseded (the existing rule).
+  constexpr auto claimed = "2026-06-01T09:00:00.000Z";
+  constexpr auto beat    = "2026-06-01T09:30:00.000Z";
+  constexpr auto expired = "2026-06-01T09:40:00.000Z";
+  fixture        fx;
+  fx.set_plan_status(1, "active");
+  fx.step(10, 1, "pending");
+  fx.task(1, "doing");
+  fx.entity_claim(1, "plan", 1, "exclusive", "active", claimed, beat, expired);
+  fx.entity_claim(2, "plan", 1, "exclusive", "aborted", "2026-06-01T10:00:00.000Z", "2026-06-01T10:00:00.000Z",
+                  "2026-06-01T10:10:00.000Z", "2026-06-01T10:05:00.000Z");
+  fx.entity_claim(3, "plan_step", 10, "exclusive", "active", claimed, beat, expired);
+  fx.entity_claim(4, "plan_step", 10, "exclusive", "stale", "2026-06-01T10:00:00.000Z", "2026-06-01T10:00:00.000Z",
+                  "2026-06-01T10:10:00.000Z", "2026-06-01T10:05:00.000Z");
+  fx.claim(5, 1, "active", claimed, beat, expired);
+  fx.claim(6, 1, "aborted", "2026-06-01T10:00:00.000Z", "2026-06-01T10:00:00.000Z", "2026-06-01T10:10:00.000Z",
+           "2026-06-01T10:05:00.000Z");
+  CHECK(ids_of(fx.run({"claim-lease-lapsed", "claim-superseded-active"})) ==
+        std::vector<std::string>{"claim-superseded-active claim:5", "claim-lease-lapsed claim:1", "claim-lease-lapsed claim:3",
+                                 "claim-lease-lapsed claim:5"});
+
+  // A plan claim on a finished plan is still superseded, and is not also a lapse.
+  fixture done;
+  done.set_plan_status(1, "done");
+  done.entity_claim(1, "plan", 1, "exclusive", "active", claimed, beat, expired);
+  CHECK(ids_of(done.run({"claim-lease-lapsed", "claim-superseded-active"})) ==
+        std::vector<std::string>{"claim-superseded-active claim:1"});
+}
+
 TEST_CASE("claim-process-died scopes plan and plan-step claims through their plan", "[engine][diagnose][claims]") {
   fixture fx;
   fx.step(10, 1, "pending");
