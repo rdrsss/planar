@@ -1311,7 +1311,7 @@ Operating the queue (watching, cancelling, settings, file modes) is in [`operati
 
 `planar-execute` (revived in plan 633) is a deterministic, spawn-free Lua workflow engine — the fourth binary. An LLM caller (or any script) invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted, deterministic host surface, runs the named phase, and prints the workflow's `flow.result(table)` payload as JSON on stdout. It is the deterministic, spawn-free complement to a full external workflow harness: `planar-execute` runs only deterministic work and hands control back to its caller for any model step.
 
-> **Centurion engine verbs are not part of this build.** In this tree `planar-execute` is the deterministic Lua workflow engine described in this section; its `run` path (and `profile show`) is the shipped surface. The Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host status|drain|stop`) require a Centurion-enabled build, available on the `dev/centurion-integration` branch. This build refuses them with `planar-execute was built without the Centurion engine` and exit `1`. See [INSTALL.md](../INSTALL.md) and the [CLI reference](cli-reference.md).
+> **Centurion integration branch.** On `dev/planar-execute`, `planar-execute` carries both the deterministic Lua `run` path described in this section and the Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host status|drain|stop`). See [INSTALL.md](../INSTALL.md) and the [CLI reference](cli-reference.md).
 
 ### No DB handle, no model spawn
 

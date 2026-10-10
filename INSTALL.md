@@ -671,11 +671,11 @@ that open a database (all but `planar-execute`, which holds no SQLite handle at
 all) statically link the vendored SQLite amalgamation — no system library
 dependency.
 
-This build does not include the Centurion workflow engine. `planar-execute`'s
-engine verbs (`submit`, `status`, `cancel`, `follow`, `host`) require a
-Centurion-enabled build (the `dev/centurion-integration` branch); this build
-refuses them with `planar-execute was built without the Centurion engine` and
-exit `1`. `planar-execute run` is unaffected.
+This branch (`dev/planar-execute`) links the Centurion workflow engine's
+client. Centurion's repository is private, so the first configure of a
+checkout needs `GITHUB_TOKEN` (install.sh borrows `gh auth token`). `make
+build` places `centuriond` beside `planar-execute`; the staged install does
+not place it yet.
 
 For a debug build instead, configure and build by hand:
 

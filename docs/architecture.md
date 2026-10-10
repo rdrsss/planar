@@ -268,7 +268,7 @@ Revived in plan 633, `planar-execute` is a deterministic, spawn-free Lua workflo
 
 Its source tree lives under `src/cmd/planar-execute/` (its own `planar_binary()` target in `src/cmd/planar-execute/CMakeLists.txt`); it links the Lua 5.5 C library (vendored) and the Centurion client, but does not link `src/lib/db/` or `vendor/sqlite/`. See [`docs/concepts.md` § Deterministic workflow engine](concepts.md#deterministic-workflow-engine) for the concept overview and host-surface reference.
 
-> **Centurion engine verbs are not part of this build.** In this tree `planar-execute` is the deterministic, spawn-free Lua runner; the embedded runner and the guards and boundary tests that pin it are the shipped surface. The Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host`) require a Centurion-enabled build (the `dev/centurion-integration` branch); this build does not link the Centurion client and refuses them with `planar-execute was built without the Centurion engine` and exit `1`. The Planar side of the supervision contract (migration 00038, engine-supervised claims, the `planar-watch` supervisor display) ships and compiles without it.
+> **Centurion integration branch.** On `dev/planar-execute`, `planar-execute` links `centurion::client` and nothing else of Centurion (the Centurion boundary in `cmake/architecture.cmake`). The Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host`) talk to a `centuriond` beside the binary. The deterministic, spawn-free Lua runner and the guards and boundary tests that pin it stay in force until plan 1033's cutover milestone.
 
 ### Live tail wake abstraction
 
