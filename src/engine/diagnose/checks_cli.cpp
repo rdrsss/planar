@@ -13,11 +13,12 @@
 ///    and one `error_category` other than `usage`, all inside the window and inside one 24-hour span of it
 ///    (decision 1384: a usage error is the caller's mistake, and a threshold over a whole 30-day window
 ///    fires for any busy verb). The members are the failures in any such span; overlapping spans are one cluster. Fingerprint
-///    `cli-failure-cluster|<verb_path>| <error_category>|<scope>`; each invocation is a member, timed by its `recorded_at`. The
-///    scope is always `global`: the capture writer stores no `scope_slug` (the column exists and is always null), so no
-///    invocation has a scope to share. A `verb_path` enters a fingerprint, so a legacy row written before write-time catalog
-///    checking cannot be allowed to carry prose into it. Rows are dropped before counting unless the path has the catalog's shape
-///    (at most two tokens, each a lower-case word with digits and hyphens, a digit string, `word:digits` or the writer's
+///    `cli-failure-cluster|<verb_path>|<error_category>|<scope>`; each failure in a qualifying span is a member, timed by its
+///    `recorded_at`. The scope is always `global`: the capture writer stores no `scope_slug` (the column exists and is always
+///    null), so no invocation has a scope to share. A `verb_path` enters a fingerprint, so a legacy row written before write-time
+///    catalog checking cannot be allowed to carry prose into it. Rows are dropped before counting unless the path has the
+///    catalog's shape (at most two tokens, each a lower-case word with digits and hyphens, a digit string, `word:digits` or the
+///    writer's
 ///    `<unknown>` placeholder; a structured operand's kind may be upper-case, as the writer allows; the empty path of a bare
 ///    `planar` call forms no cluster, since it names no verb) and the caller's `verb_path_recognized` predicate, when it supplied
 ///    one, accepts it. `planar-watch` cannot import the `planar` CLI tree that the predicate reads, so it supplies none: there a
