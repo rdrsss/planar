@@ -794,6 +794,73 @@ TEST_CASE("dispatch-confirmed-late is bounded by the window on the confirm and b
   CHECK(old.run(k_late, k_now, std::nullopt, 60).findings.size() == 1);
 }
 
+TEST_CASE("a role action that started before the bound preview existed is claim-time bookkeeping, not a spawn",
+          "[engine][diagnose][dispatch][calibration]") {
+  // Decision 1384: the preview is bound to the claim token, so it always follows the claim. A role
+  // action written with the claim itself therefore starts before the preview and before the confirm
+  // by construction; only an action that starts once the preview exists can be a spawn before the confirm.
+  fixture bookkeeping;
+  bookkeeping.task(1, "done");
+  bookkeeping.completed_claim(1, 1); // claimed 09:00
+  bookkeeping.action(1, 1, "coder", 1, "2026-06-01T09:00:00.140Z");
+  bookkeeping.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
+  bookkeeping.snapshot(1, 1, "2026-06-01T09:00:20Z");
+  CHECK(bookkeeping.run(k_late).findings.empty());
+
+  // A second role action that starts after the preview and before the confirm is late, and is the evidence.
+  fixture spawned;
+  spawned.task(1, "done");
+  spawned.completed_claim(1, 1);
+  spawned.action(1, 1, "coder", 1, "2026-06-01T09:00:00.140Z");
+  spawned.action(2, 1, "coder", 1, "2026-06-01T09:00:10.000Z");
+  spawned.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
+  spawned.snapshot(1, 1, "2026-06-01T09:00:20Z");
+  auto d = spawned.run(k_late);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "action", .id = 2}));
+  CHECK(d.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T09:00:10.000Z", "2026-06-01T09:00:20.000Z"});
+
+  // An action at the very instant the preview was created is not before it, so it counts.
+  fixture at_preview;
+  at_preview.task(1, "done");
+  at_preview.completed_claim(1, 1);
+  at_preview.action(1, 1, "coder", 1, "2026-06-01T09:00:05.000Z");
+  at_preview.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
+  at_preview.snapshot(1, 1, "2026-06-01T09:00:20Z");
+  CHECK(ids_of(at_preview.run(k_late)) == std::vector<std::string>{"dispatch-confirmed-late claim:1"});
+
+  // The preview's created_at is compared as an instant, not as text.
+  fixture instant;
+  instant.task(1, "done");
+  instant.completed_claim(1, 1);
+  instant.action(1, 1, "coder", 1, "2026-06-01T09:00:05.500Z");
+  instant.preview(1, 1, "tok1", "2026-06-01T09:00:06Z", 1, "2026-06-01T09:00:20Z");
+  instant.snapshot(1, 1, "2026-06-01T09:00:20Z");
+  CHECK(instant.run(k_late).findings.empty());
+}
+
+TEST_CASE("a snapshot-only dispatch ignores role actions at or before the claim and counts those after it",
+          "[engine][diagnose][dispatch][calibration]") {
+  // With no bound preview the equivalent anchor is the claim itself (decision 1384): an action written at
+  // `claimed_at` is claim-time bookkeeping; one that starts after the claim and before the confirm is late.
+  fixture bookkeeping;
+  bookkeeping.task(1, "done");
+  bookkeeping.completed_claim(1, 1); // claimed 09:00:00.000
+  bookkeeping.action(1, 1, "coder", 1, "2026-06-01T09:00:00.000Z");
+  bookkeeping.snapshot(1, 1, "2026-06-01T09:00:30Z");
+  CHECK(bookkeeping.run(k_late).findings.empty());
+
+  fixture spawned;
+  spawned.task(1, "done");
+  spawned.completed_claim(1, 1);
+  spawned.action(1, 1, "coder", 1, "2026-06-01T09:00:00.000Z");
+  spawned.action(2, 1, "coder", 1, "2026-06-01T09:00:10.000Z");
+  spawned.snapshot(1, 1, "2026-06-01T09:00:30Z");
+  auto d = spawned.run(k_late);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "action", .id = 2}));
+}
+
 TEST_CASE("dispatch-confirmed-late evidence does not move with the evaluation instant", "[engine][diagnose][dispatch]") {
   fixture fx;
   fx.task(1, "done");
