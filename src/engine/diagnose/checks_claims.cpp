@@ -4,11 +4,15 @@
 /// Six checks over `agent_work_claims`, `tasks`, `plans`, `plan_steps` and `agent_actions`
 /// (plan 1132, task 7374; tech spec 689 § Check catalog):
 ///
-///  - `claim-lease-lapsed`: an `active` claim past its lease that heartbeated, on a `doing` task.
+///  - `claim-lease-lapsed`: an `active` claim past its lease that heartbeated, on a `doing` task, or on
+///    a plan or plan-step that is not finished (decision 1384: coordination claims; a finished plan or
+///    step makes the claim `claim-superseded-active`'s instead, so the two never both report one).
 ///  - `claim-process-died`: an `active` claim past its lease that never heartbeated after
 ///    `claimed_at`; "active" is what "no terminal verb" means, since every terminal verb ends it.
-///  - `claim-superseded-active`: an `active` claim on a terminal entity, or behind a later
-///    exclusive claim on the same entity that is no longer `active`.
+///  - `claim-superseded-active`: an `active` claim on a terminal entity, or a task claim behind a later
+///    exclusive claim on the same task that is no longer `active`. Plan and plan-step claims are
+///    superseded only by a finished entity (decision 1384): orchestrator sessions re-claim a plan one
+///    after another, so an earlier lapsed one behind a later ended one is `claim-lease-lapsed`'s.
 ///  - `task-doing-unclaimed`: a `doing` task with no `active` claim whose lease runs to now or later.
 ///  - `claim-closed-by-reconcile`: an event for a claim that ended `stale`, inside the window.
 ///  - `heartbeat-gap` (task 7375, decisions 1345 and 1381): the points of a claim are `claimed_at`,
@@ -79,12 +83,17 @@ auto claim_finding(im::diagnostic_severity severity, const db::statement& row) -
 }
 
 auto lease_lapsed(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
+  // A task claim is lapsed while its task is `doing`. A plan or plan-step claim (a coordination claim) is lapsed
+  // while its plan or step is not finished; a finished one is `claim-superseded-active`'s (decision 1384).
   auto sql = std::format("select c.id, c.entity_kind, c.entity_id, c.lease_expires_at"
-                         " from agent_work_claims c join tasks t on c.entity_kind = 'task' and t.id = c.entity_id"
-                         " where c.status = 'active' and c.lease_expires_at < {}"
-                         "   and t.status = 'doing' and {} and {}"
+                         " from agent_work_claims c"
+                         " where c.status = 'active' and c.lease_expires_at < {0} and {1}"
+                         "   and ((c.entity_kind = 'task'"
+                         "         and exists (select 1 from tasks t where t.id = c.entity_id and t.status = 'doing'))"
+                         "        or (c.entity_kind in ('plan', 'plan_step') and coalesce({3}, 0) = 0))"
+                         "   and {2}"
                          " order by c.id",
-                         k_now, k_heartbeated, plan_filter_sql(ctx.scope, "t.plan_id"));
+                         k_now, k_heartbeated, plan_filter_sql(ctx.scope, k_claim_plan), k_entity_terminal);
   return query_findings(ctx, sql, ctx.evaluated_at, {},
                         [](const db::statement& row) { return claim_finding(im::diagnostic_severity::warning, row); });
 }
@@ -107,7 +116,7 @@ auto superseded_active(const check_context& ctx) -> std::expected<std::vector<im
                          "       (select l2.released_at from agent_work_claims l2 where l2.id = s.later)"
                          " from (select c.id, c.entity_kind, c.entity_id, c.lease_expires_at,"
                          "       coalesce((select max(l.id) from agent_work_claims l"
-                         "                 where l.entity_kind = c.entity_kind and l.entity_id = c.entity_id"
+                         "                 where c.entity_kind = 'task' and l.entity_kind = c.entity_kind and l.entity_id = c.entity_id"
                          "                   and l.id > c.id and l.status != 'active'"
                          "                   and l.claim_scope = 'exclusive' and c.claim_scope = 'exclusive'), 0) as later,"
                          "       coalesce({1}, 0) as terminal"
