@@ -10,7 +10,9 @@
 ///  - `dispatch-unconfirmed` (event, warning): a dispatch with a preview bound to its claim and no
 ///    snapshot confirming it, reported once its claim has ended or a role action has started.
 ///  - `dispatch-confirmed-late` (event, warning): a dispatch whose earliest snapshot was confirmed
-///    strictly after its first role action started.
+///    strictly after its first role action started. Role actions written with the claim are not
+///    spawns (decision 1384): an action that started before the dispatch preview bound to the claim
+///    was created is ignored, and for a snapshot-only dispatch an action at or before `claimed_at` is.
 ///  - `action-unended` (state, warning): an action with no `ended_at` whose claim is terminal or
 ///    past its lease.
 ///
@@ -95,6 +97,18 @@ auto has_role_action() -> std::string {
   return std::format("exists (select 1 from agent_actions a where {})", k_role_action);
 }
 
+/// The condition that role action `a` of claim `c` can be a spawn for `dispatch-confirmed-late` (decision 1384). A role action
+/// written with the claim itself is bookkeeping, and the confirm always follows the claim, so such an action would make
+/// every dispatch late. The anchor is the earliest dispatch preview bound to the claim's token: an action that started
+/// before that preview existed is ignored, and one at the instant it was created counts. A snapshot-only dispatch has no
+/// bound preview, so the anchor is the claim itself: an action at or before `claimed_at` is ignored. Compared as instants.
+constexpr std::string_view k_spawn_action =
+    "case when exists (select 1 from routing_dispatch_previews p where p.task_id = c.entity_id and p.claim_token = c.claim_token)"
+    " then strftime('%Y-%m-%dT%H:%M:%fZ', a.started_at) >="
+    "      (select min(strftime('%Y-%m-%dT%H:%M:%fZ', p.created_at)) from routing_dispatch_previews p"
+    "       where p.task_id = c.entity_id and p.claim_token = c.claim_token)"
+    " else strftime('%Y-%m-%dT%H:%M:%fZ', a.started_at) > strftime('%Y-%m-%dT%H:%M:%fZ', c.claimed_at) end";
+
 /// The grouping that fixes a dispatch finding's fingerprint on the claim and its task, so a record that
 /// appears in the evidence later does not make a new incident.
 auto dispatch_group(const im::finding& f) -> im::grouping {
@@ -166,13 +180,13 @@ auto confirmed_late(const check_context& ctx) -> std::expected<std::vector<im::f
   // the stored format. Late is strictly after: a confirm at the instant the action started is in time.
   auto sql = std::format("with cand as ("
                          "  select c.id as claim_id, c.entity_id as task_id,"
-                         "         (select min(a.started_at) from agent_actions a where {0}) as fa_at,"
+                         "         (select min(a.started_at) from agent_actions a where {0} and {5}) as fa_at,"
                          "         (select min(strftime({2}, s.confirmed_at)) from routing_dispatch_snapshots s"
                          "          where {1}) as sc_at"
                          "  from agent_work_claims c where {3} and {4})"
                          " select cand.claim_id, cand.task_id, cand.fa_at, cand.sc_at,"
                          "        (select min(a.id) from agent_actions a join agent_work_claims c on c.id = cand.claim_id"
-                         "         where {0} and a.started_at = cand.fa_at),"
+                         "         where {0} and {5} and a.started_at = cand.fa_at),"
                          "        (select min(s.id) from routing_dispatch_snapshots s"
                          "         join agent_work_claims c on c.id = cand.claim_id"
                          "         where {1} and strftime({2}, s.confirmed_at) = cand.sc_at)"
@@ -180,7 +194,8 @@ auto confirmed_late(const check_context& ctx) -> std::expected<std::vector<im::f
                          " where cand.fa_at is not null and cand.sc_at is not null and cand.sc_at > cand.fa_at"
                          "   and cand.sc_at >= ?1 and cand.sc_at <= ?2"
                          " order by cand.claim_id",
-                         k_role_action, snapshot_match(), k_format, is_dispatch(), plan_filter_sql(ctx.scope, k_claim_plan));
+                         k_role_action, snapshot_match(), k_format, is_dispatch(), plan_filter_sql(ctx.scope, k_claim_plan),
+                         k_spawn_action);
   return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
     im::finding f;
     f.severity       = im::diagnostic_severity::warning;

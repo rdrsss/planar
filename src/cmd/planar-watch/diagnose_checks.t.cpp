@@ -599,7 +599,12 @@ TEST_CASE("a snapshot confirmed after the role action started is late, and not u
 
   // TIME TRAVEL: a snapshot is immutable and stamped with the caller's whole-second text, and the
   // verbs write the real clock for the action, so the order of the two is not under the test's
-  // control. The action is moved to 2020-01-01, long before the confirm.
+  // control. The action is moved to 2020-01-01, long before the confirm, and the preview to the day
+  // before it: an action that began before the bound preview existed is claim-time bookkeeping and never late
+  // (decision 1384), so the action must follow the preview.
+  // The single-use trigger refuses an update of a spent preview, so it is dropped on this scratch copy first.
+  w.move_time("drop trigger trg_routing_dispatch_previews_single_use");
+  w.move_time("update routing_dispatch_previews set created_at = '2019-12-31T00:00:00.000Z'");
   w.move_time("update agent_actions set started_at = '2020-01-01T00:00:00.000Z' where action_kind = 'coder'");
   auto        parsed = w.diagnose_json(k_dispatch_checks, "36500");
   const auto& found  = parsed.find("findings")->array;

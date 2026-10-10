@@ -803,8 +803,8 @@ TEST_CASE("a role action that started before the bound preview existed is claim-
   bookkeeping.task(1, "done");
   bookkeeping.completed_claim(1, 1); // claimed 09:00
   bookkeeping.action(1, 1, "coder", 1, "2026-06-01T09:00:00.140Z");
-  bookkeeping.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
   bookkeeping.snapshot(1, 1, "2026-06-01T09:00:20Z");
+  bookkeeping.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
   CHECK(bookkeeping.run(k_late).findings.empty());
 
   // A second role action that starts after the preview and before the confirm is late, and is the evidence.
@@ -813,8 +813,8 @@ TEST_CASE("a role action that started before the bound preview existed is claim-
   spawned.completed_claim(1, 1);
   spawned.action(1, 1, "coder", 1, "2026-06-01T09:00:00.140Z");
   spawned.action(2, 1, "coder", 1, "2026-06-01T09:00:10.000Z");
-  spawned.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
   spawned.snapshot(1, 1, "2026-06-01T09:00:20Z");
+  spawned.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
   auto d = spawned.run(k_late);
   REQUIRE(d.findings.size() == 1);
   CHECK(std::ranges::contains(d.findings[0].evidence, im::entity_ref{.kind = "action", .id = 2}));
@@ -825,8 +825,8 @@ TEST_CASE("a role action that started before the bound preview existed is claim-
   at_preview.task(1, "done");
   at_preview.completed_claim(1, 1);
   at_preview.action(1, 1, "coder", 1, "2026-06-01T09:00:05.000Z");
-  at_preview.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
   at_preview.snapshot(1, 1, "2026-06-01T09:00:20Z");
+  at_preview.preview(1, 1, "tok1", "2026-06-01T09:00:05.000Z", 1, "2026-06-01T09:00:20Z");
   CHECK(ids_of(at_preview.run(k_late)) == std::vector<std::string>{"dispatch-confirmed-late claim:1"});
 
   // The preview's created_at is compared as an instant, not as text.
@@ -834,8 +834,8 @@ TEST_CASE("a role action that started before the bound preview existed is claim-
   instant.task(1, "done");
   instant.completed_claim(1, 1);
   instant.action(1, 1, "coder", 1, "2026-06-01T09:00:05.500Z");
-  instant.preview(1, 1, "tok1", "2026-06-01T09:00:06Z", 1, "2026-06-01T09:00:20Z");
   instant.snapshot(1, 1, "2026-06-01T09:00:20Z");
+  instant.preview(1, 1, "tok1", "2026-06-01T09:00:06Z", 1, "2026-06-01T09:00:20Z");
   CHECK(instant.run(k_late).findings.empty());
 }
 
