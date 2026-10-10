@@ -84,6 +84,7 @@ TEST_CASE("planar-watch: leaf help pages are exact, and still cost nothing to re
                        "\n"
                        "OPTIONS:\n"
                        "  -h,     --help              Print this help message and exit\n"
+                       "          --json              Emit machine-readable JSON instead of text\n"
                        "\n"
                        "Exit codes:\n"
                        "  0  Success.\n"
