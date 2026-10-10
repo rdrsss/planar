@@ -466,13 +466,13 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   CHECK(r.code == 0);
   CHECK(r.err.empty());
   CHECK_FALSE(r.db_open);
-  // A file-free HOME still lists the embedded defaults — 29 keys, and the
+  // A file-free HOME still lists the embedded defaults — 28 keys, and the
   // count is asserted so a resolver that silently stopped emitting a family
   // cannot pass on the two keys the case happens to name. (22 until plan 1033
-  // task 6485 added `execute.engine`, which `planar-execute` reads from this
-  // very listing; 28 since plan 1080 task hq-config added the five
-  // `queue.*` keys; 29 since `introspection.transcript_scan_bytes`.)
-  CHECK(lines_of(r.out).size() == 29);
+  // task 6485 added `execute.engine`; 28 since plan 1080 task hq-config added
+  // the five `queue.*` keys and `introspection.transcript_scan_bytes`; 28
+  // again after task 7459 removed `execute.engine`.)
+  CHECK(lines_of(r.out).size() == 28);
   CHECK(line_for(r.out, "introspection.transcript_scan_bytes") == "introspection.transcript_scan_bytes = 67108864");
   CHECK(line_for(r.out, "queue.slots") == "queue.slots = 1");
   CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s");
@@ -480,7 +480,6 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   CHECK(line_for(r.out, "queue.grace") == "queue.grace = 10s");
   CHECK(line_for(r.out, "queue.history_days") == "queue.history_days = 30");
   CHECK(line_for(r.out, "defaults.vendor") == "defaults.vendor = claude");
-  CHECK(line_for(r.out, "execute.engine") == "execute.engine = embedded");
   CHECK(line_for(r.out, "workbench.root") == "workbench.root = ~/.planar/workbench");
   cleanup(fx);
 }
@@ -678,14 +677,13 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
   REQUIRE_FALSE(r.out.empty());
-  // Oracle-measured byte count (3057) plus the 309-byte `[execute]` block
-  // plan 1033 task 6485 added, and the content markers that prove it is the
-  // DEFAULTS file rather than the operator's (which is what `--raw` would
-  // have printed). Plus the 781-byte `[queue]` block plan 1080 task
-  // hq-config added, and the `transcript_scan_bytes` key and its comment (4476 in all).
-  CHECK(r.out.size() == 4476);
+  // The content markers prove it is the DEFAULTS file rather than the
+  // operator's (which is what `--raw` would have printed). The byte count is
+  // the embedded defaults.toml, which lost its 309-byte `[execute]` block to
+  // plan 1142 task 7459 (4476 bytes before, 4167 after).
+  CHECK(r.out.size() == 4167);
   CHECK(r.out.contains("[queue]\n"));
-  CHECK(r.out.contains("[execute]\n"));
+  CHECK_FALSE(r.out.contains("[execute]"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
   CHECK_FALSE(r.out.contains("claude-fable-5"));
   // `--defaults` returns before anything else is consulted.
@@ -701,7 +699,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 4476);
+  CHECK(r.out.size() == 4167);
   cleanup(fx);
 }
 
@@ -869,6 +867,46 @@ TEST_CASE("config validate cross-checks the github-issues auth value", "[cmd][co
 
   write_config(fx, "[external.github-issues]\nauth = \"gh-cli\"\n");
   CHECK(dispatch(fx, {"config", "validate"}).code == 0);
+  cleanup(fx);
+}
+
+TEST_CASE("config validate refuses an [execute] table as an unknown key", "[cmd][config][validate][execute]") {
+  // The execute engine selector and profiles left planar's configuration
+  // with planar-execute (plan 1142, task 7459). A file that still carries
+  // the table is refused by name, including an empty table, which a parsed
+  // map alone would not show.
+  auto const fx = make_fixture("valexec");
+  write_config(fx, "[execute]\nengine = \"embedded\"\n");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 1);
+  CHECK(r.out.empty());
+  CHECK(r.err == "error: execute: unknown key (the [execute] table was removed from planar's configuration)\n");
+
+  for (auto const* body : {"[execute]\n", "[execute.profiles.w]\nstate_dir = \"~/s\"\n"}) {
+    INFO("body: " << body);
+    write_config(fx, body);
+    auto const again = dispatch(fx, {"config", "validate"});
+    CHECK(again.code == 1);
+    CHECK(again.err.starts_with("error: execute: unknown key"));
+  }
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective prints no execute. key, even when the file or the old env var names one",
+          "[cmd][config][show][execute]") {
+  auto fx = make_fixture("showexec");
+  write_config(fx, "[execute]\nengine = \"centurion\"\n\n[execute.profiles.w]\nstate_dir = \"~/s\"\n");
+  fx.vars["PLANAR_EXECUTE_ENGINE"] = "embedded";
+
+  auto const r = dispatch(fx, {"config", "show", "--effective"});
+  CHECK(r.code == 0);
+  CHECK(r.err.empty());
+  CHECK(r.out.find("execute.") == std::string::npos);
+  CHECK(r.out.find("PLANAR_EXECUTE_ENGINE") == std::string::npos);
+
+  // The embedded defaults carry no execute table either.
+  auto const defaults = dispatch(fx, {"config", "show", "--defaults"});
+  CHECK(defaults.out.find("[execute]") == std::string::npos);
   cleanup(fx);
 }
 

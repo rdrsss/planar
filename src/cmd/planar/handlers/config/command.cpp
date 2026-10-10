@@ -513,6 +513,34 @@ auto queue_key_at_line(std::string_view content, std::uint32_t line) -> std::str
   }
 }
 
+/// @brief Whether the file opens an `[execute]` table, or a table under it.
+///
+/// Lexical, like the other line scans here, because a flattened map has no
+/// entry for an empty table and `[execute]` with no keys must still refuse.
+/// @param content The whole configuration file.
+/// @return True when some table header names `execute` or `execute.<...>`.
+auto has_execute_table(std::string_view content) -> bool {
+  std::string_view rest{content};
+  while (!rest.empty()) {
+    auto const newline = rest.find('\n');
+    auto const text    = trim_any(rest.substr(0, newline == std::string_view::npos ? rest.size() : newline), " \t\r");
+    if (!text.empty() && text.front() == '[') {
+      // A trailing `# comment` after the closing bracket is not part of the
+      // table name (task 7057).
+      auto const header = text.substr(0, std::min(text.size(), text.find('#')));
+      auto const name   = trim_any(trim_any(header, " \t[]"), " \t");
+      if (name == "execute" || name.starts_with("execute.")) {
+        return true;
+      }
+    }
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    rest = rest.substr(newline + 1);
+  }
+  return false;
+}
+
 auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   static_cast<void>(args);
   auto const path = config_file_path(ctx);
@@ -696,6 +724,16 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
   // ---- step 6: the `[introspection]` keys that carry a range ------------
   for (auto const& finding : cfg::validate_introspection(*parsed)) {
     report(std::format("{}: {}", finding.key, finding.message));
+  }
+
+  // ---- step 7: the removed `[execute]` table (plan 1142, task 7459) ------
+  //
+  // planar-execute's configuration left planar with its engine selector and
+  // profiles, so `[execute]` is no longer a known key. A file that still
+  // carries one is refused by name rather than having its keys ignored.
+  if (std::ranges::any_of(*parsed, [](auto const& kv) { return kv.first == "execute" || kv.first.starts_with("execute."); }) ||
+      has_execute_table(*content)) {
+    report("execute: unknown key (the [execute] table was removed from planar's configuration)");
   }
 
   if (!findings.empty()) {
