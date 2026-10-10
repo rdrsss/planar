@@ -154,22 +154,19 @@ pattern alone. Missing already-cleaned targets are idempotent no-ops.
 
 ### 6. Close the Planar plan
 
-Prefer Planar's traced closeout workflow:
-
-```sh
-planar-execute run workflows/finalize_closeout.lua \
-  --phase closeout --args '{"plan_id":<N>}'
-```
-
-If that installed workflow is unavailable, use the equivalent documented
-operator verbs:
+Evaluate the gate, then apply:
 
 ```sh
 planar plan closeout <plan-id> --dry-run --json
 planar plan closeout <plan-id>
 ```
 
-Apply only when the dry-run reports `ready: true`. On `ready: false`, return
+`--dry-run` always exits 0 and reports `ready` and `blocked_by`. Add
+`--check-merge` to include the advisory epic-branch merge roll-up. `planar plan
+closeout` refuses at exit 8 from inside a git worktree, so run it from the
+main checkout.
+
+Run the apply command only when the dry-run reports `ready: true`. On `ready: false`, return
 `blocked-with-reasons` with the exact blocker list and leave the plan unchanged.
 Never fabricate readiness or set plan status through another path.
 
