@@ -123,7 +123,6 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("peek", handlers::peek);
   table.emplace("claim", handlers::claim);
   table.emplace("heartbeat", handlers::heartbeat);
-  table.emplace("claim-associate", handlers::claim_associate);
   table.emplace("complete", handlers::complete);
   table.emplace("fail", handlers::fail);
   table.emplace("release", handlers::release);

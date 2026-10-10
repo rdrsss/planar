@@ -27,14 +27,11 @@ export auto add(CLI::App& root) -> void {
       ->check(cliapp::zig_int_validator())
       ->default_str("0");
   reconcile->add_option("--plan")
-      ->description("Scope the sweep to claims/actions/runs belonging to this plan id (0 or absent = global sweep)")
+      ->description("Scope the sweep to claims and actions belonging to this plan id (0 or absent = global sweep)")
       ->check(cliapp::zig_int_validator());
   reconcile->add_option("--category")
       ->description("Optional closed failure category applied to claims made stale")
       ->check(CLI::IsMember{shared::failure_categories()});
-  cliapp::add_bool_flag(*reconcile, "--override-supervisor",
-                        "Also reconcile engine-supervised claims and centurion runs (skipped by default; logged as "
-                        "supervisor_override)");
   shared::add_json(*reconcile, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::reconcile_cli

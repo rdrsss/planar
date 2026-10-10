@@ -5,14 +5,6 @@
 
 module;
 
-// `pid_alive` is the one place in this module that leaves SQLite: the run
-// sweep decides a `workflow_runs` row is dead by asking the kernel whether
-// its recorded pid still exists. `kill(pid, 0)` sends no signal — it runs
-// only the permission and existence checks — which is why this is a probe
-// and not an act.
-#include <cerrno>
-#include <csignal>
-
 module planar.engine.runtime.agentactivity;
 
 import std;
@@ -765,14 +757,12 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
                                        "  worktree_id, worktree_path,\n"
                                        "  repo_root, branch, head_sha_at_claim, dirty_at_claim,\n"
                                        "  purpose, base_ref,\n"
-                                       "  run_id, stage,\n"
                                        "  lease_expires_at\n"
                                        ") values (\n"
                                        "  lower(hex(randomblob(16))), ?, ?, ?, ?,\n"
                                        "  'active', ?, ?, ?, ?,\n"
                                        "  ?, ?,\n"
                                        "  ?, ?, ?, ?,\n"
-                                       "  ?, ?,\n"
                                        "  ?, ?,\n"
                                        "  strftime('%Y-%m-%dT%H:%M:%fZ','now', {})\n"
                                        ")",
@@ -796,8 +786,6 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
   ok      = ok && bind_opt_text(*stmt, 14, claim_dirty_text(args.loc));
   ok      = ok && bind_opt_text(*stmt, 15, args.purpose);
   ok      = ok && bind_opt_text(*stmt, 16, args.base_ref);
-  ok      = ok && bind_opt_int(*stmt, 17, args.run_id);
-  ok      = ok && bind_opt_text(*stmt, 18, args.stage);
   if (!ok || !stmt->step()) {
     return std::unexpected(agent_error::query_failed);
   }
@@ -1075,24 +1063,6 @@ auto task_plan_id(db::connection& conn, std::int64_t task_id) -> std::optional<s
 // Run association
 // =========================================================================
 
-auto associate_claim_run(db::connection& conn, std::string_view claim_token, std::int64_t run_id,
-                         std::optional<std::string_view> stage) -> std::expected<std::int64_t, agent_error> {
-  auto stmt = conn.prepare("update agent_work_claims\n"
-                           "set run_id = ?,\n"
-                           "    stage = ?\n"
-                           "where claim_token = ? and status = 'active'");
-  if (!stmt) {
-    return std::unexpected(agent_error::query_failed);
-  }
-  bool ok = stmt->bind_int64(1, run_id).has_value();
-  ok      = ok && bind_opt_text(*stmt, 2, stage);
-  ok      = ok && stmt->bind_text(3, claim_token).has_value();
-  if (!ok || !stmt->step()) {
-    return std::unexpected(agent_error::query_failed);
-  }
-  return changes(conn);
-}
-
 // =========================================================================
 // Engine supervision
 // =========================================================================
@@ -1117,15 +1087,6 @@ auto get_supervision(db::connection& conn, std::string_view claim_token) -> std:
     out.attempt_id = stmt->column_text(1);
   }
   return out;
-}
-
-auto set_engine_supervision(db::connection& conn, std::int64_t claim_id, std::string_view attempt_id)
-    -> std::expected<void, agent_error> {
-  auto stmt = conn.prepare("update agent_work_claims set supervisor = 'engine', attempt_id = ? where id = ?");
-  if (!stmt || !stmt->bind_text(1, attempt_id) || !stmt->bind_int64(2, claim_id) || !stmt->step()) {
-    return std::unexpected(agent_error::query_failed);
-  }
-  return {};
 }
 
 // =========================================================================
@@ -1380,28 +1341,7 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     std::erase_if(candidates, [&](const claim& c) { return !claim_belongs_to_plan(conn, c, *policy.plan_id); });
   }
 
-  // Engine-supervised claims are the engine's to reconcile (plan 1033 D3):
-  // set aside unless the operator overrides. Decided per candidate, so the
-  // UPDATEs below touch exactly the claims left in `candidates`.
-  reconcile_result                        result;
-  std::vector<std::optional<std::string>> override_attempts;
-  {
-    std::vector<claim> kept;
-    for (auto& candidate : candidates) {
-      auto const sup = get_supervision(conn, candidate.claim_token);
-      if (!sup) {
-        return std::unexpected(sup.error());
-      }
-      if (sup->engine && !policy.override_supervisor) {
-        result.skipped_engine.push_back(std::move(candidate));
-        continue;
-      }
-      override_attempts.push_back(sup->engine ? std::optional<std::string>{sup->attempt_id.value_or("")} : std::nullopt);
-      kept.push_back(std::move(candidate));
-    }
-    candidates = std::move(kept);
-  }
-
+  reconcile_result result;
   if (policy.dry_run) {
     // Writes NOTHING — not the mark-stale, not the task reset, not the
     // orphan sweep. Both counters stay zero even with candidates present.
@@ -1414,10 +1354,9 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     category_text = to_text(*policy.category);
   }
 
-  if (policy.plan_id.has_value() || !result.skipped_engine.empty()) {
-    // Per candidate — plan-scoped, or with engine claims set aside — so the
-    // claims left out (other plans, the engine's) are untouched even though
-    // they share the expiry predicate.
+  if (policy.plan_id.has_value()) {
+    // Per candidate, plan-scoped, so the claims left out (other plans) are
+    // untouched even though they share the expiry predicate.
     for (auto const& candidate : candidates) {
       auto stmt = conn.prepare(std::format("update agent_work_claims\n"
                                            "set status = 'stale',\n"
@@ -1485,27 +1424,6 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     result.actions_closed += changes(conn);
   }
 
-  // --- the override's audit row, one per engine claim swept under it.
-  for (std::size_t i = 0; i < candidates.size(); ++i) {
-    if (!override_attempts[i].has_value()) {
-      continue;
-    }
-    auto const id = start_action(conn, start_action_args{
-                                           .session_id = candidates[i].session_id,
-                                           .claim_id   = candidates[i].id,
-                                           .kind       = action_kind::supervisor_override,
-                                           .vendor     = candidates[i].vendor,
-                                       });
-    if (!id) {
-      return std::unexpected(id.error());
-    }
-    auto const summary =
-        std::format("reconcile by operator overriding the engine supervisor (attempt {})", *override_attempts[i]);
-    if (auto const closed = end_action(conn, *id, outcome::ok, std::string_view{summary}); !closed) {
-      return std::unexpected(closed.error());
-    }
-  }
-
   // --- orphaned actions: still open, but their owning session has ended.
   // Closed with the SESSION's `ended_at`, not with now, so the timeline
   // does not claim work continued past the session that was doing it.
@@ -1547,85 +1465,6 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
   }
 
   result.candidates = std::move(candidates);
-  return result;
-}
-
-auto pid_alive(std::int64_t pid) -> bool {
-  if (pid <= 0) {
-    return false;
-  }
-  if (::kill(static_cast<::pid_t>(pid), 0) == 0) {
-    return true;
-  }
-  // ESRCH is the ONLY errno that means "gone". EPERM means the process
-  // exists under another owner, and any other errno is a question we
-  // cannot answer — both read as alive, because the conservative direction
-  // here is to leave a run running rather than abandon one that is not.
-  return errno != ESRCH;
-}
-
-auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id, bool override_supervisor)
-    -> std::expected<reconcile_runs_result, agent_error> {
-  // `lapsed` is computed IN SQL, against the same clock expression (`k_now`)
-  // every other write in this module uses, rather than fetched and compared
-  // in C++ — one fewer place a clock/format mismatch could hide.
-  std::string select_sql = std::format("select id, run_identifier, pid, plan_id, engine = 'centurion', "
-                                       "pid is null and expires_at is not null and expires_at < {} "
-                                       "from workflow_runs where status = 'running'",
-                                       k_now);
-  if (plan_id.has_value()) {
-    select_sql += std::format(" and plan_id = {}", *plan_id);
-  }
-
-  reconcile_runs_result result;
-  {
-    auto stmt = conn.prepare(select_sql);
-    if (!stmt) {
-      return std::unexpected(agent_error::query_failed);
-    }
-    while (true) {
-      auto stepped = stmt->step();
-      if (!stepped) {
-        return std::unexpected(agent_error::query_failed);
-      }
-      if (*stepped != db::step_result::row) {
-        break;
-      }
-      auto const    pid_opt = opt_int(*stmt, 2);
-      run_candidate row{.id             = stmt->column_int64(0),
-                        .run_identifier = stmt->column_text(1),
-                        .pid            = pid_opt.value_or(0),
-                        .plan_id        = opt_int(*stmt, 3)};
-      // A pid-bound run is probed for liveness exactly as before. A
-      // pid-less run is NEVER pid-probed (there is no pid to probe) — its
-      // liveness is entirely the `lapsed` predicate computed above.
-      bool const dead = pid_opt.has_value() ? !pid_alive(*pid_opt) : stmt->column_int64(5) != 0;
-      if (!dead) {
-        continue;
-      }
-      if (stmt->column_int64(4) != 0 && !override_supervisor) {
-        result.skipped_engine.push_back(std::move(row));
-      } else {
-        result.candidates.push_back(std::move(row));
-      }
-    }
-  }
-
-  if (dry_run) {
-    return result;
-  }
-
-  for (auto const& candidate : result.candidates) {
-    auto stmt = conn.prepare(std::format("update workflow_runs\n"
-                                         "set status = 'abandoned', ended_at = {}\n"
-                                         "where id = ? and status = 'running'",
-                                         k_now));
-    if (!stmt || !stmt->bind_int64(1, candidate.id) || !stmt->step()) {
-      return std::unexpected(agent_error::query_failed);
-    }
-    // Counted per ATTEMPT, not per row actually matched — zig's behavior.
-    ++result.abandoned;
-  }
   return result;
 }
 

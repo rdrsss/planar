@@ -28,7 +28,6 @@ export auto add(CLI::App& root) -> void {
       ->description("Parent action id; wires the new action as a child of this action in `planar-watch tree` "
                     "(cross-session hierarchy)")
       ->check(cliapp::zig_int_validator());
-  shared::add_run_stage(*pull);
   shared::add_json(*pull, "Emit machine-readable JSON instead of text");
   pull->add_option("plan-id")->description("Plan id to pull from")->required()->check(cliapp::zig_int_validator());
 }

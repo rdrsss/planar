@@ -16,7 +16,6 @@ import planar.cmd.planar_agent.handlers.release.command;
 import planar.cmd.planar_agent.handlers.block.command;
 import planar.cmd.planar_agent.handlers.claim.command;
 import planar.cmd.planar_agent.handlers.heartbeat.command;
-import planar.cmd.planar_agent.handlers.claim_associate.command;
 import planar.cmd.planar_agent.handlers.action.command;
 import planar.cmd.planar_agent.handlers.ingest.command;
 import planar.cmd.planar_agent.handlers.reconcile.command;
@@ -51,7 +50,6 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::block_cli::add(*app);
   handlers::claim_cli::add(*app);
   handlers::heartbeat_cli::add(*app);
-  handlers::claim_associate_cli::add(*app);
   handlers::action_cli::add(*app);
   handlers::ingest_cli::add(*app);
   handlers::reconcile_cli::add(*app);

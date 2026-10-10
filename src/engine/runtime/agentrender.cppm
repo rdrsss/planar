@@ -218,7 +218,7 @@ export auto terminal_text(const agentatomic::terminal_result& result) -> std::st
 export auto terminal_text(const agentatomic::terminal_result& result, const aa::task_row& task) -> std::string;
 
 // =========================================================================
-// abort / claim-associate
+// abort
 // =========================================================================
 
 /// @brief `abort`'s payload, which carries the aborting session id — the
@@ -233,32 +233,6 @@ export auto abort_json(const aa::claim& value, std::int64_t aborting_session) ->
 /// @param aborting_session The session that performed the abort.
 /// @return The COMPLETE payload, newline included.
 export auto abort_text(const aa::claim& value, std::int64_t aborting_session) -> std::string;
-
-/// @brief `{"ok":true,"updated":<n>}`.
-/// @param updated The number of claims stamped.
-/// @return The COMPLETE payload, newline included.
-export auto associate_json(std::int64_t updated) -> std::string;
-
-/// @brief `ok updated:<n> claim:<token>`.
-/// @param updated The number of claims stamped.
-/// @param claim_token The token the operator passed.
-/// @return The COMPLETE payload, newline included.
-export auto associate_text(std::int64_t updated, std::string_view claim_token) -> std::string;
-
-/// @brief `claim-associate --supervisor`'s payload (plan 1033 task 6488):
-/// `{"ok":true,"claim_token":…,"supervisor":"engine"|"caller","attempt_id":…|null,"changed":…}`,
-/// plus `"updated":<n>` when `--run` was also given.
-/// @param result The association outcome.
-/// @param run_updated The `--run` stamp count, when `--run` was given.
-/// @return The COMPLETE payload, newline included.
-export auto supervisor_json(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string;
-
-/// @brief The text form of `supervisor_json`:
-/// `ok claim:<token> supervisor:<s> attempt:<a|-> changed:<bool>[ updated:<n>]`.
-/// @param result The association outcome.
-/// @param run_updated The `--run` stamp count, when `--run` was given.
-/// @return The COMPLETE payload, newline included.
-export auto supervisor_text(const agentatomic::associate_result& result, std::optional<std::int64_t> run_updated) -> std::string;
 
 // =========================================================================
 // action start / end
@@ -288,31 +262,18 @@ export auto action_end_text(std::int64_t action_id, aa::outcome result) -> std::
 
 /// @brief `reconcile`'s JSON payload.
 ///
-/// `dry_run` selects between two genuinely different documents, not just
-/// different numbers: the dry-run form appends `candidates` and
-/// `run_candidates` arrays that the applied form omits entirely.
-///
-/// KNOWN DEFECT, REPRODUCED DELIBERATELY: `run_identifier` inside
-/// `run_candidates` is emitted WITHOUT JSON escaping, exactly as the
-/// oracle's `"{s}"` format string does it, so an identifier containing a
-/// quote or backslash produces invalid JSON. Every other string in this
-/// module is escaped. It is preserved under D2 and pinned by a test so
-/// that fixing it is a deliberate contract change rather than an
-/// accidental divergence.
+/// `dry_run` selects between two documents: the dry-run form appends the
+/// `candidates` array that the applied form omits.
 /// @param result The claim sweep result.
-/// @param runs The run sweep result.
 /// @param dry_run Whether this was a dry run.
 /// @return The COMPLETE payload, newline included.
-export auto reconcile_json(const aa::reconcile_result& result, const aa::reconcile_runs_result& runs, bool dry_run)
-    -> std::string;
+export auto reconcile_json(const aa::reconcile_result& result, bool dry_run) -> std::string;
 
 /// @brief `reconcile`'s text payload — a one-line summary when applied, a
 /// header plus one indented line per candidate when dry-run.
 /// @param result The claim sweep result.
-/// @param runs The run sweep result.
 /// @param dry_run Whether this was a dry run.
 /// @return The COMPLETE payload, newline included.
-export auto reconcile_text(const aa::reconcile_result& result, const aa::reconcile_runs_result& runs, bool dry_run)
-    -> std::string;
+export auto reconcile_text(const aa::reconcile_result& result, bool dry_run) -> std::string;
 
 } // namespace planar::engine::runtime::agentrender

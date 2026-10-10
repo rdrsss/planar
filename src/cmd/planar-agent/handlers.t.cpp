@@ -303,13 +303,12 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // Matched as a LISTING LINE (`"\n  <verb>"`), not as a bare substring.
   // CLI11 indents a subcommand entry by exactly two spaces and wraps its
   // description to a deeper column, so this form matches an entry and
-  // nothing else — which matters for the negative loop below, where a bare
-  // `contains("dispatch")` is satisfied by `claim-associate`'s own
-  // description ("...at dispatch time"). That false positive is exactly
-  // what a substring check would have shipped.
+  // nothing else. A bare `contains("dispatch")` would be satisfied by some
+  // other verb's description ("...at dispatch time"), which is exactly what a
+  // substring check would have shipped.
   auto const listed = [&](std::string_view verb) { return explicit_help.out.contains("\n  " + std::string{verb}); };
-  for (auto const& verb : {"pull", "peek", "claim", "heartbeat", "claim-associate", "complete", "fail", "release", "block",
-                           "action", "reconcile", "abort", "version", "schema"}) {
+  for (auto const& verb : {"pull", "peek", "claim", "heartbeat", "complete", "fail", "release", "block", "action", "reconcile",
+                           "abort", "version", "schema"}) {
     INFO("ported verb missing from the root page: " << verb);
     CHECK(listed(verb));
   }
