@@ -4,7 +4,9 @@
 /// Three checks (plan 1132, tasks 7379 and 7380; tech spec 689 § Check catalog):
 ///
 ///  - `apply-without-preview` (event, warning): a `spec ingest` invocation with the `--apply` flag
-///    and no earlier `spec ingest` invocation without it inside the window. Any exit status counts on
+///    and no earlier `spec ingest` invocation without it inside the window. A plan-scoped run also looks
+///    one hour before the window start (decision 1384): the apply creates the plan, and the plan-lifetime
+///    window starts at that creation, so the preview always precedes it. Any exit status counts on
 ///    both sides: a preview that exited non-zero still ran, and an apply that failed was still
 ///    attempted. One preview precedes every later apply.
 ///  - `cli-failure-cluster` (event, warning): at least three `cli_invocations` failures inside the
@@ -63,20 +65,29 @@ auto cli_log_status(const check_context& ctx) -> std::expected<input_status, db:
   return input_status{.state = im::coverage_state::observed, .reason = {}};
 }
 
+/// How far before the window start a plan-scoped run looks for the preview of an apply, in hours.
+constexpr int k_plan_preview_lookback_hours = 1;
+
 auto apply_without_preview(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
   // `?1` is the window start and `?2` its end. `--apply` is a whole flag name: padding with spaces keeps
   // `--apply-removals` from matching. A preview is an earlier `spec ingest` row without the flag that is
-  // itself inside the window; ties on `recorded_at` fall back to the row id.
-  auto sql = std::string{"select a.id, a.recorded_at from cli_invocations a"
+  // itself inside the window; ties on `recorded_at` fall back to the row id. A plan-scoped run also looks
+  // `k_plan_preview_lookback` before the window start (decision 1384): the apply that creates a plan is
+  // what starts the plan-lifetime window, so its preview always precedes the window.
+  const auto preview_from = ctx.scope.plan_id.has_value()
+                                ? std::format("strftime('%Y-%m-%dT%H:%M:%fZ', ?1, '-{} hours')", k_plan_preview_lookback_hours)
+                                : std::string{"?1"};
+  auto sql = std::format("select a.id, a.recorded_at from cli_invocations a"
                          " where a.verb_path = 'spec ingest' and instr(' ' || a.args_shape || ' ', ' --apply ') > 0"
                          "   and a.recorded_at >= ?1 and a.recorded_at <= ?2"
                          "   and not exists (select 1 from cli_invocations p"
                          "                   where p.verb_path = 'spec ingest'"
                          "                     and instr(' ' || p.args_shape || ' ', ' --apply ') = 0"
-                         "                     and p.recorded_at >= ?1"
+                         "                     and p.recorded_at >= {}"
                          "                     and (p.recorded_at < a.recorded_at"
                          "                          or (p.recorded_at = a.recorded_at and p.id < a.id)))"
-                         " order by a.id"};
+                         " order by a.id",
+                         preview_from);
   return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
     im::finding f;
     f.severity       = im::diagnostic_severity::warning;
