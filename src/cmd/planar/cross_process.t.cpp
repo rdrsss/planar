@@ -148,12 +148,6 @@ auto watch_bin() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_WATCH_CPP_BIN};
 }
 
-/// @brief Path to the built `planar-execute` binary.
-/// @return The path.
-auto execute_bin() -> std::filesystem::path {
-  return std::filesystem::path{PLANAR_EXECUTE_CPP_BIN};
-}
-
 /// @brief Path to the built `planar-ext` binary.
 /// @return The path.
 auto ext_bin() -> std::filesystem::path {
@@ -412,26 +406,20 @@ auto run_drain(const std::filesystem::path& work) -> drain_run {
 TEST_CASE("every built binary starts as a real process and reaches its own code (task 6536)", "[cmd][crossproc][smoke]") {
   auto const space = make_arena("xproc_start");
 
-  // `version` for the four planning-state binaries; `planar-execute` has no
-  // `version` verb at all (it exits 2 with usage), so its spine leaf is
-  // `--help`. Captured, not assumed: `planar-execute version` and
-  // `planar-execute --version` both exit 2.
+  // `version` for each of the four planning-state binaries.
   struct spine {
     std::filesystem::path bin;
     std::string           argv;
     std::string           marker;
     bool                  on_stderr; ///< Which stream the marker lands on.
   };
-  // `planar-execute` prints its usage on STDERR and leaves stdout empty —
-  // captured from a real run, not assumed. Pinning the stream is part of
-  // the point: a binary that died at dyld also prints on stderr and nothing
-  // on stdout, so the case has to say which stream carries WHAT.
+  // A binary that died at dyld also prints on stderr and nothing on stdout,
+  // so the case has to say which stream carries WHAT.
   auto const spines = std::to_array<spine>({
       {cpp_bin(), "version", "planar dev dev cxx Clang-", false},
       {agent_bin(), "version", "planar-agent dev dev cxx Clang-", false},
       {watch_bin(), "version", "planar-watch dev dev cxx Clang-", false},
       {ext_bin(), "version", "planar-ext dev dev cxx Clang-", false},
-      {execute_bin(), "--help", "planar-execute — deterministic, spawn-free Lua workflow engine.\n", true},
   });
 
   for (auto const& one : spines) {
@@ -497,10 +485,6 @@ TEST_CASE("verbs that need no database neither create one nor migrate an existin
     cases.push_back({bin, {"schema"}});
     cases.push_back({bin, {"version"}});
   }
-  // `planar-execute` exposes neither `schema` nor `version` (it holds no
-  // SQLite handle at all by design — decision 995), so `--help` is its
-  // whole pure surface.
-  cases.push_back({execute_bin(), {"--help"}});
 
   SECTION("against an empty arena, no database file appears") {
     auto const space = make_arena("xproc_nodb_fresh");

@@ -1,2 +1,0 @@
-exit: 1
-planar-execute: cannot read workflow: @ARENA@/proj/absent.lua

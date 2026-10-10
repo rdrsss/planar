@@ -18,10 +18,10 @@
 //
 // ## No allowance
 //
-// All five binaries are held to the rule. The sweeps of `planar-agent`,
+// All four binaries are held to the rule. The sweeps of `planar-agent`,
 // `planar-ext` and `planar-watch` landed, so no binary may carry an empty
-// description. The last case below pins that `planar-execute` (and the
-// rest) stay outside any allowance.
+// description. The last case below pins that every binary stays outside any
+// allowance.
 //
 // ## Provenance
 //
@@ -101,7 +101,6 @@ auto binaries() -> std::vector<binary_under_test> {
   return {{"planar", PLANAR_CPP_BIN},
           {"planar-agent", PLANAR_AGENT_CPP_BIN},
           {"planar-watch", PLANAR_WATCH_CPP_BIN},
-          {"planar-execute", PLANAR_EXECUTE_CPP_BIN},
           {"planar-ext", PLANAR_EXT_CPP_BIN}};
 }
 
@@ -221,13 +220,12 @@ TEST_CASE("the catalog walk allows no binary an empty description", "[catalog][d
   // Every binary, planar-agent, planar-ext and planar-watch included, is held to
   // the rule; the sweep of each landed, so the allowance is gone.
   auto const all = binaries();
-  REQUIRE(all.size() == 5);
+  REQUIRE(all.size() == 4);
   for (auto const& bin : all) {
     auto const walked = walk_binary(bin);
     CAPTURE(bin.name);
     CHECK(walked.empties.empty());
   }
-  CHECK(std::ranges::any_of(all, [](binary_under_test const& bin) { return bin.name == "planar-execute"; }));
 }
 
 TEST_CASE("the retired-word scan names the command and the word it found", "[catalog][descriptions][retired]") {

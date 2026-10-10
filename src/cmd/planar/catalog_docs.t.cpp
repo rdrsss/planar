@@ -21,8 +21,7 @@
 // The allowed code sets below come from each binary's `exit.cppm`
 // (`planar`: 0, 1, 2, 3, 5, 6, 7, 8 and 64; the other three CLI11 binaries
 // the same minus 8, plus `planar-agent queue`'s 124, 125, 126, 127 and
-// observer SIGINT/SIGTERM exits 130/143;
-// `planar-execute`: 0, 1, 2 and 75 from `runflow.cpp`). Each list is a copy
+// observer SIGINT/SIGTERM exits 130/143). Each list is a copy
 // because D18 forbids this test target importing another binary's module.
 
 #include <catch2/catch_test_macros.hpp>
@@ -41,15 +40,14 @@ struct binary_under_test {
   std::string           name;
   std::filesystem::path path;
   std::set<int>         codes;             // The codes this binary's exit table knows.
-  bool                  has_footer = true; // False for planar-execute, whose help is a hand-written banner.
+  bool                  has_footer = true; // False for a binary whose help is a hand-written banner.
 };
 
 auto binaries() -> std::vector<binary_under_test> {
   return {{"planar", PLANAR_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 8, 10, 64, 130, 143}, true},
           {"planar-agent", PLANAR_AGENT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64, 124, 125, 126, 127, 130, 143}, true},
           {"planar-watch", PLANAR_WATCH_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true},
-          {"planar-ext", PLANAR_EXT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true},
-          {"planar-execute", PLANAR_EXECUTE_CPP_BIN, {0, 1, 2, 75}, false}};
+          {"planar-ext", PLANAR_EXT_CPP_BIN, {0, 1, 2, 3, 5, 6, 7, 64}, true}};
 }
 
 // One command of a catalog, reduced to what these tests read.
@@ -214,9 +212,10 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
       }
     }
   }
-  // 219 + 29 + 14 + 13 + 10 leaves measured 2026-10-04.
+  // 278 leaves across the four remaining binaries measured 2026-10-10, after
+  // planar-execute's 10 left the sum; the floor keeps the same margin.
   CAPTURE(leaves);
-  CHECK(leaves >= 280);
+  CHECK(leaves >= 273);
 }
 
 TEST_CASE("every planar and planar-agent leaf has an example under its own command path", "[catalog][docs]") {

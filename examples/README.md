@@ -15,8 +15,6 @@ database.
 |---------|----------|
 | [`spec-lifecycle.md`](spec-lifecycle.md) | You want to draft specs, review them adversarially, ingest them, and prepare execution. |
 | [`spec-review-loop.md`](spec-review-loop.md) | You have draft specs with open questions and want to turn them into complete, self-consistent artifacts. |
-| [`orchestrator-run.md`](orchestrator-run.md) | You have an active plan and want to launch the orchestrator safely. |
-| [`planar-execute-workflow.md`](planar-execute-workflow.md) | You want to author and dry-run a `planar-execute` Lua workflow. |
 | [`operational-plane.md`](operational-plane.md) | You want to preview and propagate a finished local plan to Jira or GitHub Issues. |
 
 ## Minimal End-To-End Shape

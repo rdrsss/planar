@@ -1,2 +1,0 @@
-exit: 1
-planar-execute: load error: workflow:1: syntax error near 'is'

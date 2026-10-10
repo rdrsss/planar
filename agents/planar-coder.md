@@ -123,8 +123,7 @@ they are the coder's job to get right before handoff.
 Under worktree-isolated strategies, the dispatcher sends the coder into a
 pre-created worktree on a pre-created child branch. The dispatcher is the
 model-driven orchestrator for sequential worktree isolation and
-`parallel-fanout`, using `workflows/parallel-dispatch.lua` for deterministic
-branch and path computation. The coder's contract there is narrow:
+`parallel-fanout`. The coder's contract there is narrow:
 
 - **Inherit the dispatched cwd.** That cwd is the worktree path. Stay in it.
   Do not `cd` out to the main checkout or another worktree to do work.
