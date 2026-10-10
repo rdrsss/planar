@@ -13,6 +13,7 @@ Each `handlers/<name>/` directory owns one root command family.
 | `run/` | Workflow run list and detail. |
 | `sync_events/` | Sync event history. |
 | `version/`, `completion/`, `schema/` | Version, shell completion and command catalog. |
+| `agents/` | Interactive agent view a bare invocation opens on a terminal (FTXUI); no root CLI app. |
 | `shared/` | Shared view helpers; no root CLI app. |
 
 Follow-capable views stream new rows without changing the database. The
