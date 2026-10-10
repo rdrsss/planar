@@ -40,9 +40,8 @@
 /// composes carries none. Both shapes exist for stderr text, and both are
 /// live in this binary's verb subset:
 ///
-///   - `planar.engine.workflows.render::not_found_error("nope")` returns
-///     the WHOLE line, `"error: workflow 'nope' not found\n"` — prefix and
-///     terminator included.
+///   - A renderer that returns the WHOLE line, prefix and terminator
+///     included, is passed through unchanged.
 ///   - `planar.engine.runs.render::render_run_not_found(...)` documents
 ///     itself as "the message body (no `error: ` prefix, no trailing
 ///     newline)".
@@ -102,8 +101,7 @@ export inline constexpr int exit_not_implemented       = 64; ///< Placeholder / 
 /// `domain_error_kind` table and is returned through `passthrough_code` by
 /// that one leaf alone. No other `planar` verb returns 10 of its own (task 7319
 /// audited the handlers, this table, `docs/cli-reference.md` and
-/// `scripts/exit-code-contract.sh`); `workflow run` alone can surface any status,
-/// because it passes a workflow's own exit status through verbatim.
+/// `scripts/exit-code-contract.sh`).
 export inline constexpr int exit_update_available = 10;
 
 /// @brief A plain `planar update` was interrupted by `SIGINT` (128 + 2).
@@ -132,12 +130,10 @@ export struct domain_error {
   ///
   /// Unset for every ordinary failure, which is the whole point: the bucket
   /// table above is this binary's policy and nothing should route around
-  /// it. It is set by exactly one caller — `workflow run`, which execs
-  /// `planar-execute` and must propagate that child's status *exactly*
-  /// (`zig/src/cmd/planar/handlers/workflow/run.zig` ends in
-  /// `std.process.exit(code)`). A workflow's `flow.fail` can end in a code
-  /// no `domain_error_kind` names, and mapping it into the nearest bucket
-  /// would silently rewrite a caller-visible status.
+  /// it. It is set only by the `planar update` leaves, which return exit 10
+  /// (`--check`, update available) and 128+signo (an interrupted run), both
+  /// outside the bucket table. Mapping either into the nearest bucket would
+  /// silently rewrite a caller-visible status.
   std::optional<int> passthrough_code;
 };
 

@@ -66,7 +66,7 @@
 /// help ONLY WHEN THE TABLE HAS NO ENTRY FOR IT. A registered handler on a
 /// group node means the group is dual and the handler wins.
 ///
-/// That keeps `capture`, `feedback`, `workbench`, `workflow`, `annotate`,
+/// That keeps `capture`, `feedback`, `workbench`, `annotate`,
 /// `workspace` and bare `planar` on the help path (none is registered) and
 /// routes `handoff` / `resume` to their handlers, with no per-verb special
 /// case anywhere.

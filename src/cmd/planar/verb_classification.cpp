@@ -55,13 +55,10 @@ auto classify(std::span<const std::string> path) -> verb_class {
     return verb_class::execution_or_read;
   }
 
-  // Subverb groups whose ENTIRE surface is execution_or_read. `workflow`
-  // is a read-only filesystem scan holding no SQLite handle — discovering
-  // and inspecting workflows is exactly the kind of read a coder's
-  // worktree needs.
-  static constexpr std::array<std::string_view, 14> k_read_groups{
+  // Subverb groups whose ENTIRE surface is execution_or_read.
+  static constexpr std::array<std::string_view, 13> k_read_groups{
       "handoff", "capture", "audit", "workspace", "config",    "models", "templates",
-      "scope",   "doc",     "local", "skills",    "test-spec", "sync",   "workflow",
+      "scope",   "doc",     "local", "skills",    "test-spec", "sync",
   };
   if (in(top, k_read_groups)) {
     return verb_class::execution_or_read;

@@ -53,7 +53,6 @@ import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.update;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
-import planar.cmd.planar.handlers.workflow;
 import planar.cmd.planar.handlers.workspace;
 
 namespace planar::cmd {
@@ -125,7 +124,6 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_run(*app);        // 42
   handlers::declare_groups(*app);     // 43
   handlers::declare_explore(*app);    // 44
-  handlers::declare_workflow(*app);   // 45
   handlers::declare_feedback(*app);   // 46
   handlers::declare_help(*app);       // 47
 

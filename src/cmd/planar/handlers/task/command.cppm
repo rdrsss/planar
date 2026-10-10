@@ -43,7 +43,7 @@
 /// The oracle opens `$EDITOR` for the body when, and only when, all three
 /// of: `--body` was absent, `--editor` is on (it defaults to TRUE), and
 /// stdout is a TTY. Process spawning does not exist anywhere in this tree
-/// — it is the same missing seam that deferred `workflow run`, `bench
+/// — it is the same missing seam that deferred `bench
 /// harvest` and `capture commits`. This handler therefore REFUSES on that
 /// exact three-way conjunction rather than quietly creating a body-less
 /// task, which would be a silent divergence on the one path an interactive

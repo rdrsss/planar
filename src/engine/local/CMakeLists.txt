@@ -8,7 +8,7 @@
 # `<home>/.planar/local/`, the install record lives in a per-kind
 # `.link-manifest.json` beside them, and the vendor installs are symlinks. A
 # `DEPENDS db` here would be an edge that exists only to look conventional, the
-# same call `engine_workflows` made for the same reason.
+# same call the removed workflow bucket made for the same reason.
 #
 # `json_text` (layer 1, D19) supplies the one JSON string-escaping primitive.
 # Before it existed this bucket would have been the EIGHTH byte-identical copy
@@ -34,7 +34,7 @@
 # `manifest::resolve_home_and_root` takes an explicit env-lookup callable and
 # every other entry point takes explicit absolute paths. No function in this
 # bucket calls `std::getenv`, so it has no way to find a real home at all. Same
-# mechanism `engine_workflows` uses, applied to a surface where the stakes are
+# mechanism, applied to a surface where the stakes are
 # an order of magnitude higher.
 #
 # Oracle-verified while establishing that: `CODEX_HOME` is IRRELEVANT to this
@@ -69,7 +69,7 @@
 # @return says so. The alternative shape ("renderer returns the body, caller
 # appends the terminator") cannot express two payloads this tree actually has:
 # a leaf whose empty output is ZERO BYTES rather than a bare newline
-# (`workflow list --json`, `local list --json`), and NDJSON, where the newline
+# (`local list --json`), and NDJSON, where the newline
 # is per-RECORD rather than per-document. Both are pinned. See
 # `json_text/CMakeLists.txt` for the escaping half of the same contract.
 

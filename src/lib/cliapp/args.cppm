@@ -462,7 +462,7 @@ export auto positional_strings(const parsed_args& args, std::string_view name) -
 }
 
 /// @brief The key a resolved command path maps to: its segments joined
-/// with single spaces, e.g. `{"workflow","list"}` -> `"workflow list"`.
+/// with single spaces, e.g. `{"local","list"}` -> `"local list"`.
 /// @param path The resolved command path.
 /// @return The table key.
 export auto path_key(std::span<const std::string> path) -> std::string {

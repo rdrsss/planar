@@ -17,8 +17,7 @@
 #
 # `identity::planar_home` takes an explicit env-lookup callable rather than
 # reading `std::getenv`, so this module cannot find a real `~/.planar` on its
-# own -- the same structural mechanism `engine_workflows` and `engine_local`
-# use.
+# own -- the same structural mechanism `engine_local` uses.
 #
 # But for THIS bucket that is not sufficient, and the difference was established
 # by probing rather than assumed: `workspace doctor` writes to the association's

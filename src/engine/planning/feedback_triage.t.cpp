@@ -792,7 +792,7 @@ TEST_CASE("render_json emits declaration order and distinguishes null from empty
 
 TEST_CASE("render_list_json is a bare array with no trailing newline", "[feedback-triage][render][json]") {
   // The empty case is `[]`, which the caller terminates to the oracle's
-  // `[]\n`. Zero bytes would be wrong here — that is `workflow list --json`.
+  // `[]\n`. Zero bytes would be wrong here — that is `local list --json`.
   CHECK(render_list_json({}) == "[]");
 
   const feedback_triage a{

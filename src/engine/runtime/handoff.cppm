@@ -237,7 +237,7 @@ export auto render_text(const handoff& value) -> std::string;
 /// @param items The handoffs.
 /// @return The complete stdout payload. EMPTY INPUT YIELDS ZERO BYTES, not
 /// a bare newline and not `[]`; that is the same complete-payload
-/// zero-byte case `workflow list --json` already pins.
+/// zero-byte case `local list --json` already pins.
 export auto render_list_json(std::span<const handoff> items) -> std::string;
 
 /// @brief Render `planar handoff list`'s table.
