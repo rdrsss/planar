@@ -14,7 +14,9 @@
 ///    spawns (decision 1384): an action that started before the dispatch preview bound to the claim
 ///    was created is ignored, and for a snapshot-only dispatch an action at or before `claimed_at` is.
 ///  - `action-unended` (state, warning): an action with no `ended_at` whose claim is terminal or
-///    past its lease.
+///    past its lease, started inside the window or on a claim that ended inside it (decision 1384; a
+///    claim ends at its release, else its lease expiry). `planar-agent action end` closes the row on
+///    a claim in any state; `reconcile` closes only a stale claim's `claim_check` marker.
 ///
 /// A claim is a dispatch only when an orchestrator dispatch record exists for it (decisions 1344
 /// and 1349): a `routing_dispatch_previews` row with the claim's task and token, or a
@@ -210,13 +212,18 @@ auto confirmed_late(const check_context& ctx) -> std::expected<std::vector<im::f
 }
 
 auto action_unended(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
-  auto now = std::format("strftime({}, ?1)", k_format);
+  // `?1` is the window start and `?2` its end, which is the evaluation instant. The window bounds the action's start or
+  // the end of its claim (decision 1384), so a long-dead backlog is not re-reported on every run.
+  auto now = std::format("strftime({}, ?2)", k_format);
   auto sql = std::format("select a.id, c.id, c.entity_kind, c.entity_id, a.started_at"
                          " from agent_actions a join agent_work_claims c on c.id = a.claim_id"
-                         " where a.ended_at is null and {} and {}"
+                         " where a.ended_at is null and {0} and {1}"
+                         "   and ((strftime({2}, a.started_at) >= ?1 and strftime({2}, a.started_at) <= ?2)"
+                         "        or ({3} >= ?1 and {3} <= ?2))"
                          " order by a.id",
-                         not_live(now), plan_filter_sql(ctx.scope, k_claim_plan));
-  return query_findings(ctx, sql, ctx.evaluated_at, {}, [](const db::statement& row) {
+                         not_live(now), plan_filter_sql(ctx.scope, k_claim_plan), k_format,
+                         std::format("strftime({}, {})", k_format, k_ends));
+  return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
     im::finding f;
     f.severity       = im::diagnostic_severity::warning;
     f.primary        = im::entity_ref{.kind = "action", .id = row.column_int64(0)};
@@ -259,7 +266,7 @@ auto dispatch_family() -> family {
                                .kind     = im::check_kind::state,
                                .severity = im::diagnostic_severity::warning,
                                .category = "claim_action_unended",
-                               .recovery = "planar-agent reconcile",
+                               .recovery = "planar-agent action end --action <id> --outcome aborted",
                                .inputs   = {},
                                .built    = true,
                                .evaluate = action_unended});
