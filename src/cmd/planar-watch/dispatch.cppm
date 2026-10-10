@@ -121,6 +121,10 @@ export auto inject_default_verb(std::span<std::string const> argv) -> std::vecto
 
 /// @brief Parse `argv` against `root`, then render help, run the matched
 /// handler, or report a failure — writing to `ctx`'s streams throughout.
+///
+/// A bare invocation whose stdin and stdout are both terminals opens the
+/// interactive agent view instead (`agents::wants_interactive`); a bare
+/// invocation through a pipe still renders `feed`.
 /// @param ctx The invocation context.
 /// @param root The command tree (mutated by CLI11's parse; the caller owns it).
 /// @param table The handler table.
