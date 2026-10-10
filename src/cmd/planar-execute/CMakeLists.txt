@@ -135,16 +135,15 @@ planar_binary(planar_execute
 # carrier guard above is untouched.
 target_link_libraries(planar_cmd_planar_execute PRIVATE glaze::glaze)
 
-# This build links NO Centurion target. `handlers/shared/client_bridge.cpp`
-# is the engine-less implementation of `client_bridge.hpp`: every engine verb
-# (submit/status/cancel/follow/host) refuses with "planar-execute was built
-# without the Centurion engine". The Centurion-enabled build, which links
-# `centurion::client` and nothing else of Centurion (policed by
-# cmake/architecture.cmake's Centurion boundary), lives on the
-# dev/centurion-integration branch.
+# centurion::client and NOTHING else of Centurion (tech-spec D1). This is the
+# edge cmake/architecture.cmake's Centurion boundary exists to police: rule 1
+# refuses any other centurion_* target, rule 2 refuses a non-execute binary
+# reaching this one, and rule 3 grades the client's own closure for execution
+# components. `client_bridge.cpp` is the only translation unit that uses it.
+target_link_libraries(planar_cmd_planar_execute PRIVATE centurion::client)
 
 if(TARGET planar_cmd_planar_execute_tests)
-  target_link_libraries(planar_cmd_planar_execute_tests PRIVATE glaze::glaze)
+  target_link_libraries(planar_cmd_planar_execute_tests PRIVATE glaze::glaze centurion::client)
   target_compile_definitions(planar_cmd_planar_execute_tests PRIVATE
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_execute>\""
     # golden.t.cpp (plan 1033 M0, task 6484): the committed fixtures and the

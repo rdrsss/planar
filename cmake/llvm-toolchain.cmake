@@ -227,10 +227,14 @@ set(CMAKE_CXX_COMPILER "${PLANAR_LLVM_PREFIX}/bin/clang++" CACHE FILEPATH "C++ c
 # `-Wno-unused-command-line-argument` on non-Apple UNIX only. With
 # `-nostdinc++ -isystem .../c++/v1` supplied, `-stdlib=libc++` has no
 # COMPILE-time effect on Linux (it still matters at link, where it also
-# appears), so clang reports it as an unused argument, which first-party
-# targets' `-Werror` turns into a build failure. Apple's driver consumes it,
-# which is why this never fires on macOS. Scoped to a driver-level nit: it
-# silences no diagnostic about the code itself.
+# appears), so clang reports it as an unused argument. Apple's driver
+# consumes it, which is why this never fires on macOS. It only bites in
+# third-party sub-builds that compile with their own `-Werror` --
+# Centurion's vendored BoringSSL `fipsmodule/bcm.cc` was the first --
+# and this repo cannot reach into those to adjust their flags. Scoped to
+# a driver-level nit: it silences no diagnostic about the code itself, and
+# first-party targets keep `PLANAR_WARNINGS_AS_ERRORS`. Measured while
+# building the Linux gate (Dockerfile, task 6936).
 set(_planar_llvm_extra_cxx_flags "")
 if(UNIX AND NOT APPLE)
   set(_planar_llvm_extra_cxx_flags " -Wno-unused-command-line-argument")

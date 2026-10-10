@@ -83,25 +83,6 @@ auto translate(const planar::cmd::execute::call_result& answer) -> planar::cmd::
                            .message_ = answer.message_};
 }
 
-/// @brief Refuse an engine verb when this build cannot reach a Centurion engine.
-///
-/// Called FIRST by every verb in this file, before a profile is resolved or a
-/// host marker written: a build without the engine must not report a daemon
-/// that is merely not running (`status` would exit 0 saying "serving: no"),
-/// nor leave a `drain` marker behind. The exit code is the one a durable
-/// refusal maps to, because rebuilding the binary is the only thing that
-/// changes the answer.
-/// @return The exit code to stop with, or nullopt when the engine is linked.
-auto refuse_without_engine() -> std::optional<int> {
-  namespace ex          = planar::cmd::execute;
-  const char* const why = ex::engine_unavailable_reason();
-  if (why == nullptr) {
-    return std::nullopt;
-  }
-  std::cerr << "planar-execute: " << why << '\n';
-  return ex::exit_code_for(ex::flow_result::refused);
-}
-
 /// @brief Render one run as the operator or a script reads it.
 /// @param run Run projection to render.
 /// @param json Whether to use JSON output.
@@ -147,9 +128,6 @@ auto reach_host(std::string_view profile_name) -> std::expected<reached_host, st
 }
 
 auto status_run(const planar::cmd::execute::run_id_args& asked) -> int {
-  if (const auto refused = refuse_without_engine(); refused.has_value()) {
-    return *refused;
-  }
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
   if (!reached.has_value()) {
@@ -184,9 +162,6 @@ auto status_run(const planar::cmd::execute::run_id_args& asked) -> int {
 }
 
 auto cancel_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
-  if (const auto refused = refuse_without_engine(); refused.has_value()) {
-    return *refused;
-  }
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
   if (!reached.has_value()) {
@@ -217,9 +192,6 @@ auto cancel_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
 }
 
 auto host_status(const planar::cmd::execute::run_id_args& asked) -> int {
-  if (const auto refused = refuse_without_engine(); refused.has_value()) {
-    return *refused;
-  }
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
   if (!reached.has_value()) {
@@ -250,9 +222,6 @@ auto host_status(const planar::cmd::execute::run_id_args& asked) -> int {
 }
 
 auto follow_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
-  if (const auto refused = refuse_without_engine(); refused.has_value()) {
-    return *refused;
-  }
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
   if (!reached.has_value()) {
@@ -292,9 +261,6 @@ auto follow_run_verb(const planar::cmd::execute::run_id_args& asked) -> int {
 }
 
 auto host_lifecycle(std::string_view action, const planar::cmd::execute::run_id_args& asked) -> int {
-  if (const auto refused = refuse_without_engine(); refused.has_value()) {
-    return *refused;
-  }
   namespace ex = planar::cmd::execute;
   auto reached = reach_host(asked.profile);
   if (!reached.has_value()) {
@@ -341,9 +307,6 @@ auto host_lifecycle(std::string_view action, const planar::cmd::execute::run_id_
 }
 
 auto submit_run(const planar::cmd::execute::submit_args& asked) -> int {
-  if (const auto refused = refuse_without_engine(); refused.has_value()) {
-    return *refused;
-  }
   namespace ex = planar::cmd::execute;
 
   auto const resolved = resolve_named_profile(asked.profile);

@@ -202,6 +202,30 @@
 # cmake/tests/architecture-guard-fixture/layer1-cycle/ for the standing
 # proof.
 
+#
+# The Centurion boundary (plan 1033 M1, task 6708 — pass 4 below): Centurion
+# is added as a subdirectory (cmake/centurion.cmake), so its whole target
+# graph exists in this configure. Planar's planar-execute becomes a Centurion
+# CLIENT (decision 1007), and the boundary is that it is ONLY a client:
+#
+#   1. A planar_* target may link exactly one Centurion target,
+#      `centurion::client`. Any other `centurion_*` edge — store, runtime,
+#      protocol, crypto, anything — is refused by name.
+#   2. Only an execute carrier (the same carrier definition the
+#      no-SQLite-handle exception uses) may REACH centurion::client. Another
+#      binary pulling it in through an intermediate library is refused.
+#   3. centurion::client's own FULL link closure — walked across Centurion's
+#      targets, not only planar_* ones, with aliases resolved — must contain
+#      no Centurion execution component (store, workflow, model, activity,
+#      extension, host, runtime, lua, daemon_*), no Lua, no SQLite, and no
+#      terminal UI. Centurion asserts much of this on its own side
+#      (its cmake/architecture.cmake); Planar re-asserts it here because a
+#      Centurion bump that loosened its own rule would otherwise pass
+#      silently into planar-execute.
+#
+# All three are FATAL at configure with a "Centurion boundary" diagnostic.
+# Standing proofs: cmake/tests/architecture-guard-fixture/centurion-*.
+
 # @brief Classify a planar_module() name into its architecture layer.
 # @param name The module name as passed to planar_module() (e.g. "core",
 #        "engine_identity", "cmd_planar").
