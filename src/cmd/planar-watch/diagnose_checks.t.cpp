@@ -38,6 +38,12 @@
 //     with its three invocations; two failures, or three split across verbs, make none. Claims ended
 //     with `planar-agent fail --category tool_failure` form one `claim-failure-cluster`; the default
 //     category (`unknown`) forms none.
+//   * `sync-conflict-unresolved` (task 7381): a local fake Jira (the in-process HTTP fixture server)
+//     answers `planar-ext sync pull`; the remote and the local task title are both changed, so the pull
+//     records a `conflict` event and exits 3, and the diagnosis names the event and its link. After
+//     `planar-ext sync resolve` (the evidence token and the task's `updated_at` are read back from the
+//     database, as an operator would from the evidence) the diagnosis reports nothing. A `sync pull`
+//     that conflicts again after a resolution is reported again.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -45,6 +51,7 @@ import std;
 import planar.db;
 import planar.json_dom;
 
+#include "../lib/http/fixture_server.hpp"
 #include "parity_harness.hpp"
 
 namespace {
@@ -148,6 +155,25 @@ struct world {
     auto parsed = planar::json_dom::parse_json(got.out);
     REQUIRE(parsed.has_value());
     return std::move(*parsed);
+  }
+
+  /// `planar-ext` under the pinned environment plus the fake Jira's token; returns the capture whatever the exit code.
+  auto ext(std::vector<std::string> args) -> parity::capture {
+    auto env = parity::pinned_env(root);
+    env.push_back(parity::pinned_var{.name = "DEMO_TOKEN", .value = "tok-abc"});
+    auto got = parity::run_pinned(std::filesystem::path{PLANAR_EXT_CPP_BIN}, args, root, tag(), env);
+    INFO("planar-ext " << args.front() << " " << args[1] << ": " << got.err << got.out);
+    return got;
+  }
+
+  /// One text value from a read-only query over the scratch database.
+  auto text(std::string_view sql) -> std::string {
+    auto conn = planar::db::connection::open((root / "planar.db").string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare(sql);
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    return stmt->column_text(0);
   }
 
   /// Rows no verb creates, written with a plain INSERT: the project and routing candidate a dispatch preview names.
@@ -772,4 +798,79 @@ TEST_CASE("claims ended with planar-agent fail --category form a claim-failure-c
     }
     CHECK(w.diagnose_any({"claim-failure-cluster"}).find("findings")->array.empty());
   }
+}
+
+namespace {
+
+/// A Jira issue body for `DEMO-1` with the given summary and version marker.
+auto jira_issue(std::string_view summary, std::string_view updated) -> std::string {
+  return std::format(R"({{"key":"DEMO-1","fields":{{"summary":"{}","status":{{"name":"To Do"}},"updated":"{}"}}}})", summary,
+                     updated);
+}
+
+} // namespace
+
+TEST_CASE("a sync conflict through planar-ext is reported until planar-ext sync resolve settles it",
+          "[cmd][watch][diagnose][workflow][sync]") {
+  std::mutex                    guard;
+  std::string                   summary = "First task";
+  std::string                   updated = "2026-01-01T00:00:00.000+0000";
+  planar::http::fixture::server fake_jira([&](const planar::http::fixture::captured_request& req) {
+    std::scoped_lock const lock{guard};
+    if (req.verb == "PUT") {
+      return planar::http::fixture::canned_response{.status = 204, .body = {}, .content_type = "application/json"};
+    }
+    return planar::http::fixture::canned_response{
+        .status = 200, .body = jira_issue(summary, updated), .content_type = "application/json"};
+  });
+  auto                          remote_changes = [&](std::string_view new_summary, std::string_view new_updated) {
+    std::scoped_lock const lock{guard};
+    summary = new_summary;
+    updated = new_updated;
+  };
+
+  world w;
+  REQUIRE(w.ext({"ext", "register", "jira", "jira-demo", "--base-url", fake_jira.base_url(), "--project", "DEMO", "--auth-env",
+                 "DEMO_TOKEN"})
+              .code == 0);
+  w.planar({"link", "task:1", "--to", "jira-demo:DEMO-1", "--role", "mirror", "--sync", "two-way"});
+
+  // Nothing to report before any sync, and after clean ones.
+  CHECK(w.findings({"sync-conflict-unresolved"}).empty());
+  CHECK(w.ext({"sync", "pull", "1"}).code == 0);
+  remote_changes("Renamed remotely", "2026-02-02T00:00:00.000+0000");
+  CHECK(w.ext({"sync", "pull", "1"}).code == 0);
+  CHECK(w.findings({"sync-conflict-unresolved"}).empty());
+
+  // Both sides change: the pull records a conflict and exits 3.
+  w.planar({"task", "update", "1", "--title", "Renamed locally"});
+  remote_changes("Renamed remotely again", "2026-03-03T00:00:00.000+0000");
+  CHECK(w.ext({"sync", "pull", "1"}).code == 3);
+  auto event = w.scalar("select max(id) from sync_events where outcome = 'conflict'");
+  auto found = w.diagnose_json({"sync-conflict-unresolved"});
+  REQUIRE(found.find("findings")->array.size() == 1);
+  const auto& finding = found.find("findings")->array[0];
+  CHECK(finding.find("check")->string == "sync-conflict-unresolved");
+  CHECK(finding.find("severity")->string == "warning");
+  CHECK(finding.find("entity")->string == std::format("sync_event:{}", event));
+  CHECK(finding.find("fingerprint")->string == std::format("sync-conflict-unresolved|external_link:1,sync_event:{}", event));
+  CHECK(finding.find("evidence")->array.size() == 2);
+
+  // Settle it the way an operator does: the token from the event's evidence, the task's current version.
+  auto token = w.text(std::format("select json_extract(context_json, '$.token') from sync_events where id = {}", event));
+  auto local = w.text("select updated_at from tasks where id = 1");
+  REQUIRE(!token.empty());
+  auto resolved = w.ext({"sync", "resolve", std::to_string(event), "--keep", "local", "--evidence-token", token,
+                         "--expected-local-updated-at", local});
+  CHECK(resolved.code == 0);
+  CHECK(w.findings({"sync-conflict-unresolved"}).empty());
+
+  // A second conflict on the same link is a new finding, and it names the new event.
+  w.planar({"task", "update", "1", "--title", "Renamed locally again"});
+  remote_changes("Renamed remotely a third time", "2026-04-04T00:00:00.000+0000");
+  CHECK(w.ext({"sync", "pull", "1"}).code == 3);
+  auto again = w.scalar("select max(id) from sync_events where outcome = 'conflict'");
+  CHECK(again > event);
+  CHECK(w.findings({"sync-conflict-unresolved"}) ==
+        std::vector<std::string>{std::format("sync-conflict-unresolved sync_event:{} warning", again)});
 }

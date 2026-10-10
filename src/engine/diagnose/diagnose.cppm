@@ -165,7 +165,7 @@ export struct catalog {
 /// `claim-superseded-active`, `task-doing-unclaimed`, `claim-closed-by-reconcile`,
 /// `heartbeat-gap`), the dispatch family (`dispatch-no-role-action`, `dispatch-unconfirmed`, `dispatch-confirmed-late`,
 /// `action-unended`), `apply-without-preview`, `cli-failure-cluster` and `claim-failure-cluster` (the CLI and failure-cluster
-/// family) and `handoff-stale`. `queue-ended-unobserved` is declared as an
+/// family), `handoff-stale` and `sync-conflict-unresolved`. `queue-ended-unobserved` is declared as an
 /// unbuilt check; the later check tasks fill in the remaining families.
 /// @return The catalog.
 export auto builtin_catalog() -> catalog;
