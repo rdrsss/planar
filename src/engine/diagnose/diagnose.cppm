@@ -330,6 +330,13 @@ export auto render_section_text(const diagnosis& d) -> std::string;
 /// @return The JSON text without a trailing newline.
 export auto render_section_json(const diagnosis& d, std::int64_t plan_id) -> std::string;
 
+/// @brief The section of a run that could not happen at all (for example no database handle).
+/// @param plan_id The plan the run was for.
+/// @param evaluated_at The instant to print.
+/// @param reason Why it could not run.
+/// @return The rendered `unavailable` section.
+export auto unavailable_section(std::int64_t plan_id, std::string_view evaluated_at, unavailable_reason reason) -> section;
+
 /// @brief Runs the builtin catalog for one plan over its lifetime window and renders the section. Never
 /// fails: an `unavailable` run, or input the engine rejects, renders as `diagnose: unavailable (<reason>)`.
 /// Reads only, under the run's 250 ms busy timeout and `query_only` guard.

@@ -13,9 +13,12 @@
 import std;
 import planar.db;
 import planar.db.migrate;
+import planar.engine.planning;
+import planar.engine.runtime.agentatomic;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.dispatch;
 import planar.cmd.planar_agent.main;
+import planar.cmd.planar_agent.policy;
 
 namespace {
 
@@ -150,7 +153,7 @@ TEST_CASE("complete --json makes diagnose the last key of the single object only
   CHECK(last.out.ends_with(",\"incidents\":{\"state\":\"not_applicable\",\"reason\":null}}}\n"));
   CHECK(last.out.starts_with("{\"ok\":true,\"claim_token\":\""));
   CHECK(last.out.find("\"task\":{", 0) < key);
-  CHECK(last.out.find("\"diagnose\"", key + 1) == std::string::npos);
+  CHECK(last.out.find("\"diagnose\"", key + 12) == std::string::npos);
 }
 
 TEST_CASE("a finding on the milestone is printed and changes nothing about the complete", "[cmd][agent][diagnose][7383]") {
@@ -232,4 +235,27 @@ TEST_CASE("a diagnosis that cannot run is reported without changing the complete
   CHECK(done.err.empty());
   CHECK(scalar_text(scratch, "select status from plans where id = 2") == "done");
   CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "done");
+}
+
+TEST_CASE("a milestone counts as promoted only by a fresh roll-up that flipped it to done", "[cmd][agent][diagnose][7383]") {
+  namespace planning = planar::engine::planning;
+  namespace atomic   = planar::engine::runtime::agentatomic;
+
+  auto const roll_up = [](bool flipped, planning::plan_status after) {
+    return agent::plan_roll_up{
+        .result = planning::recompute_result{
+            .plan_id = 2, .status_before = planning::plan_status::active, .status_after = after, .flipped = flipped}};
+  };
+  atomic::terminal_result fresh;
+  atomic::terminal_result replay;
+  replay.replayed = true;
+
+  CHECK(agent::milestone_promoted(roll_up(true, planning::plan_status::done), fresh));
+  // A replay wrote nothing, so a retry never reports the milestone twice.
+  CHECK_FALSE(agent::milestone_promoted(roll_up(true, planning::plan_status::done), replay));
+  // A roll-up that did not flip, or flipped to something else (a demotion), is not a promotion.
+  CHECK_FALSE(agent::milestone_promoted(roll_up(false, planning::plan_status::done), fresh));
+  CHECK_FALSE(agent::milestone_promoted(roll_up(true, planning::plan_status::active), fresh));
+  // No roll-up ran (a plan-less task, or a verb that made none).
+  CHECK_FALSE(agent::milestone_promoted(agent::plan_roll_up{}, fresh));
 }

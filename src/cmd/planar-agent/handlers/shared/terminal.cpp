@@ -6,6 +6,10 @@ module planar.cmd.planar_agent.handlers.terminal;
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.cmd.internal.config_path;
+import planar.db;
+import planar.engine.config.effective;
+import planar.engine.diagnose;
 import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.agentrender;
@@ -35,6 +39,35 @@ auto view(const std::optional<std::string>& value) -> std::optional<std::string_
   return std::string_view{*value};
 }
 
+/// @brief The current instant as `YYYY-MM-DDTHH:MM:SS.mmmZ`, the form the diagnose engine takes.
+/// @return The UTC instant.
+auto now_iso() -> std::string {
+  auto const now = std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now());
+  return std::format("{:%Y-%m-%dT%H:%M:%S}Z", now);
+}
+
+/// @brief Diagnose the milestone a `complete` just promoted to `done`, after the transaction committed.
+///
+/// Reads only and never fails the verb: the engine returns an unavailable section for a busy database
+/// (its own 250 ms timeout) or a failed query, and a connection that cannot be had reads the same way.
+/// @param ctx The invocation context.
+/// @param observed What the in-transaction roll-up decided.
+/// @param result The terminal outcome.
+/// @return The section to append, or empty when no milestone was promoted by this call.
+auto milestone_section(context& ctx, const plan_roll_up& observed, const atomic::terminal_result& result)
+    -> std::optional<engine::diagnose::section> {
+  if (!milestone_promoted(observed, result)) {
+    return std::nullopt;
+  }
+  auto const cli_log = engine::config::introspection_cli_log(internal::resolve_config_path(ctx.env()));
+  auto       conn    = ctx.db().ensure_db();
+  if (!conn) {
+    return engine::diagnose::unavailable_section(observed.result->plan_id, now_iso(),
+                                                 engine::diagnose::unavailable_reason::query_failed);
+  }
+  return engine::diagnose::run_section(**conn, observed.result->plan_id, now_iso(), cli_log);
+}
+
 /// @brief Re-read the task and write the shared envelope.
 ///
 /// Re-READ rather than reasoning about what the transition must have
@@ -44,9 +77,14 @@ auto view(const std::optional<std::string>& value) -> std::optional<std::string_
 /// @param ctx The invocation context.
 /// @param result The terminal outcome.
 /// @param json Whether `--json` was given.
+/// @param section The diagnose section to append, or empty. Text gets it after one newline; JSON
+/// gets `diagnose` as the last key of the one object.
 /// @return Success, or the failure to report.
-auto emit(context& ctx, const atomic::terminal_result& result, bool json) -> handler_result {
-  auto conn = ctx.db().ensure_db();
+auto emit(context& ctx, const atomic::terminal_result& result, bool json,
+          const std::optional<engine::diagnose::section>& section = std::nullopt) -> handler_result {
+  auto const trailing = section.has_value() ? std::format(",\"diagnose\":{}", section->json) : std::string{};
+  auto const suffix   = section.has_value() ? std::format("\n{}", section->text) : std::string{};
+  auto       conn     = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
   }
@@ -54,14 +92,14 @@ auto emit(context& ctx, const atomic::terminal_result& result, bool json) -> han
     // A plan / plan_step claim (only `release` ends one) holds no task.
     // Looking one up by the claim's entity id would print whatever unrelated
     // task shares that number (task 7118).
-    ctx.out() << (json ? render::terminal_json(result) : render::terminal_text(result));
+    ctx.out() << (json ? render::terminal_json(result, trailing) : render::terminal_text(result) + suffix);
     return {};
   }
   auto const task = aa::get_task(**conn, *result.task_id);
   if (!task) {
     return std::unexpected(verb_error("task show", task.error()));
   }
-  ctx.out() << (json ? render::terminal_json(result, *task) : render::terminal_text(result, *task));
+  ctx.out() << (json ? render::terminal_json(result, *task, trailing) : render::terminal_text(result, *task) + suffix);
   return {};
 }
 
@@ -106,14 +144,15 @@ auto complete(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!flags) {
     return std::unexpected(flags.error());
   }
-  auto const summary = cliapp::flag_string(args, "--summary");
-  auto const result  = atomic::complete_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(summary),
-                                             task_policy(), flags->gate());
+  auto const   summary = cliapp::flag_string(args, "--summary");
+  plan_roll_up observed;
+  auto const   result = atomic::complete_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(summary),
+                                              task_policy(&observed), flags->gate());
   if (!result) {
     return std::unexpected(verb_error("complete", result.error()));
   }
   collect_commits(ctx, *result, cliapp::flag_bool(args, "--no-locality-probe"));
-  return emit(ctx, *result, cliapp::flag_bool(args, "--json"));
+  return emit(ctx, *result, cliapp::flag_bool(args, "--json"), milestone_section(ctx, observed, *result));
 }
 
 auto fail(context& ctx, const cliapp::parsed_args& args) -> handler_result {

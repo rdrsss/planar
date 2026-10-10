@@ -700,3 +700,11 @@ TEST_CASE("the section reads unavailable for a failed run and for input the engi
   auto bad_instant = dg::run_section(conn, 20, "yesterday", true, catalog_of({task_check("task-seen")}));
   CHECK(bad_instant.text == "diagnose: unavailable (query-failed)\n");
 }
+
+TEST_CASE("an unavailable section names the plan, the instant and the reason", "[diagnose][section]") {
+  auto s = dg::unavailable_section(7, k_now, dg::unavailable_reason::busy);
+  CHECK(s.text == "diagnose: unavailable (busy)\n");
+  CHECK(s.json ==
+        R"({"plan_id":7,"state":"unavailable","outcome":"unavailable","reason":"busy","evaluated_at":"2026-06-01T00:00:00.000Z",)"
+        R"("findings":[],"incidents":{"state":"not_applicable","reason":null}})");
+}

@@ -681,6 +681,11 @@ auto render_section_json(const diagnosis& d, std::int64_t plan_id) -> std::strin
   return out;
 }
 
+auto unavailable_section(std::int64_t plan_id, std::string_view evaluated_at, unavailable_reason reason) -> section {
+  auto const d = unavailable_diagnosis(reason, evaluated_at);
+  return section{.text = render_section_text(d), .json = render_section_json(d, plan_id)};
+}
+
 auto run_section(db::connection& conn, std::int64_t plan_id, std::string_view evaluated_at, std::optional<bool> cli_log_enabled)
     -> section {
   return run_section(conn, plan_id, evaluated_at, cli_log_enabled, builtin_catalog());
