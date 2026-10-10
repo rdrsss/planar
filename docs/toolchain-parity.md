@@ -332,8 +332,10 @@ CMAKE_CXX_STDLIB_MODULES_JSON    = /opt/homebrew/opt/llvm/lib/c++/libc++.modules
 ### Linux flag set
 
 `cmake/llvm-toolchain.cmake` derives the same flag set on Linux as on macOS;
-it appends nothing per platform, which `make linux-gate` proves. Against
-`/usr/lib/llvm-23` the resolved
+it appends nothing per platform. (A Centurion-enabled build appended
+`-Wno-unused-command-line-argument` and `-lc++abi` on non-Apple UNIX for
+Centurion's vendored BoringSSL and `protoc`; first-party code needs neither,
+which `make linux-gate` proves.) Against `/usr/lib/llvm-23` the resolved
 values are:
 
 ```

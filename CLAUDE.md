@@ -199,9 +199,12 @@ Do not claim the guard is universal without measuring. Matrix:
   redirects.
 - Third-party sources are cached under `vendor/` and committed, so a
   configured build does not touch the network.
-- Every build dependency is third-party and committed under `vendor/`; a
-  public clone configures with no network access and no token. A private or
-  first-party repository must never become a build dependency of master.
+- First-party dependencies (repositories the owner controls) are pinned the
+  same way but cached under the gitignored `external/`; a fresh checkout's
+  first configure fetches them. On this branch (`dev/planar-execute`)
+  Centurion is one, so the first configure needs `GITHUB_TOKEN`. A private
+  first-party repository must never become a build dependency of
+  master. Do not move a third-party dependency to `external/` to save space.
 - External programs that the binaries, a bundled skill or agent, or the
   installer shell out to are listed in both `INSTALL.md` § Prerequisites and
   the `BUILD_DEPS` / `RUN_DEPS` manifests in `install.sh`. Update both in the
@@ -255,6 +258,7 @@ use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architectu
 | `src/lib/` | Shared base modules: `db`, `core`, `cliapp`, `http`, `git`, `process`, `json_dom`, `json_text`, `log` and others. |
 | `src/tools/` | Project tooling: `cli_usage_lint`, `surface_lint`, `cli_docs_coverage`, `queue_contention_probe`. |
 | `vendor/` | Committed CPM cache of third-party release archives. |
+| `external/` | Gitignored CPM cache of first-party dependencies (Centurion on this branch). |
 | `migrations/` | Schema migrations in sqlx-cli format. See `migrations/README.md`. |
 | `templates/` | Propagation templates and operator-editable defaults. |
 | `workflows/` | Lua workflows and `command-policy.json`. |

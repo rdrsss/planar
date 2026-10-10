@@ -31,7 +31,7 @@ endif()
 # P1689/modules-json format changes, and using the wrong one degrades to a
 # CMake authoring warning followed by a hard configure failure ("Experimental
 # `import std` support not enabled"), not a silent fallback. Select the gate
-# per the installed CMake minor (adapted from a sibling project's CMakeLists.txt);
+# per the installed CMake minor (adapted from centurion's CMakeLists.txt);
 # fail loudly rather than guess for an unrecognized minor. The 4.4.x row is
 # empirically verified against this machine's CMake 4.4.2 — see
 # docs/toolchain-parity.md § "Derived import-std / embed flag set".
@@ -230,6 +230,17 @@ _planar_add_architecture_guard_test(reentrant-cycle fail
 # diagnostic.
 _planar_add_architecture_guard_test(nontarget-dep-caught fail
   MESSAGES "D15 violation" "-lplanar_scop_ref")
+# The Centurion boundary (plan 1033 task 6708; cmake/architecture.cmake,
+# "The Centurion boundary"): one positive control and one proof per rule.
+_planar_add_architecture_guard_test(centurion-client-legal succeed)
+_planar_add_architecture_guard_test(centurion-other-target fail
+  MESSAGES "Centurion boundary" "planar_engine_execute links 'centurion::store'")
+_planar_add_architecture_guard_test(centurion-non-execute-binary fail
+  MESSAGES "planar_cmd_planar reaches centurion::client" "planar_centurion_bridge")
+# CMake wraps a long diagnostic across lines and the harness matches per
+# line, so the chain is asserted as the fragment that stays on one line.
+_planar_add_architecture_guard_test(centurion-client-closure fail
+  MESSAGES "closure reaches" "centurion_client -> centurion_protocol ->")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 

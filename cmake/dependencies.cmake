@@ -121,7 +121,7 @@ endif()
 # that the one `sqlite3` target both trees link is the version both declare
 # (cmake/centurion.cmake § One pin per shared package). SHA256 re-verified
 # independently by downloading the archive from sqlite.org and running
-# `shasum -a 256`. Re-verify again before any bump.
+# `shasum -a 256`; it equals Centurion's. Re-verify again before any bump.
 CPMAddPackage(
   NAME sqlite
   VERSION 3.53.3
