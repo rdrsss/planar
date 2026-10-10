@@ -511,7 +511,7 @@ TEST_CASE("a dispatch whose lapsed claim left an action open reports both checks
   fx.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
   fx.action(1, 1, "tool_call", 1, "2026-06-01T09:10:00.000Z");
   CHECK(ids_of(fx.run({"dispatch-no-role-action", "action-unended"})) ==
-        std::vector<std::string>{"dispatch-no-role-action claim:1", "action-unended action:1"});
+        std::vector<std::string>{"action-unended action:1", "dispatch-no-role-action claim:1"});
 }
 
 const std::vector<std::string> k_unconfirmed{"dispatch-unconfirmed"};

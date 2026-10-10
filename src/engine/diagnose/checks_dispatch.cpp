@@ -4,7 +4,7 @@
 /// Checks over `agent_work_claims`, `agent_actions`, `routing_dispatch_previews` and
 /// `routing_dispatch_snapshots` (plan 1132, tasks 7376 and 7377; tech spec 689 § Check catalog):
 ///
-///  - `dispatch-no-role-action` (event, error): a dispatch whose claim is no longer live and that
+///  - `dispatch-no-role-action` (event, warning; decision 1384): a dispatch whose claim is no longer live and that
 ///    has no `coder`, `reviewer` or `test_coder` action tied to the claim, or tied to its task
 ///    inside the claim's lifetime.
 ///  - `dispatch-unconfirmed` (event, warning): a dispatch with a preview bound to its claim and no
@@ -116,7 +116,7 @@ auto no_role_action(const check_context& ctx) -> std::expected<std::vector<im::f
                          plan_filter_sql(ctx.scope, k_claim_plan));
   return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
     im::finding f;
-    f.severity = im::diagnostic_severity::error;
+    f.severity = im::diagnostic_severity::warning;
     f.primary  = im::entity_ref{.kind = "claim", .id = row.column_int64(0)};
     f.evidence = {f.primary, im::entity_ref{.kind = "task", .id = row.column_int64(1)}};
     if (row.column_int64(3) != 0) {
@@ -218,7 +218,7 @@ auto dispatch_family() -> family {
   family f;
   f.checks.push_back(check_def{.id       = "dispatch-no-role-action",
                                .kind     = im::check_kind::event,
-                               .severity = im::diagnostic_severity::error,
+                               .severity = im::diagnostic_severity::warning,
                                .category = "dispatch_no_role_action",
                                .recovery = "start a task-tied action before spawning",
                                .inputs   = {},

@@ -493,7 +493,7 @@ TEST_CASE("a previewed and confirmed dispatch that completes with no role action
   REQUIRE(found.size() == 1);
   CHECK(found[0].find("check")->string == "dispatch-no-role-action");
   CHECK(found[0].find("entity")->string == "claim:1");
-  CHECK(found[0].find("severity")->string == "error");
+  CHECK(found[0].find("severity")->string == "warning");
   std::vector<std::string> evidence;
   for (const auto& e : found[0].find("evidence")->array) {
     evidence.push_back(e.string);
