@@ -631,6 +631,47 @@ TEST_CASE("heartbeat-gap warns for a terminal claim only when the trailing stret
   CHECK(d.findings[0].evidence_times == std::vector<std::string>{at_offset(100s), end});
 }
 
+TEST_CASE("heartbeat-gap leaves the trailing stretch of a stale claim to claim-closed-by-reconcile",
+          "[engine][diagnose][claims][heartbeat-gap][calibration]") {
+  // Decision 1384 (amending 1381): 118 of 153 warnings on the operator's database were stale claims that
+  // `claim-closed-by-reconcile` already reports, and the stretch ended at the reconcile sweep, not at the lapse.
+  // Every other terminal status keeps the warning.
+  for (const std::string_view status : {"completed", "released", "aborted"}) {
+    fixture fx;
+    fx.task(1, "doing");
+    fx.claim(1, 1, status, at_offset(0ms), at_offset(100s), at_offset(700s), at_offset(100s + 700s));
+    fx.heartbeat_action(1, 1, at_offset(100s));
+    auto d = fx.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z");
+    INFO(status);
+    REQUIRE(d.findings.size() == 1);
+    CHECK(d.findings[0].severity == im::diagnostic_severity::warning);
+  }
+
+  fixture stale;
+  stale.task(1, "doing");
+  stale.claim(1, 1, "stale", at_offset(0ms), at_offset(100s), at_offset(700s), at_offset(100s + 7000s));
+  stale.heartbeat_action(1, 1, at_offset(100s));
+  CHECK(stale.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z").findings.empty());
+  // The reconcile event still reports the claim.
+  CHECK(stale.run({"claim-closed-by-reconcile"}, "2026-06-02T00:00:00.000Z").findings.size() == 1);
+
+  // A stale claim that never heartbeated has only the trailing stretch, so it reports nothing here either.
+  fixture silent;
+  silent.task(1, "doing");
+  silent.claim(1, 1, "stale", at_offset(0ms), at_offset(0ms), at_offset(600s), at_offset(6000s));
+  CHECK(silent.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z").findings.empty());
+
+  // Gaps between recorded heartbeats of a stale claim are still info.
+  fixture between;
+  between.task(1, "doing");
+  between.claim(1, 1, "stale", at_offset(0ms), at_offset(1000s), at_offset(1600s), at_offset(1700s));
+  between.heartbeat_action(1, 1, at_offset(100s));
+  between.heartbeat_action(2, 1, at_offset(1000s));
+  auto d = between.run({"heartbeat-gap"}, "2026-06-02T00:00:00.000Z");
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].severity == im::diagnostic_severity::info);
+}
+
 TEST_CASE("heartbeat-gap warns for an active claim when the stretch to now is beyond the lease",
           "[engine][diagnose][claims][heartbeat-gap]") {
   fixture at;
