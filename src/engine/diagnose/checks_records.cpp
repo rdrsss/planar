@@ -18,14 +18,16 @@
 /// in a run without `--plan`. When the last attempt after the conflict was an `error`, the hint says to
 /// pull again first.
 ///
-/// `handoff-stale` (plan 1132, task 7378): a `pending` or `validated` handoff whose age at the
+/// `handoff-stale` (plan 1132, task 7378; decision 1384): a `pending` or `validated` handoff whose age at the
 /// evaluation instant is strictly beyond `core::stale_handoff_threshold_hours`, the cutoff
 /// `planar health` and `planar report` apply, shared through `planar.core.thresholds` and not
 /// restated here. The age is the whole milliseconds from the handoff's `created_at` to the
 /// evaluation instant, so a handoff exactly at the cutoff is not stale. The check describes the
 /// state at the evaluation instant and ignores the window start. The plan scope reaches a handoff
 /// through its snapshot's task; a handoff whose snapshot has no task is in scope only for a run
-/// without a plan. The evidence time is the handoff's `created_at`.
+/// without a plan. A handoff whose task is `done` or `cancelled`, or was claimed (in any status) after
+/// the handoff's `created_at`, is not stale: the work moved on without consuming it (decision 1384).
+/// The evidence time is the handoff's `created_at`.
 
 module;
 
@@ -51,6 +53,9 @@ auto handoff_stale(const check_context& ctx) -> std::expected<std::vector<im::fi
                          " where h.status in ('pending', 'validated')"
                          "   and cast(round((julianday(strftime('%Y-%m-%dT%H:%M:%fZ', ?1))"
                          "                   - julianday(h.created_at)) * 86400000) as integer) > {}"
+                         "   and (t.id is null or (t.status not in ('done', 'cancelled')"
+                         "        and not exists (select 1 from agent_work_claims c where c.entity_kind = 'task'"
+                         "                        and c.entity_id = t.id and c.claimed_at > h.created_at)))"
                          "   and {}"
                          " order by h.id",
                          core::stale_handoff_threshold_hours * k_ms_per_hour, plan_filter_sql(ctx.scope, "t.plan_id"));

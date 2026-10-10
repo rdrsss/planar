@@ -260,7 +260,7 @@ TEST_CASE("handoff-stale skips a handoff whose task was claimed after the handof
   // Per handoff: a later claim hides only the handoffs older than it.
   fixture two;
   two.handoff(1, "validated", 40h, 1);
-  two.handoff(2, "validated", 20h, 1);
+  two.handoff(2, "validated", 26h, 1);
   two.claim_on(1, 1, 30h, "stale");
   auto d = two.run();
   REQUIRE(d.findings.size() == 1);
