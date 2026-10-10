@@ -23,7 +23,6 @@ import planar.cmd.planar_agent.handlers.reconcile.command;
 import planar.cmd.planar_agent.handlers.abort.command;
 import planar.cmd.planar_agent.handlers.schema.command;
 import planar.cmd.planar_agent.handlers.run.command;
-import planar.cmd.planar_agent.handlers.dispatch.command;
 import planar.cmd.planar_agent.handlers.context.command;
 import planar.cmd.planar_agent.handlers.queue.command;
 
@@ -35,8 +34,8 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   // Declaration order matches the oracle's `handlers/cmd.zig` registry.
   auto app = std::make_unique<CLI::App>("Agent-callable coordination binary (pull / claim / complete / heartbeat / reconcile).\n"
                                         "\n"
-                                        "  This binary writes agent_actions, agent_work_claims, the routing_dispatch_*\n"
-                                        "  tables, and the host-queue tables (queue_entries, queue_history,\n"
+                                        "  This binary writes agent_actions, agent_work_claims, and the host-queue\n"
+                                        "  tables (queue_entries, queue_history,\n"
                                         "  queue_schema). It changes tasks.status only as part of a coordinated\n"
                                         "  claim operation; planning entities are written by planar.",
                                         "planar-agent");
@@ -58,7 +57,6 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::abort_cli::add(*app);
   handlers::schema_cli::add(*app);
   handlers::run_cli::add(*app);
-  handlers::dispatch_cli::add(*app);
   handlers::context_cli::add(*app);
   handlers::queue_cli::add(*app);
 

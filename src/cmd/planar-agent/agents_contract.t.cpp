@@ -32,7 +32,7 @@ constexpr std::array k_agent_stems{
 };
 
 /// @brief The doctrine documents: shared text, not agents, and not renamed.
-constexpr std::array k_doctrine{"methodology.md", "doctrine.md", "models.md", "cross-scope-writes.md"};
+constexpr std::array k_doctrine{"methodology.md", "doctrine.md", "cross-scope-writes.md"};
 
 auto repo(std::string_view rel) -> std::filesystem::path {
   return std::filesystem::path{PLANAR_REPO_ROOT} / rel;
@@ -189,7 +189,7 @@ TEST_CASE("agents/ holds exactly fifteen planar-prefixed role files that follow 
   CHECK(agents == expected);
 }
 
-TEST_CASE("the four doctrine documents keep their names and carry no planar map and no name", "[cmd][agent][agents-contract]") {
+TEST_CASE("the three doctrine documents keep their names and carry no planar map and no name", "[cmd][agent][agents-contract]") {
   for (auto const* file : k_doctrine) {
     DYNAMIC_SECTION(file) {
       REQUIRE(std::filesystem::exists(repo(std::string{"agents/"} + file)));
@@ -205,6 +205,12 @@ TEST_CASE("the four doctrine documents keep their names and carry no planar map 
     count += entry.is_regular_file() && entry.path().extension() == ".md" ? 1 : 0;
   }
   CHECK(count == k_agent_stems.size() + k_doctrine.size());
+}
+
+TEST_CASE("agents/models.md is gone with the routing tier table", "[cmd][agent][agents-contract][routing]") {
+  // The tier-to-model table and `planar models resolve` were removed together
+  // (plan 1142, task 7455). Nothing in the authored tree ships the file.
+  CHECK_FALSE(std::filesystem::exists(repo("agents/models.md")));
 }
 
 TEST_CASE("a planar.slug that differs from the name fails and names the file and both values", "[cmd][agent][agents-contract]") {
@@ -234,8 +240,8 @@ TEST_CASE("a file with a top-level model or a bare file name fails", "[cmd][agen
 }
 
 TEST_CASE("no authored text dispatches an agent by its bare role name", "[cmd][agent][agents-contract]") {
-  // `--role coder`, `routing_candidate_bindings.role` and the models.md tier rows
-  // stay bare: they are role values, not agent names, and are not matched here.
+  // `--role coder` stays bare: it is a role value, not an agent name, and is
+  // not matched here.
   std::string const roles =
       "coder|reviewer|orchestrator|test-coder|janitor|research|planner|spec-reviewer|ingestor|importer|synthesizer|ext-sync|"
       "feedback-triager|introspector|sync-reconciler";

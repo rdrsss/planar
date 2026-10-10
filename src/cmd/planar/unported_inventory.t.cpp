@@ -142,8 +142,8 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   CHECK(agent_surface->contains("k_unported[] = {std::string_view{}}"));
   CHECK(agent_surface->contains("std::span<std::string_view const>{k_unported}.first(0)"));
 
-  for (auto const& landed : {"ingest", "run start", "run end", "dispatch preview", "dispatch confirm", "context add",
-                             "context capsule", "context list", "context resolve"}) {
+  for (auto const& landed :
+       {"ingest", "run start", "run end", "context add", "context capsule", "context list", "context resolve"}) {
     INFO("landed agent path remained in unported inventory: " << landed);
     CHECK(std::ranges::find(*agent_unported, landed) == agent_unported->end());
   }

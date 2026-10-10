@@ -6,7 +6,6 @@ module planar.cmd.planar_agent.dispatch;
 import std;
 import cli11;
 import planar.db;
-import planar.cmd.planar_agent.handlers.dispatch;
 import planar.cmd.planar_agent.handlers.context;
 import planar.cliapp.args;
 import planar.cliapp.surface;
@@ -132,8 +131,6 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("action end", handlers::action_end);
   table.emplace("reconcile", handlers::reconcile);
   table.emplace("abort", handlers::abort);
-  table.emplace("dispatch preview", handlers::dispatch_preview);
-  table.emplace("dispatch confirm", handlers::dispatch_confirm);
   table.emplace("context add", handlers::context_add);
   table.emplace("context capsule", handlers::context_capsule);
   table.emplace("context list", handlers::context_list);

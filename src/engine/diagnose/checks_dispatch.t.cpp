@@ -287,7 +287,7 @@ TEST_CASE("a snapshot makes a claim a dispatch only when it overlaps the claim's
 }
 
 TEST_CASE("snapshot confirmed_at is compared as an instant, not as text", "[engine][diagnose][dispatch]") {
-  // `dispatch confirm --now` writes the caller's RFC 3339 text, here without a fraction. At the
+  // The confirmation instant is stored as the caller's RFC 3339 text, here without a fraction. At the
   // release second it is inside the lifetime; as text '...:00Z' sorts after '...:00.000Z'.
   fixture fx;
   fx.task(1, "done");
@@ -564,7 +564,8 @@ TEST_CASE("dispatch-unconfirmed reports a previewed dispatch that was never conf
   CHECK(std::ranges::contains(f.evidence, im::entity_ref{.kind = "dispatch_preview", .id = 1}));
   CHECK(f.evidence.size() == 3);
   CHECK(f.evidence_times == std::vector<std::string>{"2026-06-01T09:01:00.000Z"});
-  CHECK(f.recovery.contains("planar-agent dispatch confirm"));
+  CHECK(f.recovery.contains("confirm the dispatch"));
+  CHECK_FALSE(f.recovery.contains("dispatch confirm"));
   CHECK(im::finding_fingerprint(f) == "dispatch-unconfirmed|claim:1|task:1|global");
 }
 

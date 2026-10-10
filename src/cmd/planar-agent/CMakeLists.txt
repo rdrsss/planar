@@ -141,7 +141,6 @@ planar_binary(planar_agent
     handlers/abort/command.cppm
     handlers/schema/command.cppm
     handlers/run/command.cppm
-    handlers/dispatch/command.cppm
     handlers/context/command.cppm
     handlers/queue/command.cppm
 
@@ -154,7 +153,6 @@ planar_binary(planar_agent
     handlers/shared/terminal.cppm
     handlers/shared/recovery.cppm
     handlers/action/action.cppm
-    handlers/dispatch/dispatch.cppm
     handlers/context/context.cppm
     handlers/run/runs.cppm
     handlers/queue/queue.cppm
@@ -174,7 +172,6 @@ planar_binary(planar_agent
     handlers/shared/terminal.cpp
     handlers/shared/recovery.cpp
     handlers/action/action.cpp
-    handlers/dispatch/dispatch.cpp
     handlers/context/context.cpp
     handlers/ingest/ingest.cpp
     handlers/run/runs.cpp
@@ -189,7 +186,6 @@ planar_binary(planar_agent
     db
     git
     engine_runtime
-    engine_routing
     json_text
     textview
     json_dom

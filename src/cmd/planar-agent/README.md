@@ -13,7 +13,6 @@ Its claim terminal verbs update the claim and task in one transaction.
 | `complete/`, `fail/`, `release/`, `block/` | Atomic claim terminals paired with task status changes. |
 | `action/` | Start and end nested agent actions. |
 | `run/`, `context/` | Workflow run lifecycle and context records/capsules. |
-| `dispatch/` | Preview and confirm routing authorization. |
 | `ingest/` | Translate vendor hook events into coordination records. |
 | `queue/` | The host-wide build and test queue (plan 1080): `queue run -- <command>` waits for its turn in the agent database, runs the command, and exits with its status. |
 | `reconcile/`, `abort/` | Recover expired claims, orphaned activity or a stuck claim. |

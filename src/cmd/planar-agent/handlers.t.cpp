@@ -182,7 +182,9 @@ TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd
   // below, so this pair is a contract and not a relaxation.
   CHECK(got.out.contains("\"planar-agent ingest\""));
   CHECK(got.out.contains("\"planar-agent run start\""));
-  CHECK(got.out.contains("\"planar-agent dispatch preview\""));
+  // `dispatch preview` and `dispatch confirm` were removed with the routing
+  // dispatch boundary: the catalog no longer declares them.
+  CHECK_FALSE(got.out.contains("\"planar-agent dispatch"));
   CHECK(got.out.contains("\"planar-agent context add\""));
 
   // `ingest` is now a real leaf, not an exit-64 catalog placeholder.
@@ -278,6 +280,18 @@ TEST_CASE("planar-agent maps a parse failure to exit 1, not the operator binary'
   CHECK(unknown_flag.err == "error: version: The following argument was not expected: --badflag\n");
 }
 
+TEST_CASE("planar-agent dispatch preview is an unknown subcommand and opens no database", "[cmd][agent][handlers][routing]") {
+  // Removed with the routing dispatch boundary (plan 1142, task 7455): the
+  // verb is no longer in the tree, so argv is refused exactly like any
+  // other unknown verb, at exit 1, before the database is touched.
+  auto const fx  = make_fixture("dispatch-gone");
+  auto const got = dispatch(fx, {"dispatch", "preview", "--work-item", "42"});
+  CHECK(got.code == 1);
+  CHECK(got.out.empty());
+  CHECK(got.err.starts_with("error: planar-agent: The following arguments were not expected: dispatch preview"));
+  CHECK_FALSE(got.db_open);
+}
+
 TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][handlers]") {
   auto const fx = make_fixture("help");
 
@@ -297,7 +311,7 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // The write surface is stated on the root page, as planar-ext's is.
   CHECK(explicit_help.out.contains("agent_actions"));
   CHECK(explicit_help.out.contains("agent_work_claims"));
-  CHECK(explicit_help.out.contains("routing_dispatch_"));
+  CHECK_FALSE(explicit_help.out.contains("routing_dispatch_"));
   CHECK(explicit_help.out.contains("queue_entries"));
   CHECK(explicit_help.out.contains("tasks.status"));
   // Matched as a LISTING LINE (`"\n  <verb>"`), not as a bare substring.
@@ -319,7 +333,7 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // `dispatch.cpp`'s `not_implemented_for`), which is a better operator
   // experience than an unknown-verb error and is what makes
   // `make cli-usage-check` able to resolve their flags at all.
-  for (auto const& declared : {"ingest", "dispatch", "context", "run"}) {
+  for (auto const& declared : {"ingest", "context", "run"}) {
     INFO("declared verb missing from the root page: " << declared);
     CHECK(listed(declared));
   }

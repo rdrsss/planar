@@ -149,7 +149,6 @@ planar_module(engine_models
     ranking.cppm
     views.cppm
     render.cppm
-    legacy.cppm
     profile.cppm
     roles.cppm
     models.cppm
@@ -158,7 +157,6 @@ planar_module(engine_models
     ranking.cpp
     views.cpp
     render.cpp
-    legacy.cpp
     profile.cpp
     roles.cpp
   DEPENDS

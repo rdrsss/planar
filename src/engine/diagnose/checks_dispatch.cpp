@@ -28,7 +28,7 @@
 /// A claim is live while it is `active` and its lease runs to the evaluation instant or later, so a
 /// lease that expires exactly now is live. The dispatch checks are events and wait for the claim to
 /// end: a live claim can still start its action. Every timestamp is compared as an instant
-/// (`strftime`), because `dispatch confirm --now` stores the caller's RFC 3339 text, which has no
+/// (`strftime`), because the confirmation instant is stored as the caller's RFC 3339 text, which has no
 /// fraction. Evidence times are row timestamps, never the evaluation instant.
 
 module;
@@ -250,7 +250,7 @@ auto dispatch_family() -> family {
                                .kind     = im::check_kind::event,
                                .severity = im::diagnostic_severity::warning,
                                .category = "dispatch_unconfirmed",
-                               .recovery = "planar-agent dispatch confirm before spawning",
+                               .recovery = "confirm the dispatch before spawning",
                                .inputs   = {},
                                .built    = true,
                                .evaluate = unconfirmed});

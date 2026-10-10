@@ -28,7 +28,6 @@ import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.init;
-import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.runs;
@@ -626,26 +625,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // table. `bench harvest` is deliberately absent and stays a declared
   // exit-64 refusal; its engine half was deferred WITH its git-subprocess
   // dependency in task 6095. See `handlers/runs.cppm`.
-  // `models` — all fourteen leaves. `models resolve` left the unported
-  // inventory at task 6343, once `engine_ingest`'s planning half
-  // (`assemble_planning`, `compile_planning`) joined `engine_models`'s
-  // `profile` and `roles` (task 6111): the last missing piece was the
-  // `packet::evidence` -> `profile::fact` adapter, which belongs here — see
-  // `handlers/models.cppm`.
-  table.emplace("models registry list", handlers::models_registry_list);
-  table.emplace("models registry export", handlers::models_registry_export);
-  table.emplace("models registry add", handlers::models_registry_add);
-  table.emplace("models registry update", handlers::models_registry_update);
-  table.emplace("models registry remove", handlers::models_registry_remove);
-  table.emplace("models registry bind", handlers::models_registry_bind);
-  table.emplace("models registry unbind", handlers::models_registry_unbind);
-  table.emplace("models registry observe", handlers::models_registry_observe);
-  table.emplace("models registry eligibility", handlers::models_registry_eligibility);
-  table.emplace("models registry verify-identity", handlers::models_registry_verify_identity);
-  table.emplace("models evals", handlers::models_evals);
-  table.emplace("models experiments", handlers::models_experiments);
-  table.emplace("models outcomes", handlers::models_outcomes);
-  table.emplace("models resolve", handlers::models_resolve);
   table.emplace("bench start", handlers::bench_start);
   table.emplace("bench event", handlers::bench_event);
   table.emplace("bench touch", handlers::bench_touch);
