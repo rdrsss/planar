@@ -31,7 +31,8 @@
 //   * `apply-without-preview` (task 7379): the capture log is turned on through `[introspection]
 //     cli_log` in the pinned config file, and `planar spec ingest` runs with and without `--apply`.
 //     There is no workbench spec, so the ingest exits 2, which the log records all the same. With
-//     the log off the check's input is `disabled` and the outcome `partial`.
+//     the log off the check's input is `disabled`, the check does not run and the outcome stays `ok`;
+//     a config file that cannot be parsed reads `unavailable` and the outcome `partial`.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -613,12 +614,13 @@ TEST_CASE("an ingest apply with no preview before it is reported, and one after 
   }
 }
 
-TEST_CASE("with the capture log off the apply check is partial, not clean", "[cmd][watch][diagnose][workflow][cli]") {
+TEST_CASE("with the capture log off the apply check is disabled and the outcome stays ok",
+          "[cmd][watch][diagnose][workflow][cli]") {
   world w;
   // The default config leaves cli_log off, so the apply is not logged at all.
   CHECK(w.planar_status({"spec", "ingest", "1", "--apply"}) != 0);
   auto parsed = w.diagnose_any({"apply-without-preview"});
-  CHECK(parsed.find("outcome")->string == "partial");
+  CHECK(parsed.find("outcome")->string == "ok");
   CHECK(parsed.find("findings")->array.empty());
   bool seen = false;
   for (const auto& row : parsed.find("coverage")->array) {
@@ -630,8 +632,30 @@ TEST_CASE("with the capture log off the apply check is partial, not clean", "[cm
   }
   CHECK(seen);
 
-  // The same holds for a run that selects every check: a host that does not log reads `partial`.
-  CHECK(w.diagnose_any({}).find("outcome")->string == "partial");
+  // The same holds for a run that selects every check: a host that does not log still reads `ok`.
+  CHECK(w.diagnose_any({}).find("outcome")->string == "ok");
+}
+
+TEST_CASE("a config file that cannot be parsed makes the capture-log input unavailable and the run partial",
+          "[cmd][watch][diagnose][workflow][cli]") {
+  world w;
+  {
+    std::ofstream config{w.root / "config.toml", std::ios::binary};
+    config << "[introspection\ncli_log = \n";
+    REQUIRE(config.good());
+  }
+  auto parsed = w.diagnose_any({"apply-without-preview"});
+  CHECK(parsed.find("outcome")->string == "partial");
+  CHECK(parsed.find("findings")->array.empty());
+  bool seen = false;
+  for (const auto& row : parsed.find("coverage")->array) {
+    if (row.find("input")->string == "cli_log") {
+      seen = true;
+      CHECK(row.find("state")->string == "unavailable");
+      CHECK(row.find("reason")->string == "cli_log-config-unknown");
+    }
+  }
+  CHECK(seen);
 }
 
 TEST_CASE("a dispatch previewed and confirmed without a claim token, then claimed, is still that claim's dispatch",

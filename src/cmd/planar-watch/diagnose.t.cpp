@@ -76,7 +76,7 @@ struct outcome {
 
 /// A catalog with a check that reports one error for each task, and optionally an input that is disabled
 /// and a check that fails.
-auto test_catalog(bool disabled_input, bool failing) -> dg::catalog {
+auto test_catalog(bool disabled_input, bool failing, bool unavailable_input = false) -> dg::catalog {
   dg::catalog   cat;
   dg::check_def def;
   def.id       = "task-seen";
@@ -84,7 +84,13 @@ auto test_catalog(bool disabled_input, bool failing) -> dg::catalog {
   def.severity = im::diagnostic_severity::error;
   def.category = "test";
   def.recovery = "look at it";
-  if (disabled_input) {
+  if (unavailable_input) {
+    def.inputs = {"capture_log"};
+    cat.inputs.push_back(dg::input_def{
+        .name = "capture_log", .probe = [](const dg::check_context&) -> std::expected<dg::input_status, planar::db::db_error> {
+          return dg::input_status{.state = im::coverage_state::unavailable, .reason = "cli_log-config-unknown"};
+        }});
+  } else if (disabled_input) {
     def.inputs = {"capture_log"};
     cat.inputs.push_back(dg::input_def{
         .name = "capture_log", .probe = [](const dg::check_context&) -> std::expected<dg::input_status, planar::db::db_error> {
@@ -158,9 +164,18 @@ TEST_CASE("diagnose exits 0 with findings present and prints them in text and JS
 
 TEST_CASE("diagnose exits 0 for a partial outcome and says which input was not read", "[cmd][watch][diagnose]") {
   scratch fx;
-  auto    got = run_in_process(fx, {"--plan", "1"}, test_catalog(true, false));
+  auto    got = run_in_process(fx, {"--plan", "1"}, test_catalog(false, false, true));
   CHECK(got.code == 0);
   CHECK(got.out.contains("outcome partial"));
+  CHECK(got.out.contains("input capture_log: unavailable (cli_log-config-unknown)"));
+  CHECK_FALSE(got.out.contains("task-seen"));
+}
+
+TEST_CASE("a disabled input is named but does not make the outcome partial", "[cmd][watch][diagnose]") {
+  scratch fx;
+  auto    got = run_in_process(fx, {"--plan", "1"}, test_catalog(true, false));
+  CHECK(got.code == 0);
+  CHECK(got.out.contains("outcome ok"));
   CHECK(got.out.contains("input capture_log: disabled (cli_log-off)"));
   CHECK_FALSE(got.out.contains("task-seen"));
 }
@@ -242,13 +257,6 @@ TEST_CASE("a plan built with the operator binary diagnoses clean through planar-
   step({"plan", "create", "Demo plan"}, "s3");
   step({"task", "add", "First task", "--plan", "1"}, "s4");
   step({"plan", "update", "1", "--status", "active"}, "s5");
-  // The capture log is on: with it off the whole catalog reads `partial` (a selected check cannot read its input),
-  // which `diagnose_checks.t.cpp` pins. The pinned environment names this config file.
-  {
-    std::ofstream config{root / "config.toml", std::ios::binary};
-    config << "[introspection]\ncli_log = true\n";
-    REQUIRE(config.good());
-  }
 
   auto json = run_pinned(watch, std::vector<std::string>{"diagnose", "--plan", "1", "--json"}, root, "d1");
   INFO("stderr: " << json.err);
@@ -262,8 +270,9 @@ TEST_CASE("a plan built with the operator binary diagnoses clean through planar-
   CHECK(parsed->find("scope")->find("window")->find("source")->string == "plan-lifetime");
   bool saw_run_identity = false;
   for (auto const& row : parsed->find("coverage")->array) {
-    // The capture log is the one input a built check reads here; the others are for unbuilt checks.
-    CHECK(row.find("state")->string == (row.find("input")->string == "cli_log" ? "observed" : "not_applicable"));
+    // The default config leaves the capture log off, so its input reads `disabled`, which does not degrade the
+    // outcome; the other inputs are for unbuilt checks.
+    CHECK(row.find("state")->string == (row.find("input")->string == "cli_log" ? "disabled" : "not_applicable"));
     saw_run_identity = saw_run_identity || row.find("input")->string == "run_identity";
   }
   CHECK(saw_run_identity);

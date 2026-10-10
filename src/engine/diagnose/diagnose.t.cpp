@@ -424,12 +424,12 @@ TEST_CASE("inputs of unselected or unbuilt checks are not_applicable and never d
     CHECK(state_of("queue-like") == dg::check_state::not_built);
   }
 
-  SECTION("a selected check whose input is disabled reports nothing and the outcome is partial") {
+  SECTION("a selected check whose input is disabled reports nothing and the outcome stays ok") {
     auto req   = request(1);
     req.checks = {"cli-like"};
     auto d     = dg::run(conn, req, cat);
     REQUIRE(d.has_value());
-    CHECK(d->result == dg::run_outcome::partial);
+    CHECK(d->result == dg::run_outcome::ok);
     CHECK(find_row(*d, "capture_log").state == im::coverage_state::disabled);
     CHECK(find_row(*d, "capture_log").reason == "cli_log-off");
     CHECK(capture_probes == 1);
@@ -437,13 +437,13 @@ TEST_CASE("inputs of unselected or unbuilt checks are not_applicable and never d
     CHECK(std::ranges::find(d->checks, "cli-like", &dg::check_summary::id)->state == dg::check_state::input_unavailable);
     auto text = dg::render_text(*d);
     CHECK(text.find("input capture_log: disabled (cli_log-off)") != std::string::npos);
-    CHECK(text.find("outcome partial") != std::string::npos);
+    CHECK(text.find("outcome ok") != std::string::npos);
   }
 
-  SECTION("selecting every check probes the needed input once and is partial") {
+  SECTION("selecting every check probes the needed input once and stays ok") {
     auto d = dg::run(conn, request(1), cat);
     REQUIRE(d.has_value());
-    CHECK(d->result == dg::run_outcome::partial);
+    CHECK(d->result == dg::run_outcome::ok);
     CHECK(capture_probes == 1);
     CHECK(queue_probes == 0);
     CHECK(d->findings.size() == 1);

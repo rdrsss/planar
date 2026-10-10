@@ -10,9 +10,10 @@
 //   * `apply-without-preview` (event, warning): a `spec ingest` invocation whose flags include
 //     `--apply`, with no earlier successful-or-not `spec ingest` invocation without `--apply` in the
 //     window. `--apply-removals` is a different flag; another verb with `--apply` is not an ingest.
-//   * The capture log is the check's only input (`cli_log`): off reads `disabled` and the outcome
-//     `partial`, with no finding even over rows an earlier logging period left; an unknown setting
-//     reads `unavailable`; on reads `observed`.
+//   * The capture log is the check's only input (`cli_log`): off reads `disabled`, the check does not
+//     run (no finding even over rows an earlier logging period left) and the outcome stays `ok`, since
+//     the operator turned the input off; an unknown setting reads `unavailable` and the outcome
+//     `partial`; on reads `observed`.
 //   * The positional-shape limit: `args_shape` keeps only the arity of a positional, so a preview of
 //     any plan satisfies an apply of any other.
 //   * Evidence is the invocation's row reference and its `recorded_at`, never its arguments.
@@ -260,14 +261,14 @@ TEST_CASE("apply-without-preview times its evidence from the row, not from the e
   CHECK(im::finding_digest(first.findings[0]) == im::finding_digest(later.findings[0]));
 }
 
-TEST_CASE("with the capture log off the input is disabled, the outcome partial and nothing is reported",
+TEST_CASE("with the capture log off the input is disabled, the outcome stays ok and nothing is reported",
           "[engine][diagnose][cli]") {
   // An earlier logging period left an apply with no preview; a log that is off now must not be read as evidence.
   fixture fx;
   fx.invocation(1, "spec ingest", "<pos:1> --apply", "2026-06-01T09:00:00.000Z");
 
   auto d = fx.run(k_apply, false);
-  CHECK(d.result == dg::run_outcome::partial);
+  CHECK(d.result == dg::run_outcome::ok);
   CHECK(d.findings.empty());
   auto row = coverage_of(d, "cli_log");
   CHECK(row.state == im::coverage_state::disabled);
@@ -275,6 +276,9 @@ TEST_CASE("with the capture log off the input is disabled, the outcome partial a
   auto summary = std::ranges::find(d.checks, "apply-without-preview", &dg::check_summary::id);
   REQUIRE(summary != d.checks.end());
   CHECK(summary->state == dg::check_state::input_unavailable);
+
+  // A run that selects every check reads the same.
+  CHECK(fx.run({}, false).result == dg::run_outcome::ok);
 }
 
 TEST_CASE("an unknown capture-log setting reads unavailable, never clean", "[engine][diagnose][cli]") {
