@@ -107,8 +107,9 @@ public:
 /// @brief A transport that always fails, for the TransportFailed arm.
 class dead_transport final : public planar::http::transport {
 public:
+  planar::http::transport_error failure = planar::http::transport_error::send_failed;
   auto send(const planar::http::request&) -> std::expected<planar::http::response, planar::http::transport_error> override {
-    return std::unexpected(planar::http::transport_error::send_failed);
+    return std::unexpected(failure);
   }
 };
 
@@ -513,4 +514,16 @@ TEST_CASE("jira adapter works over a real loopback HTTP round trip", "[extsync][
     CHECK(seen_put_body == R"({"fields":{"summary":"Local edit"}})");
   }
   CHECK(server.request_count() == 2);
+}
+
+TEST_CASE("jira preserves certificate verification failure in the operator diagnostic", "[extsync][jira]") {
+  dead_transport wire;
+  wire.failure = planar::http::transport_error::certificate_verification_failed;
+  jira_adapter adapter{"https://jira.invalid", bearer("fixture-token"), wire};
+  auto const   pulled = adapter.pull("PROJ-1");
+  REQUIRE_FALSE(pulled.has_value());
+  CHECK(planar::adapter::adapter_error_name(pulled.error()) == "CertificateVerificationFailed");
+  auto const commented = adapter.post_comment("PROJ-1", "fixture comment");
+  REQUIRE_FALSE(commented.has_value());
+  CHECK(planar::adapter::adapter_error_name(commented.error()) == "CertificateVerificationFailed");
 }

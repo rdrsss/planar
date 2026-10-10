@@ -29,7 +29,7 @@ not a runtime ACL.
 
 | Binary | Role | Writes |
 |--------|------|--------|
-| `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. |
+| `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. Outside the database, `update` writes the mutation-lock record and a download directory before it execs the bundled installer; it opens no database. |
 | `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, the `routing_dispatch_*` tables, and `tasks.status` as part of a coordinated operation. Also the host-queue tables `queue_entries`, `queue_history` and `queue_schema`, through `queue run`. |
 | `planar-watch` | Read-only viewer | Nothing. Opens SQLite with `mode=ro`. |
 | `planar-ext` | Jira and GitHub Issues adapters | `external_links`, `external_systems`, `sync_events` only, enforced by a `sqlite3_set_authorizer` allowlist. Read-only on planning tables. |
@@ -209,6 +209,40 @@ Do not claim the guard is universal without measuring. Matrix:
 - When an installed artifact stops shipping, add its `$PLANAR_HOME`-relative
   path to `install-cleanup.txt`.
 
+### Release bundles and the install
+
+Operators install from a release, not a checkout:
+`curl -fsSL https://github.com/rdrsss/planar/releases/latest/download/get-planar.sh | sh`.
+The old Makefile install channel into `~/.local/bin` is retired; contributors
+use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architecture.md#release-bundles),
+[INSTALL.md](INSTALL.md), and the cut recipe in
+[docs/operations.md](docs/operations.md#cutting-a-release).
+
+- **Bundle.** `planar-<os>-<arch>.tar.gz` for `macos-arm64` (macOS 26.0 or
+  later) and `linux-x86_64` (glibc 2.36 or later), no version in the name.
+  Layout: `release.json`, `install.sh`, `uninstall.sh`, `get-planar.sh`,
+  `install-cleanup.txt`, `bin/`, `skills/planar/`, `agents/`, `codex-agents/`,
+  `templates/`, `workflows/`, `migrations/`, `scripts/install-lib/`.
+- **Install order.** Both the bootstrap and `planar update` end in
+  `install.sh --prebuilt`: lock, journal, stage, probe the database with the
+  staged binaries, swap the managed subtrees (`bin/`, `skills/`, `agents/`,
+  `codex-agents/`, `workflows/`, `scripts/`, `migrations/`) through `<name>.old`,
+  create or migrate the database, place vendor surfaces, write `release.json`
+  and then the install stamp last.
+- **Data paths** are never removed by an install and are kept by
+  `planar-uninstall` without `--purge`: `planar.db` (with `-wal` and `-shm`),
+  `queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`,
+  `workspaces/`, `models/`, `execute/`, `templates/`. The one list is
+  `scripts/install-lib/data-paths.sh`; INSTALL.md carries a checked copy.
+- **`PLANAR_PORTABLE`** (CMake option, default `OFF`, set by the `dist` preset
+  only) links the C++ runtime statically with no toolchain rpath. A shipped
+  binary must satisfy `portable.binaries`; never turn it on in `debug` or
+  `release`.
+- **Release cut** (`make release-cut TAG=vX.Y.Z`) runs on macOS arm64, from an
+  annotated stable tag with `HEAD` at it and a clean tree. Try
+  `DRY_RUN=1` first. Releases are cut locally until hosted CI returns (decision
+  1337).
+
 ## Source layout
 
 | Path | Role |
@@ -234,7 +268,7 @@ Do not claim the guard is universal without measuring. Matrix:
 
 ```bash
 make build      # release build; copies the binaries into ./bin/
-make install    # release build with version metadata; installs into PREFIX
+make dist       # portable release bundle for this host (dist/); see operations.md
 make test       # debug build, then ctest
 make test-all   # the full gate; run it before a pull request
 make cpp-lint   # clang-format, clang-tidy and the Doxygen pass
@@ -246,8 +280,8 @@ cmake --build build/debug --target all planar_tests   # test binaries are not in
 ctest --test-dir build/debug --output-on-failure
 ```
 
-- Version metadata is opt-in (`-DPLANAR_VERSION_META=ON`). Only `make
-  install` and `install.sh` pass it. Embedding the live sha and dirty flag by
+- Version metadata is opt-in (`-DPLANAR_VERSION_META=ON`). Only
+  `install.sh` passes it. Embedding the live sha and dirty flag by
   default invalidates the whole build graph on every commit.
 - `make test` alone is not the merge gate; `make test-all` is.
 - **Tasks run targeted tests; milestones run the full suite.** A task builds
@@ -261,7 +295,7 @@ ctest --test-dir build/debug --output-on-failure
   builds the product only; `--target planar_tests` builds every Catch2
   binary (`make test`, `make linux-gate` and the full CI tier do both). A
   cold build spent a quarter of its CPU compiling tests that `make build`,
-  `make install` and `install.sh` never ran (measured 2026-10-03). Every
+  `install.sh` never ran (measured 2026-10-03). Every
   test executable goes through `planar_mark_test_binary()` in
   `cmake/module.cmake`; a hand-rolled `add_executable(<x>_tests …)` that
   skips it lands back in `all`.

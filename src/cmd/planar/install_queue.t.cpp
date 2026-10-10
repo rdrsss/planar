@@ -4,15 +4,17 @@
 // upgrade"; test spec 658, the install scenarios that name the post-build
 // ctest case).
 //
-// `scripts/install-lib/queue-retire.sh` holds the steps install.sh runs after
-// it installs the binaries. `scripts/install-manifest-test.sh` drives the same
-// functions with stub binaries, before anything is built, which pins the
-// probe table's decisions. What a stub cannot show is that the decisions hold
-// for what the shipped binaries actually print and do: that a truncated
-// `planar.db` really probes `schema_version_behind`, that `planar init` run the
-// way the step runs it really migrates it from inside a linked worktree, and
-// that an ahead database really is left alone. ctest runs only after the
-// build, so the binaries here are always current.
+// `scripts/install-lib/db-probe.sh` and `queue-retire.sh` hold the steps
+// install.sh runs: the database probe with the staged binaries, the migration
+// with the installed ones, and the old queue store's retirement.
+// `scripts/install-manifest-test.sh` drives the same functions with stub
+// binaries, before anything is built, which pins the state table. What a stub
+// cannot show is that the states hold for what the shipped binaries actually
+// print and do: that a truncated `planar.db` really probes behind with both
+// versions, that `planar init` run the way the step runs it really migrates it
+// from inside a linked worktree, and that an ahead database really reads ahead
+// (plan 1122, decision 1326). ctest runs only after the build, so the binaries
+// here are always current.
 //
 // `queue_retire_live_oracle` (task qp-install-retire) is the only check that
 // `scripts/install-lib/queue_retire.py`, the installer's fail-closed reader of
@@ -65,10 +67,16 @@ auto agent_bin() -> std::filesystem::path {
   return std::filesystem::path{PLANAR_AGENT_CPP_BIN};
 }
 
-/// @brief The installer's sourceable queue-upgrade functions in this checkout.
+/// @brief Path to the built `planar-watch` binary.
 /// @return The path.
-auto seam_lib() -> std::filesystem::path {
-  return std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "scripts" / "install-lib" / "queue-retire.sh";
+auto watch_bin() -> std::filesystem::path {
+  return std::filesystem::path{PLANAR_WATCH_CPP_BIN};
+}
+
+/// @brief The installer's sourceable library directory in this checkout.
+/// @return The path.
+auto seam_dir() -> std::filesystem::path {
+  return std::filesystem::path{PLANAR_TARGET_SOURCE_ROOT} / "scripts" / "install-lib";
 }
 
 /// @brief Fails the case, before any binary runs, when a fixture step failed.
@@ -152,6 +160,8 @@ auto make_install(std::string_view tag) -> install_fixture {
   must("place planar", !ec);
   std::filesystem::create_symlink(agent_bin(), fx.prefix / "bin" / "planar-agent", ec);
   must("place planar-agent", !ec);
+  std::filesystem::create_symlink(watch_bin(), fx.prefix / "bin" / "planar-watch", ec);
+  must("place planar-watch", !ec);
   {
     std::ofstream out(fx.config, std::ios::binary);
     out << "[introspection]\ncli_log = false\n";
@@ -200,9 +210,19 @@ auto run_seam(const install_fixture& fx, std::string_view fn, std::string_view t
       var.value = fx.prefix.string();
     }
   }
+  // The libraries install.sh sources, in its order; the database is resolved
+  // for the prefix as install.sh resolves it. A database function prints its
+  // state after it returns.
   std::string const script =
-      R"(set -eEuo pipefail; p="$PLANAR_HOME"; unset PLANAR_HOME; PLANAR_HOME="$p"; source "$1"; shift; "$@")";
-  std::vector<std::string> args{"-c", script, "bash", seam_lib().string(), std::string{fn}};
+      R"(set -eEuo pipefail; p="$PLANAR_HOME"; unset PLANAR_HOME; PLANAR_HOME="$p"; d="$1"; shift
+source "$d/prefix-guard.sh"; source "$d/queue-retire.sh"; source "$d/db-probe.sh"
+planar_db_resolve "$PLANAR_HOME"; rc=0; "$@" || rc=$?
+if [ -n "${INSTALL_DB_STATE-}" ]; then printf 'db state: %s %s %s\n' "$INSTALL_DB_STATE" "${INSTALL_DB_VERSION:--}" "${INSTALL_DB_TARGET:--}"; printf 'db detail: %s\n' "$INSTALL_DB_DETAIL"; fi
+exit "$rc")";
+  std::vector<std::string> args{"-c", script, "bash", seam_dir().string(), std::string{fn}};
+  if (fn.starts_with("planar_db_")) {
+    args.emplace_back((fx.prefix / "bin").string());
+  }
   if (!arg.empty()) {
     args.emplace_back(arg);
   }
@@ -297,8 +317,8 @@ auto canary_state(const std::filesystem::path& path) -> std::string {
 
 } // namespace
 
-TEST_CASE("install_queue_probe_migrate", "[cmd][install][queue]") {
-  SECTION("a behind prefix planar.db is migrated from a linked worktree, and a second run changes nothing") {
+TEST_CASE("install_db_probe_migrate", "[cmd][install][queue]") {
+  SECTION("a behind prefix planar.db is migrated from a linked worktree, and a second probe finds it current") {
     auto fx = make_install("iq_behind");
     truncated_store(fx.db);
     make_proj_a_linked_worktree(fx.work);
@@ -309,13 +329,15 @@ TEST_CASE("install_queue_probe_migrate", "[cmd][install][queue]") {
     auto const prefix_before = listing(fx.prefix);
     auto const home_before   = listing(fx.work / "fakehome" / ".planar");
 
-    auto const first = run_seam(fx, "queue_probe_migrate", "first");
+    auto const probed = run_seam(fx, "planar_db_probe", "probe");
+    INFO("probe stdout:\n" << probed.out << "\nstderr:\n" << probed.err);
+    REQUIRE(probed.code == 0);
+    CHECK(probed.out.find(std::format("db state: behind {} {}", head - 1, head)) != std::string::npos);
+
+    auto const first = run_seam(fx, "planar_db_migrate", "first");
     INFO("stdout:\n" << first.out << "\nstderr:\n" << first.err);
     REQUIRE(first.code == 0);
-    // The first probe answered behind, the second not_found, in that order.
-    auto const behind = position_of(first.out, "queue store probe: behind (exit 125, tag schema_version_behind)");
-    auto const usable = position_of(first.out, "queue store probe: usable (exit 1, tag not_found)");
-    CHECK(behind < usable);
+    CHECK(first.out.find("db state: current") != std::string::npos);
     CHECK(qfix::applied_versions(fx.db).ends_with(std::format(",{}", head)));
     // Nothing new under the prefix or the scratch HOME's .planar, no config
     // created or modified, and the canary untouched.
@@ -336,81 +358,62 @@ TEST_CASE("install_queue_probe_migrate", "[cmd][install][queue]") {
     INFO("queue run stderr:\n" << ran.err);
     REQUIRE(ran.code == 0);
 
-    // A second run of the step finds the database usable, migrates nothing
-    // and changes no table.
+    // A second probe finds the database current and changes no table.
     auto const state_before = db_state(fx.db);
-    auto const second       = run_seam(fx, "queue_probe_migrate", "second");
+    auto const second       = run_seam(fx, "planar_db_probe", "second");
     INFO("second stdout:\n" << second.out << "\nsecond stderr:\n" << second.err);
     REQUIRE(second.code == 0);
-    CHECK(second.out.find("migrating") == std::string::npos);
-    CHECK(second.out.find("queue store probe: usable") != std::string::npos);
+    CHECK(second.out.find("db state: current") != std::string::npos);
     CHECK(db_state(fx.db) == state_before);
     CHECK(qfix::file_bytes(fx.config) == config_before);
     CHECK(canary_state(fx.canary) == canary_before);
   }
 
-  SECTION("an ahead planar.db is never migrated or refused: compatible, incompatible and foreign") {
-    struct ahead_case {
+  SECTION("an ahead planar.db is ahead whatever its queue tables say, and a same-version foreign queue is a fault") {
+    // Decision 1326 replaces the old "an ahead database is never refused": the
+    // install refuses both before anything live changes. Queue compatibility
+    // never decides the main schema.
+    struct probe_case {
       std::string_view tag;
       void (*build)(const std::filesystem::path&);
-      std::string_view              verdict;
-      std::vector<std::string_view> warning; ///< Phrases stderr must carry; empty for none.
+      std::string_view state;  ///< The expected "db state: ..." prefix.
+      std::string_view detail; ///< A phrase the detail must carry; empty for none.
     };
     std::array const cases{
-        ahead_case{.tag     = "iq_ahead",
-                   .build   = qfix::ahead_store,
-                   .verdict = "queue store probe: usable (exit 1, tag not_found)",
-                   .warning = {}},
-        ahead_case{.tag     = "iq_incompat",
-                   .build   = qfix::incompatible_ahead_store,
-                   .verdict = "queue store probe: incompatible (exit 125, tag queue_schema_incompatible)",
-                   .warning = {"ahead of this build", "until a newer build is installed"}},
-        ahead_case{.tag     = "iq_foreign",
-                   .build   = qfix::foreign_store,
-                   .verdict = "queue store probe: foreign (exit 125, tag queue_schema_foreign)",
-                   .warning = {"same number, foreign migration", "a newer build alone will not fix it"}},
+        probe_case{.tag = "iq_ahead", .build = qfix::ahead_store, .state = "db state: ahead", .detail = "newer than"},
+        probe_case{
+            .tag = "iq_incompat", .build = qfix::incompatible_ahead_store, .state = "db state: ahead", .detail = "newer than"},
+        probe_case{
+            .tag = "iq_foreign", .build = qfix::foreign_store, .state = "db state: fault", .detail = "queue_schema_foreign"},
     };
     for (auto const& one : cases) {
       auto fx = make_install(one.tag);
       one.build(fx.db);
-      auto const versions_before = qfix::applied_versions(fx.db);
-      auto const got             = run_seam(fx, "queue_probe_migrate", "ahead");
+      auto const state_before = db_state(fx.db);
+      auto const got          = run_seam(fx, "planar_db_probe", "probe");
       INFO(one.tag << " stdout:\n" << got.out << "\nstderr:\n" << got.err);
       CHECK(got.code == 0);
-      CHECK(got.out.find(one.verdict) != std::string::npos);
-      CHECK(got.out.find("migrating") == std::string::npos);
-      CHECK(qfix::applied_versions(fx.db) == versions_before);
-      for (auto const phrase : one.warning) {
-        CHECK(got.err.find(phrase) != std::string::npos);
+      CHECK(got.out.find(one.state) != std::string::npos);
+      CHECK(got.out.find(one.detail) != std::string::npos);
+      CHECK(db_state(fx.db) == state_before);
+      if (one.state == "db state: ahead") {
+        auto const head = qfix::head_version();
+        CHECK(got.out.find(std::format("db state: ahead {} {}", head + 1, head)) != std::string::npos);
       }
-      if (one.warning.empty()) {
-        CHECK(got.err.empty());
-      }
-
-      // ...and an idle agent.db beside it is still retired.
-      idle_agent_store(fx.prefix / "agent.db");
-      auto const recheck = run_seam(fx, "queue_live_guard", "recheck", "re-check");
-      INFO("re-check stderr:\n" << recheck.err);
-      CHECK(recheck.code == 0);
-      auto const retired = run_seam(fx, "queue_retire_store", "retire");
-      INFO("retire stderr:\n" << retired.err);
-      CHECK(retired.code == 0);
-      CHECK_FALSE(std::filesystem::exists(fx.prefix / "agent.db"));
-      CHECK(std::filesystem::exists(fx.db));
     }
   }
 
-  SECTION("a probe that finds seq 1 as residue still counts as usable") {
+  SECTION("a probe that finds seq 1 as residue still counts as current") {
     auto fx = make_install("iq_seq1");
     qfix::head_store(fx.db);
     qfix::exec(fx.db, "insert into queue_history (seq, outcome, exit_code, cwd, argv, enqueued_at, ended_at, waited_ms) "
                       "values (1, 'exited', 0, '/', '[\"true\"]', 1, 2, 0)");
     auto const versions_before = qfix::applied_versions(fx.db);
-    auto const got             = run_seam(fx, "queue_probe_migrate", "seq1");
+    auto const got             = run_seam(fx, "planar_db_probe", "seq1");
     INFO("stdout:\n" << got.out << "\nstderr:\n" << got.err);
     CHECK(got.code == 0);
-    CHECK(got.out.find("queue store probe: usable (exit 0 with a status object)") != std::string::npos);
-    CHECK(got.out.find("migrating") == std::string::npos);
+    CHECK(got.out.find("db state: current") != std::string::npos);
+    CHECK(got.out.find("exit 0 with a status object") != std::string::npos);
     CHECK(qfix::applied_versions(fx.db) == versions_before);
   }
 }

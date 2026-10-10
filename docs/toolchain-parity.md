@@ -214,11 +214,11 @@ symptom is a build step failing with `code=127` and
 file or directory`, usually from the first third-party target
 (`_deps/spdlog-build/...`) because that is what ninja reaches first. It
 looks like a missing tool; it is a stale path. `rm -rf build/<preset>`
-and re-run the configure or `make install`; discovery resolves the new
+and re-run the configure or `install.sh`; discovery resolves the new
 prefix. EVERY build tree configured before the bump is affected —
 `build/debug` and `build/release` alike — and each one fails only when it
 next has something to compile, so `make test` can keep passing on a tree
-whose objects are all up to date while `make install` fails on the other
+whose objects are all up to date while `install.sh` fails on the other
 tree the same afternoon (2026-09-21: `release` failed first, `debug`
 failed an hour later on `make surface-lint`, which needed to rebuild the
 lint tool). Re-running configure over the stale tree is NOT enough: the
@@ -229,6 +229,80 @@ verified on macOS ARM (see the probe transcript below). The Linux branch
 has since been exercised against apt.llvm.org's `/usr/lib/llvm-23`
 (task 6936): discovery accepts it, and the tree builds and runs its suite.
 See the platform table's Linux row for what was and was not measured.
+
+## Portable distribution builds
+
+`PLANAR_PORTABLE` defaults to `OFF`. The `debug` and `release` presets keep
+their shared C++ runtime link and toolchain rpath. The `dist` preset inherits
+`release`, enables `PLANAR_PORTABLE` and `PLANAR_VERSION_META`, reads
+`PLANAR_RELEASE_VERSION` from the environment, and sets the macOS deployment
+target to `26.0` (the setting has no effect on Linux). A tagged cut can pass
+its version explicitly:
+
+```sh
+cmake --preset dist -DPLANAR_RELEASE_VERSION=v0.1.0
+cmake --build --preset dist
+```
+
+Portable linking uses `-nostdlib++` and the resolved toolchain library
+directory's `libc++.a` and `libc++abi.a`, plus `libunwind.a` on Linux. The
+archives follow target libraries on the link line, and the toolchain rpath
+is omitted. Linux uses `--unwindlib=none` to prevent Clang from adding its
+default shared `libgcc_s` unwinder alongside the explicit static archive;
+compiler builtins and startup objects remain enabled. The native host system
+selects the unwinder when CMake first reads the toolchain before initializing
+the target system name; an explicitly configured cross target takes precedence.
+The first-read regression probe runs on Linux with
+`cmake -DPLANAR_LLVM_PREFIX=/usr/lib/llvm-23 -P scripts/toolchain-probes/probe_portable_linux.cmake`. On macOS each archive uses Apple's `-load_hidden` linker option:
+system frameworks load Apple's libc++ transitively, and exposing the pinned
+runtime's globals caused an invalid free in `locale::~locale` during CLI
+startup. Hiding the archive symbols keeps the two runtimes' state separate.
+Configure refuses a missing archive and names its path. Switching
+`PLANAR_PORTABLE` back to `OFF` restores the shared runtime link. The
+macOS distribution floor is macOS 26.0; Linux bundles target glibc 2.36.
+On Linux portable builds, curl discovers static OpenSSL archives and disables
+configure-host CA bundle detection. It uses `/etc/ssl/certs` on the runtime
+host and enables OpenSSL's default trust-store fallback. The portable Linux
+HTTP transport clears curl 8.7.1's literal `none` CA filename (CPM passes a
+scoped normal variable, while curl removes only the cache entry). It also
+loads `/etc/pki/tls/certs/ca-bundle.crt` when present: curl's OpenSSL fallback
+does not run when a CA directory is configured. Certificate and hostname
+verification remain enabled. Ordinary Linux builds
+retain curl's defaults, and macOS continues to use SecureTransport.
+Certificate verification failures report `CertificateVerificationFailed` in
+external sync results and event detail; other transport failures retain
+`TransportFailed`. Removing a trusted host CA must produce that certificate
+diagnostic as well as reject the request.
+
+Because OpenSSL is frozen into a portable Linux binary, TLS fixes reach operators
+through a new Planar release. When the system OpenSSL's static pkg-config
+dependencies include zstd (as on Trixie with OpenSSL 3.5), configure requires
+`libzstd.a` and resolves that dependency to the archive as well. Binary
+dependency and clean-host trust checks
+remain required release gates. `scripts/test-portable-tls.py` exercises the
+Debian CA directory, removed CA, and Red Hat bundle against prebuilt Linux
+binaries and existing Docker images. Its required arguments select the binary
+directory, evidence directory, toolchain image (Python and OpenSSL), and bare
+runtime image; run it through the host queue. The removed-CA case requires
+`outcome=error` and `detail=CertificateVerificationFailed`, with no remote title.
+The sync result remains exit 0, as for other per-link adapter errors.
+
+The `portable.binaries` ctest case is registered only with `PLANAR_PORTABLE`.
+It logs each of the five product binaries, inspects macOS dependencies and load
+commands with `otool`, or Linux dynamic entries and symbol versions with
+`readelf`, and then runs each CLI's `--help` in a disposable HOME/database.
+This startup check also detects static-runtime initialization failures that
+load-command inspection alone cannot find. macOS permits system frameworks
+and libSystem, requires `LC_BUILD_VERSION minos 26.0`, and refuses `LC_RPATH`.
+Linux permits only glibc and its named companions, refuses both `RPATH` and
+`RUNPATH`, and requires the highest GLIBC symbol version to be at most 2.36.
+Both platforms reject toolchain-prefix references and shared C++/TLS runtimes.
+The companion `portable.inspector` case exercises positive and rejected
+inspection fixtures on either host. Run both with
+`ctest --test-dir build/dist -L '^portable$' --output-on-failure`; verify the
+matched count is two. `debug` and `release` register neither case. A build on
+a newer Linux distribution may correctly fail the GLIBC floor; fixtures do
+not substitute for the release's required Bookworm build and clean-host gate.
 
 ## Derived import-std / embed flag set (macOS, verified)
 
@@ -424,3 +498,91 @@ values listed above.
 No C++26 feature this task needed to verify failed outright; the only
 caveat is the `#embed` extension-warning interaction with warnings-as-errors,
 documented above with its exact fix.
+
+## Linux release toolchain (task 7304)
+
+The Docker `dist-toolchain` stage uses `debian:bookworm-slim`, independently
+of the Trixie `toolchain` and `gate` stages. It installs the pinned LLVM major
+23 from apt.llvm.org's `llvm-toolchain-bookworm-23` repository, including
+`libc++-23-dev`, `libc++abi-23-dev` and `libunwind-23-dev`, and Bookworm's
+`libssl-dev`. The stage checks the modules manifest and all three static
+runtime archives before configuring a portable build. An unavailable repository
+or package fails the image build; it never substitutes a newer Debian base.
+`LLVM_APT_URL` is a build argument for probing an unavailable repository; its
+default is `https://apt.llvm.org` and it affects only the release toolchain.
+
+The M1 prerequisite was measured on 2026-10-06 on an Apple silicon host with
+Docker Desktop 4.93.0, targeting `linux/amd64`. Bookworm supplied glibc
+2.36-9+deb12u14 and OpenSSL 3.0.22-1~deb12u1; apt.llvm.org supplied LLVM
+23.1.2 (`1:23.1.2~++20260920033443+85ac56026243-1~exp1~20260920033605.79`).
+CMake 4.4.2 used the existing x86_64 SHA-256 pin. The cold portable product
+build ran 1,997 steps with four jobs; image setup, configure, build and export
+took 889 seconds. Both `portable`-labelled tests subsequently passed, inspecting
+all five binaries for startup, glibc-only shared dependencies, no rpath and
+no GLIBC requirement above 2.36. Full diagnostics and package/archive provenance
+are retained in `build/m1-evidence/task7304/` on the dispatch host. This is
+product-build evidence; bundle assembly and clean-container bundle health
+validation depend on the later `make dist` implementation.
+
+`make linux-dist` fixes the platform to `linux/amd64` on either host, uses a
+separate Bookworm build cache, invokes `make dist` inside the image and exports
+`/out/dist` contents into `dist/` (override `LINUX_DIST_OUT` for evidence).
+`LINUX_DIST_JOBS` defaults to four. Apple silicon uses amd64 emulation.
+The Trixie debug gate retains its platform, commands and cache.
+
+The host wrapper resolves the full HEAD SHA and dirty state before Docker
+copies the source snapshot without `.git`. A supplied `PLANAR_RELEASE_VERSION`
+must name an existing tag at that exact clean HEAD; missing tags, mismatched
+HEAD and dirty tagged cuts fail before Docker starts. The stage passes
+`PLANAR_RELEASE_VERSION`, `PLANAR_SOURCE_SHA` and `PLANAR_SOURCE_DIRTY` through
+to `make dist`. Its assembler must validate and embed that supplied identity in
+both binaries and `release.json`; it must not infer identity from the git-free
+container. Do not edit the source while the queued build waits or runs.
+
+## Bundle assembly
+
+`make dist` configures and builds the native `dist` preset, installs the five
+binaries into an owned temporary staging tree, and assembles
+`dist/planar-macos-arm64.tar.gz` or `dist/planar-linux-x86_64.tar.gz`.
+`JOBS` defaults to four. Only these two platforms are supported. The bundle
+contains the authored skill, agents, templates, workflows, migrations,
+installer and install library; Codex agents are rendered during assembly.
+The root `uninstall.sh` is a byte copy of `scripts/uninstall.sh`, and the root
+`get-planar.sh` is a byte copy of `scripts/get-planar.sh`; assembly refuses when
+either source is missing. The same bootstrap bytes are also written to
+`dist/get-planar.sh` as the standalone release asset. Bundle assembly does not change the installer's lifecycle.
+
+For a tagged cut, set `PLANAR_RELEASE_VERSION=vMAJOR.MINOR.PATCH`. The tag
+must already exist at clean HEAD; pre-release labels, missing tags, wrong HEAD,
+foreign untracked source and tracked edits refuse before building. An unset
+version produces `dev`, which cannot be published. Only owned build and dist
+outputs are ignored, so repeated cuts retain clean source identity. The native
+assembler and `linux-dist` share the same identity check. Git-free Docker builds
+consume the trusted host's full `PLANAR_SOURCE_SHA` and `PLANAR_SOURCE_DIRTY`;
+CMake embeds them, and the assembler requires matching SHA, release, dirty state
+and date from all four version-bearing staged binaries.
+
+`release.json` has seven flat fields, one per line. Its database schema comes
+from successful staged `init --skip-project --allow-no-repo` and `health --json`
+in an owned scratch HOME, PLANAR_DB and PLANAR_CONFIG_PATH outside the
+source worktree, with inherited Git-directory overrides removed for these probes. Health must report
+current schema and numerically equal database and target versions. The target's
+serialized type is preserved; the CLI catalog format version is never used.
+The scratch arena is removed on success and refusal. Tar entries are sorted,
+with uid/gid zero and owner/group `root`; compiled bytes and dates need not be
+identical across cuts. `SHA256SUMS` uses two spaces before each bare asset name
+and covers every tarball in `dist/` and `get-planar.sh`, one record each, and
+`VERSION` contains the bare tag (or `dev`).
+
+Assembly requires exactly the two `portable` tests and inspects all five
+installed copies again. A sibling `<archive>.gates.json` records
+`format_version: 1`, the archive name, SHA-256, the complete `release` identity,
+and `gates.portable` with `result: "pass"`, `matched_count: 2` and
+`staged_binaries: 5`. It binds portability evidence to that exact archive.
+It contains no smoke or CA verdict, so it cannot authorize publication:
+`scripts/release-gates.sh` adds the toolchain-free smoke and CA trust gates as
+`format_version: 2`, and `scripts/release-publish.sh` requires that record for
+both platforms, bound to the same final checksum and release identity, and
+refuses missing evidence or `dev`. The contract is in
+[operations.md § Release Gate Evidence](operations.md#6-release-gate-evidence).
+Assembly does not publish anything.

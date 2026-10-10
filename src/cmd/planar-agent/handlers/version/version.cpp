@@ -12,10 +12,12 @@ import planar.cmd.planar_agent.handler;
 namespace planar::cmd::agent::handlers {
 
 auto version(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  (void)args;
+  auto const info     = cliapp::current_build_info();
+  auto const compiler = cliapp::compiler_version_string();
   // `render_version_text` returns the complete stdout payload, trailing
   // newline included. Written verbatim; nothing is appended.
-  ctx.out() << cliapp::render_version_text("planar-agent", cliapp::current_build_info(), cliapp::compiler_version_string());
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? cliapp::render_version_json(info, compiler)
+                                                  : cliapp::render_version_text("planar-agent", info, compiler));
   return {};
 }
 

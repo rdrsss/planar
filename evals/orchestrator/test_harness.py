@@ -4422,7 +4422,9 @@ class DocsHonestyTest(unittest.TestCase):
     Stack"). CI here is only the fast tier (`ci.yml`: formatting, installer
     fixtures and the planning eval harness UNIT tests) and the nightly/on-demand
     full tier (`full.yml`: Linux build, ctest and the orchestrator harness UNIT
-    tests); no eval lane runs in CI. And
+    tests); no eval lane runs in CI. A third workflow, `release.yml`, runs only
+    on a pushed stable `vX.Y.Z` tag and builds, gates and publishes release
+    bundles; it runs no eval lane either. And
     `evals/RESULTS.md` does not exist yet (planned for a later milestone), so
     a bare cadence claim is a documentation-honesty violation unless the line
     does one of two things:
@@ -4532,15 +4534,17 @@ class DocsHonestyTest(unittest.TestCase):
         )
 
     def test_ci_workflows_are_the_documented_tiers(self) -> None:
-        """Guards the premise: CI is exactly the fast and full tiers.
+        """Guards the premise: CI is exactly the fast and full tiers plus release.
 
-        If a workflow is added, removed or renamed, this test and the docs'
-        cadence wording (docs/testing.md, "Continuous integration") must change.
+        The workflows are `ci.yml` (fast tier), `full.yml` (full tier) and
+        `release.yml` (stable `vX.Y.Z` tag release). If a workflow is added,
+        removed or renamed, this test and the docs' cadence wording
+        (docs/testing.md, "Continuous integration") must change.
         """
         workflows = sorted(
             path.name for path in (self.REPO_ROOT / ".github" / "workflows").glob("*.yml")
         )
-        self.assertEqual(workflows, ["ci.yml", "full.yml"])
+        self.assertEqual(workflows, ["ci.yml", "full.yml", "release.yml"])
 
     def test_seeded_counter_example_is_rejected(self) -> None:
         # Task 6878's motivating counter-example: a naked "runs nightly in

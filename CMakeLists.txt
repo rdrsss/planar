@@ -102,6 +102,24 @@ endif()
 
 enable_testing()
 
+# The installer test time limit. Every ctest case named install.* (the scripts/install-*-test.sh
+# family, install.queue_probe and install.scenarios; not bootstrap.release, dist.* or release.*,
+# which test other artifacts) must finish within PLANAR_INSTALLER_TEST_LIMIT seconds: five
+# minutes, the ceiling in the release-bundles test spec (docs/testing.md, "The installer test
+# limit"). Its ctest TIMEOUT is the limit plus PLANAR_INSTALLER_TEST_MARGIN seconds of slack for
+# a loaded host, so a test slower than that fails under ctest as "Timeout". Both are cache
+# variables; the check at the end of this file fails the configure when an install.* case does
+# not carry exactly that TIMEOUT.
+set(PLANAR_INSTALLER_TEST_LIMIT 300 CACHE STRING "Seconds an installer test (ctest install.*) may take")
+set(PLANAR_INSTALLER_TEST_MARGIN 60 CACHE STRING "Extra seconds on top of the installer test limit before ctest times it out")
+if(NOT PLANAR_INSTALLER_TEST_LIMIT MATCHES "^[0-9]+$" OR PLANAR_INSTALLER_TEST_LIMIT EQUAL 0)
+  message(FATAL_ERROR "planar: PLANAR_INSTALLER_TEST_LIMIT must be a positive integer, got '${PLANAR_INSTALLER_TEST_LIMIT}'")
+endif()
+if(NOT PLANAR_INSTALLER_TEST_MARGIN MATCHES "^[0-9]+$")
+  message(FATAL_ERROR "planar: PLANAR_INSTALLER_TEST_MARGIN must be a non-negative integer, got '${PLANAR_INSTALLER_TEST_MARGIN}'")
+endif()
+math(EXPR PLANAR_INSTALLER_TEST_TIMEOUT "${PLANAR_INSTALLER_TEST_LIMIT} + ${PLANAR_INSTALLER_TEST_MARGIN}")
+
 # D15 guard standing tests (plan 996 task 6050, M2 pre-work;
 # cmake/architecture.cmake, scripts/test-architecture-guard.cmake,
 # cmake/tests/architecture-guard-fixture/): each fixture configures a
@@ -224,7 +242,7 @@ include(module)         # planar_module() (cmake/module.cmake)
 # only; `cmake --build <dir> --target planar_tests` builds the suite. Measured
 # before this change (2026-10-03, cold release build on 8 cores): the 150
 # test targets plus Catch2 were 81 of 320 CPU-minutes, compiled by
-# `make build`, `make install` and `install.sh` and then never run.
+# `make build` and `install.sh` and then never run.
 add_custom_target(planar_tests)
 
 add_subdirectory(src)
@@ -282,3 +300,167 @@ if(NOT WIN32)
     "${CMAKE_SOURCE_DIR}/compile_commands.json"
     COPY_ON_ERROR SYMBOLIC)
 endif()
+
+# Focused assembler identity/schema refusals; fixtures do not establish portability.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME dist.identity
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/dist-identity.test.py")
+set_tests_properties(dist.identity PROPERTIES LABELS "dist_identity")
+
+# Bundle layout exercises the actual assembler with isolated fake executables.
+add_test(NAME dist.layout
+  COMMAND "${CMAKE_COMMAND}" -E env "PYTHON=${Python3_EXECUTABLE}"
+    bash "${PROJECT_SOURCE_DIR}/scripts/dist-test.sh")
+set_tests_properties(dist.layout PROPERTIES LABELS "dist_layout" TIMEOUT 180)
+
+# Release publication (scripts/release-gates.sh, scripts/release-publish.sh and
+# make release-cut) in a disposable repository with an annotated scratch tag, fake
+# bundles and fake docker, gh and uname: archive-bound gate evidence, every
+# publisher refusal, and that a refusal runs no gh. Nothing real is published.
+add_test(NAME release.publish
+  COMMAND "${CMAKE_COMMAND}" -E env "PYTHON=${Python3_EXECUTABLE}"
+    bash "${PROJECT_SOURCE_DIR}/scripts/release-publish-test.sh")
+set_tests_properties(release.publish PROPERTIES LABELS "release_publish" TIMEOUT 600)
+
+# The release workflow (.github/workflows/release.yml): a lint of its trigger,
+# jobs, needs wiring, gate-before-upload order and permissions, refusal of
+# mutated copies, and its own publisher steps run against fake gh and bundles
+# (scripts/release-workflow.test.py). Nothing runs on GitHub.
+add_test(NAME release.workflow
+  COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
+    "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/release-workflow.test.py")
+set_tests_properties(release.workflow PROPERTIES LABELS "release_workflow" TIMEOUT 600)
+
+# Stock macOS bash 3.2: a static lint for unguarded empty-array expansions and bash-4-only
+# constructs in install.sh and its sourced scripts, plus a prebuilt install and
+# uninstall run under /bin/bash (3.2 on macOS) in a scratch HOME.
+#
+# One ctest entry per group (INSTALL_BASH32_GROUP): the static lint, then each of the three
+# scenarios, each run under the old bash, again, and under a newer bash whose end state
+# (modes, symlink targets, checksums) it is compared with. A single entry took about 250 s
+# on a loaded host, and the ceiling for an installer test is five minutes. The umbrella
+# label install_bash32 still selects all four. The Linux gate image builds bash 3.2 and
+# sets PLANAR_BASH32_OLD and PLANAR_BASH32_REQUIRE_COMPARE=1 (docs/testing.md, "The
+# two-shell comparison").
+foreach(_bash32_group static flag home vendors)
+  add_test(NAME install.bash32_${_bash32_group}
+    COMMAND "${CMAKE_COMMAND}" -E env "INSTALL_BASH32_GROUP=${_bash32_group}"
+      bash "${PROJECT_SOURCE_DIR}/scripts/install-bash32-test.sh")
+  set_tests_properties(install.bash32_${_bash32_group} PROPERTIES LABELS "install_bash32;install_bash32_${_bash32_group}" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+endforeach()
+
+# The installer's manifest ownership and atomicity fixtures, and its compiler-preflight
+# fixture (scripts/install-manifest-test.sh, scripts/install-deps-test.sh). The make
+# targets test-install-manifest and test-install-deps run the same scripts; `make test`
+# gets them from ctest. The stage fixture is registered in src/cmd/CMakeLists.txt
+# beside the install.order_* entries because its health scenarios need the built planar.
+add_test(NAME install.manifest
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-manifest-test.sh")
+set_tests_properties(install.manifest PROPERTIES LABELS "install_manifest" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+add_test(NAME install.deps
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-deps-test.sh")
+set_tests_properties(install.deps PROPERTIES LABELS "install_deps" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# The install-root guard: install.sh and install.sh --uninstall refuse $HOME, /
+# and the empty string at exit 2 (even with --force) and adopt legacy and
+# journal-owned roots. Scratch HOME, stub cmake, shim rm/mv: nothing real.
+add_test(NAME install.prefix_guard
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-prefix-guard-test.sh")
+set_tests_properties(install.prefix_guard PROPERTIES LABELS "install_prefix_guard" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# The data-path list: install.sh and install.sh --uninstall never remove a listed
+# path, relocations are named, and INSTALL.md's preserved-paths section matches
+# scripts/install-lib/data-paths.sh.
+add_test(NAME install.data_paths
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-data-paths-test.sh")
+set_tests_properties(install.data_paths PROPERTIES LABELS "install_data_paths" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# Every program `planar update` and get-planar.sh run is listed in install.sh's
+# RUN_DEPS (or BASE_DEPS) and INSTALL.md § Prerequisites; wget is a test-only
+# prerequisite on the Homebrew line.
+add_test(NAME install.prereq
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-prereq-test.sh")
+set_tests_properties(install.prereq PROPERTIES LABELS "install_prereq" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# Prebuilt install: `install.sh --prebuilt <dir>` places a release bundle with no
+# build and no python3, moves an old agent.db aside unread, refuses --link and an
+# incomplete bundle before creating anything, and a source install writes
+# release.json. A fake bundle of tiny executables; nothing real is touched.
+add_test(NAME install.prebuilt
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-prebuilt-test.sh")
+set_tests_properties(install.prebuilt PROPERTIES LABELS "install_prebuilt" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# The retired make install, install-bin, install-full, uninstall and uninstall-full targets are gone
+# (make's no-rule message, absent from `make help`) and no install doc carries a make install recipe.
+add_test(NAME install.retired_targets
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-retired-targets-test.sh")
+set_tests_properties(install.retired_targets PROPERTIES LABELS "install_retired_targets" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# Managed subtrees, retired paths and the templates rule through install.sh: an
+# install of unknown age becomes clean, symlinks are never followed, link and
+# copy mode replace each other, type/mode changes apply, an incomplete bundle or
+# checkout is refused, templates stay missing-only under --force. Scratch HOME, fake bundles.
+add_test(NAME install.managed
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-managed-test.sh")
+set_tests_properties(install.managed PROPERTIES LABELS "install_managed" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# The common mutation ownership protocol (scripts/install-lib/mutation-lock.sh):
+# live, killed and pid-reused owners, ambiguous records, simultaneous reclaims,
+# the update handoff and update temporaries, with real processes under stock
+# bash and base utilities only. Scratch HOME; nothing real is touched.
+add_test(NAME install.lock
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-lock-test.sh")
+set_tests_properties(install.lock PROPERTIES LABELS "install_lock" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# The scenario filter and the parallel dispatch of the installer tests above
+# (scripts/fixtures/scenario-runner.sh, INSTALL_TEST_SCENARIO and INSTALL_TEST_JOBS): a
+# stand-in script with five scenarios, and the usage paths of the four real scripts.
+# Builds and installs nothing.
+add_test(NAME install.scenarios
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-scenarios-test.sh")
+set_tests_properties(install.scenarios PROPERTIES LABELS "install_scenarios" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+
+# The release bootstrap (scripts/get-planar.sh) against a loopback release server
+# (`python3 -m http.server`, a test-only dependency; GNU wget is another) in a
+# scratch HOME: install, pinned install, refusals, the mid-run publish, the
+# interrupted install and its recovery pin, shadowing and the wget fallback.
+add_test(NAME bootstrap.release
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/get-planar-test.sh")
+set_tests_properties(bootstrap.release PROPERTIES LABELS "bootstrap" TIMEOUT 900)
+
+# The standalone uninstaller (scripts/uninstall.sh, installed as
+# ~/.planar/bin/planar-uninstall): removals through the ownership check, the
+# python-free manifest reader, preserved and purged data paths, unknown entries
+# kept, ~/.local/bin, the mutation lock, interrupted-uninstall retry and
+# reinstall. Fake bundle, scratch HOME, base tools only; nothing real is touched.
+# One ctest entry per group of scenarios (INSTALL_UNINSTALL_GROUP; the groups are listed
+# in the script), because the whole file took 428 to 510 s on a loaded host and no
+# installer test may run past five minutes. With no group the script runs all three.
+foreach(_uninstall_group removal manifest interrupted)
+  add_test(NAME install.uninstall_${_uninstall_group}
+    COMMAND "${CMAKE_COMMAND}" -E env "INSTALL_UNINSTALL_GROUP=${_uninstall_group}"
+      /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-uninstall-test.sh")
+  set_tests_properties(install.uninstall_${_uninstall_group} PROPERTIES LABELS "install_uninstall;install_uninstall_${_uninstall_group}" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+endforeach()
+
+# Fail the configure when an installer test (ctest install.*) lacks the common TIMEOUT. Deferred
+# so it sees every case registered in the top directory and in any subdirectory.
+function(planar_check_installer_test_timeouts)
+  set(_pending "${PROJECT_SOURCE_DIR}")
+  while(_pending)
+    list(POP_FRONT _pending _dir)
+    get_property(_subdirs DIRECTORY "${_dir}" PROPERTY SUBDIRECTORIES)
+    list(APPEND _pending ${_subdirs})
+    get_property(_tests DIRECTORY "${_dir}" PROPERTY TESTS)
+    foreach(_t IN LISTS _tests)
+      if(_t MATCHES "^install\\.")
+        get_test_property("${_t}" TIMEOUT DIRECTORY "${_dir}" _timeout)
+        if(NOT "${_timeout}" STREQUAL "${PLANAR_INSTALLER_TEST_TIMEOUT}")
+          message(FATAL_ERROR "planar: installer test ${_t} has TIMEOUT '${_timeout}', expected "
+            "${PLANAR_INSTALLER_TEST_TIMEOUT} (PLANAR_INSTALLER_TEST_LIMIT + PLANAR_INSTALLER_TEST_MARGIN)")
+        endif()
+      endif()
+    endforeach()
+  endwhile()
+endfunction()
+cmake_language(DEFER CALL planar_check_installer_test_timeouts)

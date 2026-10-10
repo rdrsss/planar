@@ -150,7 +150,7 @@ export auto installed_roots(const options& opts) -> std::vector<installed_root>;
 
 /// @brief Derive the OpenCode form of a staged agent: the frontmatter reduced
 /// to `description` and `mode: subagent`, the body unchanged. Byte-equal to
-/// `install.sh`'s `opencode_derive`.
+/// `ownership.sh`'s `opencode_derive`.
 /// @param staged The staged `.md` bytes.
 /// @return The derived bytes, or `std::nullopt` when the file does not open
 /// with `---`, has no description, or its frontmatter never closes.

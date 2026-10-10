@@ -13,7 +13,7 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make test-cpp-report` | The same suite, plus its skip tally. The expected tally is zero. |
 | `make ctest-registry-check` | ctest runs exactly the cases the test binaries contain. Needs `build/debug` built. |
 | `make coverage` | The `(verb, subcommand)` leaf-coverage ratio has not dropped below `scripts/coverage-baseline.txt`. |
-| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)). |
+| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)), and `scripts/check-md-anchors.py` fails on a broken in-page anchor in `docs/cli-reference.md` and `INSTALL.md`. |
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
 | `make eval-contracts` | The provider-free eval lanes. |
@@ -151,7 +151,8 @@ Both profiles go through the host queue, below.
 
 ## Continuous integration
 
-CI is deliberately small, because agents merge often and a per-merge gate
+CI is deliberately small (two tiers for ordinary changes plus the release
+workflow), because agents merge often and a per-merge gate
 would run constantly. `make test-all` through the host queue (below) is still
 the gate to run before a pull request; CI is the independent backstop.
 
@@ -159,6 +160,7 @@ the gate to run before a pull request; CI is the independent backstop.
 |---|---|---|
 | `ci.yml` (fast tier) | Pull requests into `master`, and pushes to `master` | `make fmt-check`, the installer fixtures, and the planning eval harness unit tests. It does not build the C++ tree. A newer push cancels the older run. |
 | `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, the orchestrator eval harness unit tests and the scratch queue observer integration test, on Linux in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
+| `release.yml` (release) | A pushed stable `vX.Y.Z` tag only; never a branch, a pull request or a pre-release tag | One job per platform builds the release bundle from the tag commit and runs that platform's portable and clean-host gates before uploading; the final job runs the publisher, the only step that calls `gh release`, and a failed or missing platform publishes nothing. It reuses the scripts and evidence files of `make release-cut`. See [Release Gate Evidence and Cutting a release](operations.md#6-release-gate-evidence). Under decision 1337 releases are cut locally with `make release-cut` until hosted CI returns. |
 
 The fast tier does nothing for a change that touches only `agents/`, `skills/`,
 `docs/`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`, or a
@@ -170,7 +172,7 @@ does a run that cannot be classified. Because those files feed pinned
 projections and doc gates, the nightly full tier still checks them: run
 `make test-all` before a pull request that edits `agents/` or `skills/`.
 
-Pull requests into any other branch run neither workflow. Agents integrate
+Pull requests into any other branch run none of the workflows. Agents integrate
 into `dev/integration` and open a pull request from it to `master` when a
 batch is ready, so CI runs once per batch, not once per merge. Add the
 `ci:full` label to a `master`-bound pull request that touches C++ or CMake and
@@ -256,13 +258,17 @@ make linux-gate-prune                            # docker builder prune -f
 
 `docker/linux-gate.Dockerfile` installs apt.llvm.org's LLVM 23 (clang,
 libc++ with its modules manifest, libc++abi), Kitware CMake pinned by version
-and SHA-256, ninja, git, python3, `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
+and SHA-256, ninja, git, python3, GNU `wget` (the `bootstrap.release` test), `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
 build never fails on a red suite. It records `configure.log`, `build.log`,
 `ctest.log`, `eval-unit.log`, `eval-queue-observation.log` and `status.txt`,
 and the Makefile exports them to
 `build/linux-gate/`, prints the gate verdict and exits nonzero unless
 `status=0`. Read `ctest.log` there rather than the build output: BuildKit
 clips a step's log at 2 MiB.
+
+The image also builds bash 3.2.57 from the GNU source archive (a `bash32`
+stage, copied to `/opt/bash-3.2`) for the `install.bash32_*` tests' two-shell comparison;
+see [The two-shell comparison](#the-two-shell-comparison).
 
 Every dependency is committed under `vendor/`, so the gate needs no token, no
 network fetch during configure, and no extra build context.
@@ -285,6 +291,46 @@ slot for its whole run:
 ```bash
 planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> -- make linux-gate     # cli-lint-ignore: `--` is the argument terminator
 ```
+
+### Platform-specific tests
+
+The macOS ctest list and the Linux gate's list differ by exactly three
+tests (measured 2026-10-08 on the M5 tree: 4486 listed on macOS, 4483 in
+`make linux-gate`, compared by name). Each is a `TEST_CASE` inside
+`#if defined(__APPLE__)` with a reason comment above the guard. Nothing
+enforces the table: add a row when you add a platform guard, and compare
+`ctest -N` names on both hosts when a count looks off (sort both lists with
+`LC_ALL=C sort`; duplicate names such as `engine_planning` otherwise produce
+false differences).
+
+| Test | Absent on | Reason |
+|------|-----------|--------|
+| `group_only_zombies: a group whose only member is an exited leader nobody reaped is all zombies, and a signal to it is either accepted or refused as not permitted` (`src/lib/process/identity.t.cpp`) | Linux | macOS answers `kill(-pgid)` with EPERM for a zombie-only group and the probe reads `sysctl(KERN_PROC_PGRP)`; no other kernel does either, and Linux `group_only_zombies` always answers false. |
+| `group_only_zombies: a zombie leader does not make a group with a live member all zombies` (same file) | Linux | Same macOS-only probe. |
+| `terminate: on macOS a real group whose leader exited unreaped is never reported as a failed signal` (`src/engine/hostqueue/terminate.t.cpp`) | Linux | Pins the macOS EPERM refusal; Linux has none. The fake-probe cases in the same file run everywhere. |
+
+Tests that are registered on both platforms but vacuous on a host with no
+release bundle: `update_leaves.t.cpp` has six end-to-end cases that return
+early with `SUCCEED("no release bundle exists for this host...")` where
+`release_platform` finds none, which includes the linux-aarch64 gate:
+
+- `update: a shadowing planar on PATH is named once by the bootstrap and by update, and a symlink to the install is not one`
+- `update: the exec'd installer is the lock owner and the verb opens no database`
+- `update: a KILLed update leaves nothing the next update cannot reclaim`
+- `update: SIGINT during a slowed download removes the download directory and releases the lock`
+- `update: SIGTERM during a slowed download removes the download directory and releases the lock`
+- `update: a failed installer exec removes the download directory and releases the lock`
+
+SIGINT and SIGTERM share the `interrupt_a_download` helper, which holds the
+early return. They count on both platforms and pass without exercising the
+updater there. The exec'd-installer, KILL and failed-exec cases name an
+in-process case that covers the same behaviour on every host; the shadow,
+SIGINT and SIGTERM cases have no in-process counterpart, so on such a host
+nothing exercises those behaviours. The bootstrap end-to-end update
+(`update: the binary updates a bootstrap install end to end through the real
+installer`) is not vacuous: with no bundle it asserts exit 1 and an
+`unsupported platform` error. Making the six run needs a Linux aarch64
+bundle, which is not a shipping platform.
 
 ## When every build is a full rebuild
 
@@ -343,7 +389,9 @@ reports "100% tests passed":
 
 `make ctest-registry-check` compares each binary's own `--list-tests` count
 against the `add_test` lines registered for it. It needs no baseline and
-fails on a mismatch in either direction. Do not quote a ctest total as a
+fails on a mismatch in either direction. It also fails for a
+`scripts/install-*-test.sh` that no registered ctest case names, and prints each
+script it found registered. Do not quote a ctest total as a
 count of distinct tests without it.
 
 Two related traps:
@@ -489,4 +537,349 @@ To check a migration as raw SQL:
 
 ```bash
 sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
+```
+
+## Release bundles and installer script tests
+
+`make dist` configures and builds the `dist` preset (`PLANAR_PORTABLE=ON`,
+version metadata, a macOS 26.0 deployment target), runs the portable-binary
+checks on the five staged binaries, and assembles
+`dist/planar-<platform>.tar.gz` with `SHA256SUMS`, `VERSION`, a standalone
+`get-planar.sh` and the archive's `.gates.json` evidence (`scripts/dist.sh`).
+`make linux-dist` does the same for Linux x86_64 in Docker on Debian bookworm.
+Both are release builds and not part of `make test` or `make test-all`; the
+gates they feed are in [operations.md § 6](operations.md#6-release-gate-evidence)
+and [toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
+Run them through the host queue and never with a validation tag in the real
+repository.
+
+The scripts they ship and the installer have script tests. Each is a ctest case
+registered with ctest (in `CMakeLists.txt`, `src/cmd/CMakeLists.txt` for the two
+that need built binaries, `src/cmd/planar/CMakeLists.txt` and
+`src/tools/CMakeLists.txt`), so `make test` runs them. The make targets
+`test-install-manifest`, `test-install-stage` and `test-install-deps` run
+`scripts/install-manifest-test.sh`, `install-stage-test.sh` and
+`install-deps-test.sh` directly, for a focused run, and are not prerequisites
+of `make test`: ctest runs the same scripts as `install.manifest`,
+the `install.stage_*` tests and `install.deps`. `install-manifest-test.sh` also pins
+INSTALL.md § Prerequisites. `make ctest-registry-check` fails when any
+`scripts/install-*-test.sh` is named by no registered ctest case. **No installer
+test may run longer than five minutes** (measured on a loaded host); a script
+that grows past that is split into groups, one ctest case each, selected by an
+environment variable the script reads (`INSTALL_ORDER_GROUP`,
+`INSTALL_UNINSTALL_GROUP`, `INSTALL_STAGE_GROUP`, `INSTALL_BASH32_GROUP`; unset
+runs every group, an unknown name is a usage error that exits 2 in all four).
+Below a group, one named scenario runs on its own and the scenarios of a run go in parallel
+(`INSTALL_TEST_SCENARIO`, `INSTALL_TEST_JOBS`; see [Installer test speed](#installer-test-speed)).
+`ctest -L '^install_'` covers all of them. They use scratch `HOME`,
+`TMPDIR` and database paths and fake bundles, and touch nothing real. Select one
+by label, and check the matched count:
+
+```sh
+ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
+```
+
+| ctest case | Label | Entry point | Covers |
+|------------|-------|-------------|--------|
+| `dist.identity` | `dist_identity` | `scripts/dist-identity.test.py` | Assembler identity and schema refusals. See [Bundle assembler identity checks](#bundle-assembler-identity-checks). |
+| `dist.layout` | `dist_layout` | `scripts/dist-test.sh` | The real assembler over fake binaries: entries, bytes, `release.json`, checksums. |
+| `release.publish` | `release_publish` | `scripts/release-publish-test.sh` | `release-gates.sh`, `release-publish.sh` and `make release-cut` against a scratch annotated tag, fake bundles and a fake `gh`, `docker` and `uname`: every refusal runs no `gh`. |
+| `release.workflow` | `release_workflow` | `scripts/release-workflow.test.py` | A lint of `.github/workflows/release.yml` (trigger, `needs`, gate-before-upload, permissions) and its publisher steps run against fakes. Nothing runs on GitHub. |
+| `bootstrap.release` | `bootstrap` | `scripts/get-planar-test.sh` | `get-planar.sh` end to end. See [The release bootstrap test](#the-release-bootstrap-test). |
+| `install.bash32_static`, `install.bash32_flag`, `install.bash32_home`, `install.bash32_vendors` | `install_bash32` (all four), `install_bash32_<group>` | `scripts/install-bash32-test.sh` (`INSTALL_BASH32_GROUP`) | A lint for bash-4-only constructs and unguarded empty-array expansions, and a prebuilt install and uninstall under bash 3.2 whose end state (file and directory modes, symlink targets, checksums) is compared with a newer bash's run, with no live mutation-lock owner after the uninstall. See [The two-shell comparison](#the-two-shell-comparison). |
+| `install.manifest` | `install_manifest` | `scripts/install-manifest-test.sh` | Manifest ownership and atomicity fixtures; INSTALL.md § Prerequisites. |
+| `install.stage_staging`, `install.stage_vendors`, `install.stage_placement`, `install.stage_modes`, `install.stage_uninstall` | `install_stage` (all five), `install_stage_<group>` | `scripts/install-stage-test.sh` (`INSTALL_STAGE_GROUP`) | Staging and the six vendors' surfaces. `staging`: the staged trees, a malformed agent, the staged recorder, a foreign destination, the `--vendors` filter, quoting, the nine target rows, the upgrade from the older top-level agent layout, the conflicting-flag refusals, the managed lists. `vendors`: each vendor's presence markers, link against copy, a re-install replacing a prior manifest's paths, and health after a link install. `placement`: transactional placement, a failure and a crash mid-way. `modes`: mode switches, `planar health` against the install (the built `planar`, `PLANAR_BIN`), retiring the previous projections. `uninstall`: `--uninstall`. |
+| `install.deps` | `install_deps` | `scripts/install-deps-test.sh` | The compiler preflight. |
+| `install.prefix_guard` | `install_prefix_guard` | `scripts/install-prefix-guard-test.sh` | The install-root guard for `install.sh` and `--uninstall`. |
+| `install.prereq` | `install_prereq` | `scripts/install-prereq-test.sh` | Every program `planar update` and `get-planar.sh` run is in `install.sh` `RUN_DEPS`/`BASE_DEPS` and INSTALL.md § Prerequisites; `wget` is a test-only prerequisite on the Homebrew line. `scripts/install-prereq-scan.py` pins every spawn call site of the update sources by count (a new `run_inherited`, `runner::start`, `execve` or `capture` fails until reviewed) and reads the word in every command position of `get-planar.sh`. |
+| `install.data_paths` | `install_data_paths` | `scripts/install-data-paths-test.sh` | Data paths are never removed, and INSTALL.md's preserved-paths list matches `scripts/install-lib/data-paths.sh`. |
+| `install.prebuilt` | `install_prebuilt` | `scripts/install-prebuilt-test.sh` | `install.sh --prebuilt`: an incomplete bundle, `--link`, and the move-aside of the old queue database. |
+| `install.retired_targets` | `install_retired_targets` | `scripts/install-retired-targets-test.sh` | The retired `make install` targets are gone, and no install doc carries a `make install` recipe. |
+| `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, the missing-only `templates/` rule, and a source resume refusing the other mode or a dirty checkout. |
+| `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, host renames and other hosts, simultaneous reclaims, the update handoff (an older updater's included), install roots whose path says `exists`. |
+| `install.scenarios` | `install_scenarios` | `scripts/install-scenarios-test.sh` | The scenario filter and the parallel dispatch of the installer scripts: a stand-in script for the runner, and the usage paths of the four real scripts. See [Installer test speed](#installer-test-speed). |
+| `install.uninstall_removal`, `install.uninstall_manifest`, `install.uninstall_interrupted` | `install_uninstall` (all three), `install_uninstall_<group>` | `scripts/install-uninstall-test.sh` (`INSTALL_UNINSTALL_GROUP`) | `scripts/uninstall.sh`. `removal`: unknown entries, the removal and its data-path rules, `--purge`, link-mode. `manifest`: escaped and truncated manifest lines, `~/.local/bin`, a missing manifest, a relocated database, the held lock. `interrupted`: the interrupted-uninstall retry and an interrupted upgrade. |
+| `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
+| `install.order_db`, `install.order_swap`, `install.order_recover`, `install.order_concurrent`, `install.order_handoff` | `install_order` (all five), `install_order_<group>` | `scripts/install-order-test.sh` (`INSTALL_ORDER_GROUP`) | The order of an install end to end, against bundles of the real built binaries. `db`: databases fresh, behind, ahead and faulty, the queue warning. `swap`: kill-and-resume at every swap point. `recover`: recovery before restaging and a journaled restore. `concurrent`: concurrent owners, a first-install kill, a host rename, the read-only parent, refused attempts. `handoff`: the updater handoff, `--cleanup`, uninstall over a pending install, the inert fault hook. |
+| `queue_retire_reader` | `queue;scripts` | `scripts/install-lib/queue_retire.test.py` | The reader the installer runs to judge the retired queue store's entries, including its `/proc` cases. |
+| `codex_agents_render` | `scripts` | `scripts/render_codex_agents_test.py` | The Codex custom-agent TOML renderer. |
+
+`portable.binaries` and `portable.inspector` (label `portable`) exist only in a
+configuration with `PLANAR_PORTABLE=ON`; see
+[toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
+`planar update` itself is covered by Catch2 cases under
+`src/cmd/planar/handlers/update/` (label `cmd_planar`).
+
+`scripts/release-workflow-crosscheck.py` is a manual check outside ctest. It
+compares the workflow reader's result with PyYAML and runs `actionlint`, and it
+fails when either tool is missing. Run it by hand after editing
+`.github/workflows/release.yml`.
+
+### Installer test speed
+
+The four long installer scripts (`install-order-test.sh`, `install-uninstall-test.sh`,
+`install-stage-test.sh`, `install-bash32-test.sh`) run their scenarios on their own and in
+parallel. Three environment variables, read by all four, work below the existing
+`INSTALL_<TOOL>_GROUP` filters:
+
+| Variable | Meaning |
+|----------|---------|
+| `INSTALL_TEST_SCENARIO=<name>` | Run only that scenario and report it, inside or outside its group (the group variable is then not consulted). An unknown name exits 2 and lists the known ones, as an unknown group does. |
+| `INSTALL_TEST_JOBS=<n>` | How many scenarios run at once when a run selects more than one. Default 4; `1` runs them in one process in file order. A leading zero is decimal (`08` is 8); anything but a positive integer exits 2. |
+| `INSTALL_TEST_SHARED` | Internal. The dispatching run sets it for its children; do not set it by hand. |
+
+```sh
+INSTALL_TEST_SCENARIO=reinstall bash scripts/install-uninstall-test.sh
+INSTALL_TEST_JOBS=2 INSTALL_STAGE_GROUP=modes bash scripts/install-stage-test.sh
+```
+
+How it works (`scripts/fixtures/scenario-runner.sh`, sourced by the four scripts; bash 3.2 safe,
+so no `wait -n`, associative arrays or `mapfile`):
+
+- **A scenario is a block that touches only homes it makes.** Each script wraps its blocks in
+  `if scen <name>; then ... fi`. Numbered or looped scenarios that share a home stay one name
+  (stage `all-vendors` is scenarios 8, 9, 12, 13, 23 and 24); looped scenarios whose iterations
+  make homes of their own are one name per iteration (order `swap-<point>`, uninstall
+  `purgecfg-keys`/`-spellings`/`-outside`, stage `no-change-copy`/`-link` and
+  `uninstall-copy`/`-link`).
+- **Parallel runs are processes.** The dispatching run re-runs the script once per selected
+  scenario (`INSTALL_TEST_SCENARIO=<name>`), at most `INSTALL_TEST_JOBS` at a time, each in
+  its own `mktemp` scratch directory. Every `HOME`, install root, mutation lock, `PLANAR_DB`,
+  fault directory and `$TMP/out` and `$TMP/err` are under that directory, so scenarios share
+  nothing. Output is collected per scenario and printed as `=== scenario <name>: ok|FAILED`
+  followed by its log.
+- **Skips are declared.** A scenario that cannot run on the host (order `renamed` without a
+  machine identity; the stage health scenarios 22 to 25 without a built `planar`) calls
+  `scen_skip "<reason>"`. A run whose only outcome is a declared skip passes and the dispatcher
+  prints `=== scenario <name>: skipped (<reason>)`; the "ran no check" guards still fail a
+  scenario that asserts nothing and declares nothing.
+- **A dead child is a failure.** A child whose wrapper dies before it writes its status is
+  reported as `scenario <name> exited without a status` instead of waited on, and an interrupted
+  dispatcher stops each child's process group (no `pkill`, which slim images lack).
+- **Failures keep their name.** A failing scenario prints its own message, then
+  `<script>: FAIL: scenario <name> exited <n>`; the run finishes the other scenarios, prints
+  `<script>: FAIL: <k> of <n> scenarios failed: <names>` and exits 1.
+- **Serial scenarios.** Scenarios that hold the mutation lock from a second process while
+  another run is refused, or that pause an installer or uninstaller and poll for it, test the
+  serialization of decision 1328 and run alone, one at a time, after the parallel batch. They
+  are order `concurrent-refused`, `renamed` and `uninstall-refused`, and uninstall `held` and
+  `paused`. Stage and bash32 have none.
+- **One staged fixture.** The dispatching run stages the fake bundles (order: three bundles
+  of the built binaries, the second and third copied from the first; uninstall: two fake
+  bundles; bash32: its one fake bundle; stage: the scratch checkout) once and passes the directory to its children, which use
+  it read-only. The dispatcher checksums the shared tree before and after and fails the run if a
+  scenario changed it; a scenario that must change one makes its own copy (stage `BAD`,
+  `QUOTE`, `MUT`). A single scenario, or `INSTALL_TEST_JOBS=1`, stages its own, as before.
+- **Assertions are unchanged.** The refactor only wrapped, moved and split blocks;
+  `git diff -U0 <base>.. -- scripts/install-*-test.sh | grep '^-'` shows no `fail` line removed.
+- `install.scenarios` (`scripts/install-scenarios-test.sh`, label `install_scenarios`) tests the
+  runner with a five-scenario stand-in script (one scenario alone inside and outside its group,
+  unknown names and job counts, the job bound, the serial scenario alone, per-scenario scratch,
+  a named failure, a changed shared fixture, a declared skip, a child that dies without a status,
+  an interrupted dispatcher, `INSTALL_TEST_JOBS=08`) and the usage paths of the four real scripts.
+
+Measured wall times, `ctest --test-dir build/debug -L '^install_<family>$'` through the host queue,
+2026-10-09, macOS arm64 (8 cores), a debug build, `INSTALL_TEST_JOBS` at its default of 4.
+The host also ran other sessions' queued work: its load average was 5 to 10 during all
+runs, before and after, so single numbers move by 10 to 20 percent between runs (the bash32
+family measured 132.8, 128.7 and 154.1 seconds with the same scripts). The "after" times are
+the last run of the final scripts, and the "before" times are the scripts at the cycle base.
+
+| ctest case | Before (s) | After (s) |
+|------------|-----------:|----------:|
+| `install.order_db` | 193.81 | 66.92 |
+| `install.order_swap` | 191.64 | 85.78 |
+| `install.order_recover` | 154.23 | 105.92 |
+| `install.order_concurrent` | 131.65 | 114.15 |
+| `install.order_handoff` | 132.85 | 105.26 |
+| **`install_order`, five cases** | **804.20** | **478.07** |
+| `install.uninstall_removal` | 178.50 | 66.39 |
+| `install.uninstall_manifest` | 302.41 | 145.82 |
+| `install.uninstall_interrupted` | 202.40 | 77.45 |
+| **`install_uninstall`, three cases** | **683.34** | **289.69** |
+| `install.stage_staging` | 182.13 | 72.97 |
+| `install.stage_vendors` | 153.49 | 113.76 |
+| `install.stage_placement` | 154.74 | 57.45 |
+| `install.stage_modes` | 146.53 | 88.42 |
+| `install.stage_uninstall` | 122.94 | 73.95 |
+| **`install_stage`, five cases** | **759.86** | **406.59** |
+| `install.bash32_static` | 0.40 | 0.39 |
+| `install.bash32_flag` | 38.15 | 43.39 |
+| `install.bash32_home` | 36.96 | 42.86 |
+| `install.bash32_vendors` | 57.21 | 67.44 |
+| **`install_bash32`, four cases** | **132.76** | **154.11** |
+
+The bash32 cases did not get faster: each group is one scenario, so there is nothing to run in
+parallel inside it, and the measured difference is the host's load. They are unchanged apart
+from the filter. `install.stage_vendors` is bounded by its one chain of scenarios that share
+homes (`all-vendors`, 137 s of a run).
+
+The unfiltered script, with no group and no scenario, runs every scenario in one parallel run.
+Before, that was the groups one after another in one process (the sum of the group times
+above, as the file order ran them); after, one run of the same script:
+
+| Script, no filter | Before (s, derived: the sum of the group runs above, not measured) | After (s, measured) |
+|-------------------|--------------------------:|----------:|
+| `install-order-test.sh` (26 scenarios) | 804 | 333 |
+| `install-uninstall-test.sh` (24 scenarios) | 683 | 281 |
+| `install-stage-test.sh` (25 scenarios) | 760 | 263 |
+| `install-bash32-test.sh` (4 scenarios) | 133 | 79 |
+
+To measure again, run each family's label through the queue on a quiet host and compare with the
+table; do not compare a run against numbers taken under a different load.
+
+### The installer test limit
+
+No installer test runs longer than five minutes (the release-bundles test spec). An installer
+test is every ctest case named `install.*`: the `install.order_*`, `install.stage_*`,
+`install.uninstall_*` and `install.bash32_*` group cases, `install.manifest`, `install.deps`,
+`install.prefix_guard`, `install.data_paths`, `install.prereq`, `install.prebuilt`,
+`install.retired_targets`, `install.managed`, `install.lock`, `install.scenarios` and
+`install.queue_probe`. `bootstrap.release`, `dist.*` and `release.*` are not installer tests:
+they test `get-planar.sh`, the bundle assembler and the publisher, which the spec's limit does
+not name, so they keep their own `TIMEOUT` values.
+
+The limit is two CMake cache variables in the top `CMakeLists.txt`:
+
+| Variable | Default | Meaning |
+|----------|--------:|---------|
+| `PLANAR_INSTALLER_TEST_LIMIT` | 300 | Seconds an installer test may take. |
+| `PLANAR_INSTALLER_TEST_MARGIN` | 60 | Slack for a loaded host, on top of the limit. |
+
+Every `install.*` case sets `TIMEOUT` to their sum, 360 s, so a test that runs past
+five minutes plus the margin fails under ctest as `***Timeout`, naming the case. The margin
+exists because the host queue's machine runs other sessions' work and single runs move by 10 to 20
+percent; it is not room to grow into. A test that nears 300 s on a quiet host is split or sped
+up, not given a larger limit. The configure step fails if any `install.*` case carries another
+`TIMEOUT` in any directory, so a new installer test cannot register without the limit, and it
+rejects a limit that is not a positive integer or a margin that is not a non-negative one (a
+`TIMEOUT` of 0 means no timeout to ctest). To try the limit,
+`cmake --preset debug -DPLANAR_INSTALLER_TEST_LIMIT=5 -DPLANAR_INSTALLER_TEST_MARGIN=0` and run one
+case; put the defaults back afterwards (`-DPLANAR_INSTALLER_TEST_LIMIT=300
+-DPLANAR_INSTALLER_TEST_MARGIN=60`).
+
+Measured times per case are in [Installer test speed](#installer-test-speed). The longest
+installer case on 2026-10-09 (macOS arm64, a loaded host, `ctest -L` through the host queue) was
+`install.prefix_guard` at 211 s, then `install.prebuilt` and `install.managed` at 163 and 162 s,
+`install.data_paths` at 143 s, `install.uninstall_manifest` at 125 s, and the rest below 120 s;
+all 28 ran inside the limit. `bootstrap.release`, outside the limit, took 143 s.
+
+### The two-shell comparison
+
+The `install.bash32_*` tests install and uninstall a fake bundle under bash 3.2 and under
+a newer bash and compares the two end states tree for tree: each file's mode and
+checksum, each directory's mode and each symlink's target (BSD `stat -f %Lp` and
+GNU `stat -c %a` are both handled; the HOME path is normalised, the lock records
+are left out). It also asks the mutation lock library (`_pl_owner_state`) after
+every uninstall and fails unless the lock is free or released. Its self-tests
+plant a mode change, a symlink retarget, a live lock holder and a killed one,
+and a planted mode or symlink-target change in the newer shell's run must fail the
+comparison.
+
+- **The Linux gate is the host that must run it.** `docker/linux-gate.Dockerfile`
+  builds bash 3.2.57 (SHA-256 pinned; fetched from ftp.gnu.org, falling back to two GNU mirrors) at `/opt/bash-3.2/bin/bash` and sets
+  `PLANAR_BASH32_OLD` to it and `PLANAR_BASH32_REQUIRE_COMPARE=1`. With the
+  variable set, the test fails if the old shell is not bash 3.x or no newer bash
+  exists, so the comparison cannot pass by comparing nothing.
+- **Elsewhere it runs when it can.** A developer macOS host has bash 3.2 as
+  `/bin/bash` and compares against a newer bash found at
+  `/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, on `PATH` or named by
+  `PLANAR_BASH32_NEW`. With none, it prints `TWO-SHELL COMPARISON NOT RUN` and the
+  reason, and still checks the end state against explicit expectations and a
+  second run of the same shell. It is a note and not a ctest skip: the expected
+  skip tally is zero.
+
+## Bundle assembler identity checks
+
+The `dist.identity` ctest (label `dist_identity`) runs nine focused controlled
+fixture tests for stable tag/HEAD/dirty identity, git-free snapshot inputs and Docker wrapper propagation,
+metadata init/health/schema refusals, zero or failed portable checks, and schema
+field type preservation and external scratch cwd/cleanup. The fixtures substitute external
+build commands and binaries to reach refusal paths; they do not establish real
+binary portability. Comprehensive layout/checksum coverage belongs to the
+separate bundle layout test.
+
+Fake-product assembly fixtures select Linux x86_64 through a scratch `uname`
+command, independently of the host running ctest (including Linux arm64).
+Layout expectations use that declared fixture target. This controls only tests
+of assembly with Python-script executables; it establishes no native binary
+portability or additional shipping platform. A separate refusal case gives the
+actual assembler Linux aarch64 and requires rejection before configure with no
+archive emitted. Production bundles still support only macOS arm64 and Linux
+x86_64, and the Linux gate keeps its existing platform.
+
+The `dist.layout` ctest (label `dist_layout`, entry point
+`scripts/dist-test.sh`) runs five layout scenarios against the actual
+`scripts/dist.sh` assembly path in disposable source copies. Configure, build,
+portable inspection and install commands are controlled fixtures that stage
+exactly five tiny fake executables. The real assembler copies the current
+authored assets, renders Codex agents, collects metadata and emits the archive.
+The test unpacks it and checks exact entries, executable and authored bytes,
+one rendered file per authored agent, flat metadata with the current migration
+maximum, sorted entries with fixed owners, and tagged repeat cuts. It verifies
+the emitted checksum record with both `sha256sum -c` and `shasum -a 256 -c`
+when available, and requires at least one checker.
+
+The root `uninstall.sh` is always shipped, a byte copy of `scripts/uninstall.sh`;
+assembly stops when that file is missing. The root `get-planar.sh` is likewise
+always shipped, a byte copy of `scripts/get-planar.sh`, and the same bytes are
+emitted as the standalone `dist/get-planar.sh` with their own `SHA256SUMS`
+record (checked by the same two checkers); assembly stops when the source is
+missing. Deliberate mutations prove
+that wrong entry counts, installer, uninstaller and bootstrap bytes and metadata fail; appending a byte
+to the archive must make the shell entry point's checksum assertion fail and
+name the asset. To check a retained fixture manually, use
+`scripts/dist-test.sh --check-checksums <directory> <asset-basename>` through
+the host queue. All fixture tags, output and scratch trees are isolated from
+the checkout's tags and retained `dist/` artifacts. Fake executables establish
+layout and checksum behavior; the real native/Linux portability and smoke
+evidence remains a separate gate.
+
+Task validation also runs real `make dist` and `make linux-dist` through the host
+queue. Assembly requires exactly two portable tests, then inspects the staged
+products. Retain the archive and its checksum-bound `.gates.json`, plus
+`build/dist-evidence/` init, health and portability logs. Tagged tests use a
+disposable checkout; never create validation release tags in the real repository.
+The milestone barrier runs the full suite on the merged candidate separately.
+
+## The release bootstrap test
+
+The `bootstrap.release` ctest (label `bootstrap`, entry point
+`scripts/get-planar-test.sh`) runs `scripts/get-planar.sh` end to end against a
+loopback release server, in a scratch `HOME` with its own `TMPDIR`; nothing in
+the real `~/.planar` is read or written. About forty cases run in two to three
+minutes under a 900 second timeout.
+
+- **Server.** `python3 -m http.server 0 --bind 127.0.0.1` serves a release
+  directory laid out as the GitHub release base is (`latest/download/VERSION`,
+  `download/<tag>/{SHA256SUMS,planar-<platform>.tar.gz}`). It binds port 0 and
+  the test reads the port back from the server's first line, so there is no
+  port race, and an EXIT trap kills it. The server log is the evidence for
+  where each asset came from. Bundles are the shared fake bundles published by
+  `src/cmd/planar/handlers/update/release_fixture.sh`.
+- **Test-only dependencies.** `python3` (the server) and GNU `wget` (the
+  fallback case) are dependencies of this test, never of an operator path
+  (decision 1333). The bootstrap itself runs with a PATH that holds no python3.
+  A missing `python3` or `wget`, or a `wget` that is not GNU Wget, fails the
+  test at the start with a message naming it; the test never skips, because
+  the expected skip tally is zero.
+- **Host shims.** `uname`, `sw_vers` and `ldd` are shimmed, so one host reaches
+  the unsupported-platform, old-macOS and glibc refusals. Installs run on the
+  host's own platform. A `curl` wrapper fires a hook at a chosen request (publish
+  a newer release after `VERSION` is read, signal the bootstrap during the
+  tarball download, rewrite the recovery journal after the download); curl is
+  absent from `PATH` in the wget cases.
+- **Per case.** Each asserts the exit status, the refusal's fixed opening text,
+  that a refusal left `HOME` byte for byte as it was, and that no
+  `planar-get.*` temporary directory remained. Each case prints `PASS <name>`
+  or `FAIL <name>: <reason>`; the run ends with the counts and exits non-zero
+  on any failure.
+- **Fault injection.** The interrupted-install cases use the installer's
+  `PLANAR_INSTALL_TEST_FAULT=kill@after-mutating` test fault, armed with
+  `PLANAR_INSTALL_TEST_FAULT_ARMED=test-only`.
+
+Run it through the host queue:
+
+```sh
+ctest --test-dir build/debug -L '^bootstrap$' --output-on-failure
 ```
