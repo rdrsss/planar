@@ -69,7 +69,7 @@ auto task_policy(plan_roll_up* observed) -> engine::runtime::agentatomic::task_p
 }
 
 auto milestone_promoted(const plan_roll_up& observed, const engine::runtime::agentatomic::terminal_result& result) -> bool {
-  return !result.replayed && observed.result.has_value() && observed.result->flipped &&
+  return observed.result.has_value() && observed.result->flipped &&
          observed.result->status_after == engine::planning::plan_status::done;
 }
 

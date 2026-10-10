@@ -9,7 +9,7 @@ Its claim terminal verbs update the claim and task in one transaction.
 | --- | --- |
 | `version/`, `schema/` | Version metadata and flat command catalog. |
 | `pull/`, `peek/` | Claim the next task in one plan, or preview the same selection without a write. |
-| `claim/`, `heartbeat/`, `claim_associate/` | Direct claim, lease renewal and association of an active claim with a workflow run. |
+| `claim/`, `heartbeat/` | Direct claim and lease renewal. |
 | `complete/`, `fail/`, `release/`, `block/` | Atomic claim terminals paired with task status changes. |
 | `action/` | Start and end nested agent actions. |
 | `run/`, `context/` | Workflow run lifecycle and context records/capsules. |

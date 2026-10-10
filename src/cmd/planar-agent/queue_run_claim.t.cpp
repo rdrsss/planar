@@ -847,16 +847,20 @@ TEST_CASE("queue run --claim: a lease lengthened by heartbeat --ttl lengthens th
   CHECK(finish(claimed).code == 0);
 }
 
-TEST_CASE("queue run --claim: an engine-supervised claim is refused once, with a warning, and the command runs",
+TEST_CASE("queue run --claim: a legacy engine-supervised claim is refused once, with a warning, and the command runs",
           "[cmd][agent][queue][hq-claim]") {
   auto const arena = seeded_arena("qc_engine");
   write_config(arena, k_fast_poll);
   seed_main(arena);
-  auto const                     token = mint_claim(arena);
-  std::vector<std::string> const associate{"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "a1"};
-  auto const                     handed = parity::run_pinned(agent_bin(), associate, arena.cpp_root, "associate");
-  INFO("associate stderr:\n" << handed.err);
-  REQUIRE(handed.code == 0);
+  auto const token = mint_claim(arena);
+  // A row handed to the engine before the supervision verbs were removed.
+  {
+    auto conn = planar::db::connection::open(main_db(arena).string());
+    REQUIRE(conn.has_value());
+    REQUIRE(
+        conn->execute("update agent_work_claims set supervisor = 'engine', attempt_id = 'a1' where claim_token = '" + token + "'")
+            .has_value());
+  }
   auto const before = expiry(arena, token);
 
   auto const got = run_queue(arena, "engine", sh_command("sleep 0.5; exit 2"), {"--claim", token});

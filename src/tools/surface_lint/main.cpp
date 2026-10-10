@@ -1002,7 +1002,6 @@ constexpr std::array<command_class_t, 260> k_command_classes{
     m_("planar-agent block"),
     m_("planar-agent claim"),
     m_("planar-agent heartbeat"),
-    m_("planar-agent claim-associate"),
     m_("planar-agent action start"),
     m_("planar-agent action end"),
     m_("planar-agent ingest"),

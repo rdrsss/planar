@@ -20,7 +20,6 @@ export auto add(CLI::App& root) -> void {
       ->check(CLI::IsMember{shared::failure_categories()})
       ->default_str("unknown");
   shared::add_no_locality_probe(*fail, "Skip the git locality probe and commit collection");
-  shared::add_supervision(*fail, true);
   shared::add_json(*fail, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::fail_cli
