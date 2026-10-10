@@ -571,7 +571,7 @@ TEST_CASE("handoff render_json: escapes text through json_text", "[engine_runtim
 TEST_CASE("handoff render_list_json: empty input is ZERO BYTES", "[engine_runtime][handoff]") {
   std::vector<ho::handoff> none;
   // Not `[]`, not a bare newline. The same complete-payload zero-byte case
-  // `workflow list --json` pins.
+  // `local list --json` pins.
   REQUIRE(ho::render_list_json(none).empty());
 }
 

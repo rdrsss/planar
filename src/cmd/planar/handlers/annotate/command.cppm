@@ -23,12 +23,12 @@
 /// CMakeLists tries. Composing them is not a convenience here; it is
 /// structurally impossible anywhere below this file. That makes this pair
 /// the honest end-to-end proof that layer 3 does the job it was created
-/// for, in a way `version` and the two `workflow` leaves (single-bucket,
+/// for, in a way `version` and the `skills` leaf (single-bucket,
 /// no database at all) cannot.
 ///
 /// It also exercises what the other leaves skip: the lazy database
 /// actually opening and migrating, and the `--json` / text split on a
-/// renderer whose terminator contract is the OPPOSITE of `workflow`'s.
+/// renderer whose terminator contract is the OPPOSITE of a complete-payload renderer's.
 ///
 /// ## The terminator contract is per-renderer, and this is the counterexample
 ///
@@ -37,7 +37,7 @@
 /// JSON [object|array], WITH NO TRAILING NEWLINE" — fragments the caller
 /// completes — while `render_text` and `render_list_text` say "Includes
 /// trailing newlines". So this handler appends `'\n'` on the JSON path and
-/// nothing on the text path, and `workflow list --json` (complete payload,
+/// nothing on the text path, and `local list --json` (complete payload,
 /// zero bytes when empty) appends nothing on either. Reading each
 /// renderer's own `@return` is the rule; a blanket "always append" or
 /// "never append" breaks one of the two.

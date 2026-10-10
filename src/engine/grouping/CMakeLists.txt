@@ -50,7 +50,7 @@
 # @return says so. The alternative shape ("renderer returns the body, caller
 # appends the terminator") cannot express two payloads this tree actually has:
 # a leaf whose empty output is ZERO BYTES rather than a bare newline
-# (`workflow list --json`, `local list --json`), and NDJSON, where the newline
+# (`local list --json`), and NDJSON, where the newline
 # is per-RECORD rather than per-document. Both are pinned. See
 # `json_text/CMakeLists.txt` for the escaping half of the same contract.
 

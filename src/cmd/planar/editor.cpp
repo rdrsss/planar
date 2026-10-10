@@ -47,7 +47,7 @@ auto resolve_editor(const env_lookup& env, const std::optional<std::string>& ove
 }
 
 // Both of the following moved to `planar.process` (layer 1) at task 6272,
-// unchanged in behavior, so `workflow run` could reach the same runner
+// unchanged in behavior, so a layer-2 spawner could reach the same runner
 // without importing a module named for `$EDITOR` — and so the layer-2
 // consumers still waiting on a spawn can reach it at all. These remain
 // exported here because the editor/pager vocabulary is what `editflow` and

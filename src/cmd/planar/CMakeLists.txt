@@ -25,16 +25,11 @@
 #
 #   version            The spine alone: parse -> dispatch -> stdout -> exit 0,
 #                      no database, no engine bucket, no scope.
-#   workflow list      The stdout terminator contract at its sharpest --
-#                      `--json` emits NDJSON and ZERO BYTES on an empty
-#                      catalog. Also the env-lookup seam.
-#   workflow show      The non-zero exit path (exit 1) with a renderer that
-#                      returns a COMPLETE stderr line, prefix included.
 #   annotate add       The layer-3 composition D20 exists for: engine_identity
 #                      (scope resolution) + engine_planning (annotation CRUD),
 #                      two buckets that cannot reach each other. Also the
 #                      lazy database actually opening and migrating.
-#   annotate list      The counterexample to `workflow list --json`: a JSON
+#   annotate list      The counterexample to `local list --json`: a JSON
 #                      renderer documented as returning NO terminator, so the
 #                      caller appends one. The rule is per-renderer.
 #
@@ -133,8 +128,8 @@
 #   import / synthesize        LANDED at task 6106 after the layer-2 importer
 #                              and synthesize staging engines were ported.
 #
-# Omitting an unported child from a group node stays the rule (`workflow
-# run`), so `planar workspace --help` lists one command where the oracle
+# Omitting an unported child from a group node stays the rule (the removed
+# `workflow run` was one such leaf), so `planar workspace --help` lists one command where the oracle
 # lists four and remains not oracle-comparable; the LEAF pages still are.
 #
 # --- task 6040: the agent-lifecycle operator verbs -------------------------
@@ -227,7 +222,8 @@
 # verbatim and appends nothing. A renderer that returns a FRAGMENT carries no
 # terminator and says so in its @return, and this layer composes it. Both
 # shapes are live in this subset and both are pinned in handlers.t.cpp:
-# `workflows::render::list_json` is complete (empty catalog -> zero bytes),
+# a complete-payload renderer (`local list --json`, empty catalog -> zero
+# bytes) is complete,
 # `annotation::render_list_json` is a fragment (documented "with no trailing
 # newline"). Reading each renderer's own @return is the rule; a blanket
 # always-append or never-append breaks one of the two.
@@ -236,15 +232,15 @@
 # were never used
 # by any renderer-backed leaf here: those helpers unconditionally append '\n'
 # after the Glaze payload, which predates the 5728133 contract and would
-# break `workflow list --json`'s zero-byte case. They remain correct for a
+# break `local list --json`'s zero-byte case. They remain correct for a
 # Glaze-reflected struct that has no engine renderer at all.
 #
 # --- HOME / DB safety ------------------------------------------------------
 #
 # `planar.cmd.planar.context`'s `process_env()` is the ONLY function in this
 # target that calls std::getenv; everything else reads through a context's
-# env-lookup callable, the same structural mechanism engine_workflows,
-# engine_local and engine_workspace already use. That is what lets the test
+# env-lookup callable, the same structural mechanism engine_local and
+# engine_workspace already use. That is what lets the test
 # binary run real handlers against a scratch root with no process-environment
 # mutation, and it is a direct response to commit 3ec6c37, where two cli
 # parity tests shelled the reference binary with the inherited environment
@@ -257,7 +253,7 @@
 #     (tasks 6128/6137) landed one and `worktree_gate.cpp` now calls
 #     `git::detect_worktree`. This bullet said "does not exist" long after
 #     it did.
-#   - (RESOLVED for ONE of the three named here) `workflow run`, wired at
+#   - (RESOLVED for ONE of the three named here) the removed `workflow run`, wired at
 #     task 6272 over the new layer-1 `process` seam. The other two are NOT
 #     spawn-blocked and never were, which is why they are still absent:
 #     `bench harvest` needs ~671 unported engine lines (`runs/harvest.zig`)
@@ -455,10 +451,6 @@ planar_binary(planar
     handlers/shared/catalog.cppm
     handlers/schema/command.cppm
     handlers/completion/command.cppm
-    handlers/workflow/command.cppm
-    handlers/workflow/run.cppm
-    handlers/workflow/show.cppm
-    handlers/workflow/list.cppm
     handlers/annotate/command.cppm
     handlers/annotate/receipt.cppm
     handlers/annotate/request_command.cppm
@@ -730,7 +722,6 @@ planar_binary(planar
     handlers/update/lock.cpp
     handlers/update/command.cpp
     handlers/shared/catalog.cpp
-    handlers/workflow/command.cpp
     handlers/annotate/command.cpp
     handlers/shared/ext_adapter_factory.cpp
     handlers/link/command.cpp
@@ -830,7 +821,6 @@ planar_binary(planar
     engine_tree
     engine_templates
     engine_workbench
-    engine_workflows
     engine_workspace)
 
 if(TARGET planar_cmd_planar_tests)

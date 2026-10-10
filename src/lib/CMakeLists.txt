@@ -75,12 +75,8 @@
 # read-only routing-evidence views — thirteen of the fourteen `models` schema
 # leaves. It depends only on `db`; `models resolve` is deferred with its
 # roles/profile/packet subsystem (see src/engine/models/CMakeLists.txt).
-# `src/engine/workflows` (plan 996, task 6096) is Lua-workflow discovery and
-# `@meta` parsing behind `workflow list` / `workflow show`. It depends on
-# NOTHING -- it holds no SQLite handle -- and resolves its directories from an
-# explicit env-lookup callable rather than `std::getenv`, so it cannot reach a
-# real `~/.planar` by accident. `workflow run` is deferred with its
-# process-spawn dependency (see src/engine/workflows/CMakeLists.txt).
+# The Lua-workflow discovery bucket (`src/engine/workflows`, plan 996, task
+# 6096) was removed with `planar workflow` (task 7453).
 # `json_text` (plan 996, task 6109, decision D19) is a layer-1 base library
 # holding the ONE JSON string-escaping primitive every hand-rolled renderer in
 # the tree shares. It was extracted after the per-bucket duplication D18 forces
@@ -124,7 +120,7 @@
 # program ran and failed", which `git` deliberately erases and which
 # callers render as different refusals. Its absence was cited as the blocker
 # on FIVE leaves; verified at task 6272, it was the real and only blocker on
-# exactly ONE (`workflow run`) — `capture commits` and `bench harvest` are
+# exactly ONE (the removed `workflow run`) — `capture commits` and `bench harvest` are
 # blocked on ~1100 and ~671 unported engine lines respectively, and `audit
 # commits` needs `listFiltered`, which is pure SQL and not spawn-blocked at
 # all. Both bodies moved DOWN from layer 3 unchanged in behavior; `editor`

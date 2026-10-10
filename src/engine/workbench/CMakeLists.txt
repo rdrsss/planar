@@ -71,7 +71,7 @@
 # This is the highest-risk bucket in the port: `archive` deletes a directory
 # tree and `gc` unlinks files, both under a root that ultimately comes from
 # the environment. The protection is structural rather than a test
-# convention, matching `engine_workflows` and `engine_local`:
+# convention, matching `engine_local`:
 #
 #   - `planar.engine.workbench.root` is the ONLY module that decides where
 #     the workbench lives, and it takes an injected env-lookup callable and
@@ -109,9 +109,8 @@
 #   - `edit` needed no engine code at all. It is `push` -> spawn `$EDITOR`
 #     on the feature directory -> `pull`, and the spawn primitive already
 #     existed at layer 3 (`planar.cmd.planar.editor::spawn_inherit`, ported
-#     for the drafting quartet). The claim that it shared `workflow run`'s
-#     process-spawn blocker was inherited, not measured — `workflow run`
-#     needs a spawn in the ENGINE, which is a different problem.
+#     for the drafting quartet). The claim that it shared a process-spawn
+#     blocker with the removed `workflow run` was inherited, not measured.
 #
 #   `publish` above is now the ONLY blocked leaf in this bucket. It used to
 #   be stated as one of three, which made a genuine adapter dependency read

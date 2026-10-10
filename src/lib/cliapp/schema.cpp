@@ -131,7 +131,7 @@ auto value_name_of(const CLI::Option& opt, std::string_view kind) -> std::string
 /// EMPTY-STRING default. Task 6130 closed this by supplying them as a
 /// side-table to `schema_json` — see its three-argument overload. The
 /// analysis below is retained because it is still why `default_literal`
-/// alone cannot answer: (`planar workbench edit --editor`, `planar workflow
+/// alone cannot answer: (`planar workbench edit --editor`, the removed `planar workflow
 /// run --args`, and two others) and report `""` where this reports `null`.
 /// CLI11 exposes one accessor, `get_default_str()`, returning `""` for both
 /// "no default" and "a default that is the empty string"; the two are not
