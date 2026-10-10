@@ -560,4 +560,20 @@ auto sorted_keys(const effective_map& eff) -> std::vector<std::string> {
   return keys; // std::map already iterates in ascending key order.
 }
 
+auto introspection_cli_log(const std::optional<std::filesystem::path>& path) -> std::optional<bool> {
+  if (!path.has_value()) {
+    return std::nullopt;
+  }
+  std::optional<std::string> content;
+  if (std::ifstream file(*path, std::ios::binary); file) {
+    content = std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+  }
+  auto const resolved =
+      resolve(content.has_value() ? std::optional<std::string_view>{*content} : std::nullopt, env_view::empty(), std::nullopt);
+  if (!resolved.has_value()) {
+    return std::nullopt;
+  }
+  return resolved->cfg.introspection.cli_log;
+}
+
 } // namespace planar::engine::config

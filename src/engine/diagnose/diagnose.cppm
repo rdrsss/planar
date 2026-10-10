@@ -309,4 +309,46 @@ export auto render_text(const diagnosis& d) -> std::string;
 /// @return The JSON text without a trailing newline.
 export auto render_json(const diagnosis& d) -> std::string;
 
+/// @brief A diagnosis rendered for an automatic trigger (a terminal verb or `planar plan closeout`).
+export struct section {
+  std::string text; ///< `render_section_text`: no leading separator, ends in a newline.
+  std::string json; ///< `render_section_json`: one object, no trailing newline.
+};
+
+/// @brief The automatic-trigger text: `diagnose: clean`, `diagnose: <n> finding(s)` then one
+/// `<severity> <check-id> <entity> -> <recovery>` line per finding, or `diagnose: unavailable (<reason>)`.
+/// A `partial` outcome appends `(partial: <input>[, <input>] unavailable)` to the header.
+/// @param d The diagnosis.
+/// @return The text, ending in a newline.
+export auto render_section_text(const diagnosis& d) -> std::string;
+
+/// @brief The automatic-trigger JSON object: `plan_id`, `state` (`clean`, `findings` or `unavailable`),
+/// `outcome`, `reason`, `evaluated_at`, `findings` (the same objects as `render_json`) and `incidents`
+/// (`{"state":"not_applicable","reason":null}` while the trigger records nothing).
+/// @param d The diagnosis.
+/// @param plan_id The plan the run was for.
+/// @return The JSON text without a trailing newline.
+export auto render_section_json(const diagnosis& d, std::int64_t plan_id) -> std::string;
+
+/// @brief Runs the builtin catalog for one plan over its lifetime window and renders the section. Never
+/// fails: an `unavailable` run, or input the engine rejects, renders as `diagnose: unavailable (<reason>)`.
+/// Reads only, under the run's 250 ms busy timeout and `query_only` guard.
+/// @param conn A connection to a Planar database.
+/// @param plan_id The plan (and its descendants) to diagnose.
+/// @param evaluated_at The injected evaluation instant.
+/// @param cli_log_enabled `[introspection].cli_log` as the caller read it; empty when unknown.
+/// @return The rendered section.
+export auto run_section(db::connection& conn, std::int64_t plan_id, std::string_view evaluated_at,
+                        std::optional<bool> cli_log_enabled) -> section;
+
+/// @brief `run_section()` over a caller-supplied catalog.
+/// @param conn A connection to a Planar database.
+/// @param plan_id The plan to diagnose.
+/// @param evaluated_at The injected evaluation instant.
+/// @param cli_log_enabled `[introspection].cli_log`, or empty when unknown.
+/// @param cat The catalog.
+/// @return The rendered section.
+export auto run_section(db::connection& conn, std::int64_t plan_id, std::string_view evaluated_at,
+                        std::optional<bool> cli_log_enabled, const catalog& cat) -> section;
+
 } // namespace planar::engine::diagnose

@@ -334,6 +334,12 @@ public:
 export auto resolve(std::optional<std::string_view> file_content, const env_view& env, std::optional<std::string_view> assoc_slug)
     -> std::expected<resolved, effective_error>;
 
+/// @brief `[introspection].cli_log` as the config file at `path` resolves it, without the environment
+/// (the capture path reads it the same way). A missing file is the embedded default (off).
+/// @param path The config file path; empty when the caller could not resolve one.
+/// @return The setting, or empty when no path was given or the file does not parse.
+export auto introspection_cli_log(const std::optional<std::filesystem::path>& path) -> std::optional<bool>;
+
 /// @brief The embedded `defaults.toml`, exactly as `#embed` captured it.
 ///
 /// `config show --defaults` writes these bytes VERBATIM and appends

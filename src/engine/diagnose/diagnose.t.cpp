@@ -640,3 +640,63 @@ TEST_CASE("the plan filter is a no-op without a plan and an id list with one", "
   CHECK(dg::plan_filter_sql(dg::plan_scope{}, "t.plan_id") == "1 = 1");
   CHECK(dg::plan_filter_sql(dg::plan_scope{.plan_id = 1, .plan_ids = {1, 2, 3}}, "t.plan_id") == "t.plan_id in (1, 2, 3)");
 }
+
+TEST_CASE("the automatic-trigger section is clean, lists findings, names a partial input and reports unavailable",
+          "[diagnose][section]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  build_forty_day_fixture(conn);
+
+  // Plan 9's only task is inside its lifetime, so the synthetic check reports one finding for it.
+  auto found = dg::run_section(conn, 9, k_now, true, catalog_of({task_check("task-seen")}));
+  CHECK(found.text == "diagnose: 1 finding(s)\nwarning task-seen task:14 -> do the thing\n");
+  CHECK(found.json.starts_with(
+      R"({"plan_id":9,"state":"findings","outcome":"ok","reason":null,"evaluated_at":"2026-06-01T00:00:00.000Z","findings":[{"check":"task-seen")"));
+  CHECK(found.json.ends_with(R"(],"incidents":{"state":"not_applicable","reason":null}})"));
+
+  // No check selects anything in a plan with no tasks.
+  add_plan(conn, 20, std::nullopt, "2026-05-01T00:00:00.000Z");
+  auto clean = dg::run_section(conn, 20, k_now, true, catalog_of({task_check("task-seen")}));
+  CHECK(clean.text == "diagnose: clean\n");
+  CHECK(clean.json.starts_with(R"({"plan_id":20,"state":"clean","outcome":"ok","reason":null,)"));
+  CHECK(clean.json.find(R"("findings":[],"incidents")") != std::string::npos);
+}
+
+TEST_CASE("the section reports a partial outcome with its unavailable input", "[diagnose][section]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  add_plan(conn, 20, std::nullopt, "2026-05-01T00:00:00.000Z");
+  dg::input_def broken{.name  = "broken_input",
+                       .probe = [](const dg::check_context&) -> std::expected<dg::input_status, planar::db::db_error> {
+                         return dg::input_status{.state = im::coverage_state::unavailable, .reason = "gone"};
+                       }};
+  auto          s = dg::run_section(conn, 20, k_now, true, catalog_of({task_check("task-seen", {"broken_input"})}, {broken}));
+  CHECK(s.text == "diagnose: clean (partial: broken_input unavailable)\n");
+  CHECK(s.json.starts_with(R"({"plan_id":20,"state":"clean","outcome":"partial","reason":null,)"));
+}
+
+TEST_CASE("the section reads unavailable for a failed run and for input the engine rejects", "[diagnose][section]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  add_plan(conn, 20, std::nullopt, "2026-05-01T00:00:00.000Z");
+  dg::check_def failing = task_check("task-seen");
+  failing.evaluate      = [](const dg::check_context& ctx) -> std::expected<std::vector<im::finding>, planar::db::db_error> {
+    auto stmt = ctx.conn.prepare("select no_such_column from tasks");
+    if (!stmt) {
+      return std::unexpected(stmt.error());
+    }
+    return std::vector<im::finding>{};
+  };
+  auto s = dg::run_section(conn, 20, k_now, true, catalog_of({failing}));
+  CHECK(s.text == "diagnose: unavailable (query-failed)\n");
+  CHECK(s.json.starts_with(R"({"plan_id":20,"state":"unavailable","outcome":"unavailable","reason":"query-failed",)"));
+  CHECK(s.json.find(R"("findings":[],"incidents")") != std::string::npos);
+
+  // An unknown plan is bad input to the engine; the section still never fails.
+  auto missing = dg::run_section(conn, 999, k_now, true, catalog_of({task_check("task-seen")}));
+  CHECK(missing.text == "diagnose: unavailable (query-failed)\n");
+
+  // So is an instant that is not ISO-8601.
+  auto bad_instant = dg::run_section(conn, 20, "yesterday", true, catalog_of({task_check("task-seen")}));
+  CHECK(bad_instant.text == "diagnose: unavailable (query-failed)\n");
+}

@@ -341,6 +341,44 @@ void append_string(std::string& out, std::string_view text) {
   json_text::append_json_string(out, text);
 }
 
+/// One finding as a text line: `<severity> <check-id> <entity> -> <recovery>`, newline included.
+auto finding_line(const im::finding& f) -> std::string {
+  // A cluster names its grouping key and size: its primary entity alone says neither.
+  auto cluster =
+      !f.members.empty() ? std::format(" ({}, {} members)", im::finding_fingerprint(f), f.members.size()) : std::string{};
+  return std::format("{} {} {}{} -> {}\n", im::diagnostic_severity_name(f.severity), f.check_id, im::entity_ref_text(f.primary),
+                     cluster, f.recovery.empty() ? std::string_view{"none"} : std::string_view{f.recovery});
+}
+
+/// One finding as its JSON object, appended to `out`.
+void append_finding_json(std::string& out, const im::finding& f) {
+  out += "{\"check\":";
+  append_string(out, f.check_id);
+  out += ",\"severity\":";
+  append_string(out, im::diagnostic_severity_name(f.severity));
+  out += ",\"entity\":";
+  append_string(out, im::entity_ref_text(f.primary));
+  out += ",\"evidence\":[";
+  for (std::size_t j = 0; j < f.evidence.size(); ++j) {
+    out += j == 0 ? "" : ",";
+    append_string(out, im::entity_ref_text(f.evidence[j]));
+  }
+  out += "],\"evidence_times\":[";
+  for (std::size_t j = 0; j < f.evidence_times.size(); ++j) {
+    out += j == 0 ? "" : ",";
+    append_string(out, f.evidence_times[j]);
+  }
+  out += "],\"fingerprint\":";
+  append_string(out, im::finding_fingerprint(f));
+  out += ",\"recovery\":";
+  if (f.recovery.empty()) {
+    out += "null";
+  } else {
+    append_string(out, f.recovery);
+  }
+  out += ",\"incident\":null}";
+}
+
 } // namespace
 
 namespace detail {
@@ -527,11 +565,7 @@ auto render_text(const diagnosis& d) -> std::string {
     }
   }
   for (const auto& f : d.findings) {
-    // A cluster names its grouping key and size: its primary entity alone says neither.
-    auto cluster =
-        !f.members.empty() ? std::format(" ({}, {} members)", im::finding_fingerprint(f), f.members.size()) : std::string{};
-    out += std::format("{} {} {}{} -> {}\n", im::diagnostic_severity_name(f.severity), f.check_id, im::entity_ref_text(f.primary),
-                       cluster, f.recovery.empty() ? std::string_view{"none"} : std::string_view{f.recovery});
+    out += finding_line(f);
   }
   return out;
 }
@@ -596,35 +630,75 @@ auto render_json(const diagnosis& d) -> std::string {
   }
   out += "],\"findings\":[";
   for (std::size_t i = 0; i < d.findings.size(); ++i) {
-    const auto& f = d.findings[i];
-    out += i == 0 ? "{\"check\":" : ",{\"check\":";
-    append_string(out, f.check_id);
-    out += ",\"severity\":";
-    append_string(out, im::diagnostic_severity_name(f.severity));
-    out += ",\"entity\":";
-    append_string(out, im::entity_ref_text(f.primary));
-    out += ",\"evidence\":[";
-    for (std::size_t j = 0; j < f.evidence.size(); ++j) {
-      out += j == 0 ? "" : ",";
-      append_string(out, im::entity_ref_text(f.evidence[j]));
-    }
-    out += "],\"evidence_times\":[";
-    for (std::size_t j = 0; j < f.evidence_times.size(); ++j) {
-      out += j == 0 ? "" : ",";
-      append_string(out, f.evidence_times[j]);
-    }
-    out += "],\"fingerprint\":";
-    append_string(out, im::finding_fingerprint(f));
-    out += ",\"recovery\":";
-    if (f.recovery.empty()) {
-      out += "null";
-    } else {
-      append_string(out, f.recovery);
-    }
-    out += ",\"incident\":null}";
+    out += i == 0 ? "" : ",";
+    append_finding_json(out, d.findings[i]);
   }
   out += "],\"would_resolve\":[]}";
   return out;
+}
+
+auto render_section_text(const diagnosis& d) -> std::string {
+  if (d.result == run_outcome::unavailable) {
+    return std::format("diagnose: unavailable ({})\n", d.reason ? unavailable_reason_name(*d.reason) : "query-failed");
+  }
+  std::string out =
+      d.findings.empty() ? std::string{"diagnose: clean"} : std::format("diagnose: {} finding(s)", d.findings.size());
+  if (d.result == run_outcome::partial) {
+    std::string sources;
+    for (const auto& row : d.coverage) {
+      if (row.state == im::coverage_state::unavailable) {
+        sources += sources.empty() ? "" : ", ";
+        sources += row.input;
+      }
+    }
+    out += std::format(" (partial: {} unavailable)", sources);
+  }
+  out += '\n';
+  for (const auto& f : d.findings) {
+    out += finding_line(f);
+  }
+  return out;
+}
+
+auto render_section_json(const diagnosis& d, std::int64_t plan_id) -> std::string {
+  const char* state = d.result == run_outcome::unavailable ? "unavailable" : d.findings.empty() ? "clean" : "findings";
+  std::string out   = std::format("{{\"plan_id\":{},\"state\":\"{}\",\"outcome\":", plan_id, state);
+  append_string(out, run_outcome_name(d.result));
+  out += ",\"reason\":";
+  if (d.reason) {
+    append_string(out, unavailable_reason_name(*d.reason));
+  } else {
+    out += "null";
+  }
+  out += ",\"evaluated_at\":";
+  append_string(out, d.evaluated_at);
+  out += ",\"findings\":[";
+  for (std::size_t i = 0; i < d.findings.size(); ++i) {
+    out += i == 0 ? "" : ",";
+    append_finding_json(out, d.findings[i]);
+  }
+  out += "],\"incidents\":{\"state\":\"not_applicable\",\"reason\":null}}";
+  return out;
+}
+
+auto run_section(db::connection& conn, std::int64_t plan_id, std::string_view evaluated_at, std::optional<bool> cli_log_enabled)
+    -> section {
+  return run_section(conn, plan_id, evaluated_at, cli_log_enabled, builtin_catalog());
+}
+
+auto run_section(db::connection& conn, std::int64_t plan_id, std::string_view evaluated_at, std::optional<bool> cli_log_enabled,
+                 const catalog& cat) -> section {
+  run_request request{.plan_id = plan_id, .evaluated_at = std::string{evaluated_at}, .cli_log_enabled = cli_log_enabled};
+  auto        ran = run(conn, request, cat);
+  diagnosis   d;
+  if (ran) {
+    d = std::move(*ran);
+  } else {
+    // Bad input cannot be produced by the callers (the plan exists and the instant is theirs),
+    // so a rejected run reads as a failed one rather than as the caller's mistake.
+    d = unavailable_diagnosis(unavailable_reason::query_failed, evaluated_at);
+  }
+  return section{.text = render_section_text(d), .json = render_section_json(d, plan_id)};
 }
 
 } // namespace planar::engine::diagnose

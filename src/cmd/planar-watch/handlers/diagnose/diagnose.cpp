@@ -24,21 +24,7 @@ namespace {
 /// @param ctx The invocation context.
 /// @return The setting, or empty when it cannot be determined.
 auto cli_log_setting(context& ctx) -> std::optional<bool> {
-  auto const path = internal::resolve_config_path(ctx.env());
-  if (!path.has_value()) {
-    return std::nullopt;
-  }
-  std::optional<std::string> content;
-  if (std::ifstream file(*path, std::ios::binary); file) {
-    content = std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-  }
-  // `cli_log` is resolved without the environment (the capture path reads it the same way).
-  auto const resolved = engine::config::resolve(content.has_value() ? std::optional<std::string_view>{*content} : std::nullopt,
-                                                engine::config::env_view::empty(), std::nullopt);
-  if (!resolved.has_value()) {
-    return std::nullopt;
-  }
-  return resolved->cfg.introspection.cli_log;
+  return engine::config::introspection_cli_log(internal::resolve_config_path(ctx.env()));
 }
 
 } // namespace

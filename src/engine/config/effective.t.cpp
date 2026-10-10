@@ -461,3 +461,23 @@ TEST_CASE("resolve: execute.profiles.* keys from the file are surfaced verbatim,
   REQUIRE(bare.has_value());
   CHECK(std::ranges::none_of(bare->effective, [](auto const& kv) { return kv.first.starts_with("execute.profiles."); }));
 }
+
+TEST_CASE(
+    "introspection_cli_log: unknown without a path, off for a missing file, the file's value otherwise, unknown when unparseable",
+    "[effective]") {
+  using planar::engine::config::introspection_cli_log;
+  auto dir = std::filesystem::temp_directory_path() /
+             std::format("planar_cli_log_{}", std::chrono::steady_clock::now().time_since_epoch().count());
+  std::filesystem::create_directories(dir);
+  auto write = [&](std::string_view name, std::string_view body) {
+    auto path = dir / name;
+    std::ofstream(path) << body;
+    return path;
+  };
+  CHECK_FALSE(introspection_cli_log(std::nullopt).has_value());
+  CHECK(introspection_cli_log(dir / "absent.toml") == std::optional<bool>{false});
+  CHECK(introspection_cli_log(write("on.toml", "[introspection]\ncli_log = true\n")) == std::optional<bool>{true});
+  CHECK(introspection_cli_log(write("off.toml", "[introspection]\ncli_log = false\n")) == std::optional<bool>{false});
+  CHECK_FALSE(introspection_cli_log(write("bad.toml", "[introspection\ncli_log = ")).has_value());
+  std::filesystem::remove_all(dir);
+}
