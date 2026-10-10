@@ -29,7 +29,7 @@ not a runtime ACL.
 
 | Binary | Role | Writes |
 |--------|------|--------|
-| `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. |
+| `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. Outside the database, `update` writes the mutation-lock record and a download directory before it execs the bundled installer; it opens no database. |
 | `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, the `routing_dispatch_*` tables, and `tasks.status` as part of a coordinated operation. Also the host-queue tables `queue_entries`, `queue_history` and `queue_schema`, through `queue run`. |
 | `planar-watch` | Read-only viewer | Nothing. Opens SQLite with `mode=ro`. |
 | `planar-ext` | Jira and GitHub Issues adapters | `external_links`, `external_systems`, `sync_events` only, enforced by a `sqlite3_set_authorizer` allowlist. Read-only on planning tables. |

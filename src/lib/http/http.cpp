@@ -27,6 +27,31 @@ auto write_body(char* data, std::size_t size, std::size_t nmemb, void* user) -> 
   return bytes;
 }
 
+/// @brief A body sink with an optional size limit, for `download`.
+struct bounded_body {
+  std::string   body;             ///< The bytes received so far.
+  std::uint64_t limit    = 0;     ///< The largest body accepted; 0 accepts any size.
+  bool          exceeded = false; ///< Set when a write would pass `limit`.
+};
+
+/// @brief `CURLOPT_WRITEFUNCTION` for a `bounded_body`: append, or abort the
+/// transfer when the limit would be passed.
+/// @param data The received bytes.
+/// @param size Element size (always 1 for libcurl).
+/// @param nmemb Element count.
+/// @param user The `bounded_body*` passed as `CURLOPT_WRITEDATA`.
+/// @return The number of bytes consumed; 0 aborts the transfer.
+auto write_bounded(char* data, std::size_t size, std::size_t nmemb, void* user) -> std::size_t {
+  auto* const sink  = static_cast<bounded_body*>(user);
+  auto const  bytes = size * nmemb;
+  if (sink->limit != 0 && sink->body.size() + bytes > sink->limit) {
+    sink->exceeded = true;
+    return 0;
+  }
+  sink->body.append(data, bytes);
+  return bytes;
+}
+
 /// @brief Run libcurl's global initialization exactly once per process.
 ///
 /// `curl_easy_init` will do this implicitly, but implicitly it is NOT
@@ -37,6 +62,47 @@ auto ensure_global_init() -> void {
   static std::once_flag flag;
   std::call_once(flag, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
 }
+
+/// @brief Lowercase an ASCII string.
+auto ascii_lower(std::string_view in) -> std::string {
+  std::string out(in);
+  for (auto& c : out) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return out;
+}
+
+/// @brief Whether `host` is a plain DNS name or dotted IPv4 literal.
+auto plain_host(std::string_view host) -> bool {
+  if (host.empty() || host.front() == '.' || host.back() == '.' || host.front() == '-') {
+    return false;
+  }
+  return std::ranges::all_of(host, [](char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.';
+  });
+}
+
+/// @brief Whether `port` is 1..65535 in digits only.
+auto valid_port(std::string_view port) -> bool {
+  if (port.empty() || port.size() > 5 || !std::ranges::all_of(port, [](char c) { return c >= '0' && c <= '9'; })) {
+    return false;
+  }
+  auto const value = std::stoul(std::string(port));
+  return value >= 1 && value <= 65535;
+}
+
+/// @brief A scope guard owning one easy handle.
+struct easy_handle {
+  CURL* handle                               = curl_easy_init();
+  easy_handle()                              = default;
+  easy_handle(const easy_handle&)            = delete;
+  easy_handle& operator=(const easy_handle&) = delete;
+  ~easy_handle() {
+    if (handle != nullptr) {
+      curl_easy_cleanup(handle);
+    }
+  }
+};
 
 } // namespace
 
@@ -188,6 +254,170 @@ auto curl_transport::send(const request& req) -> std::expected<response, transpo
     return std::unexpected(transport_error::send_failed);
   }
   return response{.status = static_cast<std::uint16_t>(status), .body = std::move(body_out)};
+}
+
+auto check_download_url(std::string_view url, std::optional<url_scheme> previous) -> std::expected<url_scheme, std::string> {
+  auto const refuse = [&](std::string_view why) -> std::expected<url_scheme, std::string> {
+    return std::unexpected(std::format("{}: {}", why, url));
+  };
+  if (std::ranges::any_of(url, [](char c) {
+        auto const u = static_cast<unsigned char>(c);
+        return u <= 0x20 || u == 0x7F || c == '\\';
+      })) {
+    return refuse("url contains whitespace, control or backslash characters");
+  }
+  auto const marker = url.find("://");
+  if (marker == std::string_view::npos) {
+    return refuse("url has no scheme");
+  }
+  auto const scheme_text = ascii_lower(url.substr(0, marker));
+  auto const rest        = url.substr(marker + 3);
+  auto const authority   = rest.substr(0, rest.find_first_of("/?#"));
+  if (authority.find('@') != std::string_view::npos) {
+    return refuse("url carries userinfo");
+  }
+  std::string_view host = authority;
+  std::string_view port;
+  bool             has_port = false;
+  if (auto const colon = authority.find(':'); colon != std::string_view::npos) {
+    host     = authority.substr(0, colon);
+    port     = authority.substr(colon + 1);
+    has_port = true;
+  }
+  if (has_port && !valid_port(port)) {
+    return refuse("url has a malformed port");
+  }
+
+  url_scheme scheme{};
+  if (scheme_text == "https") {
+    scheme = url_scheme::https;
+    if (!plain_host(host)) {
+      return refuse("https url has a malformed host");
+    }
+  } else if (scheme_text == "http") {
+    scheme = url_scheme::http;
+    if (host != "127.0.0.1" && host != "localhost") {
+      return refuse("http is allowed only for the exact hosts 127.0.0.1 and localhost");
+    }
+  } else if (scheme_text == "file") {
+    scheme = url_scheme::file;
+    if (has_port || (!host.empty() && host != "localhost")) {
+      return refuse("file url names a remote authority");
+    }
+  } else {
+    return refuse("url scheme is not https, http or file");
+  }
+
+  if (previous.has_value()) {
+    if (scheme == url_scheme::file) {
+      return refuse("redirect to a file url");
+    }
+    if (*previous == url_scheme::https && scheme != url_scheme::https) {
+      return refuse("redirect downgrades https");
+    }
+  }
+  return scheme;
+}
+
+auto download(std::string_view url, const download_policy& policy) -> std::expected<download_result, download_error> {
+  ensure_global_init();
+  std::string               current(url);
+  std::optional<url_scheme> previous;
+  std::uint32_t             hops = 0;
+  // One deadline for the whole redirect chain; each hop gets what remains.
+  auto const deadline = std::chrono::steady_clock::now() + policy.total_timeout;
+
+  while (true) {
+    auto const checked = check_download_url(current, previous);
+    if (!checked) {
+      return std::unexpected(
+          download_error{.kind = previous.has_value() ? download_error_kind::redirect_refused : download_error_kind::invalid_url,
+                         .url  = current,
+                         .message = checked.error()});
+    }
+    auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+    if (remaining.count() <= 0) {
+      return std::unexpected(download_error{
+          .kind = download_error_kind::timeout, .url = current, .message = std::format("download of {} timed out", current)});
+    }
+    easy_handle easy;
+    if (easy.handle == nullptr) {
+      return std::unexpected(download_error{.kind    = download_error_kind::transport_failed,
+                                            .url     = current,
+                                            .message = std::format("could not start a transfer for {}", current)});
+    }
+    auto* const  handle = easy.handle;
+    bounded_body sink{.limit = policy.max_body_bytes};
+    curl_easy_setopt(handle, CURLOPT_URL, current.c_str());
+    curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &write_bounded);
+    curl_easy_setopt(handle, CURLOPT_WRITEDATA, &sink);
+    curl_easy_setopt(handle, CURLOPT_TIMEOUT_MS, static_cast<long>(remaining.count()));
+    curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, static_cast<long>(policy.connect_timeout.count()));
+    curl_easy_setopt(handle, CURLOPT_LOW_SPEED_LIMIT, static_cast<long>(policy.low_speed_limit));
+    curl_easy_setopt(handle, CURLOPT_LOW_SPEED_TIME, static_cast<long>(policy.low_speed_time.count()));
+    // Redirects are followed by this loop, never by curl: curl cannot apply
+    // check_download_url to each hop. No CURLOPT_HTTPHEADER is ever set, so no
+    // Authorization header exists to leak.
+    curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 0L);
+    curl_easy_setopt(handle, CURLOPT_PROTOCOLS_STR, "http,https,file");
+    curl_easy_setopt(handle, CURLOPT_NETRC, static_cast<long>(CURL_NETRC_IGNORED));
+    curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(handle, CURLOPT_USERAGENT, "planar/1.0");
+    curl_easy_setopt(handle, CURLOPT_HTTPGET, 1L);
+#ifdef PLANAR_PORTABLE_LINUX_TLS
+    curl_easy_setopt(handle, CURLOPT_CAINFO, static_cast<char const*>(nullptr));
+    constexpr char  k_redhat_ca_bundle[] = "/etc/pki/tls/certs/ca-bundle.crt";
+    std::error_code ca_error;
+    if (std::filesystem::is_regular_file(k_redhat_ca_bundle, ca_error)) {
+      curl_easy_setopt(handle, CURLOPT_CAINFO, k_redhat_ca_bundle);
+    }
+#endif
+
+    auto const result = curl_easy_perform(handle);
+    if (sink.exceeded) {
+      return std::unexpected(
+          download_error{.kind    = download_error_kind::body_too_large,
+                         .url     = current,
+                         .message = std::format("download of {} exceeded the {}-byte limit", current, policy.max_body_bytes)});
+    }
+    if (result == CURLE_OPERATION_TIMEDOUT) {
+      return std::unexpected(download_error{
+          .kind = download_error_kind::timeout, .url = current, .message = std::format("download of {} timed out", current)});
+    }
+    if (result == CURLE_PEER_FAILED_VERIFICATION) {
+      return std::unexpected(download_error{.kind    = download_error_kind::certificate_verification_failed,
+                                            .url     = current,
+                                            .message = std::format("certificate verification failed for {}", current)});
+    }
+    if (result != CURLE_OK) {
+      return std::unexpected(
+          download_error{.kind    = download_error_kind::transport_failed,
+                         .url     = current,
+                         .message = std::format("download of {} failed: {}", current, curl_easy_strerror(result))});
+    }
+    long status = 0;
+    curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, &status);
+    if (*checked == url_scheme::file) {
+      status = 200;
+    }
+    char* location = nullptr;
+    if (status >= 300 && status < 400) {
+      curl_easy_getinfo(handle, CURLINFO_REDIRECT_URL, &location);
+    }
+    if (location == nullptr) {
+      return download_result{
+          .status = static_cast<std::uint16_t>(status), .body = std::move(sink.body), .final_url = current, .redirects = hops};
+    }
+    if (hops >= policy.max_redirects) {
+      return std::unexpected(
+          download_error{.kind    = download_error_kind::too_many_redirects,
+                         .url     = current,
+                         .message = std::format("more than {} redirects fetching {}", policy.max_redirects, std::string(url))});
+    }
+    ++hops;
+    previous = *checked;
+    current  = location;
+  }
 }
 
 } // namespace planar::http

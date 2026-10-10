@@ -363,6 +363,70 @@ run_prebuilt "$H" "$BUNDLE" "PATH=$H/.planar/bin:$H/.local/bin:$SHIM:$BASEBIN" -
 if grep -Fq 'shadows' "$TMP/err" "$TMP/out"; then fail "no-warning-when-planar-bin-first: a shadow warning appeared with ~/.planar/bin first"; fi
 pass
 
+# --- PLANAR_EXPECT_RECOVERY: recovery is revalidated under the mutation lock ----------------
+# The release bootstrap pins an interrupted install and passes its operation id. Under the
+# lock the installer refuses (exit 1, nothing changed) when the journal is gone, settled or
+# records another operation; the matching journal is recovered. Tech spec 677, "The
+# bootstrap" step 2.
+
+kill_mutating() { # kill_mutating NAME -- an install killed after its mutating record; sets KH, KP, KOP
+  KH="$(new_home "$1")"; KP="$KH/.planar"
+  run_prebuilt "$KH" "$BUNDLE" PLANAR_INSTALL_TEST_FAULT=kill@after-mutating PLANAR_INSTALL_TEST_FAULT_ARMED=test-only -- 
+  [[ "$RC" -ge 128 ]] || fail "expect-recovery: the installer was not killed ($RC): $(cat "$TMP/err")"
+  grep -Fxq 'phase=mutating' "$KP/.planar-journal" || fail "expect-recovery: no mutating journal: $(cat "$KP/.planar-journal")"
+  KOP="$(sed -n 's/^operation_id=//p' "$KP/.planar-journal")"
+  [[ "$KOP" =~ ^[0-9a-f]{32}$ ]] || fail "expect-recovery: the journal holds no operation id"
+}
+
+# absent journal: refused, nothing changed
+kill_mutating expect-absent
+rm -f "$KP/.planar-journal"
+: > "$KP/planar.db"   # the prefix guard still recognises the root, so the refusal is the lock-time one
+before="$(tree_sum "$KP")"
+run_prebuilt "$KH" "$BUNDLE" PLANAR_EXPECT_RECOVERY="$KOP" --
+[[ "$RC" == 1 ]] || fail "expect-recovery-absent-journal: exit $RC, not 1: $(cat "$TMP/err")"
+grep -Fq 'no longer pending' "$TMP/err" || fail "expect-recovery-absent-journal: no refusal message: $(cat "$TMP/err")"
+[[ "$(tree_sum "$KP")" == "$before" && ! -e "$KP/release.json" && ! -e "$KP/bin" ]] \
+  || fail "expect-recovery-absent-journal: the refused run changed $KP"
+pass
+
+# changed journal (another operation id): refused, journal kept, nothing changed
+kill_mutating expect-changed
+other="$(printf '%s' "$KOP" | tr '0-9a-f' '1-9a-f0')"
+[[ "$other" != "$KOP" ]] || fail "expect-recovery: could not derive another operation id"
+before="$(tree_sum "$KP")"
+run_prebuilt "$KH" "$BUNDLE" PLANAR_EXPECT_RECOVERY="$other" --
+[[ "$RC" == 1 ]] || fail "expect-recovery-changed-journal: exit $RC, not 1: $(cat "$TMP/err")"
+grep -Fq 'no longer pending' "$TMP/err" || fail "expect-recovery-changed-journal: no refusal message: $(cat "$TMP/err")"
+[[ "$(tree_sum "$KP")" == "$before" && ! -e "$KP/release.json" ]] || fail "expect-recovery-changed-journal: the refused run changed $KP"
+grep -Fxq 'phase=mutating' "$KP/.planar-journal" || fail "expect-recovery-changed-journal: the journal was not kept"
+pass
+
+# a settled journal is not a pending recovery either
+kill_mutating expect-settled
+sed -i.bak 's/^phase=mutating$/phase=complete/' "$KP/.planar-journal" && rm -f "$KP/.planar-journal.bak"
+run_prebuilt "$KH" "$BUNDLE" PLANAR_EXPECT_RECOVERY="$KOP" --
+[[ "$RC" == 1 ]] || fail "expect-recovery-settled-journal: exit $RC, not 1: $(cat "$TMP/err")"
+[[ ! -e "$KP/release.json" ]] || fail "expect-recovery-settled-journal: the refused run installed"
+pass
+
+# the matching journal is recovered, by the very operation named
+kill_mutating expect-match
+run_prebuilt "$KH" "$BUNDLE" PLANAR_EXPECT_RECOVERY="$KOP" --
+[[ "$RC" == 0 ]] || fail "expect-recovery-matching-journal: exit $RC: $(cat "$TMP/err")"
+grep -Fq 'resuming the interrupted install' "$TMP/out" "$TMP/err" || fail "expect-recovery-matching-journal: the run did not recover: $(cat "$TMP/out")"
+cmp -s "$BUNDLE/release.json" "$KP/release.json" || fail "expect-recovery-matching-journal: release.json is not the bundle's"
+pass
+
+# grammar and gating: a bad value or a source install refuses before anything is read
+H="$(new_home expect-grammar)"
+run_prebuilt "$H" "$BUNDLE" 'PLANAR_EXPECT_RECOVERY=$(touch /tmp/x)' --
+[[ "$RC" == 2 && ! -e "$H/.planar" ]] || fail "expect-recovery-grammar: exit $RC: $(cat "$TMP/err")"
+( cd "$H" && /usr/bin/env -i HOME="$H" PATH="$SHIM:$BASEBIN" PLANAR_EXPECT_RECOVERY=00000000000000000000000000000000 \
+    /bin/bash "$ROOT/install.sh" --dry-run >"$TMP/out" 2>"$TMP/err" ) && RC=0 || RC=$?
+[[ "$RC" == 2 ]] || fail "expect-recovery-source-install: exit $RC, not 2: $(cat "$TMP/err")"
+pass
+
 # --- optional: a real unpacked bundle ---------------------------------------------------------------------
 
 if [[ -n "${PLANAR_REAL_BUNDLE:-}" ]]; then

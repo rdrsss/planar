@@ -178,6 +178,15 @@ Options:
   --version          Print the installer version and exit
   -h, --help         Show this help and exit
 
+Environment:
+  PLANAR_EXPECT_RECOVERY=<operation_id>
+                     Release bootstrap only; accepted only with --prebuilt. Names
+                     the 32-hex operation_id of the interrupted install the
+                     bootstrap pinned. Under the mutation lock the installer
+                     refuses (exit 1, nothing changed) unless the recovery
+                     journal is still mutating with that operation_id and the
+                     same version, commit and release base.
+
 Output is colorized on a TTY; set NO_COLOR=1 (or pipe stdout) for plain text.
 EOF
 }
@@ -269,6 +278,14 @@ SRC_ROOT="$REPO_ROOT"
 PLANAR_BINARIES=(planar planar-agent planar-watch planar-execute planar-ext)
 if [[ "$PREBUILT" -eq 0 && ( -n "$CLEANUP_DIR" || -n "${PLANAR_MUTATION_HANDOFF-}" ) ]]; then
   printf 'install.sh: --cleanup and the updater handoff (PLANAR_MUTATION_HANDOFF) are accepted only with --prebuilt\n' >&2
+  exit 2
+fi
+if [[ "$PREBUILT" -eq 0 && -n "${PLANAR_EXPECT_RECOVERY-}" ]]; then
+  printf 'install.sh: PLANAR_EXPECT_RECOVERY is accepted only with --prebuilt\n' >&2
+  exit 2
+fi
+if [[ -n "${PLANAR_EXPECT_RECOVERY-}" && ! "${PLANAR_EXPECT_RECOVERY}" =~ ^[0-9a-f]{32}$ ]]; then
+  printf 'install.sh: PLANAR_EXPECT_RECOVERY is not a 32-digit hex operation id; nothing was changed\n' >&2
   exit 2
 fi
 if [[ "$PREBUILT" -eq 1 ]]; then
@@ -581,6 +598,7 @@ RUN_DEPS=(
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
+  "tar||planar update unpacks a downloaded release bundle"
 )
 
 if [[ "$PREBUILT" -eq 1 ]]; then
@@ -873,10 +891,21 @@ title "Checking for an interrupted install"
 JOURNAL_FILE="$ROOT_C/.planar-journal"
 set_target
 _want_source="$J_source"; _want_version="$J_target_version"; _want_sha="$J_target_sha"
-_want_schema="$J_target_schema"; _want_path="$J_target_path"
+_want_schema="$J_target_schema"; _want_path="$J_target_path"; _want_base="$J_release_base"
+# The release bootstrap pins the interrupted install it will finish. The journal
+# is read here, under the lock: anything but that same mutating attempt refuses.
+_expect_stale="the interrupted install the bootstrap pinned (operation ${PLANAR_EXPECT_RECOVERY-}) is no longer pending in $ROOT_C; nothing was changed. Run the command again"
+if [[ -n "${PLANAR_EXPECT_RECOVERY-}" && ! -e "$JOURNAL_FILE" && ! -L "$JOURNAL_FILE" ]]; then
+  err "$_expect_stale"
+fi
 if [[ -e "$JOURNAL_FILE" || -L "$JOURNAL_FILE" ]]; then
   planar_journal_load "$ROOT_C" \
     || err "$JOURNAL_FILE is not a valid recovery journal for $ROOT_C; it and every staging and backup entry are kept. Inspect it; remove it by hand only if no install was interrupted."
+  if [[ -n "${PLANAR_EXPECT_RECOVERY-}" ]]; then
+    [[ "$J_phase" == mutating && "$J_operation_id" == "$PLANAR_EXPECT_RECOVERY" \
+       && "$J_target_version" == "$_want_version" && "$J_target_sha" == "$_want_sha" \
+       && "$J_release_base" == "$_want_base" ]] || err "$_expect_stale"
+  fi
   case "$J_phase" in
     uninstalling)
       err "an uninstall of $ROOT_C was interrupted; an install never resumes a cancelled installation. Finish the uninstall first: ${J_retry:-$REPO_ROOT/install.sh --uninstall}"
@@ -1715,9 +1744,13 @@ if [[ -n "$_shadow" && "$_shadow" == /* ]]; then
   _installed_c="$(trap - ERR; planar_canonical_path "$PLANAR_BIN_DIR/planar" 2>/dev/null || printf '%s' "$PLANAR_BIN_DIR/planar")"
   if [[ "$_shadow_c" != "$_installed_c" ]]; then
     _shadow_name="$_shadow"
-    # shellcheck disable=SC2088  # a display string: the literal ~ is intended
-    [[ "$_shadow" == "$HOME/.local/bin/planar" ]] && _shadow_name="~/.local/bin/planar"
-    warn "$_shadow_name shadows the installed $PLANAR_BIN_DIR/planar: your shell runs $_shadow_name. Put $PLANAR_BIN_DIR first on PATH, or remove $_shadow_name (the retired 'make install' put it there)."
+    _shadow_why=""
+    if [[ "$_shadow" == "$HOME/.local/bin/planar" ]]; then
+      # shellcheck disable=SC2088  # a display string: the literal ~ is intended
+      _shadow_name="~/.local/bin/planar"
+      _shadow_why=" (the retired 'make install' put it there)"
+    fi
+    warn "$_shadow_name shadows the installed $PLANAR_BIN_DIR/planar: your shell runs $_shadow_name. Put $PLANAR_BIN_DIR first on PATH, or remove $_shadow_name$_shadow_why."
   fi
 fi
 

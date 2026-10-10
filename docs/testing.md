@@ -256,7 +256,7 @@ make linux-gate-prune                            # docker builder prune -f
 
 `docker/linux-gate.Dockerfile` installs apt.llvm.org's LLVM 23 (clang,
 libc++ with its modules manifest, libc++abi), Kitware CMake pinned by version
-and SHA-256, ninja, git, python3, `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
+and SHA-256, ninja, git, python3, GNU `wget` (the `bootstrap.release` test), `sqlite3` and `libssl-dev` (vendored libcurl's TLS on Linux). The image
 build never fails on a red suite. It records `configure.log`, `build.log`,
 `ctest.log`, `eval-unit.log`, `eval-queue-observation.log` and `status.txt`,
 and the Makefile exports them to
@@ -523,10 +523,12 @@ the emitted checksum record with both `sha256sum -c` and `shasum -a 256 -c`
 when available, and requires at least one checker.
 
 The root `uninstall.sh` is always shipped, a byte copy of `scripts/uninstall.sh`;
-assembly stops when that file is missing. The root `get-planar.sh` is included
-only when present in the source; fixtures pin its absence and inclusion as a
-byte copy without supplying bootstrap behavior. Deliberate mutations prove
-that wrong entry counts, installer and uninstaller bytes and metadata fail; appending a byte
+assembly stops when that file is missing. The root `get-planar.sh` is likewise
+always shipped, a byte copy of `scripts/get-planar.sh`, and the same bytes are
+emitted as the standalone `dist/get-planar.sh` with their own `SHA256SUMS`
+record (checked by the same two checkers); assembly stops when the source is
+missing. Deliberate mutations prove
+that wrong entry counts, installer, uninstaller and bootstrap bytes and metadata fail; appending a byte
 to the archive must make the shell entry point's checksum assertion fail and
 name the asset. To check a retained fixture manually, use
 `scripts/dist-test.sh --check-checksums <directory> <asset-basename>` through
@@ -541,3 +543,45 @@ products. Retain the archive and its checksum-bound `.gates.json`, plus
 `build/dist-evidence/` init, health and portability logs. Tagged tests use a
 disposable checkout; never create validation release tags in the real repository.
 The milestone barrier runs the full suite on the merged candidate separately.
+
+## The release bootstrap test
+
+The `bootstrap.release` ctest (label `bootstrap`, entry point
+`scripts/get-planar-test.sh`) runs `scripts/get-planar.sh` end to end against a
+loopback release server, in a scratch `HOME` with its own `TMPDIR`; nothing in
+the real `~/.planar` is read or written. About forty cases run in two to three
+minutes under a 900 second timeout.
+
+- **Server.** `python3 -m http.server 0 --bind 127.0.0.1` serves a release
+  directory laid out as the GitHub release base is (`latest/download/VERSION`,
+  `download/<tag>/{SHA256SUMS,planar-<platform>.tar.gz}`). It binds port 0 and
+  the test reads the port back from the server's first line, so there is no
+  port race, and an EXIT trap kills it. The server log is the evidence for
+  where each asset came from. Bundles are the shared fake bundles published by
+  `src/cmd/planar/handlers/update/release_fixture.sh`.
+- **Test-only dependencies.** `python3` (the server) and GNU `wget` (the
+  fallback case) are dependencies of this test, never of an operator path
+  (decision 1333). The bootstrap itself runs with a PATH that holds no python3.
+  A missing `python3` or `wget`, or a `wget` that is not GNU Wget, fails the
+  test at the start with a message naming it; the test never skips, because
+  the expected skip tally is zero.
+- **Host shims.** `uname`, `sw_vers` and `ldd` are shimmed, so one host reaches
+  the unsupported-platform, old-macOS and glibc refusals. Installs run on the
+  host's own platform. A `curl` wrapper fires a hook at a chosen request (publish
+  a newer release after `VERSION` is read, signal the bootstrap during the
+  tarball download, rewrite the recovery journal after the download); curl is
+  absent from `PATH` in the wget cases.
+- **Per case.** Each asserts the exit status, the refusal's fixed opening text,
+  that a refusal left `HOME` byte for byte as it was, and that no
+  `planar-get.*` temporary directory remained. Each case prints `PASS <name>`
+  or `FAIL <name>: <reason>`; the run ends with the counts and exits non-zero
+  on any failure.
+- **Fault injection.** The interrupted-install cases use the installer's
+  `PLANAR_INSTALL_TEST_FAULT=kill@after-mutating` test fault, armed with
+  `PLANAR_INSTALL_TEST_FAULT_ARMED=test-only`.
+
+Run it through the host queue:
+
+```sh
+ctest --test-dir build/debug -L '^bootstrap$' --output-on-failure
+```

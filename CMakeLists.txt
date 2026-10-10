@@ -346,6 +346,14 @@ add_test(NAME install.lock
   COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-lock-test.sh")
 set_tests_properties(install.lock PROPERTIES LABELS "install_lock" TIMEOUT 300)
 
+# The release bootstrap (scripts/get-planar.sh) against a loopback release server
+# (`python3 -m http.server`, a test-only dependency; GNU wget is another) in a
+# scratch HOME: install, pinned install, refusals, the mid-run publish, the
+# interrupted install and its recovery pin, shadowing and the wget fallback.
+add_test(NAME bootstrap.release
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/get-planar-test.sh")
+set_tests_properties(bootstrap.release PROPERTIES LABELS "bootstrap" TIMEOUT 900)
+
 # The standalone uninstaller (scripts/uninstall.sh, installed as
 # ~/.planar/bin/planar-uninstall): removals through the ownership check, the
 # python-free manifest reader, preserved and purged data paths, unknown entries
