@@ -17,7 +17,9 @@
 ///    is `info` when strictly beyond half the claim's lease and never more: a recorded heartbeat is
 ///    only written while the lease is live, so a gap ending in one is not a lapse. A `warning` is
 ///    the trailing stretch from the last point to the release (a terminal claim) or the evaluation
-///    instant (an active claim) when strictly beyond the lease. The lease is
+///    instant (an active claim) when strictly beyond the lease. A claim that ended `stale` has no
+///    trailing warning (decision 1384, amending 1381): `claim-closed-by-reconcile` reports it, and its
+///    release is the reconcile sweep, not the lapse, so the stretch is not a measure of the gap. The lease is
 ///    `lease_expires_at - last_heartbeat_at`. Gaps are measured in whole milliseconds so the
 ///    boundaries are exact. Between-point gaps and a terminal claim's stretch are reported when
 ///    they end inside the window; an active claim's stretch always describes now. Evidence is
@@ -199,7 +201,8 @@ auto heartbeat_gap(const check_context& ctx) -> std::expected<std::vector<im::fi
       "         cast(round((julianday(case when status = 'active' then strftime('%Y-%m-%dT%H:%M:%fZ', ?2)"
       "                                    else released_at end) - julianday(last_at)) * 86400000) as integer) as gap_ms"
       "  from last_points"
-      "  where status = 'active' or (released_at is not null and released_at >= ?1 and released_at <= ?2)"
+      "  where status = 'active'"
+      "     or (status != 'stale' and released_at is not null and released_at >= ?1 and released_at <= ?2)"
       ")"
       " select claim_id, entity_kind, entity_id, t1, t2, lease_ms, gap_ms, trailing from between_points"
       " where lease_ms > 0 and gap_ms * 2 > lease_ms and t2 >= ?1 and t2 <= ?2"
