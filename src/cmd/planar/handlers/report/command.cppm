@@ -35,16 +35,14 @@
 /// operator home by accident — same structural protection
 /// `context::env_lookup` already gives every other handler.
 ///
-/// ## `verb_path` leaks `search`'s free-text query — reproduced, not fixed
+/// ## `verb_path` is masked by the live CLI catalog
 ///
-/// `engine::introspect::cli_preview_jsonl` selects `cli_invocations.
-/// verb_path` verbatim, and `search <query>` records `verb_path = "search
-/// <query>"` (task 6351's finding, pinned in `introspect.t.cpp`). This
-/// handler renders that column through to `[invocations]`/`[failure
-/// tail]`/the JSONL boundary the CLI adapter feeds into `preview`'s own
-/// `cli_log` coverage row unchanged — this is the oracle's own behavior,
-/// not a defect this port introduces or an exposure this handler's own
-/// docs claim to redact.
+/// Older writers recorded `search <query>` verbatim in `cli_invocations.
+/// verb_path`. This handler passes `verb_path_recognized` (built from the
+/// live CLI tree in `cli_log`) to the introspection engine, which renders a
+/// stored value the catalog rejects as `<unrecognized>` in `[invocations]`,
+/// `[failure tail]` and the JSONL boundary that feeds `preview`'s `cli_log`
+/// evidence. Rows are never purged; the 90-day retention ages them out.
 module;
 
 export module planar.cmd.planar.handlers.report;

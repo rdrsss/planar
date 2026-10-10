@@ -2568,7 +2568,7 @@ registration time.
 
 An agent session follows `external-sync.md` for the finding `question:42`. It:
 
-- Runs `planar report --json` to obtain the structurally-redacted bundle.
+- Runs `planar report --json` to obtain the diagnostic bundle.
 - Reads `question:42` summary and its `planar audit trail` history.
 - Assembles the full issue body (header, finding section, bundle block,
   metadata footer).
@@ -2577,9 +2577,11 @@ An agent session follows `external-sync.md` for the finding `question:42`. It:
 
 **5. Confirm or decline at the preview gate.**
 
-Review every line. The bundle is structurally redacted (counts, verb paths,
-categories — no entity text). The finding section may contain entity names;
-you personally approve what goes public at this step.
+Review every line. The bundle holds counts, categories, statuses, timestamps
+and verb paths the live CLI tree names, with no entity titles or bodies. It is
+not redacted as a whole: transcript-derived signal text and the finding
+section may contain entity names or other free text. This preview is the
+redaction boundary; you personally approve what goes public at this step.
 
 - **Confirm** — the issue is posted via `gh issue create -R rdrsss/planar`.
 - **Decline** — no post, no link, no side effects. Re-run with a different

@@ -8381,26 +8381,28 @@ events:
 
 When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `claim_failure_categories`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
 
-**Privacy:** All queries are structurally redacted by construction in `src/engine/introspect/introspect.cpp`. The bundle selects only counts, closed categories, provider identities, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never release reasons or action summaries, never scope slugs, and never path-bearing columns. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
+**Privacy:** The bundle's queries (`src/engine/introspect/introspect.cpp`) select counts, closed categories, provider identities, verb paths, statuses, timestamps and coverage counters. They read no entity `title`, `body` or `summary` column, no release reason or action summary, no scope slug, no path-bearing column, and never the `args_shape` column, so flag lists are never shown. A verb path is recorded, and shown, only when the live CLI tree names it at that depth; a structured operand in the second slot (digits or `word:digits`, such as `resume 6073` or `tree plan:42`) is kept as typed, at any length. The writer records `<unknown>` and `--<unknown>` for anything else, and `planar report` renders a stored verb path the live tree does not name (an older row) as `<unrecognized>`; stored rows are never purged. This is not a guarantee about the whole report: the `introspection_preview` signals are derived from transcripts and the capture log, and a finding filed from the bundle can carry free text, and neither is structurally redacted. The operator reviewing the full text before anything is posted is the redaction boundary. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
 
 **Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--days <n>` | int | 30 | Window in days. Must be a positive integer. |
-| `--tail <n>` | int | 20 | Number of failure-tail rows to include in the text output. Must be a positive integer. |
+| `--tail <n>` | int | 20 | Number of failure-tail rows to include, in the text output and in the JSON `failure_tail`. Must be a positive integer. |
 | `--json` | bool | false | Emit stable machine-readable JSON. |
 
 **JSON wire format (`--json`):** Top-level fields are the contract consumed by downstream agents and skills:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `version` | string | Binary version string. |
+| `version` | string | The build's version token: the second token of the `planar version` line, which is the 12-character git sha (with `+dirty` appended for a dirty tree), or `dev` for a build without version metadata. Never the program name. |
 | `schema_version` | integer | Max schema_migrations version applied. |
 | `health` | string | `"ok"` or `"degraded"`. |
 | `window` | integer | The `--days` value queried. |
+| `logging_enabled` | boolean | Whether `[introspection].cli_log` is on. `false` means `invocations`, `failures` and `failure_tail` are empty because nothing was captured, not because nothing failed. |
 | `invocations` | array | Per-verb-path aggregate rows; empty array when logging disabled or no data. |
 | `failures` | array | Per-error-category failure counts; empty array when logging disabled or no data. |
+| `failure_tail` | array | The `--tail` most recent failed invocations, newest first, as `{verb_path, error_category, exit_code, recorded_at}` rows: the same rows the text output prints under `[failure tail]`. Empty array (never absent) when logging is disabled or no invocation failed. |
 | `actions` | array | Agent-action outcome aggregates (always-on). |
 | `sync` | array | Sync-event outcome aggregates (always-on). |
 | `claims` | object | `{stale_claims, never_consumed}` (always-on). |
@@ -8409,6 +8411,26 @@ When `[introspection].cli_log` is off (the default), the invocation and failure 
 | `reopens` | integer | Count of `task_reopens` rows created in the window (always-on). |
 
 Empty windows emit empty arrays, never nulls or missing fields.
+
+**Capture-log byte cap:** The 4 MiB read budget is split four ways: Claude, Codex and Copilot transcripts each get a quarter, and the `cli_log` adapter gets what the transcript adapters leave, never less than a quarter. When the window's `cli_invocations` rows would exceed its budget, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
+
+**Transcript scan:** Each transcript vendor scans only files modified inside the `--days` window, newest modification time first, with ties broken by path. A file that does not fit the vendor's remaining byte budget is skipped and counted rather than stopping the scan, so one large file no longer hides the files after it. The one exception is the newest file: when it alone exceeds the budget, its tail is read, starting at the first complete line, because the live session is usually the newest and largest file. Each `introspection_preview.coverage` row (and the text report's coverage line) carries four counters:
+
+| Counter | Meaning |
+|---------|---------|
+| `bytes_read` | Transcript bytes read for the vendor. A tail read counts only the tail. |
+| `files_partial` | Files read from their tail only. |
+| `files_skipped_cap` | Files not read because the file, byte or record cap left no room. The warning matching the cap that stopped it (`byte_cap`, `file_cap` or `record_cap`) accompanies a skipped or partial file. |
+| `files_skipped_window` | Files not read because their modification time is before the window. |
+
+The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
+
+**Transcript recognition:** A transcript signal is a failed `planar` command, and its verb path comes from the same live-CLI catalog rule the capture log uses (a token the tree names, a structured operand in the second slot, otherwise `<unknown>`), so typed words, flag values and prose never reach a signal.
+
+- **Claude:** a `Bash` `tool_use` paired with an `is_error: true` `tool_result`.
+- **Codex:** an `event_msg` `item_completed` of type `CommandExecution` with a non-zero `exit_code` or `status: "failed"`. The `command` array is either an argv or a shell wrapper (`bash -lc "<script>"`). The older `schema_version`/`command_execution` records are still read. `custom_tool_call` and `custom_tool_call_output` records are validated and otherwise ignored.
+- **Recognized command shapes:** `planar ...`, `./bin/planar ...`, `build/*/bin/planar ...` and any path ending in `/planar`, with `env`/`NAME=value` prefixes. The command may be a chain, but planar must be its last step, so the recorded exit status is planar's: a step joined by `;` may be anything, and every step joined to planar by `&&` must be `cd`, `pushd`, `export` or `NAME=value` only. A pipeline (`|`), command substitution, a here-document, a background job, a second planar step, or planar followed by another step (`planar ... && make test`) is not attributed to a verb.
+- **Copilot:** only `*.jsonl` files under the session-state path are read. When the directory holds none (the installed Copilot CLI writes YAML, Markdown and JSON metadata there), the Copilot row is `unavailable` and `warnings` carries `{"vendor":"copilot","kind":"unsupported_layout","count":1}`. Copilot's `session-store.db` and logs are not read.
 
 **Exit codes:**
 

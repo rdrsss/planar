@@ -136,8 +136,12 @@ Posting to the Planar issue tracker uses `gh` with the operator's own login.
 2. Assemble the title, the finding section, the report bundle as a fenced block, and a
    version footer.
 3. **Show the whole body and wait for explicit confirmation.** Nothing skips this. The
-   report bundle is redacted by construction (counts, verb paths, statuses, timestamps).
-   Finding text may name entities; its only protection is this review.
+   report bundle holds counts, error categories, statuses, timestamps, coverage counters
+   and verb paths shown only when the live CLI tree names them (`<unknown>` or
+   `<unrecognized>` otherwise); it holds no entity titles or bodies and never lists flags.
+   It is not redacted as a whole: transcript-derived signal text and the finding text are
+   not structurally redacted and may name entities. This preview of the full body is the
+   only redaction boundary.
 4. On decline: no post, no link, nothing changed.
 5. On confirmation: `gh issue create -R rdrsss/planar --title "<title>" --body "<body>"`.
    On failure, show the error verbatim and write nothing.

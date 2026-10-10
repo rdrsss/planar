@@ -84,102 +84,6 @@ auto string_equals(const jd::json_value* v, std::string_view expected) -> bool {
   return got.has_value() && *got == expected;
 }
 
-// ===========================================================================
-// Verb-path bounding — mirrors boundedPlanarVerbPath and its table.
-// ===========================================================================
-
-struct planar_verb_rule {
-  std::string_view domain;
-  /// Space-separated suffixes after `planar <domain>`; empty is a direct
-  /// root leaf. Every entry corresponds to a leaf in the CLI command tree.
-  std::span<const std::string_view> leaves;
-};
-
-// clang-format off
-constexpr std::string_view k_leaves_annotate[]    = {"add", "show", "list", "update", "remove", "tag", "resolve", "dismiss", "archive", "bulk-resolve", "bulk-dismiss", "bulk-archive", "verify", "sweep"};
-constexpr std::string_view k_leaves_artifact[]    = {"add", "show", "list", "update", "edit", "view", "diff", "review", "link"};
-constexpr std::string_view k_leaves_assoc[]       = {"list", "create", "add", "remove", "members", "detect"};
-constexpr std::string_view k_leaves_audit[]       = {"trail", "commits", "session", "publish-decision", "handoff-readiness"};
-constexpr std::string_view k_leaves_bench[]       = {"start", "event", "touch", "harvest", "finish", "show"};
-constexpr std::string_view k_leaves_capture[]     = {"session", "commits", "end", "note", "command", "file", "snapshot"};
-constexpr std::string_view k_leaves_closure[]     = {"compute", "show"};
-constexpr std::string_view k_leaves_empty[]       = {""};
-constexpr std::string_view k_leaves_config[]      = {"show", "edit", "validate", "init", "path"};
-constexpr std::string_view k_leaves_decision[]    = {"add", "show", "list", "accept", "supersede", "withdraw", "edit", "view", "diff", "review", "link"};
-constexpr std::string_view k_leaves_ext[]         = {"register jira", "register github", "list", "test", "create", "propagate-one", "propagate"};
-constexpr std::string_view k_leaves_feedback[]    = {"triage list", "triage show", "triage set"};
-constexpr std::string_view k_leaves_groups[]      = {"recommend"};
-constexpr std::string_view k_leaves_handoff[]     = {"create", "validate", "consume", "abandon", "list", "show"};
-constexpr std::string_view k_leaves_links[]       = {"add", "list", "remove", "trail"};
-constexpr std::string_view k_leaves_local[]       = {"list", "link", "unlink", "import", "migrate"};
-constexpr std::string_view k_leaves_models[]      = {"list", "refresh", "routing", "apply"};
-constexpr std::string_view k_leaves_plan[]        = {"create", "show", "list", "update", "edit", "view", "diff", "review", "link", "next", "recommend-strategy", "divergence", "recompute-status", "closeout", "step add", "step list", "step done", "step skip", "step link", "descendants"};
-constexpr std::string_view k_leaves_question[]    = {"add", "edit", "view", "diff", "review", "answer", "wontfix", "list", "show", "link"};
-constexpr std::string_view k_leaves_resume[]      = {"validate"};
-constexpr std::string_view k_leaves_run[]         = {"start", "event", "finish", "show"};
-constexpr std::string_view k_leaves_scenario[]    = {"add", "edit", "view", "diff", "review", "verify", "retire", "list", "show", "link"};
-constexpr std::string_view k_leaves_scope[]       = {"show", "suggest", "use", "pop", "clear"};
-constexpr std::string_view k_leaves_skills[]      = {"render", "status", "repair"};
-constexpr std::string_view k_leaves_spec[]        = {"ingest"};
-constexpr std::string_view k_leaves_sync[]        = {"pull", "push", "status", "resolve"};
-constexpr std::string_view k_leaves_task[]        = {"add", "show", "list", "update", "edit", "view", "diff", "review", "done", "cancel", "block", "link", "reopen", "touches add", "touches list", "touches remove"};
-constexpr std::string_view k_leaves_templates[]   = {"list", "show", "render", "validate", "init", "path"};
-constexpr std::string_view k_leaves_test_spec[]   = {"status"};
-constexpr std::string_view k_leaves_workbench[]   = {"pull", "push", "status", "resolve", "sync", "archive", "restore", "gc", "list", "publish", "extract-questions", "edit"};
-constexpr std::string_view k_leaves_workflow[]    = {"list", "show", "run"};
-constexpr std::string_view k_leaves_workspace[]   = {"init", "doctor", "routing build", "routing show", "regenerate"};
-
-constexpr planar_verb_rule k_planar_verb_rules[] = {
-    {"annotate", k_leaves_annotate},
-    {"artifact", k_leaves_artifact},
-    {"assoc", k_leaves_assoc},
-    {"audit", k_leaves_audit},
-    {"bench", k_leaves_bench},
-    {"capture", k_leaves_capture},
-    {"closure", k_leaves_closure},
-    {"completion", k_leaves_empty},
-    {"config", k_leaves_config},
-    {"dashboard", k_leaves_empty},
-    {"decision", k_leaves_decision},
-    {"demote", k_leaves_empty},
-    {"explore", k_leaves_empty},
-    {"ext", k_leaves_ext},
-    {"feedback", k_leaves_feedback},
-    {"groups", k_leaves_groups},
-    {"handoff", k_leaves_handoff},
-    {"health", k_leaves_empty},
-    {"import", k_leaves_empty},
-    {"init", k_leaves_empty},
-    {"link", k_leaves_empty},
-    {"links", k_leaves_links},
-    {"local", k_leaves_local},
-    {"models", k_leaves_models},
-    {"plan", k_leaves_plan},
-    {"promote", k_leaves_empty},
-    {"question", k_leaves_question},
-    {"report", k_leaves_empty},
-    {"resume", k_leaves_resume},
-    {"run", k_leaves_run},
-    {"scenario", k_leaves_scenario},
-    {"schema", k_leaves_empty},
-    {"scope", k_leaves_scope},
-    {"search", k_leaves_empty},
-    {"skills", k_leaves_skills},
-    {"spec", k_leaves_spec},
-    {"sync", k_leaves_sync},
-    {"synthesize", k_leaves_empty},
-    {"task", k_leaves_task},
-    {"templates", k_leaves_templates},
-    {"test-spec", k_leaves_test_spec},
-    {"tree", k_leaves_empty},
-    {"unlink", k_leaves_empty},
-    {"version", k_leaves_empty},
-    {"workbench", k_leaves_workbench},
-    {"workflow", k_leaves_workflow},
-    {"workspace", k_leaves_workspace},
-};
-// clang-format on
-
 /// @brief Split `text` on runs of ASCII whitespace, mirroring
 /// `std.mem.tokenizeAny(u8, text, " \t\r\n")`.
 auto tokenize(std::string_view text) -> std::vector<std::string_view> {
@@ -202,71 +106,146 @@ auto tokenize(std::string_view text) -> std::vector<std::string_view> {
   return words;
 }
 
-/// @brief Extract a canonical, bounded `planar ...` verb path from a
-/// shell command string, or unset when it does not match the known verb
-/// table exactly.
-auto bounded_planar_verb_path(std::string_view command) -> std::optional<std::string_view> {
-  auto const trim_ws = [](std::string_view s) {
-    std::size_t b     = 0;
-    std::size_t e     = s.size();
-    auto const  is_ws = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    while (b < e && is_ws(s[b])) {
-      ++b;
-    }
-    while (e > b && is_ws(s[e - 1])) {
-      --e;
-    }
-    return s.substr(b, e - b);
-  };
-  std::string_view const trimmed = trim_ws(command);
-  if (trimmed.find_first_of(";&|\n\r") != std::string_view::npos) {
-    return std::nullopt;
-  }
-  auto const words = tokenize(trimmed);
-  if (words.empty()) {
-    return std::nullopt;
-  }
-  std::string_view const executable = words[0];
-  if (executable != "planar") {
-    return std::nullopt;
-  }
-  if (words.size() < 2) {
-    return std::nullopt;
-  }
-  std::string_view const domain = words[1];
-  auto const             base   = reinterpret_cast<std::uintptr_t>(trimmed.data());
-  auto const domain_end = static_cast<std::size_t>(reinterpret_cast<std::uintptr_t>(domain.data()) - base) + domain.size();
+/// @brief The final path component of `word`.
+auto path_basename(std::string_view word) -> std::string_view {
+  auto const slash = word.rfind('/');
+  return slash == std::string_view::npos ? word : word.substr(slash + 1);
+}
 
-  for (auto const& rule : k_planar_verb_rules) {
-    if (rule.domain != domain) {
-      continue;
-    }
-    for (auto const& leaf : rule.leaves) {
-      auto const  leaf_words      = tokenize(leaf);
-      std::size_t candidate_index = 2; // words after `planar <domain>`
-      std::size_t end             = domain_end;
-      bool        matched         = true;
-      for (auto const& expected : leaf_words) {
-        if (candidate_index >= words.size()) {
-          matched = false;
-          break;
-        }
-        std::string_view const actual = words[candidate_index];
-        if (actual != expected) {
-          matched = false;
-          break;
-        }
-        end = static_cast<std::size_t>(reinterpret_cast<std::uintptr_t>(actual.data()) - base) + actual.size();
-        ++candidate_index;
-      }
-      if (matched) {
-        std::string_view const path = trimmed.substr(0, end);
-        return path.size() <= 96 ? std::optional<std::string_view>{path} : std::nullopt;
-      }
-    }
+/// @brief Whether `word` is a `NAME=value` environment assignment.
+auto is_env_assignment(std::string_view word) -> bool {
+  auto const eq = word.find('=');
+  if (eq == std::string_view::npos || eq == 0) {
+    return false;
+  }
+  auto const is_name_char = [](char c) { return c == '_' || std::isalnum(static_cast<unsigned char>(c)) != 0; };
+  return !std::isdigit(static_cast<unsigned char>(word[0])) && std::ranges::all_of(word.substr(0, eq), is_name_char);
+}
+
+/// @brief Whether `word` starts a shell redirection (`>f`, `2>&1`, `<f`).
+auto is_redirection(std::string_view word) -> bool {
+  std::size_t i = 0;
+  while (i < word.size() && std::isdigit(static_cast<unsigned char>(word[i])) != 0) {
+    ++i;
+  }
+  return i < word.size() && (word[i] == '<' || word[i] == '>');
+}
+
+/// @brief Whether a chain step may precede planar when joined to it by `&&`:
+/// a step that only changes directory or sets the environment cannot fail
+/// the chain with a status of its own that the transcript would then
+/// attribute to planar.
+auto is_trivial_step(const std::vector<std::string_view>& step) -> bool {
+  if (step.empty()) {
+    return false;
+  }
+  if (step[0] == "cd" || step[0] == "pushd" || step[0] == "export") {
+    return true;
+  }
+  return std::ranges::all_of(step, is_env_assignment);
+}
+
+/// @brief The argument words after the `planar` executable in `command`, or
+/// unset when the command is not one whose recorded exit status is planar's.
+///
+/// The command is split into steps at `;` and `&&`. Planar must be the LAST
+/// step, so the chain's status is planar's. A step joined to planar by `;`
+/// may be anything; every step joined by `&&` in the run directly before
+/// planar must be trivial (`cd`, `pushd`, `export`, `NAME=value`), because a
+/// failing `make &&` would end the chain with make's status. The planar step
+/// may carry `env`/`NAME=value` prefixes and an executable spelled `planar`
+/// or any path ending in `/planar`. Pipelines, command substitution,
+/// here-documents, background jobs and a second planar step are rejected.
+/// Only the planar step's words are returned.
+auto planar_argv_tail(std::string_view command) -> std::optional<std::vector<std::string>> {
+  if (command.find_first_of("|`\n\r") != std::string_view::npos || command.find("$(") != std::string_view::npos ||
+      command.find("<<") != std::string_view::npos) {
     return std::nullopt;
   }
-  return std::nullopt;
+  // `;` for a sequence step, `&` for an `&&` step: the marker word that
+  // introduces each step after the first.
+  std::string spaced;
+  for (std::size_t i = 0; i < command.size(); ++i) {
+    char const c = command[i];
+    if (c == ';') {
+      spaced += " ; ";
+    } else if (c == '&') {
+      if (i + 1 < command.size() && command[i + 1] == '&') {
+        spaced += " && ";
+        ++i;
+      } else if (i > 0 && command[i - 1] == '>') {
+        spaced += c; // the `&` of `2>&1`
+      } else {
+        return std::nullopt; // a background job
+      }
+    } else {
+      spaced += c;
+    }
+  }
+  std::vector<std::vector<std::string_view>> steps(1);
+  std::vector<bool>                          joined_by_and{false}; // how each step is joined to the one before it
+  for (auto const word : tokenize(spaced)) {
+    if (word == ";" || word == "&&") {
+      steps.emplace_back();
+      joined_by_and.push_back(word == "&&");
+    } else {
+      steps.back().push_back(word);
+    }
+  }
+  std::optional<std::size_t> planar_step;
+  std::size_t                executable_at = 0;
+  for (std::size_t index = 0; index < steps.size(); ++index) {
+    auto const& step = steps[index];
+    std::size_t at   = 0;
+    while (at < step.size() && (step[at] == "env" || is_env_assignment(step[at]))) {
+      ++at;
+    }
+    if (at < step.size() && path_basename(step[at]) == "planar") {
+      if (planar_step.has_value()) {
+        return std::nullopt;
+      }
+      planar_step   = index;
+      executable_at = at;
+    }
+  }
+  if (!planar_step.has_value() || *planar_step + 1 != steps.size()) {
+    return std::nullopt;
+  }
+  for (std::size_t index = *planar_step; index > 0 && joined_by_and[index]; --index) {
+    if (!is_trivial_step(steps[index - 1])) {
+      return std::nullopt;
+    }
+  }
+  std::vector<std::string> tail;
+  auto const&              step = steps[*planar_step];
+  for (std::size_t i = executable_at + 1; i < step.size() && !is_redirection(step[i]); ++i) {
+    tail.emplace_back(step[i]);
+  }
+  if (tail.empty()) {
+    return std::nullopt;
+  }
+  return tail;
+}
+
+/// @brief The signal verb path (`planar <verb path>`) for the planar
+/// invocation in `command`, or unset when `command` is not one. The words are
+/// never copied through: the verb path is what `resolve` (the live CLI
+/// catalog rule) returns for them, so operator prose cannot reach a signal.
+/// Without a resolver nothing is recognized.
+auto planar_verb_path_from_command(std::string_view command, const verb_path_resolver* resolve) -> std::optional<std::string> {
+  if (resolve == nullptr || !static_cast<bool>(*resolve)) {
+    return std::nullopt;
+  }
+  auto const tail = planar_argv_tail(command);
+  if (!tail.has_value()) {
+    return std::nullopt;
+  }
+  auto const  resolved = (*resolve)(*tail);
+  std::string path     = resolved.empty() ? std::string{"planar"} : "planar " + resolved;
+  if (path.size() > 96) {
+    return std::nullopt;
+  }
+  return path;
 }
 
 auto category_from_evidence(const jd::json_value* exit_value, bool retry, bool abandoned, bool gap) -> std::optional<category> {
@@ -309,7 +288,7 @@ auto time_bucket(std::string_view ts) -> std::string_view {
 // ===========================================================================
 
 struct extracted {
-  std::string_view verb_path;
+  std::string      verb_path;
   category         cat;
   std::string_view timestamp;
 };
@@ -340,7 +319,7 @@ auto finish_legacy(const jd::json_value* command_value, const jd::json_value* ti
   if (!cat.has_value()) {
     return k_ignored;
   }
-  return extract_result{extract_kind::normalized, extracted{*command, *cat, *timestamp}};
+  return extract_result{extract_kind::normalized, extracted{std::string{*command}, *cat, *timestamp}};
 }
 
 struct pending_claude_tool {
@@ -353,6 +332,7 @@ struct pending_claude_tool {
 /// every raw source, matching the Zig original's `ExtractState`.
 struct extract_state {
   std::vector<pending_claude_tool> claude_tools;
+  const verb_path_resolver*        resolve = nullptr; ///< The transcript verb-path catalog rule, or null.
 };
 
 auto find_claude_tool(std::vector<pending_claude_tool>& tools, std::string_view id) -> pending_claude_tool* {
@@ -460,7 +440,7 @@ auto extract_claude(extract_state& state, const jd::json_value& obj) -> extract_
         continue;
       }
       auto const command   = *string_value(input->find("command"));
-      auto const verb_path = bounded_planar_verb_path(command);
+      auto const verb_path = planar_verb_path_from_command(command, state.resolve);
       if (!verb_path.has_value()) {
         continue;
       }
@@ -470,7 +450,7 @@ auto extract_claude(extract_state& state, const jd::json_value& obj) -> extract_
       if (state.claude_tools.size() == k_default_max_records) {
         continue;
       }
-      state.claude_tools.push_back(pending_claude_tool{std::string{id}, std::string{*verb_path}, false});
+      state.claude_tools.push_back(pending_claude_tool{std::string{id}, *verb_path, false});
     }
     return k_ignored;
   }
@@ -528,7 +508,62 @@ auto extract_claude(extract_state& state, const jd::json_value& obj) -> extract_
   return k_ignored;
 }
 
-auto extract_codex(const jd::json_value& obj) -> extract_result {
+/// @brief The Codex `event_msg` arm: an `item_completed` `CommandExecution`
+/// of a planar command with failure evidence (a non-zero `exit_code` or
+/// `status: "failed"`) is a failure signal. The command array is either an
+/// argv or a shell wrapper (`bash -lc "<script>"`); both go through the same
+/// recognizer as Claude's Bash commands.
+auto extract_codex_event(const extract_state& state, const jd::json_value& obj, std::string_view timestamp) -> extract_result {
+  auto const* payload = object_value(obj.find("payload"));
+  if (payload == nullptr || !string_equals(payload->find("type"), "item_completed")) {
+    return k_ignored;
+  }
+  auto const* item = object_value(payload->find("item"));
+  if (item == nullptr) {
+    return k_malformed;
+  }
+  if (!string_equals(item->find("type"), "CommandExecution")) {
+    return k_ignored;
+  }
+  auto const* command = item->find("command");
+  if (command == nullptr || command->kind != jd::json_kind::array) {
+    return k_malformed;
+  }
+  std::vector<std::string_view> argv;
+  for (auto const& element : command->array) {
+    auto const word = string_value(&element);
+    if (!word.has_value()) {
+      return k_malformed;
+    }
+    argv.push_back(*word);
+  }
+  auto const* exit_value = item->find("exit_code");
+  if (exit_value != nullptr && !integer_value(exit_value).has_value()) {
+    return k_malformed;
+  }
+  bool const failed = (exit_value != nullptr && *integer_value(exit_value) != 0) || string_equals(item->find("status"), "failed");
+  if (!failed) {
+    return k_ignored;
+  }
+  std::string script;
+  auto const  shell = argv.empty() ? std::string_view{} : path_basename(argv[0]);
+  if (argv.size() >= 3 && (shell == "bash" || shell == "sh" || shell == "zsh") && argv[1].size() >= 2 && argv[1][0] == '-' &&
+      argv[1].back() == 'c') {
+    script = std::string{argv[2]};
+  } else {
+    for (auto const word : argv) {
+      script += script.empty() ? "" : " ";
+      script += word;
+    }
+  }
+  auto const verb_path = planar_verb_path_from_command(script, state.resolve);
+  if (!verb_path.has_value()) {
+    return k_ignored;
+  }
+  return extract_result{extract_kind::normalized, extracted{*verb_path, category::failure, timestamp}};
+}
+
+auto extract_codex(const extract_state& state, const jd::json_value& obj) -> extract_result {
   if (obj.find("schema_version") != nullptr || obj.find("event") != nullptr) {
     if (!integer_equals(obj.find("schema_version"), 1) || !string_equals(obj.find("event"), "command_execution")) {
       return k_malformed;
@@ -545,6 +580,9 @@ auto extract_codex(const jd::json_value& obj) -> extract_result {
   if (!timestamp.has_value() || !valid_timestamp(*timestamp)) {
     return k_malformed;
   }
+  if (*record_type == "event_msg") {
+    return extract_codex_event(state, obj, *timestamp);
+  }
   if (*record_type != "response_item") {
     return k_ignored;
   }
@@ -556,7 +594,18 @@ auto extract_codex(const jd::json_value& obj) -> extract_result {
   if (!payload_type.has_value()) {
     return k_malformed;
   }
-  if (*payload_type == "function_call") {
+  if (*payload_type == "custom_tool_call") {
+    if (!string_value(payload->find("call_id")).has_value() || !string_value(payload->find("name")).has_value() ||
+        !string_value(payload->find("input")).has_value()) {
+      return k_malformed;
+    }
+  } else if (*payload_type == "custom_tool_call_output") {
+    auto const* output = payload->find("output");
+    if (!string_value(payload->find("call_id")).has_value() || output == nullptr ||
+        (output->kind != jd::json_kind::string && output->kind != jd::json_kind::array)) {
+      return k_malformed;
+    }
+  } else if (*payload_type == "function_call") {
     if (!string_value(payload->find("name")).has_value()) {
       return k_malformed;
     }
@@ -570,7 +619,9 @@ auto extract_codex(const jd::json_value& obj) -> extract_result {
     if (!string_value(payload->find("call_id")).has_value()) {
       return k_malformed;
     }
-    if (!string_value(payload->find("output")).has_value()) {
+    // Current Codex writes `output` as a string or as an array of content items.
+    auto const* output = payload->find("output");
+    if (output == nullptr || (output->kind != jd::json_kind::string && output->kind != jd::json_kind::array)) {
       return k_malformed;
     }
   }
@@ -644,7 +695,7 @@ auto extract(extract_state& state, vendor v, const jd::json_value& value) -> ext
   case vendor::claude:
     return extract_claude(state, value);
   case vendor::codex:
-    return extract_codex(value);
+    return extract_codex(state, value);
   case vendor::copilot:
     return extract_copilot(value);
   case vendor::cli_log:
@@ -681,7 +732,7 @@ auto add_aggregate(std::vector<signal_row>& signals, vendor v, const extracted& 
   }
   signals.push_back(signal_row{
       .v          = v,
-      .verb_path  = std::string{item.verb_path},
+      .verb_path  = item.verb_path,
       .cat        = item.cat,
       .count      = 1,
       .first_seen = std::string{item.timestamp},
@@ -736,13 +787,19 @@ auto coverage_accounted(const coverage_row& cov) -> bool {
 
 } // namespace
 
-auto collect_preview(std::span<const raw_source> sources) -> preview {
+auto collect_preview(std::span<const raw_source> sources, const verb_path_resolver& resolve) -> preview {
   std::vector<signal_row>   signals;
   std::vector<coverage_row> coverage;
 
   for (auto const& source : sources) {
     extract_state state;
-    coverage_row  cov{.v = source.v, .state = coverage_state::observed};
+    state.resolve = &resolve;
+    coverage_row cov{.v                    = source.v,
+                     .state                = coverage_state::observed,
+                     .bytes_read           = source.bytes_read,
+                     .files_partial        = source.files_partial,
+                     .files_skipped_cap    = source.files_skipped_cap,
+                     .files_skipped_window = source.files_skipped_window};
     if (!source.enabled) {
       cov.state = coverage_state::disabled;
       coverage.push_back(cov);
@@ -918,16 +975,18 @@ auto fs_should_fail(const fs_fault& fault, vendor v, fs_operation operation, std
 /// @param override_path The operator override path, or empty for the built-in.
 /// @param home The operator's home directory.
 /// @param builtin_rel The built-in path, relative to `home`.
-/// @param jsonl_only When true (Claude, Codex), only `.jsonl`-suffixed
-/// files count inside a directory; Copilot (`false`) takes every file.
+/// @param jsonl_only When true (every transcript vendor), only `.jsonl`-suffixed
+/// files count inside a directory; `false` takes every file.
 /// @param files_left Remaining file budget, shared across all three vendors.
 /// @param bytes_left Remaining byte budget, shared across all three vendors.
 /// @param records_left Remaining record budget, shared across all three vendors.
+/// @param byte_share This vendor's share of the byte budget.
+/// @param window_start Files last modified before this are skipped and counted; unset admits all.
 /// @param fault The fault-injection seam (tests only).
 auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row>& warnings, vendor v, bool enabled,
                          std::string_view override_path, std::string_view home, std::string_view builtin_rel, bool jsonl_only,
-                         std::size_t& files_left, std::size_t& bytes_left, std::size_t& records_left, const fs_fault& fault)
-    -> void {
+                         std::size_t& files_left, std::size_t& bytes_left, std::size_t& records_left, std::size_t byte_share,
+                         const std::optional<std::filesystem::file_time_type>& window_start, const fs_fault& fault) -> void {
   if (!enabled) {
     owned.push_back(raw_source{.v = v, .enabled = false});
     return;
@@ -953,6 +1012,7 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
   }
 
   std::vector<std::string> paths;
+  bool                     layout_scanned = false;
   if (status.type() == std::filesystem::file_type::regular) {
     paths.push_back(selected_str);
   } else if (status.type() == std::filesystem::file_type::directory) {
@@ -987,6 +1047,7 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
       owned.push_back(raw_source{.v = v, .available = false});
       return;
     }
+    layout_scanned = true;
     std::filesystem::recursive_directory_iterator const end;
     while (it != end) {
       std::error_code entry_ec;
@@ -1021,16 +1082,27 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
     return;
   }
 
-  std::ranges::sort(paths);
+  // A Copilot session-state directory that holds no JSONL file has no record
+  // stream this adapter can read (the CLI writes YAML, Markdown and JSON
+  // metadata there): report it unsupported instead of counting those lines.
+  if (v == vendor::copilot && layout_scanned && paths.empty()) {
+    warnings.push_back(warning_row{.v = v, .kind = warning_kind::unsupported_layout});
+    owned.push_back(raw_source{.v = v, .available = false});
+    return;
+  }
 
-  std::string combined;
-  std::size_t scanned_files = 0;
-  std::size_t io_failures   = 0;
-  for (auto const& path : paths) {
-    if (files_left == 0) {
-      warnings.push_back(warning_row{.v = v, .kind = warning_kind::file_cap});
-      break;
-    }
+  // Stat every candidate once: size and modification time drive the window
+  // filter and the newest-first order. A stat failure is an I/O failure for
+  // that file only.
+  struct candidate {
+    std::string                     path;
+    std::uintmax_t                  size = 0;
+    std::filesystem::file_time_type mtime;
+  };
+  std::vector<candidate> candidates;
+  std::size_t            io_failures          = 0;
+  std::uint32_t          files_skipped_window = 0;
+  for (auto& path : paths) {
     if (fs_should_fail(fault, v, fs_operation::file_stat, path)) {
       ++io_failures;
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
@@ -1038,63 +1110,147 @@ auto collect_vendor_path(std::vector<raw_source>& owned, std::vector<warning_row
     }
     std::error_code size_ec;
     auto const      size = std::filesystem::file_size(path, size_ec);
-    if (size_ec) {
+    std::error_code time_ec;
+    auto const      mtime = std::filesystem::last_write_time(path, time_ec);
+    if (size_ec || time_ec) {
       ++io_failures;
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
       continue;
     }
-    if (size > bytes_left) {
-      warnings.push_back(warning_row{.v = v, .kind = warning_kind::byte_cap});
-      break;
+    if (window_start.has_value() && mtime < *window_start) {
+      ++files_skipped_window;
+      continue;
     }
-    if (fs_should_fail(fault, v, fs_operation::file_read, path)) {
+    candidates.push_back(candidate{.path = std::move(path), .size = size, .mtime = mtime});
+  }
+
+  // Newest first; equal modification times fall back to path order so two
+  // runs over the same tree read the same files.
+  std::ranges::sort(candidates, [](const candidate& a, const candidate& b) {
+    return a.mtime != b.mtime ? a.mtime > b.mtime : a.path < b.path;
+  });
+
+  // This vendor's share of the byte budget; unspent bytes stay in the shared pool.
+  std::size_t vendor_left = std::min(byte_share, bytes_left);
+  std::size_t used        = 0;
+
+  std::string   combined;
+  std::size_t   scanned_files     = 0;
+  std::uint64_t bytes_read        = 0;
+  std::uint32_t files_partial     = 0;
+  std::uint32_t files_skipped_cap = 0;
+  bool          byte_cap_hit      = false;
+  bool          stop              = false;
+  for (std::size_t index = 0; index < candidates.size(); ++index) {
+    auto const& entry = candidates[index];
+    if (stop) {
+      ++files_skipped_cap;
+      continue;
+    }
+    if (files_left == 0) {
+      warnings.push_back(warning_row{.v = v, .kind = warning_kind::file_cap});
+      stop = true;
+      ++files_skipped_cap;
+      continue;
+    }
+    // Only the newest file may be read from its tail, and only when it alone
+    // exceeds the budget; every other file that does not fit is skipped whole.
+    bool const oversize = entry.size > vendor_left;
+    bool const partial  = oversize && index == 0 && vendor_left > 0;
+    if (oversize && !partial) {
+      byte_cap_hit = true;
+      ++files_skipped_cap;
+      continue;
+    }
+    if (fs_should_fail(fault, v, fs_operation::file_read, entry.path)) {
       ++io_failures;
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
       continue;
     }
-    std::ifstream file(path, std::ios::binary);
+    std::ifstream file(entry.path, std::ios::binary);
     if (!file) {
       ++io_failures;
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::unavailable});
       continue;
     }
-    std::string const bytes{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-    auto const        record_count = count_records(bytes);
+    std::string bytes;
+    if (partial) {
+      // Read one byte before the tail so a tail that starts exactly on a
+      // record boundary keeps its first line; otherwise drop the partial
+      // first line so the tail starts at a record boundary.
+      auto const offset = static_cast<std::streamoff>(entry.size - vendor_left - 1);
+      file.seekg(offset);
+      std::string window(vendor_left + 1, '\0');
+      file.read(window.data(), static_cast<std::streamsize>(window.size()));
+      window.resize(static_cast<std::size_t>(file.gcount()));
+      auto const newline = window.find('\n');
+      bytes              = newline == std::string::npos ? std::string{} : window.substr(newline + 1);
+    } else {
+      // Capped at the stat'd size so a file that grows between stat and read
+      // cannot push the vendor past its share.
+      bytes.resize(static_cast<std::size_t>(entry.size));
+      file.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      bytes.resize(static_cast<std::size_t>(file.gcount()));
+    }
+    auto const record_count = count_records(bytes);
     if (record_count > records_left) {
       warnings.push_back(warning_row{.v = v, .kind = warning_kind::record_cap});
-      break;
+      stop = true;
+      ++files_skipped_cap;
+      continue;
     }
     combined += bytes;
     combined += '\n';
     files_left -= 1;
-    bytes_left -= bytes.size();
+    vendor_left -= std::min(vendor_left, bytes.size());
+    used += bytes.size();
     records_left -= record_count;
+    bytes_read += bytes.size();
     ++scanned_files;
+    if (partial) {
+      ++files_partial;
+      byte_cap_hit = true;
+    }
   }
+  if (byte_cap_hit) {
+    warnings.push_back(warning_row{.v = v, .kind = warning_kind::byte_cap});
+  }
+  bytes_left -= std::min(bytes_left, used);
 
+  raw_source result{.v = v};
   if (scanned_files == 0 && io_failures != 0) {
-    owned.push_back(raw_source{.v = v, .available = false});
+    result.available = false;
   } else {
-    owned.push_back(raw_source{.v = v, .jsonl = std::move(combined)});
+    result.jsonl = std::move(combined);
   }
+  result.bytes_read           = bytes_read;
+  result.files_partial        = files_partial;
+  result.files_skipped_cap    = files_skipped_cap;
+  result.files_skipped_window = files_skipped_window;
+  owned.push_back(std::move(result));
 }
 
 } // namespace
 
 auto collect_preview_from_paths(const transcript_config& config, const std::optional<cli_log_adapter>& cli,
-                                const collector_limits& limits, const fs_fault& fault) -> preview {
+                                const verb_path_resolver& resolve, const collector_limits& limits, const fs_fault& fault)
+    -> preview {
   std::vector<raw_source>  owned;
   std::vector<warning_row> extra_warnings;
   std::size_t              files_left   = limits.max_files;
   std::size_t              bytes_left   = limits.max_bytes;
   std::size_t              records_left = limits.max_records;
+  // Each of the three transcript vendors and the CLI log gets a quarter of the
+  // byte budget, so a large inventory for one vendor cannot starve another.
+  std::size_t const byte_share = limits.max_bytes / 4;
 
   collect_vendor_path(owned, extra_warnings, vendor::claude, config.claude_enabled, config.claude_path, config.home_dir,
-                      ".claude/projects", true, files_left, bytes_left, records_left, fault);
+                      ".claude/projects", true, files_left, bytes_left, records_left, byte_share, limits.window_start, fault);
   collect_vendor_path(owned, extra_warnings, vendor::codex, config.codex_enabled, config.codex_path, config.home_dir,
-                      ".codex/sessions", true, files_left, bytes_left, records_left, fault);
+                      ".codex/sessions", true, files_left, bytes_left, records_left, byte_share, limits.window_start, fault);
   collect_vendor_path(owned, extra_warnings, vendor::copilot, config.copilot_enabled, config.copilot_path, config.home_dir,
-                      ".copilot/session-state", false, files_left, bytes_left, records_left, fault);
+                      ".copilot/session-state", true, files_left, bytes_left, records_left, byte_share, limits.window_start,
+                      fault);
 
   if (cli.has_value()) {
     if (!cli->enabled) {
@@ -1116,6 +1272,16 @@ auto collect_preview_from_paths(const transcript_config& config, const std::opti
           bytes_left -= result.bytes.size();
           records_left -= records;
           owned.push_back(raw_source{.v = vendor::cli_log, .jsonl = std::move(result.bytes)});
+          if (result.truncated) {
+            // The reader stopped at the byte budget (oldest rows dropped): the
+            // source is observed, and the omitted-row count rides on the warning.
+            extra_warnings.push_back(warning_row{
+                .v    = vendor::cli_log,
+                .kind = warning_kind::byte_cap,
+                .count =
+                    static_cast<std::uint32_t>(std::min<std::size_t>(result.omitted, std::numeric_limits<std::uint32_t>::max())),
+            });
+          }
         }
       } else {
         owned.push_back(raw_source{.v = vendor::cli_log, .available = false});
@@ -1128,7 +1294,7 @@ auto collect_preview_from_paths(const transcript_config& config, const std::opti
     owned.push_back(raw_source{.v = vendor::cli_log, .available = false});
   }
 
-  auto result = collect_preview(owned);
+  auto result = collect_preview(owned, resolve);
   if (!extra_warnings.empty()) {
     result.warnings.insert(result.warnings.end(), std::make_move_iterator(extra_warnings.begin()),
                            std::make_move_iterator(extra_warnings.end()));

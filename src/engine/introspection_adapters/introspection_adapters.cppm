@@ -127,11 +127,22 @@ export inline constexpr std::size_t k_default_max_bytes = 4 * 1024 * 1024;
 /// @brief One discovered source. `jsonl` may contain multiple raw vendor
 /// records, one JSON object per line.
 export struct raw_source {
-  vendor      v;                ///< Which vendor this source came from.
-  bool        enabled   = true; ///< Whether the adapter is configured on.
-  bool        available = true; ///< Whether the source could be read at all.
-  std::string jsonl;            ///< Raw newline-delimited JSON. Empty when unavailable/disabled.
+  vendor        v;                        ///< Which vendor this source came from.
+  bool          enabled   = true;         ///< Whether the adapter is configured on.
+  bool          available = true;         ///< Whether the source could be read at all.
+  std::string   jsonl;                    ///< Raw newline-delimited JSON. Empty when unavailable/disabled.
+  std::uint64_t bytes_read           = 0; ///< Transcript bytes read into `jsonl` (excludes joining newlines).
+  std::uint32_t files_partial        = 0; ///< Files read from their tail only.
+  std::uint32_t files_skipped_cap    = 0; ///< Files skipped for a file, byte or record cap.
+  std::uint32_t files_skipped_window = 0; ///< Files skipped for a modification time before the window.
 };
+
+/// @brief Maps the argument words that follow a transcript's `planar`
+/// executable to the verb path the live CLI catalog would record for them: a
+/// token the tree names, a structured operand in the second slot, otherwise
+/// `<unknown>`. Injected so this engine imports no `cmd` module. It is
+/// required: an empty resolver recognizes no transcript command.
+export using verb_path_resolver = std::function<std::string(std::span<const std::string>)>;
 
 /// @brief Collect a no-write preview from raw vendor JSONL.
 ///
@@ -147,7 +158,8 @@ export struct raw_source {
 /// iteration.
 /// @param sources The raw per-vendor JSONL to normalize.
 /// @return The aggregated, redacted preview.
-export auto collect_preview(std::span<const raw_source> sources) -> preview;
+/// @param resolve The transcript verb-path catalog rule.
+export auto collect_preview(std::span<const raw_source> sources, const verb_path_resolver& resolve) -> preview;
 
 /// @brief Resolve which path a vendor should read: `builtin` when enabled
 /// and no override is set, `override_path` when both enabled and set, or
@@ -170,6 +182,7 @@ export struct collector_limits {
   std::size_t max_bytes = k_default_max_bytes; ///< Total bytes across all three transcript vendors PLUS the CLI adapter.
   std::size_t max_records =
       k_default_max_records; ///< Total JSONL records across all three transcript vendors PLUS the CLI adapter.
+  std::optional<std::filesystem::file_time_type> window_start; ///< Files last modified before this are skipped; unset reads all.
 };
 
 /// @brief Per-vendor transcript location configuration. Mirrors the
@@ -219,6 +232,8 @@ export enum class cli_read_status : std::uint8_t {
 export struct cli_read_result {
   cli_read_status status = cli_read_status::unavailable; ///< Which of the three states this is.
   std::string     bytes;                                 ///< Valid only when `status == ok`.
+  bool            truncated = false;                     ///< `ok` only: rows were left unread for the byte budget.
+  std::size_t     omitted   = 0;                         ///< `ok` only: how many rows were left unread.
 };
 
 /// @brief Read-only boundary for authoritative CLI rows. The adapter is
@@ -241,10 +256,12 @@ export struct cli_log_adapter {
 /// @param config Per-vendor transcript locations.
 /// @param cli The CLI-log adapter, or unset to treat it as unavailable
 /// (mirrors the oracle's `cli: ?CliLogAdapter = null` arm).
+/// @param resolve The transcript verb-path catalog rule (required).
 /// @param limits The file/byte/record caps.
 /// @param fault The fault-injection seam (tests only; empty in production).
 /// @return The aggregated, redacted preview.
 export auto collect_preview_from_paths(const transcript_config& config, const std::optional<cli_log_adapter>& cli,
-                                       const collector_limits& limits = {}, const fs_fault& fault = {}) -> preview;
+                                       const verb_path_resolver& resolve, const collector_limits& limits = {},
+                                       const fs_fault& fault = {}) -> preview;
 
 } // namespace planar::engine::introspection_adapters

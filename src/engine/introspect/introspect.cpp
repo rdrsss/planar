@@ -79,6 +79,8 @@ auto tag_name(ip::warning_kind k) -> std::string_view {
     return "evidence_cap";
   case ip::warning_kind::cli_adapter_failed:
     return "cli_adapter_failed";
+  case ip::warning_kind::unsupported_layout:
+    return "unsupported_layout";
   }
   return "unknown";
 }
@@ -170,7 +172,25 @@ auto health_summary(db::connection& conn) -> std::string {
   return "ok";
 }
 
-auto query_invocations(db::connection& conn, std::int64_t window_days)
+/// @brief A stored `verb_path` without a legacy leading `planar `.
+/// @param stored The stored value.
+/// @return The value the catalog predicate is asked about.
+auto bare_verb_path(std::string_view stored) -> std::string_view {
+  return stored.starts_with("planar ") ? stored.substr(7) : stored;
+}
+
+/// @brief The value to render for a stored `verb_path`.
+/// @param recognized The injected catalog predicate.
+/// @param stored The stored value.
+/// @return `stored` when the predicate accepts its bare form, else `unrecognized_verb_path`.
+auto masked_verb_path(const verb_path_predicate& recognized, std::string stored) -> std::string {
+  if (recognized(bare_verb_path(stored))) {
+    return stored;
+  }
+  return std::string{unrecognized_verb_path};
+}
+
+auto query_invocations(db::connection& conn, std::int64_t window_days, const verb_path_predicate& recognized)
     -> std::expected<std::vector<verb_count>, introspect_error> {
   auto stmt = conn.prepare("select verb_path,"
                            " count(*) as total,"
@@ -191,10 +211,21 @@ auto query_invocations(db::connection& conn, std::int64_t window_days)
       return std::unexpected(introspect_error::query_failed);
     }
     if (*step != db::step_result::row) {
+      std::ranges::stable_sort(rows, [](verb_count const& a, verb_count const& b) { return a.count > b.count; });
       return rows;
     }
+    // Rejected paths all render the same placeholder, so they aggregate
+    // into one row rather than listing "<unrecognized>" several times.
+    auto       path = masked_verb_path(recognized, stmt->column_text(0));
+    auto const it   = std::ranges::find(rows, path, &verb_count::verb_path);
+    if (it != rows.end()) {
+      it->count += stmt->column_int64(1);
+      it->success_count += stmt->column_int64(2);
+      it->failure_count += stmt->column_int64(3);
+      continue;
+    }
     rows.push_back(verb_count{
-        .verb_path     = stmt->column_text(0),
+        .verb_path     = std::move(path),
         .count         = stmt->column_int64(1),
         .success_count = stmt->column_int64(2),
         .failure_count = stmt->column_int64(3),
@@ -227,8 +258,8 @@ auto query_failure_categories(db::connection& conn, std::int64_t window_days)
   }
 }
 
-auto query_failure_tail(db::connection& conn, std::int64_t window_days, std::int64_t tail_n)
-    -> std::expected<std::vector<failure_tail_row>, introspect_error> {
+auto query_failure_tail(db::connection& conn, std::int64_t window_days, std::int64_t tail_n,
+                        const verb_path_predicate& recognized) -> std::expected<std::vector<failure_tail_row>, introspect_error> {
   auto stmt = conn.prepare("select verb_path, coalesce(error_category,'unknown'), exit_code, recorded_at"
                            " from cli_invocations"
                            " where exit_code != 0"
@@ -249,7 +280,7 @@ auto query_failure_tail(db::connection& conn, std::int64_t window_days, std::int
       return rows;
     }
     rows.push_back(failure_tail_row{
-        .verb_path      = stmt->column_text(0),
+        .verb_path      = masked_verb_path(recognized, stmt->column_text(0)),
         .error_category = stmt->column_text(1),
         .exit_code      = stmt->column_int64(2),
         .recorded_at    = stmt->column_text(3),
@@ -400,9 +431,11 @@ auto preview_text_block(const std::optional<ip::preview>& preview) -> std::strin
   }
   out += "\n";
   for (auto const& coverage : preview->coverage) {
-    out += std::format("  {}: state={} scanned={} normalized={} ignored={} malformed={} capped={}\n", tag_name(coverage.v),
-                       tag_name(coverage.state), coverage.scanned, coverage.normalized, coverage.ignored, coverage.malformed,
-                       coverage.capped);
+    out += std::format("  {}: state={} scanned={} normalized={} ignored={} malformed={} capped={} bytes_read={} files_partial={} "
+                       "files_skipped_cap={} files_skipped_window={}\n",
+                       tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.normalized, coverage.ignored,
+                       coverage.malformed, coverage.capped, coverage.bytes_read, coverage.files_partial,
+                       coverage.files_skipped_cap, coverage.files_skipped_window);
   }
   for (auto const& signal : preview->signals) {
     out += std::format("  signal {}/{}/{}: count={} first={} last={}\n", tag_name(signal.v), signal.verb_path,
@@ -443,9 +476,11 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
       if (i > 0) {
         out += ',';
       }
-      out += std::format(R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{}}})",
-                         tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.malformed,
-                         coverage.normalized, coverage.capped, coverage.ignored);
+      out += std::format(
+          R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{},"bytes_read":{},"files_partial":{},"files_skipped_cap":{},"files_skipped_window":{}}})",
+          tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.malformed, coverage.normalized,
+          coverage.capped, coverage.ignored, coverage.bytes_read, coverage.files_partial, coverage.files_skipped_cap,
+          coverage.files_skipped_window);
     }
   }
   out += R"(],"warnings":[)";
@@ -465,17 +500,17 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
 
 } // namespace
 
-auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled,
-           std::string_view /*db_path*/) -> std::expected<bundle, introspect_error> {
+auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled, std::string_view version,
+           const verb_path_predicate& recognized) -> std::expected<bundle, introspect_error> {
   bundle result;
-  result.version         = "planar";
+  result.version         = std::string{version};
   result.schema_version  = count_query_unwindowed(conn, "select coalesce(max(version), 0) from schema_migrations", 0);
   result.health          = health_summary(conn);
   result.window_days     = window_days;
   result.logging_enabled = logging_enabled;
 
   if (logging_enabled) {
-    auto invocations = query_invocations(conn, window_days);
+    auto invocations = query_invocations(conn, window_days, recognized);
     if (!invocations) {
       return std::unexpected(invocations.error());
     }
@@ -483,7 +518,7 @@ auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, 
     if (!failures) {
       return std::unexpected(failures.error());
     }
-    auto tail = query_failure_tail(conn, window_days, tail_n);
+    auto tail = query_failure_tail(conn, window_days, tail_n, recognized);
     if (!tail) {
       return std::unexpected(tail.error());
     }
@@ -508,23 +543,28 @@ auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, 
   return result;
 }
 
-auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes)
-    -> std::expected<std::string, introspect_error> {
+auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes,
+                       const verb_path_predicate& recognized) -> std::expected<cli_preview, introspect_error> {
   auto stmt = conn.prepare("select"
                            " case when verb_path like 'planar %' then verb_path else 'planar ' || verb_path end,"
                            " exit_code,"
                            " coalesce(error_category,''),"
                            " case when substr(recorded_at,-1)='Z' or substr(recorded_at,-6,1) in ('+','-')"
                            "      then replace(recorded_at,' ','T')"
-                           "      else replace(recorded_at,' ','T') || 'Z' end"
+                           "      else replace(recorded_at,' ','T') || 'Z' end,"
+                           " verb_path"
                            " from cli_invocations"
                            " where recorded_at >= datetime('now', ?)"
-                           " order by recorded_at asc");
+                           " order by recorded_at desc, id desc");
   if (!stmt || !stmt->bind_text(1, window_modifier(window_days))) {
     return std::unexpected(introspect_error::query_failed);
   }
 
-  std::string out;
+  // Newest first: rows are taken until the next one would push the text past
+  // `max_bytes`; the rest of the window is only counted.
+  std::vector<std::string> newest_first;
+  std::size_t              used = 0;
+  cli_preview              result;
   while (true) {
     auto step = stmt->step();
     if (!step) {
@@ -533,18 +573,38 @@ auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size
     if (*step != db::step_result::row) {
       break;
     }
-    out += R"({"schema":1,"kind":"cli_invocation","verb_path":)";
-    append_json_string(out, stmt->column_text(0));
-    out += std::format(",\"exit_code\":{},\"error_category\":", stmt->column_int64(1));
-    append_json_string(out, stmt->column_text(2));
-    out += ",\"recorded_at\":";
-    append_json_string(out, stmt->column_text(3));
-    out += "}\n";
-    if (out.size() > max_bytes) {
-      return std::unexpected(introspect_error::query_failed);
+    if (result.truncated) {
+      ++result.omitted;
+      continue;
     }
+    std::string row = R"({"schema":1,"kind":"cli_invocation","verb_path":)";
+    // The predicate sees the stored value, not the `planar `-prefixed form
+    // the boundary needs; a legacy stored prefix is looked through.
+    if (recognized(bare_verb_path(stmt->column_text(4)))) {
+      append_json_string(row, stmt->column_text(0));
+    } else {
+      append_json_string(row, std::format("planar {}", unrecognized_verb_path));
+    }
+    row += std::format(",\"exit_code\":{},\"error_category\":", stmt->column_int64(1));
+    append_json_string(row, stmt->column_text(2));
+    row += ",\"recorded_at\":";
+    append_json_string(row, stmt->column_text(3));
+    row += "}\n";
+    if (row.size() > max_bytes - used) {
+      result.truncated = true;
+      result.omitted   = 1;
+      continue;
+    }
+    used += row.size();
+    newest_first.push_back(std::move(row));
   }
-  return out;
+
+  result.rows = newest_first.size();
+  result.jsonl.reserve(used);
+  for (auto it = newest_first.rbegin(); it != newest_first.rend(); ++it) {
+    result.jsonl += *it;
+  }
+  return result;
 }
 
 auto render_text(const bundle& b) -> std::string {
@@ -636,6 +696,7 @@ auto render_json(const bundle& b) -> std::string {
   out += ",\"health\":";
   append_json_string(out, b.health);
   out += std::format(",\"window\":{}", b.window_days);
+  out += std::format(",\"logging_enabled\":{}", b.logging_enabled ? "true" : "false");
 
   out += ",\"invocations\":[";
   if (b.logging_enabled) {
@@ -661,6 +722,24 @@ auto render_json(const bundle& b) -> std::string {
       out += "{\"category\":";
       append_json_string(out, f.category);
       out += std::format(",\"count\":{}}}", f.count);
+    }
+  }
+  out += "]";
+
+  out += ",\"failure_tail\":[";
+  if (b.logging_enabled) {
+    for (std::size_t i = 0; i < b.failure_tail.size(); ++i) {
+      auto const& r = b.failure_tail[i];
+      if (i > 0) {
+        out += ",";
+      }
+      out += "{\"verb_path\":";
+      append_json_string(out, r.verb_path);
+      out += ",\"error_category\":";
+      append_json_string(out, r.error_category);
+      out += std::format(",\"exit_code\":{},\"recorded_at\":", r.exit_code);
+      append_json_string(out, r.recorded_at);
+      out += "}";
     }
   }
   out += "]";

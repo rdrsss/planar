@@ -5,30 +5,24 @@
 /// Behavior-preserving port (D2) of zig/src/engine/introspect.zig's
 /// `Bundle`, `build`, `cliPreviewJsonl`, `renderText`, and `renderJson`.
 ///
-/// All queries in this module are structurally redacted BY CONSTRUCTION:
+/// Entity text is excluded by construction:
 /// no query reads an entity-table text column (`tasks.title`,
 /// `plans.title`, `questions.title`, and so on — the full denylist is
 /// below). That IS the boundary this module actually holds, and it is
 /// real: nothing here can turn an entity's title/body/summary into report
 /// output.
 ///
-/// It is NOT a guarantee that nothing rendered here is operator-authored
-/// free text. Two columns this module DOES select are themselves
-/// operator-influenced at the CAPTURE layer, outside this module's control:
-/// `cli_invocations.verb_path` and `agent_work_claims.vendor`. In
-/// particular, `verb_path` is bounded to the first `max_verb_depth = 2`
-/// non-flag tokens (`cli_log.zig:128`), which is enough to hide a
-/// SUBCOMMAND's own free-text argument (`task add "<title>"`'s token 2 is
-/// the literal `add`, not the title) — but `search` is a TOP-LEVEL verb
-/// with a REQUIRED free-text positional (`handlers/search.zig:38`), so
-/// `planar search <query>` records `verb_path = "search <query>"` and that
-/// text is selected verbatim here (`query_invocations`, `query_failure_tail`,
-/// `cli_preview_jsonl`) and rendered into `[invocations]`, `[failure tail]`,
-/// and the JSONL boundary. This IS the oracle's own behavior — `cli_log.zig`
-/// is the writer and out of scope for this module — not a defect introduced
-/// by this port; it is called out here because the paragraph above no
-/// longer claims otherwise. `introspect.t.cpp` pins the leaking case
-/// directly rather than leaving it to be discovered by a future reader.
+/// `cli_invocations.verb_path` is the one selected column that historical
+/// capture could fill with operator text (older writers recorded
+/// `search <query>` verbatim). Every stored value therefore passes through
+/// a caller-supplied catalog predicate (`verb_path_predicate`, injected so
+/// this engine imports no `cmd` module) before it reaches `[invocations]`,
+/// `[failure tail]` or the JSONL boundary. A rejected value is rendered as
+/// `<unrecognized>`, rejected paths aggregate into one `[invocations]` row,
+/// and the stored rows are never changed or purged. A legacy leading
+/// `planar ` is looked through when the predicate is asked.
+/// `agent_work_claims.vendor` is the other operator-influenced column and is
+/// not masked.
 ///
 /// Tables read: `cli_invocations`, `agent_actions`, `sync_events`,
 /// `task_reopens`, `agent_work_claims`, `handoffs`, `schema_migrations`,
@@ -85,6 +79,19 @@ namespace planar::engine::introspect {
 /// callers): this bucket has no pre-existing callers to keep compiling.
 using preview_type = planar::introspection_preview::preview;
 
+/// @brief The placeholder rendered for a stored `verb_path` the catalog
+/// predicate rejects.
+export inline constexpr std::string_view unrecognized_verb_path = "<unrecognized>";
+
+/// @brief Decides whether a stored `verb_path` is one the live CLI catalog
+/// could have produced.
+///
+/// Injected by the caller so this engine never imports a `cmd` module. The
+/// argument is the stored value as written (never prefixed). A rejected
+/// value is rendered as `unrecognized_verb_path`; the stored row is never
+/// changed or purged (decision 1045). Must be cheap and side-effect free.
+export using verb_path_predicate = std::function<bool(std::string_view)>;
+
 /// @brief One verb-path invocation aggregate row.
 export struct verb_count {
   std::string  verb_path;         ///< The recorded verb path.
@@ -113,7 +120,7 @@ export struct sync_outcome {
 };
 
 /// @brief One failure-tail row (most-recent failed invocations, newest
-/// first). Structurally redacted — no entity text, no scope slug.
+/// first). Reads no entity text and no scope slug; the path is masked by the catalog predicate.
 export struct failure_tail_row {
   std::string  verb_path;      ///< The recorded verb path.
   std::string  error_category; ///< The `error_category`, or `"unknown"`.
@@ -142,11 +149,12 @@ export struct handoff_counts {
 
 /// @brief The complete diagnostic bundle returned by `build`.
 ///
-/// Member order is the `--json` wire-format key order the oracle emits:
-/// version, schema_version, health, window, invocations, failures,
-/// actions, sync, claims, claim_failure_categories, handoffs.
+/// Member order is NOT the `--json` key order; `render_json` fixes that:
+/// version, schema_version, health, window, logging_enabled, invocations,
+/// failures, failure_tail, actions, sync, claims, claim_failure_categories,
+/// handoffs, reopens, introspection_preview.
 export struct bundle {
-  std::string                               version;                  ///< Binary version string ("planar").
+  std::string                               version;                  ///< Build version token (see `build`).
   std::int64_t                              schema_version = 0;       ///< Max applied `schema_migrations` version.
   std::string                               health;                   ///< `"ok"` or `"degraded"`.
   std::int64_t                              window_days     = 0;      ///< Window in days that was queried.
@@ -179,24 +187,43 @@ export enum class introspect_error : std::uint8_t {
 /// @param logging_enabled Whether `[introspection].cli_log` is on. When
 /// false the invocation/failure/failure-tail sections are left empty so the
 /// caller can render "logging disabled" instead of zeros.
-/// @param db_path Borrowed path string, unused by this port (kept for
-/// signature parity with the oracle, which also never reads it).
+/// @param version The build's version token (the sha token of the
+/// `planar version` line), reported verbatim as `bundle::version`.
+/// @param recognized Catalog predicate over stored `verb_path` values. A
+/// rejected path is rendered as `unrecognized_verb_path`, and rejected paths
+/// aggregate into one `[invocations]` row. Required, not defaulted: an
+/// omitted predicate must be a compile error rather than a silent no-mask.
 /// @return The bundle, or an `introspect_error`.
 export auto build(db::connection& conn, std::int64_t window_days, std::int64_t tail_n, bool logging_enabled,
-                  std::string_view db_path) -> std::expected<bundle, introspect_error>;
+                  std::string_view version, const verb_path_predicate& recognized) -> std::expected<bundle, introspect_error>;
 
-/// @brief Convert authoritative, structurally-redacted `cli_invocations`
+/// @brief The bounded CLI-invocation JSONL `cli_preview_jsonl` produced.
+export struct cli_preview {
+  std::string jsonl;             ///< Rows read, oldest first; empty when none fit.
+  bool        truncated = false; ///< True when the byte budget left rows unread.
+  std::size_t rows      = 0;     ///< Number of rows in `jsonl`.
+  std::size_t omitted   = 0;     ///< Window rows not in `jsonl` (the oldest ones).
+};
+
+/// @brief Convert authoritative `cli_invocations`
 /// rows into the adapter's private JSONL boundary. Only verb path, exit
 /// code, error category, and timestamp are selected; argument shapes and
 /// entity-bearing tables are never read.
+///
+/// Rows are selected newest first and taken while the accumulated text stays
+/// within `max_bytes` (a row that would exceed it is not taken, so a text of
+/// exactly `max_bytes` is not truncated). The rows taken are returned
+/// oldest first. Rows left over are counted in `omitted`; the call does not
+/// fail because the window is large.
 /// @param conn An open, migrated database connection.
 /// @param window_days How many days back to query.
-/// @param max_bytes Abort with `query_failed` once the accumulated text
-/// would exceed this many bytes (mirrors the oracle's `error.StreamTooLong`).
-/// @return The JSONL text (always populated on success — see this file's
-/// header), or an `introspect_error`.
-export auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes)
-    -> std::expected<std::string, introspect_error>;
+/// @param max_bytes Upper bound on `jsonl.size()`.
+/// @param recognized Catalog predicate over stored `verb_path` values; a
+/// rejected path is emitted as `planar <unrecognized>`.
+/// @return The preview (always populated on success), or `query_failed`
+/// when a statement fails.
+export auto cli_preview_jsonl(db::connection& conn, std::int64_t window_days, std::size_t max_bytes,
+                              const verb_path_predicate& recognized) -> std::expected<cli_preview, introspect_error>;
 
 /// @brief Render the diagnostic bundle as human-readable text.
 /// @param b The bundle to render.

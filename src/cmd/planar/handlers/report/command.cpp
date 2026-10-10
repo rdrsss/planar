@@ -6,6 +6,7 @@ module planar.cmd.planar.handlers.report;
 
 import std;
 import planar.cliapp.args;
+import planar.cliapp.version;
 import planar.db;
 import planar.engine.config.effective;
 import planar.engine.introspect;
@@ -88,7 +89,13 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   }
   bool const logging_enabled = cfg_result->introspection.cli_log;
 
-  auto bundle = intro::build(db_conn, days, tail, logging_enabled, ctx.db_path().string());
+  // The bundle's `version` is the second token of the `planar version` line:
+  // the shortened sha (plus the dirty marker), or the `dev` sentinel when the
+  // build carries no version metadata.
+  auto const build_info = cliapp::current_build_info();
+  auto const version    = std::format("{}{}", cliapp::shorten_sha(build_info.sha), build_info.dirty ? "+dirty" : "");
+
+  auto bundle = intro::build(db_conn, days, tail, logging_enabled, version, verb_path_recognized);
   if (!bundle.has_value()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "building report: QueryFailed"));
   }
@@ -138,21 +145,30 @@ auto report(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   }
 
   // Bridges `engine::introspect::cli_preview_jsonl` (the authoritative,
-  // structurally-redacted `cli_invocations` reader) into the adapter's
+  // catalog-masked `cli_invocations` reader) into the adapter's
   // read-only boundary. Mirrors report.zig's `readCliPreview` closure over
   // its `CliContext`.
   ia::cli_log_adapter const cli_adapter{
       .enabled = logging_enabled,
       .read    = [&db_conn, days](std::size_t max_bytes) -> ia::cli_read_result {
-        auto jsonl = intro::cli_preview_jsonl(db_conn, days, max_bytes);
+        auto jsonl = intro::cli_preview_jsonl(db_conn, days, max_bytes, verb_path_recognized);
         if (!jsonl.has_value()) {
           return ia::cli_read_result{.status = ia::cli_read_status::failed};
         }
-        return ia::cli_read_result{.status = ia::cli_read_status::ok, .bytes = std::move(*jsonl)};
+        return ia::cli_read_result{.status    = ia::cli_read_status::ok,
+                                   .bytes     = std::move(jsonl->jsonl),
+                                   .truncated = jsonl->truncated,
+                                   .omitted   = jsonl->omitted};
       },
   };
 
-  bundle->preview = ia::collect_preview_from_paths(transcripts, cli_adapter);
+  ia::collector_limits limits;
+  limits.window_start =
+      std::filesystem::file_time_type::clock::now() - std::chrono::hours{24 * std::min<std::int64_t>(days, 36500)};
+  // Transcript commands resolve to verb paths through the same live-CLI rule
+  // the capture log applies, so typed words never reach a signal.
+  ia::verb_path_resolver const resolver = [](std::span<const std::string> argv) { return parse_args(argv).verb_path; };
+  bundle->preview                       = ia::collect_preview_from_paths(transcripts, cli_adapter, resolver, limits);
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? intro::render_json(*bundle) : intro::render_text(*bundle));
   return {};
@@ -168,8 +184,9 @@ auto declare_report(CLI::App& root) -> void {
       "Reads the cli_invocations capture log and the always-on observability\ntables (agent_actions, sync_events, "
       "agent_work_claims, handoffs) and\nrenders a diagnostic bundle.\n\nInvocation and failure sections render \"logging "
       "disabled\" when\n[introspection].cli_log is off; the always-on sections (actions, sync,\nclaims, claim failure "
-      "categories, handoffs, health) render normally in\neither case.\n\nThe bundle is structurally redacted: queries select "
-      "only counts,\ncategories, verb paths, statuses, and timestamps — never entity text.");
+      "categories, handoffs, health) render normally in\neither case.\n\nThe bundle reads no entity text: queries select "
+      "only counts,\ncategories, catalog-checked verb paths, statuses, and timestamps. It is not redacted as a whole;\nreview "
+      "the full output before sharing it.");
   add_int_default(*report, "--days", "30", "Window in days (must be > 0, default 30).");
   add_int_default(*report, "--tail", "20", "Number of failure-tail rows (must be > 0, default 20).");
   add_bool(*report, "--json", "Emit stable machine-readable JSON.");
