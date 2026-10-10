@@ -1374,11 +1374,13 @@ TEST_CASE("derive_opencode reduces the frontmatter and keeps the body", "[instal
   CHECK_FALSE(is_::derive_opencode("---\ndescription: d\nbody\n").has_value());
 }
 
-TEST_CASE("derive_opencode is byte-equal to install.sh's awk for all fifteen agents", "[installed_surface][nine_roots]") {
+TEST_CASE("derive_opencode is byte-equal to ownership.sh's awk for all fifteen agents", "[installed_surface][nine_roots]") {
   const std::filesystem::path root{PLANAR_TARGET_SOURCE_ROOT};
   scratch_root                scratch;
-  // The awk program is lifted out of install.sh itself, so a change to either side is a diff here.
-  std::ifstream installer(root / "install.sh");
+  // The awk program is lifted out of scripts/install-lib/ownership.sh, the single home of
+  // opencode_derive, so a change to either side is a diff here.
+  const auto    ownership_sh = root / "scripts" / "install-lib" / "ownership.sh";
+  std::ifstream installer(ownership_sh);
   REQUIRE(installer.good());
   std::string line, program;
   bool        in_awk = false;
@@ -1398,9 +1400,11 @@ TEST_CASE("derive_opencode is byte-equal to install.sh's awk for all fifteen age
       program += line + "\n";
     }
   }
+  INFO("no `opencode_derive() {` awk program found in " << ownership_sh.string()
+                                                        << "; if the function moved, point this test at its new file");
   REQUIRE_FALSE(program.empty());
   const auto awk_file = scratch.root_ / "derive.awk";
-  // `\047` inside the awk source is awk's own escape; install.sh holds it unchanged.
+  // `\047` inside the awk source is awk's own escape; ownership.sh holds it unchanged.
   scratch.write(awk_file, program);
 
   std::size_t compared = 0;

@@ -449,6 +449,9 @@ planar_binary(planar
     surface.cppm
     docs.cppm
     handlers/version/command.cppm
+    handlers/update/state.cppm
+    handlers/update/lock.cppm
+    handlers/update/command.cppm
     handlers/shared/catalog.cppm
     handlers/schema/command.cppm
     handlers/completion/command.cppm
@@ -723,6 +726,9 @@ planar_binary(planar
     worktree_gate.cpp
     declare.cpp
     handlers/version/command.cpp
+    handlers/update/state.cpp
+    handlers/update/lock.cpp
+    handlers/update/command.cpp
     handlers/shared/catalog.cpp
     handlers/workflow/command.cpp
     handlers/annotate/command.cpp

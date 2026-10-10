@@ -1,6 +1,6 @@
 # Getting started
 
-This walkthrough takes you from a fresh checkout to your first plan,
+This walkthrough takes you from a fresh install to your first plan,
 your first task, an end-to-end workbench round-trip, a spec-ingest
 pass, and finally an external-system propagation. It is the longest
 linear path through Planar — everything else in the docs is either
@@ -14,19 +14,21 @@ about 30 minutes the first time and 5 minutes the second.
 Planar is five C++26 binaries — the operator CLI `planar`, the
 agent-callable `planar-agent`, the read-only `planar-watch`, the
 workflow runner `planar-execute`, and the external-system binary
-`planar-ext` — backed by SQLite. Build from source and stage the
-workflow surfaces:
+`planar-ext` — backed by SQLite. Install a release bundle with the
+bootstrap (Apple silicon macOS 26 or later, or x86_64 Linux with glibc
+2.36 or later):
 
 ```sh
-git clone https://github.com/rdrsss/planar.git
-cd planar
-./install.sh
+curl -fsSL https://github.com/rdrsss/planar/releases/latest/download/get-planar.sh | sh
 ```
 
-`install.sh` builds the binaries, installs them under `~/.planar/bin/`,
-and installs the one `planar` skill and the `planar-<role>` agents into
-the harnesses it finds. Add `~/.planar/bin` to `$PATH` if it is not
-already there.
+The bootstrap verifies the bundle against the release's `SHA256SUMS`,
+installs the binaries under `~/.planar/bin/` and installs the one
+`planar` skill and the `planar-<role>` agents into the harnesses it
+finds. Add `~/.planar/bin` to `$PATH` if it is not already there.
+`planar update` later moves to a newer release, and `planar-uninstall`
+removes the install. To pin a release, build from source, or see the
+prerequisites, read [INSTALL.md](../INSTALL.md).
 
 Check that the binary runs:
 

@@ -71,7 +71,10 @@ the `planar` binary.
 | `6` | Precondition conflict: slug conflict, or the entity already exists. | `slug_conflict`, `already_exists` |
 | `7` | Database schema is **newer** than this binary supports. | `schema_version_ahead` |
 | `8` | **Worktree-gate refusal**: a planning verb was run from inside a git worktree. Outside the `domain_error_kind` bucket table entirely — `planar.cmd.planar.worktree_gate` returns it directly, before the parser even runs, so it fires even when the invocation's flags would also fail to parse. `--scope` does not bypass it. | `planar.cmd.planar.worktree_gate::check` |
+| `10` | **Update available** — not a failure. Only `planar update --check` returns it, when the installed release differs from the latest one (see [Domain: `update`](#domain-update)). Outside the `domain_error_kind` table; the handler returns it through `passthrough_code`. No other verb returns 10 of its own (`workflow run` passes a workflow's own status through verbatim). | `planar update --check` |
 | `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
+| `130` | **Interrupted by `SIGINT`** (128 + 2): a plain `planar update` caught it before its installer hand-off, removed its download directory and released the mutation lock. Outside the `domain_error_kind` table, through `passthrough_code`. | `planar update` |
+| `143` | **Interrupted by `SIGTERM`** (128 + 15), as for `130`. | `planar update` |
 
 **Usage errors exit `2`, not `64`.** An unknown flag, a missing required
 positional and a missing flag value are all `parse_error` on this binary. This
@@ -171,6 +174,18 @@ Vendor identity for auto-created sessions is taken from the `PLANAR_VENDOR` envi
 **Session auto-creation policy:** one session per `(vendor, vendor_session_id)` tuple. If `vendor_session_id` is unset (env var missing), one session per process for the duration of the active task. The `vendor` is read from `$PLANAR_VENDOR`; `vendor_session_id` is read from `$PLANAR_VENDOR_SESSION_ID`. Both are unset at install time; vendor harnesses are responsible for setting them on invocation.
 
 ---
+
+### Version metadata
+
+`planar version`, `planar-agent version`, `planar-watch version` and
+`planar-ext version` print six tokens: program, shortened sha (with
+`+dirty` when applicable), build date, `cxx`, compiler, and release tag.
+An untagged build prints `dev` in the last position. The sha token remains
+the install manifest's `build_id`.
+
+Each accepts `version --json`, which emits `release`, full `sha`, `date`,
+boolean `dirty`, and `compiler`. Version queries do not open the database.
+`planar-execute` has no version verb.
 
 ## Top-Level Usage
 
@@ -6541,6 +6556,116 @@ tables. No planning entity is read or written.
 
 ---
 
+## Domain: `update`
+
+### `planar update`
+
+**Synopsis:**
+```
+planar update [--check] [--version <tag>]
+```
+
+**Description:** Update the Planar installation to a published release
+(plan 1122 M3; tech spec 677, "The update verb"). The installation root is
+`$PLANAR_HOME` when set, else `~/.planar`: the root `install.sh` itself uses.
+The verb opens no database; the database probe, migration and live-queue
+warning belong to the installer it hands off to. The release base is
+`https://github.com/rdrsss/planar/releases`, or `PLANAR_RELEASE_URL` under the
+bootstrap's grammar (`https://HOST[:PORT]/...`, `file:///PATH`, or
+`http://127.0.0.1[:PORT]/...` / `http://localhost[:PORT]/...`; no userinfo,
+query or fragment). A malformed value is refused at exit 2.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--check` | Print `installed <v> latest <v>` and change nothing. `<v>` is `release.json`'s `version`, or `none` without one; latest is `<base>/latest/download/VERSION`, which must be a release tag. Exit 0 when they are equal, 10 when they differ. Takes no lock. Cannot be combined with `--version` (exit 2). | off |
+| `--version <tag>` | Install this release (`vMAJOR.MINOR.PATCH`) instead of the latest. A malformed tag is refused at exit 2. | latest |
+
+A plain run, or `--version <tag>`:
+
+1. Takes the common mutation lock (`<root>.lock`, the protocol in
+   `scripts/install-lib/mutation-lock.sh`, which this verb implements natively)
+   as an `update`, recording its download directory
+   `<root>/.planar-update/update-<hex>/` before creating it. A running install,
+   update or uninstall refuses it at exit 1, naming the owner's operation and
+   pid. An updater that was killed is proven dead (its pid is gone, or was
+   reused) and its recorded download directory, and nothing else, is removed.
+2. Reads the recovery journal under the lock. An interrupted install
+   (`mutating`) or uninstall (`uninstalling`) is reported as an incomplete
+   installation at exit 1 with the journal's durable retry command, before any
+   verdict about the installed release; `--check` reports it the same way. The
+   verb never replays recovery itself: the version-pinned bootstrap does.
+   A `prepared` or aborted attempt leaves the previous completed release
+   authoritative.
+3. Resolves the tag. When it equals the installed release of a completed
+   install, prints that there are no changes and exits 0.
+4. Downloads `SHA256SUMS` (at most 1 MiB) and `planar-<os>-<arch>.tar.gz` (at
+   most 512 MiB) from `<base>/download/<tag>/`, following redirects with every
+   hop checked against the same grammar, sending no `Authorization` header,
+   within a 10-minute bound. Exactly one checksum record must name the asset;
+   the asset is verified with SHA-256.
+5. Lists and extracts the archive with the system `tar` (every entry under
+   `planar-<os>-<arch>/`, no `..`, no links), checks that the bundle's
+   `release.json` names the tag, on Linux that the host's glibc
+   (`ldd --version`) meets the bundle's `os_floor`, and that the bundle's
+   `schema_version` is not below this binary's own (an older release is never
+   installed over a newer database).
+6. Replaces itself with `bash <bundle>/install.sh --prebuilt <bundle> --cleanup
+   <download dir>`, passing `PLANAR_MUTATION_HANDOFF=<generation>:<nonce>`. The
+   lock is never released before the exec: the installer adopts it (the exec
+   keeps the pid and start time), removes the download directory and releases
+   the lock when it ends. If the exec fails, the verb removes the directory and
+   releases the lock itself.
+
+`SIGINT` (Ctrl-C) or `SIGTERM` from just before step 1 until the exec stops
+the run: a download in flight is abandoned within about a second, the download
+directory is removed, the lock is released (`released.<G>`, so the next update
+starts clean rather than reclaiming), and the verb prints `error: planar update
+was interrupted by SIGINT; ...` and exits `130` (`143` for `SIGTERM`), the
+codes the bootstrap's own traps use. The message ends "the mutation lock
+released" only when this run had taken the lock; a signal that arrives before
+the lock is taken says it came "before it took the mutation lock" and that no
+lock was held. A signal that was ignored when the verb
+started (a background job's `SIGINT`) stays ignored. Immediately before the
+exec the verb restores the signals' previous dispositions, so one arriving
+from then on is never lost: before the exec it ends the verb as a `KILL` would
+(the next owner proves the updater dead and removes its recorded directory);
+after it the installer owns the directory and the lock and handles it.
+`--check` holds nothing and does not catch either signal.
+
+The shadow check belongs to the installer, after placement: when `command -v
+planar` and `<root>/bin/planar` are different files (compared after resolving
+symlinks, so a `PATH` entry that links to the installed binary is not a
+shadow) it prints `<path> shadows the installed <root>/bin/planar: your shell
+runs <path>. Put <root>/bin first on PATH, or remove <path>`. It names
+`~/.local/bin/planar` for that path and appends `(the retired 'make install'
+put it there)` only when that is the shadowing path. The verb does not repeat
+it: it never regains control after the exec. The bootstrap prints the warning
+once: it leaves it to a bundled installer that carries the check and keeps the
+same check, with the same wording prefixed `get-planar: warning: `, only for an
+older bundle that lacks it.
+
+Refusals use the bootstrap's (`get-planar.sh`) messages, after `error: `:
+`cannot reach the release server at <base>: ...`, `release <tag> does not
+exist on the release server <base>: ...`, `checksum mismatch for <asset>: ...`,
+`<base>/latest/download/VERSION holds '<value>', which is not a release tag
+...`, `this host has glibc <host> but this release needs glibc <floor> or
+later; nothing was installed`, and `unsupported platform <os> <arch>; ...`.
+Every refusal before the exec, a failed exec, and an interrupt leave no
+download directory and no held lock.
+
+**Writes:** outside the database only: the lock record
+`<root>.lock/owner.<G>` and the download directory under
+`<root>/.planar-update/`; everything else is the installer's.
+
+**Exit codes:** `0` success or no changes, `1` a fault, refusal, competing
+owner or incomplete installation, `2` bad input, `10` (`--check` only) an
+update is available, `130` / `143` interrupted by `SIGINT` / `SIGTERM` before
+the hand-off.
+
+**Capture:** None.
+
+---
+
 ## Miscellaneous leaves
 
 Commands that do not group into a larger domain page.
@@ -6785,7 +6910,7 @@ The `tree` domain provides a hierarchical view of Planar entities — plans, tas
 
 The walk follows `plans.parent_plan_id` for plan→plan, `tasks.plan_id` and `tasks.parent_task_id` for plan→task and task→subtask, and `entity_links(relationship='derives-from')` for artifacts / decisions / scenarios / questions attached to plans. Filters apply during the walk so excluded subtrees never enter the output.
 
-The flag surface deliberately mirrors `tree(1)` wherever the semantic translates. Filesystem-specific flags from `tree(1)` are explicitly rejected at parse time rather than silently ignored — see [Deliberately omitted flags](#deliberately-omitted-flags).
+The flag surface deliberately mirrors `tree(1)` wherever the semantic translates. Filesystem-specific flags from `tree(1)` are explicitly rejected at parse time rather than silently ignored — see [`tree(1)` flags with no Planar analog](#tree1-flags-with-no-planar-analog).
 
 ### `planar tree`
 
@@ -8472,6 +8597,7 @@ For quick reference, all documented commands grouped by domain:
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
 | `schema` | `schema` (also on `planar-agent` and `planar-watch`) |
+| `update` | `update`, `update --check`, `update --version <tag>` |
 ## Domain: `closure`
 
 Derived-closure extraction: given a task's touched `(repo, path)` seeds, walk
@@ -8507,7 +8633,7 @@ to walk and is refused rather than silently writing an empty closure.
 Seed paths are resolved against `projects.root_path`, which is why a project
 registered with a path that does not match your checkout produces an empty or
 wrong result — see the association-less-repo advisory under
-[`task touches add`](#planar-task-touches-add-task-id).
+[`task touches add`](#planar-task-touches-add-task-id-repo-slug---path-p).
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees
 with the task's, using the membership-aware comparison (see

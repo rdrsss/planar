@@ -661,7 +661,7 @@ auto installed_roots(const options& opts) -> std::vector<installed_root> {
 }
 
 auto derive_opencode(std::string_view staged) -> std::optional<std::string> {
-  // Mirrors install.sh's awk program record for record: `\n` terminates a
+  // Mirrors ownership.sh's awk program record for record: `\n` terminates a
   // record, an unterminated last record is still a record, and every output
   // record ends in `\n`.
   std::vector<std::string_view> lines;

@@ -1525,7 +1525,9 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // so only `project` and `validate-range` change this leaf census.
   auto const leaves = planar::cliapp::leaf_keys(*tree);
   // Task 7205 adds the `help` leaf (218 -> 219).
-  CHECK(leaves.size() == 219);
+  // Task 7319 adds the `update` leaf (219 -> 220).
+  CHECK(leaves.size() == 220);
+  CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));

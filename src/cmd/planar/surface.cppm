@@ -378,6 +378,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar import", "Import an existing repo's state into Planar."},
       {"planar synthesize", "Synthesize fresh planning artifacts from a repo's docs + code + git history."},
       {"planar version", "Print the planar version, commit, and C++ toolchain."},
+      {"planar update", "Update the Planar installation to a published release."},
       {"planar completion", "Generate the autocompletion script for the specified shell."},
       {"planar schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals)."},
       {"planar report", "Emit the diagnostic bundle: invocation and closed claim-failure aggregates plus health metrics."},

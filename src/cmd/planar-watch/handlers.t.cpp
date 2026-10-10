@@ -215,7 +215,8 @@ TEST_CASE("planar-watch version names THIS binary and opens no database", "[cmd]
 
   CHECK(got.out.starts_with("planar-watch dev dev cxx "));
   CHECK_FALSE(got.out.starts_with("planar dev"));
-  CHECK(got.out.ends_with("\n"));
+  CHECK(got.out.ends_with(" dev\n"));
+  CHECK(std::ranges::count(got.out, ' ') + 1 == 6);
 }
 
 TEST_CASE("planar-watch completion emits a distinct script per shell and opens no database", "[cmd][watch][handlers]") {

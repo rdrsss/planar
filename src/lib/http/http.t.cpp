@@ -9,7 +9,9 @@
 // is `http://127.0.0.1:<ephemeral>`. No test in this file names a real host,
 // and the one test that deliberately fails a send targets a loopback port
 // that was just closed. Grep this file for "https://" — the only occurrences
-// are inside `url_encode_query` inputs, which are never sent anywhere.
+// are inside `url_encode_query` inputs and `check_download_url` inputs, which
+// are validated as text and never sent anywhere. A redirect target naming a
+// non-loopback host is refused before any connection is attempted.
 //
 // ORACLE PROVENANCE. Three separate contracts are pinned here and they have
 // different oracles:
@@ -209,4 +211,281 @@ TEST_CASE("curl_transport reports send_failed when nothing is listening", "[http
   auto const                   got = wire.send({.verb = planar::http::method::get, .url = dead_url});
   REQUIRE_FALSE(got.has_value());
   CHECK(got.error() == planar::http::transport_error::send_failed);
+}
+
+namespace {
+
+using planar::http::download_error_kind;
+using planar::http::url_scheme;
+
+auto redirect_to(std::string location, int status = 302) -> canned_response {
+  return canned_response{.status = status, .body = "", .extra_headers = {{"Location", std::move(location)}}};
+}
+
+} // namespace
+
+TEST_CASE("download follows a redirect chain and sends no Authorization header", "[http]") {
+  std::mutex                    lock;
+  std::vector<captured_request> seen;
+  planar::http::fixture::server server([&](const captured_request& req) {
+    {
+      std::scoped_lock const guard(lock);
+      seen.push_back(req);
+    }
+    if (req.target == "/download/v1/asset") {
+      return redirect_to("/object/one");
+    }
+    if (req.target == "/object/one") {
+      return redirect_to("/object/two", 307);
+    }
+    return canned_response{.status = 200, .body = "ASSET-BYTES", .content_type = "application/octet-stream"};
+  });
+
+  auto const got = planar::http::download(server.base_url() + "/download/v1/asset");
+  REQUIRE(got.has_value());
+  CHECK(got->status == 200);
+  CHECK(got->body == "ASSET-BYTES");
+  CHECK(got->redirects == 2);
+  CHECK(got->final_url == server.base_url() + "/object/two");
+
+  std::scoped_lock const guard(lock);
+  REQUIRE(seen.size() == 3);
+  for (auto const& req : seen) {
+    CHECK_FALSE(req.header_value("authorization").has_value());
+  }
+}
+
+TEST_CASE("the adapter policy still refuses to follow the same redirect chain", "[http]") {
+  planar::http::fixture::server server([](const captured_request& req) {
+    if (req.target == "/start") {
+      return redirect_to("/next");
+    }
+    return canned_response{.status = 200, .body = "FINAL"};
+  });
+
+  planar::http::curl_transport wire;
+  auto const                   got = wire.send({.verb = planar::http::method::get, .url = server.base_url() + "/start"});
+  REQUIRE(got.has_value());
+  CHECK(got->status == 302);
+  CHECK(server.request_count() == 1);
+}
+
+TEST_CASE("download refuses a redirect to a non-loopback http host without contacting it", "[http]") {
+  planar::http::fixture::server server(
+      [](const captured_request&) { return redirect_to("http://localhost.example.invalid/steal"); });
+
+  auto const got = planar::http::download(server.base_url() + "/x");
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == download_error_kind::redirect_refused);
+  CHECK(got.error().url == "http://localhost.example.invalid/steal");
+  CHECK(server.request_count() == 1);
+}
+
+TEST_CASE("download refuses a redirect to a file url", "[http]") {
+  planar::http::fixture::server server([](const captured_request&) { return redirect_to("file:///etc/hosts"); });
+
+  auto const got = planar::http::download(server.base_url() + "/x");
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == download_error_kind::redirect_refused);
+}
+
+TEST_CASE("download gives up on a redirect loop after max_redirects", "[http]") {
+  planar::http::fixture::server server([](const captured_request&) { return redirect_to("/again"); });
+
+  auto const got = planar::http::download(server.base_url() + "/x", {.max_redirects = 3});
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == download_error_kind::too_many_redirects);
+  CHECK(server.request_count() == 4);
+}
+
+TEST_CASE("download reads a file fixture and refuses a malformed initial url", "[http]") {
+  auto const path = std::filesystem::temp_directory_path() / std::format("planar-http-dl-{}.bin", ::getpid());
+  {
+    std::ofstream out(path, std::ios::binary);
+    out << "FILE-BYTES";
+  }
+  auto const got = planar::http::download("file://" + path.string());
+  std::filesystem::remove(path);
+  REQUIRE(got.has_value());
+  CHECK(got->body == "FILE-BYTES");
+
+  auto const bad = planar::http::download("http://127.0.0.1@example.com/x");
+  REQUIRE_FALSE(bad.has_value());
+  CHECK(bad.error().kind == download_error_kind::invalid_url);
+}
+
+TEST_CASE("download aborts a body larger than max_body_bytes and accepts one at the limit", "[http]") {
+  std::string const             big(64 * 1024, 'x');
+  planar::http::fixture::server server([&](const captured_request&) {
+    return canned_response{.status = 200, .body = big, .content_type = "application/octet-stream", .chunk_bytes = 4096};
+  });
+
+  auto const over = planar::http::download(server.base_url() + "/asset", {.max_body_bytes = big.size() - 1});
+  REQUIRE_FALSE(over.has_value());
+  CHECK(over.error().kind == download_error_kind::body_too_large);
+  CHECK(over.error().message.contains(server.base_url() + "/asset"));
+
+  auto const at = planar::http::download(server.base_url() + "/asset", {.max_body_bytes = big.size()});
+  REQUIRE(at.has_value());
+  CHECK(at->body.size() == big.size());
+
+  // The default (0) keeps the unbounded behaviour every caller had before.
+  auto const unbounded = planar::http::download(server.base_url() + "/asset");
+  REQUIRE(unbounded.has_value());
+  CHECK(unbounded->body == big);
+}
+
+TEST_CASE("check_download_url accepts only the allowed authorities and protocols", "[http]") {
+  using planar::http::check_download_url;
+  // Accepted.
+  CHECK(check_download_url("https://github.com/rdrsss/planar/releases").value() == url_scheme::https);
+  CHECK(check_download_url("https://objects.example.com:8443/a?b=c").value() == url_scheme::https);
+  CHECK(check_download_url("http://127.0.0.1:8080/x").value() == url_scheme::http);
+  CHECK(check_download_url("http://localhost/x").value() == url_scheme::http);
+  CHECK(check_download_url("file:///tmp/x").value() == url_scheme::file);
+  CHECK(check_download_url("file://localhost/tmp/x").value() == url_scheme::file);
+  CHECK(check_download_url("http://127.0.0.1/x", url_scheme::http).value() == url_scheme::http);
+  CHECK(check_download_url("https://cdn.example.com/x", url_scheme::http).value() == url_scheme::https);
+
+  // Refused.
+  for (std::string_view bad : {
+           "http://localhost.example/x",
+           "http://127.0.0.1.evil.com/x",
+           "http://127.0.0.1@example.com/x",
+           "https://user:pw@github.com/x",
+           "https://user@github.com/x",
+           "http://127.0.0.1:/x",
+           "http://127.0.0.1:99999/x",
+           "http://127.0.0.1:80a/x",
+           "http://example.com/x",
+           "http://LOCALHOST/x",
+           "http://[::1]/x",
+           "file://example.com/tmp/x",
+           "file://127.0.0.1/tmp/x",
+           "file://localhost:80/tmp/x",
+           "ftp://localhost/x",
+           "https:///x",
+           "https://git hub.com/x",
+           "http://localhost\\@evil.com/x",
+           "/relative",
+       }) {
+    INFO(bad);
+    CHECK_FALSE(check_download_url(bad).has_value());
+  }
+}
+
+TEST_CASE("check_download_url never lets an https chain step down", "[http]") {
+  using planar::http::check_download_url;
+  CHECK_FALSE(check_download_url("http://127.0.0.1/x", url_scheme::https).has_value());
+  CHECK_FALSE(check_download_url("http://localhost:9/x", url_scheme::https).has_value());
+  CHECK_FALSE(check_download_url("file:///tmp/x", url_scheme::https).has_value());
+  CHECK_FALSE(check_download_url("file:///tmp/x", url_scheme::http).has_value());
+  CHECK(check_download_url("https://github.com/x", url_scheme::https).has_value());
+}
+
+TEST_CASE("the download policy bounds default to 10 minutes while the adapter keeps 30 seconds", "[http]") {
+  planar::http::download_policy const policy;
+  CHECK(policy.total_timeout == std::chrono::minutes{10});
+  CHECK(policy.low_speed_limit > 0);
+  CHECK(policy.low_speed_time > std::chrono::seconds{0});
+  CHECK(planar::http::k_default_timeout == std::chrono::seconds{30});
+}
+
+TEST_CASE("a slow body completes under the download bound and fails under the adapter bound", "[http]") {
+  // About 3 seconds of streaming: inside a 10-second download bound, outside
+  // the 1-second adapter-style bound. (The production numbers are 45s vs 30s.)
+  auto const make_slow = [](const captured_request&) {
+    return canned_response{
+        .status = 200, .body = std::string(30000, 's'), .chunk_bytes = 10000, .chunk_delay = std::chrono::milliseconds{1000}};
+  };
+  planar::http::fixture::server server(make_slow);
+
+  auto const slow = planar::http::download(
+      server.base_url() + "/slow",
+      {.total_timeout = std::chrono::seconds{10}, .low_speed_limit = 100, .low_speed_time = std::chrono::seconds{5}});
+  REQUIRE(slow.has_value());
+  CHECK(slow->body.size() == 30000);
+
+  planar::http::curl_transport wire{std::chrono::seconds{1}};
+  auto const                   bounded = wire.send({.verb = planar::http::method::get, .url = server.base_url() + "/slow"});
+  REQUIRE_FALSE(bounded.has_value());
+  CHECK(bounded.error() == planar::http::transport_error::send_failed);
+}
+
+TEST_CASE("the download bound covers the whole redirect chain, not each hop", "[http]") {
+  // Each hop streams a four-piece body at one second a piece (3-4 seconds), so
+  // either hop alone fits inside the 5-second bound; the two together do not.
+  planar::http::fixture::server server([](const captured_request& req) {
+    canned_response reply;
+    if (req.target == "/start") {
+      reply = redirect_to("/final");
+    } else {
+      reply.status = 200;
+    }
+    reply.body        = std::string(40000, 'h');
+    reply.chunk_bytes = 10000;
+    reply.chunk_delay = std::chrono::milliseconds{1000};
+    return reply;
+  });
+
+  auto const url = server.base_url() + "/final";
+  auto const got = planar::http::download(
+      server.base_url() + "/start",
+      {.total_timeout = std::chrono::seconds{5}, .low_speed_limit = 100, .low_speed_time = std::chrono::seconds{5}});
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == download_error_kind::timeout);
+  CHECK(got.error().url == url);
+}
+
+TEST_CASE("a stalled body is aborted by the low-speed bound with a timeout naming the url", "[http]") {
+  planar::http::fixture::server server([](const captured_request&) {
+    return canned_response{.status                  = 200,
+                           .body                    = std::string(20000, 'z'),
+                           .chunk_bytes             = 10,
+                           .stall_after_first_chunk = true,
+                           .stall_delay             = std::chrono::seconds{20}};
+  });
+
+  auto const url     = server.base_url() + "/stall";
+  auto const started = std::chrono::steady_clock::now();
+  auto const got     = planar::http::download(
+      url, {.total_timeout = std::chrono::seconds{60}, .low_speed_limit = 1000, .low_speed_time = std::chrono::seconds{1}});
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == download_error_kind::timeout);
+  CHECK(got.error().url == url);
+  CHECK(got.error().message.find(url) != std::string::npos);
+  // Aborted by the low-speed rule, long before the 60-second total bound.
+  CHECK(elapsed < std::chrono::seconds{15});
+}
+
+TEST_CASE("a cancel hook abandons a stalled download and a cancelled one never connects", "[http]") {
+  planar::http::fixture::server server([](const captured_request&) {
+    return canned_response{.status                  = 200,
+                           .body                    = std::string(20000, 'z'),
+                           .chunk_bytes             = 10,
+                           .stall_after_first_chunk = true,
+                           .stall_delay             = std::chrono::seconds{30}};
+  });
+  auto const                    url = server.base_url() + "/stall";
+
+  // Cancelled before the first hop: refused without a connection.
+  auto const early = planar::http::download(url, {.cancelled = [] { return true; }});
+  REQUIRE_FALSE(early.has_value());
+  CHECK(early.error().kind == download_error_kind::cancelled);
+  CHECK(early.error().message == std::format("download of {} was cancelled", url));
+  CHECK(server.request_count() == 0);
+
+  // Cancelled mid-transfer: the hook turns true once the request is in, and
+  // the stalled transfer ends long before the stall or any bound would.
+  auto const started = std::chrono::steady_clock::now();
+  auto const got     = planar::http::download(
+      url, {.total_timeout = std::chrono::seconds{60}, .cancelled = [&server] { return server.request_count() >= 1; }});
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == download_error_kind::cancelled);
+  CHECK(got.error().url == url);
+  CHECK(server.request_count() == 1);
+  CHECK(elapsed < std::chrono::seconds{10});
 }

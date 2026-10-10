@@ -154,10 +154,32 @@ The [concepts](docs/concepts.md) document defines each of these precisely.
 - **Explicit synchronization.** Remote changes arrive as proposals, and
   conflicts are surfaced rather than resolved silently.
 
+## Install
+
+On Apple silicon macOS 26 or later, or x86_64 Linux with glibc 2.36 or later:
+
+```sh
+curl -fsSL https://github.com/rdrsss/planar/releases/latest/download/get-planar.sh | sh
+```
+
+The script downloads the latest release bundle, verifies it against the
+release's `SHA256SUMS`, and installs it into `~/.planar` with the `planar` skill
+and the `planar-<role>` agents placed into each harness it finds. Add
+`~/.planar/bin` to your `PATH`. To pin a release, fetch that release's script
+and set `PLANAR_VERSION` on the shell that reads it:
+
+```sh
+curl -fsSL https://github.com/rdrsss/planar/releases/download/vX.Y.Z/get-planar.sh | PLANAR_VERSION=vX.Y.Z sh
+```
+
+Later, `planar update` moves to a newer release and `planar-uninstall` removes
+the install. [INSTALL.md](INSTALL.md) has the prerequisites, the platform
+floors, the update and uninstall details, and the source install for
+contributors.
+
 ## Quick start
 
-Planar builds from source; see [INSTALL.md](INSTALL.md) for prerequisites and
-instructions. With the binaries on your path:
+With the binaries on your path:
 
 ```bash
 planar init --name "my-project"

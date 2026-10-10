@@ -134,16 +134,10 @@ TEST_CASE("planar-agent version names THIS binary and opens no database", "[cmd]
   CHECK_FALSE(got.out.starts_with("planar dev"));
   CHECK(got.out.ends_with("\n"));
 
-  // FIELD COUNT MATCHES the oracle's five, which is what
-  // `planar.cliapp.version`'s module header promises the `cxx` divergence
-  // preserves. Task 6117 closed the gap: this used to require SIX and
-  // carry a comment explaining that `compiler_version_string()` returned
-  // `Clang 22.1.8` — a space — so the line split one token wider than
-  // `planar-agent dev dev zig 0.16.0`. Task 6106 found it on the operator
-  // binary and filed it against layer 1; the fix landed there, and this
-  // case confirms it was not binary-specific in either direction.
+  // The release extends the stable five-position prefix with token 5.
   auto const fields = std::ranges::count(got.out, ' ') + 1;
-  CHECK(fields == 5);
+  CHECK(fields == 6);
+  CHECK(got.out.ends_with(" dev\n"));
 }
 
 TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd][agent][handlers]") {
@@ -353,6 +347,7 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
         "\n"
         "OPTIONS:\n"
         "  -h,     --help              Print this help message and exit\n"
+        "          --json              Emit machine-readable JSON instead of text\n"
         "\n"
         "Exit codes:\n"
         "  0  Success.\n"

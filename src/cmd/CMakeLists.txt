@@ -157,3 +157,76 @@ add_test(NAME compile_fail_check
     "-DNEGATIVES=compile_fail_neg_bool_flag:add_bool_flag;compile_fail_neg_declare_string:add_string;compile_fail_neg_declare_int:add_int;compile_fail_neg_declare_positional:add_positional;compile_fail_neg_declare_positional_optional:add_positional_optional;compile_fail_neg_agent_json:add_json"
     -P "${CMAKE_SOURCE_DIR}/cmake/tests/compile_fail_driver.cmake")
 set_tests_properties(compile_fail_check PROPERTIES LABELS "compile_fail" RUN_SERIAL TRUE)
+
+# Distribution checks never appear in developer configurations. Use target
+# locations so the same check covers the exact five products being bundled.
+if(PLANAR_PORTABLE)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME portable.binaries
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/portable-check.py"
+      --bin-dir "$<TARGET_FILE_DIR:planar_cmd_planar>"
+      --platform "${CMAKE_SYSTEM_NAME}"
+      --toolchain-prefix "${PLANAR_LLVM_PREFIX}")
+  add_test(NAME portable.inspector
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/portable-check.test.py")
+  set_tests_properties(portable.binaries portable.inspector PROPERTIES LABELS "portable")
+endif()
+
+# --- the installer's database probe, with no python3 (plan 1122 M2) ----------
+#
+# `scripts/install-lib/queue_probe.test.py` drives install.sh's database probe
+# (`planar_db_probe`, `planar_db_migrate`) under a PATH holding base utilities
+# only, against the REAL built `planar-agent`, `planar` and `planar-watch` and
+# scratch databases. A plain add_test (not a Catch2 case) because the seeding
+# harness is Python; the installer path it checks uses none. Needs the three
+# targets built; no link edge is created.
+if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar_cmd_planar_watch)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME install.queue_probe
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/install-lib/queue_probe.test.py"
+      "$<TARGET_FILE:planar_cmd_planar_agent>" "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_watch>")
+  set_tests_properties(install.queue_probe PROPERTIES LABELS "install_queue_probe" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+endif()
+
+# --- the order of an install, end to end (plan 1122 M2, rel-install-order) ----
+#
+# `scripts/install-order-test.sh` runs install.sh --prebuilt under /bin/bash and
+# base utilities only, against bundles assembled from the REAL built binaries
+# and scratch homes: fresh, behind, ahead and faulty databases, the queue
+# warning, kill-and-resume at every swap point, concurrent owners, the updater
+# handoff and --cleanup, and uninstall over a pending install.
+if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar_cmd_planar_watch
+   AND TARGET planar_cmd_planar_execute AND TARGET planar_cmd_planar_ext)
+  # One ctest entry per group of scenarios (INSTALL_ORDER_GROUP; the groups are listed in
+  # the script): the whole file took 757 s on a loaded host and the five-minute ceiling
+  # applies to every installer test. Running the script with no group runs all of them.
+  foreach(_order_group db swap recover concurrent handoff)
+    add_test(NAME install.order_${_order_group}
+      COMMAND "${CMAKE_COMMAND}" -E env "INSTALL_ORDER_GROUP=${_order_group}"
+        /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-order-test.sh"
+        "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_agent>"
+        "$<TARGET_FILE:planar_cmd_planar_watch>" "$<TARGET_FILE:planar_cmd_planar_execute>"
+        "$<TARGET_FILE:planar_cmd_planar_ext>")
+    set_tests_properties(install.order_${_order_group} PROPERTIES LABELS "install_order;install_order_${_order_group}" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+  endforeach()
+endif()
+
+# --- the installer's staging and vendor-surface fixtures (plan 1122 M5) --------
+#
+# `scripts/install-stage-test.sh` stages the six vendors' surfaces and, for its
+# health scenarios, runs the built `planar` (PLANAR_BIN); without a binary the
+# script skips those scenarios and says so, so it is registered only where the
+# binary is a target, and always with it. `make test-install-stage` runs the same
+# script against build/debug/bin/planar.
+if(TARGET planar_cmd_planar)
+  # One ctest entry per group of scenarios (INSTALL_STAGE_GROUP; the groups are listed in
+  # the script): the whole file took 843 s on a loaded host and the ceiling for an
+  # installer test is five minutes.
+  foreach(_stage_group staging vendors placement modes uninstall)
+    add_test(NAME install.stage_${_stage_group}
+      COMMAND "${CMAKE_COMMAND}" -E env "PLANAR_BIN=$<TARGET_FILE:planar_cmd_planar>"
+        "INSTALL_STAGE_GROUP=${_stage_group}"
+        /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-stage-test.sh")
+    set_tests_properties(install.stage_${_stage_group} PROPERTIES LABELS "install_stage;install_stage_${_stage_group}" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
+  endforeach()
+endif()

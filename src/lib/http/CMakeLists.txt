@@ -37,6 +37,10 @@ planar_module(http
 
 target_link_libraries(planar_http PRIVATE CURL::libcurl)
 
+if(PLANAR_PORTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(planar_http PRIVATE PLANAR_PORTABLE_LINUX_TLS)
+endif()
+
 if(TARGET planar_http_tests)
   target_link_libraries(planar_http_tests PRIVATE CURL::libcurl)
 endif()

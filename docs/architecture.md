@@ -203,7 +203,7 @@ Planar ships five binaries (decisions 995–1001 add the fifth, `planar-ext`, th
 
 | Binary | Audience | Write surface | DB open mode |
 |---|---|---|---|
-| `planar` | Operator (human + scripts) | Planning entities (plans/tasks/decisions/etc.) + `tasks.status` on operator-driven transitions | Read-write; owns `init` and runs migrations. |
+| `planar` | Operator (human + scripts) | Planning entities (plans/tasks/decisions/etc.) + `tasks.status` on operator-driven transitions. **Plus**, outside the database and through `update` only (plan 1122 M3), the mutation-lock record beside the install root and a download directory under `<root>/.planar-update/` before it execs the bundled installer; `update` opens no database (pinned in `src/cmd/planar/parity.t.cpp`). | Read-write; owns `init` and runs migrations. |
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `workflow_runs`, `context_records`, and the `routing_dispatch_previews` / `routing_dispatch_snapshots` authorization tables (migrations 0030/0031, written by `dispatch preview` / `dispatch confirm` through `src/engine/routing/routing.cpp`); `tasks.status` ONLY as part of an atomic coordinated operation under a status-transition guard. **Plus** `queue_entries` and `queue_history`, through `queue run` and `queue cancel` (plan 1080; in `planar.db` since plan 1089). `queue run` also **executes** the command its caller names, in the caller's directory and environment. | Read-write on `planar.db`; refuses startup with exit 7 if schema is older than the binary's embedded minimum. The `queue` domain opens `planar.db` itself (`queue_store`): it refuses a behind database at 125 and, unlike every other verb, accepts an ahead one whose `queue_schema` marker admits the binary, so a migration by a newer build does not stop `queue run`. |
 | `planar-watch` | Operator (live view) + scripts | None — the binary registers zero write verbs AND opens SQLite via `file:?mode=ro` URI as a second line of defense | Read-only; same schema-version handshake as `planar-agent`. |
 | `planar-ext` | Agent / operator (operational-plane sync) | Exactly three tables — `external_links`, `external_systems`, `sync_events` — enforced by a `sqlite3_set_authorizer` allowlist keyed on the parsed table name, not by convention alone (decision 995) | Read-write on its three tables; **read-only** on planning tables (`plans`, `tasks`, `questions`, `artifacts`). Owns both operational adapters, Jira and GitHub Issues together (decision 997 — one `external_adapter` interface, one binary). `sync pull` no longer writes remote values into planning entities (decision 996): it emits `remote_title`/`remote_status` for an agent to verify and write back through `planar`. Exposes its own `schema` catalog so `cli-usage-check` polices it (decision 998). |
@@ -665,7 +665,7 @@ The operational plane adapters connect Planar to external issue trackers, and ar
 
 The boundary is a pure-virtual C++ interface: `src/lib/adapter/adapter.cppm`'s `external_adapter` class declares four operations — `validate`, `pull`, `push`, `render` — and `sync.cppm`/`propagate.cppm` consume any adapter polymorphically through `const external_adapter&`. (This is a smaller, C++-native surface than the Zig tree's five-method `fetch`/`create`/`update`/`comment`/`search` duck-typed `adapter: anytype`; both adapters implement the smaller interface.) `render` returns the provider's JSON creation payload without sending it.
 
-HTTP transport runs over vendored libcurl (`vendor/curl/`, `src/lib/http/`) with a 30-second client timeout.
+HTTP transport runs over vendored libcurl (`vendor/curl/`, `src/lib/http/`) with a 30-second client timeout and no redirect following (`curl_transport`). A separate download policy, `planar::http::download`, serves the `planar update` asset fetch: it follows redirects by hand, validating the initial URL and every hop with `check_download_url` (HTTPS in production; fixtures only `file://` or `http://` on the exact hosts `127.0.0.1` and `localhost`; no userinfo; an HTTPS chain never steps down to HTTP or `file`), sets no headers so no `Authorization` header is ever sent, and bounds a request by 10 minutes plus a low-speed abort.
 
 Both adapters together are one binary, deliberately — decision 997: splitting Jira and GitHub across two binaries would put one interface across two write surfaces and split `sync_events` writes between them, breaking the disjoint-write-surface property the five-binary doctrine rests on.
 
@@ -814,6 +814,45 @@ Fifteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `rev
 
 Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`, `agents/planar-feedback-triager.md`, and `agents/planar-introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
 
+`install.sh`, the update verb and the uninstaller change an installation only
+while they hold its **mutation lock**, a coordination directory beside the
+canonical install root (`<root>.lock`, so removing or purging the root cannot
+split it). Ownership is a generation-numbered record created with `link(2)`,
+naming the operation, the pid, the process start time and the host's machine
+identity (`/etc/machine-id` with the pid namespace, or the macOS hardware UUID,
+so a renamed host still recovers a dead owner); the highest
+generation owns the lock until it is released or its process is proven dead,
+and two processes reclaiming a dead owner race for the same generation so at
+most one wins. The update verb hands its generation to the installer it execs
+(`PLANAR_MUTATION_HANDOFF`), which adopts it once and only in that process.
+`scripts/install-lib/mutation-lock.sh` specifies the protocol for the shell and
+native implementations. Under the lock, an install keeps a **recovery journal**
+(`<root>/.planar-journal`, replaced atomically; the `mutating` and `complete`
+records are flushed with `sync(1)`) with the phases `prepared`,
+`mutating`, `complete`, `aborted-before-mutation` and `uninstalling`, the
+target release and per-subtree swap progress
+(`scripts/install-lib/journal.sh`): it stages every managed subtree, probes the
+database with the staged binaries, swaps each subtree in by two renames through
+`<name>.old`, then creates or migrates the database with the installed
+`planar init`, and writes `release.json` and the install stamp last. A run
+after an interruption resumes the same target, and a `mutating` journal takes
+precedence over the old release's stamp. [INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install)
+gives the full order and the failure rules.
+
+The uninstaller is `scripts/uninstall.sh`, a standalone bash script installed as
+`$PLANAR_HOME/bin/planar-uninstall` and shipped at the bundle root as
+`uninstall.sh`; `install.sh --uninstall` execs it. It shares the installer's
+library: the prefix guard, the lock, the journal, the data-path list and the
+vendor ownership rules (`scripts/install-lib/ownership.sh`, moved out of
+`install.sh`). Under the lock it records `uninstalling` before its first
+removal, removes the recorded vendor projections it can prove are Planar's
+(reading the version 2 manifest with `sed`), the journal-owned staging and
+backups, the managed subtrees and the install records, keeps and names the data
+paths (or removes them under `--purge`, never a relocated one), keeps and
+reports every unknown entry, and removes the journal last. A root it keeps gets
+`<root>/.planar-uninstalled`, validated evidence naming the root that the
+prefix guard accepts in place of `--force`; the next install removes it.
+
 `install.sh` writes `$PLANAR_HOME/install-manifest.json` (normally
 `~/.planar/install-manifest.json`) before the first vendor target is placed and
 again after every target, through a same-directory temp file and an atomic
@@ -880,6 +919,72 @@ stale or missing row now surfaces the same fixed full-reinstall recovery
 command: `repair_command` is always the `./install.sh --prefix
 <resolved-prefix>` bootstrap, never a scoped per-row repair. The classifier
 itself never opens SQLite and has no write path of its own.
+
+### Release bundles
+
+A release is one tarball per platform, `planar-<os>-<arch>.tar.gz` with
+`<os>-<arch>` in `{macos-arm64, linux-x86_64}`, built by `make dist` and
+`make linux-dist` (`scripts/dist.sh`). The name carries no version; the version
+is inside, in `release.json`. The bundle is a relocatable image of the managed
+part of `~/.planar`, so a prebuilt install is a copy:
+
+```
+planar-<os>-<arch>/
+├── release.json          # version, sha, date, os, arch, os_floor, schema_version
+├── install.sh            # the repository installer, byte for byte
+├── uninstall.sh          # the uninstaller, byte for byte
+├── get-planar.sh         # the bootstrap, byte for byte
+├── install-cleanup.txt
+├── bin/                  # the five binaries
+├── skills/planar/
+├── agents/
+├── codex-agents/         # rendered at dist time
+├── templates/
+├── workflows/
+├── migrations/
+└── scripts/install-lib/  # the only part of scripts/ that ships
+```
+
+`release.json` is one `"key": value` pair per line (string values quoted, and
+`schema_version` an unquoted integer) so the POSIX bootstrap reads it with
+`sed`. `schema_version` is the bundle's highest migration number,
+read from a scratch database at dist time. A release publishes five assets: both
+tarballs, a merged `SHA256SUMS`, `VERSION` and the standalone `get-planar.sh`.
+The cut and its gates are in [operations.md § 6](operations.md#6-release-gate-evidence).
+
+**Install order.** The bootstrap (`get-planar.sh`) and `planar update` both end
+in `install.sh --prebuilt <bundle>`, the same installer a source install runs.
+It takes the mutation lock, validates the recovery journal, stages every managed
+subtree, probes the database with the staged binaries (an ahead database
+refuses), swaps each subtree in by two renames through `<name>.old`, creates or
+migrates the database with the installed `planar init`, places the vendor
+surfaces, and writes `release.json` and then the install stamp last. The full
+order and the failure rules are in
+[INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install).
+
+**Managed subtrees and data paths.** The installer owns `bin/`, `skills/`,
+`agents/`, `codex-agents/`, `workflows/`, `scripts/` and `migrations/` outright
+and replaces each whole. It never removes a data path, and the uninstaller keeps
+them without `--purge`: `planar.db` with `planar.db-wal` and `planar.db-shm`,
+`queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`, `workspaces/`,
+`models/`, `execute/` and `templates/`. They live under `~/.planar` unless
+`PLANAR_DB`, `PLANAR_CONFIG_PATH`, `PLANAR_WORKBENCH_ROOT`, `PLANAR_LOCAL_HOME`
+or `PLANAR_TEMPLATES_DIR` relocates one; `--purge` names a relocated path and
+leaves it. The list exists once, in `scripts/install-lib/data-paths.sh`, and a
+test compares it with INSTALL.md. Two writes to a data path are allowed:
+migrating a `planar.db` that is behind, and placing shipped `templates/` files
+where missing.
+
+**`PLANAR_PORTABLE`.** A shipped binary links the C++ runtime statically and
+carries no rpath into a toolchain prefix, so it starts on a supported host with
+no compiler installed. The CMake option `PLANAR_PORTABLE` (default `OFF`)
+selects that link: `-nostdlib++` with the toolchain's `libc++.a`, `libc++abi.a`
+and, on Linux, `libunwind.a`. The `dist` preset turns it on (with version
+metadata and a macOS 26.0 deployment target); the `debug` and `release` presets
+leave it off. Under it, `portable.binaries` fails a binary that depends on the
+toolchain prefix, carries an rpath, or misses the floor: macOS 26.0, or glibc
+2.36 on Linux. Details are in
+[toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
 
 ### Authored-surface validation
 
@@ -975,8 +1080,6 @@ The CMake project root IS the repo root: `CMakeLists.txt` and `CMakePresets.json
 # Makefile wrappers
 make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copies
                         # the five Planar binaries into ./bin/
-make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
-                        # cmake --install into PREFIX/bin (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-cpp-report    # the same ctest suite plus its SKIP TALLY (expected: 0)
 make test-all           # unit (ctest) + ctest-registry-check + coverage +
@@ -999,9 +1102,10 @@ Planar runs a two-tier test model:
 - **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator (`cli_usage_lint`) followed by the semantic authored-surface validator (`surface_lint`), both C++ tools under `src/tools/` (decision 1000, ported from the Zig tree at task 6402 — no `zig build-exe` remains in this gate). `cli_usage_lint` dumps all **five** binaries' `schema` catalogs, `planar`/`planar-agent`/`planar-watch`/`planar-ext`/`planar-execute` (decision 998 adds `planar-ext`'s). `cli_usage_lint` also reads each catalog's `docs.examples` and validates every entry like an authored invocation (an unknown flag is a finding naming the command path and the flag; an example that invokes another command is a finding too), and its summary line counts the examples checked. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 - **C++ format/tidy/doc-comment lint** — `make cpp-lint` (pinned `clang-format`/`clang-tidy`/Doxygen; see [docs/toolchain-parity.md](toolchain-parity.md)). The full target is not composed into `make test-all`: it requires the build already configured and built (clang-tidy needs the module BMIs materialized) and clang-tidy is advisory only, with 105 residual findings (task 6439). Its gating half — `clang-format --Werror` plus the Doxygen pass — runs in `make test-all` as `make cpp-lint-gate`. `make fmt-check` runs the cheap format half with no build precondition.
 
-The binaries produced by `make build` land under `./bin/`. `make install`
-installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
-`~/.local/bin`). `install.sh` / `make install-full` additionally
+The binaries produced by `make build` land under `./bin/`; `make dist` builds the
+portable release bundle ([Release bundles](#release-bundles)). The Makefile has no
+install target; `cmake --install` places the C++ executables under a prefix you
+choose, and `install.sh` additionally
 stages the skill, agents, workflows, and migrations under `~/.planar` and places
 the skill and agents into each present vendor's directories after the CMake build.
 
