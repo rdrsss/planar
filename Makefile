@@ -609,21 +609,3 @@ eval-planning: ## Live planning-surface eval: make eval-planning CASE=<case> [AR
 .PHONY: eval-planning-unit
 eval-planning-unit: ## Planning harness unit tests
 	python3 evals/planning/test_harness.py
-
-# Verifies every candidate in agents/models.md §Candidate Presets actually
-# spawns on its host. DELIBERATELY NOT part of `make eval`: it costs one live
-# invocation per candidate. Detection only — repair is an operator edit.
-.PHONY: eval-candidate-spawn
-eval-candidate-spawn: ## Verify every Tier Table candidate spawns (opt-in, live)
-	python3 evals/candidate-spawn/verify.py $(ARGS)
-
-# Offline rollout report for the adaptive routing plane (plan 949). Invokes NO
-# model — reads Planar's own read verbs and reports class separation, cohort
-# isolation, exclusions with reasons, rollback availability.
-.PHONY: rollout-report
-rollout-report: ## Offline adaptive-routing rollout report
-	python3 evals/rollout/report.py $(ARGS)
-
-.PHONY: rollout-report-unit
-rollout-report-unit: ## Rollout report unit tests
-	python3 evals/rollout/test_report.py

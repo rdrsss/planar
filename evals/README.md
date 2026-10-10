@@ -28,7 +28,7 @@ and when: `make test-all` composes `eval-contracts` (= `eval-orchestrator-unit`
 + `eval-orchestrator-fast` + `eval-orchestrator-fixtures`), and `make eval` runs
 `eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures`.
 Live and lifecycle host modes (`eval-orchestrator-live`,
-`eval-orchestrator-lifecycle`, `eval-planning`, `eval-candidate-spawn`) are
+`eval-orchestrator-lifecycle`, `eval-planning`) are
 operator-invoked only; no result of one is retained in this repository today.
 See the results ledger, [`evals/RESULTS.md`](RESULTS.md), for retained
 live/lifecycle results. It is append-only and written by `--grade-artifacts`
