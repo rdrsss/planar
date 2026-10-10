@@ -505,3 +505,42 @@ TEST_CASE("a cluster is global whatever scope_slug holds: the capture log writes
   REQUIRE(d.findings.size() == 1);
   CHECK(d.findings[0].group->scope == "global");
 }
+
+TEST_CASE("the caller's catalog predicate drops the rows it rejects before they are counted",
+          "[engine][diagnose][cli][cluster]") {
+  // `acme` has a catalog shape, so only the caller's predicate can tell it is not a verb.
+  fixture fx;
+  add_usage_cluster(fx, 1, "acme");
+  add_usage_cluster(fx, 4, "task add");
+  auto request = dg::run_request{.checks               = k_cluster,
+                                 .evaluated_at         = std::string{k_now},
+                                 .cli_log_enabled      = true,
+                                 .verb_path_recognized = [](std::string_view v) { return v != "acme"; }};
+  auto strict  = dg::run(fx.conn, request);
+  REQUIRE(strict.has_value());
+  REQUIRE(strict->findings.size() == 1);
+  CHECK(im::finding_fingerprint(strict->findings[0]) == "cli-failure-cluster|task add|usage|global");
+
+  // With no predicate (the `planar-watch` case) the shape rule alone applies and the word-shaped row counts.
+  request.verb_path_recognized = {};
+  auto lax                     = dg::run(fx.conn, request);
+  REQUIRE(lax.has_value());
+  CHECK(lax->findings.size() == 2);
+
+  // Rows the predicate rejects do not count toward the threshold: two rejected plus one accepted is no cluster.
+  fixture mixed;
+  mixed.invocation(1, "acme", "<pos:1>", "2026-06-01T09:00:00.000Z", 2);
+  mixed.invocation(2, "acme", "<pos:1>", "2026-06-01T09:01:00.000Z", 2);
+  mixed.invocation(3, "acme", "<pos:1>", "2026-06-01T09:02:00.000Z", 2);
+  request.verb_path_recognized = [](std::string_view v) { return v != "acme"; };
+  auto none                    = dg::run(mixed.conn, request);
+  REQUIRE(none.has_value());
+  CHECK(none->findings.empty());
+}
+
+TEST_CASE("a cluster finding's text line names its fingerprint and member count", "[engine][diagnose][cli][cluster]") {
+  fixture fx;
+  add_usage_cluster(fx);
+  auto text = dg::render_text(fx.run(k_cluster));
+  CHECK(text.contains("warning cli-failure-cluster cli_invocation:1 (cli-failure-cluster|task add|usage|global, 3 members) -> "));
+}

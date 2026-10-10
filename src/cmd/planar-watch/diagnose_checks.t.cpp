@@ -33,6 +33,11 @@
 //     There is no workbench spec, so the ingest exits 2, which the log records all the same. With
 //     the log off the check's input is `disabled`, the check does not run and the outcome stays `ok`;
 //     a config file that cannot be parsed reads `unavailable` and the outcome `partial`.
+//   * Failure clusters (task 7380): three `planar task add` calls with no title fail with a usage
+//     error, the capture log records them, and `cli-failure-cluster` names `task add` and `usage`
+//     with its three invocations; two failures, or three split across verbs, make none. Claims ended
+//     with `planar-agent fail --category tool_failure` form one `claim-failure-cluster`; the default
+//     category (`unknown`) forms none.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -687,5 +692,84 @@ TEST_CASE("a dispatch previewed and confirmed without a claim token, then claime
                             world::now_text(-30).substr(0, 19)));
     // The first confirm came before the action, so the dispatch was not confirmed late.
     CHECK(w.findings(k_dispatch_checks).empty());
+  }
+}
+
+TEST_CASE("three failing task adds form one cli-failure-cluster naming the verb and category",
+          "[cmd][watch][diagnose][workflow][cluster]") {
+  {
+    world w;
+    w.enable_cli_log();
+    for (int i = 0; i < 3; ++i) {
+      CHECK(w.planar_status({"task", "add"}) != 0);
+    }
+    CHECK(w.scalar("select count(*) from cli_invocations where verb_path = 'task add' and error_category = 'usage'") == 3);
+    auto parsed = w.diagnose_any({"cli-failure-cluster"});
+    CHECK(parsed.find("outcome")->string == "ok");
+    const auto& found = parsed.find("findings")->array;
+    REQUIRE(found.size() == 1);
+    CHECK(found[0].find("check")->string == "cli-failure-cluster");
+    CHECK(found[0].find("severity")->string == "warning");
+    CHECK(found[0].find("fingerprint")->string == "cli-failure-cluster|task add|usage|global");
+    CHECK(found[0].find("evidence")->array.size() == 3);
+  }
+  {
+    // Two failures are below the threshold.
+    world w;
+    w.enable_cli_log();
+    for (int i = 0; i < 2; ++i) {
+      CHECK(w.planar_status({"task", "add"}) != 0);
+    }
+    CHECK(w.diagnose_any({"cli-failure-cluster"}).find("findings")->array.empty());
+  }
+  {
+    // Failures of two verbs do not add up.
+    world w;
+    w.enable_cli_log();
+    CHECK(w.planar_status({"task", "add"}) != 0);
+    CHECK(w.planar_status({"task", "add"}) != 0);
+    CHECK(w.planar_status({"task", "show", "99999"}) != 0);
+    CHECK(w.diagnose_any({"cli-failure-cluster"}).find("findings")->array.empty());
+  }
+}
+
+TEST_CASE("with the capture log off the cluster check is disabled and reports nothing",
+          "[cmd][watch][diagnose][workflow][cluster]") {
+  world w;
+  for (int i = 0; i < 3; ++i) {
+    CHECK(w.planar_status({"task", "add"}) != 0);
+  }
+  auto parsed = w.diagnose_any({"cli-failure-cluster"});
+  CHECK(parsed.find("outcome")->string == "ok");
+  CHECK(parsed.find("findings")->array.empty());
+}
+
+TEST_CASE("claims ended with planar-agent fail --category form a claim-failure-cluster, unknown ones do not",
+          "[cmd][watch][diagnose][workflow][cluster]") {
+  {
+    world w;
+    w.planar({"task", "add", "Third task", "--plan", "1"});
+    for (int task = 1; task <= 3; ++task) {
+      auto token = w.claim(task);
+      w.planar_agent({"fail", "--claim", token, "--reason", "tool crashed", "--category", "tool_failure", "--no-locality-probe"});
+    }
+    auto parsed = w.diagnose_any({"claim-failure-cluster"});
+    CHECK(parsed.find("outcome")->string == "ok");
+    const auto& found = parsed.find("findings")->array;
+    REQUIRE(found.size() == 1);
+    CHECK(found[0].find("check")->string == "claim-failure-cluster");
+    CHECK(found[0].find("severity")->string == "warning");
+    CHECK(found[0].find("fingerprint")->string.starts_with("claim-failure-cluster|failure_category=tool_failure|"));
+    CHECK(found[0].find("evidence")->array.size() == 3);
+  }
+  {
+    // `fail` without a category leaves the claim `unknown`, which is no classification.
+    world w;
+    w.planar({"task", "add", "Third task", "--plan", "1"});
+    for (int task = 1; task <= 3; ++task) {
+      auto token = w.claim(task);
+      w.planar_agent({"fail", "--claim", token, "--reason", "tool crashed", "--no-locality-probe"});
+    }
+    CHECK(w.diagnose_any({"claim-failure-cluster"}).find("findings")->array.empty());
   }
 }

@@ -112,6 +112,8 @@ export struct check_context {
   const time_window&  window;          ///< The window; a check filters its evidence by it.
   std::string_view    evaluated_at;    ///< The injected evaluation instant; never read from the clock.
   std::optional<bool> cli_log_enabled; ///< `[introspection].cli_log` as the caller read it; empty when the caller does not know.
+  std::function<bool(std::string_view)> verb_path_recognized; ///< The caller's catalog predicate for a stored `verb_path`; empty
+                                                              ///< when the caller has none (see `cli-failure-cluster`).
 };
 
 /// @brief One input's observed state, as an input probe reports it.
@@ -162,7 +164,8 @@ export struct catalog {
 /// far: the claim-liveness checks (`claim-lease-lapsed`, `claim-process-died`,
 /// `claim-superseded-active`, `task-doing-unclaimed`, `claim-closed-by-reconcile`,
 /// `heartbeat-gap`), the dispatch family (`dispatch-no-role-action`, `dispatch-unconfirmed`, `dispatch-confirmed-late`,
-/// `action-unended`), `apply-without-preview` (the CLI family) and `handoff-stale`. `queue-ended-unobserved` is declared as an
+/// `action-unended`), `apply-without-preview`, `cli-failure-cluster` and `claim-failure-cluster` (the CLI and failure-cluster
+/// family) and `handoff-stale`. `queue-ended-unobserved` is declared as an
 /// unbuilt check; the later check tasks fill in the remaining families.
 /// @return The catalog.
 export auto builtin_catalog() -> catalog;
@@ -219,6 +222,10 @@ export struct run_request {
   std::string                 evaluated_at;    ///< The injected instant, `YYYY-MM-DDTHH:MM:SS[.fff]Z`.
   std::optional<bool>         cli_log_enabled; ///< `[introspection].cli_log`, read by the caller (this module reads no config);
                                                ///< empty when unknown, which reads as an `unavailable` capture-log input.
+  std::function<bool(std::string_view)>
+      verb_path_recognized; ///< Whether a stored `verb_path` is one the live CLI could have
+                            ///< produced; empty when the caller has no catalog. `cli-failure-cluster`
+                            ///< drops rows it rejects, on top of its own shape rule.
 };
 
 /// @brief What happened to one catalog check in a run.

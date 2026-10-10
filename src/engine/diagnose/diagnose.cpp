@@ -237,11 +237,12 @@ auto evaluate(db::connection& conn, const run_request& request, const catalog& c
     d.window.days   = request.days.value_or(k_default_days);
   }
 
-  check_context ctx{.conn            = conn,
-                    .scope           = d.scope,
-                    .window          = d.window,
-                    .evaluated_at    = d.evaluated_at,
-                    .cli_log_enabled = request.cli_log_enabled};
+  check_context ctx{.conn                 = conn,
+                    .scope                = d.scope,
+                    .window               = d.window,
+                    .evaluated_at         = d.evaluated_at,
+                    .cli_log_enabled      = request.cli_log_enabled,
+                    .verb_path_recognized = request.verb_path_recognized};
 
   // Which inputs does a selected, built check need?
   for (const auto& input : cat.inputs) {
@@ -526,8 +527,11 @@ auto render_text(const diagnosis& d) -> std::string {
     }
   }
   for (const auto& f : d.findings) {
-    out += std::format("{} {} {} -> {}\n", im::diagnostic_severity_name(f.severity), f.check_id, im::entity_ref_text(f.primary),
-                       f.recovery.empty() ? std::string_view{"none"} : std::string_view{f.recovery});
+    // A cluster names its grouping key and size: its primary entity alone says neither.
+    auto cluster =
+        !f.members.empty() ? std::format(" ({}, {} members)", im::finding_fingerprint(f), f.members.size()) : std::string{};
+    out += std::format("{} {} {}{} -> {}\n", im::diagnostic_severity_name(f.severity), f.check_id, im::entity_ref_text(f.primary),
+                       cluster, f.recovery.empty() ? std::string_view{"none"} : std::string_view{f.recovery});
   }
   return out;
 }

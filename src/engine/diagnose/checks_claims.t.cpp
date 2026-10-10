@@ -794,7 +794,7 @@ TEST_CASE("three claims ended with one failure category form one cluster", "[eng
   fixture fx;
   for (int i = 1; i <= 3; ++i) {
     fx.task(i, "todo");
-    fx.failed_claim(i, i, "tool_failure", std::format("2026-06-01T0{}:00:00.000Z", 8 + i));
+    fx.failed_claim(i, i, "tool_failure", std::format("2026-06-01T{:02}:00:00.000Z", 8 + i));
   }
   auto d = fx.run(k_cluster);
   CHECK(d.result == dg::run_outcome::ok);
