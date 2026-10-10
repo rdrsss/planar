@@ -6,7 +6,7 @@
 # wiring is needed here beyond the file existing.
 
 planar_module(core
-  INTERFACE version.cppm check.cppm
+  INTERFACE version.cppm check.cppm thresholds.cppm
   SOURCES check.cpp)
 
 # --- vendor probe (task 6023, scope item 4) --------------------------------

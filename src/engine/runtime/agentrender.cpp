@@ -281,23 +281,27 @@ auto heartbeat_text(const aa::claim& value) -> std::string {
 // terminal verbs
 // =========================================================================
 
-auto terminal_json(const agentatomic::terminal_result& result, const aa::task_row& task) -> std::string {
+auto terminal_json(const agentatomic::terminal_result& result, const aa::task_row& task, std::string_view trailing_fields)
+    -> std::string {
   std::string out = "{\"ok\":true,\"claim_token\":";
   append_json_string(out, result.released.claim_token);
   out.append(",\"claim\":");
   append_claim(out, result.released);
   out.append(",\"task\":");
   append_task(out, task);
+  out.append(trailing_fields);
   out.append("}\n");
   return out;
 }
 
-auto terminal_json(const agentatomic::terminal_result& result) -> std::string {
+auto terminal_json(const agentatomic::terminal_result& result, std::string_view trailing_fields) -> std::string {
   std::string out = "{\"ok\":true,\"claim_token\":";
   append_json_string(out, result.released.claim_token);
   out.append(",\"claim\":");
   append_claim(out, result.released);
-  out.append(",\"task\":null}\n");
+  out.append(",\"task\":null");
+  out.append(trailing_fields);
+  out.append("}\n");
   return out;
 }
 

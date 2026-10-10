@@ -13,7 +13,7 @@ namespace planar::cmd::agent {
 
 namespace aa = engine::runtime::agentactivity;
 
-auto task_policy() -> engine::runtime::agentatomic::task_policy {
+auto task_policy(plan_roll_up* observed) -> engine::runtime::agentatomic::task_policy {
   return engine::runtime::agentatomic::task_policy{
       .check_transition = [](std::string_view from, std::string_view to) -> std::expected<void, aa::agent_error> {
         // `force` is FALSE, always. The agent plane has no `--force` on
@@ -33,9 +33,12 @@ auto task_policy() -> engine::runtime::agentatomic::task_policy {
         }
         return std::unexpected(aa::agent_error::illegal_transition);
       },
-      .recompute_plan = [](db::connection& conn, std::int64_t plan_id) -> std::expected<void, aa::agent_error> {
+      .recompute_plan = [observed](db::connection& conn, std::int64_t plan_id) -> std::expected<void, aa::agent_error> {
         auto const recomputed = engine::planning::recompute_status(conn, plan_id);
         if (recomputed) {
+          if (observed != nullptr) {
+            observed->result = *recomputed;
+          }
           return {};
         }
         // Every plan_error other than the two transition tags is an
@@ -63,6 +66,11 @@ auto task_policy() -> engine::runtime::agentatomic::task_policy {
         return std::unexpected(aa::agent_error::query_failed);
       },
   };
+}
+
+auto milestone_promoted(const plan_roll_up& observed, const engine::runtime::agentatomic::terminal_result& result) -> bool {
+  return !result.replayed && observed.result.has_value() && observed.result->flipped &&
+         observed.result->status_after == engine::planning::plan_status::done;
 }
 
 } // namespace planar::cmd::agent

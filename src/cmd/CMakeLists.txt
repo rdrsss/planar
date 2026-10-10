@@ -67,7 +67,8 @@ endif()
 # `planar-watch/readpin.t.cpp` replaces the case decision 1034 deleted at the
 # M10 cutover. It seeds a fixture with the OPERATOR and AGENT binaries and
 # then pins what the six read verbs print over it, so it needs those two
-# sibling paths for the same reason `planar/cross_process.t.cpp` needs its
+# sibling paths (and `diagnose_checks.t.cpp` drives `planar-ext` against a local fake
+# adapter to make and settle a sync conflict, so it needs the EXT binary's too) for the same reason `planar/cross_process.t.cpp` needs its
 # four — and it lives here, after every `add_subdirectory` above, because at
 # `planar-watch/CMakeLists.txt` time the sibling targets do not exist yet and
 # `add_dependencies` would FATAL.
@@ -80,10 +81,12 @@ endif()
 if(TARGET planar_cmd_planar_watch_tests)
   target_compile_definitions(planar_cmd_planar_watch_tests PRIVATE
     "PLANAR_OPERATOR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar>\""
-    "PLANAR_AGENT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\"")
+    "PLANAR_AGENT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
+    "PLANAR_EXT_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_ext>\"")
   add_dependencies(planar_cmd_planar_watch_tests
     planar_cmd_planar
-    planar_cmd_planar_agent)
+    planar_cmd_planar_agent
+    planar_cmd_planar_ext)
 endif()
 
 # --- planar-execute's golden flow.result fixtures (plan 1033 M0, task 6484) --

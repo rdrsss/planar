@@ -793,6 +793,7 @@ planar_binary(planar
     installed_surface
     engine_closure
     engine_config
+    engine_diagnose
     engine_entitylink
     engine_external
     engine_extsync

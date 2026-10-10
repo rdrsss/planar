@@ -255,8 +255,11 @@ export auto evaluate(db::connection& conn, std::int64_t plan_id, bool apply, boo
 
 /// @brief Render `plan closeout --json`.
 /// @param result The evaluation.
+/// @param trailing_fields A pre-rendered fragment of further members, each led by its comma (for
+/// example `,"diagnose":{...}`), inserted before the closing brace; empty leaves the output
+/// byte-identical.
 /// @return A COMPLETE stdout payload including its trailing newline.
-export auto render_json(const closeout_result& result) -> std::string;
+export auto render_json(const closeout_result& result, std::string_view trailing_fields = {}) -> std::string;
 
 /// @brief Render `plan closeout` in text mode.
 /// @param result The evaluation.

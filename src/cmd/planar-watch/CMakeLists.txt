@@ -113,6 +113,7 @@ planar_binary(planar_watch
     handlers/run/command.cppm
     handlers/sync_events/command.cppm
     handlers/queue/command.cppm
+    handlers/diagnose/command.cppm
     handlers/version/command.cppm
     handlers/completion/command.cppm
     handlers/schema/command.cppm
@@ -134,6 +135,7 @@ planar_binary(planar_watch
     handlers/queue/history.cppm
     handlers/agents/model.cppm
     handlers/agents/tui.cppm
+    handlers/diagnose/diagnose.cppm
     dispatch.cppm
   SOURCES
     context.cpp
@@ -153,6 +155,7 @@ planar_binary(planar_watch
     handlers/queue/history.cpp
     handlers/agents/model.cpp
     handlers/agents/tui.cpp
+    handlers/diagnose/diagnose.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal
@@ -163,6 +166,7 @@ planar_binary(planar_watch
     engine_planning
     engine_runtime
     engine_hostqueue
+    engine_diagnose
     engine_config
     json_dom
     process)

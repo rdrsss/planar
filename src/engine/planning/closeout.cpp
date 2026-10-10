@@ -694,7 +694,7 @@ auto evaluate(db::connection& conn, std::int64_t plan_id, bool apply, bool check
   };
 }
 
-auto render_json(const closeout_result& result) -> std::string {
+auto render_json(const closeout_result& result, std::string_view trailing_fields) -> std::string {
   auto const& tasks       = result.hard.tasks;
   auto const& descendants = result.hard.descendants;
   auto const& claims      = result.hard.claims;
@@ -770,7 +770,9 @@ auto render_json(const closeout_result& result) -> std::string {
     first = false;
     append_json_string(out, warning);
   }
-  out += "]}\n";
+  out += "]";
+  out += trailing_fields;
+  out += "}\n";
   return out;
 }
 

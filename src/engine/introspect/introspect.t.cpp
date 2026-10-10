@@ -797,7 +797,7 @@ TEST_CASE("build+render: a populated preview renders every coverage/signal/warni
   CHECK(text.find("[introspection preview]\n"
                   "  claude: state=observed scanned=10 normalized=3 ignored=6 malformed=1 capped=0 bytes_read=0 files_partial=0 "
                   "files_skipped_cap=0 "
-                  "files_skipped_window=0\n"
+                  "files_skipped_window=0 bytes_scanned=0 bytes_retained=0 lines_oversize=0 results_unpaired=0\n"
                   "  signal claude/planar task show/failure: count=3 first=2026-07-12T12:00:00Z last=2026-07-12T12:05:00Z\n"
                   "  warning claude/malformed: count=1\n") != std::string::npos);
 
@@ -807,6 +807,7 @@ TEST_CASE("build+render: a populated preview renders every coverage/signal/warni
           R"("introspection_preview":{"signals":[{"vendor":"claude","verb_path":"planar task show",)"
           R"("category":"failure","count":3,"first_seen":"2026-07-12T12:00:00Z",)"
           R"("last_seen":"2026-07-12T12:05:00Z"}],"coverage":[{"vendor":"claude","state":"observed",)"
-          R"("scanned":10,"malformed":1,"normalized":3,"capped":0,"ignored":6,"bytes_read":0,"files_partial":0,"files_skipped_cap":0,"files_skipped_window":0}],)"
+          R"("scanned":10,"malformed":1,"normalized":3,"capped":0,"ignored":6,"bytes_read":0,"files_partial":0,"files_skipped_cap":0,"files_skipped_window":0,)"
+          R"("bytes_scanned":0,"bytes_retained":0,"lines_oversize":0,"results_unpaired":0}],)"
           R"("warnings":[{"vendor":"claude","kind":"malformed","count":1}]}})") != std::string::npos);
 }

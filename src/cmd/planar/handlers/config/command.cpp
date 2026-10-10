@@ -397,6 +397,16 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   if (!resolved.has_value()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving configuration: ParseFailed"));
   }
+  // `resolve` falls back to the default for a wrong-typed value; a range-checked key is refused here, by name.
+  if (content_view.has_value()) {
+    if (auto const file_map = cfg::parse_toml(*content_view); file_map.has_value()) {
+      if (auto const findings = cfg::validate_introspection(*file_map); !findings.empty()) {
+        return std::unexpected(
+            error_from_body(domain_error_kind::invalid_input,
+                            std::format("invalid configuration: {}: {}", findings.front().key, findings.front().message)));
+      }
+    }
+  }
 
   bool const as_json = cliapp::flag_bool(args, "--json");
   // `--json` implies provenance; `--format` is declared and never read (see
@@ -680,6 +690,11 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
   // embedded defaults is not something the operator wrote. Every refused
   // value is its own finding, named by its dotted key.
   for (auto const& finding : cfg::validate_queue(*parsed)) {
+    report(std::format("{}: {}", finding.key, finding.message));
+  }
+
+  // ---- step 6: the `[introspection]` keys that carry a range ------------
+  for (auto const& finding : cfg::validate_introspection(*parsed)) {
     report(std::format("{}: {}", finding.key, finding.message));
   }
 
