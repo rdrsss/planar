@@ -252,7 +252,7 @@ TEST_CASE("a conflict with no later event is reported with its link and event", 
   CHECK(im::entity_ref_text(f.primary) == "sync_event:2");
   CHECK(std::ranges::contains(f.evidence, im::entity_ref{.kind = "external_link", .id = 1}));
   CHECK(f.evidence_times == std::vector<std::string>{"2026-06-01T09:00:00.000Z"});
-  CHECK(im::finding_fingerprint(f) == "sync-conflict-unresolved|external_link:1,sync_event:2");
+  CHECK(im::finding_fingerprint(f) == "sync-conflict-unresolved|external_link:1|global");
   CHECK(f.recovery.contains("planar-ext sync resolve"));
 }
 
@@ -313,19 +313,52 @@ TEST_CASE("an unresolved conflict is reported whatever its age: the check ignore
   CHECK(im::finding_digest(narrow.findings[0]) == im::finding_digest(later.findings[0]));
 }
 
-TEST_CASE("a workbench conflict has no link and is reported until it is settled in place", "[engine][diagnose][sync]") {
+TEST_CASE("workbench conflicts and link-less events are not reported: resolve cannot settle them", "[engine][diagnose][sync]") {
+  // A workbench sync writes a new conflict row on every run and `sync resolve` refuses a link-less event, so such a
+  // row would be a permanent finding. A deleted link nulls `link_id` the same way.
   fixture fx;
+  fx.links();
   fx.event(1, 0, "conflict", "2026-06-01T09:00:00.000Z");
-  fx.event(2, 0, "resolved-fs", "2026-06-01T09:10:00.000Z");
-  fx.event(3, 0, "conflict", "2026-06-01T09:20:00.000Z");
-  // A conflict event without a link has no later event "for the same link", so every conflict row stays reported.
-  auto d = fx.run_sync();
-  REQUIRE(d.findings.size() == 2);
-  CHECK(primaries_of(d) == std::vector<std::string>{"sync_event:1", "sync_event:3"});
-  CHECK(d.findings[0].evidence == std::vector<im::entity_ref>{im::entity_ref{.kind = "sync_event", .id = 1}});
-  // Settled in place (the workbench resolver updates the row's outcome), it is no conflict.
-  exec(fx.conn, "update sync_events set outcome = 'resolved-db' where id = 1");
+  fx.event(2, 0, "conflict", "2026-06-01T09:20:00.000Z");
+  fx.event(3, 1, "conflict", "2026-06-01T09:30:00.000Z");
+  exec(fx.conn, "update sync_events set scope = 'workbench' where id = 3");
+  exec(fx.conn, "insert into sync_events (id, link_id, scope, direction, outcome, at) values (4, null, 'external', 'pull', "
+                "'conflict', '2026-06-01T09:40:00.000Z')");
+  CHECK(fx.run_sync().findings.empty());
+  // The same linked event in the external scope is reported.
+  exec(fx.conn, "update sync_events set scope = 'external' where id = 3");
   CHECK(primaries_of(fx.run_sync()) == std::vector<std::string>{"sync_event:3"});
+}
+
+TEST_CASE("a second conflict on a link keeps the link's fingerprint and is a new occurrence", "[engine][diagnose][sync]") {
+  // Each `sync pull` on a still-conflicting link writes a new conflict event: the incident is the link's, the event is evidence.
+  fixture fx;
+  fx.links();
+  fx.event(1, 1, "conflict", "2026-06-01T09:00:00.000Z");
+  auto first = fx.run_sync();
+  fx.event(2, 1, "conflict", "2026-06-01T10:00:00.000Z");
+  auto second = fx.run_sync();
+  REQUIRE(first.findings.size() == 1);
+  REQUIRE(second.findings.size() == 1);
+  CHECK(im::finding_fingerprint(first.findings[0]) == "sync-conflict-unresolved|external_link:1|global");
+  CHECK(im::finding_fingerprint(first.findings[0]) == im::finding_fingerprint(second.findings[0]));
+  // The primary entity stays the event (the resolve target) and the newest event's time is the evidence, so the digest moves.
+  CHECK(im::entity_ref_text(second.findings[0].primary) == "sync_event:2");
+  CHECK(second.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T10:00:00.000Z"});
+  CHECK(im::finding_digest(first.findings[0]) != im::finding_digest(second.findings[0]));
+  // Two links are two fingerprints.
+  fx.event(3, 2, "conflict", "2026-06-01T10:30:00.000Z");
+  CHECK(fx.run_sync().findings.size() == 2);
+}
+
+TEST_CASE("the recovery hint says to pull again first when the conflict was followed by an error", "[engine][diagnose][sync]") {
+  fixture fx;
+  fx.links();
+  fx.event(1, 1, "conflict", "2026-06-01T09:00:00.000Z");
+  fx.event(2, 1, "error", "2026-06-01T09:30:00.000Z");
+  auto d = fx.run_sync();
+  REQUIRE(d.findings.size() == 1);
+  CHECK(d.findings[0].recovery.contains("planar-ext sync pull"));
 }
 
 TEST_CASE("the plan scope reaches a link through its task or plan", "[engine][diagnose][sync]") {
@@ -335,8 +368,7 @@ TEST_CASE("the plan scope reaches a link through its task or plan", "[engine][di
   fx.event(2, 2, "conflict", "2026-06-01T09:00:00.000Z"); // task 2, plan 2
   fx.event(3, 3, "conflict", "2026-06-01T09:00:00.000Z"); // plan 1 itself
   fx.event(4, 4, "conflict", "2026-06-01T09:00:00.000Z"); // an artifact: no plan
-  fx.event(5, 0, "conflict", "2026-06-01T09:00:00.000Z"); // workbench: no link, no plan
-  CHECK(fx.run_sync().findings.size() == 5);
+  CHECK(fx.run_sync().findings.size() == 4);
   CHECK(primaries_of(fx.run_sync(k_now, 1)) == std::vector<std::string>{"sync_event:1", "sync_event:3"});
   CHECK(primaries_of(fx.run_sync(k_now, 2)) == std::vector<std::string>{"sync_event:2"});
 }
