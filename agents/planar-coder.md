@@ -223,12 +223,10 @@ does not apply to this cycle.
 
 ## Engine-supervised claims
 
-**Not live in this build.** The Centurion engine needs a Centurion-enabled
-build (`dev/centurion-integration`); this build refuses `planar-execute`'s
-engine verbs, so every claim here is caller-supervised. On a Centurion-enabled
-build a brief may say the claim is engine-supervised: the orchestrator created
-it and the engine's claim-supervision workflow handed it to the engine with
-`planar-agent claim-associate --supervisor engine`. Then:
+**Not live until plan 1033's Centurion host lands.** A brief may say the claim
+is engine-supervised: the orchestrator created it and the engine's
+claim-supervision workflow handed it to the engine with `planar-agent
+claim-associate --supervisor engine`. Then:
 
 - the engine alone extends the lease; heartbeat with `planar-agent heartbeat
   --claim <token> --status "<text>"` and no `--ttl` (a bare heartbeat is

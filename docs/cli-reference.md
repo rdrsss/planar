@@ -7997,17 +7997,6 @@ asserts the observed exit-code set is exactly `{0, 1, 2}`.
 
 ### The Centurion client verbs (plan 1033 M2)
 
-> **These verbs require a Centurion-enabled build** (the
-> `dev/centurion-integration` branch). This build does not link the Centurion
-> client, and it refuses each of them. The refusal comes after argument
-> parsing, so a malformed invocation is still a usage failure (exit `2`). It
-> comes before a profile is resolved or any state is written, and it prints
-> `planar-execute: planar-execute was built without the Centurion engine` on
-> stderr, nothing on stdout, and exits `1`. That is the code a durable
-> refusal maps to, because only a different build changes the answer. The
-> rest of this section describes the verbs as a Centurion-enabled build runs
-> them.
-
 `planar-execute` is becoming a CLIENT of a Centurion daemon (decision 1007 /
 1075). These verbs act on the daemon serving one execution profile
 (`[execute.profiles.<name>]`, default `default`); only `submit` ever STARTS a
@@ -8038,12 +8027,11 @@ answer rather than a reason to start one.
 
 #### The installed daemon
 
-This build installs no daemon. On a Centurion-enabled build, `centuriond` is
-installed BESIDE the Planar binaries — `make build` copies it into `./bin/`
-and `install.sh` writes `$PLANAR_HOME/bin/centuriond` — because
-`planar-execute` resolves it as its own sibling, the same rule `cli.planar(...)`
+`centuriond` runs BESIDE the Planar binaries — `make build` copies it into
+`./bin/` — because `planar-execute` resolves it as its own sibling, the same rule `cli.planar(...)`
 uses for `planar`. What runs is the daemon that shipped with this client, not
-whatever a `PATH` names first.
+whatever a `PATH` names first. The staged release-bundle install does not
+place `centuriond` yet; on this branch, run it from a `make build` tree.
 
 It is a STOCK Centurion daemon built from the pinned archive (Planar decision
 1075): Planar never patches or forks it, and configuration is the whole

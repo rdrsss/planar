@@ -88,20 +88,15 @@ not a runtime ACL.
 `planar-execute run <wf.lua> --phase <name>` runs a deterministic Lua
 workflow locally over allowlisted host functions (`cli`, `git`, `fs`, `flow`,
 `ctx`). It exposes no model-spawning host function and is outside the claim
-ritual. The binary also carries `profile` and the Centurion client verbs:
-`submit`, `status`, `cancel`, `follow` and `host`.
+ritual. The binary also carries the Centurion client verbs: `submit`,
+`status`, `cancel`, `follow`, `host` and `profile`.
 
 Decision 1007 and plan 1033 make Centurion the workflow engine, with
-`planar-execute` as its configuration, bootstrap and client entry point. Master
-does NOT link Centurion: the integration lives on
-`dev/centurion-integration`, and here the five client verbs require a
-Centurion-enabled build and refuse with "planar-execute was built without the
-Centurion engine" (exit 1). The engine-side contract that compiles without
-Centurion ships here: migration 00038, engine-supervised claims, the engine
-selector and `profile show`. The local `run` path stays until plan 1033's
-cutover milestone (M5). Until then, every guard and boundary test that pins
-the embedded runner stays in force. Do not relax one ahead of the milestone
-that replaces it. Planar itself still never shells a headless model.
+`planar-execute` as its configuration, bootstrap and client entry point. The
+local `run` path stays until plan 1033's cutover milestone (M5). Until then,
+every guard and boundary test that pins the embedded runner stays in force.
+Do not relax one ahead of the milestone that replaces it. Planar itself still
+never shells a headless model.
 
 ### Claim ritual
 

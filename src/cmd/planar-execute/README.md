@@ -4,10 +4,7 @@ Workflow entry point and client. `main.cpp` classifies verbs with the manual
 parser in `handlers/shared/cli.cppm` and dispatches into `handlers/<name>/command.cppm`.
 These are command handlers, not CLI11 `CLI::App` objects. This binary has no
 SQLite handle. The local `run` path remains available until the Centurion
-cutover described by decision 1007 / plan 1033. This build links no Centurion
-target: `handlers/shared/client_bridge.cpp` refuses every engine call, and the
-engine verbs exit `1` with "planar-execute was built without the Centurion
-engine". The Centurion-enabled build lives on `dev/centurion-integration`.
+cutover described by decision 1007 / plan 1033.
 
 | Handler directory | Command |
 | --- | --- |

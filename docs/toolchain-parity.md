@@ -160,7 +160,7 @@ do not reach for a suppression.
 |---|---|---|
 | macOS (Homebrew, Apple Silicon) | `/opt/homebrew/opt/llvm` (keg-only; not on `PATH`) | **Verified** — this document's probes ran against it directly. |
 | macOS (Homebrew, Intel) | `/usr/local/opt/llvm` | Not verified on this task (no Intel Mac available); same keg-only layout, different prefix root — Homebrew's own convention. |
-| Linux (apt.llvm.org, Debian/Ubuntu) | `/usr/lib/llvm-<N>/bin/clang++`, alternatives symlink `clang++-<N>` at `/usr/bin/clang++-<N>` | **Builds; suite passes** (tasks 6936, 7094: 4063 of 4063 ctest cases passed on `debian:trixie-slim`, arm64, 2026-09-30, at the M3 epic head). Measured against `debian:trixie-slim` with apt.llvm.org's `clang-23` / `libc++-23-dev` (prefix `/usr/lib/llvm-23`): the tree configures, compiles and links, and the full ctest run exits 0. `make linux-gate` (`docker/linux-gate.Dockerfile`, task 7094) is now the repeatable way to rerun it and it records the pass count; see [testing.md](testing.md#the-linux-gate). The Linux flag set is in § Linux flag set below; the test-only `sqlite3` CLI dependency is task 6944. |
+| Linux (apt.llvm.org, Debian/Ubuntu) | `/usr/lib/llvm-<N>/bin/clang++`, alternatives symlink `clang++-<N>` at `/usr/bin/clang++-<N>` | **Builds; suite passes** (tasks 6936, 7094: 4063 of 4063 ctest cases passed on `debian:trixie-slim`, arm64, 2026-09-30, at the M3 epic head). Measured against `debian:trixie-slim` with apt.llvm.org's `clang-23` / `libc++-23-dev` (prefix `/usr/lib/llvm-23`): the tree configures, compiles and links, and the full ctest run exits 0. `make linux-gate` (`docker/linux-gate.Dockerfile`, task 7094) is now the repeatable way to rerun it and it records the pass count; see [testing.md](testing.md#the-linux-gate). The Linux-only flag additions are in § Linux flag additions below; the test-only `sqlite3` CLI dependency is task 6944. |
 
 ## How the prefix is found (task 6755, decision 1123)
 
@@ -329,18 +329,21 @@ CMAKE_EXE_LINKER_FLAGS           = -stdlib=libc++ -L/opt/homebrew/opt/llvm/lib/c
 CMAKE_CXX_STDLIB_MODULES_JSON    = /opt/homebrew/opt/llvm/lib/c++/libc++.modules.json
 ```
 
-### Linux flag set
+### Linux flag additions (non-Apple UNIX only)
 
-`cmake/llvm-toolchain.cmake` derives the same flag set on Linux as on macOS;
-it appends nothing per platform. (A Centurion-enabled build appended
-`-Wno-unused-command-line-argument` and `-lc++abi` on non-Apple UNIX for
-Centurion's vendored BoringSSL and `protoc`; first-party code needs neither,
-which `make linux-gate` proves.) Against `/usr/lib/llvm-23` the resolved
-values are:
+`cmake/llvm-toolchain.cmake` appends two flags on non-Apple UNIX, and only
+there, so the macOS values above stay byte-identical (task 6936):
+
+| Flag | Appended to | Why |
+|---|---|---|
+| `-Wno-unused-command-line-argument` | `CMAKE_CXX_FLAGS` | With `-nostdinc++ -isystem …/c++/v1` supplied, `-stdlib=libc++` has no compile-time effect on Linux and clang reports it as unused. That is fatal only in third-party sub-builds with their own `-Werror` (Centurion's vendored BoringSSL was the first). It silences a driver diagnostic, not one about code; first-party targets keep `PLANAR_WARNINGS_AS_ERRORS`. |
+| `-lc++abi` | `CMAKE_EXE_LINKER_FLAGS` | libc++abi is folded into libc++ on macOS but is a separate DSO on Linux that the driver does not add; without it a link fails with `libc++abi.so.1: DSO missing from command line` (Centurion's vendored `protoc` was the first). |
+
+Against `/usr/lib/llvm-23` the resolved values are therefore:
 
 ```
-CMAKE_CXX_FLAGS        = -stdlib=libc++ -nostdinc++ -isystem /usr/lib/llvm-23/include/c++/v1
-CMAKE_EXE_LINKER_FLAGS = -stdlib=libc++ -L/usr/lib/llvm-23/lib -Wl,-rpath,/usr/lib/llvm-23/lib
+CMAKE_CXX_FLAGS        = -stdlib=libc++ -nostdinc++ -isystem /usr/lib/llvm-23/include/c++/v1 -Wno-unused-command-line-argument
+CMAKE_EXE_LINKER_FLAGS = -stdlib=libc++ -L/usr/lib/llvm-23/lib -Wl,-rpath,/usr/lib/llvm-23/lib -lc++abi
 CMAKE_CXX_STDLIB_MODULES_JSON = /usr/lib/llvm-23/lib/libc++.modules.json
 ```
 
