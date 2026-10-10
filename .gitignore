@@ -83,3 +83,8 @@ __pycache__/
 
 # Owned release bundle outputs; foreign source dirt still refuses tagged cuts.
 /dist/
+
+# First-party dependency sources (repositories this project's owner controls,
+# e.g. Centurion). Pinned by URL + SHA-256 in cmake/dependencies.cmake and
+# fetched once per checkout; never committed (unlike third-party vendor/).
+/external/

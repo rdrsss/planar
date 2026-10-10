@@ -1094,6 +1094,23 @@ stage_source() {
   # option was inherited from whatever last configured the directory (task
   # 6537). The build installs into the staging directory; only its bin/ is
   # taken, and everything is swapped into place after the database probe.
+  #
+  # First-party dependencies (Centurion, a private repository) are fetched into
+  # the gitignored external/ on the first configure, not committed under
+  # vendor/ (task 6495). That download needs a GitHub token; borrow gh's when
+  # the operator has not exported one. A later configure reuses external/ and
+  # needs neither.
+  if [[ -z "${GITHUB_TOKEN:-}" ]] && command -v gh >/dev/null 2>&1; then
+    # An unauthenticated gh is normal when Centurion is already cached. Its
+    # failed token lookup must not fire the inherited ERR trap inside $().
+    trap - ERR
+    _planar_gh_token="$(gh auth token 2>/dev/null)" || _planar_gh_token=""
+    trap 'on_err $? $LINENO' ERR
+    if [[ -n "$_planar_gh_token" ]]; then
+      export GITHUB_TOKEN="$_planar_gh_token"
+    fi
+    unset _planar_gh_token
+  fi
   ( cd "$REPO_ROOT" \
     && cmake --preset "$BUILD_PRESET" -B "$BUILD_DIR" \
          -DPLANAR_VERSION_META=ON \

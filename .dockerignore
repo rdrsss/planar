@@ -1,6 +1,6 @@
 # Docker build context for docker/linux-gate.Dockerfile. The context is the
-# repo root; keep it to tracked-source size. external/ (first-party sources,
-# never committed) is never sent.
+# repo root; keep it to tracked-source size. external/ arrives as a named
+# build context, never through here.
 .git
 build
 bin
