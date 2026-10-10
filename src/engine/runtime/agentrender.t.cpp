@@ -299,7 +299,6 @@ TEST_CASE("terminal_json inserts a trailing-fields fragment before the closing b
   REQUIRE(plain.ends_with("}\n"));
   CHECK(extended == plain.substr(0, plain.size() - 2) + R"(,"diagnose":{"state":"clean"}})" + "\n");
 
-claim_kind_plan:
   auto plan_claim = sample_claim();
   plan_claim.kind = aa::entity_kind::plan;
   atomic::terminal_result const taskless{.released = plan_claim, .task_id = std::nullopt};

@@ -259,3 +259,31 @@ TEST_CASE("a milestone counts as promoted only by a fresh roll-up that flipped i
   // No roll-up ran (a plan-less task, or a verb that made none).
   CHECK_FALSE(agent::milestone_promoted(agent::plan_roll_up{}, fresh));
 }
+
+TEST_CASE("an engine complete that promotes a milestone prints the section once and its replay prints none",
+          "[cmd][agent][diagnose][7383]") {
+  for (bool const json : {false, true}) {
+    INFO("json: " << json);
+    scratch_dir scratch;
+    seed_milestone(scratch, 1);
+    auto const token = pull_token(scratch);
+    REQUIRE(run_verb(scratch, {"claim-associate", "--claim", token, "--supervisor", "engine", "--attempt", "A1"}).code == 0);
+
+    std::vector<std::string> argv{"complete", "--claim", token, "--as", "engine", "--attempt", "A1", "--no-locality-probe"};
+    if (json) {
+      argv.push_back("--json");
+    }
+    auto const promoting = run_verb(scratch, argv);
+    REQUIRE(promoting.code == 0);
+    CHECK(promoting.out.find(json ? "\"diagnose\":{\"plan_id\":2,\"state\":\"clean\"" : "\ndiagnose: clean\n") !=
+          std::string::npos);
+    CHECK(scalar_text(scratch, "select status from plans where id = 2") == "done");
+    auto const rows = scalar_text(scratch, "select count(*) from agent_actions");
+
+    auto const replay = run_verb(scratch, argv);
+    CHECK(replay.code == 0);
+    CHECK(replay.out.find("diagnose") == std::string::npos);
+    CHECK(replay.out.starts_with(json ? "{\"ok\":true" : "ok task:1 status:done claim_status:completed\n"));
+    CHECK(scalar_text(scratch, "select count(*) from agent_actions") == rows);
+  }
+}
