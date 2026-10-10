@@ -8,6 +8,16 @@
 #   release_field FILE KEY
 #       Print one value of a release.json written one `"key": value` pair per
 #       line (scripts/dist.sh), or nothing when the key is absent.
+#   release_source_checkout FILE
+#       Print the checkout a source install recorded in release.json
+#       ("source_checkout", written by install.sh), or nothing. Unlike
+#       release_field it accepts a comma in the path; install.sh records no
+#       path with a quote, a backslash or a control character.
+#   release_base_normalize URL
+#       Print URL without any trailing slashes. The same rule as the bootstrap's
+#       base_normalize (scripts/get-planar.sh, a standalone asset that cannot
+#       source this file); scripts/get-planar-test.sh feeds both the same inputs.
+#       Normalize first, then validate, as the bootstrap does.
 #   release_base_valid URL
 #       Status 0 when URL is in the bootstrap's release-base grammar: https, a
 #       local file:// fixture, or http on the exact loopback hosts, with no
@@ -20,6 +30,16 @@ release_field() {
   sed -n "s/^[[:space:]]*\"$2\":[[:space:]]*\"\{0,1\}\([^\",]*\)\"\{0,1\},\{0,1\}[[:space:]]*\$/\1/p" "$1" 2>/dev/null | head -n 1
 }
 
+release_source_checkout() {
+  sed -n 's/^[[:space:]]*"source_checkout":[[:space:]]*"\([^"\\]*\)",[[:space:]]*$/\1/p' "$1" 2>/dev/null | head -n 1
+}
+
 release_base_valid() {
   [[ "$1" =~ ^(https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\"\'@]*)?|file:///[^[:space:]\"\'@]*|http://(127\.0\.0\.1|localhost)(:[0-9]+)?(/[^[:space:]\"\'@]*)?)$ ]]
+}
+
+release_base_normalize() {
+  local u="$1"
+  while [[ "$u" == */ ]]; do u="${u%/}"; done
+  printf '%s' "$u"
 }

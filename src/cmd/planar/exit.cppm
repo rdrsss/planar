@@ -106,6 +106,17 @@ export inline constexpr int exit_not_implemented       = 64; ///< Placeholder / 
 /// because it passes a workflow's own exit status through verbatim.
 export inline constexpr int exit_update_available = 10;
 
+/// @brief A plain `planar update` was interrupted by `SIGINT` (128 + 2).
+///
+/// Returned through `passthrough_code` by that one leaf alone, after it removed
+/// its download directory and released the mutation lock, and only before its
+/// installer hand-off. Outside the `domain_error_kind` table.
+export inline constexpr int exit_interrupted_sigint = 130;
+
+/// @brief A plain `planar update` was interrupted by `SIGTERM` (128 + 15), as
+/// for `exit_interrupted_sigint`.
+export inline constexpr int exit_interrupted_sigterm = 143;
+
 /// @brief A handler failure: which exit-code bucket it falls in, plus the
 /// stderr text.
 export struct domain_error {

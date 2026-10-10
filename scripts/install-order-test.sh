@@ -22,7 +22,8 @@
 #     refuse without deletion;
 #   - a second concurrent install is refused naming the holder's pid, and a new
 #     run after the holder is killed completes; a killed first installation is
-#     recognized without --force;
+#     recognized without --force; an install killed under one host name is
+#     recovered under another;
 #   - a refused or failed attempt before any live change leaves the completed
 #     install untouched, and a probe failure while recovering keeps the earlier
 #     transaction's evidence;
@@ -56,7 +57,16 @@ cleanup() {
 trap cleanup EXIT
 fail() { printf 'install-order-test: %s\n' "$*" >&2; exit 1; }
 PASSED=0
-pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s\n' "$PASSED" "$1"; }
+pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s (%ss)\n' "$PASSED" "$1" "$SECONDS"; SECONDS=0; }
+# Test groups (plan 1122 M5, task 7361). The whole file took 757 s on a loaded host, so ctest
+# registers one entry per group (install.order_<group>, label install_order_<group>) and no
+# entry nears the five-minute ceiling. INSTALL_ORDER_GROUP selects one; unset runs all five
+# in file order, as before. An unknown name is a usage error, so a typo cannot pass by
+# running nothing.
+ORDER_GROUPS="db swap recover concurrent handoff"
+GROUP="${INSTALL_ORDER_GROUP:-all}"
+case " all $ORDER_GROUPS " in *" $GROUP "*) ;; *) printf 'install-order-test: unknown INSTALL_ORDER_GROUP %s (want one of: %s)\n' "$GROUP" "$ORDER_GROUPS" >&2; exit 2 ;; esac
+want() { [[ "$GROUP" == all || "$GROUP" == "$1" ]]; }
 # shellcheck source=fixtures/prebuilt-bundle.sh
 source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
 
@@ -139,6 +149,19 @@ healthy() {
   printf '%s' "$h"
 }
 
+# Hoisted out of the swap group: the recover, concurrent and handoff groups use it too.
+# kill_case POINT -- a healthy v1 install, killed at POINT while installing v2.
+kill_case() {
+  local point="$1" h p old_bin
+  h="$(healthy "kill-${point//:/-}")"; p="$h/.planar"
+  old_bin="$(bin_sum "$p/bin")"
+  run_install "$h" "$B2" PLANAR_INSTALL_TEST_FAULT="kill@$point" --
+  [[ "$RC" -ge 128 ]] || fail "kill at $point: the installer was not killed ($RC): $(show)"
+  [[ "$(journal_phase "$p")" == mutating ]] || fail "kill at $point: no mutating journal"
+  grep -Fq '"version": "v1.2.3"' "$p/release.json" || fail "kill at $point: release.json changed before the end"
+  KILL_OLD_BIN="$old_bin"; KILL_HOME="$h"
+}
+if want db; then
 # --- a fresh install creates a current database ---------------------------------------------------
 
 H="$(new_home fresh)"; P="$H/.planar"
@@ -308,20 +331,11 @@ run_install "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "install with no planar-watch failed ($RC): $(show)"
 [[ "$(grep -c 'could not be checked' "$TMP/err")" == 1 ]] || fail "an absent planar-watch did not print exactly one skipped line: $(show)"
 pass "live queue entries are named before the swap; an absent planar-watch is one line"
+fi
 
+if want swap; then
 # --- an interrupted swap is recovered by the next run --------------------------------------------------------------
 
-# kill_case POINT -- a healthy v1 install, killed at POINT while installing v2.
-kill_case() {
-  local point="$1" h p old_bin
-  h="$(healthy "kill-${point//:/-}")"; p="$h/.planar"
-  old_bin="$(bin_sum "$p/bin")"
-  run_install "$h" "$B2" PLANAR_INSTALL_TEST_FAULT="kill@$point" --
-  [[ "$RC" -ge 128 ]] || fail "kill at $point: the installer was not killed ($RC): $(show)"
-  [[ "$(journal_phase "$p")" == mutating ]] || fail "kill at $point: no mutating journal"
-  grep -Fq '"version": "v1.2.3"' "$p/release.json" || fail "kill at $point: release.json changed before the end"
-  KILL_OLD_BIN="$old_bin"; KILL_HOME="$h"
-}
 kill_case backed-up:bin
 P="$KILL_HOME/.planar"
 [[ -d "$P/bin.old" && ! -e "$P/bin" ]] || fail "after the kill bin/ was not moved to bin.old: $(ls -a "$P")"
@@ -356,7 +370,9 @@ run_install "$H" "$B1" --
 grep -Fq "the previous install committed; removing its leftover backups and staging" "$TMP/out" || fail "the committed transaction's cleanup was not reported: $(show)"
 no_evidence "$P"
 pass "a kill after the commit record leaves only owned cleanup for the next run"
+fi
 
+if want recover; then
 # --- recovery precedes failed restaging -----------------------------------------------------------------------------
 
 kill_case backed-up:bin
@@ -431,7 +447,9 @@ run_install "$KILL_HOME" "$B2" --
   || fail "the completed rerun is not the bundle's bin/ and skills/"
 no_evidence "$P"
 pass "a recovery restore is journaled: a kill after it and a later ambiguity both complete on rerun"
+fi
 
+if want concurrent; then
 # --- concurrent installs and an interrupted first installation ------------------------------------------------------
 
 H="$(healthy concurrent)"; P="$H/.planar"
@@ -464,6 +482,43 @@ run_install "$H" "$B1" --
 [[ -x "$P/bin/planar" && -f "$P/.planar-install" && -f "$P/planar.db" ]] || fail "the resumed first installation is incomplete"
 no_evidence "$P"
 pass "an interrupted first installation is recognized without --force"
+
+# Test spec 679, "Edge — a crashed owner's record survives a hostname change":
+# an install KILLed while it holds the lock, the host renamed (only `uname -n`
+# changes, as a macOS rename by scutil or DHCP does), and the same command again
+# recovers the dead owner and resumes, with nothing removed by hand. The lock
+# names the host by its machine identity, which this host must have (a valid
+# /etc/machine-id, or the macOS platform UUID); install-lock-test.sh runs the
+# same case with a fixture identity on every host.
+host_has_identity() {
+  local id=""
+  if [[ -r /etc/machine-id ]]; then IFS= read -r id < /etc/machine-id || true; fi
+  [[ "$id" =~ ^[0-9a-f]{32}$ ]] && return 0
+  [[ -x /usr/sbin/ioreg ]] && /usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice 2>/dev/null | grep -q '"IOPlatformUUID" = "'
+}
+if host_has_identity; then
+  real_uname="$(command -v uname)"
+  for _nm in host-a host-b; do
+    mkdir -p "$TMP/uname-$_nm"
+    printf '#!/bin/sh\nif [ "$1" = -n ]; then echo %s.example; exit 0; fi\nexec %s "$@"\n' "$_nm" "$real_uname" > "$TMP/uname-$_nm/uname"
+    chmod 755 "$TMP/uname-$_nm/uname"
+  done
+  H="$(healthy renamed)"; P="$H/.planar"
+  run_install "$H" "$B2" "PATH=$TMP/uname-host-a:$BASEBIN" PLANAR_INSTALL_TEST_FAULT=kill@after-mutating --
+  [[ "$RC" -ge 128 && "$(journal_phase "$P")" == mutating ]] || fail "the install under the first host name was not killed mid-mutation ($RC): $(show)"
+  grep -qx 'node=host-a.example' "$P.lock"/owner.* || fail "the killed install did not record the first host name: $(cat "$P.lock"/owner.*)"
+  killed_pid="$(sed -n 's/^pid=//p' "$P.lock"/owner.* | tail -1)"
+  run_install "$H" "$B2" "PATH=$TMP/uname-host-b:$BASEBIN" --
+  [[ "$RC" == 0 ]] || fail "a killed install was not recovered after a hostname change ($RC): $(show)"
+  grep -Fq "reclaimed the mutation lock from an abandoned install pid $killed_pid" "$TMP/out" || fail "the reclaim after the rename was not reported: $(show)"
+  grep -Fq 'resuming the interrupted install' "$TMP/out" || fail "the interrupted install was not resumed after the rename: $(show)"
+  [[ "$(bin_sum "$P/bin")" == "$(bin_sum "$B2/bin")" ]] || fail "the install resumed after the rename is not the pending target"
+  no_evidence "$P"
+  pass "a killed install is recovered after a hostname change, without manual removal"
+else
+  printf 'install-order-test: note: this host has no machine identity; the hostname-change case runs in install-lock-test.sh with a fixture identity\n'
+fi
+
 
 # --prefix needs a writable parent for <root>.lock: an existing root under a
 # parent the operator cannot write refuses before any change, naming the
@@ -516,7 +571,9 @@ run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 0 ]] || fail "recovery after the probe failure did not complete ($RC): $(show)"
 no_evidence "$P"
 pass "refused and pre-mutation failures leave the completed install authoritative"
+fi
 
+if want handoff; then
 # --- the update handoff and --cleanup ----------------------------------------------------------------------------------
 
 UPDATER="$TMP/updater.sh"
@@ -666,5 +723,7 @@ RC=0
     /bin/bash "$B1/install.sh" --prebuilt "$B1" >"$TMP/out" 2>"$TMP/err" ) || RC=$?
 [[ "$RC" == 0 ]] || fail "the fault hook fired without PLANAR_INSTALL_TEST_FAULT_ARMED ($RC): $(show)"
 pass "the test fault hook is inert unless armed"
+fi
 
-printf 'install order tests: %s passed\n' "$PASSED"
+[[ "$PASSED" -gt 0 ]] || fail "group $GROUP ran no check"
+printf 'install order tests (group %s): %s passed\n' "$GROUP" "$PASSED"

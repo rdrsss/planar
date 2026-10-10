@@ -13,7 +13,9 @@
 #     --uninstall (which delegates to scripts/uninstall.sh; --uninstall --force
 #     is refused naming --purge, before anything changes);
 #   - drives a relocated database and workbench: named, left untouched;
-#   - drives a relocated data path inside a managed tree: the install stops.
+#   - drives a relocated data path inside a managed tree: the install stops;
+#   - drives workbench.root and templates.dir set in config.toml under a managed
+#     tree: reported, the upgrade refused, uninstall and --purge keep the files.
 # Nothing real is touched: HOME and every variable that could point elsewhere are
 # scratch paths. Runs under stock bash 3.2.
 # shellcheck disable=SC2016,SC2088,SC2012,SC2030,SC2031  # literal backticks and ~ in fixtures; ls for messages
@@ -448,6 +450,72 @@ run_prebuilt_install --force
 [[ "$RC" == 0 ]] || fail "forced prebuilt install failed ($RC): $(cat "$TMP/err")"
 [[ "$(sums "$PP" "$PLIST")" == "$pbefore" ]] || fail "a forced prebuilt install changed a data path"
 [[ "$(cat "$PP/templates/a.toml")" == "my edited template" ]] || fail "--force overwrote an edited template on the prebuilt path"
+pass
+
+# --- a data path relocated by config.toml (test spec 679) ----------------------------------
+
+# cfg_case LABEL SECTION KEY DIRNAME PATHNAME: install, then (with config.toml
+# relocating the data path into scripts/, a managed subtree) upgrade, plain
+# uninstall and --purge. The upgrade is refused whole, before anything changes,
+# naming the data path; the relocated files are byte-identical throughout; the
+# uninstall keeps the subtree; --purge names the relocated path and skips it.
+run_bundle_uninstall() {
+  RC=0
+  env -u CODEX_HOME -u PLANAR_HOME -u PLANAR_DB -u PLANAR_CONFIG_PATH -u PLANAR_WORKBENCH_ROOT -u PLANAR_LOCAL_HOME \
+    -u PLANAR_TEMPLATES_DIR HOME="$HP" NO_COLOR=1 "$PB/install.sh" --prefix "$PP" "$@" >"$TMP/out" 2>"$TMP/err" || RC=$?
+}
+cfg_case() {
+  local label="$1" section="$2" key="$3" dir="$4" pname="$5" hc pc rel before out
+  hc="$TMP/cfg-$label/user"; pc="$hc/.planar"; rel="$pc/scripts/$dir"
+  mkdir -p "$hc"
+  HP="$hc"; PP="$pc"
+  run_prebuilt_install
+  [[ "$RC" == 0 ]] || fail "$label: the first prebuilt install failed ($RC): $(cat "$TMP/err")"
+  # Configure the relocation (quoted value, a comment, spaces) and put files there.
+  printf '# operator config\n[core]\nx = "a#b"\n[ %s ]   # relocated\n%s = "~/.planar/scripts/%s"  # under a managed tree\n' \
+    "$section" "$key" "$dir" > "$pc/config.toml"
+  mkdir -p "$rel/deep"
+  printf 'one\n' > "$rel/a.md"; printf 'two\n' > "$rel/deep/b.md"
+  before="$(cd "$rel" && find . -type f -exec cksum {} + | sort)"
+  run_prebuilt_install
+  [[ "$RC" != 0 ]] || fail "$label: the upgrade replaced a subtree holding a config.toml-relocated data path"
+  grep -Fq "data path '$pname'" "$TMP/err" || fail "$label: the refusal did not name the data path: $(cat "$TMP/err")"
+  grep -Fq "Nothing was changed" "$TMP/err" || fail "$label: the refusal did not say nothing changed: $(cat "$TMP/err")"
+  [[ "$(cd "$rel" && find . -type f -exec cksum {} + | sort)" == "$before" ]] || fail "$label: the upgrade touched the relocated files"
+  run_prebuilt_install --force
+  [[ "$RC" != 0 ]] || fail "$label: --force replaced a subtree holding a relocated data path"
+  [[ "$(cd "$rel" && find . -type f -exec cksum {} + | sort)" == "$before" ]] || fail "$label: --force touched the relocated files"
+  run_bundle_uninstall --uninstall
+  [[ "$RC" == 0 ]] || fail "$label: uninstall failed ($RC): $(cat "$TMP/err")"
+  out="$(cat "$TMP/out")"
+  [[ "$out" == *"data path $pname is relocated by config.toml ($section.$key) to $rel"* ]] \
+    || fail "$label: uninstall did not report the config.toml relocation: $out"
+  [[ "$out" == *"kept $pc/scripts (data path '$pname')"* ]] || fail "$label: uninstall did not name the subtree it kept: $out"
+  [[ "$(cd "$rel" && find . -type f -exec cksum {} + | sort)" == "$before" ]] || fail "$label: uninstall touched the relocated files"
+  [[ ! -e "$pc/bin" ]] || fail "$label: uninstall left bin/"
+  run_bundle_uninstall --uninstall --purge
+  [[ "$RC" == 0 ]] || fail "$label: purge failed ($RC): $(cat "$TMP/err")"
+  out="$(cat "$TMP/out")"
+  [[ "$out" == *"$rel"* && "$out" == *"relocated by config.toml ($section.$key)"* ]] || fail "$label: purge did not name the relocated path: $out"
+  [[ "$(cd "$rel" && find . -type f -exec cksum {} + | sort)" == "$before" ]] || fail "$label: purge removed the relocated files"
+  pass
+}
+cfg_case workbench workbench root workbench-data workbench
+cfg_case templates templates dir tpl-data templates
+
+# An environment variable wins over the config.toml key (the runtime's order), and a
+# config.toml value that is not a quoted string, or sits in another section,
+# relocates nothing.
+HE="$TMP/cfgenv/user"; mkdir -p "$HE/.planar"
+printf '[workbench]\nroot = 7\n[other]\nroot = "/elsewhere/other"\n[templates]\ndir = ""\n' > "$HE/.planar/config.toml"
+l="$(HOME="$HE" planar_data_paths_list "$HE/.planar")"
+has_line "$l" "workbench|dir|$HE/.planar/workbench|" || fail "a non-string or foreign-section workbench.root relocated something:\n$l"
+has_line "$l" "templates|dir|$HE/.planar/templates|" || fail "an empty templates.dir relocated something:\n$l"
+printf "[workbench]\nroot = '/cfg/wb'\n" > "$HE/.planar/config.toml"
+l="$(HOME="$HE" PLANAR_WORKBENCH_ROOT=/env/wb planar_data_paths_list "$HE/.planar")"
+has_line "$l" "workbench|dir|/env/wb|PLANAR_WORKBENCH_ROOT" || fail "the variable did not win over config.toml:\n$l"
+l="$(HOME="$HE" PLANAR_CONFIG_PATH="$HE/alt.toml" planar_data_paths_list "$HE/.planar")"
+has_line "$l" "workbench|dir|$HE/.planar/workbench|" || fail "config.toml was read despite PLANAR_CONFIG_PATH naming another file:\n$l"
 pass
 
 printf 'install data paths tests: %s passed\n' "$PASSED"

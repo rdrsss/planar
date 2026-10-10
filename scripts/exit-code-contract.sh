@@ -257,6 +257,22 @@ git -C "$git_repo" worktree add -q -b exit-code-contract-wt "$worktree_path" mai
 
 check_in 8 "planar: worktree-gate refusal" "$worktree_path" planar task add
 
+# --- `planar update --check` (plan 1122, task rel-m5-bootstrap-gaps) --------
+# The one verb that returns 10, "update available": not a failure. It is observed
+# for real against a release directory served through PLANAR_RELEASE_URL=file://
+# (the layout the update tests publish: latest/download/VERSION), from a scratch
+# HOME that holds a release.json. The verb takes no lock and opens no database.
+upd_home="$tmp/update-home"
+upd_rel="$tmp/update-release"
+mkdir -p "$upd_home/.planar" "$upd_rel/latest/download"
+printf '{\n  "version": "v1.0.0"\n}\n' > "$upd_home/.planar/release.json"
+printf 'v1.1.0\n' > "$upd_rel/latest/download/VERSION"
+fcheck 10 "planar update --check: newer release" planar HOME="$upd_home" PLANAR_RELEASE_URL="file://$upd_rel" -- update --check
+expected_codes+=("10")
+printf 'v1.0.0\n' > "$upd_rel/latest/download/VERSION"
+fcheck 0  "planar update --check: up to date"    planar HOME="$upd_home" PLANAR_RELEASE_URL="file://$upd_rel" -- update --check
+fcheck 1  "planar update --check: no release dir" planar HOME="$upd_home" PLANAR_RELEASE_URL="file://$tmp/no-such-release" -- update --check
+
 # --- `planar-agent queue run` (plan 1080, task 7013, decision 1188) ---------
 # The command's own status passes through, and the queue owns a handful of
 # codes. Each case runs the real binary in the scratch env above (its own

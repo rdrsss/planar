@@ -316,9 +316,32 @@ set_tests_properties(release.workflow PROPERTIES LABELS "release_workflow" TIMEO
 # Stock macOS bash 3.2: a static lint for unguarded empty-array expansions and bash-4-only
 # constructs in install.sh and its sourced scripts, plus a prebuilt install and
 # uninstall run under /bin/bash (3.2 on macOS) in a scratch HOME.
-add_test(NAME install.bash32
-  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-bash32-test.sh")
-set_tests_properties(install.bash32 PROPERTIES LABELS "install_bash32" TIMEOUT 300)
+#
+# One ctest entry per group (INSTALL_BASH32_GROUP): the static lint, then each of the three
+# scenarios, each run under the old bash, again, and under a newer bash whose end state
+# (modes, symlink targets, checksums) it is compared with. A single entry took about 250 s
+# on a loaded host, and the ceiling for an installer test is five minutes. The umbrella
+# label install_bash32 still selects all four. The Linux gate image builds bash 3.2 and
+# sets PLANAR_BASH32_OLD and PLANAR_BASH32_REQUIRE_COMPARE=1 (docs/testing.md, "The
+# two-shell comparison").
+foreach(_bash32_group static flag home vendors)
+  add_test(NAME install.bash32_${_bash32_group}
+    COMMAND "${CMAKE_COMMAND}" -E env "INSTALL_BASH32_GROUP=${_bash32_group}"
+      bash "${PROJECT_SOURCE_DIR}/scripts/install-bash32-test.sh")
+  set_tests_properties(install.bash32_${_bash32_group} PROPERTIES LABELS "install_bash32;install_bash32_${_bash32_group}" TIMEOUT 300)
+endforeach()
+
+# The installer's manifest ownership and atomicity fixtures, and its compiler-preflight
+# fixture (scripts/install-manifest-test.sh, scripts/install-deps-test.sh). The make
+# targets test-install-manifest and test-install-deps run the same scripts; `make test`
+# gets them from ctest. The stage fixture is registered in src/cmd/CMakeLists.txt
+# beside the install.order_* entries because its health scenarios need the built planar.
+add_test(NAME install.manifest
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-manifest-test.sh")
+set_tests_properties(install.manifest PROPERTIES LABELS "install_manifest" TIMEOUT 900)
+add_test(NAME install.deps
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-deps-test.sh")
+set_tests_properties(install.deps PROPERTIES LABELS "install_deps" TIMEOUT 300)
 
 # The install-root guard: install.sh and install.sh --uninstall refuse $HOME, /
 # and the empty string at exit 2 (even with --force) and adopt legacy and
@@ -333,6 +356,13 @@ set_tests_properties(install.prefix_guard PROPERTIES LABELS "install_prefix_guar
 add_test(NAME install.data_paths
   COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-data-paths-test.sh")
 set_tests_properties(install.data_paths PROPERTIES LABELS "install_data_paths" TIMEOUT 300)
+
+# Every program `planar update` and get-planar.sh run is listed in install.sh's
+# RUN_DEPS (or BASE_DEPS) and INSTALL.md § Prerequisites; wget is a test-only
+# prerequisite on the Homebrew line.
+add_test(NAME install.prereq
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-prereq-test.sh")
+set_tests_properties(install.prereq PROPERTIES LABELS "install_prereq" TIMEOUT 120)
 
 # Prebuilt install: `install.sh --prebuilt <dir>` places a release bundle with no
 # build and no python3, moves an old agent.db aside unread, refuses --link and an
@@ -377,6 +407,12 @@ set_tests_properties(bootstrap.release PROPERTIES LABELS "bootstrap" TIMEOUT 900
 # python-free manifest reader, preserved and purged data paths, unknown entries
 # kept, ~/.local/bin, the mutation lock, interrupted-uninstall retry and
 # reinstall. Fake bundle, scratch HOME, base tools only; nothing real is touched.
-add_test(NAME install.uninstall
-  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-uninstall-test.sh")
-set_tests_properties(install.uninstall PROPERTIES LABELS "install_uninstall" TIMEOUT 900)
+# One ctest entry per group of scenarios (INSTALL_UNINSTALL_GROUP; the groups are listed
+# in the script), because the whole file took 428 to 510 s on a loaded host and no
+# installer test may run past five minutes. With no group the script runs all three.
+foreach(_uninstall_group removal manifest interrupted)
+  add_test(NAME install.uninstall_${_uninstall_group}
+    COMMAND "${CMAKE_COMMAND}" -E env "INSTALL_UNINSTALL_GROUP=${_uninstall_group}"
+      /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-uninstall-test.sh")
+  set_tests_properties(install.uninstall_${_uninstall_group} PROPERTIES LABELS "install_uninstall;install_uninstall_${_uninstall_group}" TIMEOUT 600)
+endforeach()

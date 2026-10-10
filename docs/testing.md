@@ -13,7 +13,7 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make test-cpp-report` | The same suite, plus its skip tally. The expected tally is zero. |
 | `make ctest-registry-check` | ctest runs exactly the cases the test binaries contain. Needs `build/debug` built. |
 | `make coverage` | The `(verb, subcommand)` leaf-coverage ratio has not dropped below `scripts/coverage-baseline.txt`. |
-| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)). |
+| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)), and `scripts/check-md-anchors.py` fails on a broken in-page anchor in `docs/cli-reference.md` and `INSTALL.md`. |
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
 | `make eval-contracts` | The provider-free eval lanes. |
@@ -266,6 +266,10 @@ and the Makefile exports them to
 `status=0`. Read `ctest.log` there rather than the build output: BuildKit
 clips a step's log at 2 MiB.
 
+The image also builds bash 3.2.57 from the GNU source archive (a `bash32`
+stage, copied to `/opt/bash-3.2`) for the `install.bash32_*` tests' two-shell comparison;
+see [The two-shell comparison](#the-two-shell-comparison).
+
 Every dependency is committed under `vendor/`, so the gate needs no token, no
 network fetch during configure, and no extra build context.
 
@@ -287,6 +291,46 @@ slot for its whole run:
 ```bash
 planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> -- make linux-gate     # cli-lint-ignore: `--` is the argument terminator
 ```
+
+### Platform-specific tests
+
+The macOS ctest list and the Linux gate's list differ by exactly three
+tests (measured 2026-10-08 on the M5 tree: 4486 listed on macOS, 4483 in
+`make linux-gate`, compared by name). Each is a `TEST_CASE` inside
+`#if defined(__APPLE__)` with a reason comment above the guard. Nothing
+enforces the table: add a row when you add a platform guard, and compare
+`ctest -N` names on both hosts when a count looks off (sort both lists with
+`LC_ALL=C sort`; duplicate names such as `engine_planning` otherwise produce
+false differences).
+
+| Test | Absent on | Reason |
+|------|-----------|--------|
+| `group_only_zombies: a group whose only member is an exited leader nobody reaped is all zombies, and a signal to it is either accepted or refused as not permitted` (`src/lib/process/identity.t.cpp`) | Linux | macOS answers `kill(-pgid)` with EPERM for a zombie-only group and the probe reads `sysctl(KERN_PROC_PGRP)`; no other kernel does either, and Linux `group_only_zombies` always answers false. |
+| `group_only_zombies: a zombie leader does not make a group with a live member all zombies` (same file) | Linux | Same macOS-only probe. |
+| `terminate: on macOS a real group whose leader exited unreaped is never reported as a failed signal` (`src/engine/hostqueue/terminate.t.cpp`) | Linux | Pins the macOS EPERM refusal; Linux has none. The fake-probe cases in the same file run everywhere. |
+
+Tests that are registered on both platforms but vacuous on a host with no
+release bundle: `update_leaves.t.cpp` has six end-to-end cases that return
+early with `SUCCEED("no release bundle exists for this host...")` where
+`release_platform` finds none, which includes the linux-aarch64 gate:
+
+- `update: a shadowing planar on PATH is named once by the bootstrap and by update, and a symlink to the install is not one`
+- `update: the exec'd installer is the lock owner and the verb opens no database`
+- `update: a KILLed update leaves nothing the next update cannot reclaim`
+- `update: SIGINT during a slowed download removes the download directory and releases the lock`
+- `update: SIGTERM during a slowed download removes the download directory and releases the lock`
+- `update: a failed installer exec removes the download directory and releases the lock`
+
+SIGINT and SIGTERM share the `interrupt_a_download` helper, which holds the
+early return. They count on both platforms and pass without exercising the
+updater there. The exec'd-installer, KILL and failed-exec cases name an
+in-process case that covers the same behaviour on every host; the shadow,
+SIGINT and SIGTERM cases have no in-process counterpart, so on such a host
+nothing exercises those behaviours. The bootstrap end-to-end update
+(`update: the binary updates a bootstrap install end to end through the real
+installer`) is not vacuous: with no bundle it asserts exit 1 and an
+`unsupported platform` error. Making the six run needs a Linux aarch64
+bundle, which is not a shipping platform.
 
 ## When every build is a full rebuild
 
@@ -345,7 +389,9 @@ reports "100% tests passed":
 
 `make ctest-registry-check` compares each binary's own `--list-tests` count
 against the `add_test` lines registered for it. It needs no baseline and
-fails on a mismatch in either direction. Do not quote a ctest total as a
+fails on a mismatch in either direction. It also fails for a
+`scripts/install-*-test.sh` that no registered ctest case names, and prints each
+script it found registered. Do not quote a ctest total as a
 count of distinct tests without it.
 
 Two related traps:
@@ -510,12 +556,20 @@ repository.
 The scripts they ship and the installer have script tests. Each is a ctest case
 registered with ctest (in `CMakeLists.txt`, `src/cmd/CMakeLists.txt` for the two
 that need built binaries, `src/cmd/planar/CMakeLists.txt` and
-`src/tools/CMakeLists.txt`), so `make test` runs them. The `make test` target
-also depends on three installer tests that are not ctest cases:
-`test-install-manifest`, `test-install-stage` and `test-install-deps`, which run
+`src/tools/CMakeLists.txt`), so `make test` runs them. The make targets
+`test-install-manifest`, `test-install-stage` and `test-install-deps` run
 `scripts/install-manifest-test.sh`, `install-stage-test.sh` and
-`install-deps-test.sh`. `install-manifest-test.sh` also pins INSTALL.md
-§ Prerequisites. They use scratch `HOME`,
+`install-deps-test.sh` directly, for a focused run, and are not prerequisites
+of `make test`: ctest runs the same scripts as `install.manifest`,
+the `install.stage_*` tests and `install.deps`. `install-manifest-test.sh` also pins
+INSTALL.md § Prerequisites. `make ctest-registry-check` fails when any
+`scripts/install-*-test.sh` is named by no registered ctest case. **No installer
+test may run longer than five minutes** (measured on a loaded host); a script
+that grows past that is split into groups, one ctest case each, selected by an
+environment variable the script reads (`INSTALL_ORDER_GROUP`,
+`INSTALL_UNINSTALL_GROUP`, `INSTALL_STAGE_GROUP`, `INSTALL_BASH32_GROUP`; unset
+runs every group, an unknown name is a usage error that exits 2 in all four).
+`ctest -L '^install_'` covers all of them. They use scratch `HOME`,
 `TMPDIR` and database paths and fake bundles, and touch nothing real. Select one
 by label, and check the matched count:
 
@@ -530,16 +584,20 @@ ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
 | `release.publish` | `release_publish` | `scripts/release-publish-test.sh` | `release-gates.sh`, `release-publish.sh` and `make release-cut` against a scratch annotated tag, fake bundles and a fake `gh`, `docker` and `uname`: every refusal runs no `gh`. |
 | `release.workflow` | `release_workflow` | `scripts/release-workflow.test.py` | A lint of `.github/workflows/release.yml` (trigger, `needs`, gate-before-upload, permissions) and its publisher steps run against fakes. Nothing runs on GitHub. |
 | `bootstrap.release` | `bootstrap` | `scripts/get-planar-test.sh` | `get-planar.sh` end to end. See [The release bootstrap test](#the-release-bootstrap-test). |
-| `install.bash32` | `install_bash32` | `scripts/install-bash32-test.sh` | A lint for bash-4-only constructs and unguarded empty-array expansions, and a prebuilt install and uninstall under `/bin/bash`. |
+| `install.bash32_static`, `install.bash32_flag`, `install.bash32_home`, `install.bash32_vendors` | `install_bash32` (all four), `install_bash32_<group>` | `scripts/install-bash32-test.sh` (`INSTALL_BASH32_GROUP`) | A lint for bash-4-only constructs and unguarded empty-array expansions, and a prebuilt install and uninstall under bash 3.2 whose end state (file and directory modes, symlink targets, checksums) is compared with a newer bash's run, with no live mutation-lock owner after the uninstall. See [The two-shell comparison](#the-two-shell-comparison). |
+| `install.manifest` | `install_manifest` | `scripts/install-manifest-test.sh` | Manifest ownership and atomicity fixtures; INSTALL.md § Prerequisites. |
+| `install.stage_staging`, `install.stage_vendors`, `install.stage_placement`, `install.stage_modes`, `install.stage_uninstall` | `install_stage` (all five), `install_stage_<group>` | `scripts/install-stage-test.sh` (`INSTALL_STAGE_GROUP`) | Staging and the six vendors' surfaces. `staging`: the staged trees, a malformed agent, the staged recorder, a foreign destination, the `--vendors` filter, quoting, the nine target rows, the upgrade from the older top-level agent layout, the conflicting-flag refusals, the managed lists. `vendors`: each vendor's presence markers, link against copy, a re-install replacing a prior manifest's paths, and health after a link install. `placement`: transactional placement, a failure and a crash mid-way. `modes`: mode switches, `planar health` against the install (the built `planar`, `PLANAR_BIN`), retiring the previous projections. `uninstall`: `--uninstall`. |
+| `install.deps` | `install_deps` | `scripts/install-deps-test.sh` | The compiler preflight. |
 | `install.prefix_guard` | `install_prefix_guard` | `scripts/install-prefix-guard-test.sh` | The install-root guard for `install.sh` and `--uninstall`. |
+| `install.prereq` | `install_prereq` | `scripts/install-prereq-test.sh` | Every program `planar update` and `get-planar.sh` run is in `install.sh` `RUN_DEPS`/`BASE_DEPS` and INSTALL.md § Prerequisites; `wget` is a test-only prerequisite on the Homebrew line. `scripts/install-prereq-scan.py` pins every spawn call site of the update sources by count (a new `run_inherited`, `runner::start`, `execve` or `capture` fails until reviewed) and reads the word in every command position of `get-planar.sh`. |
 | `install.data_paths` | `install_data_paths` | `scripts/install-data-paths-test.sh` | Data paths are never removed, and INSTALL.md's preserved-paths list matches `scripts/install-lib/data-paths.sh`. |
 | `install.prebuilt` | `install_prebuilt` | `scripts/install-prebuilt-test.sh` | `install.sh --prebuilt`: an incomplete bundle, `--link`, and the move-aside of the old queue database. |
 | `install.retired_targets` | `install_retired_targets` | `scripts/install-retired-targets-test.sh` | The retired `make install` targets are gone, and no install doc carries a `make install` recipe. |
-| `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, and the missing-only `templates/` rule. |
-| `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, simultaneous reclaims, the update handoff. |
-| `install.uninstall` | `install_uninstall` | `scripts/install-uninstall-test.sh` | `scripts/uninstall.sh`: removals, `--purge`, unknown entries, `~/.local/bin`, interrupted-uninstall retry. |
+| `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, the missing-only `templates/` rule, and a source resume refusing the other mode or a dirty checkout. |
+| `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, host renames and other hosts, simultaneous reclaims, the update handoff (an older updater's included), install roots whose path says `exists`. |
+| `install.uninstall_removal`, `install.uninstall_manifest`, `install.uninstall_interrupted` | `install_uninstall` (all three), `install_uninstall_<group>` | `scripts/install-uninstall-test.sh` (`INSTALL_UNINSTALL_GROUP`) | `scripts/uninstall.sh`. `removal`: unknown entries, the removal and its data-path rules, `--purge`, link-mode. `manifest`: escaped and truncated manifest lines, `~/.local/bin`, a missing manifest, a relocated database, the held lock. `interrupted`: the interrupted-uninstall retry and an interrupted upgrade. |
 | `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
-| `install.order` | `install_order` | `scripts/install-order-test.sh` | The order of an install end to end, against bundles of the real built binaries: databases fresh, behind, ahead and faulty, kill-and-resume at every swap point, concurrent owners, the updater handoff. |
+| `install.order_db`, `install.order_swap`, `install.order_recover`, `install.order_concurrent`, `install.order_handoff` | `install_order` (all five), `install_order_<group>` | `scripts/install-order-test.sh` (`INSTALL_ORDER_GROUP`) | The order of an install end to end, against bundles of the real built binaries. `db`: databases fresh, behind, ahead and faulty, the queue warning. `swap`: kill-and-resume at every swap point. `recover`: recovery before restaging and a journaled restore. `concurrent`: concurrent owners, a first-install kill, a host rename, the read-only parent, refused attempts. `handoff`: the updater handoff, `--cleanup`, uninstall over a pending install, the inert fault hook. |
 | `queue_retire_reader` | `queue;scripts` | `scripts/install-lib/queue_retire.test.py` | The reader the installer runs to judge the retired queue store's entries, including its `/proc` cases. |
 | `codex_agents_render` | `scripts` | `scripts/render_codex_agents_test.py` | The Codex custom-agent TOML renderer. |
 
@@ -553,6 +611,31 @@ configuration with `PLANAR_PORTABLE=ON`; see
 compares the workflow reader's result with PyYAML and runs `actionlint`, and it
 fails when either tool is missing. Run it by hand after editing
 `.github/workflows/release.yml`.
+
+### The two-shell comparison
+
+The `install.bash32_*` tests install and uninstall a fake bundle under bash 3.2 and under
+a newer bash and compares the two end states tree for tree: each file's mode and
+checksum, each directory's mode and each symlink's target (BSD `stat -f %Lp` and
+GNU `stat -c %a` are both handled; the HOME path is normalised, the lock records
+are left out). It also asks the mutation lock library (`_pl_owner_state`) after
+every uninstall and fails unless the lock is free or released. Its self-tests
+plant a mode change, a symlink retarget, a live lock holder and a killed one,
+and a planted mode or symlink-target change in the newer shell's run must fail the
+comparison.
+
+- **The Linux gate is the host that must run it.** `docker/linux-gate.Dockerfile`
+  builds bash 3.2.57 (SHA-256 pinned; fetched from ftp.gnu.org, falling back to two GNU mirrors) at `/opt/bash-3.2/bin/bash` and sets
+  `PLANAR_BASH32_OLD` to it and `PLANAR_BASH32_REQUIRE_COMPARE=1`. With the
+  variable set, the test fails if the old shell is not bash 3.x or no newer bash
+  exists, so the comparison cannot pass by comparing nothing.
+- **Elsewhere it runs when it can.** A developer macOS host has bash 3.2 as
+  `/bin/bash` and compares against a newer bash found at
+  `/opt/homebrew/bin/bash`, `/usr/local/bin/bash`, on `PATH` or named by
+  `PLANAR_BASH32_NEW`. With none, it prints `TWO-SHELL COMPARISON NOT RUN` and the
+  reason, and still checks the end state against explicit expectations and a
+  second run of the same shell. It is a note and not a ctest skip: the expected
+  skip tally is zero.
 
 ## Bundle assembler identity checks
 

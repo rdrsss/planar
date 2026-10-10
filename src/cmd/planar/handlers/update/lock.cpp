@@ -189,6 +189,35 @@ auto max_gen(const std::string& l) -> std::string {
   return best;
 }
 
+/// @brief `_pl_record_local`: whether `r` was written on this host. Sets
+/// `why` (the shell's diagnostic) when it cannot be shown to be.
+auto record_local(const record& r, std::string& why) -> bool {
+  if (r.version == "1") {
+    auto const cur = node_name();
+    if (r.node == cur) {
+      return true;
+    }
+    why = std::format("the owner ({} pid {}) is recorded on host {} by an older Planar, which named hosts by name, and this host "
+                      "is named {}: it may be another machine or this one before a rename, so its liveness cannot be checked",
+                      r.operation, r.pid, r.node, cur);
+    return false;
+  }
+  if (r.host == "none") {
+    why = std::format("the owner ({} pid {}) is recorded on host {} with no host identity (no machine id and no host name), so "
+                      "it cannot be shown to be this host and its liveness cannot be checked",
+                      r.operation, r.pid, r.node);
+    return false;
+  }
+  auto const cur = host_key();
+  if (r.host == cur) {
+    return true;
+  }
+  why = std::format("the owner ({} pid {}) is recorded on host {} (identity {}), not this host (identity {}), so its liveness "
+                    "cannot be checked",
+                    r.operation, r.pid, r.node, r.host, cur);
+  return false;
+}
+
 /// @brief `_pl_owner_state`'s verdicts.
 enum class state : std::uint8_t { free, vanished, released, held, dead, ambiguous };
 
@@ -233,9 +262,7 @@ auto owner_state(const std::string& l, const std::string& g) -> verdict {
     out.why = std::format("the release marker {} is not a link to its ownership record", rel);
     return out;
   }
-  if (r.node != node_name()) {
-    out.why = std::format("the owner ({} pid {}) is recorded on host {}, not this host, so its liveness cannot be checked",
-                          r.operation, r.pid, r.node);
+  if (!record_local(r, out.why)) {
     return out;
   }
   std::string why;
@@ -254,6 +281,13 @@ auto owner_state(const std::string& l, const std::string& g) -> verdict {
   if (!tok.has_value()) {
     out.why = std::format("{} pid {} exists but its start time cannot be read, so it cannot be told apart from a reused pid",
                           r.operation, r.pid);
+    return out;
+  }
+  if (r.start.starts_with("ps:")) {
+    out.why =
+        std::format("{} pid {} exists and its record holds a local-time start (written by an older Planar), which cannot be "
+                    "compared across time zones, so it cannot be told apart from a reused pid",
+                    r.operation, r.pid);
     return out;
   }
   if (*tok == r.start) {
@@ -283,8 +317,8 @@ auto write_candidate(const std::string& l, std::string_view g, std::string_view 
   auto const cand = std::format("{}/cand.{}.{}", l, own_pid(), nonce);
   ::unlink(cand.c_str());
   auto const body =
-      std::format("planar-mutation-lock 1\ngen={}\noperation={}\npid={}\nstart={}\nnode={}\nnonce={}\nroot={}\ntmp={}\n", g, op,
-                  own_pid(), *start, node_name(), nonce, root, tmp);
+      std::format("planar-mutation-lock 2\ngen={}\noperation={}\npid={}\nstart={}\nhost={}\nnode={}\nnonce={}\nroot={}\ntmp={}\n",
+                  g, op, own_pid(), *start, host_key(), node_name(), nonce, root, tmp);
   int const fd = ::open(cand.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (fd < 0) {
     return std::unexpected(std::format("cannot write a candidate ownership record in {}", l));
@@ -375,7 +409,7 @@ auto start_token(std::int64_t pid) -> std::optional<std::string> {
     return std::format("proc:{}:{}", boot.empty() ? std::string{"none"} : boot, fields[19]);
   }
   auto const                            pid_text = std::to_string(pid);
-  std::array<std::string_view, 6> const args{"LC_ALL=C", "ps", "-o", "lstart=", "-p", pid_text};
+  std::array<std::string_view, 7> const args{"TZ=UTC", "LC_ALL=C", "ps", "-o", "lstart=", "-p", pid_text};
   auto const                            got = process::capture("env", args);
   if (!got.spawned || got.exit_code != 0) {
     return std::nullopt;
@@ -384,7 +418,7 @@ auto start_token(std::int64_t pid) -> std::optional<std::string> {
   if (fields.empty()) {
     return std::nullopt;
   }
-  std::string tok = "ps:";
+  std::string tok = "psu:";
   for (std::size_t i = 0; i < fields.size(); ++i) {
     tok += i == 0 ? "" : " ";
     tok += fields[i];
@@ -398,6 +432,65 @@ auto node_name() -> std::string {
     return "unknown";
   }
   return u.nodename;
+}
+
+auto host_key() -> std::string {
+  std::string id;
+  // Linux: /etc/machine-id, `IFS= read -r` of its first line.
+  if (struct stat st{}; ::stat("/etc/machine-id", &st) == 0 && S_ISREG(st.st_mode) && ::access("/etc/machine-id", R_OK) == 0) {
+    auto const line = first_line("/etc/machine-id").value_or("");
+    if (line.size() == 32 && std::ranges::all_of(line, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); })) {
+      id = "machine-id:" + line;
+    }
+  }
+  // macOS: the platform UUID, from ioreg exactly as the shell runs it.
+  constexpr std::string_view k_ioreg = "/usr/sbin/ioreg";
+  if (id.empty() && ::access(std::string{k_ioreg}.c_str(), X_OK) == 0) {
+    std::array<std::string_view, 5> const args{"LC_ALL=C", k_ioreg, "-rd1", "-c", "IOPlatformExpertDevice"};
+    auto const                            got = process::capture("/usr/bin/env", args);
+    // The shell discards ioreg's output when it exits non-zero; so does this.
+    if (got.spawned && got.exit_code == 0) {
+      constexpr std::string_view k_key = "\"IOPlatformUUID\" = \"";
+      std::string_view           text{got.output};
+      while (!text.empty()) {
+        auto const nl   = text.find('\n');
+        auto const line = text.substr(0, nl);
+        text            = nl == std::string_view::npos ? std::string_view{} : text.substr(nl + 1);
+        auto const at   = line.find(k_key);
+        if (at == std::string_view::npos) {
+          continue;
+        }
+        auto value = line.substr(at + k_key.size());
+        value      = value.substr(0, value.find('"'));
+        if (value.size() == 36 &&
+            std::ranges::all_of(value, [](char c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || c == '-'; })) {
+          id = std::format("platform-uuid:{}", value);
+        }
+        break;
+      }
+    }
+  }
+  if (id.empty()) {
+    struct utsname u{};
+    if (::uname(&u) == 0 && u.nodename[0] != '\0') {
+      id = std::format("node:{}", u.nodename);
+    }
+  }
+  if (id.empty()) {
+    return "none";
+  }
+  // Linux: the pid namespace, so a container and its host are different hosts.
+  std::array<char, 128> link{};
+  if (auto const n = ::readlink("/proc/self/ns/pid", link.data(), link.size() - 1); n > 0) {
+    std::string_view const target{link.data(), static_cast<std::size_t>(n)};
+    if (target.starts_with("pid:[") && target.ends_with(']')) {
+      auto const inode = target.substr(5, target.size() - 6);
+      if (is_digits(inode)) {
+        id += std::format("/pidns:{}", inode);
+      }
+    }
+  }
+  return id;
 }
 
 auto parse_record(const std::filesystem::path& path) -> std::optional<record> {
@@ -420,10 +513,17 @@ auto parse_record(const std::filesystem::path& path) -> std::optional<record> {
     lines.push_back(text.substr(0, nl));
     text.remove_prefix(nl + 1);
   }
-  if (lines.empty() || lines.size() > 32 || lines.front() != "planar-mutation-lock 1") {
+  if (lines.empty() || lines.size() > 32) {
     return std::nullopt;
   }
-  record                             r;
+  record r;
+  if (lines.front() == "planar-mutation-lock 1") {
+    r.version = "1";
+  } else if (lines.front() == "planar-mutation-lock 2") {
+    r.version = "2";
+  } else {
+    return std::nullopt;
+  }
   std::set<std::string, std::less<>> seen;
   for (auto const line : lines | std::views::drop(1)) {
     auto const eq = line.find('=');
@@ -443,6 +543,8 @@ auto parse_record(const std::filesystem::path& path) -> std::optional<record> {
       r.pid = value;
     } else if (key == "start") {
       r.start = value;
+    } else if (key == "host" && r.version == "2") {
+      r.host = value;
     } else if (key == "node") {
       r.node = value;
     } else if (key == "nonce") {
@@ -465,7 +567,7 @@ auto parse_record(const std::filesystem::path& path) -> std::optional<record> {
       !std::ranges::all_of(r.nonce, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); })) {
     return std::nullopt;
   }
-  if (r.start.empty() || r.node.empty() || r.root.empty()) {
+  if (r.start.empty() || r.node.empty() || r.root.empty() || (r.version == "2" && r.host.empty())) {
     return std::nullopt;
   }
   return r;

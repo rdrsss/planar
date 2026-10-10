@@ -64,7 +64,7 @@
 #                                     #   no cmake/ninja/clang/python3 needed
 #   ./install.sh --prefix /opt/planar # override ~/.planar
 #   ./install.sh --force              # overwrite existing symlinks
-#   ./install.sh --ignore-live-queue  # retire agent.db despite live old queue entries
+#   ./install.sh --ignore-live-queue  # source install: retire agent.db despite live old queue entries
 #   ./install.sh --uninstall          # run the uninstaller (~/.planar/bin/planar-uninstall)
 #   ./install.sh --preset debug       # CMake preset (default release)
 #   ./install.sh --dry-run            # preview planned actions without changing anything
@@ -85,7 +85,7 @@ set -eEuo pipefail
 PLANAR_HOME="${PLANAR_HOME-$HOME/.planar}"
 CODEX_HOME_EXPLICIT="${CODEX_HOME:-}"   # non-empty when the operator set CODEX_HOME: Codex's presence marker
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-VENDORS="claude,codex,copilot,gemini,antigravity,opencode"
+VENDORS=""                    # the default (every vendor in PLANAR_VENDOR_NAMES) is set below, after the library is sourced
 VENDORS_EXPLICIT=0            # set with --vendors: naming an absent vendor then warns
 MODE="copy"                   # copy | link
 PREBUILT_DIR=""               # set with --prebuilt DIR: the unpacked release bundle
@@ -121,16 +121,19 @@ source "$REPO_ROOT/scripts/install-lib/data-paths.sh"
 source "$REPO_ROOT/scripts/install-lib/mutation-lock.sh"
 source "$REPO_ROOT/scripts/install-lib/install-state.sh"
 source "$REPO_ROOT/scripts/install-lib/db-probe.sh"
-# The vendor ownership rules and the release-record readers shared with the
-# uninstaller (plan 1122).
+# The managed-subtree and vendor name lists, the vendor ownership rules and the
+# release-record readers shared with the uninstaller (plan 1122, plan 1133).
+source "$REPO_ROOT/scripts/install-lib/managed-lists.sh"
 source "$REPO_ROOT/scripts/install-lib/ownership.sh"
 source "$REPO_ROOT/scripts/install-lib/release.sh"
+VENDORS="${PLANAR_VENDOR_NAMES// /,}"   # comma-separated for --vendors; order is the report order
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
 # scrape, which broke whenever the header format drifted.)
 usage() {
-  cat <<'EOF'
+  # The vendor list is the one in scripts/install-lib/managed-lists.sh, never spelled out here.
+  cat <<'EOF' | sed "s/@VENDOR_LIST@/${PLANAR_VENDOR_NAMES// /,}/"
 install.sh — install Planar from a source checkout.
 
 Usage:
@@ -139,7 +142,7 @@ Usage:
 Options:
   --prefix DIR       Install root (default: ~/.planar)
   --vendors LIST     Comma-separated filter over the vendors found on this host:
-                     claude,codex,copilot,gemini,antigravity,opencode (default: all
+                     @VENDOR_LIST@ (default: all
                      of them; a vendor is placed only when its presence marker exists)
   --no-vendor        Install Planar core only; skip vendor surfaces
   --link             Symlink from this repo instead of copying (dev mode).
@@ -156,10 +159,11 @@ Options:
   --force            Overwrite existing symlinks / adopt a non-Planar prefix.
                      It does NOT bypass the agent.db live-queue guard.
   --ignore-live-queue
-                     Retire (or uninstall) the old agent.db even while its
+                     Source install only: retire the old agent.db even while its
                      queue has live entries, or python3 cannot check it. The
                      old submitters keep an orphaned queue running outside
-                     the new queue's slot count until they drain.
+                     the new queue's slot count until they drain. Refused with
+                     --prebuilt (exit 2); the uninstaller does not read agent.db.
   --no-prune         Skip removal of stale vendor files
   --preset NAME      CMake build preset: debug|release (default: release)
   --build-dir DIR    Where to configure and build (default:
@@ -205,7 +209,7 @@ while [[ $# -gt 0 ]]; do
     --no-vendor)  VENDORS=""; shift ;;
     --link)       MODE="link"; shift ;;
     --prebuilt)
-      if [[ $# -lt 2 ]]; then printf 'install.sh: --prebuilt needs a bundle directory\n' >&2; exit 64; fi
+      if [[ $# -lt 2 || -z "$2" || "$2" == -* ]]; then printf 'install.sh: --prebuilt needs a bundle directory\n' >&2; exit 64; fi
       PREBUILT=1; PREBUILT_DIR="$2"; shift 2 ;;
     --cleanup)
       if [[ $# -lt 2 ]]; then printf 'install.sh: --cleanup needs a directory\n' >&2; exit 64; fi
@@ -229,6 +233,21 @@ while [[ $# -gt 0 ]]; do
     *) printf 'install.sh: unknown flag: %s\n\n' "$1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+# ---------- flag conflicts ----------
+
+# --prebuilt installs a bundle; --uninstall removes an install; the live-queue
+# override belongs to the source install's agent.db retirement, which a prebuilt
+# install never reads. Each pair is refused by name before anything is touched
+# (and before --uninstall execs the uninstaller), as --link is below.
+if [[ "$PREBUILT" -eq 1 && "$UNINSTALL" -eq 1 ]]; then
+  printf 'install.sh: --prebuilt cannot be used with --uninstall: --prebuilt installs a release bundle and --uninstall removes the install; run them separately. Nothing was changed.\n' >&2
+  exit 2
+fi
+if [[ "$PREBUILT" -eq 1 && "$IGNORE_LIVE_QUEUE" -eq 1 ]]; then
+  printf 'install.sh: --ignore-live-queue cannot be used with --prebuilt: a prebuilt install never reads the old agent.db, so there is no live-queue check to override. Nothing was changed.\n' >&2
+  exit 2
+fi
 
 # ---------- uninstall: a call into the standalone uninstaller ----------
 
@@ -412,8 +431,8 @@ trap 'on_err $? $LINENO' ERR
 # Checks every entry and reports ALL missing tools at once (not one-at-a-time),
 # with a `brew install …` hint built from the entries that have a Homebrew
 # package. Fatal tier aborts; non-fatal tier warns (counted) and continues.
-# Keep the BUILD_DEPS / RUN_DEPS manifests below in sync with README.md
-# § Prerequisites.
+# Keep the BUILD_DEPS / RUN_DEPS manifests below in sync with INSTALL.md
+# § Prerequisites (scripts/install-prereq-test.sh pins the pair).
 check_deps() {
   local label="$1" fatal="$2"; shift 2
   local entry cmd rest pkg desc m
@@ -599,7 +618,24 @@ RUN_DEPS=(
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
   "tar||planar update unpacks a downloaded release bundle"
+  "bash||planar update runs the bundle's install.sh with it (also the installer's own interpreter)"
+  "env||planar update reads a lock owner's start time through env (TZ=UTC LC_ALL=C ps; also a base tool)"
 )
+# Test-only tool, not a dependency of the installer or of planar: GNU wget runs
+# scripts/get-planar-test.sh's wget fallback case, which fails without it. It is
+# listed under INSTALL.md § Contributor prerequisites and on its Homebrew line.
+# The install lock names a Mac by its hardware UUID, read with ioreg by its
+# absolute path (scripts/install-lib/mutation-lock.sh, HOST IDENTITY; the native
+# lock behind planar update does the same). Without it the lock falls back to the
+# host name, and a renamed Mac then cannot recover a crashed install's lock.
+# planar update reads the host's glibc version with `ldd --version` before it
+# installs a bundle (Linux only; get-planar.sh does the same).
+if [[ "$(uname -s 2>/dev/null || true)" == Linux ]]; then
+  RUN_DEPS+=("ldd||planar update reads the glibc version (ldd --version) to refuse a bundle built for a newer glibc")
+fi
+if [[ "$(uname -s 2>/dev/null || true)" == Darwin ]]; then
+  RUN_DEPS+=("/usr/sbin/ioreg||names this Mac by its hardware UUID in the install lock (falls back to the host name without it)")
+fi
 
 if [[ "$PREBUILT" -eq 1 ]]; then
   check_deps "base" 1 "${BASE_DEPS[@]}"  # bash32: nonempty
@@ -705,8 +741,9 @@ fi
 # placed missing-only after the swap. Every subtree is always shipped (an absent
 # one is refused above); commands/ and copilot/ are retired paths listed in
 # install-cleanup.txt.
-PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
-# DEFAULT_RELEASE_BASE, release_field and release_base_valid come from
+# PLANAR_JOURNAL_SUBTREES comes from scripts/install-lib/managed-lists.sh, shared
+# with the uninstaller.
+# DEFAULT_RELEASE_BASE, release_field, release_base_normalize and release_base_valid come from
 # scripts/install-lib/release.sh, shared with the uninstaller.
 
 # quote_args ARG... -- the arguments as one shell-safe line.
@@ -776,8 +813,10 @@ set_target() {
     J_target_path="$SRC_ROOT"
     J_release_base="$DEFAULT_RELEASE_BASE"
     if [[ -n "${PLANAR_RELEASE_URL-}" ]]; then
-      if release_base_valid "$PLANAR_RELEASE_URL"; then
-        J_release_base="${PLANAR_RELEASE_URL%/}"
+      # The bootstrap's rule: strip every trailing slash, then validate.
+      _rb="$(release_base_normalize "$PLANAR_RELEASE_URL")"
+      if release_base_valid "$_rb"; then
+        J_release_base="$_rb"
       else
         warn "PLANAR_RELEASE_URL is not a valid release base; the retry command names $DEFAULT_RELEASE_BASE"
       fi
@@ -798,6 +837,30 @@ set_target() {
     J_target_path="$REPO_ROOT"
     J_release_base=""
   fi
+}
+
+# checkout_clean -- the source checkout has no uncommitted change, tracked or
+# untracked (ignored files aside). Status 1 with CHECKOUT_WHY set when it has
+# one, or when git cannot say (not a repository, no git).
+CHECKOUT_WHY=""
+CHECKOUT_NOGIT=0   # 1: the tree is not a git checkout (it can never be shown clean, so never resumes); 2: git is not installed
+checkout_clean() {
+  local st n first
+  CHECKOUT_NOGIT=0
+  if ! command -v git >/dev/null 2>&1; then
+    CHECKOUT_NOGIT=2
+  elif ! (trap - ERR; git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1); then
+    CHECKOUT_NOGIT=1
+  fi
+  if ! st="$(trap - ERR; git --no-optional-locks -C "$REPO_ROOT" status --porcelain 2>&1)"; then
+    CHECKOUT_WHY="cannot tell whether the source checkout $REPO_ROOT has uncommitted changes (git status: ${st%%$'\n'*})"
+    return 1
+  fi
+  [[ -n "$st" ]] || return 0
+  n="$(printf '%s\n' "$st" | wc -l | tr -d ' ')"
+  first="${st%%$'\n'*}"
+  CHECKOUT_WHY="the source checkout $REPO_ROOT has uncommitted changes ($n path(s); first: ${first:3})"
+  return 1
 }
 
 # same_target -- the loaded journal's transaction installs what this run would.
@@ -891,7 +954,7 @@ title "Checking for an interrupted install"
 JOURNAL_FILE="$ROOT_C/.planar-journal"
 set_target
 _want_source="$J_source"; _want_version="$J_target_version"; _want_sha="$J_target_sha"
-_want_schema="$J_target_schema"; _want_path="$J_target_path"; _want_base="$J_release_base"
+_want_schema="$J_target_schema"; _want_path="$J_target_path"; _want_base="$J_release_base"; _want_mode="$MODE"
 # The release bootstrap pins the interrupted install it will finish. The journal
 # is read here, under the lock: anything but that same mutating attempt refuses.
 _expect_stale="the interrupted install the bootstrap pinned (operation ${PLANAR_EXPECT_RECOVERY-}) is no longer pending in $ROOT_C; nothing was changed. Run the command again"
@@ -927,6 +990,21 @@ if [[ -e "$JOURNAL_FILE" || -L "$JOURNAL_FILE" ]]; then
       fi
       same_target "$_want_source" "$_want_version" "$_want_sha" "$_want_schema" "$_want_path" \
         || err "an install of $J_target_version ($J_target_sha) into $ROOT_C was interrupted after it changed the installation; finish that one first, then install another release: $J_retry"
+      # A resume never mixes copy and link mode: the subtrees already swapped
+      # in have the interrupted run's form.
+      [[ "$J_mode" == "$_want_mode" ]] \
+        || err "the install of $J_target_version ($J_target_sha) into $ROOT_C was interrupted in ${J_mode:-an unrecorded} mode and this run is in $_want_mode mode; a resume never mixes copy and link mode. Nothing was changed. Complete it in its own mode: $J_retry"
+      # A source resume restages from the checkout: only a clean tree at the
+      # recorded commit is the tree the interrupted run was building.
+      if [[ "$J_source" == checkout ]] && ! checkout_clean; then
+        if [[ "$CHECKOUT_NOGIT" == 2 ]]; then
+          err "git is not installed, so the source checkout $REPO_ROOT cannot be shown to hold the tree the interrupted install of $J_target_sha was building; a resume never stages a tree it cannot show clean. Nothing was changed. Install git, then complete the install: $J_retry"
+        fi
+        if [[ "$CHECKOUT_NOGIT" == 1 ]]; then
+          err "$CHECKOUT_WHY, so it cannot be shown to hold the tree the interrupted install of $J_target_sha was building; a resume never stages a tree it cannot show clean, and a tree that is not a git checkout never can. Nothing was changed. To give up the interrupted install instead, make sure no Planar install, update or uninstall is running, remove the recovery journal $ROOT_C/.planar-journal by hand, and install again; its .staging-* and *.old entries are then reported and kept, never removed"
+        fi
+        err "$CHECKOUT_WHY, so it cannot be shown to hold the tree the interrupted install of $J_target_sha was building; a resume never stages a dirty checkout. Nothing was changed. Make the checkout clean at that commit (git stash --include-untracked keeps your changes), then complete the install: $J_retry"
+      fi
       planar_state_reconcile "$ROOT_C" || err "the interrupted install cannot be resumed safely: $INSTALL_STATE_ERROR"
       log "resuming the interrupted install of $J_target_version"
       INSTALL_ATTEMPT=recovery
@@ -1252,7 +1330,7 @@ fi
 # Gemini CLI and Antigravity are detected independently. OpenCode has no skill
 # row on purpose: it reads ~/.agents/skills and ~/.claude/skills, and Planar
 # never writes ~/.config/opencode/skills.
-VENDOR_NAMES=(claude codex copilot gemini antigravity opencode)
+read -r -a VENDOR_NAMES <<< "$PLANAR_VENDOR_NAMES"   # the one list: scripts/install-lib/managed-lists.sh
 
 # The target table: owners|format|destination directory. A row is placed when at
 # least one of its owners is present and selected, so the shared skill is placed
@@ -1678,8 +1756,17 @@ write_release_json() {
       [[ "$n" =~ ^[0-9]+$ ]] || continue
       (( 10#$n > schema )) && schema=$((10#$n))
     done
-    printf '{\n  "version": "%s",\n  "sha": "%s",\n  "date": "%s",\n  "os": "%s",\n  "arch": "%s",\n  "os_floor": "%s",\n  "schema_version": %s\n}\n' \
-      "$version" "$sha" "$date" "$os" "$arch" "$floor" "$schema" > "$tmp"
+    # The checkout this install ran from, so the uninstaller's durable retry can
+    # name it once the installed copy has replaced the checkout's own scripts.
+    # A path the line-based reader cannot hold (not absolute, or holding a
+    # quote, a backslash or a control character) is not recorded; the
+    # uninstaller then prints a generic retry.
+    local checkout_line="" checkout_re='^/[^"\\[:cntrl:]]*$'
+    if [[ "$REPO_ROOT" =~ $checkout_re ]]; then
+      checkout_line="  \"source_checkout\": \"$REPO_ROOT\","$'\n'
+    fi
+    printf '{\n  "version": "%s",\n  "sha": "%s",\n  "date": "%s",\n  "os": "%s",\n  "arch": "%s",\n  "os_floor": "%s",\n%s  "schema_version": %s\n}\n' \
+      "$version" "$sha" "$date" "$os" "$arch" "$floor" "$checkout_line" "$schema" > "$tmp"
   fi
   if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
     rm -f "$tmp"
@@ -1726,9 +1813,6 @@ agents_n="$(count_glob "$PLANAR_HOME"/agents/planar-*.md)"
 ok "Planar ${PLANAR_BUILD_ID:-installed} → $PLANAR_HOME  ${C_DIM}(${SECONDS}s, $MODE mode)${C_RESET}"
 log "binaries:   planar, planar-agent, planar-watch, planar-execute, planar-ext"
 log "surfaces:   planar skill · $agents_n agents · vendors found: ${VENDORS_FOUND[*]:-none}"
-if [[ "$WARN_COUNT" -gt 0 ]]; then
-  printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"
-fi
 printf '\n'
 log "database:   $PLANAR_INSTALL_DB (current)"
 log "next:       planar init  (in a project checkout, to register it)"
@@ -1736,7 +1820,8 @@ log "uninstall:  $PLANAR_HOME/bin/planar-uninstall  (--purge also removes the da
 
 # A planar ahead of the installed one on PATH shadows it: name that binary, and
 # say plainly when it is the one the retired `make install` left in
-# ~/.local/bin. Resolved after the summary so the warning is the last thing read.
+# ~/.local/bin. Resolved after the summary, and the warning count is printed
+# after it, so the count covers every warning.
 PLANAR_BIN_DIR="$PLANAR_HOME/bin"
 _shadow="$(command -v planar 2>/dev/null || true)"
 if [[ -n "$_shadow" && "$_shadow" == /* ]]; then
@@ -1752,6 +1837,11 @@ if [[ -n "$_shadow" && "$_shadow" == /* ]]; then
     fi
     warn "$_shadow_name shadows the installed $PLANAR_BIN_DIR/planar: your shell runs $_shadow_name. Put $PLANAR_BIN_DIR first on PATH, or remove $_shadow_name$_shadow_why."
   fi
+fi
+
+# The count comes after the shadow warning so it includes it.
+if [[ "$WARN_COUNT" -gt 0 ]]; then
+  printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"
 fi
 
 # Print PATH instructions only when ~/.planar/bin is not already on PATH.

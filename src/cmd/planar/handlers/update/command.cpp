@@ -7,6 +7,7 @@ module;
 #include <cerrno>
 #include <cstdio>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -61,9 +62,133 @@ auto bad_input(std::string body) -> std::unexpected<domain_error> {
   return std::unexpected(error_from_body(domain_error_kind::invalid_input, std::move(body)));
 }
 
-/// @brief GET `url` under the download policy with a size bound.
+// ---------------------------------------------------------------------------
+// SIGINT and SIGTERM.
+//
+// A plain run catches both from just before it takes ownership until the
+// hand-off. The handler only records the first signal; the run notices it at
+// its checkpoints and in the download's cancel hook, unwinds through
+// `update_session`, which removes the download directory and releases
+// ownership, and exits 128+signo. Immediately before the exec the previous
+// dispositions are restored: from there a signal acts as it would on any
+// process (before the exec it kills this one, which leaves what a KILL leaves
+// and the next owner reclaims; after it the installer's own handling applies),
+// and none is lost between the last check and the exec.
+// ---------------------------------------------------------------------------
+
+/// @brief The first SIGINT or SIGTERM a plain run caught, or 0.
+///
+/// The one piece of namespace-scope mutable state here: a signal handler can
+/// reach nothing else. It is written by `note_interrupt` and reset by
+/// `interrupt_guard`'s constructor; one run arms one guard at a time.
+std::atomic<int> g_update_interrupt{0};
+static_assert(std::atomic<int>::is_always_lock_free);
+
+/// @brief The signals a plain run turns into a clean stop.
+constexpr std::array<int, 2> k_interrupt_signals{SIGINT, SIGTERM};
+
+/// @brief The handler: record the first signal. Async-signal-safe (one
+/// lock-free atomic operation).
+auto note_interrupt(int sig) -> void {
+  int none = 0;
+  g_update_interrupt.compare_exchange_strong(none, sig);
+}
+
+/// @brief SIGINT and SIGTERM blocked on this thread for its lifetime.
+class signals_blocked {
+public:
+  signals_blocked() {
+    sigset_t set{};
+    sigemptyset(&set);
+    for (auto const sig : k_interrupt_signals) {
+      sigaddset(&set, sig);
+    }
+    _ok = ::pthread_sigmask(SIG_BLOCK, &set, &_old) == 0;
+  }
+  signals_blocked(const signals_blocked&)            = delete;
+  signals_blocked& operator=(const signals_blocked&) = delete;
+  signals_blocked(signals_blocked&&)                 = delete;
+  signals_blocked& operator=(signals_blocked&&)      = delete;
+  ~signals_blocked() {
+    if (_ok) {
+      ::pthread_sigmask(SIG_SETMASK, &_old, nullptr);
+    }
+  }
+
+private:
+  sigset_t _old{};
+  bool     _ok = false;
+};
+
+/// @brief Catches SIGINT and SIGTERM for one plain run and restores the
+/// previous dispositions when destroyed. A signal that was ignored when the
+/// run started (a background job's SIGINT) stays ignored.
+class interrupt_guard {
+public:
+  interrupt_guard() {
+    g_update_interrupt.store(0);
+    arm();
+  }
+  interrupt_guard(const interrupt_guard&)            = delete;
+  interrupt_guard& operator=(const interrupt_guard&) = delete;
+  interrupt_guard(interrupt_guard&&)                 = delete;
+  interrupt_guard& operator=(interrupt_guard&&)      = delete;
+  ~interrupt_guard() {
+    restore();
+  }
+
+  /// @brief Install the handler for each signal not ignored.
+  auto arm() -> void {
+    for (std::size_t i = 0; i < k_interrupt_signals.size(); ++i) {
+      struct sigaction current{};
+      if (_armed[i] || ::sigaction(k_interrupt_signals[i], nullptr, &current) != 0 || current.sa_handler == SIG_IGN) {
+        continue;
+      }
+      struct sigaction ours{};
+      ours.sa_handler = note_interrupt;
+      ours.sa_flags   = SA_RESTART;
+      sigfillset(&ours.sa_mask);
+      _armed[i] = ::sigaction(k_interrupt_signals[i], &ours, &_previous[i]) == 0;
+    }
+  }
+
+  /// @brief Put back the dispositions `arm` replaced.
+  auto restore() -> void {
+    for (std::size_t i = 0; i < k_interrupt_signals.size(); ++i) {
+      if (_armed[i]) {
+        ::sigaction(k_interrupt_signals[i], &_previous[i], nullptr);
+        _armed[i] = false;
+      }
+    }
+  }
+
+  /// @brief The signal caught, or 0.
+  [[nodiscard]] static auto caught() -> int {
+    return g_update_interrupt.load();
+  }
+
+  /// @brief Stand down for the exec: with both signals blocked, refuse when
+  /// one was caught, else restore the previous dispositions; then unblock.
+  /// @return Whether the exec may proceed.
+  [[nodiscard]] auto release_for_exec() -> bool {
+    signals_blocked const blocked;
+    if (caught() != 0) {
+      return false;
+    }
+    restore();
+    return true;
+  }
+
+private:
+  std::array<struct sigaction, 2> _previous{};
+  std::array<bool, 2>             _armed{};
+};
+
+/// @brief GET `url` under the download policy with a size bound, abandoned
+/// when a plain run catches SIGINT or SIGTERM.
 auto fetch(const std::string& url, const up::base_parts& base, std::uint64_t cap) -> std::expected<std::string, fetch_fault> {
-  auto got = http::download(url, http::download_policy{.max_body_bytes = cap});
+  auto got = http::download(
+      url, http::download_policy{.max_body_bytes = cap, .cancelled = [] { return interrupt_guard::caught() != 0; }});
   if (!got) {
     auto const& e = got.error();
     if (base.scheme == "file" && e.kind == http::download_error_kind::transport_failed) {
@@ -212,6 +337,9 @@ public:
     if (_handed_off) {
       return;
     }
+    // Removal and release finish even when SIGINT or SIGTERM arrives now; a
+    // signal that does is delivered once both are done.
+    signals_blocked const blocked;
     if (_tmp_created && up::lock::update_tmp_valid(_canon, _held.tmp)) {
       std::error_code ec;
       std::filesystem::remove_all(_held.tmp, ec);
@@ -388,6 +516,203 @@ auto extract(const std::string& archive, const std::string& asset, const std::st
   return {};
 }
 
+/// @brief The placeholder a checkpoint returns once a signal was caught;
+/// `run_update` replaces it with `interrupted`.
+auto stopped() -> std::unexpected<domain_error> {
+  return failure("interrupted");
+}
+
+/// @brief The report of a plain run stopped by `sig`: exit 128+`sig`, as a
+/// shell reports a command a signal ended and as the bootstrap's own `INT`
+/// and `TERM` traps exit.
+auto interrupted(int sig) -> std::unexpected<domain_error> {
+  auto err = error_from_body(domain_error_kind::generic_failure,
+                             std::format("planar update was interrupted by {}; nothing was installed, its download directory "
+                                         "was removed and the mutation lock released",
+                                         sig == SIGINT ? "SIGINT" : "SIGTERM"));
+  err.passthrough_code = 128 + sig;
+  return std::unexpected(std::move(err));
+}
+
+/// @brief A plain run, from the platform check to the hand-off, under
+/// `guard`. Every return except a successful exec removes the download
+/// directory and releases ownership (`update_session`).
+auto replace_installation(context& ctx, const std::string& canon, const std::string& base, const up::base_parts& parts,
+                          const std::optional<std::string>& want_tag, const update_host& host, interrupt_guard& guard)
+    -> handler_result {
+  auto const platform = host.platform();
+  if (!platform) {
+    return failure(platform.error());
+  }
+  auto const      asset       = std::format("planar-{}.tar.gz", *platform);
+  auto const      bundle_name = std::format("planar-{}", *platform);
+  std::error_code ec;
+  if (!std::filesystem::is_directory(canon, ec)) {
+    return failure(std::format("there is no Planar installation at {} to update; install one with: curl -fsSL "
+                               "{}/latest/download/get-planar.sh | sh",
+                               canon, up::k_default_release_base));
+  }
+
+  // 1. Ownership, with the temporary directory recorded before it exists.
+  auto const tmp  = std::format("{}/{}/update-{}", canon, up::lock::k_update_namespace, random_hex());
+  auto       held = up::lock::acquire(canon, "update", tmp);
+  if (!held) {
+    return failure(held.error());
+  }
+  update_session session(canon, std::move(*held));
+  if (!session.held().reclaimed.empty()) {
+    ctx.out() << std::format("planar update: reclaimed the mutation lock from an abandoned {}\n", session.held().reclaimed);
+    if (!session.held().reclaimed_tmp.empty()) {
+      std::filesystem::remove_all(session.held().reclaimed_tmp, ec);
+      ctx.out() << std::format("planar update: removed the abandoned updater's temporary directory {}\n",
+                               session.held().reclaimed_tmp);
+    }
+  }
+
+  if (interrupt_guard::caught() != 0) {
+    return stopped();
+  }
+
+  // 2. Pending recovery outranks any verdict about the current release.
+  if (auto pending = pending_recovery(canon)) {
+    return std::unexpected(std::move(*pending));
+  }
+  auto const installed = up::read_release(std::filesystem::path{canon} / "release.json");
+  if (!installed) {
+    return failure(installed.error());
+  }
+
+  // 3. The tag, and the no-change verdict over a completed install.
+  std::string tag;
+  if (want_tag.has_value()) {
+    tag = *want_tag;
+  } else {
+    auto latest = fetch_latest(base, parts);
+    if (!latest) {
+      return std::unexpected(latest.error());
+    }
+    tag = std::move(*latest);
+  }
+  bool const stamped = std::filesystem::is_regular_file(std::filesystem::path{canon} / ".planar-install", ec);
+  if (installed->has_value() && (*installed)->version == tag && stamped) {
+    ctx.out() << std::format("planar update: Planar {} is installed in {} and current; no changes\n", tag, canon);
+    return {};
+  }
+
+  // 4. Download and verify. A caught signal abandons a transfer in flight
+  // through the download's cancel hook.
+  if (interrupt_guard::caught() != 0) {
+    return stopped();
+  }
+  if (auto made = make_update_tmp(canon, tmp); !made) {
+    return failure(made.error());
+  }
+  session.mark_tmp_created();
+  ctx.out() << std::format("planar update: installing Planar {} for {} from {}\n", tag, *platform, base);
+  auto const assets = std::format("{}/download/{}", base, tag);
+  auto const sums   = fetch(std::format("{}/SHA256SUMS", assets), parts, k_sums_cap);
+  if (!sums) {
+    return failure(fault_message(sums.error(), true,
+                                 std::format("cannot download SHA256SUMS for {} from {}/SHA256SUMS", tag, assets), base, tag));
+  }
+  auto const body = fetch(std::format("{}/{}", assets, asset), parts, k_asset_cap);
+  if (!body) {
+    return failure(fault_message(body.error(), false,
+                                 std::format("cannot download {} for {} from {}/{}", asset, tag, assets, asset), base, tag));
+  }
+  if (interrupt_guard::caught() != 0) {
+    return stopped();
+  }
+  auto const expected = up::select_checksum_record(*sums, asset);
+  if (!expected) {
+    return failure(expected.error());
+  }
+  if (sha256::hex(*body) != *expected) {
+    return failure(std::format(
+        "checksum mismatch for {}: the download does not match SHA256SUMS; nothing was extracted or installed", asset));
+  }
+  auto const archive = std::format("{}/{}", tmp, asset);
+  if (!write_new_file(archive, *body)) {
+    return failure(std::format("cannot write {}; nothing was installed", archive));
+  }
+
+  // 5. Unpack and check the bundle.
+  if (interrupt_guard::caught() != 0) {
+    return stopped();
+  }
+  if (auto unpacked = extract(archive, asset, bundle_name, std::format("{}/x", tmp)); !unpacked) {
+    return failure(unpacked.error());
+  }
+  auto const bundle         = std::format("{}/x/{}", tmp, bundle_name);
+  auto const bundle_release = std::filesystem::is_regular_file(bundle + "/install.sh", ec)
+                                  ? up::read_release(bundle + "/release.json")
+                                  : std::expected<std::optional<up::release_info>, std::string>{};
+  if (!bundle_release || !bundle_release->has_value()) {
+    return failure(std::format("{} is not a release bundle (no install.sh or release.json); nothing was installed", asset));
+  }
+  auto const& release = **bundle_release;
+  if (release.version != tag) {
+    return failure(std::format("{} holds Planar '{}' but was fetched as {}; nothing was installed", asset,
+                               up::printable(release.version), tag));
+  }
+  if (*platform == "linux-x86_64") {
+    if (auto refused = up::glibc_refusal(release.os_floor, host.ldd_first_line())) {
+      return failure(std::move(*refused));
+    }
+  }
+  auto const own_schema = static_cast<std::uint64_t>(::planar::db::embedded_max());
+  if (!release.schema_version.has_value()) {
+    return failure(std::format("the {} bundle's release.json records no schema_version, so it cannot be checked against database "
+                               "schema version {} of this planar; nothing was installed",
+                               tag, own_schema));
+  }
+  if (*release.schema_version < own_schema) {
+    return failure(
+        std::format("the {} bundle carries database schema version {}, older than schema version {} of this planar; an "
+                    "older release is never installed over a newer database, so nothing was installed",
+                    tag, *release.schema_version, own_schema));
+  }
+
+  // 6. Hand off. Ownership is checked, never released, before the exec.
+  // The shadow check (`command -v planar` versus `<root>/bin/planar`) is not made
+  // here: the exec below never returns control, and a check before it would run
+  // before the new binaries are placed. The bundled installer makes it after
+  // placement, with the environment this process hands it, and names
+  // `~/.local/bin/planar` when that is the shadowing path. Printing it here too
+  // would print it twice.
+  if (auto owned = up::lock::assert_owner(session.held()); !owned) {
+    return failure(owned.error());
+  }
+  auto const bash = process::resolve_program(ctx.env(), "bash");
+  if (!bash.has_value()) {
+    return failure("bash is required to run the installer; nothing was installed");
+  }
+  exec_request const request{
+      .program = *bash,
+      .argv    = {"bash", bundle + "/install.sh", "--prebuilt", bundle, "--cleanup", session.held().tmp},
+      .env     = {{"PLANAR_MUTATION_HANDOFF", std::format("{}:{}", session.held().gen, session.held().nonce)},
+                  {"PLANAR_RELEASE_URL", base},
+                  {"PLANAR_EXPECT_RECOVERY", std::nullopt}},
+  };
+  ctx.out() << std::format("planar update: handing over to {}/install.sh\n", bundle);
+  flush_everything(ctx);
+  // The boundary: from here SIGINT and SIGTERM act as they would without this
+  // run (see `interrupt_guard`), and after the exec the installer owns the
+  // directory and ownership.
+  if (!guard.release_for_exec()) {
+    return stopped();
+  }
+  auto const ran = host.exec(request);
+  if (ran) {
+    session.hand_off();
+    return {};
+  }
+  guard.arm();
+  return failure(
+      std::format("cannot run the installer ({} {}/install.sh): {}; nothing was installed and the download was removed", *bash,
+                  bundle, std::strerror(ran.error())));
+}
+
 } // namespace
 
 auto native_host() -> update_host {
@@ -462,156 +787,14 @@ auto run_update(context& ctx, const cliapp::parsed_args& args, const update_host
     return check(ctx, *canon, base, parts);
   }
 
-  auto const platform = host.platform();
-  if (!platform) {
-    return failure(platform.error());
+  interrupt_guard guard;
+  auto            result = replace_installation(ctx, *canon, base, parts, want_tag, host, guard);
+  if (auto const sig = interrupt_guard::caught(); sig != 0) {
+    // Whatever the run was doing, the operator asked it to stop, and
+    // `update_session` has already removed the download and released ownership.
+    return interrupted(sig);
   }
-  auto const      asset       = std::format("planar-{}.tar.gz", *platform);
-  auto const      bundle_name = std::format("planar-{}", *platform);
-  std::error_code ec;
-  if (!std::filesystem::is_directory(*canon, ec)) {
-    return failure(std::format("there is no Planar installation at {} to update; install one with: curl -fsSL "
-                               "{}/latest/download/get-planar.sh | sh",
-                               *canon, up::k_default_release_base));
-  }
-
-  // 1. Ownership, with the temporary directory recorded before it exists.
-  auto const tmp  = std::format("{}/{}/update-{}", *canon, up::lock::k_update_namespace, random_hex());
-  auto       held = up::lock::acquire(*canon, "update", tmp);
-  if (!held) {
-    return failure(held.error());
-  }
-  update_session session(*canon, std::move(*held));
-  if (!session.held().reclaimed.empty()) {
-    ctx.out() << std::format("planar update: reclaimed the mutation lock from an abandoned {}\n", session.held().reclaimed);
-    if (!session.held().reclaimed_tmp.empty()) {
-      std::filesystem::remove_all(session.held().reclaimed_tmp, ec);
-      ctx.out() << std::format("planar update: removed the abandoned updater's temporary directory {}\n",
-                               session.held().reclaimed_tmp);
-    }
-  }
-
-  // 2. Pending recovery outranks any verdict about the current release.
-  if (auto pending = pending_recovery(*canon)) {
-    return std::unexpected(std::move(*pending));
-  }
-  auto const installed = up::read_release(std::filesystem::path{*canon} / "release.json");
-  if (!installed) {
-    return failure(installed.error());
-  }
-
-  // 3. The tag, and the no-change verdict over a completed install.
-  std::string tag;
-  if (want_tag.has_value()) {
-    tag = *want_tag;
-  } else {
-    auto latest = fetch_latest(base, parts);
-    if (!latest) {
-      return std::unexpected(latest.error());
-    }
-    tag = std::move(*latest);
-  }
-  bool const stamped = std::filesystem::is_regular_file(std::filesystem::path{*canon} / ".planar-install", ec);
-  if (installed->has_value() && (*installed)->version == tag && stamped) {
-    ctx.out() << std::format("planar update: Planar {} is installed in {} and current; no changes\n", tag, *canon);
-    return {};
-  }
-
-  // 4. Download and verify.
-  if (auto made = make_update_tmp(*canon, tmp); !made) {
-    return failure(made.error());
-  }
-  session.mark_tmp_created();
-  ctx.out() << std::format("planar update: installing Planar {} for {} from {}\n", tag, *platform, base);
-  auto const assets = std::format("{}/download/{}", base, tag);
-  auto const sums   = fetch(std::format("{}/SHA256SUMS", assets), parts, k_sums_cap);
-  if (!sums) {
-    return failure(fault_message(sums.error(), true,
-                                 std::format("cannot download SHA256SUMS for {} from {}/SHA256SUMS", tag, assets), base, tag));
-  }
-  auto const body = fetch(std::format("{}/{}", assets, asset), parts, k_asset_cap);
-  if (!body) {
-    return failure(fault_message(body.error(), false,
-                                 std::format("cannot download {} for {} from {}/{}", asset, tag, assets, asset), base, tag));
-  }
-  auto const expected = up::select_checksum_record(*sums, asset);
-  if (!expected) {
-    return failure(expected.error());
-  }
-  if (sha256::hex(*body) != *expected) {
-    return failure(std::format(
-        "checksum mismatch for {}: the download does not match SHA256SUMS; nothing was extracted or installed", asset));
-  }
-  auto const archive = std::format("{}/{}", tmp, asset);
-  if (!write_new_file(archive, *body)) {
-    return failure(std::format("cannot write {}; nothing was installed", archive));
-  }
-
-  // 5. Unpack and check the bundle.
-  if (auto unpacked = extract(archive, asset, bundle_name, std::format("{}/x", tmp)); !unpacked) {
-    return failure(unpacked.error());
-  }
-  auto const bundle         = std::format("{}/x/{}", tmp, bundle_name);
-  auto const bundle_release = std::filesystem::is_regular_file(bundle + "/install.sh", ec)
-                                  ? up::read_release(bundle + "/release.json")
-                                  : std::expected<std::optional<up::release_info>, std::string>{};
-  if (!bundle_release || !bundle_release->has_value()) {
-    return failure(std::format("{} is not a release bundle (no install.sh or release.json); nothing was installed", asset));
-  }
-  auto const& release = **bundle_release;
-  if (release.version != tag) {
-    return failure(std::format("{} holds Planar '{}' but was fetched as {}; nothing was installed", asset,
-                               up::printable(release.version), tag));
-  }
-  if (*platform == "linux-x86_64") {
-    if (auto refused = up::glibc_refusal(release.os_floor, host.ldd_first_line())) {
-      return failure(std::move(*refused));
-    }
-  }
-  auto const own_schema = static_cast<std::uint64_t>(::planar::db::embedded_max());
-  if (!release.schema_version.has_value()) {
-    return failure(std::format("the {} bundle's release.json records no schema_version, so it cannot be checked against database "
-                               "schema version {} of this planar; nothing was installed",
-                               tag, own_schema));
-  }
-  if (*release.schema_version < own_schema) {
-    return failure(
-        std::format("the {} bundle carries database schema version {}, older than schema version {} of this planar; an "
-                    "older release is never installed over a newer database, so nothing was installed",
-                    tag, *release.schema_version, own_schema));
-  }
-
-  // 6. Hand off. Ownership is checked, never released, before the exec.
-  // The shadow check (`command -v planar` versus `<root>/bin/planar`) is not made
-  // here: the exec below never returns control, and a check before it would run
-  // before the new binaries are placed. The bundled installer makes it after
-  // placement, with the environment this process hands it, and names
-  // `~/.local/bin/planar` when that is the shadowing path. Printing it here too
-  // would print it twice.
-  if (auto owned = up::lock::assert_owner(session.held()); !owned) {
-    return failure(owned.error());
-  }
-  auto const bash = process::resolve_program(ctx.env(), "bash");
-  if (!bash.has_value()) {
-    return failure("bash is required to run the installer; nothing was installed");
-  }
-  exec_request const request{
-      .program = *bash,
-      .argv    = {"bash", bundle + "/install.sh", "--prebuilt", bundle, "--cleanup", session.held().tmp},
-      .env     = {{"PLANAR_MUTATION_HANDOFF", std::format("{}:{}", session.held().gen, session.held().nonce)},
-                  {"PLANAR_RELEASE_URL", base},
-                  {"PLANAR_EXPECT_RECOVERY", std::nullopt}},
-  };
-  ctx.out() << std::format("planar update: handing over to {}/install.sh\n", bundle);
-  flush_everything(ctx);
-  auto const ran = host.exec(request);
-  if (ran) {
-    session.hand_off();
-    return {};
-  }
-  return failure(
-      std::format("cannot run the installer ({} {}/install.sh): {}; nothing was installed and the download was removed", *bash,
-                  bundle, std::strerror(ran.error())));
+  return result;
 }
 
 auto update(context& ctx, const cliapp::parsed_args& args) -> handler_result {

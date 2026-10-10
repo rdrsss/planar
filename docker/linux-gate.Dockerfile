@@ -38,6 +38,38 @@ ARG CMAKE_VERSION=4.4.2
 ARG CMAKE_SHA256_AARCH64=9ca1aadb4451c5dcbdc67f9b4aff42dab52abbaebd8db9e2900026502dbed671
 ARG CMAKE_SHA256_X86_64=3ada9a3f5d8a85413579bdd0ea6aa8e8da86efdd6d15c91a1afa517f2021956c
 
+# A real bash 3.2 for the installer's two-shell comparison (plan 1122 M5, task 7361).
+# Debian ships bash 5, so the gate cannot otherwise run the scenarios of
+# scripts/install-bash32-test.sh under the shell stock macOS ships. This stage builds
+# bash 3.2.57 (the last 3.2 patch level, which is what macOS's /bin/bash is) from the GNU
+# source archive (ftp.gnu.org, then two mirrors if it is unreachable), verified by SHA-256 (the checksum is what makes a mirror safe), with its 2007 config.guess/config.sub replaced (they do not know aarch64) and the old K&R-era code accepted by a modern
+# compiler (-std=gnu89, implicit declarations and int allowed). It builds serially (bash's
+# Makefiles are not parallel-safe). Nothing else uses it.
+FROM debian:trixie-slim AS bash32
+ARG BASH32_VERSION=3.2.57
+ARG BASH32_SHA256=3fa9daf85ebf35068f090ce51283ddeeb3c75eb5bc70b1a4a7cb05868bfe06a4
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl build-essential bison autotools-dev \
+ && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+    fetched=; \
+    for base in https://ftp.gnu.org/gnu https://mirrors.kernel.org/gnu https://mirrors.ocf.berkeley.edu/gnu; do \
+      echo "bash32: fetching ${base}/bash/bash-${BASH32_VERSION}.tar.gz"; \
+      if curl -fsSL --connect-timeout 20 --max-time 300 --retry 2 -o /tmp/bash.tar.gz "${base}/bash/bash-${BASH32_VERSION}.tar.gz"; then fetched=1; echo "bash32: downloaded from ${base}"; break; fi; \
+    done; \
+    [ -n "${fetched}" ] || { echo "bash32: every source failed" >&2; exit 1; }; \
+    echo "${BASH32_SHA256}  /tmp/bash.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/bash.tar.gz -C /tmp; \
+    cd "/tmp/bash-${BASH32_VERSION}"; \
+    cp /usr/share/misc/config.guess /usr/share/misc/config.sub support/; \
+    CC="gcc -std=gnu89 -w" CFLAGS="-O1" \
+      ./configure --prefix=/opt/bash-3.2 --without-bash-malloc --disable-nls >/tmp/configure.log 2>&1 || { tail -40 /tmp/configure.log; exit 1; }; \
+    make >/tmp/make.log 2>&1 || { grep -n -B8 -A3 -E 'Error|\*\*\*' /tmp/make.log | head -80; exit 1; }; \
+    make install >/tmp/install.log 2>&1 || { tail -40 /tmp/install.log; exit 1; }; \
+    test "$(/opt/bash-3.2/bin/bash -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"')" = 3.2; \
+    rm -rf /tmp/bash-* /tmp/bash.tar.gz
+
 FROM debian:trixie-slim AS toolchain
 ARG LLVM_MAJOR
 ARG CMAKE_VERSION
@@ -85,6 +117,13 @@ RUN set -eu; \
     "${PLANAR_LLVM_PREFIX}/bin/clang++" --version | head -1; \
     test -d "${PLANAR_LLVM_PREFIX}/include/c++/v1"; \
     find "${PLANAR_LLVM_PREFIX}/lib" -name 'libc++.modules.json' | grep -q .
+
+# The installer's two-shell comparison (scripts/install-bash32-test.sh) runs here with
+# bash 3.2 as the old shell and the image's bash 5 as the new one, and FAILS rather than
+# comparing one shell with itself when either is missing.
+COPY --from=bash32 /opt/bash-3.2 /opt/bash-3.2
+ENV PLANAR_BASH32_OLD=/opt/bash-3.2/bin/bash \
+    PLANAR_BASH32_REQUIRE_COMPARE=1
 
 FROM toolchain AS run
 # Sibling-lane hosts are shared; the Makefile passes a bounded job count.

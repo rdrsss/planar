@@ -128,13 +128,15 @@ source "$LIB/prefix-guard.sh"
 source "$LIB/mutation-lock.sh"
 # shellcheck source=scripts/install-lib/install-state.sh
 source "$LIB/install-state.sh"
+# shellcheck source=scripts/install-lib/managed-lists.sh
+source "$LIB/managed-lists.sh"
 # shellcheck source=scripts/install-lib/ownership.sh
 source "$LIB/ownership.sh"
 # shellcheck source=scripts/install-lib/release.sh
 source "$LIB/release.sh"
 
-# The managed subtrees, as install.sh swaps them (keep the two lists equal).
-PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
+# The managed subtrees (PLANAR_JOURNAL_SUBTREES) come from managed-lists.sh, the
+# one copy install.sh sources too.
 PLANAR_BINARY_NAMES="planar planar-agent planar-watch planar-execute planar-ext"
 
 # ---------- output ----------
@@ -173,26 +175,49 @@ uninstall_args() {
 # retry_command -- the command that finishes this uninstall after an
 # interruption, which must not depend on the installed copy (this run removes
 # it): a release install names that release's bundled uninstaller, downloaded
-# afresh; otherwise the source checkout this script runs from, or the bundle
+# afresh and verified against SHA256SUMS before it is extracted; otherwise the
+# source checkout (the one this script runs from, or the one the install
+# recorded in release.json when this is the installed copy), or the bundle
 # it runs from when that lies outside the root.
 retry_command() {
-  local args v os arch base checkout
+  local args v os arch base rb checkout pr=""
   args="$(uninstall_args)"
   if [ -f "$ROOT_C/release.json" ]; then
+    # A source install records its checkout; a usable one wins over the release
+    # branch below, because a source build of a tagged commit carries the tag
+    # as its version and has no release asset to download. A bundle's
+    # release.json never has the key.
+    checkout="$(release_source_checkout "$ROOT_C/release.json")"
+    if [[ "$checkout" == /* ]] && [ -f "$checkout/install.sh" ] && [ -f "$checkout/scripts/uninstall.sh" ]; then
+      printf 'cd %s && ./install.sh --uninstall%s' "$(printf '%q' "$checkout")" "$args"
+      return 0
+    fi
     v="$(release_field "$ROOT_C/release.json" version)"
     os="$(release_field "$ROOT_C/release.json" os)"
     arch="$(release_field "$ROOT_C/release.json" arch)"
     if [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ && "$os" =~ ^[a-z0-9_]+$ && "$arch" =~ ^[a-z0-9_]+$ ]]; then
       base="$DEFAULT_RELEASE_BASE"
-      if [ -n "${PLANAR_RELEASE_URL-}" ] && release_base_valid "$PLANAR_RELEASE_URL"; then base="${PLANAR_RELEASE_URL%/}"; fi
+      if [ -n "${PLANAR_RELEASE_URL-}" ]; then
+        rb="$(release_base_normalize "$PLANAR_RELEASE_URL")"
+        if release_base_valid "$rb"; then base="$rb"; fi
+      fi
+      # As the bootstrap does, an https base never follows a redirect to http.
+      case "$base" in https://*) pr=" --proto-redir =https" ;; esac
+      # The retry downloads SHA256SUMS and the archive, verifies the archive
+      # against its one record (sha256sum -c or shasum -a 256 -c, as the
+      # bootstrap does) and only then extracts. A mismatch, a missing or
+      # duplicate record, or no checksum tool refuses naming the asset and
+      # extracts nothing. It runs in a subshell so it leaves no variable
+      # behind, and removes its scratch directory however it ends.
       # shellcheck disable=SC2016  # the command is printed for the operator, not run
-      printf 'd="$(mktemp -d)" && curl -fsSL %s/download/%s/planar-%s-%s.tar.gz | tar -xzf - -C "$d" && bash "$d/planar-%s-%s/uninstall.sh"%s' \
-        "$base" "$v" "$os" "$arch" "$os" "$arch" "$args"
+      printf '(d="$(mktemp -d "${TMPDIR:-/tmp}/planar-uninstall.XXXXXX")" || exit 1; trap \047rm -rf "$d"\047 EXIT; a=planar-%s-%s.tar.gz && u=%s && curl -fsSL%s "$u/SHA256SUMS" -o "$d/SHA256SUMS" && curl -fsSL%s "$u/$a" -o "$d/$a" && { (cd "$d" && [ "$(grep -cx "[0-9a-f]\\{64\\}  $a" SHA256SUMS)" = 1 ] && grep -x "[0-9a-f]\\{64\\}  $a" SHA256SUMS > asset.sha256 && { command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || { echo "planar-uninstall: no sha256sum or shasum to verify $a with; nothing was extracted" >&2; exit 2; }; { sha256sum -c asset.sha256 || shasum -a 256 -c asset.sha256; } >/dev/null 2>&1; }) || { [ "$?" = 2 ] || echo "planar-uninstall: checksum verification failed for $a: it does not match SHA256SUMS; nothing was extracted" >&2; exit 1; }; } && tar -xzf "$d/$a" -C "$d" && bash "$d/planar-%s-%s/uninstall.sh"%s)' \
+        "$os" "$arch" "$(printf '%q' "$base/download/$v")" "$pr" "$pr" "$os" "$arch" "$args"
       return 0
     fi
   fi
   case "$SELF_DIR/" in
-    "$ROOT_C/"*) ;;
+    "$ROOT_C/"*)
+      ;;
     *)
       checkout="$(cd "$SELF_DIR/.." && pwd -P)"
       if [ "$(basename "$SELF_DIR")" = scripts ] && [ -f "$checkout/install.sh" ] && [ -f "$checkout/CMakeLists.txt" ]; then

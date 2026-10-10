@@ -15,10 +15,22 @@
 #           present. On macOS /bin/bash must be 3.2; elsewhere the dynamic half
 #           still runs under whatever /bin/bash is and only that version assertion
 #           is skipped, with a printed reason. The end state is checked explicitly
-#           and compared tree for tree (run-specific lock records left out, the HOME
-#           path normalised) between two runs under /bin/bash (a self-check that keeps
-#           the comparison honest) and, when a different, newer bash is on the host,
-#           with that bash's run.
+#           and compared tree for tree (file and directory modes, symlink targets and
+#           file checksums; run-specific lock records left out, the HOME path
+#           normalised) between two runs under the old bash (a self-check that keeps
+#           the comparison honest) and, when a different, newer bash is available,
+#           with that bash's run. After every uninstall the mutation lock library's own
+#           judgement (_pl_owner_state) must say no owner is live (free or released).
+#
+# THE TWO-SHELL COMPARISON AND WHERE IT IS REQUIRED (plan 1122 M5, task 7361)
+#   The Linux gate image (docker/linux-gate.Dockerfile) builds a real bash 3.2.57 at
+#   /opt/bash-3.2/bin/bash and sets PLANAR_BASH32_OLD to it and
+#   PLANAR_BASH32_REQUIRE_COMPARE=1: there the old shell must be bash 3.x and a newer
+#   bash (the image's /bin/bash) must exist, or the test FAILS rather than comparing
+#   nothing. Anywhere else (a developer macOS host, whose /bin/bash is 3.2 but which
+#   may have no newer bash) the comparison runs when a newer bash is found and
+#   otherwise prints a note saying it did not run and why; it never silently passes
+#   as if it had. PLANAR_BASH32_NEW names the newer bash explicitly.
 #
 # The uninstall command is a function (uninstall_run), so the standalone
 # planar-uninstall can be driven by the same scenarios. Everything runs in a
@@ -120,20 +132,42 @@ lint_selftest() {
   [[ -n "$(lint_bash4 "$f")" ]] || fail "lint self-test: \${v,,} went undetected"
 }
 
-if [[ "${1-}" != "--dynamic-only" ]]; then
+# Test groups (plan 1122 M5, task 7361): the whole file took about 250 s on a loaded host with
+# the second shell, so ctest registers one entry per group, install.bash32_static,
+# install.bash32_flag, _home and _vendors (label install_bash32[_<group>]), each of
+# which runs one scenario under the old bash, again, and under the newer bash.
+# INSTALL_BASH32_GROUP selects one; unset runs everything in one process. An unknown
+# name is a usage error.
+GROUP="${INSTALL_BASH32_GROUP:-all}"
+case "$GROUP" in all|static|flag|home|vendors) ;; *) printf 'install-bash32-test: unknown INSTALL_BASH32_GROUP %s (want one of: static flag home vendors)\n' "$GROUP" >&2; exit 2 ;; esac
+case "$GROUP" in
+  all)     SCEN_NAMES="novendor-flag novendor-home vendors" ;;
+  flag)    SCEN_NAMES="novendor-flag" ;;
+  home)    SCEN_NAMES="novendor-home" ;;
+  vendors) SCEN_NAMES="vendors" ;;
+  *)       SCEN_NAMES="" ;;
+esac
+
+if [[ "${1-}" != "--dynamic-only" && ( "$GROUP" == all || "$GROUP" == static ) ]]; then
   lint_selftest
   pass "static lint self-test: planted unguarded and bash-4 constructs are detected"
   static_check
   pass "static lint: no unguarded array expansion or bash-4-only construct in install.sh and its sourced scripts"
 fi
+[[ "$GROUP" == static ]] && { printf 'install-bash32-test: %d checks passed (static group)\n' "$PASSED"; exit 0; }
 [[ "${1-}" == "--static-only" ]] && { printf 'install-bash32-test: %d checks passed (static only)\n' "$PASSED"; exit 0; }
 
 # ---- dynamic half ---------------------------------------------------------------------
 
-BASH_BIN=/bin/bash
+BASH_BIN="${PLANAR_BASH32_OLD:-/bin/bash}"
+REQUIRE_COMPARE="${PLANAR_BASH32_REQUIRE_COMPARE:-}"
 [[ -x "$BASH_BIN" ]] || fail "dynamic: $BASH_BIN is not executable"
 child_major="$("$BASH_BIN" -c 'echo "${BASH_VERSINFO[0]}"')"
-if [[ "$(uname -s)" == Darwin ]]; then
+if [[ -n "$REQUIRE_COMPARE" ]]; then
+  # The gate host: the old shell must really be bash 3.x, or the "newer" shell is the only shell.
+  [[ "$child_major" == 3 ]] || fail "dynamic: PLANAR_BASH32_REQUIRE_COMPARE is set but $BASH_BIN is bash $child_major, not 3.x (set PLANAR_BASH32_OLD to a bash 3.2)"
+  pass "dynamic: the old shell $BASH_BIN is bash 3.x (BASH_VERSINFO[0]=3)"
+elif [[ "$(uname -s)" == Darwin && "$BASH_BIN" == /bin/bash ]]; then
   [[ "$child_major" == 3 ]] || fail "dynamic: /bin/bash on macOS must be bash 3.2 (BASH_VERSINFO[0]=$child_major); stock macOS ships 3.2"
   "$BASH_BIN" --version | head -n 1 | grep -q 'version 3\.2' || fail "dynamic: $BASH_BIN --version is not 3.2"
   pass "dynamic: /bin/bash is bash 3.2 (BASH_VERSINFO[0]=3)"
@@ -143,17 +177,19 @@ fi
 
 # A newer bash for the end-state comparison, when the host has one.
 NEW_BASH=""
-for c in /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash || true)"; do
+for c in "${PLANAR_BASH32_NEW:-}" /opt/homebrew/bin/bash /usr/local/bin/bash /bin/bash "$(command -v bash || true)"; do
   [[ -n "$c" && -x "$c" ]] || continue
-  # the same file as /bin/bash (Debian: /bin -> /usr/bin) is no comparison at all
-  [[ "$c" -ef /bin/bash ]] && continue
+  # the same file as the old shell (Debian: /bin -> /usr/bin) is no comparison at all
+  [[ "$c" -ef "$BASH_BIN" ]] && continue
   m="$("$c" -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null || true)"
   if [[ "$m" =~ ^[0-9]+$ && "$m" -gt "$child_major" && "$m" -ge 4 ]]; then NEW_BASH="$c"; break; fi
 done
 if [[ -n "$NEW_BASH" ]]; then
   printf 'note: comparing end states against %s (bash %s)\n' "$NEW_BASH" "$("$NEW_BASH" -c 'echo "${BASH_VERSINFO[0]}"')"
+elif [[ -n "$REQUIRE_COMPARE" ]]; then
+  fail "dynamic: PLANAR_BASH32_REQUIRE_COMPARE is set but no bash 4 or newer other than $BASH_BIN was found (PLANAR_BASH32_NEW=${PLANAR_BASH32_NEW:-unset}); the two-shell comparison cannot run"
 else
-  printf 'note: no bash 4 or newer other than /bin/bash on this host; the end state is checked against explicit expectations only\n'
+  printf 'note: TWO-SHELL COMPARISON NOT RUN: no bash 4 or newer other than %s on this host and PLANAR_BASH32_REQUIRE_COMPARE is unset; the end state is checked against explicit expectations and a second run of the same shell only\n' "$BASH_BIN"
 fi
 
 # PATH: the base tier of install.sh's BASE_DEPS only, as install-prebuilt-test.sh does.
@@ -183,13 +219,67 @@ UNINSTALL_REMOVES_VENDORS=1
 # The installed standalone uninstaller (task 7314), run under the bash under test.
 uninstall_run() { local b="$1" h="$2"; run_in "$b" "$h" "$h/.planar/bin/planar-uninstall"; }
 
-# tree_state HOME -- the relative file list plus checksums, for comparing runs. Run-specific
+# file_mode PATH -- the permission bits, octal. BSD stat (macOS) takes -f %Lp and GNU stat
+# (Linux) -c %a; the form is chosen once by trying GNU's on /.
+if stat -c %a / >/dev/null 2>&1; then file_mode() { stat -c %a "$1"; }; else file_mode() { stat -f %Lp "$1"; }; fi
+
+# tree_state HOME -- every path under HOME with what makes it that state, for comparing runs:
+# a regular file's mode and checksum, a directory's mode, a symlink's target. Run-specific
 # state is normalised: .planar.lock/ (owner and released records) is left out, and the
-# HOME path is replaced by @HOME@ inside every file before it is checksummed (the
-# manifest and release stamp record absolute paths).
-tree_state() { ( cd "$1" && find . -path ./.planar.lock -prune -o \( -type f -o -type l \) -print | sort | while IFS= read -r f; do
-  if [[ -L "$f" ]]; then printf '%s -> link\n' "$f"; else printf '%s %s\n' "$f" "$(LC_ALL=C sed "s#$1#@HOME@#g" "$f" | cksum)"; fi
+# HOME path is replaced by @HOME@ inside every file and every link target before it is
+# compared (the manifest and release stamp record absolute paths).
+tree_state() { ( cd "$1" && find . -path ./.planar.lock -prune -o -print | LC_ALL=C sort | while IFS= read -r f; do
+  if [[ -L "$f" ]]; then printf '%s -> %s\n' "$f" "$(readlink "$f" | LC_ALL=C sed "s#$1#@HOME@#g")"
+  elif [[ -d "$f" ]]; then printf '%s dir %s\n' "$f" "$(file_mode "$f")"
+  else printf '%s %s %s\n' "$f" "$(file_mode "$f")" "$(LC_ALL=C sed "s#$1#@HOME@#g" "$f" | cksum)"; fi
 done ); }
+
+# The state function must see what it claims to: a planted mode change, a planted symlink
+# retarget, a changed directory mode and a moved file are each a difference.
+tree_state_selftest() {
+  local d="$TMP/ts-self" a b
+  mkdir -p "$d/t/sub"; printf 'x\n' > "$d/t/f"; chmod 644 "$d/t/f"; ln -s one "$d/t/l"; chmod 755 "$d/t/sub"
+  a="$(tree_state "$d/t")"
+  [[ "$a" == "$(tree_state "$d/t")" ]] || fail "tree_state self-test: an unchanged tree compared different"
+  chmod 600 "$d/t/f"; b="$(tree_state "$d/t")"
+  [[ "$a" != "$b" ]] || fail "tree_state self-test: a planted file mode change (644 to 600) went undetected"
+  chmod 644 "$d/t/f"; ln -sfn two "$d/t/l"; b="$(tree_state "$d/t")"
+  [[ "$a" != "$b" ]] || fail "tree_state self-test: a planted symlink target change went undetected"
+  ln -sfn one "$d/t/l"; chmod 700 "$d/t/sub"; b="$(tree_state "$d/t")"
+  [[ "$a" != "$b" ]] || fail "tree_state self-test: a planted directory mode change went undetected"
+  chmod 755 "$d/t/sub"; [[ "$a" == "$(tree_state "$d/t")" ]] || fail "tree_state self-test: restoring the tree did not restore its state"
+}
+
+# lock_state BASH HOME -- the mutation lock library's own judgement of the current owner of
+# HOME/.planar (free, released, held, dead, ambiguous), or absent when no lock directory
+# exists. It is computed under the bash being tested, with the base-tier PATH.
+LOCKLIB="$ROOT/scripts/install-lib/mutation-lock.sh"
+lock_state() {
+  /usr/bin/env -i HOME="$2" PATH="$BASEBIN" LC_ALL=C "$1" -c '
+    set -u; source "$1"; l="$(planar_lock_dir "$2")"
+    [ -d "$l" ] || { echo absent; exit 0; }
+    g="$(_pl_max_gen "$l")"; _pl_owner_state "$l" "$g"; echo "$_PL_STATE"' lock_state "$LOCKLIB" "$2/.planar"
+}
+# lock_clear STATE -- an uninstall leaves no owner: nothing ever locked, or the last
+# generation released. A held, dead (killed) or ambiguous owner is a leftover.
+lock_clear() { case "$1" in absent|free|released) return 0 ;; *) return 1 ;; esac; }
+
+# The assertion must see a live owner: a real holder process acquires the lock of a scratch
+# root; the library calls it held, and the assertion refuses it. Once it is killed, the
+# record is dead, which the assertion also refuses (only a release counts).
+lock_selftest() {
+  local root="$TMP/lock-self" holder
+  mkdir -p "$root"
+  lock_clear "$(lock_state "$BASH_BIN" "$root")" || fail "lock self-test: a root with no lock directory was not clear"
+  ( /usr/bin/env -i HOME="$root" PATH="$BASEBIN" LC_ALL=C "$BASH_BIN" -c 'source "$1"; planar_lock_acquire "$2" install || exit 1; : > "$3"; sleep 120' lk "$LOCKLIB" "$root/.planar" "$root/ready" >/dev/null 2>&1 ) &
+  holder=$!
+  local _; for _ in $(seq 1 100); do [[ -f "$root/ready" ]] && break; sleep 0.1; done
+  [[ -f "$root/ready" ]] || { kill "$holder" 2>/dev/null; fail "lock self-test: the holder never acquired the lock"; }
+  [[ "$(lock_state "$BASH_BIN" "$root")" == held ]] || { pkill -P "$holder" 2>/dev/null; kill "$holder" 2>/dev/null; fail "lock self-test: a live holder was judged $(lock_state "$BASH_BIN" "$root"), not held"; }
+  ! lock_clear held || fail "lock self-test: lock_clear accepted a held owner"
+  pkill -P "$holder" 2>/dev/null || true; kill "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true
+  ! lock_clear "$(lock_state "$BASH_BIN" "$root")" || fail "lock self-test: lock_clear accepted a killed owner's record"
+}
 
 # scenario BASH TAG NAME VENDORS(0 none present, 1 present and placed, 2 present, --no-vendor) [install args] -- install, re-install, uninstall; echoes the
 # post-install tree state into $TMP/state-<bash-tag>-<name>.{installed,removed}.
@@ -214,7 +304,14 @@ scenario() {
   else
     [[ ! -e "$home/.claude" && ! -e "$home/.codex" ]] || fail "[$tag/$name] a vendor directory appeared in a vendorless HOME"
   fi
+  # Two entries outside the managed tree that every run plants identically, so the state
+  # comparison has a mode and a symlink target to compare. PLANT=mode or PLANT=link changes
+  # one of them (the planted-change check below).
+  printf 'planted\n' > "$home/planted-file"; chmod 644 "$home/planted-file"; ln -s target-a "$home/planted-link"
+  [[ "${PLANT-}" != mode ]] || chmod 600 "$home/planted-file"
+  [[ "${PLANT-}" != link ]] || ln -sfn target-b "$home/planted-link"
   tree_state "$home" > "$TMP/state-$tag-$name.installed"
+  [[ "${STOP_AFTER-}" != installed ]] || return 0
   # a second install is the no-change path (more empty arrays: nothing to place)
   install_run "$bash_bin" "$home" ${@+"$@"}
   [[ "$RC" == 0 ]] || fail "[$tag/$name] second prebuilt install exited $RC: $(cat "$TMP/err")"
@@ -227,21 +324,34 @@ scenario() {
   if [[ "$vendors" == 1 && "$UNINSTALL_REMOVES_VENDORS" == 1 ]]; then
     [[ ! -e "$home/.claude/agents/planar-coder.md" && ! -e "$home/.codex/agents/planar-coder.toml" ]] || fail "[$tag/$name] uninstall left vendor surfaces"
   fi
+  local ls; ls="$(lock_state "$bash_bin" "$home")"
+  lock_clear "$ls" || fail "[$tag/$name] after uninstall the mutation lock library judges the owner $ls (a live or unreleased owner remains)"
   tree_state "$home" > "$TMP/state-$tag-$name.removed"
 }
 
-scenario "$BASH_BIN" stock novendor-flag 2 --no-vendor
-pass "dynamic: prebuilt install (--no-vendor, vendors present) and uninstall exit 0 under $BASH_BIN"
-scenario "$BASH_BIN" stock novendor-home 0
-pass "dynamic: prebuilt install and uninstall exit 0 under $BASH_BIN with no vendor present (empty VENDORS_FOUND)"
-scenario "$BASH_BIN" stock vendors 1
-pass "dynamic: prebuilt install and uninstall exit 0 under $BASH_BIN with vendors present"
+tree_state_selftest
+pass "dynamic: tree_state self-test: planted mode, symlink-target and directory-mode changes are detected"
+lock_selftest
+pass "dynamic: lock assertion self-test: a live owner is held and refused; a killed owner is refused"
+# scen_run BASH TAG NAME -- one named scenario (the three differ in vendors present and flags).
+scen_run() {
+  case "$3" in
+    novendor-flag) scenario "$1" "$2" novendor-flag 2 --no-vendor ;;
+    novendor-home) scenario "$1" "$2" novendor-home 0 ;;
+    vendors)       scenario "$1" "$2" vendors 1 ;;
+    *) fail "unknown scenario $3" ;;
+  esac
+}
+# run_scenarios BASH TAG -- the selected group's scenarios under BASH.
+run_scenarios() { local n; for n in $SCEN_NAMES; do scen_run "$1" "$2" "$n"; done; }
+run_scenarios "$BASH_BIN" stock
+pass "dynamic: prebuilt install and uninstall exit 0 under $BASH_BIN ($SCEN_NAMES), the end state as expected, no live lock owner left"
 
 # compare_runs TAG_A TAG_B LABEL -- the three scenarios' end states under two tags must be
 # identical once the scenario tag in the HOME path is normalised.
 compare_runs() {
   local a="$1" b="$2" label="$3" s ph
-  for s in novendor-flag novendor-home vendors; do
+  for s in $SCEN_NAMES; do
     for ph in installed removed; do
       diff "$TMP/state-$a-$s.$ph" "$TMP/state-$b-$s.$ph" > "$TMP/diff.out" \
         || fail "[$s/$ph] end state differs between $label: $(cat "$TMP/diff.out")"
@@ -251,7 +361,6 @@ compare_runs() {
 
 # Self-check: the same bash run twice must compare equal, whether or not the host has a
 # newer bash, so the comparison itself cannot rot unnoticed.
-run_scenarios() { scenario "$1" "$2" novendor-flag 2 --no-vendor; scenario "$1" "$2" novendor-home 0; scenario "$1" "$2" vendors 1; }
 run_scenarios "$BASH_BIN" again
 compare_runs stock again "two runs under $BASH_BIN"
 pass "dynamic: comparison self-check: two runs under $BASH_BIN have identical end states"
@@ -259,7 +368,20 @@ pass "dynamic: comparison self-check: two runs under $BASH_BIN have identical en
 if [[ -n "$NEW_BASH" ]]; then
   run_scenarios "$NEW_BASH" new
   compare_runs stock new "$BASH_BIN and $NEW_BASH"
-  pass "dynamic: end states under $BASH_BIN and $NEW_BASH are identical"
+  pass "dynamic: end states (modes, symlink targets, checksums) under $BASH_BIN and $NEW_BASH are identical"
+  # A planted difference in the second shell's run must fail the comparison: the same
+  # scenario with one mode (then one symlink target) changed is compared with the stock run.
+  # Only the install half matters (the installed state is what is compared), so the planted
+  # runs stop there.
+  if [[ "$GROUP" == all || "$GROUP" == home ]]; then
+  for plant in mode link; do
+    STOP_AFTER=installed PLANT="$plant" scenario "$NEW_BASH" "plant$plant" novendor-home 0
+    if diff "$TMP/state-stock-novendor-home.installed" "$TMP/state-plant$plant-novendor-home.installed" > "$TMP/diff.out"; then
+      fail "a planted $plant change in the $NEW_BASH run was not detected by the end-state comparison"
+    fi
+  done
+  pass "dynamic: a planted mode change and a planted symlink-target change in the second shell's run fail the comparison"
+  fi
 fi
 
 printf 'install-bash32-test: %d checks passed\n' "$PASSED"

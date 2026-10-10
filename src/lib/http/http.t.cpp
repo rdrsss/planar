@@ -459,3 +459,33 @@ TEST_CASE("a stalled body is aborted by the low-speed bound with a timeout namin
   // Aborted by the low-speed rule, long before the 60-second total bound.
   CHECK(elapsed < std::chrono::seconds{15});
 }
+
+TEST_CASE("a cancel hook abandons a stalled download and a cancelled one never connects", "[http]") {
+  planar::http::fixture::server server([](const captured_request&) {
+    return canned_response{.status                  = 200,
+                           .body                    = std::string(20000, 'z'),
+                           .chunk_bytes             = 10,
+                           .stall_after_first_chunk = true,
+                           .stall_delay             = std::chrono::seconds{30}};
+  });
+  auto const                    url = server.base_url() + "/stall";
+
+  // Cancelled before the first hop: refused without a connection.
+  auto const early = planar::http::download(url, {.cancelled = [] { return true; }});
+  REQUIRE_FALSE(early.has_value());
+  CHECK(early.error().kind == download_error_kind::cancelled);
+  CHECK(early.error().message == std::format("download of {} was cancelled", url));
+  CHECK(server.request_count() == 0);
+
+  // Cancelled mid-transfer: the hook turns true once the request is in, and
+  // the stalled transfer ends long before the stall or any bound would.
+  auto const started = std::chrono::steady_clock::now();
+  auto const got     = planar::http::download(
+      url, {.total_timeout = std::chrono::seconds{60}, .cancelled = [&server] { return server.request_count() >= 1; }});
+  auto const elapsed = std::chrono::steady_clock::now() - started;
+  REQUIRE_FALSE(got.has_value());
+  CHECK(got.error().kind == download_error_kind::cancelled);
+  CHECK(got.error().url == url);
+  CHECK(server.request_count() == 1);
+  CHECK(elapsed < std::chrono::seconds{10});
+}

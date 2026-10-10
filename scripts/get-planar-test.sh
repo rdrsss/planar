@@ -128,6 +128,9 @@ if [ -n "${FAKE_WGET_LOG:-}" ]; then
   for a in "$@"; do last=$a; done
   case "$last" in -*) ;; *) echo "$last" >> "$FAKE_WGET_LOG" ;; esac
 fi
+# FAKE_FILE_LIMIT=N makes every file the real client writes past N blocks fail with a
+# real write error (SIGXFSZ ignored, so the client sees EFBIG): a full disk.
+if [ -n "${FAKE_FILE_LIMIT:-}" ]; then ulimit -f "$FAKE_FILE_LIMIT"; trap '' XFSZ; fi
 exec "$FAKE_REAL_WGET" "$@"
 STUB
 # curl: runs the real one; when the request URL matches FAKE_HOOK_MATCH it also
@@ -140,6 +143,8 @@ if [ -n "${FAKE_HOOK_MATCH:-}" ]; then
   case "$url" in $FAKE_HOOK_MATCH) fire=yes ;; esac
 fi
 [ "$fire" = yes ] && [ "${FAKE_HOOK_WHEN:-after}" = before ] && /bin/sh "$FAKE_HOOK_CMD"
+# FAKE_FILE_LIMIT=N: a full disk, as in the wget shim.
+if [ -n "${FAKE_FILE_LIMIT:-}" ]; then ulimit -f "$FAKE_FILE_LIMIT"; trap '' XFSZ; fi
 "$FAKE_REAL_CURL" "$@"
 rc=$?
 [ "$fire" = yes ] && [ "${FAKE_HOOK_WHEN:-after}" = after ] && /bin/sh "$FAKE_HOOK_CMD"
@@ -159,9 +164,13 @@ done
 
 SRV="$WORK/srv"
 SRV_LOG="$WORK/server.log"
-start_server() { # start_server DIR LOG -- sets SRV_PORT_OUT and SRV_PID_OUT (port 0, read back)
-  local dir="$1" log="$2" port
-  "$PYTHON3" -u -m http.server 0 --bind 127.0.0.1 --directory "$dir" >"$log" 2>&1 &
+start_server() { # start_server DIR LOG [SCRIPT] -- sets SRV_PORT_OUT and SRV_PID_OUT (port 0, read back)
+  local dir="$1" log="$2" script="${3:-}" port
+  if [[ -n "$script" ]]; then
+    "$PYTHON3" -u "$script" >"$log" 2>&1 &
+  else
+    "$PYTHON3" -u -m http.server 0 --bind 127.0.0.1 --directory "$dir" >"$log" 2>&1 &
+  fi
   SRV_PID_OUT=$!
   for _ in $(seq 1 100); do
     port="$(sed -n 's/^Serving HTTP on [^ ]* port \([0-9][0-9]*\).*/\1/p' "$log" | head -n 1)"
@@ -673,6 +682,92 @@ mv "$SHIM/wget.off" "$SHIM/wget"
 RUN_PATH=""
 refusal 1 "get-planar: neither curl nor wget is installed; install one of them"
 expect_no_requests
+end_case
+
+
+# =====================================================================================
+# task rel-m5-bootstrap-gaps: a failure names its cause, and only a refused
+# connection names the server unreachable
+# =====================================================================================
+# A server that promises 100000 bytes, sends 5000 and closes: a truncated transfer.
+cat > "$WORK/truncating-server.py" <<'PY'
+import socket
+s = socket.socket()
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+print("Serving HTTP on 127.0.0.1 port %d" % s.getsockname()[1], flush=True)
+while True:
+    c, _ = s.accept()
+    c.recv(65536)
+    c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n" + b"x" * 5000)
+    c.close()
+PY
+start_server "$WORK/srv" "$WORK/trunc.log" "$WORK/truncating-server.py"
+TRUNC_PID="$SRV_PID_OUT"; TRUNC_PORT="$SRV_PORT_OUT"
+[[ -d "$WORK/tools-nocurl" ]] || mk_tools "$WORK/tools-nocurl"
+
+expect_not_err() { grep -Fq -- "$1" "$ERR" && fail "stderr has '$1' but must not; stderr: $(cat "$ERR")"; return 0; }
+
+for client in curl wget; do
+  if [[ "$client" == curl ]]; then CLIENT_PATH=""; else CLIENT_PATH="$SHIM:$WORK/tools-nocurl"; fi
+
+  new_case "cause-refused-$client"
+  BASE="http://127.0.0.1:$DEAD_PORT/none"
+  RUN_PATH="$CLIENT_PATH"; boot PLANAR_RELEASE_URL="$BASE"; RUN_PATH=""
+  refusal 1 "get-planar: cannot reach the release server at $BASE:"
+  expect_not_err "cut short"
+  expect_not_err "cannot write"
+  end_case
+
+  new_case "cause-truncated-$client"
+  BASE="http://127.0.0.1:$TRUNC_PORT/rel"
+  RUN_PATH="$CLIENT_PATH"; boot PLANAR_RELEASE_URL="$BASE" PLANAR_VERSION=v1.0.0; RUN_PATH=""
+  refusal 1 "get-planar: cannot download SHA256SUMS for v1.0.0 from $BASE/download/v1.0.0/SHA256SUMS: the transfer was cut short"
+  expect_not_err "cannot reach"
+  expect_not_err "cannot write"
+  end_case
+
+  new_case "cause-full-disk-$client"
+  # ulimit -f makes the real $client fail the tarball's write with a real write error
+  # (curl exit 23, wget exit 3); the small VERSION and SHA256SUMS files still fit.
+  RUN_PATH="$CLIENT_PATH"; boot PLANAR_RELEASE_URL="$BASE" FAKE_FILE_LIMIT=1; RUN_PATH=""
+  refusal 1 "get-planar: cannot download $ASSET for v1.0.0 from $BASE/download/v1.0.0/$ASSET: cannot write the download to the temporary directory"
+  expect_not_err "cannot reach"
+  expect_not_err "cut short"
+  end_case
+done
+kill "$TRUNC_PID" 2>/dev/null; wait "$TRUNC_PID" 2>/dev/null
+
+# =====================================================================================
+# task rel-m5-bootstrap-gaps: one trailing-slash rule in the bootstrap and install.sh
+# =====================================================================================
+new_case recovery-trailing-slash-base
+boot PLANAR_RELEASE_URL="$BASE//" PLANAR_INSTALL_TEST_FAULT=kill@after-mutating PLANAR_INSTALL_TEST_FAULT_ARMED=test-only
+[[ "$RC" -ne 0 ]] || fail "the killed install exited 0"
+[[ "$(sed -n 's/^release_base=//p' "$H/.planar/.planar-journal")" == "$BASE" ]] \
+  || fail "the journal records '$(sed -n 's/^release_base=//p' "$H/.planar/.planar-journal")', not $BASE"
+boot PLANAR_RELEASE_URL="$BASE/"
+expect_rc 0
+expect_out "finished the interrupted install of v1.0.0"
+expect_matches_bundle "$BUNDLE_V1"
+expect_tmp_clean
+end_case
+
+new_case base-normalize-parity
+# The bootstrap is a standalone release asset and cannot source install-lib, so the two
+# rules are separate code. They must agree on every input.
+# shellcheck source=/dev/null
+source "$ROOT/scripts/install-lib/release.sh"
+eval "$(sed -n '/^base_normalize() {/,/^}/p' "$SCRIPT_UNDER_TEST")"
+declare -F release_base_normalize >/dev/null || fail "install-lib/release.sh has no release_base_normalize"
+if declare -F release_base_normalize >/dev/null; then
+  for in in 'https://h/x' 'https://h/x/' 'https://h/x//' 'https://h/x///' 'https://h/' 'https://h//' 'file:///a/b//' 'http://127.0.0.1:1/r/s/' '/' '//' ''; do
+    a="$(base_normalize "$in")"; b="$(release_base_normalize "$in")"
+    [[ "$a" == "$b" ]] || fail "'$in': the bootstrap gives '$a', install.sh gives '$b'"
+  done
+  [[ "$(release_base_normalize 'https://h/x//')" == 'https://h/x' ]] || fail "trailing slashes were not all removed"
+fi
 end_case
 
 # --- the tally ---------------------------------------------------------------------------

@@ -52,6 +52,15 @@ auto write_bounded(char* data, std::size_t size, std::size_t nmemb, void* user) 
   return bytes;
 }
 
+/// @brief `CURLOPT_XFERINFOFUNCTION` for a download with a cancel hook.
+/// @param user The `download_policy*` passed as `CURLOPT_XFERINFODATA`.
+/// @return Non-zero, which aborts the transfer, once the policy's
+/// `cancelled` returns true.
+auto poll_cancelled(void* user, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/, curl_off_t /*ultotal*/, curl_off_t /*ulnow*/)
+    -> int {
+  return static_cast<const download_policy*>(user)->cancelled() ? 1 : 0;
+}
+
 /// @brief Run libcurl's global initialization exactly once per process.
 ///
 /// `curl_easy_init` will do this implicitly, but implicitly it is NOT
@@ -328,6 +337,11 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
   auto const deadline = std::chrono::steady_clock::now() + policy.total_timeout;
 
   while (true) {
+    if (policy.cancelled && policy.cancelled()) {
+      return std::unexpected(download_error{.kind    = download_error_kind::cancelled,
+                                            .url     = current,
+                                            .message = std::format("download of {} was cancelled", current)});
+    }
     auto const checked = check_download_url(current, previous);
     if (!checked) {
       return std::unexpected(
@@ -364,6 +378,11 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
     curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(handle, CURLOPT_USERAGENT, "planar/1.0");
     curl_easy_setopt(handle, CURLOPT_HTTPGET, 1L);
+    if (policy.cancelled) {
+      curl_easy_setopt(handle, CURLOPT_XFERINFOFUNCTION, &poll_cancelled);
+      curl_easy_setopt(handle, CURLOPT_XFERINFODATA, &policy);
+      curl_easy_setopt(handle, CURLOPT_NOPROGRESS, 0L);
+    }
 #ifdef PLANAR_PORTABLE_LINUX_TLS
     curl_easy_setopt(handle, CURLOPT_CAINFO, static_cast<char const*>(nullptr));
     constexpr char  k_redhat_ca_bundle[] = "/etc/pki/tls/certs/ca-bundle.crt";
@@ -379,6 +398,11 @@ auto download(std::string_view url, const download_policy& policy) -> std::expec
           download_error{.kind    = download_error_kind::body_too_large,
                          .url     = current,
                          .message = std::format("download of {} exceeded the {}-byte limit", current, policy.max_body_bytes)});
+    }
+    if (result == CURLE_ABORTED_BY_CALLBACK) {
+      return std::unexpected(download_error{.kind    = download_error_kind::cancelled,
+                                            .url     = current,
+                                            .message = std::format("download of {} was cancelled", current)});
     }
     if (result == CURLE_OPERATION_TIMEDOUT) {
       return std::unexpected(download_error{

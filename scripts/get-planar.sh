@@ -225,13 +225,17 @@ read_inputs() {
 
 # http_get URL DEST HEADERS ERRFILE -- one request with redirects off. Sets
 # F_STATUS (the last status code, or empty) and F_LOC (a Location header, or
-# empty). Status 0 when the client ran.
+# empty). Status 0 when the client ran. F_RC is the client's exit status and
+# F_PARTIAL is "yes" when wget saw a 200 and then failed (a body cut short); a
+# failure is classified by client_failure.
 http_get() {
   _hg_scheme=${1%%:*}
+  F_RC=0
+  F_PARTIAL=no
   : > "$3"
   if [ "$CLIENT" = curl ]; then
     F_STATUS=$(curl -q -sS --connect-timeout 20 --max-time 600 --proto "=$_hg_scheme" \
-      --max-redirs 0 -D "$3" -o "$2" -w '%{http_code}' "$1" 2>"$4") || { F_STATUS=""; return 1; }
+      --max-redirs 0 -D "$3" -o "$2" -w '%{http_code}' "$1" 2>"$4") || { F_RC=$?; F_STATUS=""; return 1; }
     F_STATUS=$(printf '%s' "$F_STATUS" | tr -cd '0-9')
   else
     if [ "$_hg_scheme" = https ]; then _hg_only=--https-only; else _hg_only=""; fi
@@ -242,10 +246,12 @@ http_get() {
     # The headers go to stderr. A redirect or an error status makes wget exit
     # non-zero, so the status line is the verdict there; but a 200 whose body
     # was cut short is a failure, so a 200 needs exit status 0.
+    F_RC=$_hg_rc
     cp "$4" "$3" 2>/dev/null
     F_STATUS=$(sed -n 's/^[[:space:]]*HTTP\/[0-9.]*[[:space:]]\{1,\}\([0-9][0-9][0-9]\).*/\1/p' "$3" | tail -n 1)
     if [ "$F_STATUS" = 200 ] && [ "$_hg_rc" -ne 0 ]; then
       printf 'wget exited with status %s after a 200 response; the download is incomplete\n' "$_hg_rc" > "$4"
+      F_PARTIAL=yes
       F_STATUS=""
       return 1
     fi
@@ -254,12 +260,59 @@ http_get() {
   return 0
 }
 
+# client_failure -- classify a failed client run (F_RC, F_PARTIAL, and the
+# client's stderr in client-err) into F_KIND and F_REASON by cause, so that only
+# a failure to reach the server says the server is unreachable.
+#   curl (man curl, EXIT CODES): 5 6 7 are proxy/host resolution and connection
+#     failures, 28 a timeout, 35 51 58 59 60 77 82 83 90 91 a failed TLS
+#     handshake or certificate check: unreachable. 18 is a partial file: truncated.
+#     23 is a write error: write.
+#   wget (man wget, EXIT STATUS): 4 is a network failure and 5 an SSL
+#     verification failure: unreachable, unless a 200 had already arrived, which
+#     makes the 4 a transfer cut short. 3 is a file I/O error: write.
+# Anything else is "other" and names the client's exit status.
+client_failure() {
+  _cf_err=$(printable "$(cat "$TMP_DIR/client-err" 2>/dev/null)")
+  _cf_cause=other
+  if [ "$CLIENT" = curl ]; then
+    case $F_RC in
+      5|6|7|28|35|51|58|59|60|77|82|83|90|91) _cf_cause=unreachable ;;
+      18) _cf_cause=truncated ;;
+      23) _cf_cause="write" ;;
+    esac
+  else
+    case $F_RC in
+      3) _cf_cause="write" ;;
+      4) if [ "$F_PARTIAL" = yes ]; then _cf_cause=truncated; else _cf_cause=unreachable; fi ;;
+      5) _cf_cause=unreachable ;;
+    esac
+  fi
+  F_KIND=other
+  case $_cf_cause in
+    unreachable)
+      F_KIND=unreachable
+      F_REASON="the $CLIENT client failed: $_cf_err"
+      ;;
+    truncated)
+      F_REASON="the transfer was cut short; the connection ended before the whole file arrived ($CLIENT exit status $F_RC): $_cf_err"
+      ;;
+    write)
+      F_REASON="cannot write the download to the temporary directory $TMP_DIR; the disk is full or the directory is not writable ($CLIENT exit status $F_RC): $_cf_err"
+      ;;
+    *)
+      F_REASON="the $CLIENT client failed with exit status $F_RC: $_cf_err"
+      ;;
+  esac
+}
+
 # fetch URL DEST -- download URL to DEST, following redirects by hand under the
 # redirect policy. Status 1 with F_REASON set on any failure; DEST is only
 # trusted on status 0. F_KIND classifies a failure: "missing" (the server
 # answered 404 or 410, or a file:// fixture lacks the file under an existing
-# base directory), "unreachable" (no HTTP response: DNS, connect, TLS or
-# timeout failure, or the file:// base directory is absent) or "other".
+# base directory), "unreachable" (the client could not reach the server: DNS,
+# connect, TLS or timeout failure, or the file:// base directory is absent) or
+# "other". A cut-short transfer and a failed local write are "other", with the
+# cause in F_REASON (client_failure).
 fetch() {
   _f_url=$1
   _f_dest=$2
@@ -289,7 +342,7 @@ fetch() {
     _f_scheme=$U_SCHEME
     _f_auth=$U_AUTH
     http_get "$_f_url" "$_f_dest" "$TMP_DIR/headers" "$TMP_DIR/client-err" \
-      || { F_REASON="the $CLIENT client failed: $(printable "$(cat "$TMP_DIR/client-err" 2>/dev/null)")"; F_KIND=unreachable; rm -f "$_f_dest"; return 1; }
+      || { client_failure; rm -f "$_f_dest"; return 1; }
     case "$F_STATUS" in
       200)
         return 0
@@ -312,8 +365,7 @@ fetch() {
           F_REASON="HTTP $F_STATUS"
           case "$F_STATUS" in 404|410) F_KIND=missing ;; esac
         else
-          F_REASON="no HTTP response: $(printable "$(cat "$TMP_DIR/client-err" 2>/dev/null)")"
-          F_KIND=unreachable
+          client_failure
         fi
         rm -f "$_f_dest"
         return 1

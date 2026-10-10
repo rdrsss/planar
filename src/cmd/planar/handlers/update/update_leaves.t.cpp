@@ -15,7 +15,8 @@
 //     runs on, including ones no bundle exists for.
 //   - The built binary, black-box, with the real `install.sh --prebuilt`
 //     behind the exec, a `bash` stand-in that inspects the lock from inside
-//     the exec'd process, and a KILL in the middle of a download.
+//     the exec'd process, a KILL, a SIGINT and a SIGTERM in the middle of
+//     a download, and an installer exec that fails.
 //
 // Every release is a fake one (`release_fixture.sh`, which builds on
 // `scripts/fixtures/prebuilt-bundle.sh`) served through `file://` or the
@@ -25,8 +26,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <signal.h>
+#include <spawn.h>
+#include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 import std;
@@ -43,6 +47,9 @@ import planar.db.migrate;
 
 #include "../lib/http/fixture_server.hpp"
 #include "parity_harness.hpp"
+
+// The process environment, inherited by the spawned binary.
+extern "C" char** environ; // NOLINT(readability-redundant-declaration)
 
 namespace {
 
@@ -99,6 +106,41 @@ auto record_text(std::string_view gen, std::string_view op, std::string_view pid
                  std::string_view root, std::string_view tmp = "") -> std::string {
   return std::format("planar-mutation-lock 1\ngen={}\noperation={}\npid={}\nstart={}\nnode={}\nnonce={}\nroot={}\ntmp={}\n", gen,
                      op, pid, start, node, std::string(32, 'a'), root, tmp);
+}
+
+/// This host's identity as the lock header specifies it, derived here with
+/// other tools than either implementation uses: a valid `/etc/machine-id`,
+/// else the macOS `IOPlatformUUID`, else `node:<uname -n>`, else `none`; on
+/// Linux with the pid namespace's inode appended as `/pidns:<inode>`.
+auto oracle_host_key() -> std::string {
+  std::string out;
+  auto const  rc = bash(R"SH(id=""
+[ -r /etc/machine-id ] && id="$(head -n 1 /etc/machine-id)"
+if printf '%s' "$id" | grep -Eqx '[0-9a-f]{32}'; then key="machine-id:$id"
+else
+  u=""
+  [ -x /usr/sbin/ioreg ] && u="$(/usr/sbin/ioreg -rd1 -c IOPlatformExpertDevice | grep -F '"IOPlatformUUID" = "' | head -n 1 | sed 's/.*"IOPlatformUUID" = "//; s/".*//')"
+  if printf '%s' "$u" | grep -Eqx '[0-9A-F-]{36}'; then key="platform-uuid:$u"
+  elif n="$(uname -n)" && [ -n "$n" ]; then key="node:$n"
+  else echo none; exit 0; fi
+fi
+ns="$(readlink /proc/$$/ns/pid 2>/dev/null || true)"
+ns="$(printf '%s' "$ns" | sed -n 's/^pid:\[\([0-9][0-9]*\)\]$/\1/p')"
+[ -z "$ns" ] || key="$key/pidns:$ns"
+printf '%s\n' "$key")SH",
+                        {}, &out);
+  REQUIRE(rc == 0);
+  REQUIRE(out.ends_with('\n'));
+  out.pop_back();
+  return out;
+}
+
+/// A format-2 record (the host named by its identity, the node name informational).
+auto record_v2(std::string_view gen, std::string_view op, std::string_view pid, std::string_view start, std::string_view host,
+               std::string_view node, std::string_view root) -> std::string {
+  return std::format(
+      "planar-mutation-lock 2\ngen={}\noperation={}\npid={}\nstart={}\nhost={}\nnode={}\nnonce={}\nroot={}\ntmp=\n", gen, op, pid,
+      start, host, node, std::string(32, 'a'), root);
 }
 
 /// A pid no process has: far above any pid_max on the supported platforms.
@@ -709,6 +751,11 @@ TEST_CASE("update lock: the native start token, canonical path and records agree
   std::string out;
   REQUIRE(bash(R"(source "$1"; planar_lock_start_token "$2")", {lock_lib(), std::to_string(::getpid())}, &out) == 0);
   CHECK(lock::start_token(::getpid()).value() + "\n" == out);
+  // The host identity: the same bytes on both sides, and what the header specifies.
+  REQUIRE(bash(R"(source "$1"; _pl_host_key)", {lock_lib()}, &out) == 0);
+  CHECK(lock::host_key() + "\n" == out);
+  CHECK(lock::host_key() == oracle_host_key());
+  CHECK(lock::host_key() != "none");
 
   auto       space = make_arena("lockcanon");
   auto const real  = space.cpp_root / "real";
@@ -727,10 +774,10 @@ TEST_CASE("update lock: the native start token, canonical path and records agree
   REQUIRE(held.has_value());
   REQUIRE(
       bash(
-          R"(source "$1"; _pl_read_record "$2" && echo "$_PLR_GEN|$_PLR_OP|$_PLR_PID|$_PLR_START|$_PLR_NODE|$_PLR_NONCE|$_PLR_ROOT|$_PLR_TMP")",
+          R"(source "$1"; _pl_read_record "$2" && echo "$_PLR_VER|$_PLR_GEN|$_PLR_OP|$_PLR_PID|$_PLR_START|$_PLR_HOST|$_PLR_NODE|$_PLR_NONCE|$_PLR_ROOT|$_PLR_TMP")",
           {lock_lib(), std::format("{}/owner.{}", held->dir, held->gen)}, &out) == 0);
-  CHECK(out == std::format("{}|update|{}|{}|{}|{}|{}|{}\n", held->gen, ::getpid(), lock::start_token(::getpid()).value(),
-                           lock::node_name(), held->nonce, root, root + "/.planar-update/u1"));
+  CHECK(out == std::format("2|{}|update|{}|{}|{}|{}|{}|{}|{}\n", held->gen, ::getpid(), lock::start_token(::getpid()).value(),
+                           lock::host_key(), lock::node_name(), held->nonce, root, root + "/.planar-update/u1"));
   lock::release(*held);
   CHECK(std::filesystem::exists(std::format("{}/released.{}", held->dir, held->gen)));
   // Released: the shell takes the next generation and the native side sees it held.
@@ -760,6 +807,80 @@ TEST_CASE("update lock: the native start token, canonical path and records agree
   lock::release(*again);
 }
 
+namespace {
+
+/// Sets `TZ` for this process for one scope and restores it; `ps` children inherit it.
+class scoped_tz {
+public:
+  explicit scoped_tz(const char* zone) {
+    if (auto const* old = std::getenv("TZ"); old != nullptr) {
+      _old = old;
+    }
+    ::setenv("TZ", zone, 1);
+    ::tzset();
+  }
+  scoped_tz(const scoped_tz&)                    = delete;
+  auto operator=(const scoped_tz&) -> scoped_tz& = delete;
+  ~scoped_tz() {
+    if (_old.has_value()) {
+      ::setenv("TZ", _old->c_str(), 1);
+    } else {
+      ::unsetenv("TZ");
+    }
+    ::tzset();
+  }
+
+private:
+  std::optional<std::string> _old;
+};
+
+constexpr const char* k_tz_owner   = "Pacific/Kiritimati"; // UTC+14
+constexpr const char* k_tz_checker = "America/Adak";       // UTC-10 / -9
+
+} // namespace
+
+TEST_CASE("update lock: a live owner is recognised across time zones on both sides", "[update][lock]") {
+  auto space = make_arena("locktz");
+
+  // Native owner in one zone, shell checker in another.
+  auto const root = canon(space.cpp_root / "inst");
+  {
+    auto const owner = [&] {
+      scoped_tz const tz{k_tz_owner};
+      return lock::acquire(root, "update", "");
+    }();
+    REQUIRE(owner.has_value());
+    std::string out;
+    int const   rc =
+        bash(R"(export TZ="$3"; source "$1"; planar_lock_acquire "$2" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; })",
+             {lock_lib(), root, k_tz_checker}, &out);
+    CHECK(rc == 1);
+    CHECK(out.contains(std::format("update (pid {})", ::getpid())));
+    CHECK(highest_gen(owner->dir) == owner->gen);
+    lock::release(*owner);
+  }
+
+  // Shell owner in one zone, native checker in another.
+  auto const shell_root = canon(space.cpp_root / "inst2");
+  auto const ready      = space.cpp_root / "ready";
+  std::system(
+      std::format(
+          "TZ={} bash -c {} bash {} {} {} > /dev/null 2>&1 &", k_tz_owner,
+          shell_quote(
+              R"(source "$1"; planar_lock_acquire "$2" install || exit 1; echo $$ > "$3.tmp"; mv "$3.tmp" "$3"; exec sleep 30)"),
+          shell_quote(lock_lib()), shell_quote(shell_root), shell_quote(ready.string()))
+          .c_str());
+  REQUIRE(planar::cmd::parity::await_sentinel(ready, true, std::chrono::seconds{20}).has_value());
+  auto const pid = std::stoi(read_all(ready));
+  {
+    scoped_tz const tz{k_tz_checker};
+    auto const      refused = lock::acquire(shell_root, "update", "");
+    REQUIRE_FALSE(refused.has_value());
+    CHECK(refused.error().starts_with(std::format("another Planar install (pid {}) is changing this installation", pid)));
+  }
+  ::kill(pid, SIGKILL);
+}
+
 TEST_CASE("update lock: a reused pid is reclaimed and ambiguous records refuse on both sides", "[update][lock]") {
   auto space = make_arena("lockambig");
   struct shape {
@@ -769,7 +890,8 @@ TEST_CASE("update lock: a reused pid is reclaimed and ambiguous records refuse o
   };
   auto const               me = std::to_string(::getpid());
   std::vector<shape> const shapes{
-      {"reused pid", record_text("1", "install", me, "ps:Thu Jan 1 00:00:00 1970", lock::node_name(), "/r"), true},
+      {"reused pid", record_text("1", "install", me, "psu:Thu Jan 1 00:00:00 1970", lock::node_name(), "/r"), true},
+      {"legacy local-time start", record_text("1", "install", me, "ps:Thu Jan 1 00:00:00 1970", lock::node_name(), "/r"), false},
       {"dead pid", record_text("1", "install", k_dead_pid, "ps:x", lock::node_name(), "/r"), true},
       {"another host", record_text("1", "install", me, "ps:x", "elsewhere.invalid", "/r"), false},
       {"malformed", "planar-mutation-lock 1\ngen=1\noperation=install\n", false},
@@ -810,6 +932,86 @@ TEST_CASE("update lock: a reused pid is reclaimed and ambiguous records refuse o
       }
     }
   }
+}
+
+TEST_CASE("update lock: a dead owner's record survives a hostname change and another machine's never does, on both sides",
+          "[update][lock]") {
+  // Test spec 679, "Edge — a crashed owner's record survives a hostname change".
+  auto       space = make_arena("lockhost");
+  auto const host  = oracle_host_key();
+  auto const me    = std::to_string(::getpid());
+  auto const mine  = lock::start_token(::getpid()).value();
+  struct shape {
+    std::string name;
+    std::string body;
+    bool        free;     // native and shell both reclaim
+    std::string why = {}; // a phrase both refusals carry
+  };
+  std::vector<shape> const shapes{
+      {"renamed host, dead owner", record_v2("1", "install", k_dead_pid, "psu:x", host, "renamed.invalid", "/r"), true},
+      {"renamed host, live owner", record_v2("1", "install", me, mine, host, "renamed.invalid", "/r"), false,
+       std::format("another Planar install (pid {})", me)},
+      {"another machine, same name, dead owner",
+       record_v2("1", "install", k_dead_pid, "psu:x", "machine-id:" + std::string(32, 'f'), lock::node_name(), "/r"), false,
+       std::format("recorded on host {}", lock::node_name())},
+      {"no host identity, dead owner", record_v2("1", "install", k_dead_pid, "psu:x", "none", lock::node_name(), "/r"), false,
+       "no host identity"},
+      {"older Planar, renamed host, dead owner", record_text("1", "install", k_dead_pid, "psu:x", "renamed.invalid", "/r"), false,
+       "recorded on host renamed.invalid"},
+      {"older Planar, this host, dead owner", record_text("1", "install", k_dead_pid, "psu:x", lock::node_name(), "/r"), true},
+  };
+  int n = 0;
+  for (auto const& s : shapes) {
+    INFO(s.name);
+    for (std::string_view side : {"native", "shell"}) {
+      INFO(side);
+      auto const root = canon(space.cpp_root / std::format("h{}", n++));
+      auto const dir  = root + ".lock";
+      std::filesystem::create_directories(dir);
+      std::filesystem::permissions(dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+      write_file(dir + "/owner.1", s.body);
+      bool        won = false;
+      std::string why;
+      if (side == "native") {
+        auto const got = lock::acquire(root, "update", "");
+        won            = got.has_value();
+        why            = won ? std::string{} : got.error();
+        if (won) {
+          lock::release(*got);
+        }
+      } else {
+        won = bash(R"(source "$1"; planar_lock_acquire "$2" install || { echo "$PLANAR_LOCK_ERROR"; exit 1; })",
+                   {lock_lib(), root}, &why) == 0;
+      }
+      INFO(why);
+      CHECK(won == s.free);
+      if (!s.free) {
+        CHECK(why.contains(s.why));
+        CHECK_FALSE(std::filesystem::exists(dir + "/owner.2"));
+      }
+    }
+  }
+}
+
+TEST_CASE("update lock: both sides write format-2 records that name the host by its identity", "[update][lock]") {
+  auto       space = make_arena("lockfmt2");
+  auto const host  = oracle_host_key();
+  auto const root  = canon(space.cpp_root / "inst");
+  auto const held  = lock::acquire(root, "update", "");
+  REQUIRE(held.has_value());
+  auto const text = read_all(std::format("{}/owner.{}", held->dir, held->gen));
+  INFO(text);
+  CHECK(text.starts_with("planar-mutation-lock 2\n"));
+  CHECK(text.contains(std::format("\nhost={}\n", host)));
+  CHECK(text.contains(std::format("\nnode={}\n", lock::node_name())));
+  lock::release(*held);
+
+  auto const  shell_root = canon(space.cpp_root / "inst2");
+  std::string out;
+  REQUIRE(bash(R"(source "$1"; planar_lock_acquire "$2" install && planar_lock_release && cat "$2.lock/owner.1")",
+               {lock_lib(), shell_root}, &out) == 0);
+  CHECK(out.starts_with("planar-mutation-lock 2\n"));
+  CHECK(out.contains(std::format("\nhost={}\n", host)));
 }
 
 TEST_CASE("update lock: simultaneous reclaims of a dead owner leave exactly one owner", "[update][lock]") {
@@ -1199,6 +1401,189 @@ TEST_CASE("update: a KILLed update leaves nothing the next update cannot reclaim
   CHECK(next.code == 0);
   CHECK(next.out.contains(std::format("reclaimed the mutation lock from an abandoned update pid {}", rec->pid)));
   CHECK_FALSE(std::filesystem::exists(rec->tmp));
+  CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
+  CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.1.0\""));
+  CHECK(lock_free(dir));
+}
+
+namespace {
+
+/// Start `bin args` from `work/proj` under `env`, stdout and stderr into
+/// `work/<tag>.out` and `work/<tag>.err`, and return its pid. SIGINT and
+/// SIGTERM start at their default dispositions with nothing blocked: a
+/// shell's `&` would start the child with SIGINT ignored, and an ignored
+/// SIGINT is one `planar update` deliberately leaves alone. `sh` execs `env`,
+/// which execs the binary, so the pid is the binary's own.
+auto spawn_pinned(const std::filesystem::path& bin, const std::vector<std::string>& args, const std::filesystem::path& work,
+                  std::string_view tag, std::span<const pinned_var> env) -> pid_t {
+  std::string line = std::format("cd {} && exec {}{}", shell_quote((work / "proj").string()),
+                                 planar::cmd::parity::pinned_env_prefix(env), shell_quote(bin.string()));
+  for (auto const& a : args) {
+    line += " " + shell_quote(a);
+  }
+  line += std::format(" > {} 2> {}", shell_quote((work / std::format("{}.out", tag)).string()),
+                      shell_quote((work / std::format("{}.err", tag)).string()));
+  posix_spawnattr_t attr{};
+  REQUIRE(::posix_spawnattr_init(&attr) == 0);
+  sigset_t defaults{};
+  sigset_t none{};
+  sigemptyset(&defaults);
+  sigaddset(&defaults, SIGINT);
+  sigaddset(&defaults, SIGTERM);
+  sigemptyset(&none);
+  ::posix_spawnattr_setsigdefault(&attr, &defaults);
+  ::posix_spawnattr_setsigmask(&attr, &none);
+  ::posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK);
+  std::string        sh = "/bin/sh";
+  std::string        c  = "-c";
+  std::vector<char*> argv{sh.data(), c.data(), line.data(), nullptr};
+  pid_t              pid = -1;
+  int const          rc  = ::posix_spawn(&pid, "/bin/sh", nullptr, &attr, argv.data(), environ);
+  ::posix_spawnattr_destroy(&attr);
+  REQUIRE(rc == 0);
+  return pid;
+}
+
+/// Wait up to `budget` for `pid` to end; its wait status, or unset (after a
+/// KILL and reap) when it did not end in time.
+auto reap_within(pid_t pid, std::chrono::milliseconds budget) -> std::optional<int> {
+  auto const deadline = std::chrono::steady_clock::now() + budget;
+  int        status   = 0;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto const got = ::waitpid(pid, &status, WNOHANG);
+    if (got == pid) {
+      return status;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ::kill(pid, SIGKILL);
+  ::waitpid(pid, &status, 0);
+  return std::nullopt;
+}
+
+/// Interrupt a real `planar update` with `sig` while its asset download is
+/// stalled on the loopback fixture, then check that it removed its download
+/// directory, released the lock through the protocol and exited 128+sig, and
+/// that the next update starts clean.
+auto interrupt_a_download(int sig, std::string_view name) -> void {
+  auto       space = make_arena(std::format("upsig{}", sig));
+  auto const work  = space.cpp_root;
+  auto const rel   = work / "rel";
+  auto const plat  = host_platform();
+  if (!plat.has_value()) {
+    SUCCEED("no release bundle exists for this host");
+    return;
+  }
+  std::string out;
+  REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
+               {source_root().string(), rel.string(), "v1.1.0", *plat}, &out) == 0);
+  auto const inst = work / "home";
+  write_file(inst / "release.json", "{\"version\": \"v1.0.0\", \"schema_version\": 41}\n");
+  write_file(inst / ".planar-install", "x\ny\n");
+  write_file(inst / "bin/planar", "#!/bin/sh\n");
+  // Every file is served whole except the asset: one 16-byte piece, then a
+  // stall far longer than the interrupted run may take.
+  planar::http::fixture::server server([&](const planar::http::fixture::captured_request& req) {
+    auto const body = read_all(rel / req.target.substr(1));
+    if (req.target.ends_with(".tar.gz")) {
+      return planar::http::fixture::canned_response{.status                  = 200,
+                                                    .body                    = body,
+                                                    .content_type            = "application/octet-stream",
+                                                    .chunk_bytes             = 16,
+                                                    .stall_after_first_chunk = true,
+                                                    .stall_delay             = std::chrono::seconds{60}};
+    }
+    return planar::http::fixture::canned_response{.status = 200, .body = body, .content_type = "text/plain"};
+  });
+  auto const                    pid = spawn_pinned(cpp_bin(), {"update"}, work, name, env_with(work, server.base_url()));
+  auto const                    dir = canon(inst) + ".lock";
+  REQUIRE(planar::cmd::parity::await_sentinel(dir + "/owner.1", true, std::chrono::seconds{30}).has_value());
+  auto const rec = lock::parse_record(dir + "/owner.1");
+  REQUIRE(rec.has_value());
+  REQUIRE(rec->pid == std::to_string(pid));
+  // VERSION, SHA256SUMS, then the asset: the third request means the
+  // download into the temporary directory is in flight.
+  for (int i = 0; i < 3000 && server.request_count() < 3; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  REQUIRE(server.request_count() >= 3);
+  REQUIRE(std::filesystem::is_directory(rec->tmp));
+  auto const sent = std::chrono::steady_clock::now();
+  REQUIRE(::kill(pid, sig) == 0);
+  auto const status = reap_within(pid, std::chrono::seconds{20});
+  auto const err    = read_all(work / std::format("{}.err", name));
+  INFO(err);
+  REQUIRE(status.has_value());
+  // It stopped the stalled transfer, not waited it out.
+  CHECK(std::chrono::steady_clock::now() - sent < std::chrono::seconds{15});
+  CHECK_FALSE(WIFSIGNALED(*status));
+  REQUIRE(WIFEXITED(*status));
+  CHECK(WEXITSTATUS(*status) == 128 + sig);
+  CHECK(err.contains(std::format("planar update was interrupted by {}", name)));
+  CHECK_FALSE(std::filesystem::exists(rec->tmp));
+  CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
+  // Released through the protocol (`released.<G>`), not left to a reclaim.
+  CHECK(std::filesystem::exists(dir + "/released.1"));
+  CHECK(lock_free(dir));
+  CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.0.0\""));
+
+  auto const next =
+      run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "next", env_with(work, "file://" + canon(rel)));
+  INFO(next.out << next.err);
+  CHECK(next.code == 0);
+  CHECK_FALSE(next.out.contains("reclaimed"));
+  CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
+  CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.1.0\""));
+  CHECK(lock_free(dir));
+}
+
+} // namespace
+
+TEST_CASE("update: SIGINT during a slowed download removes the download directory and releases the lock", "[update][e2e]") {
+  interrupt_a_download(SIGINT, "SIGINT");
+}
+
+TEST_CASE("update: SIGTERM during a slowed download removes the download directory and releases the lock", "[update][e2e]") {
+  interrupt_a_download(SIGTERM, "SIGTERM");
+}
+
+TEST_CASE("update: a failed installer exec removes the download directory and releases the lock", "[update][e2e]") {
+  auto       space = make_arena("upexecbad");
+  auto const work  = space.cpp_root;
+  auto const rel   = work / "rel";
+  auto const base  = "file://" + canon(rel);
+  auto const plat  = host_platform();
+  if (!plat.has_value()) {
+    SUCCEED("no release bundle exists for this host; the in-process failed-exec case covers the cleanup");
+    return;
+  }
+  std::string out;
+  REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
+               {source_root().string(), rel.string(), "v1.1.0", *plat}, &out) == 0);
+  auto const inst = work / "home";
+  write_file(inst / "release.json", "{\"version\": \"v1.0.0\", \"schema_version\": 41}\n");
+  write_file(inst / ".planar-install", "x\ny\n");
+  write_file(inst / "bin/planar", "#!/bin/sh\n");
+  // A `bash` the verb resolves (it is executable) but the kernel cannot run:
+  // its interpreter does not exist, so execve fails with ENOENT.
+  auto const fake = work / "fakebin";
+  write_file(fake / "bash", "#!/nonexistent/interpreter\n");
+  std::filesystem::permissions(fake / "bash", std::filesystem::perms::owner_all);
+  auto const path = std::format("{}:{}", fake.string(), std::getenv("PATH"));
+  auto const got  = run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "badexec",
+                               env_with(work, base, {{.name = "PATH", .value = path}}));
+  INFO(got.out << got.err);
+  CHECK(got.code == 1);
+  CHECK(got.err.contains("cannot run the installer"));
+  auto const dir = canon(inst) + ".lock";
+  CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
+  CHECK(std::filesystem::exists(dir + "/released.1"));
+  CHECK(lock_free(dir));
+
+  auto const next = run_pinned(cpp_bin(), std::vector<std::string>{"update"}, work, "next", env_with(work, base));
+  INFO(next.out << next.err);
+  CHECK(next.code == 0);
+  CHECK_FALSE(next.out.contains("reclaimed"));
   CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
   CHECK(read_all(inst / "release.json").contains("\"version\": \"v1.1.0\""));
   CHECK(lock_free(dir));

@@ -73,6 +73,8 @@ the `planar` binary.
 | `8` | **Worktree-gate refusal**: a planning verb was run from inside a git worktree. Outside the `domain_error_kind` bucket table entirely — `planar.cmd.planar.worktree_gate` returns it directly, before the parser even runs, so it fires even when the invocation's flags would also fail to parse. `--scope` does not bypass it. | `planar.cmd.planar.worktree_gate::check` |
 | `10` | **Update available** — not a failure. Only `planar update --check` returns it, when the installed release differs from the latest one (see [Domain: `update`](#domain-update)). Outside the `domain_error_kind` table; the handler returns it through `passthrough_code`. No other verb returns 10 of its own (`workflow run` passes a workflow's own status through verbatim). | `planar update --check` |
 | `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
+| `130` | **Interrupted by `SIGINT`** (128 + 2): a plain `planar update` caught it before its installer hand-off, removed its download directory and released the mutation lock. Outside the `domain_error_kind` table, through `passthrough_code`. | `planar update` |
+| `143` | **Interrupted by `SIGTERM`** (128 + 15), as for `130`. | `planar update` |
 
 **Usage errors exit `2`, not `64`.** An unknown flag, a missing required
 positional and a missing flag value are all `parse_error` on this binary. This
@@ -6614,6 +6616,19 @@ A plain run, or `--version <tag>`:
    the lock when it ends. If the exec fails, the verb removes the directory and
    releases the lock itself.
 
+`SIGINT` (Ctrl-C) or `SIGTERM` from just before step 1 until the exec stops
+the run: a download in flight is abandoned within about a second, the download
+directory is removed, the lock is released (`released.<G>`, so the next update
+starts clean rather than reclaiming), and the verb prints `error: planar update
+was interrupted by SIGINT; ...` and exits `130` (`143` for `SIGTERM`), the
+codes the bootstrap's own traps use. A signal that was ignored when the verb
+started (a background job's `SIGINT`) stays ignored. Immediately before the
+exec the verb restores the signals' previous dispositions, so one arriving
+from then on is never lost: before the exec it ends the verb as a `KILL` would
+(the next owner proves the updater dead and removes its recorded directory);
+after it the installer owns the directory and the lock and handles it.
+`--check` holds nothing and does not catch either signal.
+
 The shadow check belongs to the installer, after placement: when `command -v
 planar` and `<root>/bin/planar` are different files (compared after resolving
 symlinks, so a `PATH` entry that links to the installed binary is not a
@@ -6632,7 +6647,8 @@ exist on the release server <base>: ...`, `checksum mismatch for <asset>: ...`,
 `<base>/latest/download/VERSION holds '<value>', which is not a release tag
 ...`, `this host has glibc <host> but this release needs glibc <floor> or
 later; nothing was installed`, and `unsupported platform <os> <arch>; ...`.
-Every refusal before the exec leaves no download directory and no held lock.
+Every refusal before the exec, a failed exec, and an interrupt leave no
+download directory and no held lock.
 
 **Writes:** outside the database only: the lock record
 `<root>.lock/owner.<G>` and the download directory under
@@ -6640,7 +6656,8 @@ Every refusal before the exec leaves no download directory and no held lock.
 
 **Exit codes:** `0` success or no changes, `1` a fault, refusal, competing
 owner or incomplete installation, `2` bad input, `10` (`--check` only) an
-update is available.
+update is available, `130` / `143` interrupted by `SIGINT` / `SIGTERM` before
+the hand-off.
 
 **Capture:** None.
 
@@ -6890,7 +6907,7 @@ The `tree` domain provides a hierarchical view of Planar entities — plans, tas
 
 The walk follows `plans.parent_plan_id` for plan→plan, `tasks.plan_id` and `tasks.parent_task_id` for plan→task and task→subtask, and `entity_links(relationship='derives-from')` for artifacts / decisions / scenarios / questions attached to plans. Filters apply during the walk so excluded subtrees never enter the output.
 
-The flag surface deliberately mirrors `tree(1)` wherever the semantic translates. Filesystem-specific flags from `tree(1)` are explicitly rejected at parse time rather than silently ignored — see [Deliberately omitted flags](#deliberately-omitted-flags).
+The flag surface deliberately mirrors `tree(1)` wherever the semantic translates. Filesystem-specific flags from `tree(1)` are explicitly rejected at parse time rather than silently ignored — see [`tree(1)` flags with no Planar analog](#tree1-flags-with-no-planar-analog).
 
 ### `planar tree`
 
@@ -8591,7 +8608,7 @@ to walk and is refused rather than silently writing an empty closure.
 Seed paths are resolved against `projects.root_path`, which is why a project
 registered with a path that does not match your checkout produces an empty or
 wrong result — see the association-less-repo advisory under
-[`task touches add`](#planar-task-touches-add-task-id).
+[`task touches add`](#planar-task-touches-add-task-id-repo-slug---path-p).
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees
 with the task's, using the membership-aware comparison (see
