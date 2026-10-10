@@ -1,25 +1,24 @@
 # src/cmd/ — layer-3 command binaries (tech-spec § Target layout; D15's
 # `cmd -> engine.* -> {cli, db} -> vendored`).
 #
-# `planar` (plan 996, task 6105) is the first. `planar-agent`,
-# `planar-watch` and `planar-execute` (task 6107) land beside it.
-# `planar-ext` (task 6418; task 6412, decisions 995-1000) is the fifth
-# and owns the external-plane `ext` and `sync` families.
+# `planar` (plan 996, task 6105) is the first. `planar-agent` and
+# `planar-watch` land beside it. `planar-ext` (task 6418; task 6412,
+# decisions 995-1000) is the fourth and owns the external-plane `ext` and
+# `sync` families.
 #
-# The five binaries share invocation values, path resolution and the lazy
+# The four binaries share invocation values, path resolution and the lazy
 # database holder through `cmd_internal`, a command-support target classified
 # below the binary layer. Each binary supplies its own database open policy;
 # the architecture guard still forbids binary-to-binary `cmd_* -> cmd_*`
-# links. `planar-execute` does not link `cmd_internal` because it holds no
-# SQLite handle.
+# links.
 #
 # `parity_harness.hpp` is test-only and remains a plain included header.
 #
 # Every binary here MUST be declared with planar_binary() (cmake/module.cmake),
 # never a bare add_executable(): the helper is what registers the target into
 # PLANAR_MODULE_TARGETS so cmake/architecture.cmake's D15 walk sees it at all.
-# A raw add_executable() sits outside the guard entirely — the exact gap task
-# 6050 found and cmake/tests/architecture-guard-fixture/cmd-binary-db/ still
+# A raw add_executable() sits outside the guard entirely — the gap task 6050
+# found, and the one cmake/tests/architecture-guard-fixture/unregistered-target-caught/
 # stands guard over.
 
 add_subdirectory(internal)
@@ -146,7 +145,7 @@ add_test(NAME compile_fail_check
 set_tests_properties(compile_fail_check PROPERTIES LABELS "compile_fail" RUN_SERIAL TRUE)
 
 # Distribution checks never appear in developer configurations. Use target
-# locations so the same check covers the exact five products being bundled.
+# locations so the same check covers the exact products being bundled.
 if(PLANAR_PORTABLE)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
   add_test(NAME portable.binaries

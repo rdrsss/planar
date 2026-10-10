@@ -186,14 +186,10 @@ endfunction()
 # cmake/architecture.cmake's planar_check_architecture() walks only the
 # GLOBAL PLANAR_MODULE_TARGETS property. planar_module() targets append
 # themselves to it automatically; a plain add_executable() call (as every
-# cmd binary — planar, planar-agent, planar-watch, planar-execute — will
+# cmd binary — planar, planar-agent, planar-watch, planar-ext — will
 # be) does NOT, so a naked add_executable() in a future src/cmd/*/
-# CMakeLists.txt would sit outside D15 enforcement entirely — exactly the
-# gap plan 996 task 6050 (M2 pre-work) found: the tech-spec claims
-# architecture.cmake turns an accidental planar-execute -> planar_db edge
-# into a "configure/link failure", which was only true for the
-# `engine_execute` module, not the `cmd_planar_execute` binary target,
-# because nothing registered the binary into the walk.
+# CMakeLists.txt would sit outside D15 enforcement entirely — the gap plan
+# 996 task 6050 (M2 pre-work) found.
 #
 # planar_binary(<name> [SOURCES ...] [DEPENDS ...]) creates
 # `planar_cmd_<name>` (matching `_planar_module_layer()`'s `^cmd_` layer-3
@@ -204,19 +200,10 @@ endfunction()
 # directly, once M2/M3 add the first cmd binary — a bare add_executable()
 # there silently re-opens the coverage gap this function closes.
 #
-# Name your execute binary however reads naturally — e.g.
-# planar_binary(execute DEPENDS engine_execute ...) yielding
-# `planar_cmd_execute` — you do NOT need to spell it
-# planar_binary(planar_execute ...) to get the no-SQLite-handle exception in
-# architecture.cmake to fire. That exception now derives from whether the
-# target actually links `planar_engine_execute`, not from matching this
-# function's naming output against a literal string (plan 996, task 6070,
-# M3 pre-work — see cmake/architecture.cmake's header comment and
-# cmake/tests/architecture-guard-fixture/planar-binary-execute-natural-name/
-# for the standing proof). This function itself performs no name
-# validation or normalization; the robustness lives in the consuming check,
-# not here — do not add a parallel name-based guard in this function, it
-# would just be a second literal to keep in sync.
+# This function performs no name validation or normalization, and the layer
+# classification in cmake/architecture.cmake reads the target's real edges, not
+# its name: do not add a parallel name-based guard in this function, it would
+# just be a second literal to keep in sync.
 #
 # INTERFACE / MAIN / the test lane (plan 996, task 6105, M4b — the first
 # real cmd binary). Three additions, all forced by the same fact: a cmd
@@ -277,14 +264,14 @@ function(planar_binary name)
   # the `planar_cmd_` prefix this function adds for the D15 walk's benefit
   # — which is not a name any operator, script, or the Makefile's
   # `test-parity-cpp` lane would ever guess. That lane defaults
-  # CPP_BIN_DIR to `build/debug/bin` and looks for `planar`,
-  # `planar-agent`, `planar-watch`, `planar-execute`; it had never once
+  # CPP_BIN_DIR to `build/debug/bin` and looks for the shipped binaries by
+  # their dashed names; it had never once
   # run as documented, and every parity measurement this project has taken
   # was preceded by four hand-made symlinks. The prefix exists for the
   # architecture guard, so it is the guard's business, not the shipped
   # artifact's.
   #
-  # Underscores become dashes because that is what the four binaries are
+  # Underscores become dashes because that is what the shipped binaries are
   # actually called (`planar-agent`, not `planar_agent`) and what the Zig
   # oracle emits, so the two trees' outputs are directly comparable by
   # name. The TEST binary below deliberately keeps the default location:
