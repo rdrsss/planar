@@ -151,7 +151,8 @@ Both profiles go through the host queue, below.
 
 ## Continuous integration
 
-CI is deliberately small, because agents merge often and a per-merge gate
+CI is deliberately small (two tiers for ordinary changes plus the release
+workflow), because agents merge often and a per-merge gate
 would run constantly. `make test-all` through the host queue (below) is still
 the gate to run before a pull request; CI is the independent backstop.
 
@@ -159,6 +160,7 @@ the gate to run before a pull request; CI is the independent backstop.
 |---|---|---|
 | `ci.yml` (fast tier) | Pull requests into `master`, and pushes to `master` | `make fmt-check`, the installer fixtures, and the planning eval harness unit tests. It does not build the C++ tree. A newer push cancels the older run. |
 | `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, the orchestrator eval harness unit tests and the scratch queue observer integration test, on Linux in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
+| `release.yml` (release) | A pushed stable `vX.Y.Z` tag only; never a branch, a pull request or a pre-release tag | One job per platform builds the release bundle from the tag commit and runs that platform's portable and clean-host gates before uploading; the final job runs the publisher, the only step that calls `gh release`, and a failed or missing platform publishes nothing. It reuses the scripts and evidence files of `make release-cut`. See [Release Gate Evidence and Cutting a release](operations.md#6-release-gate-evidence). Under decision 1337 releases are cut locally with `make release-cut` until hosted CI returns. |
 
 The fast tier does nothing for a change that touches only `agents/`, `skills/`,
 `docs/`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`, or a
@@ -170,7 +172,7 @@ does a run that cannot be classified. Because those files feed pinned
 projections and doc gates, the nightly full tier still checks them: run
 `make test-all` before a pull request that edits `agents/` or `skills/`.
 
-Pull requests into any other branch run neither workflow. Agents integrate
+Pull requests into any other branch run none of the workflows. Agents integrate
 into `dev/integration` and open a pull request from it to `master` when a
 batch is ready, so CI runs once per batch, not once per merge. Add the
 `ci:full` label to a `master`-bound pull request that touches C++ or CMake and
@@ -490,6 +492,67 @@ To check a migration as raw SQL:
 ```bash
 sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
 ```
+
+## Release bundles and installer script tests
+
+`make dist` configures and builds the `dist` preset (`PLANAR_PORTABLE=ON`,
+version metadata, a macOS 26.0 deployment target), runs the portable-binary
+checks on the five staged binaries, and assembles
+`dist/planar-<platform>.tar.gz` with `SHA256SUMS`, `VERSION`, a standalone
+`get-planar.sh` and the archive's `.gates.json` evidence (`scripts/dist.sh`).
+`make linux-dist` does the same for Linux x86_64 in Docker on Debian bookworm.
+Both are release builds and not part of `make test` or `make test-all`; the
+gates they feed are in [operations.md § 6](operations.md#6-release-gate-evidence)
+and [toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
+Run them through the host queue and never with a validation tag in the real
+repository.
+
+The scripts they ship and the installer have script tests. Each is a ctest case
+registered with ctest (in `CMakeLists.txt`, `src/cmd/CMakeLists.txt` for the two
+that need built binaries, `src/cmd/planar/CMakeLists.txt` and
+`src/tools/CMakeLists.txt`), so `make test` runs them. The `make test` target
+also depends on three installer tests that are not ctest cases:
+`test-install-manifest`, `test-install-stage` and `test-install-deps`, which run
+`scripts/install-manifest-test.sh`, `install-stage-test.sh` and
+`install-deps-test.sh`. `install-manifest-test.sh` also pins INSTALL.md
+§ Prerequisites. They use scratch `HOME`,
+`TMPDIR` and database paths and fake bundles, and touch nothing real. Select one
+by label, and check the matched count:
+
+```sh
+ctest --test-dir build/debug -L '^dist_layout$' --output-on-failure
+```
+
+| ctest case | Label | Entry point | Covers |
+|------------|-------|-------------|--------|
+| `dist.identity` | `dist_identity` | `scripts/dist-identity.test.py` | Assembler identity and schema refusals. See [Bundle assembler identity checks](#bundle-assembler-identity-checks). |
+| `dist.layout` | `dist_layout` | `scripts/dist-test.sh` | The real assembler over fake binaries: entries, bytes, `release.json`, checksums. |
+| `release.publish` | `release_publish` | `scripts/release-publish-test.sh` | `release-gates.sh`, `release-publish.sh` and `make release-cut` against a scratch annotated tag, fake bundles and a fake `gh`, `docker` and `uname`: every refusal runs no `gh`. |
+| `release.workflow` | `release_workflow` | `scripts/release-workflow.test.py` | A lint of `.github/workflows/release.yml` (trigger, `needs`, gate-before-upload, permissions) and its publisher steps run against fakes. Nothing runs on GitHub. |
+| `bootstrap.release` | `bootstrap` | `scripts/get-planar-test.sh` | `get-planar.sh` end to end. See [The release bootstrap test](#the-release-bootstrap-test). |
+| `install.bash32` | `install_bash32` | `scripts/install-bash32-test.sh` | A lint for bash-4-only constructs and unguarded empty-array expansions, and a prebuilt install and uninstall under `/bin/bash`. |
+| `install.prefix_guard` | `install_prefix_guard` | `scripts/install-prefix-guard-test.sh` | The install-root guard for `install.sh` and `--uninstall`. |
+| `install.data_paths` | `install_data_paths` | `scripts/install-data-paths-test.sh` | Data paths are never removed, and INSTALL.md's preserved-paths list matches `scripts/install-lib/data-paths.sh`. |
+| `install.prebuilt` | `install_prebuilt` | `scripts/install-prebuilt-test.sh` | `install.sh --prebuilt`: an incomplete bundle, `--link`, and the move-aside of the old queue database. |
+| `install.retired_targets` | `install_retired_targets` | `scripts/install-retired-targets-test.sh` | The retired `make install` targets are gone, and no install doc carries a `make install` recipe. |
+| `install.managed` | `install_managed` | `scripts/install-managed-test.sh` | Managed subtrees, retired paths, link and copy mode, and the missing-only `templates/` rule. |
+| `install.lock` | `install_lock` | `scripts/install-lock-test.sh` | The mutation lock with real processes: killed and pid-reused owners, simultaneous reclaims, the update handoff. |
+| `install.uninstall` | `install_uninstall` | `scripts/install-uninstall-test.sh` | `scripts/uninstall.sh`: removals, `--purge`, unknown entries, `~/.local/bin`, interrupted-uninstall retry. |
+| `install.queue_probe` | `install_queue_probe` | `scripts/install-lib/queue_probe.test.py` | The installer's database probe with no `python3`, against the real built binaries. |
+| `install.order` | `install_order` | `scripts/install-order-test.sh` | The order of an install end to end, against bundles of the real built binaries: databases fresh, behind, ahead and faulty, kill-and-resume at every swap point, concurrent owners, the updater handoff. |
+| `queue_retire_reader` | `queue;scripts` | `scripts/install-lib/queue_retire.test.py` | The reader the installer runs to judge the retired queue store's entries, including its `/proc` cases. |
+| `codex_agents_render` | `scripts` | `scripts/render_codex_agents_test.py` | The Codex custom-agent TOML renderer. |
+
+`portable.binaries` and `portable.inspector` (label `portable`) exist only in a
+configuration with `PLANAR_PORTABLE=ON`; see
+[toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
+`planar update` itself is covered by Catch2 cases under
+`src/cmd/planar/handlers/update/` (label `cmd_planar`).
+
+`scripts/release-workflow-crosscheck.py` is a manual check outside ctest. It
+compares the workflow reader's result with PyYAML and runs `actionlint`, and it
+fails when either tool is missing. Run it by hand after editing
+`.github/workflows/release.yml`.
 
 ## Bundle assembler identity checks
 

@@ -209,6 +209,40 @@ Do not claim the guard is universal without measuring. Matrix:
 - When an installed artifact stops shipping, add its `$PLANAR_HOME`-relative
   path to `install-cleanup.txt`.
 
+### Release bundles and the install
+
+Operators install from a release, not a checkout:
+`curl -fsSL https://github.com/rdrsss/planar/releases/latest/download/get-planar.sh | sh`.
+The old Makefile install channel into `~/.local/bin` is retired; contributors
+use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architecture.md#release-bundles),
+[INSTALL.md](INSTALL.md), and the cut recipe in
+[docs/operations.md](docs/operations.md#cutting-a-release).
+
+- **Bundle.** `planar-<os>-<arch>.tar.gz` for `macos-arm64` (macOS 26.0 or
+  later) and `linux-x86_64` (glibc 2.36 or later), no version in the name.
+  Layout: `release.json`, `install.sh`, `uninstall.sh`, `get-planar.sh`,
+  `install-cleanup.txt`, `bin/`, `skills/planar/`, `agents/`, `codex-agents/`,
+  `templates/`, `workflows/`, `migrations/`, `scripts/install-lib/`.
+- **Install order.** Both the bootstrap and `planar update` end in
+  `install.sh --prebuilt`: lock, journal, stage, probe the database with the
+  staged binaries, swap the managed subtrees (`bin/`, `skills/`, `agents/`,
+  `codex-agents/`, `workflows/`, `scripts/`, `migrations/`) through `<name>.old`,
+  create or migrate the database, place vendor surfaces, write `release.json`
+  and then the install stamp last.
+- **Data paths** are never removed by an install and are kept by
+  `planar-uninstall` without `--purge`: `planar.db` (with `-wal` and `-shm`),
+  `queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`,
+  `workspaces/`, `models/`, `execute/`, `templates/`. The one list is
+  `scripts/install-lib/data-paths.sh`; INSTALL.md carries a checked copy.
+- **`PLANAR_PORTABLE`** (CMake option, default `OFF`, set by the `dist` preset
+  only) links the C++ runtime statically with no toolchain rpath. A shipped
+  binary must satisfy `portable.binaries`; never turn it on in `debug` or
+  `release`.
+- **Release cut** (`make release-cut TAG=vX.Y.Z`) runs on macOS arm64, from an
+  annotated stable tag with `HEAD` at it and a clean tree. Try
+  `DRY_RUN=1` first. Releases are cut locally until hosted CI returns (decision
+  1337).
+
 ## Source layout
 
 | Path | Role |
@@ -234,6 +268,7 @@ Do not claim the guard is universal without measuring. Matrix:
 
 ```bash
 make build      # release build; copies the binaries into ./bin/
+make dist       # portable release bundle for this host (dist/); see operations.md
 make test       # debug build, then ctest
 make test-all   # the full gate; run it before a pull request
 make cpp-lint   # clang-format, clang-tidy and the Doxygen pass

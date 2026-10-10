@@ -174,6 +174,36 @@ linux-dist: ## Build the Linux x86_64 bundle on Debian Bookworm (amd64 emulation
 	    --build-arg PLANAR_SOURCE_DIRTY="$$source_dirty" \
 	    --progress=plain --output "type=local,dest=$(LINUX_DIST_OUT)" .
 
+# The local release path (decision 1337): both platforms from one existing stable
+# tag, each gated by scripts/release-gates.sh, then the common publisher. The
+# native bundle needs a macOS arm64 host; Linux builds and gates run in Docker.
+# DRY_RUN=1 runs every build, gate and publisher check and prints the command;
+# any other non-empty DRY_RUN is refused before anything runs.
+RELEASE_CUT_DIR ?= build/release-cut
+
+.PHONY: release-cut
+release-cut: ## Build, gate and publish both bundles from an existing stable tag: make release-cut TAG=vX.Y.Z [DRY_RUN=1]
+	@set -eu; \
+	  tag="$(TAG)"; \
+	  [ -n "$$tag" ] || { echo "make release-cut: TAG=vMAJOR.MINOR.PATCH is required" >&2; exit 2; }; \
+	  case "$(DRY_RUN)" in \
+	    '') publish_mode= ;; \
+	    1) publish_mode=--dry-run ;; \
+	    *) echo "make release-cut: DRY_RUN must be 1 (a dry run) or unset (publish), not '$(DRY_RUN)'" >&2; exit 2 ;; \
+	  esac; \
+	  host="$$(uname -s)-$$(uname -m)"; \
+	  [ "$$host" = Darwin-arm64 ] || { echo "make release-cut: the native macos-arm64 bundle needs a macOS arm64 host (this host is $$host)" >&2; exit 1; }; \
+	  scripts/release-publish.sh --preflight "$$tag" >/dev/null; \
+	  out="$(RELEASE_CUT_DIR)/$$tag"; \
+	  rm -rf "$$out"; \
+	  mkdir -p "$$out/macos-arm64"; \
+	  PLANAR_RELEASE_VERSION="$$tag" $(MAKE) dist; \
+	  cp dist/planar-macos-arm64.tar.gz dist/planar-macos-arm64.tar.gz.gates.json dist/get-planar.sh "$$out/macos-arm64/"; \
+	  scripts/release-gates.sh --platform macos-arm64 "$$out/macos-arm64"; \
+	  PLANAR_RELEASE_VERSION="$$tag" $(MAKE) linux-dist LINUX_DIST_OUT="$$out/linux-x86_64"; \
+	  scripts/release-gates.sh --platform linux-x86_64 "$$out/linux-x86_64"; \
+	  scripts/release-publish.sh $$publish_mode "$$tag" "$$out/macos-arm64" "$$out/linux-x86_64"
+
 .PHONY: linux-gate-prune
 linux-gate-prune: ## Reclaim the Docker build cache the Linux gate leaves behind (docker builder prune -f)
 	docker builder prune -f
