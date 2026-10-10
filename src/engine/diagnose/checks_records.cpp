@@ -1,17 +1,22 @@
 /// @file checks_records.cpp
 /// @brief The handoff and sync-conflict family of the diagnose catalog (see diagnose.cppm).
 ///
-/// `sync-conflict-unresolved` (plan 1132, task 7381): a `sync_events` row with outcome `conflict` and
-/// no later event for the same link (a higher row id) that ends the conflict. An event ends it when
-/// its outcome is `ok`, `noop` or `success` (a clean sync, and the event `planar-ext sync resolve`
-/// writes) or `resolved-fs`/`resolved-db` (a settled workbench conflict); `error` and the other
-/// outcomes end nothing. Of several conflicts on one link only the latest is reported, since resolve
-/// only accepts the link's latest event. A conflict row without a link (a workbench conflict, which the
-/// resolver settles by updating the row's outcome in place) has no later event for "the same link", so
-/// it is reported for as long as its outcome reads `conflict`. A state check: it reads every matching row
-/// regardless of the window start. The evidence is the event and its link, timed by the event's `at`.
-/// The plan scope reaches a link through its task or plan; a link to anything else, and a link-less
-/// event, belongs to no plan and appears only in a run without `--plan`.
+/// `sync-conflict-unresolved` (plan 1132, task 7381): an external-scope `sync_events` row with outcome
+/// `conflict` and a link, with no later event for the same link (a higher row id) that ends the
+/// conflict. An event ends it when its outcome is `ok`, `noop` or `success` (a clean sync, and the event
+/// `planar-ext sync resolve` writes) or `resolved-fs`/`resolved-db`; `error` and the other outcomes end
+/// nothing. Of several conflicts on one link only the latest is reported, since resolve only accepts a
+/// link's latest event. Workbench-scope conflicts and events without a link are not reported: a workbench
+/// sync writes a new conflict row on every run, `sync resolve` refuses an event with no link, and a
+/// deleted link nulls `link_id`, so such a row would stay a finding for good. The workbench case is a
+/// separate follow-up. The incident is the link's: the fingerprint is `sync-conflict-unresolved|
+/// external_link:<id>|global` and does not name the event, because every `sync pull` on a still-conflicting
+/// link writes a new conflict event. The primary entity stays the latest event (the `sync resolve`
+/// target) and its `at` is the evidence time, so each new conflict is a new occurrence of the same
+/// incident. A state check: it reads every matching row regardless of the window start. The plan scope
+/// reaches a link through its task or plan; a link to anything else belongs to no plan and appears only
+/// in a run without `--plan`. When the last attempt after the conflict was an `error`, the hint says to
+/// pull again first.
 ///
 /// `handoff-stale` (plan 1132, task 7378): a `pending` or `validated` handoff whose age at the
 /// evaluation instant is strictly beyond `core::stale_handoff_threshold_hours`, the cutoff
@@ -64,10 +69,12 @@ auto handoff_stale(const check_context& ctx) -> std::expected<std::vector<im::fi
 
 auto sync_conflict_unresolved(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
   auto sql =
-      std::format("select e.id, coalesce(e.link_id, 0), e.at"
+      std::format("select e.id, e.link_id, e.at,"
+                  "       exists (select 1 from sync_events r where r.link_id = e.link_id and r.id > e.id"
+                  "               and r.outcome = 'error')"
                   " from sync_events e"
                   " left join external_links l on l.id = e.link_id"
-                  " where e.outcome = 'conflict'"
+                  " where e.outcome = 'conflict' and e.scope = 'external' and e.link_id is not null"
                   "   and not exists (select 1 from sync_events n where n.link_id = e.link_id and n.id > e.id"
                   "                   and n.outcome in ('conflict', 'ok', 'noop', 'success', 'resolved-fs', 'resolved-db'))"
                   "   and {}"
@@ -79,9 +86,13 @@ auto sync_conflict_unresolved(const check_context& ctx) -> std::expected<std::ve
     im::finding f;
     f.severity = im::diagnostic_severity::warning;
     f.primary  = im::entity_ref{.kind = "sync_event", .id = row.column_int64(0)};
-    f.evidence = {f.primary};
-    if (row.column_int64(1) != 0) {
-      f.evidence.push_back(im::entity_ref{.kind = "external_link", .id = row.column_int64(1)});
+    f.evidence = {f.primary, im::entity_ref{.kind = "external_link", .id = row.column_int64(1)}};
+    f.group    = im::grouping{.key_parts = {im::entity_ref_text(f.evidence[1])}, .scope = "global"};
+    if (row.column_int64(3) != 0) {
+      f.recovery =
+          std::format("planar-ext sync pull {} first (the last attempt after the conflict errored), then planar-ext sync "
+                      "resolve <sync_event id> --keep local|remote (see its --help for the evidence flags)",
+                      row.column_int64(1));
     }
     f.evidence_times = {row.column_text(2)};
     return f;

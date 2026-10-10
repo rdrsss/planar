@@ -18,8 +18,9 @@
 //     `conflict` and no later event for the same link that ends the conflict: a successful or no-op
 //     sync (`ok`, `noop`, `success`; `planar-ext sync resolve` writes an `ok` event) or a
 //     `resolved-fs`/`resolved-db` outcome. A later `error` ends nothing; of several conflicts on one
-//     link only the latest is reported. A conflict without a link (a workbench conflict, settled in
-//     place) is reported while its outcome is still `conflict`. The evidence is the event and its link,
+//     link only the latest is reported. Workbench-scope and link-less events are not reported. The
+//     fingerprint is the link's (`sync-conflict-unresolved|external_link:<id>|global`), not the event's,
+//     so a second conflict on the link is a new occurrence of one incident. The evidence is the event and its link,
 //     timed by the event's `at`; the check ignores the window start; the plan scope reaches a link
 //     through its task or plan, and a link that belongs to no plan appears only without `--plan`.
 

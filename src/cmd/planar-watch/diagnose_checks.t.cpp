@@ -853,7 +853,7 @@ TEST_CASE("a sync conflict through planar-ext is reported until planar-ext sync 
   CHECK(finding.find("check")->string == "sync-conflict-unresolved");
   CHECK(finding.find("severity")->string == "warning");
   CHECK(finding.find("entity")->string == std::format("sync_event:{}", event));
-  CHECK(finding.find("fingerprint")->string == std::format("sync-conflict-unresolved|external_link:1,sync_event:{}", event));
+  CHECK(finding.find("fingerprint")->string == "sync-conflict-unresolved|external_link:1|global");
   CHECK(finding.find("evidence")->array.size() == 2);
 
   // Settle it the way an operator does: the token from the event's evidence, the task's current version.
@@ -865,12 +865,20 @@ TEST_CASE("a sync conflict through planar-ext is reported until planar-ext sync 
   CHECK(resolved.code == 0);
   CHECK(w.findings({"sync-conflict-unresolved"}).empty());
 
-  // A second conflict on the same link is a new finding, and it names the new event.
+  // A second conflict on the same link is the same incident: one fingerprint, with the new event as its primary entity.
   w.planar({"task", "update", "1", "--title", "Renamed locally again"});
   remote_changes("Renamed remotely a third time", "2026-04-04T00:00:00.000+0000");
   CHECK(w.ext({"sync", "pull", "1"}).code == 3);
   auto again = w.scalar("select max(id) from sync_events where outcome = 'conflict'");
   CHECK(again > event);
-  CHECK(w.findings({"sync-conflict-unresolved"}) ==
-        std::vector<std::string>{std::format("sync-conflict-unresolved sync_event:{} warning", again)});
+  auto second = w.diagnose_json({"sync-conflict-unresolved"});
+  REQUIRE(second.find("findings")->array.size() == 1);
+  CHECK(second.find("findings")->array[0].find("entity")->string == std::format("sync_event:{}", again));
+  CHECK(second.find("findings")->array[0].find("fingerprint")->string == finding.find("fingerprint")->string);
+
+  // Pulling again while the link still conflicts writes yet another event: still one finding, still one fingerprint.
+  CHECK(w.ext({"sync", "pull", "1"}).code == 3);
+  auto third = w.diagnose_json({"sync-conflict-unresolved"});
+  REQUIRE(third.find("findings")->array.size() == 1);
+  CHECK(third.find("findings")->array[0].find("fingerprint")->string == finding.find("fingerprint")->string);
 }
