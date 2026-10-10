@@ -224,6 +224,32 @@ CPMAddPackage(
 # VERSION is stated explicitly (task 6496): CPM cannot parse one out of the
 # `curl-8_7_1` tag and recorded this package as version "1", so any other
 # CPMAddPackage(curl ...) request would compare against a meaningless number.
+set(_planar_curl_portable_options "")
+if(PLANAR_PORTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Portable Linux bundles carry OpenSSL rather than requiring the host's
+  # libssl/libcrypto ABI. TLS fixes therefore require a new Planar release.
+  # Trust comes from the runtime host, never a configure-host bundle path.
+  # CPM scopes these options to curl's subdirectory, including its OpenSSL
+  # discovery; ordinary builds and macOS SecureTransport keep their defaults.
+  list(APPEND _planar_curl_portable_options
+    "OPENSSL_USE_STATIC_LIBS ON"
+    "CURL_CA_BUNDLE none"
+    "CURL_CA_PATH /etc/ssl/certs"
+    "CURL_CA_FALLBACK ON")
+  # OpenSSL 3.5's pkg-config static dependencies include bare `zstd` link
+  # items. FindOpenSSL resolves its own archives and zlib statically, but
+  # leaves these items as -lzstd, which would select a shared library.
+  # Declare this directory-scoped target before curl so its TLS targets
+  # resolve those existing items to an archive. Hosts without zstd need no
+  # target; the post-discovery check below refuses a missing required archive.
+  find_library(_planar_openssl_zstd_archive NAMES libzstd.a NO_CACHE)
+  if(_planar_openssl_zstd_archive)
+    add_library(zstd STATIC IMPORTED)
+    set_target_properties(zstd PROPERTIES
+      IMPORTED_LOCATION "${_planar_openssl_zstd_archive}")
+  endif()
+  unset(_planar_openssl_zstd_archive)
+endif()
 CPMAddPackage(
   NAME curl
   VERSION 8.7.1
@@ -247,7 +273,14 @@ CPMAddPackage(
     "CURL_ENABLE_SSL ON"
     "CURL_USE_OPENSSL ${PLANAR_CURL_USE_OPENSSL}"
     "CURL_USE_SECTRANSP ${PLANAR_CURL_USE_SECTRANSP}"
+    ${_planar_curl_portable_options}
 )
+unset(_planar_curl_portable_options)
+
+if(PLANAR_PORTABLE AND CMAKE_SYSTEM_NAME STREQUAL "Linux"
+    AND "zstd" IN_LIST _OPENSSL_STATIC_LIBRARIES AND NOT TARGET zstd)
+  message(FATAL_ERROR "Portable OpenSSL requires its static dependency libzstd.a")
+endif()
 
 # --- spdlog (D11) -------------------------------------------------------------
 #

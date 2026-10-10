@@ -814,6 +814,43 @@ Fifteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `rev
 
 Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`, `agents/planar-feedback-triager.md`, and `agents/planar-introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
 
+`install.sh`, the update verb and the uninstaller change an installation only
+while they hold its **mutation lock**, a coordination directory beside the
+canonical install root (`<root>.lock`, so removing or purging the root cannot
+split it). Ownership is a generation-numbered record created with `link(2)`,
+naming the operation, the pid and the process start time; the highest
+generation owns the lock until it is released or its process is proven dead,
+and two processes reclaiming a dead owner race for the same generation so at
+most one wins. The update verb hands its generation to the installer it execs
+(`PLANAR_MUTATION_HANDOFF`), which adopts it once and only in that process.
+`scripts/install-lib/mutation-lock.sh` specifies the protocol for the shell and
+native implementations. Under the lock, an install keeps a **recovery journal**
+(`<root>/.planar-journal`, replaced atomically; the `mutating` and `complete`
+records are flushed with `sync(1)`) with the phases `prepared`,
+`mutating`, `complete`, `aborted-before-mutation` and `uninstalling`, the
+target release and per-subtree swap progress
+(`scripts/install-lib/journal.sh`): it stages every managed subtree, probes the
+database with the staged binaries, swaps each subtree in by two renames through
+`<name>.old`, then creates or migrates the database with the installed
+`planar init`, and writes `release.json` and the install stamp last. A run
+after an interruption resumes the same target, and a `mutating` journal takes
+precedence over the old release's stamp. [INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install)
+gives the full order and the failure rules.
+
+The uninstaller is `scripts/uninstall.sh`, a standalone bash script installed as
+`$PLANAR_HOME/bin/planar-uninstall` and shipped at the bundle root as
+`uninstall.sh`; `install.sh --uninstall` execs it. It shares the installer's
+library: the prefix guard, the lock, the journal, the data-path list and the
+vendor ownership rules (`scripts/install-lib/ownership.sh`, moved out of
+`install.sh`). Under the lock it records `uninstalling` before its first
+removal, removes the recorded vendor projections it can prove are Planar's
+(reading the version 2 manifest with `sed`), the journal-owned staging and
+backups, the managed subtrees and the install records, keeps and names the data
+paths (or removes them under `--purge`, never a relocated one), keeps and
+reports every unknown entry, and removes the journal last. A root it keeps gets
+`<root>/.planar-uninstalled`, validated evidence naming the root that the
+prefix guard accepts in place of `--force`; the next install removes it.
+
 `install.sh` writes `$PLANAR_HOME/install-manifest.json` (normally
 `~/.planar/install-manifest.json`) before the first vendor target is placed and
 again after every target, through a same-directory temp file and an atomic
@@ -975,8 +1012,6 @@ The CMake project root IS the repo root: `CMakeLists.txt` and `CMakePresets.json
 # Makefile wrappers
 make build              # cmake --preset release -DPLANAR_VERSION_META=OFF; copies
                         # the five Planar binaries into ./bin/
-make install            # cmake --preset release -DPLANAR_VERSION_META=ON;
-                        # cmake --install into PREFIX/bin (default ~/.local/bin)
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-cpp-report    # the same ctest suite plus its SKIP TALLY (expected: 0)
 make test-all           # unit (ctest) + ctest-registry-check + coverage +
@@ -999,9 +1034,9 @@ Planar runs a two-tier test model:
 - **Authored-surface lint gate** — `make cli-usage-check` runs the schema-driven CLI validator (`cli_usage_lint`) followed by the semantic authored-surface validator (`surface_lint`), both C++ tools under `src/tools/` (decision 1000, ported from the Zig tree at task 6402 — no `zig build-exe` remains in this gate). `cli_usage_lint` dumps all **five** binaries' `schema` catalogs, `planar`/`planar-agent`/`planar-watch`/`planar-ext`/`planar-execute` (decision 998 adds `planar-ext`'s). `cli_usage_lint` also reads each catalog's `docs.examples` and validates every entry like an authored invocation (an unknown flag is a finding naming the command path and the flag; an example that invokes another command is a finding too), and its summary line counts the examples checked. `make surface-lint` runs only the semantic validator. The composed gate is wired into `make test-all` once.
 - **C++ format/tidy/doc-comment lint** — `make cpp-lint` (pinned `clang-format`/`clang-tidy`/Doxygen; see [docs/toolchain-parity.md](toolchain-parity.md)). The full target is not composed into `make test-all`: it requires the build already configured and built (clang-tidy needs the module BMIs materialized) and clang-tidy is advisory only, with 105 residual findings (task 6439). Its gating half — `clang-format --Werror` plus the Doxygen pass — runs in `make test-all` as `make cpp-lint-gate`. `make fmt-check` runs the cheap format half with no build precondition.
 
-The binaries produced by `make build` land under `./bin/`. `make install`
-installs the C++ executables (via `cmake --install`) under `PREFIX/bin` (default
-`~/.local/bin`). `install.sh` / `make install-full` additionally
+The binaries produced by `make build` land under `./bin/`. The Makefile has no
+install target; `cmake --install` places the C++ executables under a prefix you
+choose, and `install.sh` additionally
 stages the skill, agents, workflows, and migrations under `~/.planar` and places
 the skill and agents into each present vendor's directories after the CMake build.
 

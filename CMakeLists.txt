@@ -224,7 +224,7 @@ include(module)         # planar_module() (cmake/module.cmake)
 # only; `cmake --build <dir> --target planar_tests` builds the suite. Measured
 # before this change (2026-10-03, cold release build on 8 cores): the 150
 # test targets plus Catch2 were 81 of 320 CPU-minutes, compiled by
-# `make build`, `make install` and `install.sh` and then never run.
+# `make build` and `install.sh` and then never run.
 add_custom_target(planar_tests)
 
 add_subdirectory(src)
@@ -282,3 +282,75 @@ if(NOT WIN32)
     "${CMAKE_SOURCE_DIR}/compile_commands.json"
     COPY_ON_ERROR SYMBOLIC)
 endif()
+
+# Focused assembler identity/schema refusals; fixtures do not establish portability.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+add_test(NAME dist.identity
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/dist-identity.test.py")
+set_tests_properties(dist.identity PROPERTIES LABELS "dist_identity")
+
+# Bundle layout exercises the actual assembler with isolated fake executables.
+add_test(NAME dist.layout
+  COMMAND "${CMAKE_COMMAND}" -E env "PYTHON=${Python3_EXECUTABLE}"
+    bash "${PROJECT_SOURCE_DIR}/scripts/dist-test.sh")
+set_tests_properties(dist.layout PROPERTIES LABELS "dist_layout" TIMEOUT 180)
+
+# Stock macOS bash 3.2: a static lint for unguarded empty-array expansions and bash-4-only
+# constructs in install.sh and its sourced scripts, plus a prebuilt install and
+# uninstall run under /bin/bash (3.2 on macOS) in a scratch HOME.
+add_test(NAME install.bash32
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-bash32-test.sh")
+set_tests_properties(install.bash32 PROPERTIES LABELS "install_bash32" TIMEOUT 300)
+
+# The install-root guard: install.sh and install.sh --uninstall refuse $HOME, /
+# and the empty string at exit 2 (even with --force) and adopt legacy and
+# journal-owned roots. Scratch HOME, stub cmake, shim rm/mv: nothing real.
+add_test(NAME install.prefix_guard
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-prefix-guard-test.sh")
+set_tests_properties(install.prefix_guard PROPERTIES LABELS "install_prefix_guard" TIMEOUT 300)
+
+# The data-path list: install.sh and install.sh --uninstall never remove a listed
+# path, relocations are named, and INSTALL.md's preserved-paths section matches
+# scripts/install-lib/data-paths.sh.
+add_test(NAME install.data_paths
+  COMMAND bash "${PROJECT_SOURCE_DIR}/scripts/install-data-paths-test.sh")
+set_tests_properties(install.data_paths PROPERTIES LABELS "install_data_paths" TIMEOUT 300)
+
+# Prebuilt install: `install.sh --prebuilt <dir>` places a release bundle with no
+# build and no python3, moves an old agent.db aside unread, refuses --link and an
+# incomplete bundle before creating anything, and a source install writes
+# release.json. A fake bundle of tiny executables; nothing real is touched.
+add_test(NAME install.prebuilt
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-prebuilt-test.sh")
+set_tests_properties(install.prebuilt PROPERTIES LABELS "install_prebuilt" TIMEOUT 600)
+
+# The retired make install, install-bin, install-full, uninstall and uninstall-full targets are gone
+# (make's no-rule message, absent from `make help`) and no install doc carries a make install recipe.
+add_test(NAME install.retired_targets
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-retired-targets-test.sh")
+set_tests_properties(install.retired_targets PROPERTIES LABELS "install_retired_targets" TIMEOUT 120)
+
+# Managed subtrees, retired paths and the templates rule through install.sh: an
+# install of unknown age becomes clean, symlinks are never followed, link and
+# copy mode replace each other, type/mode changes apply, an incomplete bundle or
+# checkout is refused, templates stay missing-only under --force. Scratch HOME, fake bundles.
+add_test(NAME install.managed
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-managed-test.sh")
+set_tests_properties(install.managed PROPERTIES LABELS "install_managed" TIMEOUT 600)
+
+# The common mutation ownership protocol (scripts/install-lib/mutation-lock.sh):
+# live, killed and pid-reused owners, ambiguous records, simultaneous reclaims,
+# the update handoff and update temporaries, with real processes under stock
+# bash and base utilities only. Scratch HOME; nothing real is touched.
+add_test(NAME install.lock
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-lock-test.sh")
+set_tests_properties(install.lock PROPERTIES LABELS "install_lock" TIMEOUT 300)
+
+# The standalone uninstaller (scripts/uninstall.sh, installed as
+# ~/.planar/bin/planar-uninstall): removals through the ownership check, the
+# python-free manifest reader, preserved and purged data paths, unknown entries
+# kept, ~/.local/bin, the mutation lock, interrupted-uninstall retry and
+# reinstall. Fake bundle, scratch HOME, base tools only; nothing real is touched.
+add_test(NAME install.uninstall
+  COMMAND /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-uninstall-test.sh")
+set_tests_properties(install.uninstall PROPERTIES LABELS "install_uninstall" TIMEOUT 900)

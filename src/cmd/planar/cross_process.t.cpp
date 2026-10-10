@@ -461,6 +461,22 @@ TEST_CASE("every built binary starts as a real process and reaches its own code 
         run_pinned(one.bin, std::vector<std::string>{"version"}, space.cpp_root, std::format("{}v", one.bin.filename().string()));
     REQUIRE(ran.out.ends_with("\n"));
     REQUIRE(count_of(ran.out, "\n") == 1);
+    REQUIRE(std::ranges::count(ran.out, ' ') + 1 == 6);
+    REQUIRE(ran.out.ends_with(" dev\n"));
+    // An operator can compare machine identity to the human line without
+    // initializing a database; every planning-state binary has this flag.
+    auto const machine = run_pinned(one.bin, std::vector<std::string>{"version", "--json"}, space.cpp_root,
+                                    std::format("{}json", one.bin.filename().string()));
+    REQUIRE(machine.code == 0);
+    REQUIRE(machine.err.empty());
+    REQUIRE(
+        machine.out.starts_with("{\"release\":\"dev\",\"sha\":\"dev\",\"date\":\"dev\",\"dirty\":false,\"compiler\":\"Clang-"));
+    REQUIRE(machine.out.ends_with("\"}\n"));
+    REQUIRE_FALSE(std::filesystem::exists(space.cpp_root / "planar.db"));
+    auto const help = run_pinned(one.bin, std::vector<std::string>{"version", "--help"}, space.cpp_root,
+                                 std::format("{}help", one.bin.filename().string()));
+    REQUIRE(help.code == 0);
+    REQUIRE(help.out.contains("--json"));
   }
 }
 

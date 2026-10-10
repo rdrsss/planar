@@ -172,6 +172,18 @@ Vendor identity for auto-created sessions is taken from the `PLANAR_VENDOR` envi
 
 ---
 
+### Version metadata
+
+`planar version`, `planar-agent version`, `planar-watch version` and
+`planar-ext version` print six tokens: program, shortened sha (with
+`+dirty` when applicable), build date, `cxx`, compiler, and release tag.
+An untagged build prints `dev` in the last position. The sha token remains
+the install manifest's `build_id`.
+
+Each accepts `version --json`, which emits `release`, full `sha`, `date`,
+boolean `dirty`, and `compiler`. Version queries do not open the database.
+`planar-execute` has no version verb.
+
 ## Top-Level Usage
 
 ```

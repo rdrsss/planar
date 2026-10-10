@@ -529,25 +529,5 @@ class Store(Base):
         self.assertEqual(read_bytes(path), before)
 
 
-class ProbeVerdict(unittest.TestCase):
-    def test_table(self):
-        cases = [
-            (0, '{"seq":1}', "usable"),
-            (1, '{"error":{"tag":"not_found"}}', "usable"),
-            (125, '{"error":{"tag":"schema_version_behind"}}', "behind"),
-            (125, '{"error":{"tag":"queue_schema_incompatible"}}', "incompatible"),
-            (125, '{"error":{"tag":"queue_schema_foreign"}}', "foreign"),
-            (125, '{"error":{"tag":"store_unreachable"}}', "failed"),
-            (1, '{"error":{"tag":"schema_version_behind"}}', "failed"),
-            (125, '{"error":{"tag":"not_found"}}', "failed"),
-            (0, "not json", "failed"),
-            (0, '{"error":{"tag":"not_found"}}', "failed"),
-            (7, '{"error":{"tag":"schema_version_ahead"}}', "failed"),
-        ]
-        for code, out, want in cases:
-            with self.subTest(code=code, out=out):
-                self.assertEqual(qr.classify_probe(code, out)[0], want)
-
-
 if __name__ == "__main__":
     unittest.main(verbosity=1)

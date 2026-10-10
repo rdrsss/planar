@@ -147,10 +147,17 @@ Planar install manifest records stops the install, naming the path. See
   command projections that it can prove Planar made, prints each removal, and leaves and
   reports anything it cannot prove. See
   [INSTALL.md § Upgrade note](../INSTALL.md#upgrade-note-the-previous-skill-and-agent-projections).
-- **Uninstall.** `./install.sh --uninstall` removes every target the manifest records while
-  it still holds what Planar placed, and everything under `$PLANAR_HOME` except
-  `planar.db` and `queue-logs/`; `--force` removes those too. It never removes a vendor
-  directory or `~/.agents/skills` itself. See [INSTALL.md § Uninstall](../INSTALL.md#uninstall).
+- **Uninstall.** `planar-uninstall` (`$PLANAR_HOME/bin/planar-uninstall`, also run by
+  `./install.sh --uninstall`) reads the manifest without `python3` and removes every
+  target it records while it still holds what Planar placed, then the managed subtrees
+  and the install records under `$PLANAR_HOME`. It keeps and names the preserved data
+  paths (`planar.db` and its sidecars, `queue-logs/`, `workbench/`, `config.toml`,
+  `local/`, `templates/` and the rest of the
+  [INSTALL.md § Preserved paths](../INSTALL.md#preserved-paths) list) and reports every
+  entry it does not know; `--purge` removes the data paths too, except a relocated one.
+  Without a version 2 manifest it removes nothing under the vendor directories, and it
+  never removes a vendor directory or `~/.agents/skills` itself. See
+  [INSTALL.md § Uninstall](../INSTALL.md#uninstall).
 
 ## The `planar` skill
 

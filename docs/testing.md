@@ -490,3 +490,54 @@ To check a migration as raw SQL:
 ```bash
 sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
 ```
+
+## Bundle assembler identity checks
+
+The `dist.identity` ctest (label `dist_identity`) runs nine focused controlled
+fixture tests for stable tag/HEAD/dirty identity, git-free snapshot inputs and Docker wrapper propagation,
+metadata init/health/schema refusals, zero or failed portable checks, and schema
+field type preservation and external scratch cwd/cleanup. The fixtures substitute external
+build commands and binaries to reach refusal paths; they do not establish real
+binary portability. Comprehensive layout/checksum coverage belongs to the
+separate bundle layout test.
+
+Fake-product assembly fixtures select Linux x86_64 through a scratch `uname`
+command, independently of the host running ctest (including Linux arm64).
+Layout expectations use that declared fixture target. This controls only tests
+of assembly with Python-script executables; it establishes no native binary
+portability or additional shipping platform. A separate refusal case gives the
+actual assembler Linux aarch64 and requires rejection before configure with no
+archive emitted. Production bundles still support only macOS arm64 and Linux
+x86_64, and the Linux gate keeps its existing platform.
+
+The `dist.layout` ctest (label `dist_layout`, entry point
+`scripts/dist-test.sh`) runs five layout scenarios against the actual
+`scripts/dist.sh` assembly path in disposable source copies. Configure, build,
+portable inspection and install commands are controlled fixtures that stage
+exactly five tiny fake executables. The real assembler copies the current
+authored assets, renders Codex agents, collects metadata and emits the archive.
+The test unpacks it and checks exact entries, executable and authored bytes,
+one rendered file per authored agent, flat metadata with the current migration
+maximum, sorted entries with fixed owners, and tagged repeat cuts. It verifies
+the emitted checksum record with both `sha256sum -c` and `shasum -a 256 -c`
+when available, and requires at least one checker.
+
+The root `uninstall.sh` is always shipped, a byte copy of `scripts/uninstall.sh`;
+assembly stops when that file is missing. The root `get-planar.sh` is included
+only when present in the source; fixtures pin its absence and inclusion as a
+byte copy without supplying bootstrap behavior. Deliberate mutations prove
+that wrong entry counts, installer and uninstaller bytes and metadata fail; appending a byte
+to the archive must make the shell entry point's checksum assertion fail and
+name the asset. To check a retained fixture manually, use
+`scripts/dist-test.sh --check-checksums <directory> <asset-basename>` through
+the host queue. All fixture tags, output and scratch trees are isolated from
+the checkout's tags and retained `dist/` artifacts. Fake executables establish
+layout and checksum behavior; the real native/Linux portability and smoke
+evidence remains a separate gate.
+
+Task validation also runs real `make dist` and `make linux-dist` through the host
+queue. Assembly requires exactly two portable tests, then inspects the staged
+products. Retain the archive and its checksum-bound `.gates.json`, plus
+`build/dist-evidence/` init, health and portability logs. Tagged tests use a
+disposable checkout; never create validation release tags in the real repository.
+The milestone barrier runs the full suite on the merged candidate separately.

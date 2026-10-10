@@ -10,6 +10,13 @@
 # deleted `zig/` outright, and the targets that drove it were removed rather
 # than stubbed — see the note above `test-cpp-report`.
 
+# No built-in suffix rules. With them, `make install` would match the repository's
+# install.sh through make's `%: %.sh` rule and copy it to a file named `install`
+# instead of refusing: the install and uninstall targets are retired (plan 1122)
+# and must fail with make's no-rule message.
+MAKEFLAGS += --no-builtin-rules
+.SUFFIXES:
+
 BINARY        := planar
 AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
@@ -21,8 +28,6 @@ AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
-
-PREFIX      ?= $(HOME)/.local
 
 # CMake build output — binaries land under `build/<preset>/bin` per
 # CMakePresets.json. Override to point a target at a different build
@@ -72,31 +77,6 @@ build: ## Build the five Planar binaries into ./bin/
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
 
-.PHONY: install
-install: ## Build and install the five Planar executables into PREFIX/bin
-	cmake --preset release -DPLANAR_VERSION_META=ON
-	cmake --build build/release $(ARGS)
-	cmake --install build/release --prefix $(PREFIX)
-
-.PHONY: install-bin
-install-bin: install ## Compatibility alias for the binary-only install
-
-.PHONY: install-full
-install-full: ## Legacy full install: binaries plus skills, agents, workflows, and vendor wiring
-	./install.sh $(INSTALL_FLAGS)
-
-.PHONY: uninstall
-uninstall: ## Remove the five Planar executables from PREFIX/bin
-	rm -f $(PREFIX)/bin/$(BINARY)
-	rm -f $(PREFIX)/bin/$(AGENT_BINARY)
-	rm -f $(PREFIX)/bin/$(WATCH_BINARY)
-	rm -f $(PREFIX)/bin/$(EXECUTE_BINARY)
-	rm -f $(PREFIX)/bin/$(EXT_BINARY)
-
-.PHONY: uninstall-full
-uninstall-full: ## Remove the legacy full install (preserves planar.db, its -wal/-shm sidecars and queue-logs/; removes the retired agent.db behind the live-queue guard)
-	./install.sh --uninstall $(INSTALL_FLAGS)
-
 # Scratch database for hand-run smoke tests, kept in the build dir.
 #
 # A from-source binary resolves $PLANAR_DB, falling back to the operator's real
@@ -130,6 +110,14 @@ test-install-manifest: ## Run focused installer manifest ownership/atomicity fix
 test-install-stage: ## Run focused installer staging and vendor-surface fixtures (six vendors, nine targets)
 	bash scripts/install-stage-test.sh
 
+.PHONY: test-install-prefix-guard
+test-install-prefix-guard: ## Run the install-root guard fixtures (ctest install.prefix_guard runs them under `make test`)
+	bash scripts/install-prefix-guard-test.sh
+
+.PHONY: test-install-data-paths
+test-install-data-paths: ## Run the data-path fixtures (ctest install.data_paths runs them under `make test`)
+	bash scripts/install-data-paths-test.sh
+
 .PHONY: test-install-deps
 test-install-deps: ## Run focused installer compiler-preflight fixture
 	bash scripts/install-deps-test.sh
@@ -161,6 +149,30 @@ linux-gate: ## Build and run ctest plus queue observer Python checks on Linux in
 	@grep -E "tests passed|tests failed|Total Test time" $(LINUX_GATE_OUT)/ctest.log || true
 	@grep -qx "status=0" $(LINUX_GATE_OUT)/status.txt || { \
 	  echo "make linux-gate: FAILED (see $(LINUX_GATE_OUT)/*.log)"; exit 1; }
+
+# Resolve bundle identity on
+# the host before Docker loses .git; tagged cuts require that exact clean HEAD.
+.PHONY: dist
+dist: ## Assemble the native portable bundle with embedded release identity
+	JOBS="$(or $(JOBS),4)" scripts/dist.sh
+
+LINUX_DIST_JOBS ?= 4
+LINUX_DIST_OUT  ?= dist
+export PLANAR_RELEASE_VERSION
+
+.PHONY: linux-dist
+linux-dist: ## Build the Linux x86_64 bundle on Debian Bookworm (amd64 emulation on Apple silicon)
+	@set -eu; \
+	  identity=$$(scripts/dist.sh --identity); \
+	  source_sha=$$(printf '%s\n' "$$identity" | sed -n '1p'); \
+	  source_dirty=$$(printf '%s\n' "$$identity" | sed -n '2p'); \
+	  DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+	    --target dist -f docker/linux-gate.Dockerfile \
+	    --build-arg JOBS=$(LINUX_DIST_JOBS) \
+	    --build-arg PLANAR_RELEASE_VERSION="$${PLANAR_RELEASE_VERSION:-}" \
+	    --build-arg PLANAR_SOURCE_SHA="$$source_sha" \
+	    --build-arg PLANAR_SOURCE_DIRTY="$$source_dirty" \
+	    --progress=plain --output "type=local,dest=$(LINUX_DIST_OUT)" .
 
 .PHONY: linux-gate-prune
 linux-gate-prune: ## Reclaim the Docker build cache the Linux gate leaves behind (docker builder prune -f)

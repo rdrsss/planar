@@ -125,6 +125,20 @@ auto curl_transport::send(const request& req) -> std::expected<response, transpo
   curl_easy_setopt(handle, CURLOPT_NOSIGNAL, 1L);
   curl_easy_setopt(handle, CURLOPT_USERAGENT, "planar/1.0");
 
+#ifdef PLANAR_PORTABLE_LINUX_TLS
+  // CPM passes CURL_CA_BUNDLE=none as a scoped normal variable. curl 8.7.1
+  // removes only its cache entry, leaving a literal "none" in curl_config.h.
+  // Clear that filename so the configured host CA directory can be used.
+  curl_easy_setopt(handle, CURLOPT_CAINFO, static_cast<char const*>(nullptr));
+  // curl's OpenSSL fallback is skipped when a CA directory is configured.
+  // Red Hat hosts keep their trust bundle here instead of hashed CA files.
+  constexpr char  k_redhat_ca_bundle[] = "/etc/pki/tls/certs/ca-bundle.crt";
+  std::error_code ca_error;
+  if (std::filesystem::is_regular_file(k_redhat_ca_bundle, ca_error)) {
+    curl_easy_setopt(handle, CURLOPT_CAINFO, k_redhat_ca_bundle);
+  }
+#endif
+
   switch (req.verb) {
   case method::get:
     curl_easy_setopt(handle, CURLOPT_HTTPGET, 1L);
@@ -162,7 +176,11 @@ auto curl_transport::send(const request& req) -> std::expected<response, transpo
     curl_easy_setopt(handle, CURLOPT_HTTPHEADER, header_list);
   }
 
-  if (curl_easy_perform(handle) != CURLE_OK) {
+  auto const result = curl_easy_perform(handle);
+  if (result == CURLE_PEER_FAILED_VERIFICATION) {
+    return std::unexpected(transport_error::certificate_verification_failed);
+  }
+  if (result != CURLE_OK) {
     return std::unexpected(transport_error::send_failed);
   }
   long status = 0;

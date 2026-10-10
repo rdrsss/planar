@@ -155,7 +155,7 @@ export struct link_result {
 /// @return The rewritten bytes.
 export auto rewrite_name(std::string_view content, std::string_view name) -> std::string;
 
-/// @brief The OpenCode form of an agent, as `install.sh`'s `opencode_derive` prints it.
+/// @brief The OpenCode form of an agent, as `ownership.sh`'s `opencode_derive` prints it.
 ///
 /// Frontmatter reduced to `description` and `mode: subagent`; the body is
 /// unchanged and ends in a newline. A description YAML would misread is

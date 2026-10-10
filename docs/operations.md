@@ -367,9 +367,13 @@ queue their builds, how long they wait, how often a command times out and how
 often entries end `abandoned`. An entry with no vendor or role was submitted by
 an agent or script that did not say who it is.
 
-**Preservation and file modes.** `install.sh --uninstall` keeps `planar.db`
-(with its `-wal` and `-shm`) and `queue-logs/`; remove them by hand, or pass
-`--force`, when you want them gone. A live entry stores the submitter's task
+**Preservation and file modes.** `planar-uninstall` (`~/.planar/bin/planar-uninstall`,
+also run by `install.sh --uninstall`) keeps and names every data path, `planar.db`
+(with its `-wal` and `-shm`) and `queue-logs/` among them, and the retired old
+queue database; the full list is in
+[INSTALL.md § Preserved paths](../INSTALL.md#preserved-paths). `planar-uninstall --purge`
+removes them too, except a relocated one, which it names and leaves; there is no
+`--force` (see [INSTALL.md § Uninstall](../INSTALL.md#uninstall)). (`install.sh --prebuilt` moves the retired queue database and its old logs into `~/.planar/retired/<date>/` instead of removing them; see [INSTALL.md § Prebuilt install](../INSTALL.md#prebuilt-install---prebuilt).) A live entry stores the submitter's task
 claim token in the clear (`queue_entries.claim_token`, written when `queue run`
 is given `--claim`; the history row does not keep it), and a claim token
 authorises heartbeats and terminal verbs on that claim. `planar.db` holds claim
@@ -380,8 +384,12 @@ tokens too. So the files are owner-only:
 - `queue-logs/` is created `0700` and its logs `0600`. A log directory that
   already exists must be owned by you and not writable by group or others, or a
   detached run refuses.
-- A `PLANAR_DB` outside the install root is yours: `install.sh` only touches
-  the database directly under the install root.
+- A `PLANAR_DB` outside the install root is yours: `install.sh` changes the
+  modes of the database directly under the install root only. It does create
+  a missing database, or migrate a behind one, at the resolved path (`PLANAR_DB`
+  when set) with the installed `planar init --skip-project --allow-no-repo`,
+  and refuses, changing nothing, a database ahead of the release it installs
+  ([INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install)).
 - An install root shared by several users (a `--prefix` such as `/opt/planar`
   that more than one account runs from) is unsupported under the `0700` rule:
   only the owner can open the database. Run one install per user.

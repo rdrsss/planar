@@ -92,11 +92,11 @@ export struct response {
 
 /// @brief Why a `send` failed to produce a response at all.
 ///
-/// Deliberately coarse: the Zig adapters collapse every transport failure
-/// into a single `TransportFailed` regardless of cause, so distinguishing
-/// them here would produce a distinction no caller can observe.
+/// Certificate verification failures retain their cause for operator
+/// diagnostics. Other failures keep the generic transport error.
 export enum class transport_error : std::uint8_t {
-  send_failed, ///< No response was obtained (DNS, connect, timeout, TLS, write).
+  send_failed,                     ///< No response was obtained (DNS, connect, timeout, TLS, write).
+  certificate_verification_failed, ///< The peer certificate could not be verified.
 };
 
 /// @brief The abstract transport an adapter sends through.
@@ -111,7 +111,7 @@ public:
 
   /// @brief Perform one request.
   /// @param req The request to send.
-  /// @return The response, or `transport_error::send_failed`. A non-2xx
+  /// @return The response, or a transport error. A non-2xx
   /// status is a RESPONSE, not an error — status interpretation belongs to
   /// the adapter, exactly as in the Zig original.
   virtual auto send(const request& req) -> std::expected<response, transport_error> = 0;
@@ -143,7 +143,7 @@ public:
 
   /// @brief Perform one request over libcurl.
   /// @param req The request to send.
-  /// @return The response, or `transport_error::send_failed`.
+  /// @return The response, or a transport error.
   auto send(const request& req) -> std::expected<response, transport_error> override;
 
   /// @brief The configured timeout.

@@ -28,8 +28,6 @@
 #                                     # (planar-*.md roles plus the shared docs)
 #     skills/planar/                  # staged planar skill (SKILL.md + references/)
 #     codex-agents/planar-*.toml      # Codex custom agents rendered from agents/
-#     copilot/                        # Copilot instructions/prompts (only when
-#                                     # the checkout has a copilot/ directory)
 #     templates/                      # operator-editable defaults
 #     workflows/                      # Lua workflows
 #     scripts/validate-{barrel-modes,plan-status}-acceptance
@@ -62,10 +60,12 @@
 #   ./install.sh --vendors claude,codex
 #   ./install.sh --link               # symlink from this repo instead of copying
 #                                     #   (dev mode — edits to repo propagate)
+#   ./install.sh --prebuilt DIR       # install an unpacked release bundle: no build,
+#                                     #   no cmake/ninja/clang/python3 needed
 #   ./install.sh --prefix /opt/planar # override ~/.planar
 #   ./install.sh --force              # overwrite existing symlinks
 #   ./install.sh --ignore-live-queue  # retire agent.db despite live old queue entries
-#   ./install.sh --uninstall          # tear down everything install.sh created
+#   ./install.sh --uninstall          # run the uninstaller (~/.planar/bin/planar-uninstall)
 #   ./install.sh --preset debug       # CMake preset (default release)
 #   ./install.sh --dry-run            # preview planned actions without changing anything
 #   ./install.sh --verbose            # per-file detail (default prints a summary)
@@ -80,12 +80,16 @@ set -eEuo pipefail
 
 # ---------- defaults ----------
 
-PLANAR_HOME="${PLANAR_HOME:-$HOME/.planar}"
+# `${VAR-default}`, not `:-`: PLANAR_HOME set to the empty string must reach the
+# prefix guard and be refused, never be silently replaced by the default.
+PLANAR_HOME="${PLANAR_HOME-$HOME/.planar}"
 CODEX_HOME_EXPLICIT="${CODEX_HOME:-}"   # non-empty when the operator set CODEX_HOME: Codex's presence marker
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 VENDORS="claude,codex,copilot,gemini,antigravity,opencode"
 VENDORS_EXPLICIT=0            # set with --vendors: naming an absent vendor then warns
 MODE="copy"                   # copy | link
+PREBUILT_DIR=""               # set with --prebuilt DIR: the unpacked release bundle
+PREBUILT=0                    # 1 when --prebuilt was passed
 FORCE=0
 UNINSTALL=0
 IGNORE_LIVE_QUEUE=0           # set with --ignore-live-queue; the ONLY override of
@@ -103,11 +107,24 @@ DRY_RUN=0                     # set with --dry-run/-n to preview without changes
 INSTALLER_VERSION="1.0.0"     # install.sh's own version (see --version)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$REPO_ROOT/scripts/install-manifest.sh"
+source "$REPO_ROOT/scripts/install-lib/install-manifest.sh"
 # The queue upgrade steps (plan 1089): probe and migrate the prefix planar.db,
 # guard and retire the old agent.db. Sourced so the installer-manifest test
 # and the post-build ctest cases drive the exact functions this script runs.
 source "$REPO_ROOT/scripts/install-lib/queue-retire.sh"
+# The install-root guard shared with the uninstaller (plan 1122).
+source "$REPO_ROOT/scripts/install-lib/prefix-guard.sh"
+# The single list of data paths the installer never removes (plan 1122).
+source "$REPO_ROOT/scripts/install-lib/data-paths.sh"
+# The common mutation lock, the recovery journal's state machine and the
+# database probe (plan 1122, "Order of an install").
+source "$REPO_ROOT/scripts/install-lib/mutation-lock.sh"
+source "$REPO_ROOT/scripts/install-lib/install-state.sh"
+source "$REPO_ROOT/scripts/install-lib/db-probe.sh"
+# The vendor ownership rules and the release-record readers shared with the
+# uninstaller (plan 1122).
+source "$REPO_ROOT/scripts/install-lib/ownership.sh"
+source "$REPO_ROOT/scripts/install-lib/release.sh"
 
 # usage — the canonical help text. Defined before arg parsing so -h/--help and
 # the unknown-flag path can both reach it. (Replaces the old header-comment sed
@@ -125,7 +142,17 @@ Options:
                      claude,codex,copilot,gemini,antigravity,opencode (default: all
                      of them; a vendor is placed only when its presence marker exists)
   --no-vendor        Install Planar core only; skip vendor surfaces
-  --link             Symlink from this repo instead of copying (dev mode)
+  --link             Symlink from this repo instead of copying (dev mode).
+                     Refused with --prebuilt (exit 2).
+  --prebuilt DIR     Install the unpacked release bundle in DIR instead of
+                     building: take bin/, the skill, the agents, codex-agents/
+                     and release.json from DIR. Needs only base system tools;
+                     cmake, ninja, clang and python3 are not checked. An old
+                     agent.db is moved, unread, to retired/<date>/.
+  --cleanup DIR      Updater only: remove the updater's temporary directory DIR
+                     when the install ends. Accepted only with --prebuilt and
+                     the updater's ownership handoff (PLANAR_MUTATION_HANDOFF),
+                     and only for exactly the directory that handoff recorded.
   --force            Overwrite existing symlinks / adopt a non-Planar prefix.
                      It does NOT bypass the agent.db live-queue guard.
   --ignore-live-queue
@@ -140,7 +167,14 @@ Options:
                      the developer's build/<preset>.
   --dry-run, -n      Show what would happen without making any changes
   --verbose, -v      Per-file detail (default prints a summary)
-  --uninstall        Tear down everything install.sh created
+  --uninstall        Run the standalone uninstaller (planar-uninstall): remove
+                     everything Planar installed, keep and name the data paths
+                     (planar.db, workbench/, templates/, ...) and anything it
+                     does not know. --force is refused; see --purge.
+  --purge            With --uninstall: remove the data paths too (a relocated
+                     one is named and left where it is)
+  --yes, -y          With --uninstall: remove Planar binaries in ~/.local/bin
+                     without asking
   --version          Print the installer version and exit
   -h, --help         Show this help and exit
 
@@ -150,15 +184,28 @@ EOF
 
 # ---------- parse args ----------
 
+ORIG_ARGS=("$@")              # for the durable retry command
+CLEANUP_DIR=""                # set with --cleanup DIR (the updater's handoff only)
+PREFIX_GIVEN=0                # 1 when --prefix was passed (forwarded to the uninstaller)
+UNINSTALL_PURGE=0             # --purge: uninstall only
+UNINSTALL_YES=0               # --yes: uninstall only
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --prefix)     PLANAR_HOME="$2"; shift 2 ;;
+    --prefix)     PLANAR_HOME="$2"; PREFIX_GIVEN=1; shift 2 ;;
     --vendors)    VENDORS="$2"; VENDORS_EXPLICIT=1; shift 2 ;;
     --no-vendor)  VENDORS=""; shift ;;
     --link)       MODE="link"; shift ;;
+    --prebuilt)
+      if [[ $# -lt 2 ]]; then printf 'install.sh: --prebuilt needs a bundle directory\n' >&2; exit 64; fi
+      PREBUILT=1; PREBUILT_DIR="$2"; shift 2 ;;
+    --cleanup)
+      if [[ $# -lt 2 ]]; then printf 'install.sh: --cleanup needs a directory\n' >&2; exit 64; fi
+      CLEANUP_DIR="$2"; shift 2 ;;
     --force)      FORCE=1; shift ;;
     --ignore-live-queue) IGNORE_LIVE_QUEUE=1; shift ;;
     --uninstall)  UNINSTALL=1; shift ;;
+    --purge)      UNINSTALL_PURGE=1; shift ;;
+    --yes|-y)     UNINSTALL_YES=1; shift ;;
     --no-prune)   NO_PRUNE=1; shift ;;
     --preset)     BUILD_PRESET="$2"; shift 2 ;;
     --build-dir)  BUILD_DIR="$2"; shift 2 ;;
@@ -174,12 +221,100 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ---------- uninstall: a call into the standalone uninstaller ----------
+
+# `install.sh --uninstall` runs the standalone uninstaller (decision 1331): the
+# bundle's uninstall.sh, or the checkout's scripts/uninstall.sh. It forwards
+# --prefix, --purge, --yes and --force (which the uninstaller refuses, naming
+# --purge); the install-only options are ignored, as they always were.
+if [[ "$UNINSTALL" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    printf 'install.sh: --dry-run is not supported with --uninstall; nothing was changed\n' >&2
+    exit 64
+  fi
+  _uninstaller="$REPO_ROOT/uninstall.sh"
+  [[ -f "$_uninstaller" ]] || _uninstaller="$REPO_ROOT/scripts/uninstall.sh"
+  if [[ ! -f "$_uninstaller" ]]; then
+    printf 'install.sh: cannot find the uninstaller (uninstall.sh or scripts/uninstall.sh) in %s; nothing was changed\n' "$REPO_ROOT" >&2
+    exit 1
+  fi
+  _uargs=()
+  [[ "$PREFIX_GIVEN" -eq 1 ]] && _uargs+=(--prefix "$PLANAR_HOME")
+  [[ "$UNINSTALL_PURGE" -eq 1 ]] && _uargs+=(--purge)
+  [[ "$UNINSTALL_YES" -eq 1 ]] && _uargs+=(--yes)
+  [[ "$FORCE" -eq 1 ]] && _uargs+=(--force)
+  exec "$BASH" "$_uninstaller" ${_uargs[@]+"${_uargs[@]}"}
+fi
+if [[ "$UNINSTALL_PURGE" -eq 1 || "$UNINSTALL_YES" -eq 1 ]]; then
+  printf 'install.sh: --purge and --yes are uninstall options; pass them with --uninstall (or run planar-uninstall)\n' >&2
+  exit 64
+fi
+
 # The installer's own build directory. Deliberately NOT build/<preset>: that
 # one belongs to the developer, and sharing it is how an install picked up a
 # parity lane's build flags and left version-metadata stamping switched on
 # behind it (task 6537). `--build-dir` overrides for callers that need to
 # place it elsewhere (the installer integration tests do).
 [[ -n "$BUILD_DIR" ]] || BUILD_DIR="$REPO_ROOT/build/install-$BUILD_PRESET"
+
+# ---------- prebuilt bundle ----------
+
+# SRC_ROOT is where every staged input is read from: the source checkout, or,
+# with --prebuilt, the unpacked release bundle (tech spec 677, "Prebuilt install
+# mode"). Everything below that reads skills/, agents/, migrations/,
+# templates/, workflows/, scripts/ or install-cleanup.txt reads SRC_ROOT.
+# The bundle is validated here, before the prefix guard and before anything is
+# created: a refusal leaves no ~/.planar behind.
+SRC_ROOT="$REPO_ROOT"
+PLANAR_BINARIES=(planar planar-agent planar-watch planar-execute planar-ext)
+if [[ "$PREBUILT" -eq 0 && ( -n "$CLEANUP_DIR" || -n "${PLANAR_MUTATION_HANDOFF-}" ) ]]; then
+  printf 'install.sh: --cleanup and the updater handoff (PLANAR_MUTATION_HANDOFF) are accepted only with --prebuilt\n' >&2
+  exit 2
+fi
+if [[ "$PREBUILT" -eq 1 ]]; then
+  if [[ "$MODE" == "link" ]]; then
+    printf 'install.sh: --link cannot be used with --prebuilt: link mode would symlink the install into the bundle directory %s, which the caller deletes after the install\n' "$PREBUILT_DIR" >&2
+    exit 2
+  fi
+  if [[ ! -d "$PREBUILT_DIR" ]]; then
+    printf 'install.sh: --prebuilt %s: not a directory\n' "$PREBUILT_DIR" >&2
+    exit 1
+  fi
+  SRC_ROOT="$(cd "$PREBUILT_DIR" && pwd -P)"
+  _bundle_missing=()
+  for _b in "${PLANAR_BINARIES[@]}"; do  # bash32: nonempty
+    [[ -f "$SRC_ROOT/bin/$_b" && -x "$SRC_ROOT/bin/$_b" ]] || _bundle_missing+=("bin/$_b")
+  done
+  [[ -f "$SRC_ROOT/release.json" ]] || _bundle_missing+=("release.json")
+  [[ -f "$SRC_ROOT/uninstall.sh" ]] || _bundle_missing+=("uninstall.sh")
+  [[ -f "$SRC_ROOT/skills/planar/SKILL.md" ]] || _bundle_missing+=("skills/planar/SKILL.md")
+  [[ -d "$SRC_ROOT/agents" ]] || _bundle_missing+=("agents/")
+  _bundle_toml=0
+  for _b in "$SRC_ROOT"/codex-agents/planar-*.toml; do [[ -f "$_b" ]] && _bundle_toml=1; done
+  [[ "$_bundle_toml" -eq 1 ]] || _bundle_missing+=("codex-agents/planar-*.toml")
+  # Every managed subtree is always shipped; an absent one is a broken bundle.
+  for _b in workflows migrations scripts/install-lib; do
+    [[ -d "$SRC_ROOT/$_b" ]] || _bundle_missing+=("$_b/")
+  done
+  if [[ ${#_bundle_missing[@]} -gt 0 ]]; then
+    printf 'install.sh: the prebuilt directory %s is not a complete release bundle; missing:\n' "$SRC_ROOT" >&2
+    for _b in ${_bundle_missing[@]+"${_bundle_missing[@]}"}; do printf '  %s\n' "$_b" >&2; done
+    exit 1
+  fi
+else
+  # A source install stages every managed subtree from the checkout; one whose
+  # source directory is absent is an incomplete checkout, refused before any write.
+  _src_missing=()
+  for _b in skills/planar agents scripts/install-lib workflows migrations; do
+    [[ -d "$SRC_ROOT/$_b" ]] || _src_missing+=("$_b/")
+  done
+  [[ -f "$SRC_ROOT/scripts/uninstall.sh" ]] || _src_missing+=("scripts/uninstall.sh")
+  if [[ ${#_src_missing[@]} -gt 0 ]]; then
+    printf 'install.sh: the checkout %s is incomplete; missing:\n' "$SRC_ROOT" >&2
+    for _b in ${_src_missing[@]+"${_src_missing[@]}"}; do printf '  %s\n' "$_b" >&2; done
+    exit 1
+  fi
+fi
 
 # ---------- output helpers ----------
 
@@ -278,14 +413,14 @@ check_deps() {
   [[ ${#missing[@]} -eq 0 ]] && return 0
   if [[ "$fatal" -eq 1 ]]; then
     printf '\n%sinstall.sh: missing required %s tool(s):%s\n' "$C_RED$C_BOLD" "$label" "$C_RESET" >&2
-    for m in "${missing[@]}"; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$m" >&2; done
-    [[ ${#brew[@]} -gt 0 ]] && printf '  macOS: brew install %s\n' "${brew[*]}" >&2
+    for m in ${missing[@]+"${missing[@]}"}; do printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$m" >&2; done
+    [[ ${#brew[@]} -gt 0 ]] && printf '  macOS: brew install %s\n' "${brew[*]:-}" >&2
     exit 1
   fi
   printf '  %s!%s %s tool(s) missing — install proceeds, but some workflows will degrade:\n' \
     "$C_YELLOW" "$C_RESET" "$label" >&2
-  for m in "${missing[@]}"; do WARN_COUNT=$((WARN_COUNT + 1)); printf '    %s-%s %s\n' "$C_YELLOW" "$C_RESET" "$m" >&2; done
-  [[ ${#brew[@]} -gt 0 ]] && printf '    macOS: brew install %s\n' "${brew[*]}" >&2
+  for m in ${missing[@]+"${missing[@]}"}; do WARN_COUNT=$((WARN_COUNT + 1)); printf '    %s-%s %s\n' "$C_YELLOW" "$C_RESET" "$m" >&2; done
+  [[ ${#brew[@]} -gt 0 ]] && printf '    macOS: brew install %s\n' "${brew[*]:-}" >&2
   return 0
 }
 
@@ -303,6 +438,19 @@ version_ge() {
 
 # count_glob — how many of the given paths exist (a non-matching glob passes its
 # literal pattern, which fails the -e test, so the count is 0).
+# rm_managed <path...> — remove a directory tree the installer owns and re-stages,
+# refusing when it is, lies inside, or holds a data path (a relocated data path
+# can sit inside a managed tree). Data paths are never removed by an install.
+rm_managed() {
+  local p
+  for p in "$@"; do
+    if planar_removal_blocked "$ROOT_C" "$p"; then
+      err "refusing to remove $p: it holds or is the data path '$PLANAR_DATA_PATH_HIT', which an install never removes. Move that data path out of the installer's trees."
+    fi
+    if [[ -L "$p" ]]; then rm -f "$p"; else rm -rf "$p"; fi
+  done
+}
+
 count_glob() { local n=0 f; for f in "$@"; do [[ -e "$f" ]] && n=$((n + 1)); done; printf '%s' "$n"; }
 
 # Place a file (or directory) at $2 from $1, either by copy or symlink.
@@ -341,386 +489,59 @@ symlink_to() {
   ln -s "$src" "$dst"
 }
 
-# ---------- shared helpers: previous-projection sweep and OpenCode form ----------
+# ---------- prefix guard ----------
 
-SWEEP_REMOVED=0
-SWEEP_LEFT=0
-
-# sweep_remove <path> <what> — remove one proven entry and say so.
-sweep_remove() {
-  local path="$1" what="$2"
-  if [[ -L "$path" ]]; then rm -f "$path"; else rm -rf "$path"; fi
-  log "removed $what: $path"
-  SWEEP_REMOVED=$((SWEEP_REMOVED + 1))
-}
-
-# sweep_link_into <link> <glob-prefix...> — true when <link> is a symlink (live
-# or dangling: readlink, not -e) whose target matches one of the prefixes.
-sweep_link_into() {
-  local link="$1" target pat; shift
-  [[ -L "$link" ]] || return 1
-  target="$(readlink "$link" 2>/dev/null || true)"
-  for pat in "$@"; do
-    # shellcheck disable=SC2053  # the prefix is a glob on purpose
-    [[ "$target" == $pat ]] && return 0
-  done
-  return 1
-}
-
-# sweep_commands <dir> — the retired ~/.claude/commands symlinks.
-sweep_commands() {
-  local dir="$1" link
-  [[ -d "$dir" ]] || return 0
-  while IFS= read -r -d '' link; do
-    if sweep_link_into "$link" "$PLANAR_HOME/*" "$HOME/.planar/local/*"; then
-      sweep_remove "$link" "command symlink"
-    fi
-  done < <(find "$dir" -maxdepth 1 -type l \( -name 'pl-*.md' -o -name 'local-*.md' \) -print0)
-}
-
-# sweep_retired_toplevel_agent <link> — true when <link> points at a direct
-# child of $PLANAR_HOME/agents/ whose name is not planar-*: the layout an older
-# release linked vendor agents to before roles were prefixed. The current
-# layout links only to agents/planar-<role>.md, so it never matches. Live and
-# dangling links both match (readlink, not -e).
-sweep_retired_toplevel_agent() {
-  local link="$1" target rest
-  [[ -L "$link" ]] || return 1
-  target="$(readlink "$link" 2>/dev/null || true)"
-  [[ "$target" == "$PLANAR_HOME/agents/"* ]] || return 1
-  rest="${target#"$PLANAR_HOME/agents/"}"
-  [[ -n "$rest" && "$rest" != */* && "$rest" != planar-* ]]
-}
-
-# sweep_agents <dir> — the agent symlinks older installs placed: the unprefixed
-# render output under $PLANAR_HOME/agents/<vendor>/, and the still older links
-# to top-level $PLANAR_HOME/agents/<role>.md. A symlink to a top-level
-# agents/planar-<role>.md (link mode, the current layout) is not matched.
-sweep_agents() {
-  local dir="$1" link v
-  local -a pats=()
-  [[ -d "$dir" ]] || return 0
-  for v in claude codex copilot gemini antigravity opencode; do pats+=("$PLANAR_HOME/agents/$v/*"); done
-  while IFS= read -r -d '' link; do
-    if sweep_link_into "$link" "${pats[@]}" || sweep_retired_toplevel_agent "$link"; then
-      sweep_remove "$link" "agent symlink"
-    fi
-  done < <(find "$dir" -maxdepth 1 -type l -print0)
-}
-
-# sweep_skills <dir> <staged-dir> — the pl-* skill directories an older install
-# copied or linked into <dir>. Removed when a symlink into $PLANAR_HOME, or when
-# the bytes equal <staged-dir>/<same name> (the old runtime marker file
-# .planar-source is Planar's own and ignored in the comparison). A pl-* directory
-# with neither proof is left and reported. Other entries are ignored.
-sweep_skills() {
-  local dir="$1" staged="$2" entry name
-  [[ -d "$dir" ]] || return 0
-  while IFS= read -r -d '' entry; do
-    name="$(basename "$entry")"
-    if [[ -L "$entry" ]]; then
-      if sweep_link_into "$entry" "$PLANAR_HOME/*"; then sweep_remove "$entry" "skill symlink"; fi
-    elif [[ -d "$entry" ]]; then
-      if [[ -d "$staged/$name" ]] && diff -r -x .planar-source "$staged/$name/" "$entry/" >/dev/null 2>&1; then
-        sweep_remove "$entry" "skill copy"
-      else
-        warn "left $entry: could not prove ownership (no byte-identical staged copy at $staged/$name)"
-        SWEEP_LEFT=$((SWEEP_LEFT + 1))
-      fi
-    fi
-  done < <(find "$dir" -maxdepth 1 -name 'pl-*' -print0)
-}
-
-# run_sweep — the sweep over every vendor directory that exists.
-run_sweep() {
-  local _d
-  sweep_commands "$HOME/.claude/commands"
-  for _d in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/agents" \
-            "$HOME/.gemini/antigravity-cli/agents" "$HOME/.config/opencode/agents"; do
-    sweep_agents "$_d"
-  done
-  sweep_skills "$CODEX_HOME/skills" "$PLANAR_HOME/codex-skills"
-  sweep_skills "$HOME/.copilot/skills" "$PLANAR_HOME/copilot-skills"
-  sweep_skills "$HOME/.gemini/antigravity-cli/skills" "$PLANAR_HOME/gemini-skills"
-  sweep_skills "$HOME/.config/opencode/skills" "$PLANAR_HOME/opencode-skills"
-}
-
-# opencode_derive <staged agent .md> — print the OpenCode form of an agent: the
-# frontmatter reduced to `description` and `mode: subagent`, the body unchanged.
-# A description YAML would misread as a mapping or comment is double-quoted.
-opencode_derive() {
-  awk '
-    NR == 1 { if ($0 != "---") exit 2; infm = 1; next }
-    infm && $0 == "---" {
-      if (desc == "") exit 3
-      if (desc !~ /^["\047]/ && (desc ~ /: / || desc ~ / #/ || desc ~ /:$/ || desc ~ /^[-?:,\[\]{}#&*!|>%@`]/)) {
-        gsub(/\\/, "\\\\", desc); gsub(/"/, "\\\"", desc); desc = "\"" desc "\""
-      }
-      print "---"; print "description: " desc; print "mode: subagent"; print "---"
-      infm = 0; next
-    }
-    infm { if ($0 ~ /^description:/) { desc = $0; sub(/^description:[ \t]*/, "", desc) } ; next }
-    { print }
-    END { if (infm) exit 4 }
-  ' "$1"
-}
-
-# uninstall_owned <staged> <installed> <vendor> <kind> — <installed> is still
-# what Planar placed: a symlink into $PLANAR_HOME, or content equal to <staged>
-# (an OpenCode agent is compared with its derived form).
-uninstall_owned() {
-  local staged="$1" installed="$2" vendor="$3" kind="$4" tmp rc=0
-  if [[ -L "$installed" ]]; then
-    [[ "$(readlink "$installed" 2>/dev/null || true)" == "$PLANAR_HOME"/* ]]
-    return
-  fi
-  if [[ "$kind" == skill ]]; then
-    [[ -d "$installed" && -d "$staged" ]] && diff -r "$staged/" "$installed/" >/dev/null 2>&1
-    return
-  fi
-  [[ -f "$installed" && -f "$staged" ]] || return 1
-  if [[ "$vendor" == opencode ]]; then
-    tmp="$(mktemp)"
-    if opencode_derive "$staged" > "$tmp" 2>/dev/null; then cmp -s "$tmp" "$installed" || rc=1; else rc=1; fi
-    rm -f "$tmp"
-    return "$rc"
-  fi
-  cmp -s "$staged" "$installed"
-}
-
-# uninstall_recorded_targets — remove each projection the manifest records that
-# is still Planar's, then report what is left under a planar name.
-uninstall_recorded_targets() {
-  local manifest="$PLANAR_HOME/install-manifest.json" staged installed vendor kind d e
-  local removed=0 listing
-  if [[ -f "$manifest" ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-      listing="$(python3 - "$manifest" <<'PY' || true
-import json, sys
-try:
-    m = json.load(open(sys.argv[1], encoding='utf-8'))
-except Exception:
-    sys.exit(0)
-for r in m.get('projections', []):
-    if all(isinstance(r.get(k), str) for k in ('staged_path', 'installed_path', 'vendor', 'kind')):
-        sys.stdout.write('\t'.join((r['staged_path'], r['installed_path'], r['vendor'], r['kind'])) + '\n')
-PY
-)"
-      while IFS=$'\t' read -r staged installed vendor kind; do
-        [[ -n "$installed" ]] || continue
-        [[ -e "$installed" || -L "$installed" ]] || continue
-        if uninstall_owned "$staged" "$installed" "$vendor" "$kind"; then
-          if [[ -L "$installed" ]]; then rm -f "$installed"; else rm -rf "$installed"; fi
-          log "removed recorded target: $installed"
-          removed=$((removed + 1))
-        fi
-      done <<< "$listing"
-    else
-      warn "python3 not found: cannot read $manifest, so the placed vendor targets are not removed"
-    fi
-  fi
-  log "removed $removed recorded vendor target(s)"
-  for d in "$HOME/.claude/skills" "$HOME/.agents/skills" "$HOME/.gemini/antigravity-cli/skills" \
-           "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/agents" \
-           "$HOME/.gemini/antigravity-cli/agents" "$HOME/.config/opencode/agents"; do
-    [[ -d "$d" ]] || continue
-    while IFS= read -r -d '' e; do
-      warn "left $e: Planar did not place it as recorded"
-    done < <(find "$d" -maxdepth 1 \( -name 'planar' -o -name 'planar-*' \) -print0)
-  done
-}
-
-# ---------- uninstall path ----------
-
-if [[ "$UNINSTALL" -eq 1 ]]; then
-  title "Uninstalling Planar"
-
-  # The live-queue guard runs before anything is removed, --force or not:
-  # uninstall removes agent.db (it is no longer preserved), so it must not
-  # pull the store out from under a live old queue. This branch runs before
-  # the dependency preflight, so the guard checks for python3 itself, and
-  # only when agent.db exists. --ignore-live-queue is the only override.
-  queue_live_guard uninstall || exit 1
-
-  # The targets this installer places (plan 1104, M2): every `installed_path`
-  # the manifest's projection rows record, removed only while it is still what
-  # Planar placed (a symlink into $PLANAR_HOME, or bytes equal to the staged
-  # source). Only the `planar` entries go: no vendor directory and not
-  # ~/.agents/skills is removed. Anything else named planar or planar-* in those
-  # directories is left and reported. The previous skill and agent projections
-  # an older install made are swept the same way as on install.
-  uninstall_recorded_targets
-  run_sweep
-  log "retired $SWEEP_REMOVED previous projection(s); left $SWEEP_LEFT that could not be proven Planar's"
-
-  for vendor_root in "$HOME/.claude/commands" "$HOME/.codex/skills" "$HOME/.copilot/skills" "$HOME/.gemini/antigravity-cli/skills"; do
-    [[ -d "$vendor_root" ]] || continue
-    while IFS= read -r -d '' link; do
-      target="$(readlink "$link" 2>/dev/null || true)"
-      if [[ "$target" == "$PLANAR_HOME"/* ]]; then
-        log "removing symlink: $link"
-        rm -f "$link"
-      fi
-    done < <(find "$vendor_root" -maxdepth 1 -name 'pl-*.md' -print0)
-  done
-
-  for codex_root in "$CODEX_HOME/skills"; do
-    [[ -d "$codex_root" ]] || continue
-    while IFS= read -r -d '' link; do
-      target="$(readlink "$link" 2>/dev/null || true)"
-      if [[ "$target" == "$PLANAR_HOME"/* ]]; then
-        log "removing Codex skill link: $link"
-        rm -f "$link"
-      fi
-    done < <(find "$codex_root" -maxdepth 1 -name 'pl-*' -type l -print0)
-  done
-
-  if [[ -d "$CODEX_HOME/skills" ]]; then
-    while IFS= read -r -d '' link; do
-      skill_dir="$(dirname "$link")"
-      target="$(readlink "$link" 2>/dev/null || true)"
-      marker="$skill_dir/.planar-source"
-      marker_target=""
-      if [[ -f "$marker" ]]; then
-        marker_target="$(cat "$marker" 2>/dev/null || true)"
-      fi
-      if [[ "$target" == "$PLANAR_HOME"/* || "$marker_target" == "$PLANAR_HOME"/* ]]; then
-        log "removing Codex skill: $skill_dir"
-        rm -f "$link"
-        rm -f "$marker"
-        rmdir "$skill_dir" 2>/dev/null || true
-      fi
-    done < <(find "$CODEX_HOME/skills" -mindepth 2 -maxdepth 2 -path '*/pl-*/SKILL.md' -print0)
-  fi
-
-  if [[ -d "$HOME/.copilot/skills" ]]; then
-    while IFS= read -r -d '' link; do
-      skill_dir="$(dirname "$link")"
-      target="$(readlink "$link" 2>/dev/null || true)"
-      marker="$skill_dir/.planar-source"
-      marker_target=""
-      if [[ -f "$marker" ]]; then
-        marker_target="$(cat "$marker" 2>/dev/null || true)"
-      fi
-      if [[ "$target" == "$PLANAR_HOME"/* || "$marker_target" == "$PLANAR_HOME"/* ]]; then
-        log "removing Copilot skill: $skill_dir"
-        rm -f "$link"
-        rm -f "$marker"
-        rmdir "$skill_dir" 2>/dev/null || true
-      fi
-    done < <(find "$HOME/.copilot/skills" -mindepth 2 -maxdepth 2 -path '*/pl-*/SKILL.md' -print0)
-  fi
-
-  if [[ -d "$PLANAR_HOME/codex-skills" ]]; then
-    log "removing Codex runtime skills: $PLANAR_HOME/codex-skills"
-    rm -rf "$PLANAR_HOME/codex-skills"
-  fi
-
-  if [[ -d "$PLANAR_HOME/copilot-skills" ]]; then
-    log "removing Copilot runtime skills: $PLANAR_HOME/copilot-skills"
-    rm -rf "$PLANAR_HOME/copilot-skills"
-  fi
-
-  # Remove agent symlinks installed by symlink_vendor_agents. Mirrors the
-  # prune_stale_vendor_agents safety semantics: only remove files whose symlink
-  # target points into $PLANAR_HOME; regular files and operator-authored links
-  # are left untouched.
-  for agent_dir in "$HOME/.claude/agents" "$CODEX_HOME/agents" "$HOME/.copilot/agents" "$HOME/.gemini/antigravity-cli/agents"; do
-    [[ -d "$agent_dir" ]] || continue
-    while IFS= read -r -d '' link; do
-      target="$(readlink "$link" 2>/dev/null || true)"
-      if [[ "$target" == "$PLANAR_HOME"/* ]]; then
-        log "removing agent symlink: $link"
-        rm -f "$link"
-      fi
-    done < <(find "$agent_dir" -maxdepth 1 -type l -print0)
-  done
-
-  if [[ -d "$PLANAR_HOME" ]]; then
-    # Prefix ownership guard, uninstall side. The --uninstall branch returns
-    # (exit 0) above the INSTALL-side ownership guard further down this file,
-    # so without this check a mistyped --prefix/PLANAR_HOME reaches the
-    # unconditional `rm -rf "$PLANAR_HOME"` below with NO ownership check at
-    # all — `PLANAR_HOME=$HOME ./install.sh --uninstall --force` deletes the
-    # operator's home directory outright, and even without --force the
-    # find-and-delete two lines down removes every top-level entry of
-    # $PLANAR_HOME except the preserved data entries (planar.db, its SQLite
-    # sidecars, queue-logs/).
-    #
-    # Two checks, in order:
-    #   1. $PLANAR_HOME normalized (plain `realpath`, not `-m` — GNU's `-m`
-    #      tolerates a nonexistent path but BSD/macOS realpath has no `-m`
-    #      flag at all and errors out, which silently fell through to the
-    #      raw-string fallback below and defeated the whole normalization on
-    #      macOS when this was first written; `-m` is unneeded here anyway,
-    #      since we are already inside `-d "$PLANAR_HOME"`, so the path is
-    #      guaranteed to exist) so a trailing slash or a symlink cannot
-    #      defeat the comparison — the D13 normalization hazard tasks
-    #      6051/6052/6053 described for a different, now-gone code path,
-    #      applied to the real one — must not equal $HOME itself. $HOME is
-    #      never a valid Planar prefix, so this refuses even under --force:
-    #      there is no legitimate reason to override it.
-    #   2. Absent that, the SAME ownership signals the install-side guard
-    #      uses (stamp / bin/planar / planar.db) must be present, unless
-    #      --force overrides — mirroring the install-side guard exactly
-    #      rather than inventing a second policy. The retired agent.db is no
-    #      longer a signal (plan 1089): a prefix holding only it is refused.
-    _planar_home_real="$(realpath "$PLANAR_HOME" 2>/dev/null || echo "$PLANAR_HOME")"
-    _home_real="$(realpath "$HOME" 2>/dev/null || echo "$HOME")"
-    if [[ "$_planar_home_real" == "$_home_real" ]]; then
-      err "refusing to uninstall: PLANAR_HOME ($PLANAR_HOME) resolves to \$HOME ($HOME) — this would delete your home directory. Set --prefix to the actual Planar install root."
-    fi
-    if [[ ! -e "$PLANAR_HOME/.planar-install" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
-      err "$PLANAR_HOME does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Refusing to remove it. Pass the correct --prefix, or re-run with --force to remove it anyway."
-    fi
-
-    log "removing install root: $PLANAR_HOME"
-    log "(planar.db, its -wal/-shm sidecars and queue-logs/ are preserved if you have data — re-run with --force or rm manually; the retired agent.db is removed)"
-    if [[ "$FORCE" -eq 1 ]]; then
-      rm -rf "$PLANAR_HOME"
-    else
-      # Preserve the database and the queue's detached-run output; remove
-      # everything else, the retired agent.db and its sidecars included (plan
-      # 1089; the live-queue guard above already ran). planar.db's SQLite
-      # sidecars (-wal / -shm) hold committed data not yet checkpointed into
-      # the main file (it runs in WAL mode, so an unclean exit leaves them
-      # behind), so they stay with it. A PLANAR_DB override lives wherever
-      # the operator put it and is never touched here.
-      find "$PLANAR_HOME" -mindepth 1 -maxdepth 1 \
-        ! -name 'planar.db' ! -name 'planar.db-wal' ! -name 'planar.db-shm' \
-        ! -name 'queue-logs' \
-        -exec rm -rf {} +
-    fi
-  fi
-
-  title "Uninstall complete."
-  exit 0
-fi
+# Runs before anything is removed, created or built
+# (scripts/install-lib/prefix-guard.sh; the uninstaller runs the same guard). An
+# install root that is the empty string, /, or $HOME exits 2 even with --force;
+# a non-empty root with no Planar sign exits 1 unless --force adopts it.
+_guard_rc=0
+planar_prefix_guard "$PLANAR_HOME" "$FORCE" install || _guard_rc=$?
+[[ "$_guard_rc" -eq 0 ]] || exit "$_guard_rc"
+# Every removal, the lock, the journal and the staging are keyed on the
+# canonical root, whatever spelling of it the operator gave.
+ROOT_C="$PLANAR_PREFIX_CANON"
+case "$ROOT_C" in *$'\n'*|*$'\t'*) printf 'install.sh: the install root %s holds a newline or tab; refusing\n' "$ROOT_C" >&2; exit 2 ;; esac
+HOME_PLANAR_C="$(trap - ERR; planar_canonical_path "$HOME/.planar" 2>/dev/null || printf '%s' "$HOME/.planar")"
 
 # ---------- preflight ----------
 
-title "Planar — install from $REPO_ROOT"
+if [[ "$PREBUILT" -eq 1 ]]; then
+  title "Planar — install the prebuilt bundle $SRC_ROOT"
+else
+  title "Planar — install from $REPO_ROOT"
+fi
+planar_data_paths_report "$PLANAR_HOME" | while IFS= read -r _l; do log "$_l"; done
 
 # Live-queue preflight (plan 1089, tech spec 656 step 1). When the prefix
 # still holds the retired agent.db, refuse before anything is built while its
 # old queue has a live entry, or when the store cannot be read. It runs again
 # immediately before agent.db is removed (step 4). --ignore-live-queue is the
 # only override; --force is not one.
-queue_live_guard preflight || exit 1
+# The prebuilt path never reads agent.db (no python3 there): it moves the file
+# aside, unread, once the queue store probe passes.
+if [[ "$PREBUILT" -eq 0 ]]; then
+  queue_live_guard preflight || exit 1
+fi
 
 # Dependency manifest — keep in sync with INSTALL.md § Prerequisites and the
 # CLAUDE.md "external tool dependencies" rule. Format: "cmd|brewpkg|what for"
 # (empty brewpkg = base system tool, no Homebrew hint).
 #
-# build_deps: the installer itself shells these; a miss aborts the install.
+# toolchain_deps: the source build needs these; a miss aborts a source install.
+#             The prebuilt path (--prebuilt) never checks them.
+# base_deps:  the installer itself shells these on every path; a miss aborts
+#             the install. A prebuilt install checks only this tier.
 # run_deps:   Planar (the binary + bundled agent skills) needs these at run
 #             time; a miss only warns — the install still produces a binary.
-BUILD_DEPS=(
+TOOLCHAIN_DEPS=(
   "cmake|cmake|configures, builds, and installs the five Planar binaries"
   "ninja|ninja|C++26 module dependency scanning"
   "/opt/homebrew/opt/llvm/bin/clang|llvm|pinned LLVM C compiler required by CMakePresets.json"
   "/opt/homebrew/opt/llvm/bin/clang++|llvm|pinned LLVM C++ compiler required by CMakePresets.json"
   "python3|python|CMake configure (the Python test runners); install.sh's agent.db retirement reader (scripts/install-lib/queue_retire.py); the counter-reset log helper (scripts/queue-logs-after-reset.py); the Codex agent TOML renderer (scripts/render-codex-agents.py)"
+)
+BASE_DEPS=(
   "mktemp||capture the queue retirement probe's stderr (scripts/install-lib/queue-retire.sh)"
   "cp||copy install artifacts into place"
   "ln||symlink vendor surfaces"
@@ -731,7 +552,7 @@ BUILD_DEPS=(
   "sort||order the manifest's recorded paths so its bytes are stable"
   "diff||compare a copied vendor skill directory with the staged one"
   "find||walk vendor + template source trees"
-  "head||take the first match in scripts/install-manifest.sh and scripts/install-lib/queue-retire.sh"
+  "head||take the first match in scripts/install-lib/install-manifest.sh and scripts/install-lib/queue-retire.sh"
   "rmdir||remove emptied vendor skill directories"
   "awk||read the build id from 'planar version'"
   "grep||validate the Planar package manifest"
@@ -742,7 +563,18 @@ BUILD_DEPS=(
   "dirname||resolve parent directories"
   "tr||normalize version / PATH strings"
   "chmod||mark shipped scripts executable"
+  "date||name retired/<date>/ when an old agent.db is moved aside (scripts/install-lib/queue-retire.sh)"
+  "uname||name the host os and arch in the release record the source install writes (release.json)"
+  "realpath||resolve the install root and its data paths (scripts/install-lib/prefix-guard.sh, scripts/install-lib/data-paths.sh)"
+  "od||read random bytes for the mutation-lock nonce and the staging name (scripts/install-lib/mutation-lock.sh)"
+  "ps||read a lock owner's start time where there is no /proc, so a reused pid is not mistaken for a live owner (scripts/install-lib/mutation-lock.sh)"
+  "sed||read release.json, the recovery records and the database probe's diagnostics"
+  "wc||check the recovery journal's size (scripts/install-lib/journal.sh)"
+  "cut||shorten the staging token (scripts/install-lib/install-state.sh)"
+  "sleep||wait at a paused test fault point (scripts/install-lib/install-state.sh; test-only)"
+  "sync||flush the recovery journal's mutating and complete records to disk (install.sh)"
 )
+BUILD_DEPS=("${TOOLCHAIN_DEPS[@]}" "${BASE_DEPS[@]}")  # bash32: nonempty
 RUN_DEPS=(
   "cmp||compares staged and installed bytes in the installer (also a build dep above)"
   "git|git|repo discovery + 'planar import' (required at runtime)"
@@ -751,16 +583,20 @@ RUN_DEPS=(
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
 )
 
-check_deps "build" 1 "${BUILD_DEPS[@]}"
+if [[ "$PREBUILT" -eq 1 ]]; then
+  check_deps "base" 1 "${BASE_DEPS[@]}"  # bash32: nonempty
+else
+  check_deps "build" 1 "${BUILD_DEPS[@]}"  # bash32: nonempty
 
-# Check that we are in a CMake Planar source checkout.
-[[ -f "$REPO_ROOT/CMakeLists.txt" ]] || err "CMakeLists.txt not found in $REPO_ROOT (run install.sh from the Planar source repo)"
-[[ -f "$REPO_ROOT/CMakePresets.json" ]] || err "CMakePresets.json not found in $REPO_ROOT"
+  # Check that we are in a CMake Planar source checkout.
+  [[ -f "$REPO_ROOT/CMakeLists.txt" ]] || err "CMakeLists.txt not found in $REPO_ROOT (run install.sh from the Planar source repo)"
+  [[ -f "$REPO_ROOT/CMakePresets.json" ]] || err "CMakePresets.json not found in $REPO_ROOT"
+fi
 
 
 # Runtime tools — non-fatal; the install still produces a working binary, but
 # Planar's git-backed verbs and the bundled agent skills need these to work.
-check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"
+check_deps "Planar runtime" 0 "${RUN_DEPS[@]}"  # bash32: nonempty
 
 # git version floor — non-fatal, matching the RUN_DEPS tier above (git is
 # already in RUN_DEPS; this adds the *version* check check_deps' presence-only
@@ -780,8 +616,12 @@ fi
 log "PLANAR_HOME = $PLANAR_HOME"
 log "mode        = $MODE"
 log "vendors     = ${VENDORS:-(none)}"
-log "preset      = $BUILD_PRESET"
-log "build dir   = $BUILD_DIR"
+if [[ "$PREBUILT" -eq 1 ]]; then
+  log "bundle      = $SRC_ROOT (prebuilt: no build)"
+else
+  log "preset      = $BUILD_PRESET"
+  log "build dir   = $BUILD_DIR"
+fi
 [[ "$DRY_RUN" -eq 1 ]] && log "dry-run     = yes (no changes will be made)"
 
 # Writability — the install writes into $PLANAR_HOME (or creates it). Fail with
@@ -793,38 +633,43 @@ else
   [[ -d "$_parent" && -w "$_parent" ]] || err "cannot create $PLANAR_HOME — $_parent is not writable (permissions?)"
 fi
 
-# Prefix ownership guard — the install wipes subdirs of $PLANAR_HOME (skills/,
-# commands/, agents/, …). A mis-typed --prefix (say ~/dev or $HOME) would wipe
-# the wrong tree. Refuse unless the prefix is empty, already a Planar install
-# (carries a bin/planar or the .planar-install stamp), or --force overrides.
 PLANAR_STAMP="$PLANAR_HOME/.planar-install"
-if [[ -d "$PLANAR_HOME" && -n "$(ls -A "$PLANAR_HOME" 2>/dev/null)" ]]; then
-  # Ownership signals: the stamp, an existing binary, or a preserved planar.db
-  # (left behind by a non-force uninstall). Any one of them means "our tree".
-  # The retired agent.db is not one (plan 1089).
-  if [[ ! -e "$PLANAR_STAMP" && ! -x "$PLANAR_HOME/bin/planar" && ! -e "$PLANAR_HOME/planar.db" && "$FORCE" -ne 1 ]]; then
-    err "$PLANAR_HOME exists and does not look like a Planar install (no bin/planar, no planar.db, no .planar-install stamp). Pass a clean --prefix, remove it, or re-run with --force to adopt it."
-  fi
-fi
 
 # Dry run — everything above is read-only preflight; stop here and print the
 # plan rather than mutating anything.
 if [[ "$DRY_RUN" -eq 1 ]]; then
   _cleanup_n=0
-  [[ -f "$REPO_ROOT/install-cleanup.txt" ]] && \
-    _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$REPO_ROOT/install-cleanup.txt" || true)"
+  [[ -f "$SRC_ROOT/install-cleanup.txt" ]] && \
+    _cleanup_n="$(grep -cE '^[[:space:]]*[^#[:space:]]' "$SRC_ROOT/install-cleanup.txt" || true)"
   title "Dry run — planned actions"
-  log "build 5 Planar binaries → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
-  log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
-  if [[ -e "$PLANAR_HOME/planar.db" ]]; then
-    log "probe $PLANAR_HOME/planar.db with the new planar-agent; migrate it with planar init only when behind"
+  if [[ "$PREBUILT" -eq 1 ]]; then
+    log "copy 5 Planar binaries from $SRC_ROOT/bin → $PLANAR_HOME/bin  [prebuilt: nothing is built]"
+  else
+    log "build 5 Planar binaries → $PLANAR_HOME/bin  [preset=$BUILD_PRESET]"
   fi
-  if [[ -e "$PLANAR_HOME/agent.db" ]]; then
+  log "take the mutation lock $(planar_lock_dir "$ROOT_C") and record a recovery journal in $ROOT_C/.planar-journal"
+  if [[ -e "$ROOT_C/.planar-journal" ]]; then
+    if planar_journal_load "$ROOT_C"; then
+      log "recover first: a previous install left its journal in phase $J_phase"
+    else
+      log "stop: $ROOT_C/.planar-journal is not a valid recovery journal"
+    fi
+  fi
+  log "stage every managed subtree under $ROOT_C/.staging-<token>/, then probe the database with the staged binaries (an ahead or unusable database stops the install before any change)"
+  log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
+  log "swap bin/, skills/, agents/, codex-agents/, workflows/, scripts/ and migrations/ in through <name>.old"
+  log "create a missing database, or migrate a behind one, with the installed planar init --skip-project --allow-no-repo"
+  if [[ -e "$PLANAR_HOME/agent.db" && "$PREBUILT" -eq 1 ]]; then
+    log "move $PLANAR_HOME/agent.db, its sidecars and the old numbered queue logs, unread, into $PLANAR_HOME/retired/<date>/"
+  elif [[ -e "$PLANAR_HOME/agent.db" ]]; then
     log "re-check $PLANAR_HOME/agent.db for live queue entries, then retire it and its old numbered queue logs"
   fi
-  log "wipe + re-place: agents/, scripts/, skills/, commands/, migrations/$([[ -d "$REPO_ROOT/copilot" ]] && echo ', copilot/')"
-  log "stage skills/planar/ and agents/*.md; render the Codex agent TOML into $PLANAR_HOME/codex-agents"
-  log "place templates/ (missing-only; --force overwrites)"
+  if [[ "$PREBUILT" -eq 1 ]]; then
+    log "stage skills/planar/ and agents/*.md; copy the bundle's codex-agents/ and release.json into $PLANAR_HOME"
+  else
+    log "stage skills/planar/ and agents/*.md; render the Codex agent TOML into $PLANAR_HOME/codex-agents; write $PLANAR_HOME/release.json"
+  fi
+  log "place templates/ (missing-only, --force included); write release.json, then the install stamp last"
   if [[ -n "$VENDORS" ]]; then
     log "place the planar skill and agents for each vendor found among: $VENDORS (presence markers decide; see the vendor table in install.sh)"
   else
@@ -835,57 +680,413 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
-# ---------- build the binary ----------
+# ---------- install state helpers ----------
 
-title "Building the Planar binaries"
+# The managed subtrees: each is staged complete, then swapped in by two renames
+# (scripts/install-lib/install-state.sh). templates/ is a data path and is
+# placed missing-only after the swap. Every subtree is always shipped (an absent
+# one is refused above); commands/ and copilot/ are retired paths listed in
+# install-cleanup.txt.
+PLANAR_JOURNAL_SUBTREES="bin skills agents codex-agents workflows scripts migrations"
+# DEFAULT_RELEASE_BASE, release_field and release_base_valid come from
+# scripts/install-lib/release.sh, shared with the uninstaller.
+
+# quote_args ARG... -- the arguments as one shell-safe line.
+quote_args() {
+  local a out=""
+  for a in "$@"; do out="$out${out:+ }$(printf '%q' "$a")"; done
+  printf '%s' "$out"
+}
+
+# retry_command -- the durable command that completes this transaction. A
+# release install names the version-pinned public bootstrap (never the updater's
+# temporary directory, which cleanup removes); a source install names the
+# checkout it ran from.
+retry_command() {
+  local envs="" args=() a skip=0
+  for a in ${ORIG_ARGS[@]+"${ORIG_ARGS[@]}"}; do
+    if [[ "$skip" -eq 1 ]]; then skip=0; continue; fi
+    case "$a" in
+      --cleanup|--prebuilt) skip=1; continue ;;
+    esac
+    args+=("$a")
+  done
+  if [[ "$PREBUILT" -eq 0 ]]; then
+    printf 'cd %s && ./install.sh%s' "$(printf '%q' "$REPO_ROOT")" "${args[*]+ $(quote_args ${args[@]+"${args[@]}"})}"
+    return 0
+  fi
+  if [[ "$J_target_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    [[ "$J_release_base" == "$DEFAULT_RELEASE_BASE" ]] || envs="$envs PLANAR_RELEASE_URL=$(printf '%q' "$J_release_base")"
+    [[ "$ROOT_C" == "$HOME_PLANAR_C" ]] || envs="$envs PLANAR_HOME=$(printf '%q' "$ROOT_C")"
+    printf 'curl -fsSL %s/download/%s/get-planar.sh | PLANAR_VERSION=%s%s sh' "$J_release_base" "$J_target_version" "$J_target_version" "$envs"
+    return 0
+  fi
+  case "$SRC_ROOT/" in
+    "$ROOT_C/$PLANAR_LOCK_UPDATE_NS/"*)
+      printf 're-run install.sh --prebuilt from an unpacked bundle of commit %s (this %s bundle is not published)' "$J_target_sha" "$J_target_version"
+      ;;
+    *)
+      printf 'bash %s --prebuilt %s%s' "$(printf '%q' "$SRC_ROOT/install.sh")" "$(printf '%q' "$SRC_ROOT")" "${args[*]+ $(quote_args ${args[@]+"${args[@]}"})}"
+      ;;
+  esac
+}
+
+# journal_save -- write the journal or stop.
+journal_save() {
+  planar_journal_write "$ROOT_C" || err "cannot write the recovery journal $ROOT_C/.planar-journal"
+}
+
+# journal_save_durable -- write the journal, then flush it to disk with sync(1),
+# so the record survives a power loss as well as a kill. Used for the two phase
+# records the recovery depends on: mutating (before the first live change) and
+# complete (before the backups are disposed of).
+journal_save_durable() {
+  journal_save
+  sync || warn "sync failed; the recovery journal $ROOT_C/.planar-journal is written but may not be on disk yet"
+}
+
+# set_target -- the identity of the release this run installs, into J_target_*.
+set_target() {
+  local f n max=0
+  # shellcheck disable=SC2034  # J_* are written to the journal by name
+  J_mode="$MODE"
+  if [[ "$PREBUILT" -eq 1 ]]; then
+    J_source=prebuilt
+    J_target_version="$(release_field "$SRC_ROOT/release.json" version)"
+    J_target_sha="$(release_field "$SRC_ROOT/release.json" sha)"
+    J_target_schema="$(release_field "$SRC_ROOT/release.json" schema_version)"
+    J_target_path="$SRC_ROOT"
+    J_release_base="$DEFAULT_RELEASE_BASE"
+    if [[ -n "${PLANAR_RELEASE_URL-}" ]]; then
+      if release_base_valid "$PLANAR_RELEASE_URL"; then
+        J_release_base="${PLANAR_RELEASE_URL%/}"
+      else
+        warn "PLANAR_RELEASE_URL is not a valid release base; the retry command names $DEFAULT_RELEASE_BASE"
+      fi
+    fi
+    [[ "$J_target_version" =~ ^[A-Za-z0-9._+-]+$ ]] || err "the bundle's release.json has no readable version"
+  else
+    J_source=checkout
+    J_target_version=source
+    J_target_sha="$(trap - ERR; git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null)" || J_target_sha=unknown
+    [[ -n "$J_target_sha" ]] || J_target_sha=unknown
+    for f in "$SRC_ROOT"/migrations/*.up.sql; do
+      [[ -f "$f" ]] || continue
+      n="${f##*/}"; n="${n%%_*}"
+      [[ "$n" =~ ^[0-9]+$ ]] || continue
+      (( 10#$n > max )) && max=$((10#$n))
+    done
+    J_target_schema="$max"
+    J_target_path="$REPO_ROOT"
+    J_release_base=""
+  fi
+}
+
+# same_target -- the loaded journal's transaction installs what this run would.
+same_target() {
+  local v="$J_target_version" s="$J_target_sha" c="$J_target_schema" src="$J_source" p="$J_target_path"
+  [[ "$src" == "$1" && "$v" == "$2" && "$s" == "$3" && "$c" == "$4" ]] || return 1
+  [[ "$src" == prebuilt || "$p" == "$5" ]]
+}
+
+# ---------- mutation ownership ----------
+
+INSTALL_ATTEMPT=""      # fresh | recovery, once the journal is ours
+RUN_MUTATED=0           # 1 from the first live change of this run
+NEW_STAGING=""          # the staging directory this run created
+CLEANUP_OK=""           # the validated --cleanup directory
+
+# _install_on_exit -- the EXIT trap from the moment ownership is held. A failed
+# attempt that never changed anything live is marked aborted-before-mutation,
+# its own staging is removed and its journal last, leaving the previous install
+# authoritative. A failure after the mutating record keeps the journal and the
+# backups and names the durable retry command. Then the updater's temporary
+# directory is removed (with --cleanup) and ownership is released.
+_install_on_exit() {
+  local rc=$? jf
+  trap - ERR
+  set +e
+  jf="$ROOT_C/.planar-journal"
+  if [[ -n "$INSTALL_ATTEMPT" && -f "$jf" && ! -L "$jf" ]]; then
+    if [[ "$J_phase" == prepared ]]; then
+      J_phase=aborted-before-mutation
+      planar_journal_write "$ROOT_C"
+      planar_state_dispose_staging "$ROOT_C"
+      rm -f "$jf"
+      printf '  this attempt stopped before changing the installation; its staging was removed and the previous install is unchanged\n' >&2
+    elif [[ "$J_phase" == mutating ]]; then
+      if [[ "$RUN_MUTATED" -eq 0 && -n "$NEW_STAGING" ]]; then
+        planar_state_dispose_staging "$ROOT_C" "$NEW_STAGING"
+        planar_journal_write "$ROOT_C"
+      fi
+      if [[ "$rc" -ne 0 ]]; then
+        printf '\n%sThe installation at %s is incomplete.%s Data paths and the recovery evidence (%s, the *.old backups) are kept; the binaries may already have changed. Fix the cause above, then complete the install with:\n  %s\n' \
+          "$C_RED$C_BOLD" "$ROOT_C" "$C_RESET" "$jf" "$J_retry" >&2
+      fi
+    fi
+  fi
+  if [[ -n "$CLEANUP_OK" ]] && planar_update_tmp_valid "$ROOT_C" "$CLEANUP_OK"; then
+    rm -rf "$CLEANUP_OK"
+    rmdir "$ROOT_C/$PLANAR_LOCK_UPDATE_NS" 2>/dev/null
+  fi
+  planar_lock_release
+  exit "$rc"
+}
+
+title "Taking ownership of $ROOT_C"
+if [[ -n "${PLANAR_MUTATION_HANDOFF-}" ]]; then
+  planar_lock_adopt "$ROOT_C" "$PLANAR_MUTATION_HANDOFF" \
+    || { printf '\ninstall.sh: refusing the update handoff: %s\n' "$PLANAR_LOCK_ERROR" >&2; exit 1; }
+  log "adopted the updater's ownership (generation $PLANAR_LOCK_GEN of $PLANAR_LOCK_DIR)"
+else
+  if [[ -n "$CLEANUP_DIR" ]]; then
+    printf '\ninstall.sh: --cleanup is accepted only from the updater, which hands its ownership over in PLANAR_MUTATION_HANDOFF; nothing was removed\n' >&2
+    exit 1
+  fi
+  planar_lock_acquire "$ROOT_C" install || { printf '\ninstall.sh: %s\n' "$PLANAR_LOCK_ERROR" >&2; exit 1; }
+  log "mutation lock: $PLANAR_LOCK_DIR (generation $PLANAR_LOCK_GEN)"
+fi
+trap _install_on_exit EXIT
+if [[ -n "$CLEANUP_DIR" ]]; then
+  if [[ "$CLEANUP_DIR" != "$PLANAR_LOCK_TMP" ]] || ! planar_update_tmp_valid "$ROOT_C" "$CLEANUP_DIR" \
+     || planar_removal_blocked "$ROOT_C" "$CLEANUP_DIR"; then
+    err "refusing --cleanup $CLEANUP_DIR: it must be exactly the temporary directory the updater recorded (${PLANAR_LOCK_TMP:-none}), a real directory you own under $ROOT_C/$PLANAR_LOCK_UPDATE_NS/; nothing was removed"
+  fi
+  CLEANUP_OK="$CLEANUP_DIR"
+fi
+if [[ -n "$PLANAR_LOCK_RECLAIMED" ]]; then
+  log "reclaimed the mutation lock from an abandoned $PLANAR_LOCK_RECLAIMED"
+  if [[ -n "$PLANAR_LOCK_RECLAIMED_TMP" ]]; then
+    rm -rf "$PLANAR_LOCK_RECLAIMED_TMP"
+    log "removed the abandoned updater's temporary directory $PLANAR_LOCK_RECLAIMED_TMP"
+  fi
+fi
+planar_install_fault after-lock || err "test fault after taking ownership"
 
 harden_planar_home
-mkdir -p "$PLANAR_HOME/bin"
-# CMake configures, builds, and installs all FIVE executable targets:
-#
-#   planar         — operator surface
-#   planar-agent   — agent-callable coordination (atomic claim ops,
-#                    nested actions, ingest, operator recovery)
-#   planar-watch   — human-facing read-only viewer (no write verbs,
-#                    strict SQLITE_OPEN_READONLY handle)
-#   planar-execute — deterministic spawn-free Lua workflow engine
-#                    (run <wf.lua> --phase; shells planar for state,
-#                    holds no DB handle, no model-spawn host fn)
-#   planar-ext     — operational-plane binary (Jira, GitHub Issues adapters;
-#                    read-only on planning tables, read-write on exactly
-#                    external_links / external_systems / sync_events)
-#
-# `PLANAR_VERSION_META=ON` stamps the install's git metadata. It stays off
-# for ordinary dev builds so commit/dirty changes do not invalidate the tree.
-#
-# EVERY option this build depends on is pinned explicitly. A configure that
-# omits a flag does NOT reset it -- the cache wins -- so an unpinned
-# option was inherited from whatever last configured the directory (task
-# 6537).
-( cd "$REPO_ROOT" \
-  && cmake --preset "$BUILD_PRESET" -B "$BUILD_DIR" \
-       -DPLANAR_VERSION_META=ON \
-  && cmake --build "$BUILD_DIR" \
-  && cmake --install "$BUILD_DIR" --prefix "$PLANAR_HOME" )
-vlog "wrote $PLANAR_HOME/bin/planar"
-vlog "wrote $PLANAR_HOME/bin/planar-agent"
-vlog "wrote $PLANAR_HOME/bin/planar-watch"
-vlog "wrote $PLANAR_HOME/bin/planar-execute"
-vlog "wrote $PLANAR_HOME/bin/planar-ext"
+
+# ---------- recovery ----------
+
+# Validate any recovery journal and finish or discard what it owns before
+# anything new is staged (tech spec 677, steps 2 and 3).
+title "Checking for an interrupted install"
+JOURNAL_FILE="$ROOT_C/.planar-journal"
+set_target
+_want_source="$J_source"; _want_version="$J_target_version"; _want_sha="$J_target_sha"
+_want_schema="$J_target_schema"; _want_path="$J_target_path"
+if [[ -e "$JOURNAL_FILE" || -L "$JOURNAL_FILE" ]]; then
+  planar_journal_load "$ROOT_C" \
+    || err "$JOURNAL_FILE is not a valid recovery journal for $ROOT_C; it and every staging and backup entry are kept. Inspect it; remove it by hand only if no install was interrupted."
+  case "$J_phase" in
+    uninstalling)
+      err "an uninstall of $ROOT_C was interrupted; an install never resumes a cancelled installation. Finish the uninstall first: ${J_retry:-$REPO_ROOT/install.sh --uninstall}"
+      ;;
+    complete)
+      log "the previous install committed; removing its leftover backups and staging"
+      planar_state_finish "$ROOT_C"
+      planar_journal_clear
+      ;;
+    prepared|aborted-before-mutation)
+      log "a previous attempt ($J_phase) stopped before changing the installation; removing its staging"
+      planar_state_dispose_staging "$ROOT_C"
+      rm -f "$JOURNAL_FILE"
+      planar_journal_clear
+      ;;
+    mutating)
+      if [[ "$J_owner_pid" != "$$" ]] && [[ "$(trap - ERR; planar_lock_start_token "$J_owner_pid" 2>/dev/null || true)" == "$J_owner_start" ]] && [[ -n "$J_owner_start" ]]; then
+        err "the interrupted install's owner (pid $J_owner_pid) is still running although it no longer holds the mutation lock; nothing was changed"
+      fi
+      same_target "$_want_source" "$_want_version" "$_want_sha" "$_want_schema" "$_want_path" \
+        || err "an install of $J_target_version ($J_target_sha) into $ROOT_C was interrupted after it changed the installation; finish that one first, then install another release: $J_retry"
+      planar_state_reconcile "$ROOT_C" || err "the interrupted install cannot be resumed safely: $INSTALL_STATE_ERROR"
+      log "resuming the interrupted install of $J_target_version"
+      INSTALL_ATTEMPT=recovery
+      ;;
+  esac
+fi
+while IFS= read -r _l; do [[ -n "$_l" ]] && warn "$_l"; done < <(planar_state_report_unknown "$ROOT_C")
+
+if [[ "$INSTALL_ATTEMPT" != recovery ]]; then
+  planar_journal_clear
+  J_phase=prepared
+  J_operation=install
+  # shellcheck disable=SC2034  # J_* are written to the journal by name
+  [[ -n "${PLANAR_MUTATION_HANDOFF-}" ]] && J_operation=update
+  # shellcheck disable=SC2034  # J_* are written to the journal by name
+  J_operation_id="$(trap - ERR; _pl_nonce)" || err "cannot read random bytes for the operation id"
+  set_target
+  J_retry="$(retry_command)"
+  for _n in $PLANAR_JOURNAL_SUBTREES; do printf -v "J_$(planar_journal_sub_key "$_n")" '%s' pending; done
+  INSTALL_ATTEMPT=fresh
+fi
+J_owner_pid="$$"
+J_owner_start="$(trap - ERR; planar_lock_start_token "$$")" || J_owner_start=unknown
+# shellcheck disable=SC2034  # J_* are written to the journal by name
+J_owner_lock="$PLANAR_LOCK_GEN"
+NEW_STAGING="$(trap - ERR; planar_state_pick_staging)" || err "cannot pick a staging name"
+J_staging="${J_staging:+$J_staging }$NEW_STAGING"
+journal_save
+STAGE="$ROOT_C/$NEW_STAGING"
+planar_install_fault after-prepared || err "test fault after recording the attempt"
+
+# ---------- stage ----------
+
+# stage_uninstaller SRC -- the standalone uninstaller, as bin/planar-uninstall
+# of the staged bin/ (bin/ is swapped in whole). Always a copy, in link mode
+# too: it must keep working whatever happens to the checkout.
+stage_uninstaller() {
+  cp -f "$1" "$STAGE/bin/planar-uninstall"
+  chmod 755 "$STAGE/bin/planar-uninstall"
+}
+
+# stage_prebuilt -- copy every managed subtree of the bundle into $STAGE.
+stage_prebuilt() {
+  local b d
+  mkdir -p "$STAGE/bin" "$STAGE/skills" "$STAGE/agents"
+  for b in "${PLANAR_BINARIES[@]}"; do  # bash32: nonempty
+    cp -f "$SRC_ROOT/bin/$b" "$STAGE/bin/$b"
+    chmod 755 "$STAGE/bin/$b"
+  done
+  stage_uninstaller "$SRC_ROOT/uninstall.sh"
+  cp -R "$SRC_ROOT/skills/planar" "$STAGE/skills/planar"
+  find "$SRC_ROOT/agents" -maxdepth 1 -type f -exec cp -f {} "$STAGE/agents/" \;
+  cp -R "$SRC_ROOT/codex-agents" "$STAGE/codex-agents"
+  for d in workflows scripts migrations; do
+    cp -R "$SRC_ROOT/$d" "$STAGE/$d"
+  done
+  [[ -d "$STAGE/scripts" ]] && chmod +x "$STAGE/scripts/"* 2>/dev/null
+  log "staged the bundle's bin/, skills/, agents/, codex-agents/, workflows/, scripts/ and migrations/ (prebuilt: nothing is built)"
+}
+
+# stage_source -- build the five binaries and stage every managed subtree from
+# the checkout into $STAGE. In link mode scripts/, workflows/, migrations/ and
+# skills/planar are symlinks into the checkout and agents/ holds links to the
+# authored files (models.md is copied: the prefix owns its tier table).
+stage_source() {
+  local d f
+  title "Building the Planar binaries"
+  # CMake configures, builds, and installs all FIVE executable targets:
+  #
+  #   planar         — operator surface
+  #   planar-agent   — agent-callable coordination (atomic claim ops,
+  #                    nested actions, ingest, operator recovery)
+  #   planar-watch   — human-facing read-only viewer (no write verbs,
+  #                    strict SQLITE_OPEN_READONLY handle)
+  #   planar-execute — deterministic spawn-free Lua workflow engine
+  #                    (run <wf.lua> --phase; shells planar for state,
+  #                    holds no DB handle, no model-spawn host fn)
+  #   planar-ext     — operational-plane binary (Jira, GitHub Issues adapters;
+  #                    read-only on planning tables, read-write on exactly
+  #                    external_links / external_systems / sync_events)
+  #
+  # `PLANAR_VERSION_META=ON` stamps the install's git metadata. It stays off
+  # for ordinary dev builds so commit/dirty changes do not invalidate the tree.
+  #
+  # EVERY option this build depends on is pinned explicitly. A configure that
+  # omits a flag does NOT reset it -- the cache wins -- so an unpinned
+  # option was inherited from whatever last configured the directory (task
+  # 6537). The build installs into the staging directory; only its bin/ is
+  # taken, and everything is swapped into place after the database probe.
+  ( cd "$REPO_ROOT" \
+    && cmake --preset "$BUILD_PRESET" -B "$BUILD_DIR" \
+         -DPLANAR_VERSION_META=ON \
+    && cmake --build "$BUILD_DIR" \
+    && cmake --install "$BUILD_DIR" --prefix "$STAGE/.cmake-install" )
+  [[ -d "$STAGE/.cmake-install/bin" ]] || err "the build installed no bin/ into $STAGE/.cmake-install"
+  mv "$STAGE/.cmake-install/bin" "$STAGE/bin"
+  rm -rf "$STAGE/.cmake-install"
+  stage_uninstaller "$REPO_ROOT/scripts/uninstall.sh"
+  title "Staging the planar skill and agents"
+  mkdir -p "$STAGE/skills" "$STAGE/agents"
+  place "$SRC_ROOT/skills/planar" "$STAGE/skills/planar"
+  while IFS= read -r -d '' f; do
+    if [[ "$MODE" == "link" && "$(basename "$f")" != "models.md" ]]; then
+      ln -s "$f" "$STAGE/agents/$(basename "$f")"
+    else
+      cp -f "$f" "$STAGE/agents/$(basename "$f")"
+    fi
+  done < <(find "$SRC_ROOT/agents" -maxdepth 1 -type f -print0)
+  # The renderer exits 1 naming a malformed file and writes nothing.
+  local out
+  if ! out="$(python3 "$SRC_ROOT/scripts/render-codex-agents.py" "$SRC_ROOT/agents" "$STAGE/codex-agents" 2>&1)"; then
+    err "rendering the Codex agents failed: $out"
+  fi
+  for d in workflows scripts migrations; do
+    place "$SRC_ROOT/$d" "$STAGE/$d"
+  done
+  # Copied script tooling is executable. In link mode the path resolves into the
+  # checkout, whose modes are left alone.
+  [[ "$MODE" != "link" && -d "$STAGE/scripts" ]] && chmod +x "$STAGE/scripts/"* 2>/dev/null
+  log "staged skills/planar/, agents/, codex-agents/, workflows/, scripts/ and migrations/ ($MODE)"
+}
+
+title "Staging into $STAGE"
+mkdir "$STAGE" || err "cannot create the staging directory $STAGE"
+if [[ "$PREBUILT" -eq 1 ]]; then
+  stage_prebuilt
+else
+  stage_source
+fi
+planar_install_fault staging || err "test fault while staging"
 
 # Smoke check — a build can succeed yet produce a binary that won't run. Confirm
-# it executes now (and capture the build id) rather than discovering it broken
-# at `planar init`.
-PLANAR_VERSION_LINE="$("$PLANAR_HOME/bin/planar" version 2>/dev/null || true)"
+# the staged binary executes (and capture the build id) before anything live
+# changes.
+PLANAR_VERSION_LINE="$("$STAGE/bin/planar" version 2>/dev/null || true)"
 [[ -n "$PLANAR_VERSION_LINE" ]] || \
-  err "built $PLANAR_HOME/bin/planar but it failed to run ('planar version' produced no output)"
+  err "$STAGE/bin/planar was staged but it failed to run ('planar version' produced no output)"
 PLANAR_BUILD_ID="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
-ok "built 5 Planar binaries → $PLANAR_HOME/bin  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+ok "5 Planar binaries staged  ${C_DIM}($PLANAR_VERSION_LINE)${C_RESET}"
+planar_install_fault after-staging || err "test fault after staging"
+
+# ---------- probe the database ----------
+
+# The staged binaries classify the database before anything live changes
+# (tech spec 677 step 5; decisions 1324-1326).
+title "Probing the database with the staged binaries"
+planar_db_resolve "$ROOT_C"
+planar_db_probe "$STAGE/bin"
+planar_install_fault probe || { INSTALL_DB_STATE=fault; INSTALL_DB_DETAIL="test fault injected into the probe"; }
+log "database $PLANAR_INSTALL_DB: $INSTALL_DB_STATE ($INSTALL_DB_DETAIL)"
+case "$INSTALL_DB_STATE" in
+  missing)
+    log "no database yet: the installed planar will create it after the swap (no project is registered)" ;;
+  behind)
+    log "the database is at schema $INSTALL_DB_VERSION, behind this release's $INSTALL_DB_TARGET: it is migrated after the swap" ;;
+  current) ;;
+  ahead)
+    err "refusing to install: the database $PLANAR_INSTALL_DB is at schema $INSTALL_DB_VERSION, newer than this release's schema $INSTALL_DB_TARGET. An older release is never installed over a newer database; nothing was changed. Install a release at schema $INSTALL_DB_VERSION or later." ;;
+  *)
+    err "refusing to install: the database $PLANAR_INSTALL_DB cannot be used: $INSTALL_DB_DETAIL. Nothing was changed. Fix the database (or PLANAR_DB), then re-run." ;;
+esac
+
+# The still-installed read-only planar-watch names live queue entries before the
+# swap (decision 1327). It never blocks.
+planar_queue_warning "$ROOT_C/bin"
+
+planar_state_unknown_backup "$ROOT_C" && err "$INSTALL_STATE_ERROR"
+# A managed subtree is moved aside whole, so one that is, or holds, a data path
+# (relocated into it) stops the install here, before anything changes.
+for _n in $PLANAR_JOURNAL_SUBTREES; do
+  if [[ -e "$ROOT_C/$_n" || -L "$ROOT_C/$_n" ]] && planar_removal_blocked "$ROOT_C" "$ROOT_C/$_n"; then
+    err "refusing to replace $PLANAR_HOME/$_n: it holds or is the data path '$PLANAR_DATA_PATH_HIT', which an install never moves or removes. Nothing was changed. Move that data path out of the installer's trees."
+  fi
+done
+
+# ---------- live changes begin ----------
+
+# Durably record the mutating intent before the first live change (the vendor
+# sweep is one). From here a failure keeps the journal and the backups.
+J_db="$INSTALL_DB_STATE"
+J_phase=mutating
+journal_save_durable
+planar_install_fault after-mutating || err "test fault after recording the mutating intent"
+RUN_MUTATED=1
 
 # ---------- retire the previous projections ----------
 
 # Order matters (plan 1104, M2): this sweep runs BEFORE the $PLANAR_HOME cleanup
-# below and before the artifacts are re-staged. The staged <vendor>-skills/
+# below and before the subtrees are swapped. The staged <vendor>-skills/
 # trees an older install left under $PLANAR_HOME are the only evidence that a
 # pl-* directory in a vendor's skills directory is a copy Planar made, and the
 # cleanup deletes those trees. Nothing is removed that cannot be proven
@@ -896,163 +1097,68 @@ title "Retiring the previous skill and agent projections"
 run_sweep
 log "retired $SWEEP_REMOVED previous projection(s); left $SWEEP_LEFT that could not be proven Planar's"
 
-# CMake install only writes the targets it builds — it never removes files a
-# PRIOR install left behind. Iterate the cleanup manifest and delete
-# any $PLANAR_HOME-relative artifact current Planar no longer ships (e.g. a
-# binary dropped in a refactor) so a re-install over an older tree is clean.
-# See install-cleanup.txt. This runs after the sweep above (which needs the
-# staged trees listed here) and after the build. An entry the build above just
-# installed again is exempt, so the install stays consistent and a re-run does
-# not flap; the exemption list is empty today.
-CLEANUP_LIST="$REPO_ROOT/install-cleanup.txt"
-CLEANUP_KEEP_THIS_RUN=" "
+# Iterate the cleanup manifest and delete any root-relative artifact current
+# Planar no longer ships (see install-cleanup.txt). A data path is never
+# removed, and neither is anything reached through a symlink: an entry whose
+# path, or any directory on the way to it, is a symlink is removed only as the
+# link itself when the entry names the link.
+CLEANUP_LIST="$SRC_ROOT/install-cleanup.txt"
 if [[ -f "$CLEANUP_LIST" ]]; then
   while IFS= read -r _raw; do
     _line="${_raw%%#*}"                  # strip an inline comment
     read -r _relpath _ <<< "$_line"      # trim whitespace; first token = path
     [[ -z "$_relpath" ]] && continue
-    if [[ "$CLEANUP_KEEP_THIS_RUN" == *" $_relpath "* ]]; then
-      vlog "kept $PLANAR_HOME/$_relpath (installed by this run)"
+    _rel="${_relpath%/}"
+    case "/$_rel/" in */../*|*/./*|//) warn "skipped cleanup entry $_relpath: not a plain relative path"; continue ;; esac
+    _target="$ROOT_C/$_rel"
+    if planar_removal_blocked "$ROOT_C" "$_target"; then
+      log "kept $PLANAR_HOME/$_relpath (data path '$PLANAR_DATA_PATH_HIT': a cleanup entry never removes a data path)"
       continue
     fi
-    _target="$PLANAR_HOME/$_relpath"
-    if [[ "$_relpath" == */ ]]; then
-      [[ -d "$_target" ]] && { rm -rf "$_target"; log "removed stale dir  $_target"; }
+    _p="$ROOT_C"; _via_link=0; _rest="$_rel"
+    while [[ "$_rest" == */* ]]; do
+      _p="$_p/${_rest%%/*}"; _rest="${_rest#*/}"
+      [[ -L "$_p" ]] && { _via_link=1; break; }
+    done
+    if [[ "$_via_link" -eq 1 ]]; then
+      vlog "kept $PLANAR_HOME/$_relpath: $_p is a symlink, which cleanup never follows"
+      continue
+    fi
+    if [[ -L "$_target" ]]; then
+      rm -f "$_target"; log "removed stale link $PLANAR_HOME/$_rel"
+    elif [[ "$_relpath" == */ ]]; then
+      [[ -d "$_target" ]] && { rm -rf "$_target"; log "removed stale dir  $PLANAR_HOME/$_relpath"; }
     else
-      [[ -e "$_target" ]] && { rm -f "$_target"; log "removed stale file $_target"; }
+      [[ -e "$_target" ]] && { rm -f "$_target"; log "removed stale file $PLANAR_HOME/$_relpath"; }
     fi
   done < "$CLEANUP_LIST"
 fi
 
-# ---------- queue store ----------
+# ---------- swap the managed subtrees ----------
 
-# The queue lives in planar.db (plan 1089). Ask the planar-agent just
-# installed whether the prefix's planar.db is usable, read-only and from /,
-# and migrate it with `planar init` only when it is behind (decision 1008).
-# An ahead planar.db is never refused: an incompatible or foreign queue schema
-# only warns. Any other answer stops the install here, with the new binaries
-# installed and nothing retired. Then re-check the old agent.db's queue
-# immediately before removing anything (an entry may have appeared during the
-# build), and retire it with its old numbered logs. See
-# scripts/install-lib/queue-retire.sh.
-title "Checking the queue store"
-queue_probe_migrate || exit 1
-queue_live_guard re-check || exit 1
-queue_retire_store || exit 1
-
-# ---------- place artifacts ----------
-
-title "Placing source artifacts into $PLANAR_HOME"
-
-# These directories are the canonical Planar artifacts that get installed.
-# In copy mode we mirror them under $PLANAR_HOME; in link mode we symlink the
-# whole tree so edits to the repo propagate.
-#
-# `agents/` and `skills/` are special-cased because each mixes canonical
-# authored input with rendered vendor output. Their prefix roots must remain
-# real directories so the renderer never writes through a link into the source
-# checkout.
-for d in scripts workflows; do
-  if [[ -d "$REPO_ROOT/$d" ]]; then
-    rm -rf "$PLANAR_HOME/$d"
-    place "$REPO_ROOT/$d" "$PLANAR_HOME/$d"
-    log "$d/ → $PLANAR_HOME/$d ($MODE)"
+title "Swapping the managed subtrees into $ROOT_C"
+for _n in $PLANAR_JOURNAL_SUBTREES; do
+  _sk="$(planar_journal_sub_key "$_n")"
+  _st="J_$_sk"
+  if [[ "${!_st}" == swapped ]]; then
+    vlog "$_n/ already swapped by the interrupted run"
+    continue
   fi
+  planar_state_swap "$ROOT_C" "$STAGE" "$_n" || err "could not swap $_n/: $INSTALL_STATE_ERROR"
+  log "$_n/ → $ROOT_C/$_n ($MODE)"
 done
-
-# Stage only the canonical top-level agent sources. Vendor subdirectories are
-# renderer output and are recreated below. Link mode keeps authored role/docs
-# live, except models.md: the renderer patches its tier table at install time,
-# so that file must be prefix-owned to preserve the canonical checkout.
-rm -rf "$PLANAR_HOME/agents"
-mkdir -p "$PLANAR_HOME/agents"
-if [[ -d "$REPO_ROOT/agents" ]]; then
-  while IFS= read -r -d '' f; do
-    dst="$PLANAR_HOME/agents/$(basename "$f")"
-    if [[ "$MODE" == "link" && "$(basename "$f")" != "models.md" ]]; then
-      ln -s "$f" "$dst"
-    else
-      cp -f "$f" "$dst"
-    fi
-  done < <(find "$REPO_ROOT/agents" -maxdepth 1 -type f -print0)
-  log "agents/ → $PLANAR_HOME/agents (canonical sources: $MODE; rendered outputs: copy)"
-fi
-
-# Wipe the whole skills/ subtree first so a previous install's staged files
-# (including the retired skills/src/ copy) do not linger.
-rm -rf "$PLANAR_HOME/skills" "$PLANAR_HOME/commands"
-mkdir -p "$PLANAR_HOME/skills"
-
-# ---------- stage the planar skill and agents ----------
-
-# Stage the vendor-neutral skill and agents once, before any vendor placement:
-# skills/planar/ (SKILL.md + references/) and the nineteen agents/*.md files
-# (the fifteen planar-*.md roles and the four doctrine documents) are copied
-# or linked per $MODE, and the Codex custom-agent TOML files are rendered from
-# agents/ into codex-agents/. The TOML never goes under agents/codex/, which
-# belongs to the retired render. agents/<vendor>/ subdirectories are left to
-# the cleanup task.
-title "Staging the planar skill and agents"
-[[ -f "$REPO_ROOT/skills/planar/SKILL.md" ]] || err "skills/planar/SKILL.md not found in $REPO_ROOT (required to stage the planar skill)"
-[[ -d "$REPO_ROOT/agents" ]] || err "agents/ not found in $REPO_ROOT (required to stage the planar agents)"
-
-rm -rf "$PLANAR_HOME/skills/planar"
-mkdir -p "$PLANAR_HOME/skills"
-place "$REPO_ROOT/skills/planar" "$PLANAR_HOME/skills/planar"
-log "skills/planar/ → $PLANAR_HOME/skills/planar ($MODE)"
-
-mkdir -p "$PLANAR_HOME/agents"
-_staged_agents=0
-for f in "$REPO_ROOT"/agents/*.md; do
-  [[ -f "$f" ]] || continue
-  rm -f "$PLANAR_HOME/agents/$(basename "$f")"
-  place "$f" "$PLANAR_HOME/agents/$(basename "$f")"
-  vlog "agents/$(basename "$f") → $PLANAR_HOME/agents ($MODE)"
-  _staged_agents=$((_staged_agents + 1))
-done
-log "agents/*.md → $PLANAR_HOME/agents ($_staged_agents files, $MODE)"
-
-# The renderer exits 1 naming a malformed file and writes nothing. Render into
-# a sibling directory and move it into place only on success, so a failure
-# leaves no codex-agents/ behind and a prior good one intact.
-_codex_new="$PLANAR_HOME/codex-agents.new"
-rm -rf "$_codex_new"
-if ! _codex_out="$(python3 "$REPO_ROOT/scripts/render-codex-agents.py" "$REPO_ROOT/agents" "$_codex_new" 2>&1)"; then
-  rm -rf "$_codex_new"
-  err "rendering the Codex agents failed: $_codex_out"
-fi
-rm -rf "$PLANAR_HOME/codex-agents"
-mv "$_codex_new" "$PLANAR_HOME/codex-agents"
-log "codex-agents/ ← agents/ ($(count_glob "$PLANAR_HOME"/codex-agents/*.toml) TOML files)"
-
-# Migrations live at repo root in sqlx-cli format and are read by the CMake
-# build via configure-time codegen. We also stage them under $PLANAR_HOME for
-# ad-hoc tooling (e.g. operators running `sqlx migrate` against scratch DBs).
-if [[ -d "$REPO_ROOT/migrations" ]]; then
-  rm -rf "$PLANAR_HOME/migrations"
-  place "$REPO_ROOT/migrations" "$PLANAR_HOME/migrations"
-  log "migrations/ → $PLANAR_HOME/migrations ($MODE)"
-fi
-
-# copilot/ is optional and may not exist yet.
-if [[ -d "$REPO_ROOT/copilot" ]]; then
-  rm -rf "$PLANAR_HOME/copilot"
-  place "$REPO_ROOT/copilot" "$PLANAR_HOME/copilot"
-  log "copilot/ → $PLANAR_HOME/copilot ($MODE)"
-fi
 
 # templates/ ships operator-editable defaults (workspace-capabilities.toml,
-# doc prompts). Unlike the surfaces above we do NOT rm -rf first: the
-# install drops individual files into place only when missing, so hand
-# edits survive `install.sh` re-runs. Use --force to overwrite.
-if [[ -d "$REPO_ROOT/templates" ]]; then
+# doc prompts). It is a data path: each file is placed only when missing, so
+# hand edits survive `install.sh` re-runs, --force included.
+if [[ -d "$SRC_ROOT/templates" ]]; then
   mkdir -p "$PLANAR_HOME/templates"
   while IFS= read -r -d '' f; do
-    rel="${f#$REPO_ROOT/templates/}"
+    rel="${f#"$SRC_ROOT"/templates/}"
     dst="$PLANAR_HOME/templates/$rel"
     mkdir -p "$(dirname "$dst")"
-    if [[ -e "$dst" && "$FORCE" -ne 1 ]]; then
-      vlog "templates/$rel: kept existing (use --force to overwrite)"
+    if [[ -e "$dst" || -L "$dst" ]]; then
+      vlog "templates/$rel: kept existing (templates are placed missing-only, even with --force)"
       continue
     fi
     if [[ "$MODE" == "link" ]]; then
@@ -1061,14 +1167,41 @@ if [[ -d "$REPO_ROOT/templates" ]]; then
       cp -f "$f" "$dst"
     fi
     vlog "templates/$rel → $dst ($MODE)"
-  done < <(find "$REPO_ROOT/templates" -type f -print0)
+  done < <(find "$SRC_ROOT/templates" -type f -print0)
 fi
 
-# Make sure copied script tooling is executable. In link mode the prefix path
-# resolves into the source checkout; chmod there would mutate canonical source
-# modes (including non-executable data manifests).
-if [[ "$MODE" != "link" && -d "$PLANAR_HOME/scripts" ]]; then
-  chmod +x "$PLANAR_HOME/scripts/"* 2>/dev/null || true
+# ---------- initialize or migrate the database ----------
+
+# A missing or behind database is brought current by the swapped-in installed
+# planar (tech spec 677 step 8; decision 1325), then probed again. A failure
+# keeps the journal and the backups: binaries are not rolled back across a
+# schema change.
+if [[ "$J_db" == missing || "$J_db" == behind ]]; then
+  title "$([[ "$J_db" == missing ]] && echo Initializing || echo Migrating) the database"
+  log "(cd / && PLANAR_DB=$(printf '%q' "$PLANAR_INSTALL_DB") PLANAR_CONFIG_PATH=$(printf '%q' "$PLANAR_INSTALL_CONFIG") $(printf '%q' "$ROOT_C/bin/planar") init --skip-project --allow-no-repo)"
+  _db_ok=1
+  planar_db_migrate "$ROOT_C/bin" || _db_ok=0
+  planar_install_fault post-probe || { _db_ok=0; INSTALL_DB_DETAIL="test fault injected into the post-migration probe"; }
+  if [[ "$_db_ok" -ne 1 ]]; then
+    err "the database $PLANAR_INSTALL_DB could not be brought to this release's schema: $INSTALL_DB_DETAIL. Its rows are kept; the new binaries are already in place."
+  fi
+  ok "database $PLANAR_INSTALL_DB is current"
+  J_db=current
+  journal_save
+fi
+planar_install_fault after-migrate || err "test fault after the migration"
+
+# ---------- queue store ----------
+
+# The retired agent.db (plan 1089). The source path re-checks its old queue
+# for live entries and retires it with its old numbered logs; the prebuilt path
+# has no python3 and moves it aside unread. See scripts/install-lib/queue-retire.sh.
+title "Retiring the old queue store"
+if [[ "$PREBUILT" -eq 1 ]]; then
+  queue_retire_prebuilt || exit 1
+else
+  queue_live_guard re-check || exit 1
+  queue_retire_store || exit 1
 fi
 
 # ---------- vendor surfaces ----------
@@ -1319,11 +1452,11 @@ record_manifest() {
   install_manifest_begin "${PLANAR_BUILD_ID:-unknown}" "$MODE"
   for p in ${VENDORS_FOUND[@]+"${VENDORS_FOUND[@]}"}; do INSTALL_MANIFEST_VENDORS+=("$p"); done
   if [[ "$STAGED_EXTRAS_READ" -eq 0 ]]; then
-    install_manifest_record_staged "$PLANAR_HOME" "$REPO_ROOT"
-    STAGED_EXTRAS=("${INSTALL_MANIFEST_EXTRAS[@]}")
+    install_manifest_record_staged "$PLANAR_HOME" "$SRC_ROOT"
+    STAGED_EXTRAS=(${INSTALL_MANIFEST_EXTRAS[@]+"${INSTALL_MANIFEST_EXTRAS[@]}"})
     STAGED_EXTRAS_READ=1
   else
-    INSTALL_MANIFEST_EXTRAS=("${STAGED_EXTRAS[@]}")
+    INSTALL_MANIFEST_EXTRAS=(${STAGED_EXTRAS[@]+"${STAGED_EXTRAS[@]}"})
   fi
   for ((i = 0; i < ${#PLAN_DST[@]}; i++)); do
     [[ -n "${PLAN_STATE[$i]:-}" ]] || continue
@@ -1341,10 +1474,10 @@ if [[ -n "$VENDORS" ]]; then
   title "Placing vendor surfaces"
 
   IFS=',' read -r -a _requested <<< "$VENDORS"
-  for _v in "${_requested[@]}"; do
-    [[ " ${VENDOR_NAMES[*]} " == *" $_v "* ]] || warn "unknown vendor: $_v (skipping)"
+  for _v in ${_requested[@]+"${_requested[@]}"}; do
+    [[ " ${VENDOR_NAMES[*]} " == *" $_v "* ]] || warn "unknown vendor: $_v (skipping)"  # bash32: nonempty
   done
-  for _v in "${VENDOR_NAMES[@]}"; do
+  for _v in "${VENDOR_NAMES[@]}"; do  # bash32: nonempty
     if [[ ",$VENDORS," != *",$_v,"* ]]; then
       VENDORS_SKIPPED+=("$_v (not in --vendors)")
     elif vendor_present "$_v"; then
@@ -1366,11 +1499,11 @@ if [[ -n "$VENDORS" ]]; then
   # the glob's sorted order (planar-coder first). The install-stage tests rely
   # on this order (a stop at the Nth target leaves exactly the first N-1 placed
   # and recorded).
-  for _row in "${VENDOR_TARGETS[@]}"; do
+  for _row in "${VENDOR_TARGETS[@]}"; do  # bash32: nonempty
     IFS='|' read -r _owners _fmt _dir <<< "$_row"
     _active=0
     IFS=',' read -r -a _owner_list <<< "$_owners"
-    for _o in "${_owner_list[@]}"; do
+    for _o in ${_owner_list[@]+"${_owner_list[@]}"}; do
       [[ " ${VENDORS_FOUND[*]:-} " == *" $_o "* ]] && _active=1
     done
     [[ "$_active" -eq 1 ]] || continue
@@ -1462,14 +1595,96 @@ fi
 record_manifest
 vlog "wrote $PLANAR_HOME/install-manifest.json (${#INSTALL_MANIFEST_EXTRAS[@]} recorded paths)"
 
+# ---------- release record ----------
+
+# write_release_json — $PLANAR_HOME/release.json, the single record of which
+# release is installed (decision 1334). A prebuilt install copies the bundle's
+# file. A source install writes one in the same shape scripts/dist.sh writes:
+# `version` is the sixth token of `planar version` (the release tag, `dev`
+# for a build without one), so `planar update --check` on a source install
+# reports dev and always finds an update. The other fields are read from the
+# build and the host: the full sha from `planar version --json`, the version
+# line's date, the host os and arch, the os floor dist.sh records for that os,
+# and the highest migration number the build embeds. The file is
+# written beside its destination and renamed into place, and left alone when
+# its bytes are unchanged.
+release_json_safe() {
+  # Print $1 when it is a plain token (no quote, backslash or space), else $2.
+  if [[ "$1" =~ ^[A-Za-z0-9._+:-]+$ ]]; then printf '%s' "$1"; else printf '%s' "$2"; fi
+}
+write_release_json() {
+  local dest="$PLANAR_HOME/release.json" tmp="$PLANAR_HOME/release.json.new.$$"
+  rm -f "$tmp"
+  if [[ "$PREBUILT" -eq 1 ]]; then
+    cp -f "$SRC_ROOT/release.json" "$tmp"
+  else
+    local version sha date os arch floor schema f n vjson
+    version="$(release_json_safe "$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $6}')" dev)"
+    # The full commit sha, as scripts/dist.sh records it, comes from
+    # `planar version --json`; the version line carries a short form only.
+    vjson="$(trap - ERR; "$PLANAR_RELEASE_BIN" version --json 2>/dev/null)" || vjson=""
+    sha="$(printf '%s' "$vjson" | sed -n 's/.*"sha":"\([^"]*\)".*/\1/p' | head -n 1)"
+    [[ -n "$sha" ]] || sha="$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $2}')"
+    sha="$(release_json_safe "$sha" unknown)"
+    date="$(release_json_safe "$(printf '%s' "$PLANAR_VERSION_LINE" | awk '{print $3}')" unknown)"
+    case "$(uname -s)" in
+      Darwin) os=macos ;;
+      Linux)  os=linux ;;
+      *)      os="$(uname -s | tr '[:upper:]' '[:lower:]')" ;;
+    esac
+    arch="$(uname -m)"
+    [[ "$arch" == aarch64 ]] && arch=arm64
+    # The platform floor scripts/dist.sh records for a bundle of this OS: the
+    # macOS deployment target, or the glibc floor of the Linux bundles. Keep
+    # these two constants in step with dist.sh.
+    case "$os" in
+      macos) floor=26.0 ;;
+      linux) floor=2.36 ;;
+      *)     floor=unknown ;;
+    esac
+    schema=0
+    for f in "$SRC_ROOT"/migrations/*.up.sql; do
+      [[ -f "$f" ]] || continue
+      n="${f##*/}"; n="${n%%_*}"
+      [[ "$n" =~ ^[0-9]+$ ]] || continue
+      (( 10#$n > schema )) && schema=$((10#$n))
+    done
+    printf '{\n  "version": "%s",\n  "sha": "%s",\n  "date": "%s",\n  "os": "%s",\n  "arch": "%s",\n  "os_floor": "%s",\n  "schema_version": %s\n}\n' \
+      "$version" "$sha" "$date" "$os" "$arch" "$floor" "$schema" > "$tmp"
+  fi
+  if [[ -f "$dest" ]] && cmp -s "$tmp" "$dest"; then
+    rm -f "$tmp"
+    vlog "release.json unchanged"
+  else
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$dest"
+    log "wrote $dest"
+  fi
+}
+
+title "Recording the release"
+PLANAR_RELEASE_BIN="$ROOT_C/bin/planar"
+write_release_json
+
 # ---------- ownership stamp ----------
 
 # Mark $PLANAR_HOME as a Planar-managed install. The prefix ownership guard
 # reads this on re-install to distinguish "our tree" from a mis-typed --prefix.
-printf 'planar-install %s\nbuild %s\n' "$INSTALLER_VERSION" "${PLANAR_BUILD_ID:-unknown}" > "$PLANAR_STAMP"
-
+# release.json, then this stamp, are the last writes of the install.
 # A database the install itself created or replaced is private too.
 harden_planar_home
+printf 'planar-install %s\nbuild %s\n' "$INSTALLER_VERSION" "${PLANAR_BUILD_ID:-unknown}" > "$PLANAR_STAMP"
+# The stamp supersedes the marker a previous uninstall left (journal.sh).
+rm -f "$ROOT_C/$PLANAR_UNINSTALLED_NAME"
+
+# ---------- commit ----------
+
+# The installation is committed: record that first, then dispose of the
+# backups and the staging, and remove the journal last (tech spec 677 step 9).
+J_phase=complete
+journal_save_durable
+planar_install_fault after-complete || err "test fault after recording completion"
+planar_state_finish "$ROOT_C"
 
 # ---------- summary ----------
 
@@ -1486,11 +1701,27 @@ if [[ "$WARN_COUNT" -gt 0 ]]; then
   printf '  %s!%s %s warning(s) above — review before first run\n' "$C_YELLOW" "$C_RESET" "$WARN_COUNT"
 fi
 printf '\n'
-log "next:       planar init"
-log "uninstall:  ./install.sh --uninstall"
+log "database:   $PLANAR_INSTALL_DB (current)"
+log "next:       planar init  (in a project checkout, to register it)"
+log "uninstall:  $PLANAR_HOME/bin/planar-uninstall  (--purge also removes the data paths)"
+
+# A planar ahead of the installed one on PATH shadows it: name that binary, and
+# say plainly when it is the one the retired `make install` left in
+# ~/.local/bin. Resolved after the summary so the warning is the last thing read.
+PLANAR_BIN_DIR="$PLANAR_HOME/bin"
+_shadow="$(command -v planar 2>/dev/null || true)"
+if [[ -n "$_shadow" && "$_shadow" == /* ]]; then
+  _shadow_c="$(trap - ERR; planar_canonical_path "$_shadow" 2>/dev/null || printf '%s' "$_shadow")"
+  _installed_c="$(trap - ERR; planar_canonical_path "$PLANAR_BIN_DIR/planar" 2>/dev/null || printf '%s' "$PLANAR_BIN_DIR/planar")"
+  if [[ "$_shadow_c" != "$_installed_c" ]]; then
+    _shadow_name="$_shadow"
+    # shellcheck disable=SC2088  # a display string: the literal ~ is intended
+    [[ "$_shadow" == "$HOME/.local/bin/planar" ]] && _shadow_name="~/.local/bin/planar"
+    warn "$_shadow_name shadows the installed $PLANAR_BIN_DIR/planar: your shell runs $_shadow_name. Put $PLANAR_BIN_DIR first on PATH, or remove $_shadow_name (the retired 'make install' put it there)."
+  fi
+fi
 
 # Print PATH instructions only when ~/.planar/bin is not already on PATH.
-PLANAR_BIN_DIR="$PLANAR_HOME/bin"
 if ! printf '%s' "$PATH" | tr ':' '\n' | grep -qx "$PLANAR_BIN_DIR"; then
   printf '\n'
   printf '  Add %s to your PATH so the planar command is available:\n' "$PLANAR_BIN_DIR"
