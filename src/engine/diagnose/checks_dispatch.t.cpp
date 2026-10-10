@@ -16,8 +16,6 @@
 //     past its lease.
 //   * A direct claim, a live claim, and a preview for another task or token produce no dispatch
 //     finding.
-//   * `dispatch-unconfirmed` (event, warning): a dispatch with a preview bound to its claim and no
-//     snapshot confirming it, once its claim has ended or a role action has started.
 //   * `dispatch-confirmed-late` (event, warning): a dispatch whose earliest snapshot was confirmed
 //     strictly after its first role action started; an equal instant is not late.
 
@@ -189,7 +187,6 @@ TEST_CASE("the dispatch and action checks are catalogued with the spec's kind, s
   };
   for (const auto& want : std::vector<row>{
            {"dispatch-no-role-action", im::check_kind::event, im::diagnostic_severity::warning, "dispatch_no_role_action"},
-           {"dispatch-unconfirmed", im::check_kind::event, im::diagnostic_severity::warning, "dispatch_unconfirmed"},
            {"dispatch-confirmed-late", im::check_kind::event, im::diagnostic_severity::warning, "dispatch_confirmed_late"},
            {"action-unended", im::check_kind::state, im::diagnostic_severity::warning, "claim_action_unended"}}) {
     auto it = std::ranges::find(cat.checks, want.id, &dg::check_def::id);
@@ -241,7 +238,7 @@ TEST_CASE("a direct claim is never a dispatch, whether or not it started an acti
   fx.action(1, 2, "coder", 2, "2026-06-01T09:10:00.000Z", "2026-06-01T09:50:00.000Z");
   fx.lapsed_claim(3, 1);
   CHECK(fx.run(k_no_role).findings.empty());
-  CHECK(fx.run({"dispatch-no-role-action", "dispatch-unconfirmed", "dispatch-confirmed-late"}).findings.empty());
+  CHECK(fx.run({"dispatch-no-role-action", "dispatch-confirmed-late"}).findings.empty());
 }
 
 TEST_CASE("a preview is a dispatch record only for its own task and claim token", "[engine][diagnose][dispatch]") {
@@ -287,7 +284,7 @@ TEST_CASE("a snapshot makes a claim a dispatch only when it overlaps the claim's
 }
 
 TEST_CASE("snapshot confirmed_at is compared as an instant, not as text", "[engine][diagnose][dispatch]") {
-  // `dispatch confirm --now` writes the caller's RFC 3339 text, here without a fraction. At the
+  // The confirmation instant is stored as the caller's RFC 3339 text, here without a fraction. At the
   // release second it is inside the lifetime; as text '...:00Z' sorts after '...:00.000Z'.
   fixture fx;
   fx.task(1, "done");
@@ -545,137 +542,7 @@ TEST_CASE("a dispatch whose lapsed claim left an action open reports both checks
         std::vector<std::string>{"action-unended action:1", "dispatch-no-role-action claim:1"});
 }
 
-const std::vector<std::string> k_unconfirmed{"dispatch-unconfirmed"};
 const std::vector<std::string> k_late{"dispatch-confirmed-late"};
-
-TEST_CASE("dispatch-unconfirmed reports a previewed dispatch that was never confirmed", "[engine][diagnose][dispatch]") {
-  fixture fx;
-  fx.task(1, "done");
-  fx.completed_claim(1, 1);
-  fx.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
-
-  auto d = fx.run(k_unconfirmed);
-  REQUIRE(d.findings.size() == 1);
-  const auto& f = d.findings[0];
-  CHECK(f.check_id == "dispatch-unconfirmed");
-  CHECK(f.severity == im::diagnostic_severity::warning);
-  CHECK(im::entity_ref_text(f.primary) == "claim:1");
-  CHECK(std::ranges::contains(f.evidence, im::entity_ref{.kind = "task", .id = 1}));
-  CHECK(std::ranges::contains(f.evidence, im::entity_ref{.kind = "dispatch_preview", .id = 1}));
-  CHECK(f.evidence.size() == 3);
-  CHECK(f.evidence_times == std::vector<std::string>{"2026-06-01T09:01:00.000Z"});
-  CHECK(f.recovery.contains("planar-agent dispatch confirm"));
-  CHECK(im::finding_fingerprint(f) == "dispatch-unconfirmed|claim:1|task:1|global");
-}
-
-TEST_CASE("a confirmed dispatch is not unconfirmed, however the snapshot is tied to it", "[engine][diagnose][dispatch]") {
-  // The preview was spent on a snapshot.
-  fixture spent;
-  spent.task(1, "done");
-  spent.completed_claim(1, 1);
-  spent.snapshot(1, 1, "2026-06-01T09:05:00.000Z");
-  spent.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z", 1, "2026-06-01T09:05:00.000Z");
-  CHECK(spent.run(k_unconfirmed).findings.empty());
-
-  // An unspent preview with a snapshot for the same task inside the claim's lifetime.
-  fixture overlap;
-  overlap.task(1, "done");
-  overlap.completed_claim(1, 1);
-  overlap.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
-  overlap.snapshot(1, 1, "2026-06-01T09:05:00Z");
-  CHECK(overlap.run(k_unconfirmed).findings.empty());
-
-  // A snapshot for the task from long before the claim does not confirm this dispatch.
-  fixture before;
-  before.task(1, "done");
-  before.completed_claim(1, 1);
-  before.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
-  before.snapshot(1, 1, "2026-05-30T09:05:00.000Z");
-  CHECK(ids_of(before.run(k_unconfirmed)) == std::vector<std::string>{"dispatch-unconfirmed claim:1"});
-
-  // A first preview that was abandoned and a second that was confirmed: the dispatch was confirmed.
-  fixture second;
-  second.task(1, "done");
-  second.completed_claim(1, 1);
-  second.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
-  second.snapshot(1, 1, "2026-06-01T09:06:00.000Z");
-  second.preview(2, 1, "tok1", "2026-06-01T09:05:00.000Z", 1, "2026-06-01T09:06:00.000Z");
-  CHECK(second.run(k_unconfirmed).findings.empty());
-}
-
-TEST_CASE("dispatch-unconfirmed ignores a snapshot-only dispatch and a direct claim", "[engine][diagnose][dispatch]") {
-  fixture fx;
-  fx.task(1, "done");
-  fx.task(2, "done");
-  fx.completed_claim(1, 1); // a snapshot confirms it and no preview exists
-  fx.snapshot(1, 1, "2026-06-01T09:05:00.000Z");
-  fx.completed_claim(2, 2); // no record at all
-  fx.action(1, 2, "coder", 2, "2026-06-01T09:10:00.000Z");
-  CHECK(fx.run(k_unconfirmed).findings.empty());
-}
-
-TEST_CASE("dispatch-unconfirmed waits for the claim to end or a role action to start", "[engine][diagnose][dispatch]") {
-  // A live claim that has only been previewed may still be confirmed.
-  fixture quiet;
-  quiet.task(1, "doing");
-  quiet.live_claim(1, 1);
-  quiet.preview(1, 1, "tok1", "2026-06-01T11:01:00.000Z");
-  quiet.action(1, 1, "tool_call", 1, "2026-06-01T11:05:00.000Z");
-  CHECK(quiet.run(k_unconfirmed).findings.empty());
-
-  // Once a role action has started, the work began without a confirmation.
-  fixture started;
-  started.task(1, "doing");
-  started.live_claim(1, 1);
-  started.preview(1, 1, "tok1", "2026-06-01T11:01:00.000Z");
-  started.action(1, 1, "coder", 1, "2026-06-01T11:05:00.000Z");
-  CHECK(ids_of(started.run(k_unconfirmed)) == std::vector<std::string>{"dispatch-unconfirmed claim:1"});
-
-  // A lapsed claim is over, with or without an action.
-  fixture lapsed;
-  lapsed.task(1, "doing");
-  lapsed.lapsed_claim(1, 1);
-  lapsed.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
-  CHECK(ids_of(lapsed.run(k_unconfirmed)) == std::vector<std::string>{"dispatch-unconfirmed claim:1"});
-}
-
-TEST_CASE("dispatch-unconfirmed is bounded by the window on the preview and by the plan scope", "[engine][diagnose][dispatch]") {
-  fixture fx;
-  fx.task(1, "done", 1);
-  fx.task(2, "done", 2);
-  fx.completed_claim(1, 1);
-  fx.completed_claim(2, 2);
-  fx.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
-  fx.preview(2, 2, "tok2", "2026-06-01T09:01:00.000Z");
-  CHECK(ids_of(fx.run(k_unconfirmed)) ==
-        std::vector<std::string>{"dispatch-unconfirmed claim:1", "dispatch-unconfirmed claim:2"});
-  CHECK(ids_of(fx.run(k_unconfirmed, k_now, 2)) == std::vector<std::string>{"dispatch-unconfirmed claim:2"});
-
-  fixture old;
-  old.task(1, "done");
-  old.claim(1, 1, "completed", "2026-05-01T09:00:00.000Z", "2026-05-01T09:30:00.000Z", "2026-05-01T09:40:00.000Z",
-            "2026-05-01T10:00:00.000Z");
-  old.preview(1, 1, "tok1", "2026-05-01T09:01:00.000Z");
-  CHECK(old.run(k_unconfirmed).findings.empty());
-  CHECK(old.run(k_unconfirmed, k_now, std::nullopt, 60).findings.size() == 1);
-}
-
-TEST_CASE("dispatch-unconfirmed keeps one fingerprint when the dispatch is previewed again", "[engine][diagnose][dispatch]") {
-  fixture fx;
-  fx.task(1, "done");
-  fx.completed_claim(1, 1);
-  fx.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
-  auto before = fx.run(k_unconfirmed);
-  fx.preview(2, 1, "tok1", "2026-06-01T09:02:00.000Z");
-  auto after = fx.run(k_unconfirmed);
-  REQUIRE(before.findings.size() == 1);
-  REQUIRE(after.findings.size() == 1);
-  CHECK(im::finding_fingerprint(before.findings[0]) == im::finding_fingerprint(after.findings[0]));
-  // The evidence names the newest preview and is timed by it, which makes a new occurrence.
-  CHECK(std::ranges::contains(after.findings[0].evidence, im::entity_ref{.kind = "dispatch_preview", .id = 2}));
-  CHECK(after.findings[0].evidence_times == std::vector<std::string>{"2026-06-01T09:02:00.000Z"});
-  CHECK(im::finding_digest(before.findings[0]) != im::finding_digest(after.findings[0]));
-}
 
 TEST_CASE("a snapshot a preview was spent on confirms the dispatch even outside the claim's lifetime",
           "[engine][diagnose][dispatch]") {
@@ -685,7 +552,6 @@ TEST_CASE("a snapshot a preview was spent on confirms the dispatch even outside 
   fx.action(1, 1, "coder", 1, "2026-06-01T09:10:00.000Z", "2026-06-01T09:50:00.000Z");
   fx.snapshot(1, 1, "2026-06-01T10:30:00.000Z"); // confirmed after the claim ended
   fx.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z", 1, "2026-06-01T10:30:00.000Z");
-  CHECK(fx.run(k_unconfirmed).findings.empty());
   // It is a dispatch with a snapshot, confirmed after its coder action started.
   CHECK(ids_of(fx.run(k_late)) == std::vector<std::string>{"dispatch-confirmed-late claim:1"});
 }
@@ -713,8 +579,6 @@ TEST_CASE("dispatch-confirmed-late reports a snapshot confirmed after the first 
   CHECK(f.evidence_times == std::vector<std::string>{"2026-06-01T09:10:00.000Z", "2026-06-01T09:20:00.000Z"});
   CHECK(f.recovery.contains("confirm"));
   CHECK(im::finding_fingerprint(f) == "dispatch-confirmed-late|claim:1|task:1|global");
-  // A confirmed dispatch is not unconfirmed.
-  CHECK(fx.run(k_unconfirmed).findings.empty());
 }
 
 TEST_CASE("a confirm at the same instant as the action start is not late, one tick after is", "[engine][diagnose][dispatch]") {
@@ -791,7 +655,7 @@ TEST_CASE("dispatch-confirmed-late needs a dispatch with a role action and a sna
   fx.task(1, "done");
   fx.task(2, "done");
   fx.task(3, "done");
-  fx.completed_claim(1, 1); // a preview and an action but never confirmed: unconfirmed, not late
+  fx.completed_claim(1, 1); // a preview and an action but never confirmed: not late
   fx.preview(1, 1, "tok1", "2026-06-01T09:01:00.000Z");
   fx.action(1, 1, "coder", 1, "2026-06-01T09:10:00.000Z");
   fx.completed_claim(2, 2); // a direct claim with its own action
@@ -914,7 +778,6 @@ TEST_CASE("a snapshot spent from a token-less preview on the same task binds to 
   fx.snapshot(1, 1, "2026-06-01T08:59:50Z");
   fx.preview(1, 1, "", "2026-06-01T08:59:00.000Z", 1, "2026-06-01T08:59:50Z");
   CHECK(ids_of(fx.run(k_no_role)) == std::vector<std::string>{"dispatch-no-role-action claim:1"});
-  CHECK(fx.run(k_unconfirmed).findings.empty());
 
   // A later re-dispatch snapshot does not become the earliest: the first confirm preceded the action.
   fx.action(1, 1, "coder", 1, "2026-06-01T09:10:00.000Z");

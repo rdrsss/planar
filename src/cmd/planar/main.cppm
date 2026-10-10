@@ -30,7 +30,6 @@ import planar.cmd.planar.handlers.init;
 import planar.cmd.planar.handlers.link;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.local;
-import planar.cmd.planar.handlers.models;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.promote.command;
 import planar.cmd.planar.handlers.demote.command;
@@ -70,7 +69,7 @@ auto root_app() -> std::unique_ptr<CLI::App> {
                                         "  This binary writes planning entities (plans, tasks, decisions,\n"
                                         "  questions, artifacts, annotations) and makes manual tasks.status\n"
                                         "  transitions. The agent-coordination tables (agent_actions,\n"
-                                        "  agent_work_claims, routing_dispatch_*, and the host-queue tables) are\n"
+                                        "  agent_work_claims, and the host-queue tables) are\n"
                                         "  written by planar-agent; the external-link tables are written by\n"
                                         "  planar-ext.",
                                         "planar");
@@ -102,7 +101,6 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_capture(*app);    // 21
   handlers::declare_audit(*app);      // 22
   handlers::declare_health(*app);     // 23
-  handlers::declare_models(*app);     // 24
   handlers::declare_dashboard(*app);  // 25
   handlers::declare_spec(*app);       // 26
   handlers::declare_test_spec(*app);  // 27

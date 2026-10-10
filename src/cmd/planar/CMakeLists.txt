@@ -506,22 +506,6 @@ planar_binary(planar
     handlers/capture/commits.cppm
     handlers/capture/session.cppm
     handlers/init/command.cppm
-    handlers/models/command.cppm
-    handlers/models/registry.cppm
-    handlers/models/outcomes.cppm
-    handlers/models/experiments.cppm
-    handlers/models/resolve.cppm
-    handlers/models/evals.cppm
-    handlers/models/registry_export.cppm
-    handlers/models/registry_verify_identity.cppm
-    handlers/models/registry_eligibility.cppm
-    handlers/models/registry_observe.cppm
-    handlers/models/registry_unbind.cppm
-    handlers/models/registry_bind.cppm
-    handlers/models/registry_remove.cppm
-    handlers/models/registry_update.cppm
-    handlers/models/registry_add.cppm
-    handlers/models/registry_list.cppm
     handlers/plan/command.cppm
     handlers/plan/descendants.cppm
     handlers/plan/step.cppm
@@ -731,7 +715,6 @@ planar_binary(planar
     handlers/workbench/command.cpp
     handlers/capture/command.cpp
     handlers/init/command.cpp
-    handlers/models/command.cpp
     handlers/plan/command.cpp
     handlers/assoc/command.cpp
     handlers/scope/command.cpp
@@ -807,7 +790,6 @@ planar_binary(planar
     engine_synthesize
     engine_local
     engine_health
-    engine_models
     engine_planning
     document_authority
     # New at task 6299, for handlers/shared/promotion.cpp. `promote` and `demote`

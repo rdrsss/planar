@@ -122,9 +122,8 @@ TEST_CASE("planar-agent's declared verb set includes the bounded queue observer"
                                                     // (task hq-queue-cancel), `status` and `rule` (task
                                                     // hq-queue-rule-verb) are new.
                                                     "queue", "cancel", "status", "rule", "wait",
-                                                    // The nine declared by task 6065, which refuse at 64.
-                                                    "add", "capsule", "confirm", "context", "dispatch", "ingest", "list",
-                                                    "preview", "resolve", "run"});
+                                                    // The seven declared by task 6065, which refuse at 64.
+                                                    "add", "capsule", "context", "ingest", "list", "resolve", "run"});
 }
 
 TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cmd][agent][capability]") {
@@ -143,7 +142,7 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  CHECK(leaves.size() == 29);
+  CHECK(leaves.size() == 27);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
