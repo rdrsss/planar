@@ -5,6 +5,7 @@
 module planar.engine.introspect;
 
 import std;
+import planar.core.thresholds;
 import planar.db;
 import planar.json_text;
 import planar.introspection_preview;
@@ -85,6 +86,18 @@ auto tag_name(ip::warning_kind k) -> std::string_view {
   return "unknown";
 }
 
+auto reason_name(ip::warning_reason r) -> std::string_view {
+  switch (r) {
+  case ip::warning_reason::none:
+    return "none";
+  case ip::warning_reason::retained:
+    return "retained";
+  case ip::warning_reason::scanned:
+    return "scanned";
+  }
+  return "unknown";
+}
+
 /// @brief `-{window_days} days`, the SQLite `datetime()` modifier bound at
 /// every windowed query below (a bind parameter, not string-formatted SQL —
 /// C++-idiomatic replacement for the oracle's stack-buffered
@@ -161,9 +174,10 @@ auto health_summary(db::connection& conn) -> std::string {
   auto const not_resumable = inflight - resumable;
 
   auto const stale_handoffs = count_query_unwindowed(conn,
-                                                     "select count(*) from handoffs"
-                                                     " where status in ('pending','validated')"
-                                                     "   and (julianday('now') - julianday(created_at)) * 24 > 24",
+                                                     std::format("select count(*) from handoffs"
+                                                                 " where status in ('pending','validated')"
+                                                                 "   and (julianday('now') - julianday(created_at)) * 24 > {}",
+                                                                 core::stale_handoff_threshold_hours),
                                                      0);
 
   if (not_resumable > 0 || stale_handoffs > 0) {
@@ -393,13 +407,14 @@ auto query_claim_failure_categories(db::connection& conn, std::int64_t window_da
 
 auto query_handoff_counts(db::connection& conn, std::int64_t window_days) -> handoff_counts {
   auto const stale = count_query(conn,
-                                 "select count(*) from handoffs"
-                                 " where status in ('pending','validated')"
-                                 "   and (julianday('now') - julianday(created_at)) * 24 > 24"
-                                 "   and created_at >= datetime('now', ?)",
+                                 std::format("select count(*) from handoffs"
+                                             " where status in ('pending','validated')"
+                                             "   and (julianday('now') - julianday(created_at)) * 24 > {}"
+                                             "   and created_at >= datetime('now', ?)",
+                                             core::stale_handoff_threshold_hours),
                                  window_days, 0);
   // "never consumed" = status is not 'consumed', regardless of staleness —
-  // distinct from `stale` above, which requires age > 24h.
+  // distinct from `stale` above, which requires age beyond the shared threshold.
   auto const never_consumed = count_query(conn,
                                           "select count(*) from handoffs"
                                           " where status != 'consumed'"
@@ -432,17 +447,23 @@ auto preview_text_block(const std::optional<ip::preview>& preview) -> std::strin
   out += "\n";
   for (auto const& coverage : preview->coverage) {
     out += std::format("  {}: state={} scanned={} normalized={} ignored={} malformed={} capped={} bytes_read={} files_partial={} "
-                       "files_skipped_cap={} files_skipped_window={}\n",
+                       "files_skipped_cap={} files_skipped_window={} bytes_scanned={} bytes_retained={} lines_oversize={} "
+                       "results_unpaired={}\n",
                        tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.normalized, coverage.ignored,
                        coverage.malformed, coverage.capped, coverage.bytes_read, coverage.files_partial,
-                       coverage.files_skipped_cap, coverage.files_skipped_window);
+                       coverage.files_skipped_cap, coverage.files_skipped_window, coverage.bytes_scanned, coverage.bytes_retained,
+                       coverage.lines_oversize, coverage.results_unpaired);
   }
   for (auto const& signal : preview->signals) {
     out += std::format("  signal {}/{}/{}: count={} first={} last={}\n", tag_name(signal.v), signal.verb_path,
                        tag_name(signal.cat), signal.count, signal.first_seen, signal.last_seen);
   }
   for (auto const& warning : preview->warnings) {
-    out += std::format("  warning {}/{}: count={}\n", tag_name(warning.v), tag_name(warning.kind), warning.count);
+    out += std::format("  warning {}/{}: count={}", tag_name(warning.v), tag_name(warning.kind), warning.count);
+    if (warning.reason != ip::warning_reason::none) {
+      out += std::format(" reason={}", reason_name(warning.reason));
+    }
+    out += '\n';
   }
   return out;
 }
@@ -477,10 +498,11 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
         out += ',';
       }
       out += std::format(
-          R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{},"bytes_read":{},"files_partial":{},"files_skipped_cap":{},"files_skipped_window":{}}})",
+          R"({{"vendor":"{}","state":"{}","scanned":{},"malformed":{},"normalized":{},"capped":{},"ignored":{},"bytes_read":{},"files_partial":{},"files_skipped_cap":{},"files_skipped_window":{},"bytes_scanned":{},"bytes_retained":{},"lines_oversize":{},"results_unpaired":{}}})",
           tag_name(coverage.v), tag_name(coverage.state), coverage.scanned, coverage.malformed, coverage.normalized,
           coverage.capped, coverage.ignored, coverage.bytes_read, coverage.files_partial, coverage.files_skipped_cap,
-          coverage.files_skipped_window);
+          coverage.files_skipped_window, coverage.bytes_scanned, coverage.bytes_retained, coverage.lines_oversize,
+          coverage.results_unpaired);
     }
   }
   out += R"(],"warnings":[)";
@@ -490,8 +512,11 @@ auto preview_json_block(const std::optional<ip::preview>& preview) -> std::strin
       if (i > 0) {
         out += ',';
       }
-      out +=
-          std::format(R"({{"vendor":"{}","kind":"{}","count":{}}})", tag_name(warning.v), tag_name(warning.kind), warning.count);
+      out += std::format(R"({{"vendor":"{}","kind":"{}","count":{})", tag_name(warning.v), tag_name(warning.kind), warning.count);
+      if (warning.reason != ip::warning_reason::none) {
+        out += std::format(R"(,"reason":"{}")", reason_name(warning.reason));
+      }
+      out += '}';
     }
   }
   out += "]}";

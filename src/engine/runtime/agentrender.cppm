@@ -190,14 +190,20 @@ export auto heartbeat_text(const aa::claim& value) -> std::string;
 /// @brief The envelope all four terminal verbs share.
 /// @param result The terminal outcome.
 /// @param task The task in its new state.
+/// @param trailing_fields A pre-rendered fragment of further members, each led by its comma
+/// (for example `,"diagnose":{...}`), inserted before the closing brace; empty leaves the output
+/// byte-identical to the envelope without it.
 /// @return The COMPLETE payload, newline included.
-export auto terminal_json(const agentatomic::terminal_result& result, const aa::task_row& task) -> std::string;
+export auto terminal_json(const agentatomic::terminal_result& result, const aa::task_row& task,
+                          std::string_view trailing_fields = {}) -> std::string;
 
 /// @brief The terminal envelope for a plan / plan_step claim, which holds no
 /// task: `{"ok":true,"claim_token":...,"claim":{...},"task":null}` (task 7118).
 /// @param result The terminal outcome.
+/// @param trailing_fields A pre-rendered fragment of further members, each led by its comma, inserted
+/// before the closing brace; empty leaves the output byte-identical.
 /// @return The COMPLETE payload, newline included.
-export auto terminal_json(const agentatomic::terminal_result& result) -> std::string;
+export auto terminal_json(const agentatomic::terminal_result& result, std::string_view trailing_fields = {}) -> std::string;
 
 /// @brief `ok entity:<kind>:<id> claim_status:<status>` for a plan / plan_step
 /// claim (task 7118).

@@ -438,12 +438,14 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
 
   const bool         introspection_cli_log        = pick_bool("introspection.cli_log", file_map, *def_map, eff, false);
   const std::int64_t introspection_retention_days = pick_int("introspection.retention_days", file_map, *def_map, eff, 90);
-  const bool         claude_enabled  = pick_bool("introspection.transcripts.claude_enabled", file_map, *def_map, eff, true);
-  const bool         codex_enabled   = pick_bool("introspection.transcripts.codex_enabled", file_map, *def_map, eff, true);
-  const bool         copilot_enabled = pick_bool("introspection.transcripts.copilot_enabled", file_map, *def_map, eff, true);
-  const auto claude_path  = pick_str("introspection.transcripts.claude_path", "", env, std::nullopt, file_map, *def_map, eff);
-  const auto codex_path   = pick_str("introspection.transcripts.codex_path", "", env, std::nullopt, file_map, *def_map, eff);
-  const auto copilot_path = pick_str("introspection.transcripts.copilot_path", "", env, std::nullopt, file_map, *def_map, eff);
+  const std::int64_t introspection_scan_bytes =
+      pick_int("introspection.transcript_scan_bytes", file_map, *def_map, eff, 67'108'864);
+  const bool claude_enabled  = pick_bool("introspection.transcripts.claude_enabled", file_map, *def_map, eff, true);
+  const bool codex_enabled   = pick_bool("introspection.transcripts.codex_enabled", file_map, *def_map, eff, true);
+  const bool copilot_enabled = pick_bool("introspection.transcripts.copilot_enabled", file_map, *def_map, eff, true);
+  const auto claude_path     = pick_str("introspection.transcripts.claude_path", "", env, std::nullopt, file_map, *def_map, eff);
+  const auto codex_path      = pick_str("introspection.transcripts.codex_path", "", env, std::nullopt, file_map, *def_map, eff);
+  const auto copilot_path    = pick_str("introspection.transcripts.copilot_path", "", env, std::nullopt, file_map, *def_map, eff);
 
   // `[queue]` (plan 1080, task hq-config). Recorded only in `eff`, so
   // `config show --effective` reports the values and their provenance; the
@@ -500,8 +502,9 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
                   },
               .introspection =
                   introspection_config{
-                      .cli_log        = introspection_cli_log,
-                      .retention_days = introspection_retention_days,
+                      .cli_log               = introspection_cli_log,
+                      .retention_days        = introspection_retention_days,
+                      .transcript_scan_bytes = introspection_scan_bytes,
                       .transcripts =
                           transcripts_config{
                               .claude_enabled  = claude_enabled,
@@ -534,6 +537,20 @@ auto sensitive_name(std::string_view name) -> bool {
   return std::ranges::any_of(suffixes, [&](auto suf) { return lower.ends_with(suf); });
 }
 
+auto validate_introspection(const toml_map& file_map) -> std::vector<introspection_finding> {
+  std::vector<introspection_finding> findings;
+  constexpr std::string_view         key = "introspection.transcript_scan_bytes";
+  if (auto const it = file_map.find(key); it != file_map.end()) {
+    auto const& value = it->second;
+    if (value.kind_ != toml_value::kind::integer) {
+      findings.push_back(introspection_finding{std::string{key}, "must be an integer above 0 (bytes)"});
+    } else if (value.int_ <= 0) {
+      findings.push_back(introspection_finding{std::string{key}, std::format("must be above 0, got {}", value.int_)});
+    }
+  }
+  return findings;
+}
+
 auto sorted_keys(const effective_map& eff) -> std::vector<std::string> {
   std::vector<std::string> keys;
   keys.reserve(eff.size());
@@ -541,6 +558,22 @@ auto sorted_keys(const effective_map& eff) -> std::vector<std::string> {
     keys.push_back(k);
   }
   return keys; // std::map already iterates in ascending key order.
+}
+
+auto introspection_cli_log(const std::optional<std::filesystem::path>& path) -> std::optional<bool> {
+  if (!path.has_value()) {
+    return std::nullopt;
+  }
+  std::optional<std::string> content;
+  if (std::ifstream file(*path, std::ios::binary); file) {
+    content = std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+  }
+  auto const resolved =
+      resolve(content.has_value() ? std::optional<std::string_view>{*content} : std::nullopt, env_view::empty(), std::nullopt);
+  if (!resolved.has_value()) {
+    return std::nullopt;
+  }
+  return resolved->cfg.introspection.cli_log;
 }
 
 } // namespace planar::engine::config

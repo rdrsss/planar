@@ -286,3 +286,23 @@ TEST_CASE("strings that need escaping are escaped everywhere else", "[agentrende
   // `\b` and `\f` short forms).
   REQUIRE(out.find(R"("release_reason":"ctrl\u0001")") != std::string::npos);
 }
+
+TEST_CASE("terminal_json inserts a trailing-fields fragment before the closing brace and is byte-identical without one",
+          "[agentrender][7383]") {
+  auto const              claim = sample_claim();
+  auto const              task  = sample_task();
+  atomic::terminal_result ended{.released = claim, .task_id = 2};
+
+  auto const plain = render::terminal_json(ended, task);
+  CHECK(render::terminal_json(ended, task, std::string_view{}) == plain);
+  auto const extended = render::terminal_json(ended, task, R"(,"diagnose":{"state":"clean"})");
+  REQUIRE(plain.ends_with("}\n"));
+  CHECK(extended == plain.substr(0, plain.size() - 2) + R"(,"diagnose":{"state":"clean"}})" + "\n");
+
+  auto plan_claim = sample_claim();
+  plan_claim.kind = aa::entity_kind::plan;
+  atomic::terminal_result const taskless{.released = plan_claim, .task_id = std::nullopt};
+  auto const                    taskless_plain = render::terminal_json(taskless);
+  CHECK(render::terminal_json(taskless, R"(,"diagnose":{"state":"clean"})") ==
+        taskless_plain.substr(0, taskless_plain.size() - 2) + R"(,"diagnose":{"state":"clean"}})" + "\n");
+}

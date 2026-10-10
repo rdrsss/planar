@@ -116,11 +116,11 @@ auto make_fixture(std::string_view tag) -> fixture {
   };
 }
 
-/// @brief Dispatch `args` against the real tree and table.
+/// @brief Dispatch `args` against the real tree and table, output untouched.
 /// @param fx The fixture.
 /// @param args The argv tail.
 /// @return The captured invocation.
-auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
+auto dispatch_raw(const fixture& fx, std::vector<std::string> args) -> invocation {
   std::vector<std::string> argv{"planar"};
   argv.insert(argv.end(), args.begin(), args.end());
 
@@ -136,6 +136,33 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   auto const         table = planar::cmd::make_handler_table(*tree);
   int const          code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
+}
+
+/// @brief The report as it was before the diagnose section (plan 1132, task 7384): the text before
+/// `diagnose:`'s own line, or the JSON object without its trailing `diagnose` member. Output with no
+/// section comes back unchanged, so a case that wants the section uses `dispatch_raw`.
+/// @param out Everything the verb wrote to stdout.
+/// @return The report without its diagnose section.
+auto without_diagnose(std::string out) -> std::string {
+  if (auto const json = out.find(R"(,"diagnose":{)"); json != std::string::npos) {
+    return out.substr(0, json) + "}\n";
+  }
+  if (auto const line = out.find("\ndiagnose: "); line != std::string::npos) {
+    // The section follows the report's own final newline and one separating newline.
+    return out.substr(0, line);
+  }
+  return out;
+}
+
+/// @brief Dispatch `args` and drop the diagnose section from stdout, so a case about the gate report
+/// compares the report alone. `dispatch_raw` keeps the section.
+/// @param fx The fixture.
+/// @param args The argv tail.
+/// @return The captured invocation with the section removed.
+auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
+  auto result = dispatch_raw(fx, std::move(args));
+  result.out  = without_diagnose(std::move(result.out));
+  return result;
 }
 
 /// @brief Read one integer out of the fixture database.
@@ -530,4 +557,157 @@ TEST_CASE("plan closeout is dispatched rather than refused at 64", "[cmd][plan][
   CHECK(result.code != 64);
   CHECK(result.err.find("not implemented") == std::string::npos);
   CHECK(result.out.starts_with(R"J({"plan":1,)J"));
+}
+
+// ===========================================================================
+// The diagnose section (plan 1132, task 7384)
+// ===========================================================================
+
+namespace {
+
+/// @brief An anchor (plan 1) whose only milestone (plan 2) has one finished task, so the anchor is
+/// ready to close and nothing is left for the diagnosis to find.
+void seed_closable_anchor(const fixture& fx) {
+  REQUIRE(dispatch_raw(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch_raw(fx, {"plan", "create", "Anchor", "--scope", "global", "--slug", "anchor", "--json"}).code == 0);
+  REQUIRE(dispatch_raw(fx, {"plan", "create", "Milestone", "--scope", "global", "--slug", "milestone", "--parent", "1", "--json"})
+              .code == 0);
+  REQUIRE(dispatch_raw(fx, {"task", "add", "Only task", "--plan", "2", "--scope", "global", "--no-editor", "--json"}).code == 0);
+  REQUIRE(dispatch_raw(fx, {"task", "update", "1", "--status", "doing"}).code == 0);
+  REQUIRE(dispatch_raw(fx, {"task", "done", "1"}).code == 0);
+  REQUIRE(text(fx, "select status from plans where id = 2") == "done");
+}
+
+/// @brief The 7337 shape: a claim left `active` and lapsed on a task that finished.
+void seed_lapsed_claim(const fixture& fx) {
+  raw_sql(fx, "insert into sessions (vendor) values ('probe')");
+  // It heartbeated once, so only `claim-superseded-active` reports it (a claim that never did is also
+  // `claim-process-died`'s).
+  raw_sql(fx, "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, claimed_at, "
+              "last_heartbeat_at, lease_expires_at) values ('lapsed-1', 1, 'task', 1, 'active', 'probe', "
+              "'1999-12-31T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')");
+}
+
+} // namespace
+
+TEST_CASE("a clean anchor closeout prints diagnose: clean after one newline on dry-run and apply",
+          "[cmd][plan][closeout][diagnose]") {
+  auto const fx = make_fixture("diag_clean");
+  seed_closable_anchor(fx);
+
+  auto const dry = dispatch_raw(fx, {"plan", "closeout", "1", "--dry-run"});
+  CHECK(dry.code == 0);
+  CHECK(dry.err.empty());
+  CHECK(dry.out.ends_with("\ndiagnose: clean\n"));
+  CHECK(dry.out.starts_with("[dry-run] plan 1: ready to close (no change made)\n"));
+  // One newline between the report and the section: the report's own final newline, then one more.
+  CHECK(dry.out.find("\n\ndiagnose: clean\n") != std::string::npos);
+  CHECK(text(fx, "select status from plans where id = 1") != "done");
+
+  auto const dry_json = dispatch_raw(fx, {"plan", "closeout", "1", "--dry-run", "--json"});
+  CHECK(dry_json.code == 0);
+  auto const key = dry_json.out.find(R"(,"diagnose":{"plan_id":1,"state":"clean","outcome":"ok")");
+  REQUIRE(key != std::string::npos);
+  CHECK(dry_json.out.ends_with("}}\n"));
+  CHECK(dry_json.out.find("\"diagnose\"", key + 12) == std::string::npos);
+  CHECK(dry_json.out.find('\n') == dry_json.out.size() - 1);
+
+  auto const applied = dispatch_raw(fx, {"plan", "closeout", "1"});
+  CHECK(applied.code == 0);
+  CHECK(applied.out.starts_with("plan 1: marked done\n"));
+  CHECK(applied.out.ends_with("\ndiagnose: clean\n"));
+  CHECK(text(fx, "select status from plans where id = 1") == "done");
+}
+
+TEST_CASE("closeout on an already done plan still diagnoses, in both renderings", "[cmd][plan][closeout][diagnose]") {
+  auto const fx = make_fixture("diag_done");
+  seed_closable_anchor(fx);
+  REQUIRE(dispatch_raw(fx, {"plan", "closeout", "1"}).code == 0);
+
+  auto const again = dispatch_raw(fx, {"plan", "closeout", "1"});
+  CHECK(again.code == 0);
+  CHECK(again.out.starts_with("plan 1: ready (already terminal — no change)\n"));
+  CHECK(again.out.ends_with("\ndiagnose: clean\n"));
+
+  auto const again_json = dispatch_raw(fx, {"plan", "closeout", "1", "--json"});
+  CHECK(again_json.code == 0);
+  CHECK(again_json.out.find(R"("applied":false)") != std::string::npos);
+  CHECK(again_json.out.find(R"(,"diagnose":{"plan_id":1,"state":"clean")") != std::string::npos);
+  CHECK(again_json.out.ends_with("}}\n"));
+}
+
+TEST_CASE("an anomaly is shown without changing ready, blocked_by or the exit status", "[cmd][plan][closeout][diagnose]") {
+  auto const fx = make_fixture("diag_finding");
+  seed_closable_anchor(fx);
+  seed_lapsed_claim(fx);
+
+  auto const dry = dispatch_raw(fx, {"plan", "closeout", "1", "--dry-run"});
+  CHECK(dry.code == 0);
+  CHECK(dry.out.find("\ndiagnose: 1 finding(s)\n") != std::string::npos);
+  CHECK(dry.out.find("error claim-superseded-active claim:1 -> planar-agent abort --claim <token>\n") != std::string::npos);
+
+  auto const json = dispatch_raw(fx, {"plan", "closeout", "1", "--dry-run", "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out.find(R"("ready":true)") != std::string::npos);
+  CHECK(json.out.find(R"("blocked_by":[])") != std::string::npos);
+  CHECK(json.out.find(R"(,"diagnose":{"plan_id":1,"state":"findings","outcome":"ok")") != std::string::npos);
+  CHECK(json.out.find(R"("check":"claim-superseded-active")") != std::string::npos);
+
+  auto const applied = dispatch_raw(fx, {"plan", "closeout", "1"});
+  CHECK(applied.code == 0);
+  CHECK(text(fx, "select status from plans where id = 1") == "done");
+}
+
+TEST_CASE("findings neither mask nor change a hard-gate refusal", "[cmd][plan][closeout][diagnose]") {
+  auto const fx = make_fixture("diag_refusal");
+  seed_closable_anchor(fx);
+  REQUIRE(dispatch_raw(fx, {"task", "add", "Open task", "--plan", "2", "--scope", "global", "--no-editor", "--json"}).code == 0);
+  seed_lapsed_claim(fx);
+
+  auto const refused = dispatch_raw(fx, {"plan", "closeout", "1", "--json"});
+  CHECK(refused.code == 3);
+  CHECK(refused.err == "error: plan 1 is not ready to close (2 reason(s))\n");
+  CHECK(refused.out.find(R"("ready":false)") != std::string::npos);
+  CHECK(
+      refused.out.find(
+          R"J("blocked_by":["1 open task(s) on plan (todo/doing/blocked)","1 open descendant plan(s) (draft/active/paused)"])J") !=
+      std::string::npos);
+  CHECK(refused.out.find(R"("check":"claim-superseded-active")") != std::string::npos);
+  CHECK(text(fx, "select status from plans where id = 1") != "done");
+}
+
+TEST_CASE("a diagnosis that cannot run is reported and closeout proceeds", "[cmd][plan][closeout][diagnose]") {
+  auto const fx = make_fixture("diag_unavailable");
+  seed_closable_anchor(fx);
+  raw_sql(fx, "drop table sync_events");
+
+  auto const dry = dispatch_raw(fx, {"plan", "closeout", "1", "--dry-run"});
+  CHECK(dry.code == 0);
+  CHECK(dry.out.ends_with("\ndiagnose: unavailable (query-failed)\n"));
+  CHECK(dry.out.starts_with("[dry-run] plan 1: ready to close (no change made)\n"));
+
+  auto const json = dispatch_raw(fx, {"plan", "closeout", "1", "--dry-run", "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out.find(R"(,"diagnose":{"plan_id":1,"state":"unavailable","outcome":"unavailable","reason":"query-failed")") !=
+        std::string::npos);
+
+  auto const applied = dispatch_raw(fx, {"plan", "closeout", "1"});
+  CHECK(applied.code == 0);
+  CHECK(applied.out.ends_with("\ndiagnose: unavailable (query-failed)\n"));
+  CHECK(text(fx, "select status from plans where id = 1") == "done");
+}
+
+TEST_CASE("a dry-run diagnosis writes nothing", "[cmd][plan][closeout][diagnose]") {
+  auto const fx = make_fixture("diag_nowrite");
+  seed_closable_anchor(fx);
+  seed_lapsed_claim(fx);
+
+  auto const read_all = [&] {
+    std::ifstream file(fx.db_path, std::ios::binary);
+    return std::string{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+  };
+  auto const before = read_all();
+  REQUIRE_FALSE(before.empty());
+  REQUIRE(dispatch_raw(fx, {"plan", "closeout", "1", "--dry-run"}).code == 0);
+  CHECK(read_all() == before);
 }

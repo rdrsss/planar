@@ -44,6 +44,7 @@ module;
 export module planar.engine.health;
 
 import std;
+import planar.core.thresholds;
 import planar.db;
 import planar.installed_surface;
 
@@ -163,8 +164,9 @@ export auto hygiene(db::connection& conn, const hygiene_options& options) -> std
 export auto render_hygiene_text(const hygiene_report& report) -> std::string;
 
 /// @brief The `check`/`with_projection_freshness` half's stale-handoff
-/// cutoff, in hours. 24 mirrors the oracle's default.
-export inline constexpr std::int64_t stale_handoff_threshold_hours = 24;
+/// cutoff, in hours: the one `planar.core.thresholds` shares with `planar report`
+/// and `planar-watch diagnose`.
+export inline constexpr std::int64_t stale_handoff_threshold_hours = core::stale_handoff_threshold_hours;
 
 /// @brief The installed-projection section of `report`.
 ///
