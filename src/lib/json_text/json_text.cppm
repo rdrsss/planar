@@ -8,7 +8,7 @@
 /// both need has exactly two legal shapes: duplicated per bucket, or extracted
 /// downward into a layer-1 base library (D19 — the same move that produced
 /// `scope_ref`). Duplication was the standing choice, and
-/// `engine/workflows/render.cpp` wrote the rule down explicitly: extracting is
+/// the removed `engine/workflows/render.cpp` (task 7453) wrote the rule down explicitly: extracting is
 /// "worth doing once a THIRD bucket needs it rather than on the second".
 ///
 /// That threshold had been passed several times over when it was written. The
@@ -21,7 +21,7 @@
 ///     engine/models/render.cpp
 ///     engine/planning/test_spec_status.cpp
 ///     engine/runs/render.cpp
-///     engine/workflows/render.cpp
+///     engine/workflows/render.cpp (removed, task 7453)
 ///
 /// The seven `append_json_string` copies really were behaviorally identical
 /// (two spell the C0 test `c < 0x20` and five spell it `c <= 0x1F`, which is

@@ -28,7 +28,6 @@ helpers used by multiple families.
 | `report/`, `feedback/` | Issue reporting and feedback triage. |
 | `bench/`, `run/` | Measurement bench and run records. |
 | `closure/` | Feature closeout computation and evidence. |
-| `workflow/` | Workflow definitions and operations. |
 | `explore/` | Exploration command. |
 | `version/`, `completion/`, `schema/` | Version, shell completion and the flat command catalog. |
 | `shared/` | Shared handler helpers; no root CLI app. |

@@ -64,7 +64,7 @@
 #             renderer (schema_json documents "no trailing newline"), the
 #             counterexample to a blanket append-nothing rule.
 #   the claim ritual (task 6038)
-#             pull / peek / claim / heartbeat / claim-associate /
+#             pull / peek / claim / heartbeat /
 #             complete / fail / release / block / action start|end /
 #             reconcile / abort. See the section below.
 #
@@ -134,7 +134,6 @@ planar_binary(planar_agent
     handlers/block/command.cppm
     handlers/claim/command.cppm
     handlers/heartbeat/command.cppm
-    handlers/claim_associate/command.cppm
     handlers/action/command.cppm
     handlers/ingest/command.cppm
     handlers/reconcile/command.cppm

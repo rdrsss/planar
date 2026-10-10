@@ -42,17 +42,6 @@ auto view(const std::optional<std::string>& value) -> std::optional<std::string_
   return std::string_view{*value};
 }
 
-/// @brief `--stage` is meaningless without `--run` — the FK the stage
-/// annotates. Refused before anything is written.
-/// @param args The parsed arguments.
-/// @return The refusal, or unset when the pair is consistent.
-auto check_stage_requires_run(const cliapp::parsed_args& args) -> std::optional<domain_error> {
-  if (cliapp::flag_string(args, "--stage").has_value() && !cliapp::flag_int(args, "--run").has_value()) {
-    return invalid_input_error("--stage requires --run: provide a workflow_runs.id via --run <id>");
-  }
-  return std::nullopt;
-}
-
 /// @brief Split `--worktree` into an id or a path.
 ///
 /// A value that parses as an integer is a `worktrees` row id (and is
@@ -100,9 +89,6 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto conn = ctx.db().ensure_db();
   if (!conn) {
     return std::unexpected(conn.error());
-  }
-  if (auto const refusal = check_stage_requires_run(args); refusal.has_value()) {
-    return std::unexpected(*refusal);
   }
 
   // An UNRECOGNISED --role degrades to `coder` rather than failing. That
@@ -167,7 +153,6 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 
   auto const purpose  = cliapp::flag_string(args, "--purpose");
   auto const base_ref = cliapp::flag_string(args, "--base-ref");
-  auto const stage    = cliapp::flag_string(args, "--stage");
 
   auto const result = atomic::pull_next(**conn,
                                         atomic::pull_args{
@@ -185,8 +170,6 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                                             .kind              = kind,
                                             .metadata          = view(metadata),
                                             .parent_action_id  = parent,
-                                            .run_id            = cliapp::flag_int(args, "--run"),
-                                            .stage             = view(stage),
                                         },
                                         task_policy());
   if (!result) {
@@ -235,9 +218,6 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  if (auto const refusal = check_stage_requires_run(args); refusal.has_value()) {
-    return std::unexpected(*refusal);
-  }
 
   auto const entity_raw = cliapp::flag_string(args, "--entity").value_or(std::string{});
   auto const entity     = parse_entity_ref(entity_raw);
@@ -277,7 +257,6 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const role    = cliapp::flag_string(args, "--role");
   auto const model   = cliapp::flag_string(args, "--model");
   auto const purpose = cliapp::flag_string(args, "--purpose");
-  auto const stage   = cliapp::flag_string(args, "--stage");
 
   auto const acquired = atomic::claim_entity(**conn,
                                              aa::acquire_args{
@@ -294,8 +273,6 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                                                  .ttl_secs          = *ttl,
                                                  .loc               = loc,
                                                  .force             = cliapp::flag_bool(args, "--force"),
-                                                 .run_id            = cliapp::flag_int(args, "--run"),
-                                                 .stage             = view(stage),
                                              },
                                              !cliapp::flag_bool(args, "--no-transition"), task_policy());
   if (!acquired) {
@@ -354,59 +331,6 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   }
 
   ctx.out() << (cliapp::flag_bool(args, "--json") ? render::claim_json(*refreshed) : render::heartbeat_text(*refreshed));
-  return {};
-}
-
-auto claim_associate(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  auto conn = ctx.db().ensure_db();
-  if (!conn) {
-    return std::unexpected(conn.error());
-  }
-  auto const token      = cliapp::flag_string(args, "--claim").value_or(std::string{});
-  auto const run        = cliapp::flag_int(args, "--run");
-  auto const stage      = cliapp::flag_string(args, "--stage");
-  auto const supervisor = cliapp::flag_string(args, "--supervisor");
-  auto const attempt    = cliapp::flag_string(args, "--attempt");
-  if (!run.has_value() && !supervisor.has_value()) {
-    return std::unexpected(invalid_input_error("claim-associate needs --run <id>, --supervisor <caller|engine>, or both"));
-  }
-  if (auto const refusal = check_stage_requires_run(args); refusal.has_value()) {
-    return std::unexpected(*refusal);
-  }
-  auto const engine = supervisor == std::optional<std::string>{"engine"};
-  if (engine && (!attempt.has_value() || attempt->empty())) {
-    return std::unexpected(invalid_input_error("--supervisor engine requires --attempt <id>"));
-  }
-  if (!engine && attempt.has_value()) {
-    return std::unexpected(invalid_input_error("--attempt applies only with --supervisor engine"));
-  }
-
-  // Supervisor first: it is the half that can be refused (one-way, live
-  // claim), and a refusal must not leave a half-applied --run stamp behind.
-  std::optional<atomic::associate_result> associated;
-  if (supervisor.has_value()) {
-    auto result = atomic::associate_supervisor(**conn, token, engine, view(attempt));
-    if (!result) {
-      return std::unexpected(verb_error("claim-associate", result.error()));
-    }
-    associated = std::move(*result);
-  }
-
-  std::optional<std::int64_t> updated;
-  if (run.has_value()) {
-    auto const stamped = aa::associate_claim_run(**conn, token, *run, view(stage));
-    if (!stamped) {
-      return std::unexpected(verb_error("claim-associate", stamped.error()));
-    }
-    updated = *stamped;
-  }
-
-  auto const json = cliapp::flag_bool(args, "--json");
-  if (associated.has_value()) {
-    ctx.out() << (json ? render::supervisor_json(*associated, updated) : render::supervisor_text(*associated, updated));
-  } else {
-    ctx.out() << (json ? render::associate_json(*updated) : render::associate_text(*updated, token));
-  }
   return {};
 }
 

@@ -120,9 +120,6 @@ export auto surface_empty_string_defaults() -> std::span<std::pair<std::string_v
   // 6130 those four values were the entire 8-byte difference.
   static constexpr std::pair<std::string_view, std::string_view> k_empty_defaults[] = {
       {"planar workbench edit", "--editor"},
-      {"planar workflow run", "--args"},
-      {"planar workflow run", "--worktree"},
-      {"planar workflow run", "--sandbox-root"},
   };
   return k_empty_defaults;
 }
@@ -383,10 +380,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar groups", "Recommend task slices that minimize closure replication."},
       {"planar groups recommend", "Recommend closure-minimizing task slices for a plan."},
       {"planar explore", "Launch Planar Explorer (reserved; currently prints its help)."},
-      {"planar workflow", "Discover, inspect, and run Lua workflows for planar-execute."},
-      {"planar workflow list", "List shipped and sandbox workflows."},
-      {"planar workflow show", "Show @meta and source path for a named workflow."},
-      {"planar workflow run", "Resolve a workflow by name and exec it via planar-execute."},
       {"planar feedback", "Manage structured feedback."},
       {"planar feedback triage", "Review structured feedback triage."},
       {"planar feedback triage list", "List triaged findings."},

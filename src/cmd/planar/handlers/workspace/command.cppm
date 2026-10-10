@@ -33,7 +33,7 @@
 ///
 /// `--json` emits `{"orgs":[]}` and a newline; the text mode emits ZERO
 /// BYTES. Oracle-captured on both. That is the same per-renderer
-/// terminator rule `workflow list --json` and `annotate list --json`
+/// terminator rule `local list --json` and `annotate list --json`
 /// already split on, arriving here as a split between two modes of ONE
 /// leaf: both renderers return COMPLETE payloads, so this handler writes
 /// each verbatim and appends nothing to either.

@@ -848,7 +848,6 @@ TEST_CASE("release succeeds on a plan claim, unlike complete (task 6890)", "[age
   auto const released = atomic::release_work(conn, held->claim_token, "handing off", policy.bind());
   REQUIRE(released.has_value());
   REQUIRE(released->released.status == aa::claim_status::released);
-  REQUIRE_FALSE(released->replayed);
   // A plan claim holds no task: `fx.plan_id` is a PLAN id and a task row may
   // share the number, so the result must not name one (task 7118).
   REQUIRE_FALSE(released->task_id.has_value());

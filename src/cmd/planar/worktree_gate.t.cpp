@@ -150,13 +150,11 @@ TEST_CASE("classify: report and schema are execution_or_read", "[cmd][worktree-g
   CHECK(cls({"schema"}) == verb_class::execution_or_read);
 }
 
-TEST_CASE("classify: bench and workflow are execution_or_read", "[cmd][worktree-gate]") {
+TEST_CASE("classify: bench is execution_or_read", "[cmd][worktree-gate]") {
   // `bench` is the measurement rig the harness drives from inside
-  // worktrees by design; `workflow` is a read-only filesystem scan.
+  // worktrees by design.
   CHECK(cls({"bench"}) == verb_class::execution_or_read);
   CHECK(cls({"bench", "harvest"}) == verb_class::execution_or_read);
-  CHECK(cls({"workflow"}) == verb_class::execution_or_read);
-  CHECK(cls({"workflow", "validate"}) == verb_class::execution_or_read);
 }
 
 TEST_CASE("classify: entity-group reads pass and writes are planning", "[cmd][worktree-gate]") {
@@ -217,8 +215,8 @@ TEST_CASE("classify: annotate, init, promote, demote, link, unlink, links are pl
 }
 
 TEST_CASE("classify: read groups pass wholesale", "[cmd][worktree-gate]") {
-  for (auto const& v : {"handoff", "capture", "audit", "workspace", "config", "templates", "scope", "doc", "local",
-                        "skills", "test-spec", "sync"}) {
+  for (auto const& v : {"handoff", "capture", "audit", "workspace", "config", "templates", "scope", "doc", "local", "skills",
+                        "test-spec", "sync"}) {
     INFO(v);
     CHECK(cls({v}) == verb_class::execution_or_read);
     CHECK(cls({v, "show"}) == verb_class::execution_or_read);

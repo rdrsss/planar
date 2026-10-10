@@ -59,12 +59,12 @@ namespace {
 namespace parity = planar::cmd::parity;
 
 struct world {
-  parity::arena         arena = parity::make_arena("watch_diagnose_checks");
-  std::filesystem::path root  = arena.cpp_root;
-  std::filesystem::path op    = std::filesystem::path{PLANAR_OPERATOR_CPP_BIN};
-  std::filesystem::path agent = std::filesystem::path{PLANAR_AGENT_CPP_BIN};
-  std::filesystem::path watch = std::filesystem::path{PLANAR_CPP_BIN};
-  int                   seq   = 0;
+  parity::arena         arena       = parity::make_arena("watch_diagnose_checks");
+  std::filesystem::path root        = arena.cpp_root;
+  std::filesystem::path op          = std::filesystem::path{PLANAR_OPERATOR_CPP_BIN};
+  std::filesystem::path agent       = std::filesystem::path{PLANAR_AGENT_CPP_BIN};
+  std::filesystem::path watch       = std::filesystem::path{PLANAR_CPP_BIN};
+  int                   seq         = 0;
   int                   preview_seq = 0;
 
   auto tag() -> std::string {
@@ -411,8 +411,7 @@ TEST_CASE("handoff-stale agrees with the stale-handoff count planar report print
   CHECK(parsed->find("handoffs")->find("stale_handoffs")->integer == 1);
 }
 
-const std::vector<std::string> k_dispatch_checks{"dispatch-no-role-action", "dispatch-unconfirmed", "dispatch-confirmed-late",
-                                                 "action-unended"};
+const std::vector<std::string> k_dispatch_checks{"dispatch-no-role-action", "dispatch-confirmed-late", "action-unended"};
 
 TEST_CASE("a previewed and confirmed dispatch that completes with no role action is one finding",
           "[cmd][watch][diagnose][workflow][dispatch]") {
@@ -500,32 +499,7 @@ TEST_CASE("an action left open under a lapsed claim is reported, and not before 
   CHECK(w.findings({"action-unended"}) == std::vector<std::string>{"action-unended action:2 warning"});
 }
 
-TEST_CASE("previewed dispatches that were never confirmed are reported, a direct claim beside them is not",
-          "[cmd][watch][diagnose][workflow][dispatch]") {
-  world w;
-  w.seed_routing();
-  w.planar({"task", "add", "Third task", "--plan", "1"});
-  w.planar({"task", "add", "Fourth task", "--plan", "1"});
-  // Tasks 1 and 2 are confirmed before their coder action starts; task 3 never is. Task 4 is
-  // claimed directly with no preview.
-  std::vector<std::string> tokens;
-  for (int task = 1; task <= 3; ++task) {
-    tokens.push_back(w.claim(task));
-    auto preview = w.dispatch_preview(task, tokens.back());
-    if (task != 3) {
-      w.dispatch_confirm(preview, world::now_text(), tokens.back());
-    }
-    w.planar_agent({"action", "start", "--claim", tokens.back(), "--kind", "coder", "--entity", std::format("task:{}", task),
-                    "--no-locality-probe"});
-  }
-  auto direct = w.claim(4);
-  w.planar_agent({"action", "start", "--claim", direct, "--kind", "coder", "--entity", "task:4", "--no-locality-probe"});
-
-  CHECK(w.findings(k_dispatch_checks) == std::vector<std::string>{"dispatch-unconfirmed claim:3 warning"});
-}
-
-TEST_CASE("a snapshot confirmed after the role action started is late, and not unconfirmed",
-          "[cmd][watch][diagnose][workflow][dispatch]") {
+TEST_CASE("a snapshot confirmed after the role action started is late", "[cmd][watch][diagnose][workflow][dispatch]") {
   world w;
   w.seed_routing();
   auto token   = w.claim(1);

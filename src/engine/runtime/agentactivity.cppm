@@ -179,20 +179,20 @@ export enum class action_kind : std::uint8_t {
   user_message,
   assistant_message,
   other,
-  // Engine supervision (migration 00038, plan 1033 task 6487/6488). Written
-  // ONLY by the atomic supervision paths in `agentatomic`, never by
-  // `action start` — see `is_supervision_kind`.
-  claim_associate,     ///< A claim handed to (or re-attempted by) the engine supervisor.
-  claim_terminal,      ///< The engine's one terminal verb on a claim.
-  supervisor_override, ///< An operator terminating an engine claim with `--override-supervisor`.
+  // Engine supervision (migration 00038, plan 1033 task 6487/6488). No verb
+  // writes these kinds any more; they remain so that rows written before the
+  // removal still decode, and `action start --kind` still refuses them (see
+  // `is_supervision_kind`).
+  claim_associate,     ///< Legacy: a claim handed to the engine supervisor (no verb writes it now).
+  claim_terminal,      ///< Legacy: the engine's terminal verb on a claim (no verb writes it now).
+  supervisor_override, ///< Legacy: an operator terminating an engine claim (no verb writes it now).
   run_submitted,       ///< A Centurion run's submission.
   run_reconciled,      ///< A terminal verb re-issued by post-crash reconciliation.
 };
 
-/// @brief Whether `kind` is one of the five engine-supervision kinds.
+/// @brief Whether `kind` is one of the engine-supervision kinds.
 ///
-/// Those rows are the audit trail of who terminated an engine-supervised
-/// claim, so they are written only inside the atomic supervision paths;
+/// Those rows are the audit trail of the engine's supervised claims, so
 /// `action start --kind` and `pull --role` refuse or ignore them, or any
 /// agent could forge a `claim_terminal` row.
 /// @param kind The kind.
@@ -473,9 +473,7 @@ export struct acquire_args {
   /// Take over a live claim: mark every active claim on the same
   /// `(kind, entity_id)` stale first. Operator recovery only; the normal
   /// path returns `claim_contention` instead.
-  bool                            force = false;
-  std::optional<std::int64_t>     run_id; ///< `workflow_runs` FK.
-  std::optional<std::string_view> stage;  ///< Workflow stage name.
+  bool force = false;
 };
 
 /// @brief Insert a new claim.
@@ -685,19 +683,6 @@ export auto task_plan_id(db::connection& conn, std::int64_t task_id) -> std::opt
 // Run association
 // =========================================================================
 
-/// @brief Stamp a `workflow_runs` id (and optional stage) onto a live claim.
-///
-/// Returns the number of rows updated rather than an error when the token
-/// is unknown or terminal — `0` is a legitimate answer the CLI surfaces as
-/// `updated:0` with exit 0. Not wrapped in a transaction (a single UPDATE).
-/// @param conn An open, migrated connection.
-/// @param claim_token The token to stamp.
-/// @param run_id The `workflow_runs` row id.
-/// @param stage The stage name, or unset for NULL.
-/// @return The number of rows updated, or `query_failed`.
-export auto associate_claim_run(db::connection& conn, std::string_view claim_token, std::int64_t run_id,
-                                std::optional<std::string_view> stage) -> std::expected<std::int64_t, agent_error>;
-
 // =========================================================================
 // Engine supervision (migration 00038, plan 1033 D3/D4)
 // =========================================================================
@@ -715,17 +700,6 @@ export struct supervision {
 /// @param claim_token The claim.
 /// @return The supervision, or `claim_not_found` / `query_failed`.
 export auto get_supervision(db::connection& conn, std::string_view claim_token) -> std::expected<supervision, agent_error>;
-
-/// @brief Mark a claim engine-supervised under `attempt_id`.
-///
-/// One-way: nothing here sets a claim back to `caller`. MUST be called
-/// inside the caller's transaction, after the claim has been checked live.
-/// @param conn An open, migrated connection.
-/// @param claim_id The claim row.
-/// @param attempt_id The Centurion attempt.
-/// @return Success, or `query_failed`.
-export auto set_engine_supervision(db::connection& conn, std::int64_t claim_id, std::string_view attempt_id)
-    -> std::expected<void, agent_error>;
 
 // =========================================================================
 // Actions
@@ -843,11 +817,6 @@ export struct reconcile_policy {
   std::optional<std::int64_t>     session_id;               ///< Scope to one session; unset sweeps globally.
   std::optional<std::int64_t>     plan_id;                  ///< Scope to one plan; unset sweeps globally.
   std::optional<failure_category> category;                 ///< Category to stamp on claims made stale.
-  /// Reconcile engine-supervised claims too (plan 1033 task 6489). Off by
-  /// default: an engine claim's lease and terminal verb are the engine's,
-  /// so the sweep reports it as skipped instead of taking it over. Each
-  /// claim swept under this flag gets one `supervisor_override` action.
-  bool override_supervisor = false;
 };
 
 /// @brief What a sweep did (or, in dry-run, would do).
@@ -859,9 +828,6 @@ export struct reconcile_result {
   std::int64_t       claims_marked_stale = 0;
   std::int64_t       actions_closed      = 0; ///< Number of action rows closed.
   std::vector<claim> candidates;              ///< The expired claims found (populated in every mode).
-  /// Expired ENGINE-supervised claims left untouched (plan 1033 task 6489);
-  /// always empty under `override_supervisor`.
-  std::vector<claim> skipped_engine;
 };
 
 /// @brief Mark expired claims stale, return their tasks to `todo` where
@@ -876,45 +842,6 @@ export struct reconcile_result {
 /// @param policy The sweep policy.
 /// @return The sweep result, or `query_failed`.
 export auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> std::expected<reconcile_result, agent_error>;
-
-/// @brief A `workflow_runs` row the sweep considers dead.
-export struct run_candidate {
-  std::int64_t                id{};           ///< Row id.
-  std::string                 run_identifier; ///< The caller-supplied identifier.
-  std::int64_t                pid{};          ///< The recorded process id (0 for a pid-less, lease-supervised run).
-  std::optional<std::int64_t> plan_id;        ///< The owning plan, when set.
-};
-
-/// @brief What the run sweep did.
-export struct reconcile_runs_result {
-  std::int64_t               abandoned = 0;  ///< Rows moved to `abandoned`.
-  std::vector<run_candidate> candidates;     ///< The dead-pid rows found.
-  std::vector<run_candidate> skipped_engine; ///< Dead-pid `engine='centurion'` rows left running (task 6489).
-};
-
-/// @brief Is a process id live?
-///
-/// POSIX `kill(pid, 0)`: `ESRCH` means gone, `EPERM` means it exists under
-/// another owner (so: alive), any other errno is treated as alive because
-/// the conservative direction here is to NOT abandon a run we are unsure
-/// about. A non-positive pid is dead by definition.
-/// @param pid The process id.
-/// @return `true` when the process appears to exist.
-export auto pid_alive(std::int64_t pid) -> bool;
-
-/// @brief Abandon `running` workflow runs that are dead: a pid-bound run
-/// whose recorded pid is gone, or a pid-less run whose `expires_at` lease
-/// has lapsed (decision D11, task 6847). A pid-less run with a live lease
-/// is left running — reconcile never probes a lease it has not seen expire.
-/// @param conn An open, migrated connection.
-/// @param dry_run When true, collect candidates and write nothing.
-/// A `centurion` run's liveness is the Centurion host's to judge, not a pid
-/// probe's, so it is reported as skipped unless `override_supervisor`.
-/// @param plan_id Scope to one plan; unset sweeps globally.
-/// @param override_supervisor Abandon dead-pid/expired-lease `centurion` runs too.
-/// @return The sweep result, or `query_failed`.
-export auto reconcile_runs(db::connection& conn, bool dry_run, std::optional<std::int64_t> plan_id,
-                           bool override_supervisor = false) -> std::expected<reconcile_runs_result, agent_error>;
 
 // =========================================================================
 // Read paths — the display half (task 6120)

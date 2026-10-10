@@ -54,7 +54,6 @@ import planar.cmd.planar.handlers.unlink;
 import planar.cmd.planar.handlers.update;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
-import planar.cmd.planar.handlers.workflow;
 import planar.cmd.planar.handlers.workspace;
 
 namespace planar::cmd {
@@ -546,9 +545,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("completion", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return handlers::completion(ctx, args, root);
   });
-  table.emplace("workflow list", handlers::workflow_list);
-  table.emplace("workflow show", handlers::workflow_show);
-  table.emplace("workflow run", handlers::workflow_run);
   table.emplace("annotate add", handlers::annotate_add);
   table.emplace("annotate list", handlers::annotate_list);
   table.emplace("annotate capabilities", handlers::annotate_capabilities);

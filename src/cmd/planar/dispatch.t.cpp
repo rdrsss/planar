@@ -52,20 +52,20 @@
 //     stdout b''
 //     stderr b'error: planar: The following argument was not expected: nosuchverb\n'
 //
-//   $C workflow nosuchsub
+//   $C annotate nosuchsub
 //     exit 2
 //     stdout b''
-//     stderr b'error: workflow: The following argument was not expected: nosuchsub\n'
+//     stderr b'error: annotate: The following argument was not expected: nosuchsub\n'
 //
-//   $C workflow list --nosuchflag
+//   $C annotate list --nosuchflag
 //     exit 2
 //     stdout b''
 //     stderr b'error: list: The following argument was not expected: --nosuchflag\n'
 //
-//   $C workflow show          (missing required positional)
+//   $C unlink                 (missing required positional)
 //     exit 2
 //     stdout b''
-//     stderr b'error: name is required\n'
+//     stderr b'error: link-id is required\n'
 //
 // NOTE the error NAME CLI11 assigns internally is coarser than the
 // oracle's — an unknown subcommand, an unknown subcommand under a group,
@@ -131,10 +131,10 @@ auto dispatch(std::vector<std::string> args, std::map<std::string, std::string, 
 } // namespace
 
 TEST_CASE("path_key joins a resolved path with single spaces", "[cmd][dispatch]") {
-  std::vector<std::string> const two{"workflow", "list"};
+  std::vector<std::string> const two{"annotate", "list"};
   std::vector<std::string> const one{"version"};
   std::vector<std::string> const none{};
-  CHECK(planar::cliapp::path_key(two) == "workflow list");
+  CHECK(planar::cliapp::path_key(two) == "annotate list");
   CHECK(planar::cliapp::path_key(one) == "version");
   CHECK(planar::cliapp::path_key(none).empty());
 }
@@ -167,19 +167,19 @@ TEST_CASE("unregistered_leaves actually reports an unwired leaf", "[cmd][dispatc
   // case proves it discriminates by handing it a table with a hole.
   auto const tree  = planar::cmd::root_app();
   auto       table = planar::cmd::make_handler_table(*tree);
-  table.erase("workflow show");
+  table.erase("annotate list");
   auto const missing = planar::cmd::unregistered_leaves(*tree, table);
   REQUIRE(missing.size() == 1);
-  CHECK(missing.front() == "workflow show");
+  CHECK(missing.front() == "annotate list");
 }
 
 TEST_CASE("unreachable_handlers actually reports a dead entry", "[cmd][dispatch][registration]") {
   auto const tree  = planar::cmd::root_app();
   auto       table = planar::cmd::make_handler_table(*tree);
-  table.emplace("workflow shwo", [](context&, const planar::cliapp::parsed_args&) -> planar::cmd::handler_result { return {}; });
+  table.emplace("annotate lsit", [](context&, const planar::cliapp::parsed_args&) -> planar::cmd::handler_result { return {}; });
   auto const dead = planar::cmd::unreachable_handlers(*tree, table);
   REQUIRE(dead.size() == 1);
-  CHECK(dead.front() == "workflow shwo");
+  CHECK(dead.front() == "annotate lsit");
 }
 
 TEST_CASE("an unknown subcommand writes stderr ONLY and exits 2", "[cmd][dispatch][parity]") {
@@ -200,24 +200,39 @@ TEST_CASE("planar models resolve is an unknown subcommand, not a live verb", "[c
 }
 
 TEST_CASE("an unknown subcommand under a group names the group", "[cmd][dispatch][parity]") {
-  auto const got = dispatch({"workflow", "nosuchsub"});
+  auto const got = dispatch({"annotate", "nosuchsub"});
   CHECK(got.code == 2);
   CHECK(got.out.empty());
-  CHECK(got.err == "error: workflow: The following argument was not expected: nosuchsub\n");
+  CHECK(got.err == "error: annotate: The following argument was not expected: nosuchsub\n");
+}
+
+TEST_CASE("the removed workflow verb is an unknown subcommand and leaves the schema catalog", "[cmd][dispatch][parity]") {
+  // Task 7453 removed `planar workflow`. A removal needs a negative test: the
+  // verb must refuse at exit 2 as an unknown subcommand, and no catalog entry
+  // may still name it.
+  auto const got = dispatch({"workflow", "list"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: planar: The following arguments were not expected: workflow list\n");
+
+  auto const catalog = dispatch({"schema"});
+  REQUIRE(catalog.code == 0);
+  CHECK_FALSE(catalog.out.contains(R"("command":"planar workflow)"));
+  CHECK_FALSE(catalog.out.contains(R"("path":["workflow")"));
 }
 
 TEST_CASE("an unknown flag writes stderr ONLY and exits 2", "[cmd][dispatch][parity]") {
-  auto const got = dispatch({"workflow", "list", "--nosuchflag"});
+  auto const got = dispatch({"annotate", "list", "--nosuchflag"});
   CHECK(got.code == 2);
   CHECK(got.out.empty());
   CHECK(got.err == "error: list: The following argument was not expected: --nosuchflag\n");
 }
 
 TEST_CASE("a missing required positional writes stderr ONLY and exits 2", "[cmd][dispatch][parity]") {
-  auto const got = dispatch({"workflow", "show"});
+  auto const got = dispatch({"unlink"});
   CHECK(got.code == 2);
   CHECK(got.out.empty());
-  CHECK(got.err == "error: name is required\n");
+  CHECK(got.err == "error: link-id is required\n");
 }
 
 TEST_CASE("planar --help states what the binary writes", "[cmd][dispatch][help]") {
@@ -250,25 +265,31 @@ TEST_CASE("planar help is a leaf in the schema catalog", "[cmd][dispatch][help]"
 }
 
 TEST_CASE("--help renders the leaf's page to stdout and exits 0", "[cmd][dispatch]") {
-  auto const got = dispatch({"workflow", "show", "--help"});
+  auto const got = dispatch({"skills", "--help"});
   CHECK(got.code == 0);
   CHECK(got.err.empty());
   // Re-baselined onto CLI11's formatter (task 6123) and pinned exactly,
   // trailing spaces included — a page trimmed to a `contains` check would
   // stop discriminating a dropped flag, which is the whole reason a leaf's
   // help page is pinned at all.
-  CHECK(got.out == "Show @meta and source path for a named workflow.\n"
-                   "\n"
-                   "\n"
-                   "show [OPTIONS] name\n"
-                   "\n"
-                   "\n"
-                   "POSITIONALS:\n"
-                   "  name REQUIRED               \n"
-                   "\n"
-                   "OPTIONS:\n"
-                   "  -h,     --help              Print this help message and exit\n"
-                   "          --json              \n");
+  CHECK(got.out ==
+        "The skill tree is skills/planar/, installed by install.sh. `planar health`\n"
+        "reports install drift. This verb is retired and will be removed next release.\n"
+        "\n"
+        "\n"
+        "skills [OPTIONS]\n"
+        "\n"
+        "\n"
+        "OPTIONS:\n"
+        "  -h,     --help              Print this help message and exit\n"
+        "\n"
+        "Examples:\n"
+        "  planar skills\n"
+        "\n"
+        "Exit codes:\n"
+        "  0  Success.\n"
+        "  1  Generic failure: entity not found, an unmapped error, or a busy source.\n"
+        "  2  Bad input: an invalid value or entity ref, or a parse failure such as an unknown flag or a missing argument.\n");
 }
 
 TEST_CASE("an unwired leaf falls through to exit 64, not a crash", "[cmd][dispatch]") {
@@ -699,19 +720,14 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // did not survive checking: `show` decodes routing-table.json off disk
   // and never calls the builder. Argued in full in
   // src/engine/workspace/routing.cppm's header.
-  // 47 before task 6272 ported ONE leaf out of it — `workflow run` — with
-  // the layer-1 `planar.process` spawn seam it had been deferred on since
-  // task 6105. That leaves 46, and the count is the WHOLE story of that
-  // cycle, which is why it is worth reading here rather than only in
-  // src/lib/process/CMakeLists.txt.
+  // 47 before task 6272 ported ONE leaf out of it — `workflow run`, which
+  // task 7453 later removed with the verb — using the layer-1
+  // `planar.process` spawn seam it had been deferred on since task 6105.
+  // That history is why the cycle is worth reading here rather than only
+  // in src/lib/process/CMakeLists.txt.
   //
-  // FIVE leaves named "a process-spawn seam" as their blocker. The seam now
-  // exists at layer 1 and moved exactly ONE of them:
-  //   workflow run     MOVED. `catalog::find` was already ported and shared
-  //                    with `workflow show` (`not_found_error` is one
-  //                    function serving both, byte-identical). The spawn
-  //                    genuinely was the only missing piece — 167 zig lines
-  //                    of handler and no engine half at all.
+  // FOUR leaves named "a process-spawn seam" as their blocker after task
+  // 6272 moved the fifth (`workflow run`, since removed):
   //   capture commits   NOT moved. Needs ~1100 unported lines: the git-WALK
   //                    half of `runtime/sessioncommits.zig`. The C++
   //                    `sessioncommits` module is deliberately one pure-SQL
@@ -740,8 +756,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - "There is no process-spawn seam anywhere in this tree" was false
   //     THREE times over when task 6272 acted on it. `planar.git::run`
   //     (layer 1, popen), `editor::spawn_inherit` (layer 3, fork/execv,
-  //     inherited stdio, injected env — structurally exactly what `workflow
-  //     run` needed) and `ext_adapter_factory::spawn_capture` (layer 3,
+  //     inherited stdio, injected env — structurally exactly what the removed
+  //     `workflow run` needed) and `ext_adapter_factory::spawn_capture` (layer 3,
   //     posix_spawnp) all existed. What was missing was a runner at a layer
   //     every consumer can reach, named for processes rather than for the
   //     first caller that needed one.
@@ -1300,11 +1316,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // than trusted to the count dropping by one.
   INFO("moved by task 6325, completing the `assoc` family: assoc detect");
   CHECK_FALSE(unported.contains("assoc detect"));
-  // The leaf task 6272 moved, named rather than trusted to the count. The
-  // four leaves that were predicted to move WITH it must stay unported —
-  // wiring any of them off the back of this cycle would claim an engine
-  // half that does not exist.
-  CHECK_FALSE(unported.contains("workflow run"));
   // `audit commits` WAS in this list and should never have been: it was
   // grouped with the genuinely spawn-blocked leaves on the strength of its
   // MODULE's dependencies rather than its own handler's, which calls
@@ -1532,8 +1543,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   auto const leaves = planar::cliapp::leaf_keys(*tree);
   // Task 7205 adds the `help` leaf (218 -> 219).
   // Task 7319 adds the `update` leaf (219 -> 220).
-  // Plan 1142 task 7455 removes `models` (14 leaves) from this tree (220 -> 206).
-  CHECK(leaves.size() == 206);
+  // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
+  CHECK(leaves.size() == 203);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
@@ -1568,8 +1579,8 @@ TEST_CASE("the exit-code envelope maps each bucket distinctly", "[cmd][exit]") {
 
 TEST_CASE("report composes a message body but writes a rendered payload verbatim", "[cmd][exit]") {
   // The two stderr shapes. Getting this wrong doubles the `error: ` prefix
-  // on every renderer-sourced failure, which is precisely what `workflow
-  // show nope` would have shown.
+  // on every renderer-sourced failure, which is precisely what a renderer's
+  // "not found" line would have shown.
   using planar::cmd::domain_error_kind;
   std::ostringstream body_out;
   planar::cmd::report(planar::cmd::error_from_body(planar::cmd::domain_error_kind::invalid_input, "--anchor-path is required"),
@@ -1578,9 +1589,9 @@ TEST_CASE("report composes a message body but writes a rendered payload verbatim
 
   std::ostringstream rendered_out;
   planar::cmd::report(
-      planar::cmd::error_from_rendered(planar::cmd::domain_error_kind::generic_failure, "error: workflow 'nope' not found\n"),
+      planar::cmd::error_from_rendered(planar::cmd::domain_error_kind::generic_failure, "error: item 'nope' not found\n"),
       rendered_out);
-  CHECK(rendered_out.str() == "error: workflow 'nope' not found\n");
+  CHECK(rendered_out.str() == "error: item 'nope' not found\n");
 }
 
 // --- dual group-and-leaf nodes (plan 996, task 6040) -------------------

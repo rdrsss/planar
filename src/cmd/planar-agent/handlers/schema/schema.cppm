@@ -20,7 +20,7 @@
 /// `planar schema` verb append one at the write site, not here" — and the
 /// Zig handler does exactly that (`writeAll(catalog)` then
 /// `writeAll("\n")`). So this handler appends. That is the OPPOSITE of
-/// what `planar workflow list --json` needs, where the renderer returns a
+/// what `planar local list --json` needs, where the renderer returns a
 /// complete payload and appending would break the zero-bytes-on-empty
 /// case. The rule is per-renderer, read off each `@return`; there is no
 /// blanket policy (commit 5728133, task 6106).

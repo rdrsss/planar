@@ -58,8 +58,8 @@
 // ## What it still does NOT compare, measured rather than assumed
 //
 // `default`, and only `default`. Four oracle flags declare an EMPTY-STRING
-// default (`planar workbench edit --editor`, and `--args` / `--worktree` /
-// `--sandbox-root` on `planar workflow run`) and report `""` where this
+// default (`planar workbench edit --editor`, and three flags of the removed
+// `planar workflow run`) and report `""` where this
 // tree reports `null`. `CLI::Option` exposes ONE accessor,
 // `get_default_str()`, returning `""` for both "no default" and "a default
 // that is the empty string" — the two are not distinguishable from a built

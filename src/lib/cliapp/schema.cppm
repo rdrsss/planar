@@ -150,9 +150,6 @@ export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_vi
 /// default, wrong for the four the oracle declares with `""`:
 ///
 ///     planar workbench edit --editor
-///     planar workflow run   --args
-///     planar workflow run   --worktree
-///     planar workflow run   --sandbox-root
 ///
 /// Eight bytes of a 353,934-byte catalog, and the ONLY eight in which
 /// `planar`'s catalog differed from the oracle's.
@@ -169,7 +166,7 @@ export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_vi
 /// @param summaries `(full command path, summary)` pairs; see the
 /// two-argument overload.
 /// @param empty_string_defaults `(full command path, flag long name)`
-/// pairs — e.g. `{"planar workflow run", "--args"}`. A flag named here
+/// pairs — e.g. `{"planar workbench edit", "--editor"}`. A flag named here
 /// reports `"default":""`; one absent keeps `null`. Naming a flag that
 /// does not exist is inert.
 /// @return The catalog as a single-line JSON document (no trailing

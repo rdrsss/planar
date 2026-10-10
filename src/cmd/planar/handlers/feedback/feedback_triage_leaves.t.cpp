@@ -193,7 +193,7 @@ TEST_CASE("feedback triage list reports the empty state as a sentence and an emp
   CHECK(text.err.empty());
   CHECK(text.out == "(no feedback triage)\n");
 
-  // TERMINATED `[]\n`, not zero bytes — the contrast is `workflow list
+  // TERMINATED `[]\n`, not zero bytes — the contrast is `local list
   // --json`, whose empty catalog really is zero bytes.
   auto const json = dispatch(fx, {"feedback", "triage", "list", "--json"});
   CHECK(json.code == 0);

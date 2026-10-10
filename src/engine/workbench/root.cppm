@@ -13,8 +13,7 @@
 /// the operator's real `~/.planar/workbench/`. `workbench archive` deletes
 /// a whole tree; `workbench gc` unlinks files.
 ///
-/// So the protection is structural, the same mechanism `engine_workflows`
-/// and `engine_local` use: `resolve_root` takes an explicit `env_lookup`
+/// So the protection is structural, the same mechanism `engine_local` uses: `resolve_root` takes an explicit `env_lookup`
 /// callable and this module calls `std::getenv` NOWHERE. A test cannot
 /// reach a real HOME through it, because the code has no way to find one.
 /// The CLI layer supplies the real environment.

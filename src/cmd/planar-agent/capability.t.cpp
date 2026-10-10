@@ -115,9 +115,8 @@ TEST_CASE("planar-agent's declared verb set includes the bounded queue observer"
   // asserted EXACTLY — a completeness check against reality, so an
   // invented verb fails it just as it did before.
   CHECK(names == std::set<std::string, std::less<>>{// The fourteen with real handlers.
-                                                    "abort", "action", "block", "claim", "claim-associate", "complete", "end",
-                                                    "fail", "heartbeat", "peek", "pull", "reconcile", "release", "schema",
-                                                    "start", "version",
+                                                    "abort", "action", "block", "claim", "complete", "end", "fail", "heartbeat",
+                                                    "peek", "pull", "reconcile", "release", "schema", "start", "version",
                                                     // Plan 1080: the host-wide build and test queue's domain
                                                     // and its verbs. `run` is already a name above; `cancel`
                                                     // (task hq-queue-cancel), `status` and `rule` (task
@@ -143,7 +142,7 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  CHECK(leaves.size() == 28);
+  CHECK(leaves.size() == 27);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
