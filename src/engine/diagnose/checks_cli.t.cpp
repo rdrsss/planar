@@ -259,6 +259,55 @@ TEST_CASE("the invocation log carries no plan, so a plan scope changes the windo
   CHECK(ids_of(fx.run(k_apply, true, k_now, 1)) == std::vector<std::string>{"apply-without-preview cli_invocation:1"});
 }
 
+TEST_CASE("a plan-scoped run looks a bounded interval before the plan's creation for the preview",
+          "[engine][diagnose][cli][calibration]") {
+  // Decision 1384: `spec ingest --apply` creates the plan, and the plan-lifetime window starts at its creation, so the
+  // preview that precedes every such apply always fell just outside the window. A plan-scoped run therefore looks one
+  // hour before the window start for the preview; an unscoped run has no such anchor and does not.
+  auto plan_created_at = [](fixture& fx, std::string_view at) {
+    exec(fx.conn, std::format("update plans set created_at = '{}' where id = 1", at));
+  };
+
+  fixture fx;
+  plan_created_at(fx, "2026-06-01T09:00:00.000Z");
+  fx.invocation(1, "spec ingest", "<pos:1>", "2026-06-01T08:59:59.700Z");
+  fx.invocation(2, "spec ingest", "<pos:1> --apply", "2026-06-01T09:00:01.000Z");
+  CHECK(fx.run(k_apply, true, k_now, 1).findings.empty());
+  // The unscoped run of the same rows has its preview inside the seven-day window anyway.
+  CHECK(fx.run(k_apply).findings.empty());
+
+  // The look-back is bounded: one hour before the window start counts, a millisecond earlier does not.
+  fixture edge;
+  plan_created_at(edge, "2026-06-01T09:00:00.000Z");
+  edge.invocation(1, "spec ingest", "<pos:1>", "2026-06-01T08:00:00.000Z");
+  edge.invocation(2, "spec ingest", "<pos:1> --apply", "2026-06-01T09:00:01.000Z");
+  CHECK(edge.run(k_apply, true, k_now, 1).findings.empty());
+
+  fixture beyond;
+  plan_created_at(beyond, "2026-06-01T09:00:00.000Z");
+  beyond.invocation(1, "spec ingest", "<pos:1>", "2026-06-01T07:59:59.999Z");
+  beyond.invocation(2, "spec ingest", "<pos:1> --apply", "2026-06-01T09:00:01.000Z");
+  CHECK(ids_of(beyond.run(k_apply, true, k_now, 1)) == std::vector<std::string>{"apply-without-preview cli_invocation:2"});
+
+  // An apply in the look-back is not reported (it is before the window) and does not count as a preview.
+  fixture apply_before;
+  plan_created_at(apply_before, "2026-06-01T09:00:00.000Z");
+  apply_before.invocation(1, "spec ingest", "<pos:1> --apply", "2026-06-01T08:30:00.000Z");
+  apply_before.invocation(2, "spec ingest", "<pos:1> --apply", "2026-06-01T09:00:01.000Z");
+  CHECK(ids_of(apply_before.run(k_apply, true, k_now, 1)) == std::vector<std::string>{"apply-without-preview cli_invocation:2"});
+
+  // The unscoped run keeps the plain window: a preview just before it does not satisfy an apply inside it.
+  fixture unscoped;
+  unscoped.invocation(1, "spec ingest", "<pos:1>", "2026-05-25T11:50:00.000Z");
+  unscoped.invocation(2, "spec ingest", "<pos:1> --apply", "2026-05-25T12:10:00.000Z");
+  CHECK(ids_of(unscoped.run(k_apply)) == std::vector<std::string>{"apply-without-preview cli_invocation:2"});
+  // --days with --plan replaces the window start, and the look-back is taken from that start.
+  fixture days;
+  days.invocation(1, "spec ingest", "<pos:1>", "2026-05-25T11:50:00.000Z");
+  days.invocation(2, "spec ingest", "<pos:1> --apply", "2026-05-25T12:10:00.000Z");
+  CHECK(days.run(k_apply, true, k_now, 1, 7).findings.empty());
+}
+
 TEST_CASE("apply-without-preview times its evidence from the row, not from the evaluation instant", "[engine][diagnose][cli]") {
   fixture fx;
   fx.invocation(1, "spec ingest", "<pos:1> --apply", "2026-06-01T09:00:00.000Z");
