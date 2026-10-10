@@ -33,9 +33,10 @@
 //     There is no workbench spec, so the ingest exits 2, which the log records all the same. With
 //     the log off the check's input is `disabled`, the check does not run and the outcome stays `ok`;
 //     a config file that cannot be parsed reads `unavailable` and the outcome `partial`.
-//   * Failure clusters (task 7380): three `planar task add` calls with no title fail with a usage
-//     error, the capture log records them, and `cli-failure-cluster` names `task add` and `usage`
-//     with its three invocations; two failures, or three split across verbs, make none. Claims ended
+//   * Failure clusters (task 7380): three `planar task show` calls on a missing id fail with a
+//     `not_found` error, the capture log records them, and `cli-failure-cluster` names `task show` and
+//     `not_found` with its three invocations; two failures, or three split across verbs, make none, and
+//     three usage failures (`task add` with no title) make none either (decision 1384). Claims ended
 //     with `planar-agent fail --category tool_failure` form one `claim-failure-cluster`; the default
 //     category (`unknown`) forms none.
 //   * `sync-conflict-unresolved` (task 7381): a local fake Jira (the in-process HTTP fixture server)
@@ -726,22 +727,22 @@ TEST_CASE("a dispatch previewed and confirmed without a claim token, then claime
   }
 }
 
-TEST_CASE("three failing task adds form one cli-failure-cluster naming the verb and category",
+TEST_CASE("three failing task shows form one cli-failure-cluster naming the verb and category",
           "[cmd][watch][diagnose][workflow][cluster]") {
   {
     world w;
     w.enable_cli_log();
     for (int i = 0; i < 3; ++i) {
-      CHECK(w.planar_status({"task", "add"}) != 0);
+      CHECK(w.planar_status({"task", "show", "99999"}) != 0);
     }
-    CHECK(w.scalar("select count(*) from cli_invocations where verb_path = 'task add' and error_category = 'usage'") == 3);
+    CHECK(w.scalar("select count(*) from cli_invocations where verb_path = 'task show' and error_category = 'not_found'") == 3);
     auto parsed = w.diagnose_any({"cli-failure-cluster"});
     CHECK(parsed.find("outcome")->string == "ok");
     const auto& found = parsed.find("findings")->array;
     REQUIRE(found.size() == 1);
     CHECK(found[0].find("check")->string == "cli-failure-cluster");
     CHECK(found[0].find("severity")->string == "warning");
-    CHECK(found[0].find("fingerprint")->string == "cli-failure-cluster|task add|usage|global");
+    CHECK(found[0].find("fingerprint")->string == "cli-failure-cluster|task show|not_found|global");
     CHECK(found[0].find("evidence")->array.size() == 3);
   }
   {
@@ -749,7 +750,7 @@ TEST_CASE("three failing task adds form one cli-failure-cluster naming the verb 
     world w;
     w.enable_cli_log();
     for (int i = 0; i < 2; ++i) {
-      CHECK(w.planar_status({"task", "add"}) != 0);
+      CHECK(w.planar_status({"task", "show", "99999"}) != 0);
     }
     CHECK(w.diagnose_any({"cli-failure-cluster"}).find("findings")->array.empty());
   }
@@ -757,9 +758,19 @@ TEST_CASE("three failing task adds form one cli-failure-cluster naming the verb 
     // Failures of two verbs do not add up.
     world w;
     w.enable_cli_log();
-    CHECK(w.planar_status({"task", "add"}) != 0);
-    CHECK(w.planar_status({"task", "add"}) != 0);
     CHECK(w.planar_status({"task", "show", "99999"}) != 0);
+    CHECK(w.planar_status({"task", "show", "99999"}) != 0);
+    CHECK(w.planar_status({"plan", "show", "99999"}) != 0);
+    CHECK(w.diagnose_any({"cli-failure-cluster"}).find("findings")->array.empty());
+  }
+  {
+    // Decision 1384: three usage failures (a task add with no title) are recorded and form no cluster.
+    world w;
+    w.enable_cli_log();
+    for (int i = 0; i < 3; ++i) {
+      CHECK(w.planar_status({"task", "add"}) != 0);
+    }
+    CHECK(w.scalar("select count(*) from cli_invocations where verb_path = 'task add' and error_category = 'usage'") == 3);
     CHECK(w.diagnose_any({"cli-failure-cluster"}).find("findings")->array.empty());
   }
 }

@@ -85,9 +85,9 @@ struct fixture {
     exec(conn, sql);
   }
 
-  /// One logged invocation. A zero exit has no error category; any other exit is a `usage` failure.
+  /// One logged invocation. A zero exit has no error category; any other exit is a `validation` failure (a `usage` one is never a cluster member).
   auto invocation(int id, std::string_view verb_path, std::string_view args_shape, std::string_view recorded_at,
-                  int exit_code = 0, std::string_view category = "usage") -> void {
+                  int exit_code = 0, std::string_view category = "validation") -> void {
     exec(conn, std::format("insert into cli_invocations (id, verb_path, args_shape, exit_code, error_category, recorded_at) "
                            "values ({}, '{}', '{}', {}, {}, '{}')",
                            id, verb_path, args_shape, exit_code,
@@ -373,8 +373,8 @@ TEST_CASE("the capture-log input is not applicable when no selected check needs 
 namespace {
 const std::vector<std::string> k_cluster{"cli-failure-cluster"};
 
-/// Three `task add` usage failures on one day, a clean cluster.
-auto add_usage_cluster(fixture& fx, int first_id = 1, std::string_view verb = "task add", std::string_view category = "usage")
+/// Three `task add` failures on one day, a clean cluster.
+auto add_cluster(fixture& fx, int first_id = 1, std::string_view verb = "task add", std::string_view category = "validation")
     -> void {
   fx.invocation(first_id, verb, "<pos:1>", "2026-06-01T09:00:00.000Z", 2, category);
   fx.invocation(first_id + 1, verb, "<pos:1>", "2026-06-01T09:01:00.000Z", 2, category);
@@ -396,16 +396,16 @@ TEST_CASE("cli-failure-cluster is catalogued with the spec's kind, severity, cat
 
 TEST_CASE("three same-category failures of one verb form one cluster", "[engine][diagnose][cli][cluster]") {
   fixture fx;
-  add_usage_cluster(fx);
+  add_cluster(fx);
   auto d = fx.run(k_cluster);
   CHECK(d.result == dg::run_outcome::ok);
   REQUIRE(d.findings.size() == 1);
   const auto& f = d.findings[0];
   CHECK(f.check_id == "cli-failure-cluster");
   CHECK(f.severity == im::diagnostic_severity::warning);
-  CHECK(im::finding_fingerprint(f) == "cli-failure-cluster|task add|usage|global");
+  CHECK(im::finding_fingerprint(f) == "cli-failure-cluster|task add|validation|global");
   REQUIRE(f.group.has_value());
-  CHECK(f.group->key_parts == std::vector<std::string>{"task add", "usage"});
+  CHECK(f.group->key_parts == std::vector<std::string>{"task add", "validation"});
   CHECK(f.group->scope == "global");
   // One member per invocation, timed by its own row; the count is the member count.
   REQUIRE(f.members.size() == 3);
@@ -423,8 +423,8 @@ TEST_CASE("two failures, or three split across categories or verbs, form no clus
   CHECK(two.run(k_cluster).findings.empty());
 
   fixture split;
-  split.invocation(1, "task add", "<pos:1>", "2026-06-01T09:00:00.000Z", 2, "usage");
-  split.invocation(2, "task add", "<pos:1>", "2026-06-01T09:01:00.000Z", 2, "usage");
+  split.invocation(1, "task add", "<pos:1>", "2026-06-01T09:00:00.000Z", 2, "validation");
+  split.invocation(2, "task add", "<pos:1>", "2026-06-01T09:01:00.000Z", 2, "validation");
   split.invocation(3, "task add", "<pos:1>", "2026-06-01T09:02:00.000Z", 1, "internal");
   CHECK(split.run(k_cluster).findings.empty());
 
@@ -450,18 +450,18 @@ TEST_CASE("successful invocations are not cluster members", "[engine][diagnose][
 
 TEST_CASE("two clusters of one verb and two verbs are separate findings in a fixed order", "[engine][diagnose][cli][cluster]") {
   fixture fx;
-  add_usage_cluster(fx, 1, "task add", "usage");
-  add_usage_cluster(fx, 4, "task add", "internal");
-  add_usage_cluster(fx, 7, "plan show", "usage");
+  add_cluster(fx, 1, "task add", "validation");
+  add_cluster(fx, 4, "task add", "internal");
+  add_cluster(fx, 7, "plan show", "validation");
   auto                     d = fx.run(k_cluster);
   std::vector<std::string> fingerprints;
   for (const auto& f : d.findings) {
     fingerprints.push_back(im::finding_fingerprint(f));
   }
   std::ranges::sort(fingerprints);
-  CHECK(fingerprints == std::vector<std::string>{"cli-failure-cluster|plan show|usage|global",
+  CHECK(fingerprints == std::vector<std::string>{"cli-failure-cluster|plan show|validation|global",
                                                  "cli-failure-cluster|task add|internal|global",
-                                                 "cli-failure-cluster|task add|usage|global"});
+                                                 "cli-failure-cluster|task add|validation|global"});
 }
 
 TEST_CASE("a cluster counts only failures inside the window", "[engine][diagnose][cli][cluster]") {
@@ -479,7 +479,7 @@ TEST_CASE("a cluster counts only failures inside the window", "[engine][diagnose
 TEST_CASE("a narrower and a wider window over the same members share one fingerprint and add no member digest",
           "[engine][diagnose][cli][cluster]") {
   fixture fx;
-  fx.invocation(1, "task add", "<pos:1>", "2026-05-30T09:00:00.000Z", 2);
+  fx.invocation(1, "task add", "<pos:1>", "2026-05-31T11:00:00.000Z", 2);
   fx.invocation(2, "task add", "<pos:1>", "2026-06-01T01:00:00.000Z", 2);
   fx.invocation(3, "task add", "<pos:1>", "2026-06-01T09:01:00.000Z", 2);
   fx.invocation(4, "task add", "<pos:1>", "2026-06-01T09:02:00.000Z", 2);
@@ -508,9 +508,77 @@ TEST_CASE("a narrower and a wider window over the same members share one fingerp
   CHECK(later_digests == wide_digests);
 }
 
+TEST_CASE("usage failures never form a cluster", "[engine][diagnose][cli][cluster][calibration]") {
+  // Decision 1384: a usage error is the caller's mistake, and 33 of the 63 clusters on the operator's database were usage.
+  fixture fx;
+  add_cluster(fx, 1, "task add", "usage");
+  add_cluster(fx, 4, "task add", "usage");
+  CHECK(fx.run(k_cluster).findings.empty());
+  // They do not add to another category's count either, and the other categories still cluster.
+  fx.invocation(7, "task add", "<pos:1>", "2026-06-01T09:03:00.000Z", 1, "internal");
+  fx.invocation(8, "task add", "<pos:1>", "2026-06-01T09:04:00.000Z", 1, "internal");
+  CHECK(fx.run(k_cluster).findings.empty());
+  fx.invocation(9, "task add", "<pos:1>", "2026-06-01T09:05:00.000Z", 1, "internal");
+  auto d = fx.run(k_cluster);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(im::finding_fingerprint(d.findings[0]) == "cli-failure-cluster|task add|internal|global");
+  CHECK(d.findings[0].members.size() == 3);
+}
+
+TEST_CASE("a cluster needs three failures inside one 24-hour span of the window", "[engine][diagnose][cli][cluster][calibration]") {
+  // Decision 1384: 56 of 63 clusters spanned a day or more because the threshold counted the whole 30-day window.
+  fixture spread; // one a day for three days: never three inside a day
+  spread.invocation(1, "task add", "<pos:1>", "2026-05-28T09:00:00.000Z", 2);
+  spread.invocation(2, "task add", "<pos:1>", "2026-05-29T09:00:00.000Z", 2);
+  spread.invocation(3, "task add", "<pos:1>", "2026-05-30T09:00:00.000Z", 2);
+  CHECK(spread.run(k_cluster, true, k_now, std::nullopt, 30).findings.empty());
+
+  fixture edge; // 24 hours exactly is inside the span, a millisecond more is not
+  edge.invocation(1, "task add", "<pos:1>", "2026-05-30T09:00:00.000Z", 2);
+  edge.invocation(2, "task add", "<pos:1>", "2026-05-30T21:00:00.000Z", 2);
+  edge.invocation(3, "task add", "<pos:1>", "2026-05-31T09:00:00.000Z", 2);
+  CHECK(edge.run(k_cluster, true, k_now, std::nullopt, 30).findings.size() == 1);
+  fixture over;
+  over.invocation(1, "task add", "<pos:1>", "2026-05-30T09:00:00.000Z", 2);
+  over.invocation(2, "task add", "<pos:1>", "2026-05-30T21:00:00.000Z", 2);
+  over.invocation(3, "task add", "<pos:1>", "2026-05-31T09:00:00.001Z", 2);
+  CHECK(over.run(k_cluster, true, k_now, std::nullopt, 30).findings.empty());
+
+  // The members are the failures in a qualifying span; stragglers outside it are not members.
+  fixture mixed;
+  mixed.invocation(1, "task add", "<pos:1>", "2026-05-20T09:00:00.000Z", 2);
+  mixed.invocation(2, "task add", "<pos:1>", "2026-05-28T09:00:00.000Z", 2);
+  mixed.invocation(3, "task add", "<pos:1>", "2026-05-28T09:10:00.000Z", 2);
+  mixed.invocation(4, "task add", "<pos:1>", "2026-05-28T09:20:00.000Z", 2);
+  mixed.invocation(5, "task add", "<pos:1>", "2026-05-31T09:00:00.000Z", 2);
+  auto d = mixed.run(k_cluster, true, k_now, std::nullopt, 30);
+  REQUIRE(d.findings.size() == 1);
+  REQUIRE(d.findings[0].members.size() == 3);
+  CHECK(im::entity_ref_text(d.findings[0].members[0].ref) == "cli_invocation:2");
+  CHECK(im::entity_ref_text(d.findings[0].primary) == "cli_invocation:2");
+
+  // Overlapping spans are one cluster: failures every 12 hours chain into a single finding with every member.
+  fixture chain;
+  chain.invocation(1, "task add", "<pos:1>", "2026-05-29T00:00:00.000Z", 2);
+  chain.invocation(2, "task add", "<pos:1>", "2026-05-29T12:00:00.000Z", 2);
+  chain.invocation(3, "task add", "<pos:1>", "2026-05-30T00:00:00.000Z", 2);
+  chain.invocation(4, "task add", "<pos:1>", "2026-05-30T12:00:00.000Z", 2);
+  chain.invocation(5, "task add", "<pos:1>", "2026-05-31T00:00:00.000Z", 2);
+  auto c = chain.run(k_cluster, true, k_now, std::nullopt, 30);
+  REQUIRE(c.findings.size() == 1);
+  CHECK(c.findings[0].members.size() == 5);
+
+  // A span is measured on the time of the rows, not their ids.
+  fixture ids;
+  ids.invocation(1, "task add", "<pos:1>", "2026-05-31T09:00:00.000Z", 2);
+  ids.invocation(2, "task add", "<pos:1>", "2026-05-29T09:00:00.000Z", 2);
+  ids.invocation(3, "task add", "<pos:1>", "2026-05-30T09:00:00.000Z", 2);
+  CHECK(ids.run(k_cluster, true, k_now, std::nullopt, 30).findings.empty());
+}
+
 TEST_CASE("cli-failure-cluster follows the capture-log input like every CLI check", "[engine][diagnose][cli][cluster]") {
   fixture fx;
-  add_usage_cluster(fx);
+  add_cluster(fx);
   auto off = fx.run(k_cluster, false);
   CHECK(off.result == dg::run_outcome::ok);
   CHECK(off.findings.empty());
@@ -533,7 +601,7 @@ TEST_CASE("a legacy verb path that could carry prose never reaches a cluster key
   for (const auto* verb : {"import /Users/private/acme", "a b c", "Acme Secret", "it''s"}) {
     for (int i = 0; i < 3; ++i) {
       fx.exec_raw(std::format("insert into cli_invocations (id, verb_path, args_shape, exit_code, error_category, recorded_at) "
-                              "values ({}, '{}', '', 2, 'usage', '2026-06-01T09:00:00.000Z')",
+                              "values ({}, '{}', '', 2, 'validation', '2026-06-01T09:00:00.000Z')",
                               ++id, verb));
     }
   }
@@ -541,14 +609,14 @@ TEST_CASE("a legacy verb path that could carry prose never reaches a cluster key
 
   // The writer's placeholder and a structured operand are catalog shapes.
   fixture placeholder;
-  add_usage_cluster(placeholder, 1, "<unknown>");
-  add_usage_cluster(placeholder, 4, "task 12");
+  add_cluster(placeholder, 1, "<unknown>");
+  add_cluster(placeholder, 4, "task 12");
   CHECK(placeholder.run(k_cluster).findings.size() == 2);
 }
 
 TEST_CASE("a cluster is global whatever scope_slug holds: the capture log writes none", "[engine][diagnose][cli][cluster]") {
   fixture fx;
-  add_usage_cluster(fx);
+  add_cluster(fx);
   exec(fx.conn, "update cli_invocations set scope_slug = 'repo:planar'");
   auto d = fx.run(k_cluster);
   REQUIRE(d.findings.size() == 1);
@@ -559,8 +627,8 @@ TEST_CASE("the caller's catalog predicate drops the rows it rejects before they 
           "[engine][diagnose][cli][cluster]") {
   // `acme` has a catalog shape, so only the caller's predicate can tell it is not a verb.
   fixture fx;
-  add_usage_cluster(fx, 1, "acme");
-  add_usage_cluster(fx, 4, "task add");
+  add_cluster(fx, 1, "acme");
+  add_cluster(fx, 4, "task add");
   auto request = dg::run_request{.checks               = k_cluster,
                                  .evaluated_at         = std::string{k_now},
                                  .cli_log_enabled      = true,
@@ -568,7 +636,7 @@ TEST_CASE("the caller's catalog predicate drops the rows it rejects before they 
   auto strict  = dg::run(fx.conn, request);
   REQUIRE(strict.has_value());
   REQUIRE(strict->findings.size() == 1);
-  CHECK(im::finding_fingerprint(strict->findings[0]) == "cli-failure-cluster|task add|usage|global");
+  CHECK(im::finding_fingerprint(strict->findings[0]) == "cli-failure-cluster|task add|validation|global");
 
   // With no predicate (the `planar-watch` case) the shape rule alone applies and the word-shaped row counts.
   request.verb_path_recognized = {};
@@ -589,15 +657,14 @@ TEST_CASE("the caller's catalog predicate drops the rows it rejects before they 
 
 TEST_CASE("a cluster finding's text line names its fingerprint and member count", "[engine][diagnose][cli][cluster]") {
   fixture fx;
-  add_usage_cluster(fx);
+  add_cluster(fx);
   auto text = dg::render_text(fx.run(k_cluster));
-  CHECK(text.contains("warning cli-failure-cluster cli_invocation:1 (cli-failure-cluster|task add|usage|global, 3 members) -> "));
+  CHECK(text.contains("warning cli-failure-cluster cli_invocation:1 (cli-failure-cluster|task add|validation|global, 3 members) -> "));
 }
 
 TEST_CASE("each error category gets its own recovery hint, built only from commands that exist",
           "[engine][diagnose][cli][cluster]") {
-  const std::vector<std::pair<std::string, std::string>> expected{{"usage", "planar task add --help"},
-                                                                  {"scope", "planar scope show"},
+  const std::vector<std::pair<std::string, std::string>> expected{{"scope", "planar scope show"},
                                                                   {"not_found", "list"},
                                                                   {"conflict", "re-read"},
                                                                   {"validation", "planar task add --help"},
@@ -608,7 +675,7 @@ TEST_CASE("each error category gets its own recovery hint, built only from comma
   std::set<std::string>                                  distinct;
   for (const auto& [category, needle] : expected) {
     fixture fx;
-    add_usage_cluster(fx, 1, "task add", category);
+    add_cluster(fx, 1, "task add", category);
     auto d = fx.run(k_cluster);
     INFO(category);
     REQUIRE(d.findings.size() == 1);
@@ -622,18 +689,18 @@ TEST_CASE("each error category gets its own recovery hint, built only from comma
 TEST_CASE("a structured operand kind may be upper-case, as the capture writer allows, and an empty verb path is no cluster",
           "[engine][diagnose][cli][cluster]") {
   fixture fx;
-  add_usage_cluster(fx, 1, "plan Task:12");
+  add_cluster(fx, 1, "plan Task:12");
   auto d = fx.run(k_cluster);
   REQUIRE(d.findings.size() == 1);
-  CHECK(im::finding_fingerprint(d.findings[0]) == "cli-failure-cluster|plan Task:12|usage|global");
+  CHECK(im::finding_fingerprint(d.findings[0]) == "cli-failure-cluster|plan Task:12|validation|global");
 
   // The writer's kind has letters, hyphens and underscores only; digits in it are not its output.
   fixture digits;
-  add_usage_cluster(digits, 1, "plan task1:12");
+  add_cluster(digits, 1, "plan task1:12");
   CHECK(digits.run(k_cluster).findings.empty());
 
   // A bare `planar` records an empty verb path: there is no verb to name, so it forms no cluster.
   fixture bare;
-  add_usage_cluster(bare, 1, "");
+  add_cluster(bare, 1, "");
   CHECK(bare.run(k_cluster).findings.empty());
 }
