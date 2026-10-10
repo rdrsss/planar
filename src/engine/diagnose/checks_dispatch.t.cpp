@@ -438,7 +438,9 @@ TEST_CASE("action-unended reports an open action whose claim lapsed", "[engine][
   CHECK(std::ranges::contains(f.evidence, im::entity_ref{.kind = "claim", .id = 1}));
   CHECK(std::ranges::contains(f.evidence, im::entity_ref{.kind = "task", .id = 1}));
   CHECK(f.evidence_times == std::vector<std::string>{"2026-06-01T09:10:00.000Z"});
-  CHECK(f.recovery.contains("planar-agent reconcile"));
+  // `reconcile` does not end an action, but `action end` does, whatever state its claim is in (decision 1384).
+  CHECK(f.recovery.contains("planar-agent action end --action <id>"));
+  CHECK(!f.recovery.contains("reconcile"));
 }
 
 TEST_CASE("action-unended is silent while the lease runs and starts when it lapses", "[engine][diagnose][actions]") {
@@ -478,17 +480,46 @@ TEST_CASE("action-unended reports an open action on a claim that ended through a
         std::vector<std::string>{"action-unended action:1", "action-unended action:2", "action-unended action:3"});
 }
 
-TEST_CASE("action-unended is a state check: the window does not hide an old action, the plan scope does",
-          "[engine][diagnose][actions]") {
+TEST_CASE("action-unended reports only actions started, or claims ended, inside the window; the plan scope narrows it",
+          "[engine][diagnose][actions][calibration]") {
+  // Decision 1384: 318 of 363 findings on the operator's database predated the 30-day window, so the window
+  // now bounds this check, by the action's start or by the end of its claim (its release, else its lease expiry).
   fixture fx;
   fx.task(1, "doing", 1);
   fx.task(2, "doing", 2);
+  fx.task(3, "done", 1);
+  fx.task(4, "done", 1);
+  // Window default: 7 days ending 2026-06-01T12:00, so it starts 2026-05-25T12:00.
   fx.claim(1, 1, "active", "2026-04-01T09:00:00.000Z", "2026-04-01T09:30:00.000Z", "2026-04-01T09:40:00.000Z");
   fx.claim(2, 2, "active", "2026-04-01T09:00:00.000Z", "2026-04-01T09:30:00.000Z", "2026-04-01T09:40:00.000Z");
-  fx.action(1, 1, "tool_call", 1, "2026-04-01T09:10:00.000Z");
-  fx.action(2, 2, "tool_call", 2, "2026-04-01T09:10:00.000Z");
-  CHECK(ids_of(fx.run({"action-unended"})) == std::vector<std::string>{"action-unended action:1", "action-unended action:2"});
-  CHECK(ids_of(fx.run({"action-unended"}, k_now, 2)) == std::vector<std::string>{"action-unended action:2"});
+  fx.action(1, 1, "tool_call", 1, "2026-04-01T09:10:00.000Z"); // old action, claim lapsed in April: outside
+  fx.action(2, 2, "tool_call", 2, "2026-04-01T09:10:00.000Z"); // the same on another plan: outside
+  CHECK(fx.run({"action-unended"}).findings.empty());
+  CHECK(ids_of(fx.run({"action-unended"}, k_now, std::nullopt, 90)) ==
+        std::vector<std::string>{"action-unended action:1", "action-unended action:2"});
+  CHECK(ids_of(fx.run({"action-unended"}, k_now, 2, 90)) == std::vector<std::string>{"action-unended action:2"});
+
+  // The claim ended inside the window although the action started long before it.
+  fx.claim(3, 3, "stale", "2026-04-01T09:00:00.000Z", "2026-04-01T09:30:00.000Z", "2026-04-01T09:40:00.000Z",
+           "2026-05-30T09:00:00.000Z");
+  fx.action(3, 3, "coder", 3, "2026-04-01T09:10:00.000Z");
+  // The action started inside the window although its claim was taken long before it.
+  fx.claim(4, 4, "aborted", "2026-04-01T09:00:00.000Z", "2026-04-01T09:30:00.000Z", "2026-04-01T09:40:00.000Z",
+           "2026-04-02T09:00:00.000Z");
+  fx.action(4, 4, "coder", 4, "2026-05-28T09:10:00.000Z");
+  CHECK(ids_of(fx.run({"action-unended"})) == std::vector<std::string>{"action-unended action:3", "action-unended action:4"});
+
+  // The window edges are inclusive, on the claim's end and on the action's start, compared as instants.
+  fixture edge;
+  edge.task(1, "done");
+  edge.task(2, "done");
+  edge.claim(1, 1, "stale", "2026-04-01T09:00:00.000Z", "2026-04-01T09:30:00.000Z", "2026-04-01T09:40:00.000Z",
+             "2026-05-25T12:00:00.000Z");
+  edge.action(1, 1, "coder", 1, "2026-04-01T09:10:00.000Z");
+  edge.claim(2, 2, "stale", "2026-04-01T09:00:00.000Z", "2026-04-01T09:30:00.000Z", "2026-04-01T09:40:00.000Z",
+             "2026-05-25T11:59:59.999Z");
+  edge.action(2, 2, "coder", 2, "2026-04-01T09:10:00.000Z");
+  CHECK(ids_of(edge.run({"action-unended"})) == std::vector<std::string>{"action-unended action:1"});
 }
 
 TEST_CASE("action-unended evidence does not move with the evaluation instant", "[engine][diagnose][actions]") {
