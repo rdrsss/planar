@@ -15,8 +15,9 @@
 ///    before write-time catalog checking cannot be allowed to carry prose into it. Rows are dropped
 ///    before counting unless the path has the catalog's shape (at most two tokens, each a lower-case
 ///    word with digits and hyphens, a digit string, `word:digits` or the writer's `<unknown>`
-///    placeholder) and the caller's `verb_path_recognized` predicate, when it supplied one, accepts it.
-///    `planar-watch` cannot import the `planar` CLI tree that the predicate reads, so it supplies none:
+///    placeholder; a structured operand's kind may be upper-case, as the writer allows; the empty path of a
+///    bare `planar` call forms no cluster, since it names no verb) and the caller's `verb_path_recognized` predicate, when it
+///    supplied one, accepts it. `planar-watch` cannot import the `planar` CLI tree that the predicate reads, so it supplies none:
 ///    there a legacy row that is word-shaped (for example `acme`) is still counted. That is a known gap,
 ///    documented in docs/cli-reference.md.
 ///  - `claim-failure-cluster` (event, warning), over `agent_work_claims`: at least three claims that
@@ -100,20 +101,70 @@ auto catalog_token(std::string_view t) -> bool {
     return !v.empty() && std::ranges::all_of(v, [](unsigned char c) { return c >= '0' && c <= '9'; });
   };
   if (auto colon = t.find(':'); colon != std::string_view::npos) {
+    // The writer's structured operand: letters (either case), hyphens and underscores, then digits.
     auto kind = t.substr(0, colon);
-    return !kind.empty() && std::ranges::all_of(kind, lower) && !(kind.front() >= '0' && kind.front() <= '9') &&
+    return !kind.empty() &&
+           std::ranges::all_of(kind, [](unsigned char c) { return std::isalpha(c) != 0 || c == '-' || c == '_'; }) &&
            digits(t.substr(colon + 1));
   }
   return digits(t) || (!t.empty() && t.front() >= 'a' && t.front() <= 'z' && std::ranges::all_of(t, lower));
 }
 
-/// True when a stored `verb_path` has the shape the capture writer produces: one or two catalog tokens.
+/// True when a stored `verb_path` has the shape the capture writer produces: one or two catalog tokens. An
+/// empty path (a bare `planar` call, which records no verb) is not: there is no verb to name in a cluster.
 auto catalog_shaped(std::string_view verb_path) -> bool {
   auto space = verb_path.find(' ');
   if (space == std::string_view::npos) {
     return catalog_token(verb_path);
   }
   return catalog_token(verb_path.substr(0, space)) && catalog_token(verb_path.substr(space + 1));
+}
+
+/// The recovery hint for a CLI failure category; only commands that exist are named.
+auto cli_recovery(std::string_view category, std::string_view verb_path) -> std::string {
+  const auto help = verb_path == "<unknown>" ? std::string{"planar --help"} : std::format("planar {} --help", verb_path);
+  if (category == "usage") {
+    return std::format("{} shows the accepted arguments; correct the call", help);
+  }
+  if (category == "validation") {
+    return std::format("{} lists the accepted values; a value was rejected", help);
+  }
+  if (category == "scope") {
+    return "run from inside the target project or pass --scope; planar scope show prints the resolved scope";
+  }
+  if (category == "not_found") {
+    return "check the id with the entity's list verb (for example planar task list) before retrying";
+  }
+  if (category == "conflict") {
+    return "re-read the entity's current state, then retry the change";
+  }
+  if (category == "io") {
+    return "check the file path and its permissions, then retry";
+  }
+  if (category == "db") {
+    return "planar health checks the database and its schema";
+  }
+  if (category == "busy") {
+    return "another writer held the database; retry once it finishes";
+  }
+  return "planar report --days 7 shows the failure details to include in a bug report";
+}
+
+/// The recovery hint for a claim failure category; the ledger command takes `active`, `stale` or `all`.
+auto claim_recovery(std::string_view category) -> std::string {
+  std::string_view next = "fix the shared cause before re-claiming";
+  if (category == "usage_limit") {
+    next = "the vendor's usage cap was reached: wait for it to reset or use another vendor";
+  } else if (category == "context_limit") {
+    next = "the context filled: split the task or hand off sooner";
+  } else if (category == "output_limit") {
+    next = "the output cap was hit: split the task into smaller steps";
+  } else if (category == "tool_failure") {
+    next = "a tool failed: fix or replace it before re-claiming";
+  } else if (category == "validation") {
+    next = "validation failed: run the task's validation profile locally before re-claiming";
+  }
+  return std::format("planar-watch claims --status all lists the failed claims (status aborted); {}", next);
 }
 
 auto cli_failure_cluster(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
@@ -157,6 +208,7 @@ auto cli_failure_cluster(const check_context& ctx) -> std::expected<std::vector<
     f.severity = im::diagnostic_severity::warning;
     f.primary  = members.front().ref;
     f.group    = im::grouping{.key_parts = {key.first, key.second}, .scope = "global"};
+    f.recovery = cli_recovery(key.second, key.first);
     for (const auto& m : members) {
       f.evidence.push_back(m.ref);
       f.evidence_times.push_back(m.time);
@@ -232,7 +284,8 @@ auto claim_failure_cluster(const check_context& ctx) -> std::expected<std::vecto
       f.evidence.push_back(m.ref);
       f.evidence_times.push_back(m.time);
     }
-    f.members = std::move(b.members);
+    f.recovery = claim_recovery(category);
+    f.members  = std::move(b.members);
     out.push_back(std::move(f));
   }
   return out;
@@ -255,7 +308,7 @@ auto cli_family() -> family {
                                .kind     = im::check_kind::event,
                                .severity = im::diagnostic_severity::warning,
                                .category = "cli_failure_cluster",
-                               .recovery = "planar report --days 7 lists the repeated failures; fix the cause before retrying",
+                               .recovery = "planar report --days 7 lists the repeated failures",
                                .inputs   = {"cli_log"},
                                .built    = true,
                                .evaluate = cli_failure_cluster});
@@ -263,7 +316,7 @@ auto cli_family() -> family {
                                .kind     = im::check_kind::event,
                                .severity = im::diagnostic_severity::warning,
                                .category = "claim_failure_cluster",
-                               .recovery = "planar-watch claims --status aborted lists the failed claims; fix the shared cause",
+                               .recovery = "planar-watch claims --status all lists the failed claims",
                                .inputs   = {},
                                .built    = true,
                                .evaluate = claim_failure_cluster});
