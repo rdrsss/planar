@@ -581,8 +581,11 @@ void seed_closable_anchor(const fixture& fx) {
 /// @brief The 7337 shape: a claim left `active` and lapsed on a task that finished.
 void seed_lapsed_claim(const fixture& fx) {
   raw_sql(fx, "insert into sessions (vendor) values ('probe')");
-  raw_sql(fx, "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, "
-              "lease_expires_at) values ('lapsed-1', 1, 'task', 1, 'active', 'probe', '2000-01-01T00:00:00.000Z')");
+  // It heartbeated once, so only `claim-superseded-active` reports it (a claim that never did is also
+  // `claim-process-died`'s).
+  raw_sql(fx, "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, status, vendor, claimed_at, "
+              "last_heartbeat_at, lease_expires_at) values ('lapsed-1', 1, 'task', 1, 'active', 'probe', "
+              "'1999-12-31T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')");
 }
 
 } // namespace
@@ -636,7 +639,6 @@ TEST_CASE("closeout on an already done plan still diagnoses, in both renderings"
 TEST_CASE("an anomaly is shown without changing ready, blocked_by or the exit status", "[cmd][plan][closeout][diagnose]") {
   auto const fx = make_fixture("diag_finding");
   seed_closable_anchor(fx);
-  auto const control = dispatch(fx, {"plan", "closeout", "1", "--dry-run", "--json"});
   seed_lapsed_claim(fx);
 
   auto const dry = dispatch_raw(fx, {"plan", "closeout", "1", "--dry-run"});
@@ -650,7 +652,6 @@ TEST_CASE("an anomaly is shown without changing ready, blocked_by or the exit st
   CHECK(json.out.find(R"("blocked_by":[])") != std::string::npos);
   CHECK(json.out.find(R"(,"diagnose":{"plan_id":1,"state":"findings","outcome":"ok")") != std::string::npos);
   CHECK(json.out.find(R"("check":"claim-superseded-active")") != std::string::npos);
-  (void)control;
 
   auto const applied = dispatch_raw(fx, {"plan", "closeout", "1"});
   CHECK(applied.code == 0);

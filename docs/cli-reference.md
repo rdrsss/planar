@@ -989,6 +989,12 @@ the hard-evidence counts.
 - `ready=false` + `--dry-run` → exit 0 (preview; caller reads the JSON to decide).
 - `ready=false` + apply (no `--dry-run`) → non-zero exit; plan unchanged.
 
+**Diagnosis section (plan 1132, task 7384).** After the gate is evaluated and, on an apply, outside its transaction, `closeout` diagnoses the plan being closed over its lifetime window and appends the result, on `--dry-run`, on apply (including a refused one) and on the early-return path for a plan already `done`:
+
+- **Text:** the report, one newline (a blank line), then `diagnose: clean`, or `diagnose: <n> finding(s)` followed by one `<severity> <check-id> <entity> -> <recovery>` line per finding, or `diagnose: unavailable (<reason>)` with reason `busy`, `query-failed` or `schema-unsupported`. A run that could not read an input a check needs appends `(partial: <input> unavailable)` to the header.
+- **JSON:** `diagnose` is the LAST key of the single object, `{"plan_id":<id>,"state":"clean"|"findings"|"unavailable","outcome":"ok"|"partial"|"unavailable","reason":null|"<reason>","evaluated_at":"...","findings":[...],"incidents":{"state":"not_applicable","reason":null}}`, with the finding shape [`planar-watch diagnose`](#planar-watch-diagnose--check-recorded-orchestration-state-plan-1132) prints. Every earlier key is unchanged.
+- Findings and diagnosis failures never change `ready`, `blocked_by`, the hard gate or the exit status (decision 1342): a refused apply still exits 3 with the same `blocked_by`, and a diagnosis that cannot run still lets a ready plan close. The diagnosis reads only (a 250 ms busy timeout and a `query_only` guard) and records no incident.
+
 **Schema effects:** On apply, updates `plans(status, updated_at)` and records an `audit_log` row. No new table is created.
 
 **Exit codes:**
