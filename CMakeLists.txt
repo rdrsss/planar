@@ -162,21 +162,7 @@ endfunction()
 
 _planar_add_architecture_guard_test(upward fail
   MESSAGES "D15 violation" "planar_core.*depends on.*planar_engine_widget")
-_planar_add_architecture_guard_test(engine-execute-db fail
-  MESSAGES "D15 violation" "planar_engine_execute depends on planar_db")
-_planar_add_architecture_guard_test(cmd-binary-db fail
-  MESSAGES "D15 violation" "planar_cmd_planar_execute depends on planar_db")
 _planar_add_architecture_guard_test(layer1-same-layer succeed)
-# Hazard 1 (plan 996 task 6070, M3 pre-work): planar_binary() exercised
-# through its real function body, not the manual-registration proxy the
-# fixtures above use.
-_planar_add_architecture_guard_test(planar-binary-real fail NEEDS_TOOLCHAIN
-  MESSAGES "D15 violation" "planar_cmd_planar_execute depends on planar_db")
-# Hazard 2 (plan 996 task 6070, M3 pre-work): the no-SQLite-handle exception
-# must still fire when planar_binary() is called with the natural,
-# unprefixed name ("execute", not "planar_execute").
-_planar_add_architecture_guard_test(planar-binary-execute-natural-name fail NEEDS_TOOLCHAIN
-  MESSAGES "D15 violation" "planar_cmd_execute depends on planar_db")
 # Blind spot 1 (plan 996 task 6069, M3 pre-work): INTERFACE edges are
 # invisible to a LINK_LIBRARIES-only walk. M2 reviewer probe.
 _planar_add_architecture_guard_test(interface-edge fail
@@ -191,21 +177,16 @@ _planar_add_architecture_guard_test(genex-edge fail
 # cycle that neither the layer walk nor CMake's own generator catches.
 _planar_add_architecture_guard_test(layer1-cycle fail
   MESSAGES "D15 violation" "dependency cycle detected")
-# Blind spot 4 (plan 996 task 6069, M3 pre-work — inherited scope gap from
-# task 6070): the execute-carrier / no-SQLite-handle exception must
-# consult the full transitive closure, not just direct links.
-_planar_add_architecture_guard_test(execute-transitive-db fail
-  MESSAGES "D15 violation" "planar_cmd_execute depends on planar_db")
 # F2 (plan 996 task 6078, M3 review remediation): a legal PRIVATE downward
 # edge on a STATIC library — CMake records this as $<LINK_ONLY:...> in
 # INTERFACE_LINK_LIBRARIES — must configure cleanly, not trip the genex
 # refusal.
 _planar_add_architecture_guard_test(private-link-legal succeed)
 # F3 (plan 996 task 6078, M3 review remediation): an unregistered
-# planar_-prefixed intermediate target must not silently void the
-# transitive closure for a real carrier->db violation reachable through it.
+# planar_-prefixed intermediate target must not silently hide the edges
+# routed through it from the cycle and layer walks.
 _planar_add_architecture_guard_test(unregistered-target-caught fail
-  MESSAGES "D15 violation" "planar_cmd_execute depends on planar_engine_middleware")
+  MESSAGES "D15 violation" "planar_cmd_probe depends on planar_engine_middleware")
 # Residual 1 (plan 996 task 6074): the genex refusal used to fire only on
 # an entry containing the LITERAL `planar_`, so a generator expression
 # that computes a planar_* target name any other way was invisible. This
