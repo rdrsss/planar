@@ -21,6 +21,11 @@
 //     strictly beyond half the lease and never more; a `warning` is the trailing stretch from the
 //     last point to the release (terminal claim) or the evaluation instant (active claim) strictly
 //     beyond the lease. The lease is `lease_expires_at - last_heartbeat_at`.
+//   * `claim-failure-cluster` (event, warning; task 7380): at least three claims that ended with the
+//     same non-`unknown` `failure_category` inside the window, timed by `released_at`. Fingerprint
+//     `claim-failure-cluster|failure_category=<value>|<scope>`; the scope is the members' common scope
+//     (their entity's `repo:<slug>` or `assoc:<slug>`), `global` when they differ or carry none. A
+//     narrower and a wider window over the same members share one fingerprint and the same member digests.
 //   * `claim-superseded-active` evidence (claim, entity, later ended claim, the lease expiry), the
 //     exclusive-only rule, and the plan and plan-step branches; `task-doing-unclaimed` times its
 //     evidence from the latest claim, not from the task's `updated_at`.
@@ -107,6 +112,25 @@ struct fixture {
   auto claim(int id, int task_id, std::string_view status, std::string_view claimed, std::string_view last_heartbeat,
              std::string_view lease_expires, std::string_view released = {}) -> void {
     entity_claim(id, "task", task_id, "exclusive", status, claimed, last_heartbeat, lease_expires, released);
+  }
+
+  /// One ended claim carrying a failure category, the shape `planar-agent fail --category` leaves.
+  auto failed_claim(int id, int task_id, std::string_view category, std::string_view released) -> void {
+    claim(id, task_id, "aborted", "2026-06-01T08:00:00.000Z", "2026-06-01T08:00:00.000Z", "2026-06-01T09:00:00.000Z", released);
+    exec(conn, std::format("update agent_work_claims set failure_category = '{}' where id = {}", category, id));
+  }
+
+  /// A task on a repo or association scope (`kind` is `repo` or `association`), creating the scope row.
+  auto scoped_task(int id, std::string_view kind, int scope_id, std::string_view slug, int plan = 1) -> void {
+    if (kind == "repo") {
+      exec(conn, std::format("insert or ignore into projects (id, slug, name) values ({}, '{}', '{}')", scope_id, slug, slug));
+    } else {
+      exec(conn, std::format("insert or ignore into associations (id, slug, name, kind) values ({}, '{}', '{}', 'project')",
+                             scope_id, slug, slug));
+    }
+    exec(conn, std::format("insert into tasks (id, scope_kind, scope_id, plan_id, title, status, created_at, updated_at) values "
+                           "({}, '{}', {}, {}, 't{}', 'todo', '2026-05-01T00:00:00.000Z', '2026-05-02T00:00:00.000Z')",
+                           id, kind, scope_id, plan, id));
   }
 
   auto set_plan_status(int id, std::string_view status) -> void {
@@ -728,4 +752,221 @@ TEST_CASE("heartbeat-gap evidence does not move with the evaluation instant", "[
   REQUIRE(first.findings.size() == 1);
   REQUIRE(second.findings.size() == 1);
   CHECK(im::finding_digest(first.findings[0]) == im::finding_digest(second.findings[0]));
+}
+
+// ---- claim-failure-cluster (plan 1132, task 7380) ----
+
+namespace {
+const std::vector<std::string> k_cluster{"claim-failure-cluster"};
+
+auto fingerprints_of(const dg::diagnosis& d) -> std::vector<std::string> {
+  std::vector<std::string> out;
+  for (const auto& f : d.findings) {
+    out.push_back(im::finding_fingerprint(f));
+  }
+  std::ranges::sort(out);
+  return out;
+}
+
+auto digests_of(const im::finding& f) -> std::set<std::string> {
+  std::set<std::string> out;
+  auto                  fingerprint = im::finding_fingerprint(f);
+  for (const auto& m : f.members) {
+    out.insert(im::member_digest(fingerprint, m));
+  }
+  return out;
+}
+} // namespace
+
+TEST_CASE("claim-failure-cluster is catalogued with the spec's kind, severity and category",
+          "[engine][diagnose][claims][cluster]") {
+  auto cat = dg::builtin_catalog();
+  auto it  = std::ranges::find(cat.checks, "claim-failure-cluster", &dg::check_def::id);
+  REQUIRE(it != cat.checks.end());
+  CHECK(it->built);
+  CHECK(it->kind == im::check_kind::event);
+  CHECK(it->severity == im::diagnostic_severity::warning);
+  CHECK(it->category == "claim_failure_cluster");
+  CHECK(it->inputs.empty());
+}
+
+TEST_CASE("three claims ended with one failure category form one cluster", "[engine][diagnose][claims][cluster]") {
+  fixture fx;
+  for (int i = 1; i <= 3; ++i) {
+    fx.task(i, "todo");
+    fx.failed_claim(i, i, "tool_failure", std::format("2026-06-01T0{}:00:00.000Z", 8 + i));
+  }
+  auto d = fx.run(k_cluster);
+  CHECK(d.result == dg::run_outcome::ok);
+  REQUIRE(d.findings.size() == 1);
+  const auto& f = d.findings[0];
+  CHECK(f.check_id == "claim-failure-cluster");
+  CHECK(f.severity == im::diagnostic_severity::warning);
+  CHECK(im::finding_fingerprint(f) == "claim-failure-cluster|failure_category=tool_failure|global");
+  REQUIRE(f.group.has_value());
+  CHECK(f.group->key_parts == std::vector<std::string>{"failure_category=tool_failure"});
+  // One member per claim, timed by its own `released_at`.
+  REQUIRE(f.members.size() == 3);
+  CHECK(im::entity_ref_text(f.members[0].ref) == "claim:1");
+  CHECK(f.members[0].time == "2026-06-01T09:00:00.000Z");
+  CHECK(f.members[2].time == "2026-06-01T11:00:00.000Z");
+  CHECK(f.evidence.size() == 3);
+  CHECK(!f.recovery.empty());
+}
+
+TEST_CASE("two claims, split categories and unknown or missing categories form no cluster",
+          "[engine][diagnose][claims][cluster]") {
+  fixture two;
+  for (int i = 1; i <= 2; ++i) {
+    two.task(i, "todo");
+    two.failed_claim(i, i, "tool_failure", "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(two.run(k_cluster).findings.empty());
+
+  fixture split;
+  split.task(1, "todo");
+  split.task(2, "todo");
+  split.task(3, "todo");
+  split.failed_claim(1, 1, "tool_failure", "2026-06-01T09:00:00.000Z");
+  split.failed_claim(2, 2, "tool_failure", "2026-06-01T09:01:00.000Z");
+  split.failed_claim(3, 3, "validation", "2026-06-01T09:02:00.000Z");
+  CHECK(split.run(k_cluster).findings.empty());
+
+  // `unknown` is the absence of a classification: three of them are no cluster, and they add nothing to a real one.
+  fixture unknown;
+  for (int i = 1; i <= 3; ++i) {
+    unknown.task(i, "todo");
+    unknown.failed_claim(i, i, "unknown", "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(unknown.run(k_cluster).findings.empty());
+  unknown.task(4, "todo");
+  unknown.task(5, "todo");
+  unknown.failed_claim(4, 4, "tool_failure", "2026-06-01T09:00:00.000Z");
+  unknown.failed_claim(5, 5, "tool_failure", "2026-06-01T09:00:00.000Z");
+  CHECK(unknown.run(k_cluster).findings.empty());
+
+  // Claims that ended without a category (completed, released) are not failures.
+  fixture clean;
+  for (int i = 1; i <= 3; ++i) {
+    clean.task(i, "todo");
+    clean.claim(i, i, "completed", "2026-06-01T08:00:00.000Z", "2026-06-01T08:00:00.000Z", "2026-06-01T09:00:00.000Z",
+                "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(clean.run(k_cluster).findings.empty());
+}
+
+TEST_CASE("each category forms its own cluster", "[engine][diagnose][claims][cluster]") {
+  fixture fx;
+  for (int i = 1; i <= 6; ++i) {
+    fx.task(i, "todo");
+    fx.failed_claim(i, i, i <= 3 ? "tool_failure" : "validation", "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(fingerprints_of(fx.run(k_cluster)) ==
+        std::vector<std::string>{"claim-failure-cluster|failure_category=tool_failure|global",
+                                 "claim-failure-cluster|failure_category=validation|global"});
+}
+
+TEST_CASE("a claim cluster counts only claims that ended inside the window", "[engine][diagnose][claims][cluster]") {
+  // The default window is seven days: 2026-05-25T12:00 through the evaluation instant.
+  fixture fx;
+  for (int i = 1; i <= 3; ++i) {
+    fx.task(i, "todo");
+  }
+  fx.failed_claim(1, 1, "tool_failure", "2026-05-20T09:00:00.000Z");
+  fx.failed_claim(2, 2, "tool_failure", "2026-06-01T09:00:00.000Z");
+  fx.failed_claim(3, 3, "tool_failure", "2026-06-01T10:00:00.000Z");
+  CHECK(fx.run(k_cluster).findings.empty());
+  auto wide = fx.run(k_cluster, k_now, std::nullopt, 30);
+  REQUIRE(wide.findings.size() == 1);
+  CHECK(wide.findings[0].members.size() == 3);
+}
+
+TEST_CASE("a narrower and a wider window over the same members share one fingerprint and add no member digest",
+          "[engine][diagnose][claims][cluster]") {
+  fixture fx;
+  for (int i = 1; i <= 4; ++i) {
+    fx.task(i, "todo");
+  }
+  fx.failed_claim(1, 1, "tool_failure", "2026-05-30T09:00:00.000Z");
+  fx.failed_claim(2, 2, "tool_failure", "2026-06-01T01:00:00.000Z");
+  fx.failed_claim(3, 3, "tool_failure", "2026-06-01T09:00:00.000Z");
+  fx.failed_claim(4, 4, "tool_failure", "2026-06-01T10:00:00.000Z");
+  auto narrow = fx.run(k_cluster, k_now, std::nullopt, 1);
+  auto wide   = fx.run(k_cluster, k_now, std::nullopt, 30);
+  REQUIRE(narrow.findings.size() == 1);
+  REQUIRE(wide.findings.size() == 1);
+  CHECK(narrow.findings[0].members.size() == 3);
+  CHECK(wide.findings[0].members.size() == 4);
+  CHECK(im::finding_fingerprint(narrow.findings[0]) == im::finding_fingerprint(wide.findings[0]));
+  auto wide_digests = digests_of(wide.findings[0]);
+  for (const auto& digest : digests_of(narrow.findings[0])) {
+    CHECK(wide_digests.contains(digest));
+  }
+  // A later evaluation instant over the same members changes none of their digests.
+  auto later = fx.run(k_cluster, "2026-06-02T01:00:00.000Z", std::nullopt, 30);
+  REQUIRE(later.findings.size() == 1);
+  CHECK(digests_of(later.findings[0]) == wide_digests);
+}
+
+TEST_CASE("a cluster's scope is its members' common scope, global when they differ or carry none",
+          "[engine][diagnose][claims][cluster]") {
+  fixture repo;
+  for (int i = 1; i <= 3; ++i) {
+    repo.scoped_task(i, "repo", 7, "planar");
+    repo.failed_claim(i, i, "tool_failure", "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(fingerprints_of(repo.run(k_cluster)) ==
+        std::vector<std::string>{"claim-failure-cluster|failure_category=tool_failure|repo:planar"});
+
+  fixture assoc;
+  for (int i = 1; i <= 3; ++i) {
+    assoc.scoped_task(i, "association", 3, "acme");
+    assoc.failed_claim(i, i, "tool_failure", "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(fingerprints_of(assoc.run(k_cluster)) ==
+        std::vector<std::string>{"claim-failure-cluster|failure_category=tool_failure|assoc:acme"});
+
+  fixture spans;
+  spans.scoped_task(1, "repo", 7, "planar");
+  spans.scoped_task(2, "repo", 7, "planar");
+  spans.scoped_task(3, "repo", 8, "other");
+  for (int i = 1; i <= 3; ++i) {
+    spans.failed_claim(i, i, "tool_failure", "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(fingerprints_of(spans.run(k_cluster)) ==
+        std::vector<std::string>{"claim-failure-cluster|failure_category=tool_failure|global"});
+
+  fixture partial;
+  partial.scoped_task(1, "repo", 7, "planar");
+  partial.scoped_task(2, "repo", 7, "planar");
+  partial.task(3, "todo");
+  for (int i = 1; i <= 3; ++i) {
+    partial.failed_claim(i, i, "tool_failure", "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(fingerprints_of(partial.run(k_cluster)) ==
+        std::vector<std::string>{"claim-failure-cluster|failure_category=tool_failure|global"});
+}
+
+TEST_CASE("a plan scope keeps only the claims of that plan and its descendants", "[engine][diagnose][claims][cluster]") {
+  fixture fx;
+  fx.task(1, "todo", 1);
+  fx.task(2, "todo", 1);
+  fx.task(3, "todo", 2);
+  for (int i = 1; i <= 3; ++i) {
+    fx.failed_claim(i, i, "tool_failure", "2026-06-01T09:00:00.000Z");
+  }
+  CHECK(fx.run(k_cluster, k_now, 1).findings.empty());
+  auto all = fx.run(k_cluster);
+  REQUIRE(all.findings.size() == 1);
+  CHECK(all.findings[0].members.size() == 3);
+}
+
+TEST_CASE("claim-failure-cluster needs no input, so an unknown capture-log setting does not degrade it",
+          "[engine][diagnose][claims][cluster]") {
+  fixture fx;
+  auto    d = fx.run(k_cluster);
+  CHECK(d.result == dg::run_outcome::ok);
+  auto summary = std::ranges::find(d.checks, "claim-failure-cluster", &dg::check_summary::id);
+  REQUIRE(summary != d.checks.end());
+  CHECK(summary->state == dg::check_state::ran);
 }
