@@ -112,11 +112,11 @@ struct fixture {
   /// One claim on task `task_id`, taken `age` before the instant (any status: a later claim is a later claim).
   auto claim_on(int id, int task_id, std::chrono::milliseconds age, std::string_view status = "completed") -> void {
     auto at = ago(age);
-    exec(conn, std::format("insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, status, vendor, "
-                           "claimed_at, last_heartbeat_at, lease_expires_at, released_at) values ({}, 'tok{}', 1, 'task', {}, "
-                           "'{}', 'test', '{}', '{}', '{}', {})",
-                           id, id, task_id, status, at, at, at,
-                           status == "active" ? std::string{"null"} : std::format("'{}'", at)));
+    exec(conn,
+         std::format("insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, status, vendor, "
+                     "claimed_at, last_heartbeat_at, lease_expires_at, released_at) values ({}, 'tok{}', 1, 'task', {}, "
+                     "'{}', 'test', '{}', '{}', '{}', {})",
+                     id, id, task_id, status, at, at, at, status == "active" ? std::string{"null"} : std::format("'{}'", at)));
   }
 
   auto set_task_status(int task_id, std::string_view status) -> void {

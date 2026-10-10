@@ -112,18 +112,19 @@ auto process_died(const check_context& ctx) -> std::expected<std::vector<im::fin
 auto superseded_active(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
   // `later` is the newest later exclusive claim on the entity that is no longer active, or 0, and
   // `later_at` its release time.
-  auto sql = std::format("select s.id, s.entity_kind, s.entity_id, s.lease_expires_at, s.later,"
-                         "       (select l2.released_at from agent_work_claims l2 where l2.id = s.later)"
-                         " from (select c.id, c.entity_kind, c.entity_id, c.lease_expires_at,"
-                         "       coalesce((select max(l.id) from agent_work_claims l"
-                         "                 where c.entity_kind = 'task' and l.entity_kind = c.entity_kind and l.entity_id = c.entity_id"
-                         "                   and l.id > c.id and l.status != 'active'"
-                         "                   and l.claim_scope = 'exclusive' and c.claim_scope = 'exclusive'), 0) as later,"
-                         "       coalesce({1}, 0) as terminal"
-                         "       from agent_work_claims c where c.status = 'active' and {0}) s"
-                         " where s.terminal != 0 or s.later != 0"
-                         " order by s.id",
-                         plan_filter_sql(ctx.scope, k_claim_plan), k_entity_terminal);
+  auto sql =
+      std::format("select s.id, s.entity_kind, s.entity_id, s.lease_expires_at, s.later,"
+                  "       (select l2.released_at from agent_work_claims l2 where l2.id = s.later)"
+                  " from (select c.id, c.entity_kind, c.entity_id, c.lease_expires_at,"
+                  "       coalesce((select max(l.id) from agent_work_claims l"
+                  "                 where c.entity_kind = 'task' and l.entity_kind = c.entity_kind and l.entity_id = c.entity_id"
+                  "                   and l.id > c.id and l.status != 'active'"
+                  "                   and l.claim_scope = 'exclusive' and c.claim_scope = 'exclusive'), 0) as later,"
+                  "       coalesce({1}, 0) as terminal"
+                  "       from agent_work_claims c where c.status = 'active' and {0}) s"
+                  " where s.terminal != 0 or s.later != 0"
+                  " order by s.id",
+                  plan_filter_sql(ctx.scope, k_claim_plan), k_entity_terminal);
   return query_findings(ctx, sql, {}, {}, [](const db::statement& row) {
     auto f = claim_finding(im::diagnostic_severity::error, row);
     // A state check: the fingerprint names the active claim and its entity only, so the later

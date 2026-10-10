@@ -12,18 +12,17 @@
 ///  - `cli-failure-cluster` (event, warning): at least three `cli_invocations` failures with one `verb_path`
 ///    and one `error_category` other than `usage`, all inside the window and inside one 24-hour span of it
 ///    (decision 1384: a usage error is the caller's mistake, and a threshold over a whole 30-day window
-///    fires for any busy verb). The members are the failures in any such span; overlapping spans are one cluster. Fingerprint `cli-failure-cluster|<verb_path>|
-///    <error_category>|<scope>`; each invocation is a member, timed by its `recorded_at`. The scope is
-///    always `global`: the capture writer stores no `scope_slug` (the column exists and is always null),
-///    so no invocation has a scope to share. A `verb_path` enters a fingerprint, so a legacy row written
-///    before write-time catalog checking cannot be allowed to carry prose into it. Rows are dropped
-///    before counting unless the path has the catalog's shape (at most two tokens, each a lower-case
-///    word with digits and hyphens, a digit string, `word:digits` or the writer's `<unknown>`
-///    placeholder; a structured operand's kind may be upper-case, as the writer allows; the empty path of a
-///    bare `planar` call forms no cluster, since it names no verb) and the caller's `verb_path_recognized` predicate, when it
-///    supplied one, accepts it. `planar-watch` cannot import the `planar` CLI tree that the predicate reads, so it supplies none:
-///    there a legacy row that is word-shaped (for example `acme`) is still counted. That is a known gap,
-///    documented in docs/cli-reference.md.
+///    fires for any busy verb). The members are the failures in any such span; overlapping spans are one cluster. Fingerprint
+///    `cli-failure-cluster|<verb_path>| <error_category>|<scope>`; each invocation is a member, timed by its `recorded_at`. The
+///    scope is always `global`: the capture writer stores no `scope_slug` (the column exists and is always null), so no
+///    invocation has a scope to share. A `verb_path` enters a fingerprint, so a legacy row written before write-time catalog
+///    checking cannot be allowed to carry prose into it. Rows are dropped before counting unless the path has the catalog's shape
+///    (at most two tokens, each a lower-case word with digits and hyphens, a digit string, `word:digits` or the writer's
+///    `<unknown>` placeholder; a structured operand's kind may be upper-case, as the writer allows; the empty path of a bare
+///    `planar` call forms no cluster, since it names no verb) and the caller's `verb_path_recognized` predicate, when it supplied
+///    one, accepts it. `planar-watch` cannot import the `planar` CLI tree that the predicate reads, so it supplies none: there a
+///    legacy row that is word-shaped (for example `acme`) is still counted. That is a known gap, documented in
+///    docs/cli-reference.md.
 ///  - `claim-failure-cluster` (event, warning), over `agent_work_claims`: at least three claims that
 ///    ended inside the window (by `released_at`) with the same `failure_category` other than `unknown`.
 ///    Fingerprint `claim-failure-cluster|failure_category=<value>|<scope>`; each claim is a member, timed
@@ -79,17 +78,17 @@ auto apply_without_preview(const check_context& ctx) -> std::expected<std::vecto
   const auto preview_from = ctx.scope.plan_id.has_value()
                                 ? std::format("strftime('%Y-%m-%dT%H:%M:%fZ', ?1, '-{} hours')", k_plan_preview_lookback_hours)
                                 : std::string{"?1"};
-  auto sql = std::format("select a.id, a.recorded_at from cli_invocations a"
-                         " where a.verb_path = 'spec ingest' and instr(' ' || a.args_shape || ' ', ' --apply ') > 0"
-                         "   and a.recorded_at >= ?1 and a.recorded_at <= ?2"
-                         "   and not exists (select 1 from cli_invocations p"
-                         "                   where p.verb_path = 'spec ingest'"
-                         "                     and instr(' ' || p.args_shape || ' ', ' --apply ') = 0"
-                         "                     and p.recorded_at >= {}"
-                         "                     and (p.recorded_at < a.recorded_at"
-                         "                          or (p.recorded_at = a.recorded_at and p.id < a.id)))"
-                         " order by a.id",
-                         preview_from);
+  auto       sql = std::format("select a.id, a.recorded_at from cli_invocations a"
+                               " where a.verb_path = 'spec ingest' and instr(' ' || a.args_shape || ' ', ' --apply ') > 0"
+                               "   and a.recorded_at >= ?1 and a.recorded_at <= ?2"
+                               "   and not exists (select 1 from cli_invocations p"
+                               "                   where p.verb_path = 'spec ingest'"
+                               "                     and instr(' ' || p.args_shape || ' ', ' --apply ') = 0"
+                               "                     and p.recorded_at >= {}"
+                               "                     and (p.recorded_at < a.recorded_at"
+                               "                          or (p.recorded_at = a.recorded_at and p.id < a.id)))"
+                               " order by a.id",
+                               preview_from);
   return query_findings(ctx, sql, ctx.window.from, ctx.window.to, [](const db::statement& row) {
     im::finding f;
     f.severity       = im::diagnostic_severity::warning;
@@ -217,8 +216,8 @@ auto cli_failure_cluster(const check_context& ctx) -> std::expected<std::vector<
       continue;
     }
     auto& b = groups[{verb_path, stmt->column_text(2)}];
-    b.members.push_back(im::cluster_member{
-        .ref = im::entity_ref{.kind = "cli_invocation", .id = stmt->column_int64(0)}, .time = stmt->column_text(3)});
+    b.members.push_back(im::cluster_member{.ref  = im::entity_ref{.kind = "cli_invocation", .id = stmt->column_int64(0)},
+                                           .time = stmt->column_text(3)});
     b.at_ms.push_back(stmt->column_int64(4));
   }
   std::vector<im::finding> out;

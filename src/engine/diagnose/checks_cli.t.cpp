@@ -85,7 +85,8 @@ struct fixture {
     exec(conn, sql);
   }
 
-  /// One logged invocation. A zero exit has no error category; any other exit is a `validation` failure (a `usage` one is never a cluster member).
+  /// One logged invocation. A zero exit has no error category; any other exit is a `validation` failure (a `usage` one is never a
+  /// cluster member).
   auto invocation(int id, std::string_view verb_path, std::string_view args_shape, std::string_view recorded_at,
                   int exit_code = 0, std::string_view category = "validation") -> void {
     exec(conn, std::format("insert into cli_invocations (id, verb_path, args_shape, exit_code, error_category, recorded_at) "
@@ -526,7 +527,8 @@ TEST_CASE("usage failures never form a cluster", "[engine][diagnose][cli][cluste
   CHECK(d.findings[0].members.size() == 3);
 }
 
-TEST_CASE("a cluster needs three failures inside one 24-hour span of the window", "[engine][diagnose][cli][cluster][calibration]") {
+TEST_CASE("a cluster needs three failures inside one 24-hour span of the window",
+          "[engine][diagnose][cli][cluster][calibration]") {
   // Decision 1384: 56 of 63 clusters spanned a day or more because the threshold counted the whole 30-day window.
   fixture spread; // one a day for three days: never three inside a day
   spread.invocation(1, "task add", "<pos:1>", "2026-05-28T09:00:00.000Z", 2);
@@ -660,20 +662,16 @@ TEST_CASE("a cluster finding's text line names its fingerprint and member count"
   fixture fx;
   add_cluster(fx);
   auto text = dg::render_text(fx.run(k_cluster));
-  CHECK(text.contains("warning cli-failure-cluster cli_invocation:1 (cli-failure-cluster|task add|validation|global, 3 members) -> "));
+  CHECK(text.contains(
+      "warning cli-failure-cluster cli_invocation:1 (cli-failure-cluster|task add|validation|global, 3 members) -> "));
 }
 
 TEST_CASE("each error category gets its own recovery hint, built only from commands that exist",
           "[engine][diagnose][cli][cluster]") {
-  const std::vector<std::pair<std::string, std::string>> expected{{"scope", "planar scope show"},
-                                                                  {"not_found", "list"},
-                                                                  {"conflict", "re-read"},
-                                                                  {"validation", "planar task add --help"},
-                                                                  {"io", "permissions"},
-                                                                  {"db", "planar health"},
-                                                                  {"busy", "retry"},
-                                                                  {"internal", "planar report"}};
-  std::set<std::string>                                  distinct;
+  const std::vector<std::pair<std::string, std::string>> expected{
+      {"scope", "planar scope show"}, {"not_found", "list"},   {"conflict", "re-read"}, {"validation", "planar task add --help"},
+      {"io", "permissions"},          {"db", "planar health"}, {"busy", "retry"},       {"internal", "planar report"}};
+  std::set<std::string> distinct;
   for (const auto& [category, needle] : expected) {
     fixture fx;
     add_cluster(fx, 1, "task add", category);
