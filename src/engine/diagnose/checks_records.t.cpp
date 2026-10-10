@@ -109,6 +109,20 @@ struct fixture {
                            id, snapshot, status, ago(age)));
   }
 
+  /// One claim on task `task_id`, taken `age` before the instant (any status: a later claim is a later claim).
+  auto claim_on(int id, int task_id, std::chrono::milliseconds age, std::string_view status = "completed") -> void {
+    auto at = ago(age);
+    exec(conn, std::format("insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, status, vendor, "
+                           "claimed_at, last_heartbeat_at, lease_expires_at, released_at) values ({}, 'tok{}', 1, 'task', {}, "
+                           "'{}', 'test', '{}', '{}', '{}', {})",
+                           id, id, task_id, status, at, at, at,
+                           status == "active" ? std::string{"null"} : std::format("'{}'", at)));
+  }
+
+  auto set_task_status(int task_id, std::string_view status) -> void {
+    exec(conn, std::format("update tasks set status = '{}' where id = {}", status, task_id));
+  }
+
   /// An external system and `count` links to it: link 1 on task 1 (plan 1), link 2 on task 2 (plan 2),
   /// link 3 on plan 1 itself, link 4 on an artifact (no plan).
   auto links() -> void {
@@ -211,6 +225,48 @@ TEST_CASE("handoff-stale follows the plan scope through the snapshot's task", "[
   REQUIRE(scoped.findings.size() == 1);
   CHECK(im::entity_ref_text(scoped.findings[0].primary) == "handoff:1");
   CHECK(std::ranges::contains(scoped.findings[0].evidence, im::entity_ref{.kind = "task", .id = 1}));
+}
+
+TEST_CASE("handoff-stale skips a handoff whose task is done or cancelled", "[engine][diagnose][handoff][calibration]") {
+  // Decision 1384: 15 of 16 findings on the operator's database were handoffs whose work finished without consuming them.
+  fixture fx;
+  fx.handoff(1, "validated", 30h, 1);
+  CHECK(fx.run().findings.size() == 1); // the task is todo: genuinely waiting
+  fx.set_task_status(1, "doing");
+  CHECK(fx.run().findings.size() == 1);
+  fx.set_task_status(1, "done");
+  CHECK(fx.run().findings.empty());
+  fx.set_task_status(1, "cancelled");
+  CHECK(fx.run().findings.empty());
+  // A handoff whose snapshot has no task has nothing to compare with and stays reported.
+  fixture none;
+  none.handoff(1, "pending", 30h, 0);
+  CHECK(none.run().findings.size() == 1);
+}
+
+TEST_CASE("handoff-stale skips a handoff whose task was claimed after the handoff was made",
+          "[engine][diagnose][handoff][calibration]") {
+  fixture fx;
+  fx.handoff(1, "pending", 30h, 1);
+  fx.claim_on(1, 1, 31h); // before the handoff: the handoff is still the latest word
+  CHECK(fx.run().findings.size() == 1);
+  fx.claim_on(2, 1, 30h); // at the handoff's own instant: not later
+  CHECK(fx.run().findings.size() == 1);
+  fx.claim_on(3, 2, 10h); // another task's claim says nothing
+  CHECK(fx.run().findings.size() == 1);
+  fx.claim_on(4, 1, 30h - 1ms, "active"); // any later claim, in any status
+  CHECK(fx.run().findings.empty());
+
+  // Per handoff: a later claim hides only the handoffs older than it.
+  fixture two;
+  two.handoff(1, "validated", 40h, 1);
+  two.handoff(2, "validated", 20h, 1);
+  two.claim_on(1, 1, 30h, "stale");
+  auto d = two.run();
+  REQUIRE(d.findings.size() == 1);
+  CHECK(im::entity_ref_text(d.findings[0].primary) == "handoff:2");
+  // A plan-scoped run reads the same rows.
+  CHECK(two.run(k_now, 1).findings.size() == 1);
 }
 
 // ---- sync-conflict-unresolved (plan 1132, task 7381) ----
