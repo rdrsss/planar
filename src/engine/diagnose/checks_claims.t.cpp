@@ -970,3 +970,25 @@ TEST_CASE("claim-failure-cluster needs no input, so an unknown capture-log setti
   REQUIRE(summary != d.checks.end());
   CHECK(summary->state == dg::check_state::ran);
 }
+
+TEST_CASE("each failure category gets its own recovery hint, naming a command that works",
+          "[engine][diagnose][claims][cluster]") {
+  std::set<std::string>          distinct;
+  const std::vector<std::string> categories{"usage_limit", "context_limit", "output_limit", "tool_failure", "validation"};
+  for (const auto& category : categories) {
+    fixture fx;
+    for (int i = 1; i <= 3; ++i) {
+      fx.task(i, "todo");
+      fx.failed_claim(i, i, category, "2026-06-01T09:00:00.000Z");
+    }
+    auto d = fx.run(k_cluster);
+    INFO(category);
+    REQUIRE(d.findings.size() == 1);
+    const auto& hint = d.findings[0].recovery;
+    // `planar-watch claims --status` accepts active, stale and all; `aborted` silently reads as active.
+    CHECK(hint.contains("planar-watch claims --status all"));
+    CHECK(!hint.contains("--status aborted"));
+    distinct.insert(hint);
+  }
+  CHECK(distinct.size() == categories.size());
+}

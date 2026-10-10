@@ -544,3 +544,47 @@ TEST_CASE("a cluster finding's text line names its fingerprint and member count"
   auto text = dg::render_text(fx.run(k_cluster));
   CHECK(text.contains("warning cli-failure-cluster cli_invocation:1 (cli-failure-cluster|task add|usage|global, 3 members) -> "));
 }
+
+TEST_CASE("each error category gets its own recovery hint, built only from commands that exist",
+          "[engine][diagnose][cli][cluster]") {
+  const std::vector<std::pair<std::string, std::string>> expected{{"usage", "planar task add --help"},
+                                                                  {"scope", "planar scope show"},
+                                                                  {"not_found", "list"},
+                                                                  {"conflict", "re-read"},
+                                                                  {"validation", "planar task add --help"},
+                                                                  {"io", "permissions"},
+                                                                  {"db", "planar health"},
+                                                                  {"busy", "retry"},
+                                                                  {"internal", "planar report"}};
+  std::set<std::string>                                  distinct;
+  for (const auto& [category, needle] : expected) {
+    fixture fx;
+    add_usage_cluster(fx, 1, "task add", category);
+    auto d = fx.run(k_cluster);
+    INFO(category);
+    REQUIRE(d.findings.size() == 1);
+    const auto& hint = d.findings[0].recovery;
+    CHECK(hint.contains(needle));
+    distinct.insert(hint);
+  }
+  CHECK(distinct.size() == expected.size());
+}
+
+TEST_CASE("a structured operand kind may be upper-case, as the capture writer allows, and an empty verb path is no cluster",
+          "[engine][diagnose][cli][cluster]") {
+  fixture fx;
+  add_usage_cluster(fx, 1, "plan Task:12");
+  auto d = fx.run(k_cluster);
+  REQUIRE(d.findings.size() == 1);
+  CHECK(im::finding_fingerprint(d.findings[0]) == "cli-failure-cluster|plan Task:12|usage|global");
+
+  // The writer's kind has letters, hyphens and underscores only; digits in it are not its output.
+  fixture digits;
+  add_usage_cluster(digits, 1, "plan task1:12");
+  CHECK(digits.run(k_cluster).findings.empty());
+
+  // A bare `planar` records an empty verb path: there is no verb to name, so it forms no cluster.
+  fixture bare;
+  add_usage_cluster(bare, 1, "");
+  CHECK(bare.run(k_cluster).findings.empty());
+}
