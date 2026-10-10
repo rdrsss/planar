@@ -467,9 +467,10 @@ TEST_CASE("two clusters of one verb and two verbs are separate findings in a fix
 TEST_CASE("a cluster counts only failures inside the window", "[engine][diagnose][cli][cluster]") {
   // The default window is seven days: 2026-05-25T12:00 through the evaluation instant.
   fixture fx;
-  fx.invocation(1, "task add", "<pos:1>", "2026-05-20T09:00:00.000Z", 2);
-  fx.invocation(2, "task add", "<pos:1>", "2026-06-01T09:01:00.000Z", 2);
-  fx.invocation(3, "task add", "<pos:1>", "2026-06-01T09:02:00.000Z", 2);
+  // The first failure is an hour before the window starts, close enough to the others to share a 24-hour span.
+  fx.invocation(1, "task add", "<pos:1>", "2026-05-25T11:00:00.000Z", 2);
+  fx.invocation(2, "task add", "<pos:1>", "2026-05-25T13:00:00.000Z", 2);
+  fx.invocation(3, "task add", "<pos:1>", "2026-05-25T14:00:00.000Z", 2);
   CHECK(fx.run(k_cluster).findings.empty());
   auto wide = fx.run(k_cluster, true, k_now, std::nullopt, 30);
   REQUIRE(wide.findings.size() == 1);

@@ -9,8 +9,10 @@
 ///    window starts at that creation, so the preview always precedes it. Any exit status counts on
 ///    both sides: a preview that exited non-zero still ran, and an apply that failed was still
 ///    attempted. One preview precedes every later apply.
-///  - `cli-failure-cluster` (event, warning): at least three `cli_invocations` failures inside the
-///    window with one `verb_path` and one `error_category`. Fingerprint `cli-failure-cluster|<verb_path>|
+///  - `cli-failure-cluster` (event, warning): at least three `cli_invocations` failures with one `verb_path`
+///    and one `error_category` other than `usage`, all inside the window and inside one 24-hour span of it
+///    (decision 1384: a usage error is the caller's mistake, and a threshold over a whole 30-day window
+///    fires for any busy verb). The members are the failures in any such span; overlapping spans are one cluster. Fingerprint `cli-failure-cluster|<verb_path>|
 ///    <error_category>|<scope>`; each invocation is a member, timed by its `recorded_at`. The scope is
 ///    always `global`: the capture writer stores no `scope_slug` (the column exists and is always null),
 ///    so no invocation has a scope to share. A `verb_path` enters a fingerprint, so a legacy row written
@@ -101,6 +103,9 @@ auto apply_without_preview(const check_context& ctx) -> std::expected<std::vecto
 /// The failures a cluster needs, per the tech spec: three.
 constexpr std::size_t k_cluster_threshold = 3;
 
+/// The span in which they must fall, inclusive: 24 hours in milliseconds (decision 1384).
+constexpr std::int64_t k_cluster_span_ms = 24LL * 3'600'000;
+
 /// The shape of a catalog verb path token: a lower-case word of letters, digits and hyphens that starts
 /// with a letter, a digit string, `word:digits`, or the writer's `<unknown>` placeholder.
 auto catalog_token(std::string_view t) -> bool {
@@ -134,9 +139,6 @@ auto catalog_shaped(std::string_view verb_path) -> bool {
 /// The recovery hint for a CLI failure category; only commands that exist are named.
 auto cli_recovery(std::string_view category, std::string_view verb_path) -> std::string {
   const auto help = verb_path == "<unknown>" ? std::string{"planar --help"} : std::format("planar {} --help", verb_path);
-  if (category == "usage") {
-    return std::format("{} shows the accepted arguments; correct the call", help);
-  }
   if (category == "validation") {
     return std::format("{} lists the accepted values; a value was rejected", help);
   }
@@ -179,10 +181,13 @@ auto claim_recovery(std::string_view category) -> std::string {
 }
 
 auto cli_failure_cluster(const check_context& ctx) -> std::expected<std::vector<im::finding>, db::db_error> {
-  // Every failure inside the window, filtered here by shape and by the caller's predicate before any
-  // counting; the threshold is applied to what is left. Rows come in id order, so members do too.
-  auto stmt = ctx.conn.prepare("select id, verb_path, error_category, recorded_at from cli_invocations"
-                               " where exit_code != 0 and error_category is not null"
+  // Every failure inside the window except a `usage` one (decision 1384: a caller's mistake), filtered here by shape
+  // and by the caller's predicate before any counting; the threshold is applied to what is left. Rows come in id
+  // order, so members do too. Column 4 is the instant in whole epoch milliseconds, so the 24-hour span is exact.
+  auto stmt = ctx.conn.prepare("select id, verb_path, error_category, recorded_at,"
+                               "       cast(round((julianday(recorded_at) - 2440587.5) * 86400000) as integer)"
+                               " from cli_invocations"
+                               " where exit_code != 0 and error_category is not null and error_category != 'usage'"
                                "   and recorded_at >= ?1 and recorded_at <= ?2"
                                " order by id");
   if (!stmt) {
@@ -194,7 +199,11 @@ auto cli_failure_cluster(const check_context& ctx) -> std::expected<std::vector<
   if (auto ok = stmt->bind_text(2, ctx.window.to); !ok) {
     return std::unexpected(ok.error());
   }
-  std::map<std::pair<std::string, std::string>, std::vector<im::cluster_member>> groups;
+  struct bucket {
+    std::vector<im::cluster_member> members;
+    std::vector<std::int64_t>       at_ms; ///< The instant of each member, parallel to `members`.
+  };
+  std::map<std::pair<std::string, std::string>, bucket> groups;
   while (true) {
     auto step = stmt->step();
     if (!step) {
@@ -207,12 +216,38 @@ auto cli_failure_cluster(const check_context& ctx) -> std::expected<std::vector<
     if (!catalog_shaped(verb_path) || (ctx.verb_path_recognized && !ctx.verb_path_recognized(verb_path))) {
       continue;
     }
-    groups[{verb_path, stmt->column_text(2)}].push_back(im::cluster_member{
+    auto& b = groups[{verb_path, stmt->column_text(2)}];
+    b.members.push_back(im::cluster_member{
         .ref = im::entity_ref{.kind = "cli_invocation", .id = stmt->column_int64(0)}, .time = stmt->column_text(3)});
+    b.at_ms.push_back(stmt->column_int64(4));
   }
   std::vector<im::finding> out;
-  for (auto& [key, members] : groups) {
-    if (members.size() < k_cluster_threshold) {
+  for (auto& [key, b] : groups) {
+    // A member is a failure inside some 24-hour span that holds at least `k_cluster_threshold` failures of the group.
+    // The spans are scanned in time order (ties by id, which is the member order), and a span marks every row in it.
+    std::vector<std::size_t> order(b.members.size());
+    std::ranges::iota(order, std::size_t{0});
+    std::ranges::stable_sort(order, [&](std::size_t x, std::size_t y) { return b.at_ms[x] < b.at_ms[y]; });
+    std::vector<bool> in_span(b.members.size(), false);
+    std::size_t       last = 0;
+    for (std::size_t first = 0; first < order.size(); ++first) {
+      last = std::max(last, first);
+      while (last + 1 < order.size() && b.at_ms[order[last + 1]] - b.at_ms[order[first]] <= k_cluster_span_ms) {
+        ++last;
+      }
+      if (last - first + 1 >= k_cluster_threshold) {
+        for (auto k = first; k <= last; ++k) {
+          in_span[order[k]] = true;
+        }
+      }
+    }
+    std::vector<im::cluster_member> members;
+    for (std::size_t k = 0; k < b.members.size(); ++k) {
+      if (in_span[k]) {
+        members.push_back(std::move(b.members[k]));
+      }
+    }
+    if (members.empty()) {
       continue;
     }
     im::finding f;
