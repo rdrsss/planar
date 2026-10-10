@@ -185,7 +185,7 @@ if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar
   add_test(NAME install.queue_probe
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/install-lib/queue_probe.test.py"
       "$<TARGET_FILE:planar_cmd_planar_agent>" "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_watch>")
-  set_tests_properties(install.queue_probe PROPERTIES LABELS "install_queue_probe" TIMEOUT 300)
+  set_tests_properties(install.queue_probe PROPERTIES LABELS "install_queue_probe" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
 endif()
 
 # --- the order of an install, end to end (plan 1122 M2, rel-install-order) ----
@@ -207,7 +207,7 @@ if(TARGET planar_cmd_planar AND TARGET planar_cmd_planar_agent AND TARGET planar
         "$<TARGET_FILE:planar_cmd_planar>" "$<TARGET_FILE:planar_cmd_planar_agent>"
         "$<TARGET_FILE:planar_cmd_planar_watch>" "$<TARGET_FILE:planar_cmd_planar_execute>"
         "$<TARGET_FILE:planar_cmd_planar_ext>")
-    set_tests_properties(install.order_${_order_group} PROPERTIES LABELS "install_order;install_order_${_order_group}" TIMEOUT 600)
+    set_tests_properties(install.order_${_order_group} PROPERTIES LABELS "install_order;install_order_${_order_group}" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
   endforeach()
 endif()
 
@@ -227,6 +227,6 @@ if(TARGET planar_cmd_planar)
       COMMAND "${CMAKE_COMMAND}" -E env "PLANAR_BIN=$<TARGET_FILE:planar_cmd_planar>"
         "INSTALL_STAGE_GROUP=${_stage_group}"
         /bin/bash "${PROJECT_SOURCE_DIR}/scripts/install-stage-test.sh")
-    set_tests_properties(install.stage_${_stage_group} PROPERTIES LABELS "install_stage;install_stage_${_stage_group}" TIMEOUT 600)
+    set_tests_properties(install.stage_${_stage_group} PROPERTIES LABELS "install_stage;install_stage_${_stage_group}" TIMEOUT ${PLANAR_INSTALLER_TEST_TIMEOUT})
   endforeach()
 endif()

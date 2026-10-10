@@ -15,11 +15,18 @@
 #     fails here until it is reviewed and the pin moved. Each program a site
 #     names (a literal, an env-wrapped argv head, a constexpr path) must be in
 #     UPDATE_PROGRAMS; a program held in a variable shows as its own name and
-#     fails the same way.
+#     fails the same way. A call counts however its namespace is written
+#     (process::capture, an alias, or a bare capture( after a using-declaration).
 #   - get-planar.sh: the word in every command position is read with a small
 #     sh lexer (so `tar`, `mktemp`, `id` count as much as a `command -v` probe).
+#     Commands inside an unquoted here-document ($(...) and backticks) are read
+#     too; a quoted one expands nothing and is skipped.
 #     Each must be a builtin or the script's own function, in BOOTSTRAP_PROGRAMS,
 #     in install.sh's manifests, or on the named BOOTSTRAP_BASE allowlist.
+# Probes (the end of this script): mutated copies of the update sources and of
+# get-planar.sh, each hiding an unlisted program (an unqualified spawn call; a
+# command in an unquoted here-document, as $(...) and as backticks, and with a spaced delimiter), must fail
+# this test naming the program, and a quoted here-document must still pass.
 # Every pin is also checked the other way against the sources so it cannot rot.
 # bash 3.2: no associative arrays, no mapfile.
 set -euo pipefail
@@ -69,15 +76,16 @@ in_prereq() { # in_prereq NAME -- NAME is a code span (or the tail of a path in 
 
 # --- 1. what planar update spawns -------------------------------------------------
 SCAN="$ROOT/scripts/install-prereq-scan.py"
+python3 "$SCAN" --self-test >/dev/null || fail "the scanner's own --self-test failed ($SCAN --self-test)"
 UPDATE_SCAN="$(python3 "$SCAN" update "$UPDATE_DIR")" || fail "scanning $UPDATE_DIR failed"
 SEEN_UPDATE="$(printf '%s\n' "$UPDATE_SCAN" | sed -n 's/^program //p' | tr '\n' ' ')"
 SEEN_SITES="$(printf '%s\n' "$UPDATE_SCAN" | sed -n 's/^site \([a-z_]*\) \([0-9]*\)$/\1=\2/p' | tr '\n' ' ')"
 [[ -n "$SEEN_SITES" ]] || fail "found no spawn call site in $UPDATE_DIR; has the update handler moved?"
-[[ "${SEEN_SITES% }" == "$UPDATE_SITES" ]] \
-  || fail "the spawn call sites of $UPDATE_DIR changed: found '${SEEN_SITES% }', pinned '$UPDATE_SITES'. A new or removed process::capture/run_inherited/runner::start/execve/... call may run a program that is not listed; review it, then update UPDATE_SITES, UPDATE_PROGRAMS, install.sh RUN_DEPS and INSTALL.md § Prerequisites"
 for p in $SEEN_UPDATE; do
   in_words "$p" "$UPDATE_PROGRAMS" || fail "planar update spawns '$p' ($UPDATE_DIR) but it is not in this test's UPDATE_PROGRAMS; list it there, in install.sh RUN_DEPS and in INSTALL.md § Prerequisites"
 done
+[[ "${SEEN_SITES% }" == "$UPDATE_SITES" ]] \
+  || fail "the spawn call sites of $UPDATE_DIR changed: found '${SEEN_SITES% }', pinned '$UPDATE_SITES'. A new or removed process::capture/run_inherited/runner::start/execve/... call may run a program that is not listed; review it, then update UPDATE_SITES, UPDATE_PROGRAMS, install.sh RUN_DEPS and INSTALL.md § Prerequisites"
 for p in $UPDATE_PROGRAMS; do
   in_words "$p" "$SEEN_UPDATE" || fail "UPDATE_PROGRAMS pins '$p' but the update sources no longer spawn it; drop it from the pin and the manifests"
   in_words "$p" "$INSTALL_DEPS" || fail "planar update runs '$p' but install.sh's BASE_DEPS/RUN_DEPS do not list it"
@@ -116,3 +124,73 @@ grep -Fq 'GNU wget is a declared dependency of this test' "$ROOT/scripts/get-pla
   || fail "scripts/get-planar-test.sh no longer declares its wget dependency; revisit the wget prerequisite"
 
 printf 'install-prereq-test: every program planar update (%s) and the bootstrap (%s) run is listed\n' "$UPDATE_PROGRAMS" "$BOOTSTRAP_PROGRAMS"
+
+# --- 4. probes: the scanner must catch a program hidden in a way the real sources avoid ---
+if [[ -n "${PREREQ_NO_PROBES:-}" ]]; then
+  printf 'install-prereq-test: probes skipped (PREREQ_NO_PROBES)\n'
+  exit 0
+fi
+PROBE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/install-prereq-probe.XXXXXX")"
+trap 'rm -rf "$PROBE_TMP"' EXIT
+rerun() { # rerun VAR=PATH -- run this test (probes off) against a mutated copy; output in $PROBE_OUT, status in $PROBE_RC
+  PROBE_RC=0
+  PROBE_OUT="$(env PREREQ_NO_PROBES=1 "$1" bash "${BASH_SOURCE[0]}" 2>&1)" || PROBE_RC=$?
+}
+expect_caught() { # expect_caught LABEL PROGRAM
+  [[ "$PROBE_RC" -ne 0 ]] || fail "probe '$1': the test passed although '$2' is hidden; the scanner missed it"
+  case "$PROBE_OUT" in
+    *"'$2'"*) printf 'install-prereq-test: probe %s: caught: %s\n' "$1" "$(printf '%s\n' "$PROBE_OUT" | grep -F "'$2'" | head -1)" ;;
+    *) fail "probe '$1': failed without naming '$2': $PROBE_OUT" ;;
+  esac
+}
+
+# update sources: an unlisted program started through spawn calls written without `process::`
+mkdir "$PROBE_TMP/update"
+cp "$UPDATE_DIR"/*.cpp "$UPDATE_DIR"/*.cppm "$PROBE_TMP/update/"
+cat >> "$PROBE_TMP/update/command.cpp" <<'EOF'
+namespace probe_unqualified {
+using namespace planar::process;
+auto hidden(std::span<const std::string_view> args) -> capture_result { return capture("zzprobe-unqualified", args); }
+}
+EOF
+rerun "PREREQ_UPDATE_DIR=$PROBE_TMP/update"
+expect_caught unqualified-spawn zzprobe-unqualified
+
+# update sources: a runner::start call, whose argv is a variable so no program name shows, written
+# bare after a using-directive and through a namespace alias; only the site pin can catch it
+for kind in bare alias; do
+  mkdir "$PROBE_TMP/update-$kind"
+  cp "$UPDATE_DIR"/*.cpp "$UPDATE_DIR"/*.cppm "$PROBE_TMP/update-$kind/"
+  if [[ "$kind" == bare ]]; then
+    printf 'namespace probe_runner_bare {\nusing namespace planar::process::runner;\nauto hidden(const spec& s) { return start(s); }\n}\n' >> "$PROBE_TMP/update-$kind/command.cpp"
+  else
+    printf 'namespace probe_runner_alias {\nnamespace rr = planar::process::runner;\nauto hidden(const rr::spec& s) { return rr::start(s); }\n}\n' >> "$PROBE_TMP/update-$kind/command.cpp"
+  fi
+  rerun "PREREQ_UPDATE_DIR=$PROBE_TMP/update-$kind"
+  [[ "$PROBE_RC" -ne 0 ]] || fail "probe 'runner-$kind': the test passed although an unpinned runner::start call was added"
+  case "$PROBE_OUT" in
+    *runner_start=1*) printf 'install-prereq-test: probe runner-%s: caught: runner_start site reported\n' "$kind" ;;
+    *) fail "probe 'runner-$kind': failed without reporting the runner_start site: $PROBE_OUT" ;;
+  esac
+done
+
+# get-planar.sh: an unlisted program run inside an unquoted here-document, as $(...) and as backticks
+for kind in subst tick spaced; do
+  cp "$BOOTSTRAP" "$PROBE_TMP/boot-$kind.sh"
+  op='<<'
+  case "$kind" in
+    subst) body='$(zzprobe-heredoc-subst --version)' ;;
+    tick) body='`zzprobe-heredoc-tick --version`' ;;
+    spaced) body='$(zzprobe-heredoc-spaced --version)'; op='<< ' ;;
+  esac
+  printf 'cat %sEOF\n%s\nEOF\n' "$op" "$body" >> "$PROBE_TMP/boot-$kind.sh"
+  rerun "PREREQ_BOOTSTRAP=$PROBE_TMP/boot-$kind.sh"
+  expect_caught "heredoc-$kind" "zzprobe-heredoc-$kind"
+done
+
+# control: the same text in a quoted here-document expands nothing, so it must pass
+cp "$BOOTSTRAP" "$PROBE_TMP/boot-quoted.sh"
+printf "cat <<'EOF'\n"'$(zzprobe-quoted --version) `zzprobe-quoted`'"\nEOF\n" >> "$PROBE_TMP/boot-quoted.sh"
+rerun "PREREQ_BOOTSTRAP=$PROBE_TMP/boot-quoted.sh"
+[[ "$PROBE_RC" -eq 0 ]] || fail "probe 'heredoc-quoted': a quoted here-document was scanned as if it expanded: $PROBE_OUT"
+printf 'install-prereq-test: probe heredoc-quoted: ignored, as it must be\n'

@@ -1520,6 +1520,8 @@ auto interrupt_a_download(int sig, std::string_view name) -> void {
   REQUIRE(WIFEXITED(*status));
   CHECK(WEXITSTATUS(*status) == 128 + sig);
   CHECK(err.contains(std::format("planar update was interrupted by {}", name)));
+  CHECK(err.contains("the mutation lock released"));
+  CHECK_FALSE(err.contains("before it took the mutation lock"));
   CHECK_FALSE(std::filesystem::exists(rec->tmp));
   CHECK_FALSE(std::filesystem::exists(inst / ".planar-update"));
   // Released through the protocol (`released.<G>`), not left to a reclaim.
@@ -1545,6 +1547,119 @@ TEST_CASE("update: SIGINT during a slowed download removes the download director
 
 TEST_CASE("update: SIGTERM during a slowed download removes the download directory and releases the lock", "[update][e2e]") {
   interrupt_a_download(SIGTERM, "SIGTERM");
+}
+
+namespace {
+
+/// Hand a real `planar update` off to a stand-in `bash` that reports the
+/// signal mask it was exec'd with, then waits in `sleep`, and check that
+/// neither SIGINT nor SIGTERM is blocked there and that `sig` stops it. The
+/// stand-in reads the mask from `/proc/<pid>/status` (`SigBlk`) where that
+/// exists, else from python3 (`ps -o sigmask=` reads 0 on macOS whatever the
+/// mask is); both give the mask as hex with signal N in bit N-1. `exec sleep` keeps the pid, and with it the mask.
+auto installer_inherits_unblocked_signals(int sig, std::string_view name) -> void {
+  auto       space = make_arena(std::format("upmask{}", sig));
+  auto const work  = space.cpp_root;
+  auto const rel   = work / "rel";
+  auto const plat  = host_platform();
+  if (!plat.has_value()) {
+    SUCCEED("no release bundle exists for this host");
+    return;
+  }
+  std::string out;
+  REQUIRE(bash(R"("$1/src/cmd/planar/handlers/update/release_fixture.sh" "$@")",
+               {source_root().string(), rel.string(), "v1.1.0", *plat}, &out) == 0);
+  auto const inst = work / "home";
+  write_file(inst / "release.json", "{\"version\": \"v1.0.0\", \"schema_version\": 41}\n");
+  write_file(inst / ".planar-install", "x\ny\n");
+  auto const fake   = work / "fakebin";
+  auto const report = work / "mask.report";
+  write_file(fake / "bash", std::format(R"SH(#!/bin/sh
+r={}
+m=""
+if [ -r "/proc/$$/status" ]; then
+  while IFS= read -r l; do
+    case $l in
+      SigBlk:*) m=${{l#SigBlk:}}; m=${{m#"${{m%%[![:space:]]*}}"}} ;;
+    esac
+  done < "/proc/$$/status"
+else
+  m="$(python3 -c 'import signal; print(format(sum(1 << (n - 1) for n in signal.pthread_sigmask(signal.SIG_BLOCK, [])), "x"))')"
+fi
+printf 'pid=%s\nmask=%s\n' "$$" "$m" > "$r.tmp"
+mv "$r.tmp" "$r"
+exec sleep 120
+)SH",
+                                        shell_quote(report.string())));
+  std::filesystem::permissions(fake / "bash", std::filesystem::perms::owner_all);
+  auto const path = std::format("{}:{}", fake.string(), std::getenv("PATH"));
+  auto const pid =
+      spawn_pinned(cpp_bin(), {"update"}, work, name, env_with(work, "file://" + canon(rel), {{.name = "PATH", .value = path}}));
+  REQUIRE(planar::cmd::parity::await_sentinel(report.string(), true, std::chrono::seconds{30}).has_value());
+  auto const text = read_all(report);
+  INFO(text << read_all(work / std::format("{}.err", name)));
+  REQUIRE(text.contains(std::format("pid={}\n", pid)));
+  auto const at = text.find("mask=");
+  REQUIRE(at != std::string::npos);
+  auto const hex = text.substr(at + 5, text.find('\n', at) - at - 5);
+  REQUIRE_FALSE(hex.empty());
+  auto const mask = std::stoull(hex, nullptr, 16);
+  CHECK(((mask >> (SIGINT - 1)) & 1U) == 0U);
+  CHECK(((mask >> (SIGTERM - 1)) & 1U) == 0U);
+  // And it stops on the signal: neither blocked nor ignored.
+  REQUIRE(::kill(pid, sig) == 0);
+  auto const status = reap_within(pid, std::chrono::seconds{20});
+  REQUIRE(status.has_value());
+  REQUIRE(WIFSIGNALED(*status));
+  CHECK(WTERMSIG(*status) == sig);
+}
+
+} // namespace
+
+TEST_CASE("update: the installer it hands off to has SIGINT unblocked and stops on it", "[update][e2e]") {
+  installer_inherits_unblocked_signals(SIGINT, "SIGINT");
+}
+
+TEST_CASE("update: the installer it hands off to has SIGTERM unblocked and stops on it", "[update][e2e]") {
+  installer_inherits_unblocked_signals(SIGTERM, "SIGTERM");
+}
+
+namespace {
+
+/// A plain run interrupted by `sig` before it takes the mutation lock: the
+/// platform check, the first thing the run does, raises the signal in this
+/// process. The report must not claim a lock it never held, and no lock
+/// directory may appear.
+auto interrupt_before_the_lock(int sig, std::string_view name) -> void {
+  auto w = make_world(std::format("upearly{}", sig));
+  publish(w, "v1.1.0", "macos-arm64");
+  seed_install(w, "v1.0.0");
+  recorder rec;
+  auto     host = host_for("macos-arm64", std::nullopt, rec);
+  host.platform = [sig]() -> std::expected<std::string, std::string> {
+    ::raise(sig);
+    return "macos-arm64";
+  };
+  auto const got = invoke(w, {}, host);
+  INFO(got.out << got.err);
+  CHECK(got.code == 128 + sig);
+  CHECK(got.err.contains(std::format("planar update was interrupted by {}", name)));
+  CHECK(got.err.contains("before it took the mutation lock"));
+  CHECK_FALSE(got.err.contains("lock released"));
+  CHECK_FALSE(got.err.contains("released the mutation lock"));
+  CHECK_FALSE(rec.request.has_value());
+  CHECK_FALSE(std::filesystem::exists(canon(w.inst) + ".lock"));
+  CHECK_FALSE(std::filesystem::exists(update_ns(w)));
+}
+
+} // namespace
+
+TEST_CASE("update: SIGINT before the lock is taken does not claim a release", "[update]") {
+  interrupt_before_the_lock(SIGINT, "SIGINT");
+}
+
+TEST_CASE("update: SIGTERM before the lock is taken does not claim a release", "[update]") {
+  interrupt_before_the_lock(SIGTERM, "SIGTERM");
 }
 
 TEST_CASE("update: a failed installer exec removes the download directory and releases the lock", "[update][e2e]") {

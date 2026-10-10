@@ -6621,7 +6621,10 @@ the run: a download in flight is abandoned within about a second, the download
 directory is removed, the lock is released (`released.<G>`, so the next update
 starts clean rather than reclaiming), and the verb prints `error: planar update
 was interrupted by SIGINT; ...` and exits `130` (`143` for `SIGTERM`), the
-codes the bootstrap's own traps use. A signal that was ignored when the verb
+codes the bootstrap's own traps use. The message ends "the mutation lock
+released" only when this run had taken the lock; a signal that arrives before
+the lock is taken says it came "before it took the mutation lock" and that no
+lock was held. A signal that was ignored when the verb
 started (a background job's `SIGINT`) stays ignored. Immediately before the
 exec the verb restores the signals' previous dispositions, so one arriving
 from then on is never lost: before the exec it ends the verb as a `KILL` would

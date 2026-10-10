@@ -66,7 +66,20 @@ pass() { PASSED=$((PASSED + 1)); printf 'ok %s %s (%ss)\n' "$PASSED" "$1" "$SECO
 ORDER_GROUPS="db swap recover concurrent handoff"
 GROUP="${INSTALL_ORDER_GROUP:-all}"
 case " all $ORDER_GROUPS " in *" $GROUP "*) ;; *) printf 'install-order-test: unknown INSTALL_ORDER_GROUP %s (want one of: %s)\n' "$GROUP" "$ORDER_GROUPS" >&2; exit 2 ;; esac
-want() { [[ "$GROUP" == all || "$GROUP" == "$1" ]]; }
+# Scenario selection and parallel dispatch (plan 1122 M6, task 7434; scripts/fixtures/scenario-runner.sh).
+# INSTALL_TEST_SCENARIO=<name> runs only that scenario, inside or outside its group; an unknown
+# name exits 2. A run that selects several scenarios runs INSTALL_TEST_JOBS of them at a time
+# (default 4), each as a child of this script with its own scratch directory and homes. The table
+# is the dispatch order, longest first, name:group. The kill points of the swap scenario are separate names
+# (swap-bin for the first, swap-<point> for each point of its loop). The serial scenarios hold a
+# mutation lock from a second process while another run is refused, or wait on a paused
+# installer, and run alone after the parallel batch (decision 1328: the lock serializes mutation
+# of one root, and these scenarios test that serialization).
+SCEN_TABLE="recover-journaled:recover refused:concurrent recover-restage:recover updater:handoff faults:db uninstall-pending:handoff queue:db swap-complete:swap swap-bin:swap migfail:db swap-backup-bin:swap swap-swap-skills:swap postprobe:db swap-swap-bin:swap swap-after-mutating:swap roparent:concurrent ahead:db behind:db fresh:db relocated:db durable:db firstkill:concurrent inert:handoff concurrent-refused:concurrent renamed:concurrent uninstall-refused:handoff"
+SCEN_SERIAL=" concurrent-refused renamed uninstall-refused "
+# shellcheck source=fixtures/scenario-runner.sh
+source "$ROOT/scripts/fixtures/scenario-runner.sh"
+scen_init install-order-test "$SCEN_TABLE" "$SCEN_SERIAL"
 # shellcheck source=fixtures/prebuilt-bundle.sh
 source "$ROOT/scripts/fixtures/prebuilt-bundle.sh"
 
@@ -88,19 +101,40 @@ ln -s /bin/bash "$BASEBIN/bash"
 # --- bundles of the real binaries ------------------------------------------------------
 
 HEAD_SCHEMA="$(ls "$ROOT/migrations" | sed -n 's/^0*\([0-9][0-9]*\)_.*\.up\.sql$/\1/p' | sort -n | tail -1)"
+# The head migration's down file, for the scenarios that put a database one migration behind.
+down="$(ls "$ROOT/migrations"/*.down.sql | sort | tail -1)"
+# release_json_write DEST TAG -- DEST/release.json for the head schema.
+release_json_write() {
+  printf '{\n  "version": "%s",\n  "sha": "%s",\n  "date": "2026-10-06T00:00:00Z",\n  "os": "macos",\n  "arch": "arm64",\n  "os_floor": "26.0",\n  "schema_version": %s\n}\n' \
+    "$2" "0123456789012345678901234567890123456789" "$HEAD_SCHEMA" > "$1/release.json"
+}
 # make_bundle DIR TAG -- the repository's bundle layout around the built binaries.
 make_bundle() {
   local dest="$1" tag="$2" i names=(planar planar-agent planar-watch planar-execute planar-ext)
   fake_bundle_make "$ROOT" "$dest"
   for i in 0 1 2 3 4; do cp -f "${REAL_BINS[$i]}" "$dest/bin/${names[$i]}"; chmod 755 "$dest/bin/${names[$i]}"; done
-  printf '{\n  "version": "%s",\n  "sha": "%s",\n  "date": "2026-10-06T00:00:00Z",\n  "os": "macos",\n  "arch": "arm64",\n  "os_floor": "26.0",\n  "schema_version": %s\n}\n' \
-    "$tag" "0123456789012345678901234567890123456789" "$HEAD_SCHEMA" > "$dest/release.json"
+  release_json_write "$dest" "$tag"
 }
-B1="$TMP/bundles/v1/planar-bundle"; make_bundle "$B1" v1.2.3
-B2="$TMP/bundles/v2/planar-bundle"; make_bundle "$B2" v1.2.4
-# A development bundle has no published bootstrap: its durable retry is the
-# bundle's own installer (this one is not under an updater's temporary directory).
-B3="$TMP/bundles/dev/planar-bundle"; make_bundle "$B3" dev
+# copy_bundle SRC DEST TAG -- another release of an already staged bundle: a copy of it with its
+# own release.json, instead of staging the layout and the binaries again.
+copy_bundle() {
+  mkdir -p "$(dirname "$2")"
+  cp -R "$1" "$2"
+  release_json_write "$2" "$3"
+}
+if [[ -n "${INSTALL_TEST_SHARED-}" ]]; then
+  # A parallel child: the dispatching run staged the three bundles; they are read-only here.
+  B1="$INSTALL_TEST_SHARED/bundles/v1/planar-bundle"
+  B2="$INSTALL_TEST_SHARED/bundles/v2/planar-bundle"
+  B3="$INSTALL_TEST_SHARED/bundles/dev/planar-bundle"
+else
+  B1="$TMP/bundles/v1/planar-bundle"; make_bundle "$B1" v1.2.3
+  B2="$TMP/bundles/v2/planar-bundle"; copy_bundle "$B1" "$B2" v1.2.4
+  # A development bundle has no published bootstrap: its durable retry is the
+  # bundle's own installer (this one is not under an updater's temporary directory).
+  B3="$TMP/bundles/dev/planar-bundle"; copy_bundle "$B1" "$B3" dev
+fi
+scen_dispatch "$TMP/bundles" "$@"
 
 # --- arena helpers ---------------------------------------------------------------------------
 
@@ -161,7 +195,7 @@ kill_case() {
   grep -Fq '"version": "v1.2.3"' "$p/release.json" || fail "kill at $point: release.json changed before the end"
   KILL_OLD_BIN="$old_bin"; KILL_HOME="$h"
 }
-if want db; then
+if scen fresh; then
 # --- a fresh install creates a current database ---------------------------------------------------
 
 H="$(new_home fresh)"; P="$H/.planar"
@@ -179,7 +213,9 @@ no_evidence "$P"
 grep -Fq "init --skip-project --allow-no-repo" "$TMP/out" || fail "the initialization command was not printed"
 [[ -d "$P.lock" && -z "$(ls "$P.lock" | grep -v '^owner\.\|^released\.' || true)" ]] || fail "the lock directory is not beside the root, holding records only: $(ls -a "$P.lock")"
 pass "fresh install creates a current database"
+fi
 
+if scen relocated; then
 H="$(new_home fresh-relocated)"; P="$H/.planar"
 mkdir -p "$H/data" "$H/cfg"
 run_install "$H" "$B1" PLANAR_DB="$H/data/elsewhere.db" PLANAR_CONFIG_PATH="$H/cfg/c.toml" --
@@ -188,7 +224,9 @@ run_install "$H" "$B1" PLANAR_DB="$H/data/elsewhere.db" PLANAR_CONFIG_PATH="$H/c
 [[ "$(db_version "$H/data/elsewhere.db")" == "$HEAD_SCHEMA" ]] || fail "the relocated database is not current"
 grep -Fq "relocated by PLANAR_DB to $H/data/elsewhere.db" "$TMP/out" || fail "the relocation was not named: $(show)"
 pass "fresh install honours a relocated database and config"
+fi
 
+if scen durable; then
 # The mutating and complete records are flushed to disk with sync(1) once they
 # are written: a recording sync on the PATH notes the journal's phase each time
 # it runs.
@@ -203,7 +241,9 @@ run_install "$H" "$B1" PATH="$SYNCBIN" SYNC_LOG="$TMP/sync.log" SYNC_ROOT="$P" -
 [[ "$(cat "$TMP/sync.log" 2>/dev/null | tr '\n' ' ')" == "phase=mutating phase=complete " ]] \
   || fail "the mutating and complete records were not each flushed with sync: $(cat "$TMP/sync.log" 2>/dev/null)"
 pass "the mutating and complete records are flushed with sync"
+fi
 
+if scen behind; then
 # --- a behind database is migrated after the swap ---------------------------------------------------------
 
 H="$(new_home behind)"; P="$H/.planar"; mkdir -p "$P"
@@ -211,7 +251,6 @@ planar_at "$P/planar.db" init --skip-project --allow-no-repo >/dev/null
 planar_at "$P/planar.db" plan create "Seed plan" --scope global --json >/dev/null
 planar_at "$P/planar.db" task add "Seed task" --plan 1 --scope global --editor=false --json >/dev/null
 plan_before="$(planar_at "$P/planar.db" plan show 1 --json)"; task_before="$(planar_at "$P/planar.db" task show 1 --json)"
-down="$(ls "$ROOT/migrations"/*.down.sql | sort | tail -1)"
 db_exec "$P/planar.db" "$(cat "$down")"
 [[ "$(db_version "$P/planar.db")" == "$((HEAD_SCHEMA - 1))" ]] || fail "the seeded database is not one migration behind"
 run_install "$H" "$B1" --
@@ -226,7 +265,9 @@ swap_at="${o%%Swapping the managed subtrees*}"; mig_at="${o%%Migrating the datab
 grep -Fq "behind this release's $HEAD_SCHEMA" "$TMP/out" || fail "the probe did not name the behind versions"
 no_evidence "$P"
 pass "a behind database is migrated after the swap"
+fi
 
+if scen ahead; then
 # --- a bundle older than the database is refused before any swap ---------------------------------------------
 
 H="$(healthy ahead)"; P="$H/.planar"
@@ -241,7 +282,9 @@ grep -Fq "at schema $((HEAD_SCHEMA + 1)), newer than this release's schema $HEAD
 grep -Fq '"version": "v1.2.3"' "$P/release.json" || fail "release.json changed"
 no_evidence "$P"
 pass "a bundle older than the database is refused before any swap"
+fi
 
+if scen faults; then
 # --- database faults have explicit install states ---------------------------------------------------------------
 
 # fault_case NAME SQL-OR-ACTION WANT -- a healthy install, its database damaged;
@@ -268,7 +311,9 @@ fault_case corrupt corrupt "not a database"
 fault_case foreign "drop table queue_schema" "queue_schema_foreign"
 fault_case incompatible "insert into queue_schema (version, compat, description) values (2, 2, 'needs a newer binary')" "queue store is not usable"
 pass "unreadable, foreign and incompatible databases are refused before cleanup or swap"
+fi
 
+if scen migfail; then
 # A migration whose transaction fails, after the swap: nonzero, rows kept,
 # journal and backups kept, the durable retry printed; it completes once fixed.
 H="$(healthy migfail)"; P="$H/.planar"
@@ -295,7 +340,9 @@ RC=0
 grep -Fq '"version": "dev"' "$P/release.json" || fail "release.json is not the new release after the retry"
 no_evidence "$P"
 pass "a failed migration keeps its recovery evidence and the printed retry completes it"
+fi
 
+if scen postprobe; then
 # A post-migration probe failure, and a release tag's retry is the pinned bootstrap.
 H="$(healthy postprobe)"; P="$H/.planar"
 db_exec "$P/planar.db" "$(cat "$down")"
@@ -308,7 +355,9 @@ run_install "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "re-running after a post-probe failure did not complete ($RC): $(show)"
 no_evidence "$P"
 pass "a failed post-migration probe keeps the journal; the release retry is the pinned bootstrap"
+fi
 
+if scen queue; then
 # --- a live queue entry is named before the swap ----------------------------------------------------------------
 
 H="$(healthy queue)"; P="$H/.planar"
@@ -333,9 +382,10 @@ run_install "$H" "$B2" --
 pass "live queue entries are named before the swap; an absent planar-watch is one line"
 fi
 
-if want swap; then
+if scen swap-bin || scen swap-backup-bin || scen swap-swap-bin || scen swap-swap-skills || scen swap-after-mutating; then
 # --- an interrupted swap is recovered by the next run --------------------------------------------------------------
 
+if scen swap-bin; then
 kill_case backed-up:bin
 P="$KILL_HOME/.planar"
 [[ -d "$P/bin.old" && ! -e "$P/bin" ]] || fail "after the kill bin/ was not moved to bin.old: $(ls -a "$P")"
@@ -349,7 +399,9 @@ done
 grep -Fq '"version": "v1.2.4"' "$P/release.json" || fail "release.json is not new after recovery"
 grep -Fq "restored $P/bin from $P/bin.old" "$TMP/out" || fail "recovery did not restore bin/ before restaging: $(show)"
 no_evidence "$P"
+fi
 for point in backup:bin swap:bin swap:skills after-mutating; do
+  scen "swap-${point//:/-}" || continue
   kill_case "$point"
   run_install "$KILL_HOME" "$B2" --
   [[ "$RC" == 0 ]] || fail "recovery after a kill at $point failed ($RC): $(show)"
@@ -357,7 +409,9 @@ for point in backup:bin swap:bin swap:skills after-mutating; do
   no_evidence "$KILL_HOME/.planar"
 done
 pass "a kill at every swap point is recovered by the same command"
+fi
 
+if scen swap-complete; then
 # A kill after the commit record leaves only owned cleanup: release.json and the
 # stamp are already the new release, and the next run disposes of the backups.
 H="$(healthy kill-complete)"; P="$H/.planar"
@@ -372,7 +426,7 @@ no_evidence "$P"
 pass "a kill after the commit record leaves only owned cleanup for the next run"
 fi
 
-if want recover; then
+if scen recover-restage; then
 # --- recovery precedes failed restaging -----------------------------------------------------------------------------
 
 kill_case backed-up:bin
@@ -408,7 +462,9 @@ run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 1 ]] && grep -Fq "cannot reconcile skills" "$TMP/err" || fail "an unrecorded state did not refuse: $(show)"
 [[ "$(tree_sum "$P")" == "$before" ]] || fail "the reconcile refusal changed the installation"
 pass "recovery restores before restaging, keeps unknown entries, resumes after late failures, refuses ambiguity"
+fi
 
+if scen recover-journaled; then
 # --- a recovery restore is journaled ----------------------------------------------------------------------------------
 
 # A kill right after recovery renames <n>.old back to <n>, before the journal
@@ -449,7 +505,7 @@ no_evidence "$P"
 pass "a recovery restore is journaled: a kill after it and a later ambiguity both complete on rerun"
 fi
 
-if want concurrent; then
+if scen concurrent-refused; then
 # --- concurrent installs and an interrupted first installation ------------------------------------------------------
 
 H="$(healthy concurrent)"; P="$H/.planar"
@@ -472,7 +528,9 @@ run_install "$H" "$B2" --
 grep -Fq "reclaimed the mutation lock from an abandoned install pid $holder_pid" "$TMP/out" || fail "the reclaim was not reported: $(show)"
 no_evidence "$P"
 pass "a second concurrent install is refused; after the holder is killed a new run completes"
+fi
 
+if scen firstkill; then
 H="$(new_home firstkill)"; P="$H/.planar"
 run_install "$H" "$B1" PLANAR_INSTALL_TEST_FAULT=kill@after-prepared --
 [[ "$RC" -ge 128 && -f "$P/.planar-journal" && ! -e "$P/bin" && ! -e "$P/.planar-install" && ! -e "$P/planar.db" ]] \
@@ -482,7 +540,9 @@ run_install "$H" "$B1" --
 [[ -x "$P/bin/planar" && -f "$P/.planar-install" && -f "$P/planar.db" ]] || fail "the resumed first installation is incomplete"
 no_evidence "$P"
 pass "an interrupted first installation is recognized without --force"
+fi
 
+if scen renamed; then
 # Test spec 679, "Edge — a crashed owner's record survives a hostname change":
 # an install KILLed while it holds the lock, the host renamed (only `uname -n`
 # changes, as a macOS rename by scutil or DHCP does), and the same command again
@@ -516,9 +576,11 @@ if host_has_identity; then
   no_evidence "$P"
   pass "a killed install is recovered after a hostname change, without manual removal"
 else
-  printf 'install-order-test: note: this host has no machine identity; the hostname-change case runs in install-lock-test.sh with a fixture identity\n'
+  scen_skip "this host has no machine identity; the hostname-change case runs in install-lock-test.sh with a fixture identity"
+fi
 fi
 
+if scen roparent; then
 
 # --prefix needs a writable parent for <root>.lock: an existing root under a
 # parent the operator cannot write refuses before any change, naming the
@@ -541,7 +603,9 @@ chmod 700 "$P.lock"
 run_install "$H" "$B2" -- --prefix "$P"
 [[ "$RC" == 0 ]] || fail "the install after the lock directory was made private failed ($RC): $(show)"
 pass "--prefix needs a writable parent for its lock, and a lock directory others can write is refused"
+fi
 
+if scen refused; then
 # --- a refused attempt does not poison a completed install -----------------------------------------------------------
 
 H="$(healthy refused)"; P="$H/.planar"
@@ -573,7 +637,7 @@ no_evidence "$P"
 pass "refused and pre-mutation failures leave the completed install authoritative"
 fi
 
-if want handoff; then
+if scen updater; then
 # --- the update handoff and --cleanup ----------------------------------------------------------------------------------
 
 UPDATER="$TMP/updater.sh"
@@ -654,7 +718,9 @@ run_install "$H" "$B2" --
 [[ -d "$P/.planar-update/someone-else" ]] || fail "an unrelated directory in the update namespace was removed"
 grep -Fq "removed the abandoned updater's temporary directory" "$TMP/out" || fail "the reclaim cleanup was not reported: $(show)"
 pass "the update handoff, --cleanup containment and killed-updater cleanup"
+fi
 
+if scen uninstall-pending; then
 # --- uninstalling journals and uninstall over a pending install ------------------------------------------------------
 
 kill_case backed-up:workflows
@@ -673,7 +739,9 @@ run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 1 ]] && grep -Fq 'finish-uninstall-here' "$TMP/err" || fail "an uninstalling journal did not refuse naming its retry: $(show)"
 [[ "$(tree_sum "$P")" == "$before" ]] || fail "the refusal over an uninstalling journal changed the installation"
 pass "uninstall ends a pending install and an uninstalling journal is never replayed"
+fi
 
+if scen uninstall-refused; then
 # An uninstall that refuses before removing anything cancels nothing: while
 # another process holds the mutation lock the uninstaller refuses naming it, the
 # pending install's journal is untouched, and the same install command then
@@ -714,7 +782,9 @@ run_install "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "an install after a refused uninstall failed ($RC): $(show)"
 no_evidence "$P"
 pass "a refused uninstall cancels nothing: the pending install resumes and later installs proceed"
+fi
 
+if scen inert; then
 # --- the fault hook is inert unless armed ---------------------------------------------------------------------------------
 
 H="$(new_home inert)"
@@ -725,5 +795,5 @@ RC=0
 pass "the test fault hook is inert unless armed"
 fi
 
-[[ "$PASSED" -gt 0 ]] || fail "group $GROUP ran no check"
-printf 'install order tests (group %s): %s passed\n' "$GROUP" "$PASSED"
+[[ "$PASSED" -gt 0 ]] || { scen_none_ran; fail "group $GROUP ran no check"; }
+printf 'install order tests (group %s%s): %s passed\n' "$GROUP" "${SCEN_FILTER:+, scenario $SCEN_FILTER}" "$PASSED"
