@@ -10,8 +10,9 @@
 ///
 /// The capture log is the check's input (`cli_log`). The caller reads `[introspection].cli_log` and
 /// passes it in the run request, because this module reads no configuration: off reads `disabled`,
-/// an unknown setting `unavailable`, and either makes the outcome `partial`. When the log is off the
-/// check is not run, so rows an earlier logging period left are never read as evidence.
+/// an unknown setting `unavailable`. Only `unavailable` makes the outcome `partial`; a log the operator
+/// turned off does not. When the log is off the check is not run, so rows an earlier logging period left are never read as
+/// evidence.
 ///
 /// Known limit: `args_shape` keeps flag names and only the arity of a positional (`<pos:1>`), so a
 /// preview of any plan satisfies an apply of any other. The log carries no plan either, so a plan

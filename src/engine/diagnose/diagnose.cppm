@@ -24,9 +24,10 @@
 /// query or lacks the planning tables yields a `diagnosis` whose `result` is
 /// `run_outcome::unavailable` with an `unavailable_reason`, not an error; what
 /// exit status that earns is the caller's decision. An input that a
-/// selected, built check needs and that reads `unavailable` or `disabled` makes
-/// the result `partial`; an input that no selected, built check needs reads
-/// `not_applicable` and never degrades it (decision 1346).
+/// selected, built check needs and that reads `unavailable` makes the result
+/// `partial`. One that reads `disabled` (the operator turned it off) does not: the checks that
+/// need it are reported as not run and the input is named, but the result stays `ok`. An input that
+/// no selected, built check needs reads `not_applicable` and never degrades it (decision 1346).
 export module planar.engine.diagnose;
 
 import std;
@@ -49,8 +50,8 @@ export inline constexpr int k_default_days = 7;
 
 /// @brief The overall result of one run.
 export enum class run_outcome {
-  ok,         ///< Every input a selected, built check needs was observed.
-  partial,    ///< A needed input was unavailable or disabled; absence of findings is not "clean".
+  ok,         ///< No input a selected, built check needs was `unavailable`; a `disabled` one does not degrade it.
+  partial,    ///< A needed input was unavailable; absence of findings is not "clean".
   unavailable ///< The run could not read the database; see `unavailable_reason`.
 };
 
@@ -286,7 +287,7 @@ export auto unavailable_reason_name(unavailable_reason r) noexcept -> std::strin
 export auto check_state_name(check_state s) noexcept -> std::string_view;
 
 /// @brief Renders a diagnosis as text: a header (scope, window, outcome), one line per
-/// `unavailable` or `disabled` input, then one line per finding,
+/// `unavailable` or `disabled` input (only `unavailable` degrades the outcome), then one line per finding,
 /// `<severity> <check-id> <entity> -> <recovery>`. An `unavailable` run is one line,
 /// `diagnose: unavailable (<reason>)`.
 /// @param d The diagnosis.

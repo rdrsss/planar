@@ -170,7 +170,14 @@ auto find_input(const catalog& cat, std::string_view name) -> const input_def* {
   return it == cat.inputs.end() ? nullptr : &*it;
 }
 
-auto needs_observation(const im::coverage_row& row) -> bool {
+/// True when the input could not be read and the outcome must not read clean. An input the operator turned off
+/// (`disabled`) is a choice, not a failure, and does not degrade the outcome.
+auto degrades_outcome(const im::coverage_row& row) -> bool {
+  return row.state == im::coverage_state::unavailable;
+}
+
+/// True when the text rendering names the input: one that was not read, whether or not it degrades the outcome.
+auto is_unread(const im::coverage_row& row) -> bool {
   return row.state == im::coverage_state::unavailable || row.state == im::coverage_state::disabled;
 }
 
@@ -287,7 +294,7 @@ auto evaluate(db::connection& conn, const run_request& request, const catalog& c
     } else {
       for (const auto& name : def.inputs) {
         const auto& row = row_of(name);
-        if (needs_observation(row)) {
+        if (degrades_outcome(row)) {
           d.result = run_outcome::partial;
         }
         if (row.state != im::coverage_state::observed) {
@@ -513,7 +520,7 @@ auto render_text(const diagnosis& d) -> std::string {
   out += std::format("diagnose: {}, window {} to {} ({}), outcome {}\n", scope, d.window.from, d.window.to,
                      window_source_name(d.window.source), run_outcome_name(d.result));
   for (const auto& row : d.coverage) {
-    if (needs_observation(row)) {
+    if (is_unread(row)) {
       out += std::format("input {}: {}{}\n", row.input, im::coverage_state_name(row.state),
                          row.reason.empty() ? std::string{} : std::format(" ({})", row.reason));
     }
