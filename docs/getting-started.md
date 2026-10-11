@@ -1,6 +1,6 @@
 # Getting started
 
-This walkthrough takes you from a fresh checkout to your first plan,
+This walkthrough takes you from a fresh install to your first plan,
 your first task, an end-to-end workbench round-trip, a spec-ingest
 pass, and finally an external-system propagation. It is the longest
 linear path through Planar — everything else in the docs is either
@@ -14,29 +14,87 @@ about 30 minutes the first time and 5 minutes the second.
 Planar is five C++26 binaries — the operator CLI `planar`, the
 agent-callable `planar-agent`, the read-only `planar-watch`, the
 workflow runner `planar-execute`, and the external-system binary
-`planar-ext` — backed by SQLite. Build from source and stage the
-workflow surfaces:
+`planar-ext` — backed by SQLite. Install a release bundle with the
+bootstrap (Apple silicon macOS 26 or later, or x86_64 Linux with glibc
+2.36 or later):
 
 ```sh
-git clone https://github.com/rdrsss/planar.git
-cd planar
-./install.sh
+curl -fsSL https://github.com/rdrsss/planar/releases/latest/download/get-planar.sh | sh
 ```
 
-`install.sh` builds the binaries, installs them under `~/.planar/bin/`,
-and stages every vendor workflow surface (Claude commands, Codex,
-Copilot, and Gemini skills, Planar agents) into their
-per-user install paths. Add `~/.planar/bin` to `$PATH` if it is not
-already there.
+The bootstrap verifies the bundle against the release's `SHA256SUMS`,
+installs the binaries under `~/.planar/bin/` and installs the one
+`planar` skill and the `planar-<role>` agents into the harnesses it
+finds. Add `~/.planar/bin` to `$PATH` if it is not already there.
+`planar update` later moves to a newer release, and `planar-uninstall`
+removes the install. To pin a release, build from source, or see the
+prerequisites, read [INSTALL.md](../INSTALL.md).
 
-Verify the install:
+Check that the binary runs:
 
 ```sh
 planar version
-planar --help
 ```
 
-## 2. Initialise the database
+## 2. Start with `planar --help`
+
+The first command to run, with or without a coding agent, is the help
+page. Every binary documents itself:
+
+```sh
+planar --help
+planar task --help
+planar task add --help
+planar help
+planar schema --compact
+```
+
+`planar --help` lists the verb groups. `planar task --help` lists one
+group's verbs, and `planar task add --help` is a leaf verb's help: every
+flag is described, and the page ends with `Examples:` and `Exit codes:`
+sections. `planar help` prints the root page. To find any verb without
+guessing, `planar schema --compact` prints one row per command with its
+summary, and `planar schema --command "task add"` prints the full entry
+for one command. Ask the catalog for one command or the compact tree,
+never the whole catalog. The same works on `planar-agent`, `planar-watch`,
+`planar-ext` and `planar-execute`.
+
+Everything in the rest of this tutorial is plain CLI. No skill is needed.
+
+## 3. Using Planar from a coding agent
+
+The installer already placed the one `planar` skill and the fifteen
+`planar-<role>` agents for whichever of the six supported vendors it
+found on your machine. The skill teaches only the rules that cross verbs;
+the CLI help stays the source for everything verb-shaped. Confirm the
+install with:
+
+```sh
+planar health
+```
+
+The `projection freshness` row counts the installed skill and agent
+files as `fresh`, `stale` or `missing`; a degraded result prints the
+reinstall command.
+
+There is no command to type. From inside a project, ask your coding
+agent for the outcome in plain words, and it loads the skill on its own:
+
+```text
+Draft a Planar spec for adding multi-currency checkout.
+What needs my attention in this project?
+Hand off task 42; I'm stopping for today.
+```
+
+In Claude Code, `/planar <request>` loads the skill explicitly. Name a
+role agent to dispatch it: "use the planar-planner agent to draft …".
+[Skill reference § Using it day to day](skill-reference.md#using-it-day-to-day)
+lists more requests and maps each retired `pl-*` skill to its
+replacement; the rest of that page covers the layout, the vendor
+targets, drift and uninstall. Come back to this tutorial for the CLI
+path either way.
+
+## 4. Initialise the database
 
 `planar init` creates `~/.planar/planar.db` (the operational SQLite
 store) and registers the current directory as a project:
@@ -88,7 +146,7 @@ planar health
 `scope show` should print `project:example-app` as the scope resolved
 from cwd; `health` should end with `overall: ok`.
 
-## 3. Your first plan
+## 5. Your first plan
 
 A *plan* is a unit of intent — usually a feature or a bug fix — that
 collects tasks, artifacts, decisions, scenarios, and questions
@@ -112,7 +170,7 @@ planar plan create "M1 — landing page" --slug login-flow-m1 \
     --parent <plan-id>
 ```
 
-## 4. Your first task
+## 6. Your first task
 
 Tasks are the unit of execution. Create one
 under the plan you just made:
@@ -133,7 +191,7 @@ planar task done <task-id>                    # -> done
 code. The actual work happens in your editor; Planar tracks the
 intent and the outcome.
 
-## 5. The workbench
+## 7. The workbench
 
 The *workbench* is a bidirectionally synced filesystem under
 `~/.planar/workbench/`. Every plan with the workbench enabled gets
@@ -175,7 +233,7 @@ Editing the file on disk and re-running `workbench sync` round-trips
 the change. A hand-dropped file without the generated frontmatter is
 reported as malformed and is not imported.
 
-## 6. Spec ingestion
+## 8. Spec ingestion
 
 `planar spec ingest` decomposes a workbench planning document into
 a structured task graph. It reads the plan's `tech_spec` and `roadmap`
@@ -216,7 +274,7 @@ new sub-plans and tasks):
 planar tree
 ```
 
-## 7. External-system sync
+## 9. External-system sync
 
 Planar's operational plane integrates with Jira and GitHub Issues
 via adapters. `ext`/`sync` live on the `planar-ext` binary. Register
@@ -238,7 +296,7 @@ sub-plans, and their tasks — and records each counterpart in
 write local fields (decision 996); use it to see whether the remote drifted,
 then update the local entity yourself if warranted.
 
-## 8. Capture, hand off, and resume
+## 10. Capture, hand off, and resume
 
 The walkthrough so far recorded intent. This section records the *work*
 itself, then moves it to a fresh agent. The examples below assume plan 1 and
@@ -289,7 +347,7 @@ planar resume validate 1   # exit 0 if resumable; 1 with remediation if not
 `resume validate` is the CI gate: it exits `0` when the task can be resumed
 from zero conversational context, and `1` with remediation when it cannot.
 
-## 9. What's going on? — `planar tree`
+## 11. What's going on? — `planar tree`
 
 The fastest answer to "what work do I have, where does it live, and what's
 the structure?" is `planar tree`:
@@ -316,7 +374,7 @@ of that tool's flags (`-L`, `-I`, `-P`, `--prune`, `--noreport`,
 time with exit 2. See
 [CLI reference § Domain: `tree`](cli-reference.md#domain-tree).
 
-## 10. Where to go next
+## 12. Where to go next
 
 - [Concepts](concepts.md) — the mental model: scope, association,
   plan, task, handoff, workbench.
@@ -326,8 +384,10 @@ time with exit 2. See
   adapter boundary.
 - [CLI reference](cli-reference.md) — every command, every flag,
   every exit code.
-- [Skill reference](skill-reference.md) — every vendor skill
-  (`pl-*`) with its inputs, outputs, and side effects.
+- [Skill reference](skill-reference.md) — the `planar` skill, the
+  `planar-<role>` agents, and where the installer places them.
+- [Light touch](light-touch.md) — Planar as a capture journal, four
+  verbs and no agent workflow.
 
 ## Troubleshooting
 

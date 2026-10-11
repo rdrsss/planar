@@ -82,6 +82,8 @@ export module planar.cliapp.schema;
 
 import std;
 import cli11;
+import planar.cliapp.args;
+import planar.cliapp.surface;
 import planar.cliapp.walk;
 
 namespace planar::cliapp {
@@ -174,5 +176,126 @@ export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_vi
 /// newline).
 export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
                         std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults) -> std::string;
+
+/// @brief One exit code a binary documents, with the meaning every command
+/// that lists it shares.
+export struct exit_code_doc {
+  int              code = 0; ///< The process exit status.
+  std::string_view meaning;  ///< One sentence saying what the status means.
+};
+
+/// @brief A meaning that replaces the binary-wide one for a single command.
+export struct exit_meaning_override {
+  std::string_view command;  ///< Full command path, e.g. `planar plan closeout`.
+  int              code = 0; ///< The status whose meaning differs on this command.
+  std::string_view meaning;  ///< The meaning on this command.
+};
+
+/// @brief The per-command examples and exit codes of one binary, supplied as
+/// data beside its summary table.
+///
+/// `CLI::App` has no slot for either, so they travel out of band exactly as
+/// summaries do. One table feeds both renderers, `schema_json`'s `docs`
+/// object and the `Examples:` and `Exit codes:` sections of `--help`, so the
+/// two cannot drift. Only leaf commands have rows; a group has no
+/// `docs.examples` and no help sections.
+///
+/// All spans borrow static storage owned by the binary.
+export struct command_docs {
+  /// `(full command path, invocation)` pairs. A command may appear on several
+  /// rows; they render in table order.
+  std::span<std::pair<std::string_view, std::string_view> const> examples;
+  /// `(full command path, space-separated exit codes)` pairs, one row per
+  /// leaf, codes in the order they should render.
+  std::span<std::pair<std::string_view, std::string_view> const> exit_codes;
+  /// The binary-wide meaning of each code a row may name.
+  std::span<exit_code_doc const> meanings;
+  /// Meanings that differ for one command.
+  std::span<exit_meaning_override const> overrides;
+};
+
+/// @brief The examples and exit codes `docs` holds for one command.
+export struct command_doc_entry {
+  /// Example invocations, in table order.
+  std::vector<std::string_view> examples;
+  /// `(code, meaning)` pairs, in table order. A code with no meaning in the
+  /// table carries an empty meaning.
+  std::vector<std::pair<int, std::string_view>> exit_codes;
+};
+
+/// @brief Resolve the examples and exit codes `docs` holds for `command`.
+/// @param docs The binary's table.
+/// @param command Full command path, e.g. `planar task update`.
+/// @return The entry; both lists are empty for a command with no rows.
+export auto docs_for(const command_docs& docs, std::string_view command) -> command_doc_entry;
+
+/// @brief Render the `Examples:` and `Exit codes:` help sections for `command`.
+///
+/// The text is what `install_docs_footers` hands CLI11 as the footer: an
+/// `Examples:` header, one two-space-indented invocation per line, a blank
+/// line, an `Exit codes:` header, then `  <code>  <meaning>` per line, with no
+/// trailing newline. A section with no rows is omitted.
+/// @param docs The binary's table.
+/// @param command Full command path.
+/// @return The sections, or an empty string for a command with no rows.
+export auto render_docs_footer(const command_docs& docs, std::string_view command) -> std::string;
+
+/// @brief Install the `Examples:` and `Exit codes:` sections as the footer of
+/// every command `docs` has rows for.
+///
+/// Walks the tree with `all_nodes` and sets each leaf's footer to
+/// `render_docs_footer`; a command without rows keeps no footer. Call it after
+/// the whole tree is declared. The spans inside `docs` must outlive the tree.
+/// @param root The command tree root.
+/// @param docs The binary's table.
+export auto install_docs_footers(CLI::App& root, const command_docs& docs) -> void;
+
+/// @brief Emit the catalog with summaries, empty-string defaults, and the
+/// per-command `docs.examples` and `docs.exitCodes`.
+///
+/// Every other `docs` slot stays empty. A command with no rows in `docs`
+/// emits `[]` for both.
+/// @param root The command tree root.
+/// @param summaries See the two-argument overload.
+/// @param empty_string_defaults See the three-argument overload.
+/// @param docs The binary's examples and exit codes.
+/// @return The catalog as a single-line JSON document (no trailing
+/// newline).
+export auto schema_json(const CLI::App& root, std::span<std::pair<std::string_view, std::string_view> const> summaries,
+                        std::span<std::pair<std::string_view, std::string_view> const> empty_string_defaults,
+                        const command_docs&                                            docs) -> std::string;
+
+/// @brief What a `schema` invocation asks for.
+export struct schema_request {
+  /// The command to look up, as the operator typed it; unset selects every command.
+  std::optional<std::string> command;
+  /// Whether to reduce each command to its full path and summary.
+  bool compact = false;
+};
+
+/// @brief Declare `--command` and `--compact` on a binary's `schema` node.
+/// @param schema_node The `schema` subcommand.
+export auto declare_schema_flags(CLI::App& schema_node) -> void;
+
+/// @brief Read the `schema` flags from a parse result.
+/// @param args The parsed arguments of the `schema` leaf.
+/// @return The request those flags describe.
+export auto schema_request_of(const parsed_args& args) -> schema_request;
+
+/// @brief Narrow a full flat catalog to what `request` asks for.
+///
+/// With no request fields set the catalog is returned unchanged, byte for
+/// byte. `--command` selects one command object, copied verbatim from the
+/// catalog; the name resolves as the full path (`planar task update`) or
+/// relative to the root (`task update`), with runs of whitespace collapsed.
+/// `--compact` rewrites every command to `{"command":...,"summary":...}`
+/// inside the same envelope with `"layout":"compact"`. Both together emit the
+/// one compact row, bare.
+/// @param catalog A catalog produced by `schema_json` (or any emitter of the
+/// same flat shape, such as `planar-execute`'s).
+/// @param request The selection.
+/// @return The JSON document without a trailing newline, or a message naming
+/// the unknown command.
+export auto select_schema(std::string_view catalog, const schema_request& request) -> std::expected<std::string, std::string>;
 
 } // namespace planar::cliapp

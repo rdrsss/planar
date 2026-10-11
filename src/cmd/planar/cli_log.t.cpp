@@ -122,23 +122,24 @@ TEST_CASE("a flag value never reaches args_shape, in any of its four spellings",
 
   // 1. Separate following token. Consumed as the value and discarded --
   //    note it is not counted as a positional either.
-  auto const separate = shape_of({"task", "add", "--title", sentinel, "--json"});
+  auto const separate = shape_of({"task", "add", "--body", sentinel, "--json"});
   CHECK(separate.verb_path == "task add");
-  CHECK(separate.args_shape == "--title --json");
+  CHECK(separate.args_shape == "--body --json");
 
   // 2. The inline form. The recorded name EXCLUDES the `=`, which is what
-  //    the oracle writes (`task show --plan=X` recorded `--plan`).
-  auto const inline_form = shape_of({"task", "show", std::string_view{"--plan=SENTINEL_MUST_NOT_LEAK"}});
-  CHECK(inline_form.verb_path == "task show");
+  //    the oracle writes (`task list --plan=X` records `--plan`).
+  auto const inline_form = shape_of({"task", "list", std::string_view{"--plan=SENTINEL_MUST_NOT_LEAK"}});
+  CHECK(inline_form.verb_path == "task list");
   CHECK(inline_form.args_shape == "--plan");
 
   // 3 and 4. Short flag with an attached value, with and without `=`. No
-  //    planar flag declares a short form today; the closure is structural,
-  //    because the invariant has to hold for whatever argv arrives.
+  //    planar flag declares a short form today, so the name is redacted too;
+  //    the closure is structural, because the invariant has to hold for
+  //    whatever argv arrives.
   auto const short_attached = shape_of({"task", "add", std::string_view{"-pSENTINEL_MUST_NOT_LEAK"}});
-  CHECK(short_attached.args_shape == "-p");
+  CHECK(short_attached.args_shape == "--<unknown>");
   auto const short_equals = shape_of({"task", "add", std::string_view{"-p=SENTINEL_MUST_NOT_LEAK"}});
-  CHECK(short_equals.args_shape == "-p");
+  CHECK(short_equals.args_shape == "--<unknown>");
 
   for (auto const& shape : {separate, inline_form, short_attached, short_equals}) {
     CHECK_FALSE(shape.args_shape.contains(sentinel));
@@ -160,7 +161,7 @@ TEST_CASE("a positional value is counted, never recorded", "[cmd][cli_log][priva
   CHECK(after_separator.args_shape == "<pos:3>");
 
   // Mixed: a flag consumes its value, and the trailing bare word counts.
-  auto const mixed = shape_of({"plan", "show", "--scope", sentinel, "trailing"});
+  auto const mixed = shape_of({"task", "list", "--scope", sentinel, "trailing"});
   CHECK(mixed.args_shape == "<pos:1> --scope");
 
   for (auto const& shape : {one, after_separator, mixed}) {
@@ -180,7 +181,7 @@ TEST_CASE("a hostile value cannot reach the cli_invocations ROW", "[cmd][cli_log
   scratch_db arena;
   auto       conn = arena.open();
 
-  auto const hostile = tail({"task", "add", "--title", "SENTINEL_MUST_NOT_LEAK", "--body", "line one\nline two", "--plan",
+  auto const hostile = tail({"task", "add", "--slug", "SENTINEL_MUST_NOT_LEAK", "--body", "line one\nline two", "--plan",
                              "SENTINEL_MUST_NOT_LEAK", "--json", "SENTINEL_MUST_NOT_LEAK"});
   auto const shape   = pc::parse_args(hostile);
   REQUIRE(pc::write_invocation(conn, shape, 2, pc::category_for(planar::cmd::domain_error_kind::invalid_input), 12, 90));
@@ -189,7 +190,7 @@ TEST_CASE("a hostile value cannot reach the cli_invocations ROW", "[cmd][cli_log
   REQUIRE(rows.size() == 1);
   CHECK_FALSE(rows[0].contains(sentinel));
   CHECK_FALSE(rows[0].contains("line one"));
-  CHECK(rows[0] == "task add --title --body --plan --json");
+  CHECK(rows[0] == "task add --slug --body --plan --json");
 
   // The non-shape columns came through, so the row is a real record rather
   // than an empty one that trivially contains no secret.
@@ -202,22 +203,12 @@ TEST_CASE("a hostile value cannot reach the cli_invocations ROW", "[cmd][cli_log
   CHECK(stmt->is_null(3)); // scope_slug is written as NULL, matching the oracle.
 }
 
-TEST_CASE("the verb slot IS recorded verbatim, and that is the oracle's boundary", "[cmd][cli_log][privacy]") {
-  // Pinned in the OPPOSITE direction from the cases above, on purpose.
-  //
-  // The stated invariant is "flag VALUES are never recorded", and it says
-  // nothing about the verb slot. Running the oracle shows why that wording
-  // is exact: a ONE-level verb that takes a positional puts the operator's
-  // argument straight into verb_path.
-  //
-  //     $ planar resume SENTINEL   -> verb_path 'resume SENTINEL'
-  //     $ planar tree SENTINEL     -> verb_path 'tree SENTINEL'
-  //
-  // A porter who read the invariant as "no values are ever recorded" would
-  // suppress these and diverge from the oracle on every `resume` and
-  // `tree`. This case exists so that neither reading can drift silently: if
-  // the project ever decides the oracle is wrong here, this test is where
-  // the decision gets made, rather than somewhere a shape quietly changed.
+TEST_CASE("structured operands in the verb slot are recorded as typed", "[cmd][cli_log][privacy]") {
+  // The rule (task 7369): slot 2 records a token as typed when the live
+  // CLI tree names it under slot 1, or when it is a structured operand, a
+  // single bare id or `word:digits` ref. That shape is bounded and cannot
+  // carry prose, so `resume 6073` and `tree plan:42` keep their rows. Free
+  // text in slot 2 is `<unknown>` and is pinned in the redaction cases below.
   auto const resumed = shape_of({"resume", "6073"});
   CHECK(resumed.verb_path == "resume 6073");
   CHECK(resumed.args_shape.empty());
@@ -234,6 +225,96 @@ TEST_CASE("the verb slot IS recorded verbatim, and that is the oracle's boundary
   CHECK_FALSE(deep.verb_path.contains("SENTINEL"));
 }
 
+// --- verb-path and flag-name redaction (task 7369) ------------------------
+
+TEST_CASE("a mistyped top-level token is recorded as <unknown>", "[cmd][cli_log][privacy][redaction]") {
+  auto const bogus = shape_of({"SENTINEL_MUST_NOT_LEAK"});
+  CHECK(bogus.verb_path == "<unknown>");
+  CHECK_FALSE(bogus.verb_path.contains("SENTINEL"));
+
+  // Structured-looking tokens are legitimate only in slot 2.
+  CHECK(shape_of({"5551234567"}).verb_path == "<unknown>");
+  CHECK(shape_of({"acme:7"}).verb_path == "<unknown>");
+
+  // The unknown token is not a parent verb, so a following word is a counted positional.
+  auto const with_prose = shape_of({"SENTINEL_MUST_NOT_LEAK", "more", "prose"});
+  CHECK(with_prose.verb_path == "<unknown>");
+  CHECK(with_prose.args_shape == "<pos:2>");
+}
+
+TEST_CASE("a prose token after a parent verb is recorded as <unknown>", "[cmd][cli_log][privacy][redaction]") {
+  auto const prose = shape_of({"task", "SENTINEL_MUST_NOT_LEAK", "second", "third"});
+  CHECK(prose.verb_path == "task <unknown>");
+  CHECK(prose.args_shape == "<pos:2>");
+
+  // A real subcommand is still recorded.
+  CHECK(shape_of({"task", "add"}).verb_path == "task add");
+  CHECK(shape_of({"plan", "show", "42"}).verb_path == "plan show");
+}
+
+TEST_CASE("a flag the resolved verb does not declare is recorded as --<unknown>", "[cmd][cli_log][privacy][redaction]") {
+  auto const separate = shape_of({"task", "list", "--SENTINEL_MUST_NOT_LEAK", "value"});
+  CHECK(separate.verb_path == "task list");
+  CHECK(separate.args_shape == "--<unknown>");
+
+  auto const inline_form = shape_of({"task", "list", "--SENTINEL_MUST_NOT_LEAK=value"});
+  CHECK(inline_form.args_shape == "--<unknown>");
+
+  auto const short_form = shape_of({"task", "list", "-zSENTINEL_MUST_NOT_LEAK"});
+  CHECK(short_form.args_shape == "--<unknown>");
+
+  // A declared flag next to an undeclared one keeps its name.
+  auto const mixed = shape_of({"task", "add", "--body", "x", "--SENTINEL_MUST_NOT_LEAK", "--json"});
+  CHECK(mixed.args_shape == "--body --<unknown> --json");
+
+  // An unresolved verb declares nothing but the root's flags.
+  auto const unresolved = shape_of({"SENTINEL_MUST_NOT_LEAK", "--title"});
+  CHECK(unresolved.args_shape == "--<unknown>");
+
+  for (auto const& shape : {separate, inline_form, short_form, mixed, unresolved}) {
+    CHECK_FALSE(shape.args_shape.contains("SENTINEL"));
+  }
+}
+
+TEST_CASE("flags on a three-level verb are checked against the leaf", "[cmd][cli_log][privacy][redaction]") {
+  auto const declared = shape_of({"feedback", "triage", "set", "--severity", "high"});
+  CHECK(declared.verb_path == "feedback triage");
+  CHECK(declared.args_shape == "<pos:1> --severity");
+
+  auto const undeclared = shape_of({"feedback", "triage", "set", "--SENTINEL_MUST_NOT_LEAK", "high"});
+  CHECK(undeclared.verb_path == "feedback triage");
+  CHECK(undeclared.args_shape == "<pos:1> --<unknown>");
+}
+
+TEST_CASE("verb_path_recognized accepts what the writer produces and rejects the rest", "[cmd][cli_log][privacy][redaction]") {
+  // Everything the writer can emit for real input is recognized, so the
+  // read mask never masks a current row.
+  for (std::string_view const path : {"", "health", "task add", "task show", "feedback triage", "resume 6073", "tree plan:42",
+                                      "<unknown>", "task <unknown>", "<unknown> 6073"}) {
+    CAPTURE(path);
+    CHECK(pc::verb_path_recognized(path));
+  }
+  // Historical leaks and anything the tree does not name are not.
+  for (std::string_view const path : {"search NDJSON", "bogusverb", "task bogus", "task add extra", "5551234567", "acme:7",
+                                      "health prose", "resume SENTINEL", "task <unrecognized>", "a b c"}) {
+    CAPTURE(path);
+    CHECK_FALSE(pc::verb_path_recognized(path));
+  }
+  // Whatever parse_args writes, the predicate accepts.
+  for (auto const& shape : {shape_of({"task", "SENTINEL", "x"}), shape_of({"SENTINEL"}), shape_of({"search", "SENTINEL"}),
+                            shape_of({"feedback", "triage", "set", "--severity", "high"}), shape_of({"resume", "6073"})}) {
+    CAPTURE(shape.verb_path);
+    CHECK(pc::verb_path_recognized(shape.verb_path));
+  }
+}
+
+TEST_CASE("real verbs and structured operands are still recorded", "[cmd][cli_log][redaction]") {
+  CHECK(shape_of({"task", "add"}).verb_path == "task add");
+  CHECK(shape_of({"resume", "6073"}).verb_path == "resume 6073");
+  CHECK(shape_of({"tree", "plan:42"}).verb_path == "tree plan:42");
+  CHECK(shape_of({"health", "--json"}).args_shape == "--json");
+}
+
 // --- the rest of the shape contract --------------------------------------
 
 TEST_CASE("parse_args reproduces the oracle's rows for the ordinary shapes", "[cmd][cli_log]") {
@@ -246,8 +327,8 @@ TEST_CASE("parse_args reproduces the oracle's rows for the ordinary shapes", "[c
   CHECK(task_show.args_shape == "<pos:1> --json");
 
   auto const unknown = shape_of({"nosuchverb", "--json"});
-  CHECK(unknown.verb_path == "nosuchverb");
-  CHECK(unknown.args_shape == "--json");
+  CHECK(unknown.verb_path == "<unknown>");
+  CHECK(unknown.args_shape == "--<unknown>"); // an unresolved verb declares no flags
 
   // Empty argv tail: no verb, no shape, and no crash.
   auto const nothing = pc::parse_args({});
@@ -256,7 +337,7 @@ TEST_CASE("parse_args reproduces the oracle's rows for the ordinary shapes", "[c
 
   // A flag whose value LOOKS like a flag is not consumed as a value -- it
   // is recorded as a flag name in its own right, exactly as the oracle does.
-  auto const flaggy = shape_of({"plan", "show", "--scope", "--json"});
+  auto const flaggy = shape_of({"task", "list", "--scope", "--json"});
   CHECK(flaggy.args_shape == "--scope --json");
 }
 

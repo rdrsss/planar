@@ -12,7 +12,9 @@ import planar.cliapp.walk;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.exit;
 import planar.cmd.planar_watch.handler;
+import planar.cmd.planar_watch.handlers.agents.tui;
 import planar.cmd.planar_watch.handlers.completion;
+import planar.cmd.planar_watch.handlers.diagnose;
 import planar.cmd.planar_watch.handlers.feed;
 import planar.cmd.planar_watch.handlers.ledger;
 import planar.cmd.planar_watch.handlers.live;
@@ -86,6 +88,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("sync-events", handlers::sync_events);
   table.emplace("queue", handlers::queue);
   table.emplace("queue history", handlers::queue_history);
+  table.emplace("diagnose", handlers::diagnose);
   table.emplace("version", handlers::version);
   table.emplace("schema", [&root](context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return handlers::schema(ctx, args, root);
@@ -149,6 +152,12 @@ auto inject_default_verb(std::span<std::string const> argv) -> std::vector<std::
 }
 
 auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
+  // A bare invocation on a terminal opens the interactive agent view. Every
+  // other invocation, including a bare one through a pipe, keeps the
+  // `feed` default below.
+  if (agents::wants_interactive(ctx.argv(), agents::stdin_is_tty(), agents::stdout_is_tty(ctx.out()), ctx.env()))
+    return agents::run_interactive(ctx);
+
   auto const argv = cliapp::hoist_subcommands(root, inject_default_verb(ctx.argv()));
   // CLI11's vector overload consumes argv[1..] in REVERSE order and never
   // sees argv[0] (see CLI::App::parse_char_t, which builds exactly this).
@@ -172,7 +181,12 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
     // which is exactly the asymmetry this decision closes. Nothing is
     // written to stdout on a parse failure.
     ctx.err() << "error: " << e.what() << '\n';
-    // This binary's policy is exit 1, NOT the operator binary's 2.
+    // `diagnose` is the exception (spec 689 § Output contract: 2 for bad input, which an
+    // unknown flag such as `--run` is). Every older verb keeps this binary's policy of exit 1,
+    // NOT the operator binary's 2.
+    if (argv.size() > 1 && argv[1] == "diagnose") {
+      return exit_user_input;
+    }
     return exit_code_for(domain_error_kind::parse_error);
   }
 

@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::plan_cli {
 /// @return Registered CLI node.
 export auto attach_step_skip(CLI::App& step) -> CLI::App* {
   CLI::App* skip = step.add_subcommand("skip", "Mark a plan step as skipped.");
-  add_string(*skip, "--scope");
-  add_json(*skip);
-  add_positional(*skip, "step-id");
+  add_string(*skip, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_json(*skip, "Emit machine-readable JSON instead of text");
+  add_positional(*skip, "step-id", "Plan step id");
   return skip;
 }
 } // namespace planar::cmd::handlers::plan_cli

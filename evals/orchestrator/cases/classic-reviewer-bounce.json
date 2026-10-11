@@ -16,7 +16,7 @@
       "id": "request-changes-loops",
       "description": "The orchestrator returns request-changes remediation to coder while the claim stays live.",
       "mode": "all",
-      "paths": ["agents/orchestrator.md"],
+      "paths": ["agents/planar-orchestrator.md"],
       "pattern": "request-changes.*no terminal verb"
     }
   ],

@@ -73,7 +73,7 @@ auto append_target_record(std::string& out, const link::target_record& rec) -> v
 auto list_json(std::span<const link::list_record> rows, std::optional<std::string_view> vendor_filter) -> std::string {
   std::string out;
   for (const auto& row : rows) {
-    if (vendor_filter && row.record.vendor != *vendor_filter) {
+    if (vendor_filter && !link::vendor_matches(row.record.vendor, *vendor_filter)) {
       continue;
     }
     out.push_back('{');
@@ -97,7 +97,7 @@ auto list_text(std::span<const link::list_record> rows, std::optional<std::strin
       std::format("{}  {}  {}  {}  {}\n", pad("name", 12), pad("kind", 7), pad("vendor", 7), pad("status", 7), "target");
   bool any = false;
   for (const auto& row : rows) {
-    if (vendor_filter && row.record.vendor != *vendor_filter) {
+    if (vendor_filter && !link::vendor_matches(row.record.vendor, *vendor_filter)) {
       continue;
     }
     any = true;
@@ -123,7 +123,6 @@ auto link_json(const manifest::sandbox_file& file, const link::link_result& resu
   append_kv(out, fm_first, "ArgumentHint", file.frontmatter.argument_hint);
   append_kv(out, fm_first, "Tier", file.frontmatter.tier);
   append_kv(out, fm_first, "Model", file.frontmatter.model);
-  out.append(std::format(",\"Shadow\":{}", file.frontmatter.shadow ? "true" : "false"));
   // The AUTHORED vendor list, not the resolved one: an author who named none
   // gets `[]` here even though all three were installed into.
   out.append(",\"Vendors\":[");
@@ -215,6 +214,16 @@ auto unlink_json(const link::unlink_result& result) -> std::string {
   }
   out.append("],\"PurgedFile\":");
   append_json_string(out, result.purged_file);
+  if (!result.skipped.empty()) {
+    out.append(",\"Skipped\":[");
+    for (std::size_t i = 0; i < result.skipped.size(); ++i) {
+      if (i != 0) {
+        out.push_back(',');
+      }
+      append_target_record(out, result.skipped[i]);
+    }
+    out.push_back(']');
+  }
   out.append("}}\n");
   return out;
 }
@@ -223,6 +232,9 @@ auto unlink_text(const link::unlink_result& result) -> std::string {
   std::string out = std::format("{} ({})\n", result.name, manifest::kind_name(result.kind));
   for (const auto& rec : result.removed) {
     out.append(std::format("  {}  removed  <-  {}\n", pad(rec.vendor, 7), rec.target_path));
+  }
+  for (const auto& rec : result.skipped) {
+    out.append(std::format("  {}  skipped: not owned  <-  {}\n", pad(rec.vendor, 7), rec.target_path));
   }
   if (!result.purged_file.empty()) {
     out.append(std::format("  purged source file: {}\n", result.purged_file));
@@ -379,21 +391,37 @@ auto reconcile_text(std::span<const link::reconcile_action> actions, bool dry_ru
   if (actions.empty()) {
     return "reconcile: manifest already consistent with the filesystem\n";
   }
-  const std::string_view verb = dry_run ? "would remove" : "removed";
-  std::string            out;
+  std::string out;
+  std::size_t changes = 0;
   for (const auto& action : actions) {
-    // "removed N install(s)" even for `target-missing`, where they were
-    // RE-CREATED. The oracle's wording; see link.cppm.
-    out.append(std::format("{} ({}) - {}; {} {} install(s)\n", action.name, manifest::kind_name(action.kind), action.reason, verb,
+    if (action.reason == "not-owned") {
+      out.append(std::format("{} ({}) - skipped: not owned; left {} path(s) in place\n", action.name,
+                             manifest::kind_name(action.kind), action.removed_targets.size()));
+      for (const auto& path : action.removed_targets) {
+        out.append(std::format("  {}\n", path));
+      }
+      continue;
+    }
+    if (action.reason == "write-failed") {
+      out.append(std::format("error: could not write {} path(s); not recorded\n", action.removed_targets.size()));
+      for (const auto& path : action.removed_targets) {
+        out.append(std::format("  {}\n", path));
+      }
+      continue;
+    }
+    const bool             removal = action.reason == "source-missing" || action.reason == "legacy";
+    const std::string_view verb    = removal ? (dry_run ? "would remove" : "removed") : (dry_run ? "would write" : "wrote");
+    out.append(std::format("{} ({}) - {}; {} {} path(s)\n", action.name, manifest::kind_name(action.kind), action.reason, verb,
                            action.removed_targets.size()));
     for (const auto& path : action.removed_targets) {
       out.append(std::format("  {}\n", path));
     }
+    changes += action.removed_targets.size();
   }
   if (dry_run) {
-    out.append(std::format("\ndry-run: {} stale entry(ies) would be cleaned\n", actions.size()));
+    out.append(std::format("\ndry-run: {} change(s) would be made\n", changes));
   } else {
-    out.append(std::format("\ndone: {} stale entry(ies) cleaned\n", actions.size()));
+    out.append(std::format("\ndone: {} change(s)\n", changes));
   }
   return out;
 }

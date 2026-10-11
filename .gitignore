@@ -79,24 +79,10 @@
 scripts/parity-data/parity-gap-report.json
 scripts/parity-data/parity-gap-report.md
 
-# Per-vendor skill renders — generated at install time by
-# `planar skills render`. Source is skills/src/. See CLAUDE.md
-# § Integration test methodology for the render-at-install
-# pipeline.
-/commands/
-/skills/codex/
-/skills/copilot/
-/skills/gemini/
-
-# Per-vendor agent renders — generated at install time by
-# `planar skills render`. Source is agents/*.md role specs.
-# The non-rendered source files (agents/coder.md, etc.) are
-# checked in; only the vendor subdirs are generated output.
-/agents/claude/
-/agents/codex/
-/agents/copilot/
-/agents/gemini/
 __pycache__/
+
+# Owned release bundle outputs; foreign source dirt still refuses tagged cuts.
+/dist/
 
 # Mt-KaHyPar's own upstream CMakeLists.txt (mt-kahypar/io/CMakeLists.txt)
 # writes its version header via `configure_file(... "${CMAKE_CURRENT_SOURCE_DIR}/version.h" ...)`

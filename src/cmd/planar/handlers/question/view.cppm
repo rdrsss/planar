@@ -14,7 +14,7 @@ namespace planar::cmd::handlers::question_cli {
 /// @return Registered CLI node.
 export auto attach_view(CLI::App& question) -> CLI::App* {
   CLI::App* view = question.add_subcommand("view", "View question's workbench file.");
-  add_positional(*view, "question-id");
+  add_positional(*view, "question-id", "Question id");
   return view;
 }
 } // namespace planar::cmd::handlers::question_cli

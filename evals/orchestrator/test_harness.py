@@ -351,7 +351,7 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
     live path silently ran against an unstaged (or wrong) vendor config.
     """
 
-    def test_run_phase3_preview_claude_fails_closed_on_missing_commands(self) -> None:
+    def test_run_phase3_preview_claude_fails_closed_on_missing_planar_skill(self) -> None:
         case = {
             "id": "staging-guard-probe",
             "tasks": [{"slug": "task-one", "title": "Task one"}],
@@ -368,10 +368,12 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
         ) as results_root, tempfile.TemporaryDirectory(
             prefix="planar-eval-staging-guard-fakehome-"
         ) as fake_home:
-            # Created, but deliberately empty: no `commands` subdirectory,
-            # so `claude`'s one REQUIRED surface is missing.
+            # A checkout with no `skills/planar/`, so the REQUIRED Planar
+            # skill surface is missing.
             fake_real_root = Path(fake_home) / "fake-claude"
             fake_real_root.mkdir()
+            empty_checkout = Path(fake_home) / "empty-checkout"
+            empty_checkout.mkdir()
             options = harness.Options(
                 mode="live",
                 vendor="claude",
@@ -382,13 +384,14 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
             )
             with mock.patch.object(
                 arena, "real_vendor_root", return_value=fake_real_root
-            ), mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
+            ), mock.patch.object(harness, "ROOT", empty_checkout), \
+                mock.patch.object(harness, "run_to_file") as run_to_file_mock, \
                 mock.patch.object(harness, "run_command") as run_command_mock:
                 with self.assertRaises(arena.VendorStagingError) as ctx:
                     harness.run_phase3_preview(
                         Path("<staging-guard-probe>"), case, options
                     )
-                self.assertIn("commands", str(ctx.exception))
+                self.assertIn(str(Path("skills") / "planar"), str(ctx.exception))
             run_to_file_mock.assert_not_called()
             run_command_mock.assert_not_called()
 
@@ -473,6 +476,10 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
             self.assertEqual(stage_mock.call_count, 1)
             _, kwargs = stage_mock.call_args
             self.assertEqual(kwargs.get("surface"), "agent")
+            # The Planar surface is staged from this checkout, and the
+            # orchestrator agent is required for a live preview run.
+            self.assertEqual(kwargs.get("repo_root"), harness.ROOT)
+            self.assertEqual(kwargs.get("required_agents"), ("planar-orchestrator",))
 
     def test_prepare_lifecycle_fixture_threads_options_surface_to_staging(self) -> None:
         case = {
@@ -510,6 +517,156 @@ class VendorStagingBeforeHostStartTests(unittest.TestCase):
             self.assertEqual(stage_mock.call_count, 1)
             _, kwargs = stage_mock.call_args
             self.assertEqual(kwargs.get("surface"), "agent")
+
+
+class LifecycleFixtureAgentTests(unittest.TestCase):
+    """The lifecycle fixture writes `planar-`prefixed agents."""
+
+    def test_orchestrator_source_falls_back_to_the_inline_fixture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agent-src-") as tmp:
+            with mock.patch.object(harness, "ROOT", Path(tmp)):
+                self.assertEqual(
+                    harness.orchestrator_agent_source(),
+                    harness.INLINE_ORCHESTRATOR_FIXTURE,
+                )
+
+    def test_orchestrator_source_reads_the_checkout_agent_when_present(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agent-src-") as tmp:
+            (Path(tmp) / "agents").mkdir()
+            (Path(tmp) / "agents" / "planar-orchestrator.md").write_text(
+                "from the checkout\n", encoding="utf-8"
+            )
+            with mock.patch.object(harness, "ROOT", Path(tmp)):
+                self.assertEqual(harness.orchestrator_agent_source(), "from the checkout\n")
+
+    def stage(self, root: Path, checkout: Path | None = None) -> Path:
+        repo = root / "repo"
+        harness.write_lifecycle_agents(
+            repo,
+            harness.FIXTURES_DIR / "controlled-classic",
+            checkout,
+        )
+        return repo
+
+    def render_checkout_orchestrator(self, root: Path) -> str:
+        agents = root / "one"
+        agents.mkdir()
+        shutil.copyfile(
+            harness.ROOT / "agents" / "planar-orchestrator.md",
+            agents / "planar-orchestrator.md",
+        )
+        out = root / "rendered"
+        subprocess.run(
+            [
+                sys.executable,
+                str(harness.ROOT / "scripts" / "render-codex-agents.py"),
+                str(agents),
+                str(out),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return (out / "planar-orchestrator.toml").read_text(encoding="utf-8")
+
+    def test_lifecycle_agents_are_written_with_the_planar_prefix(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            repo = self.stage(Path(tmp))
+            for role in ("orchestrator", "coder", "reviewer", "test-coder"):
+                self.assertTrue((repo / ".claude" / "agents" / f"planar-{role}.md").is_file(), role)
+                self.assertTrue((repo / ".codex" / "agents" / f"planar-{role}.toml").is_file(), role)
+                self.assertFalse((repo / ".claude" / "agents" / f"{role}.md").exists(), role)
+                self.assertFalse((repo / ".codex" / "agents" / f"{role}.toml").exists(), role)
+
+    def test_staged_skill_bytes_equal_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            repo = self.stage(Path(tmp))
+            source = harness.ROOT / "skills" / "planar"
+            staged = repo / ".claude" / "skills" / "planar"
+            names = sorted(p.relative_to(source) for p in source.rglob("*") if p.is_file())
+            self.assertIn(Path("SKILL.md"), names)
+            self.assertEqual(
+                names,
+                sorted(p.relative_to(staged) for p in staged.rglob("*") if p.is_file()),
+            )
+            for rel in names:
+                self.assertEqual((staged / rel).read_bytes(), (source / rel).read_bytes(), str(rel))
+
+    def test_staged_claude_orchestrator_equals_the_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            repo = self.stage(Path(tmp))
+            self.assertEqual(
+                (repo / ".claude" / "agents" / "planar-orchestrator.md").read_bytes(),
+                (harness.ROOT / "agents" / "planar-orchestrator.md").read_bytes(),
+            )
+
+    def test_staged_codex_orchestrator_equals_the_script_output(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            root = Path(tmp)
+            repo = self.stage(root)
+            self.assertEqual(
+                (repo / ".codex" / "agents" / "planar-orchestrator.toml").read_text(encoding="utf-8"),
+                self.render_checkout_orchestrator(root),
+            )
+
+    def test_controlled_agents_parse_with_the_fixture_instructions(self) -> None:
+        import tomllib
+
+        with tempfile.TemporaryDirectory(prefix="planar-eval-agents-") as tmp:
+            repo = self.stage(Path(tmp))
+            fixture = harness.FIXTURES_DIR / "controlled-classic"
+            for role in ("coder", "reviewer", "test-coder"):
+                parsed = tomllib.loads(
+                    (repo / ".codex" / "agents" / f"planar-{role}.toml").read_text(encoding="utf-8")
+                )
+                self.assertEqual(list(parsed), ["name", "description", "developer_instructions"])
+                self.assertEqual(parsed["name"], f"planar-{role}")
+                self.assertEqual(
+                    parsed["developer_instructions"],
+                    (fixture / f"{role}.instructions.md").read_text(encoding="utf-8"),
+                )
+                claude = (repo / ".claude" / "agents" / f"planar-{role}.md").read_text(encoding="utf-8")
+                self.assertIn(f"name: planar-{role}\n", claude)
+                self.assertIn(f"  slug: planar-{role}\n", claude)
+
+    def test_fixture_and_arena_stage_without_skills_src(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="planar-eval-no-skills-src-") as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            (checkout / "scripts").mkdir(parents=True)
+            shutil.copytree(harness.ROOT / "skills" / "planar", checkout / "skills" / "planar")
+            shutil.copytree(
+                harness.ROOT / "agents", checkout / "agents",
+                ignore=shutil.ignore_patterns("__pycache__"),
+            )
+            shutil.copyfile(
+                harness.ROOT / "scripts" / "render-codex-agents.py",
+                checkout / "scripts" / "render-codex-agents.py",
+            )
+            self.assertFalse((checkout / "skills" / "src").exists())
+            repo = self.stage(root, checkout)
+            self.assertTrue((repo / ".claude" / "skills" / "planar" / "SKILL.md").is_file())
+            self.assertTrue((repo / ".codex" / "agents" / "planar-orchestrator.toml").is_file())
+            env = arena.make_arena(root / "arena")
+            arena.stage_planar_surface(env, "claude", checkout)
+            arena.stage_planar_surface(env, "codex", checkout)
+
+    def test_missing_checkout_orchestrator_falls_back_to_the_inline_fixture(self) -> None:
+        import tomllib
+
+        with tempfile.TemporaryDirectory(prefix="planar-eval-fallback-") as tmp:
+            root = Path(tmp)
+            checkout = root / "checkout"
+            (checkout / "scripts").mkdir(parents=True)
+            shutil.copyfile(
+                harness.ROOT / "scripts" / "render-codex-agents.py",
+                checkout / "scripts" / "render-codex-agents.py",
+            )
+            repo = self.stage(root, checkout)
+            parsed = tomllib.loads(
+                (repo / ".codex" / "agents" / "planar-orchestrator.toml").read_text(encoding="utf-8")
+            )
+            self.assertEqual(parsed["developer_instructions"], harness.INLINE_ORCHESTRATOR_FIXTURE)
+            self.assertFalse((repo / ".claude" / "skills").exists())
 
 
 class VendorAuthBeforeHostStartTests(unittest.TestCase):
@@ -658,7 +815,12 @@ class VendorAuthBeforeHostStartTests(unittest.TestCase):
             prefix="planar-eval-auth-guard-fakehome-"
         ) as fake_home:
             fake_real_root = Path(fake_home) / "fake-claude"
-            (fake_real_root / "commands").mkdir(parents=True)
+            fake_real_root.mkdir(parents=True)
+            fake_checkout = Path(fake_home) / "checkout"
+            (fake_checkout / "skills" / "planar").mkdir(parents=True)
+            (fake_checkout / "skills" / "planar" / "SKILL.md").write_text("# planar\n")
+            (fake_checkout / "agents").mkdir()
+            (fake_checkout / "agents" / "planar-orchestrator.md").write_text("# o\n")
             options = harness.Options(
                 mode="live",
                 vendor="claude",
@@ -681,7 +843,7 @@ class VendorAuthBeforeHostStartTests(unittest.TestCase):
 
             with mock.patch.object(
                 arena, "real_vendor_root", return_value=fake_real_root
-            ), mock.patch.object(
+            ), mock.patch.object(harness, "ROOT", fake_checkout), mock.patch.object(
                 harness.arena, "make_arena", side_effect=scrubbed_make_arena
             ), mock.patch.object(
                 harness, "run_to_file"
@@ -928,6 +1090,13 @@ class SemanticGraderNegativeControlTests(unittest.TestCase):
                 [{"event": event} for event in events],
             )
 
+        def false_queue_success(root: Path) -> None:
+            harness.write_json(root / "fixture-test-ticket.json", {"seq": 7})
+            harness.write_json(root / "fixture-test-observation.json", {
+                "seq": 7, "wait_reason": "timed_out", "result_exit_code": 124,
+                "status": {"state": "running", "outcome": None},
+            })
+
         controls = [
             (
                 "missing-artifact",
@@ -1002,6 +1171,11 @@ class SemanticGraderNegativeControlTests(unittest.TestCase):
                     root / "fixture-test.json", {"returncode": 1}
                 ),
                 "fixture test exit code was 1",
+            ),
+            (
+                "fixture-ticket-not-finished",
+                false_queue_success,
+                "fixture ticket lacks an authoritative passing queue outcome",
             ),
         ]
         for name, mutator, reason in controls:
@@ -2393,7 +2567,16 @@ class CollectLifecycleArtifactsWiringTest(unittest.TestCase):
             raise AssertionError(f"unexpected run_json call: {args}")
 
         context = make_collect_context(repo, artifacts)
-        with mock.patch.object(harness, "run_json", side_effect=fake_run_json):
+        log_path = artifacts / "fixture-queue.log"
+        log_path.write_text("PASS\n", encoding="utf-8")
+        passing = harness.queue_observation.Observation(
+            7, 7, "completed", 0,
+            {"seq": 7, "state": "ended", "outcome": "exited", "exit_code": 0},
+            None, "compatibility",
+        )
+        with mock.patch.object(harness, "run_json", side_effect=fake_run_json), mock.patch.object(
+            harness.queue_observation, "submit", return_value=(7, log_path)
+        ), mock.patch.object(harness.queue_observation, "observe", return_value=passing):
             harness.collect_lifecycle_artifacts(context, collect_options())
 
     def test_empty_observed_dir_with_audit_claims_raises_wrapper_bypassed(
@@ -2490,10 +2673,21 @@ class CollectLifecycleArtifactsWiringTest(unittest.TestCase):
                 raise AssertionError(f"unexpected run_command call: {args}")
 
             context = make_collect_context(repo, artifacts)
+            log_path = artifacts / "fixture-queue.log"
+            log_path.write_text("PASS\n", encoding="utf-8")
+            passing = harness.queue_observation.Observation(
+                7, 7, "completed", 0,
+                {"seq": 7, "state": "ended", "outcome": "exited", "exit_code": 0},
+                None, "compatibility",
+            )
             with mock.patch.object(
                 harness, "run_json", side_effect=fake_run_json
             ), mock.patch.object(
                 harness, "run_command", side_effect=fake_run_command
+            ), mock.patch.object(
+                harness.queue_observation, "submit", return_value=(7, log_path)
+            ), mock.patch.object(
+                harness.queue_observation, "observe", return_value=passing
             ):
                 harness.collect_lifecycle_artifacts(context, collect_options())
             warnings = harness.read_json(artifacts / "warnings.json")
@@ -2583,10 +2777,21 @@ class CollectLifecycleArtifactsWiringTest(unittest.TestCase):
                 raise AssertionError(f"unexpected run_command call: {args}")
 
             context = make_collect_context(repo, artifacts)
+            log_path = artifacts / "fixture-queue.log"
+            log_path.write_text("PASS\n", encoding="utf-8")
+            passing = harness.queue_observation.Observation(
+                7, 7, "completed", 0,
+                {"seq": 7, "state": "ended", "outcome": "exited", "exit_code": 0},
+                None, "compatibility",
+            )
             with mock.patch.object(
                 harness, "run_json", side_effect=fake_run_json
             ), mock.patch.object(
                 harness, "run_command", side_effect=fake_run_command
+            ), mock.patch.object(
+                harness.queue_observation, "submit", return_value=(7, log_path)
+            ), mock.patch.object(
+                harness.queue_observation, "observe", return_value=passing
             ):
                 harness.collect_lifecycle_artifacts(context, collect_options())
             events = harness.read_json(artifacts / "events.normalized.json")
@@ -4217,7 +4422,9 @@ class DocsHonestyTest(unittest.TestCase):
     Stack"). CI here is only the fast tier (`ci.yml`: formatting, installer
     fixtures and the planning eval harness UNIT tests) and the nightly/on-demand
     full tier (`full.yml`: Linux build, ctest and the orchestrator harness UNIT
-    tests); no eval lane runs in CI. And
+    tests); no eval lane runs in CI. A third workflow, `release.yml`, runs only
+    on a pushed stable `vX.Y.Z` tag and builds, gates and publishes release
+    bundles; it runs no eval lane either. And
     `evals/RESULTS.md` does not exist yet (planned for a later milestone), so
     a bare cadence claim is a documentation-honesty violation unless the line
     does one of two things:
@@ -4327,15 +4534,17 @@ class DocsHonestyTest(unittest.TestCase):
         )
 
     def test_ci_workflows_are_the_documented_tiers(self) -> None:
-        """Guards the premise: CI is exactly the fast and full tiers.
+        """Guards the premise: CI is exactly the fast and full tiers plus release.
 
-        If a workflow is added, removed or renamed, this test and the docs'
-        cadence wording (docs/testing.md, "Continuous integration") must change.
+        The workflows are `ci.yml` (fast tier), `full.yml` (full tier) and
+        `release.yml` (stable `vX.Y.Z` tag release). If a workflow is added,
+        removed or renamed, this test and the docs' cadence wording
+        (docs/testing.md, "Continuous integration") must change.
         """
         workflows = sorted(
             path.name for path in (self.REPO_ROOT / ".github" / "workflows").glob("*.yml")
         )
-        self.assertEqual(workflows, ["ci.yml", "full.yml"])
+        self.assertEqual(workflows, ["ci.yml", "full.yml", "release.yml"])
 
     def test_seeded_counter_example_is_rejected(self) -> None:
         # Task 6878's motivating counter-example: a naked "runs nightly in
@@ -5908,6 +6117,190 @@ class RealLedgerAndCwdIsolationTests(unittest.TestCase):
             f"SpendCeilingTests / ReplayDriverRegistryTests left a stray "
             f"directory at {stray_dir}",
         )
+
+
+# Task 7214 (plan 1104 M1): the contract assertions and coherence phrases that
+# used to grep the legacy role skill sources now grep `agents/planar-<role>.md`.
+# The pins below were measured from `git show bb9e5816:...` -- i.e. from the
+# pre-retarget case files and `grade_coherence` -- by reducing every path to
+# its role (the legacy skill path and `agents/planar-X.md` both become `X`).
+# 31 case assertions (the 22 `skill-planar-contract/*` ones are task 7213's and
+# are agent-independent), and 18 must/forbid calls in `grade_coherence`.
+RETARGETED_CASE_ROLES: dict[str, list[str]] = {
+    "ambiguous-tier-requires-operator-answer/tier-question-stops-dispatch": ["orchestrator"],
+    "ambiguous-tier-requires-operator-answer/no-round-up": ["agents/models.md", "orchestrator"],
+    "archive-and-finalization-capability-boundary/janitor-owns-closeout": ["orchestrator"],
+    "archive-and-finalization-capability-boundary/no-plan-status-bypass": ["orchestrator"],
+    "archive-and-finalization-capability-boundary/archive-requires-done": ["orchestrator"],
+    "classic-lifecycle-success/review-before-complete": ["orchestrator"],
+    "classic-review-cycle-base-relative-diff/orchestrator-captures-base": ["orchestrator"],
+    "classic-review-cycle-base-relative-diff/specialists-read-base-diff": ["reviewer", "test-coder"],
+    "classic-reviewer-bounce/request-changes-loops": ["orchestrator"],
+    "delivery-profiles/delivery-profile": ["janitor", "orchestrator"],
+    "delivery-profiles/delivery-modes": ["janitor"],
+    "dispatch-command-capability-boundaries/strategy-isolation-parity": ["orchestrator"],
+    "dispatch-command-capability-boundaries/orchestrator-does-not-pull-feature-task": ["agents/methodology.md", "orchestrator"],
+    "review-bypass-is-explicit-expert-opt-in/recommendation-never-outputs-bypass": ["agents/methodology.md", "orchestrator"],
+    "foreign-flat-lifecycle-success/review-before-complete": ["orchestrator"],
+    "phase3-model-routing-host-boundary/preview-binds-tier-and-model": ["orchestrator"],
+    "phase3-model-routing-host-boundary/preview-preserves-task-identity": ["orchestrator"],
+    "phase3-model-routing-host-boundary/no-non-medium-default-for-decided-work": ["agents/models.md", "orchestrator"],
+    "phase3-model-routing-host-boundary/no-title-vocabulary-escalation": ["agents/models.md", "orchestrator"],
+    "phase3-model-routing-host-boundary/no-cross-host-vendor-substitution": ["orchestrator"],
+    "phase35-is-coverage-driven/coverage-oracle": ["orchestrator"],
+    "phase35-is-coverage-driven/no-configurable-cadence": ["agents/methodology.md", "orchestrator"],
+    "repository-derived-validation-profile/profile-cross-role": ["coder", "orchestrator", "reviewer", "test-coder"],
+    "repository-derived-validation-profile/no-language-gates": ["agents/doctrine.md", "agents/methodology.md", "orchestrator"],
+    "validation-cadence/cadence-section-every-role": ["agents/methodology.md", "coder", "orchestrator", "reviewer", "test-coder"],
+    "validation-cadence/full-suite-at-milestone-barrier": ["agents/methodology.md", "coder", "orchestrator", "reviewer", "test-coder"],
+    "validation-cadence/no-per-task-broad-regression": ["agents/methodology.md", "coder", "orchestrator", "reviewer", "test-coder"],
+    "validation-cadence/fix-cycles-stay-focused": ["agents/methodology.md"],
+    "validation-cadence/reviewer-no-full-suite-demand": ["reviewer"],
+    "validation-cadence/skill-full-suite-once": ["skills/planar/references/claim-ritual.md"],
+    "validation-cadence/skill-empty-filter-fails": ["skills/planar/references/claim-ritual.md"],
+    "validation-cadence/repo-guide-states-cadence": ["CLAUDE.md"],
+    "validation-cadence/repo-task-profile": ["docs/testing.md"],
+    "reviewer-iteration-five-terminates/iteration-five-no-request-changes": ["orchestrator", "reviewer"],
+    "reviewer-iteration-five-terminates/caveats-become-tasks": ["orchestrator", "reviewer"],
+    "spec-review-before-ingestion/spec-review-present": ["orchestrator"],
+    "spec-review-before-ingestion/ready-gates-ingestion": ["orchestrator"],
+    "terminal-ownership-and-blind-review-evidence/no-coder-task-done": ["coder"],
+    "terminal-ownership-and-blind-review-evidence/in-pwd-bypass-exception": ["coder", "orchestrator"],
+    "terminal-ownership-and-blind-review-evidence/blind-structured-packet": ["reviewer"],
+}
+
+# (kind, pattern source, roles). The research pattern was "Self-contained
+# output contract" before the fold; the agent's heading is the retargeted form.
+COHERENCE_PHRASES: list[tuple[str, str, list[str]]] = [
+    ("forbid", "'recommended for:.*(mechanical|docs-polish|single-verb)'", ["agents/methodology.md", "orchestrator"]),
+    ("forbid", "'planar task done'", ["coder"]),
+    ("must", "'Planar-managed Git repositor'", ["janitor", "orchestrator"]),
+    ("must", "'validation profile'", ["agents/methodology.md", "coder", "orchestrator", "reviewer", "test-coder"]),
+    ("must", "'structured.*evidence|evidence row'", ["coder", "reviewer", "test-coder"]),
+    ("must", "'pl-spec-review|planar-spec-reviewer'", ["orchestrator"]),
+    ("must", "'never recommended'", ["agents/methodology.md", "orchestrator"]),
+    ("must", "'in-pwd.*barrel-bypass|barrel-bypass.*in-pwd'", ["coder", "orchestrator"]),
+    ("must", "'github-pr.*external-pr.*local-ref.*already-integrated'", ["janitor"]),
+    ("must", "\"coder.*(narrative )?report|coder\'s report\"", ["agents/methodology.md", "reviewer"]),
+    ("must", "'Output contract \u2014 the findings brief'", ["research"]),
+]
+# Calls with a computed path list or a skill-only target; counted, not role-pinned.
+COHERENCE_OTHER_CALLS = 7  # 1 forbid core_rel, 2 forbid SKILL_RELS, 2 must SKILL.md, 2 must harness.py
+COHERENCE_CALL_TOTAL = 18  # 11 role-pinned above + COHERENCE_OTHER_CALLS
+
+
+def _role_of(path: str) -> str:
+    match = re.fullmatch(r"agents/planar-([a-z-]+)\.md", path)
+    return match.group(1) if match else path
+
+
+def coherence_phrase_roles(source: str) -> tuple[int, list[tuple[str, str, list[str]]]]:
+    """Total must/forbid calls in `grade_coherence` and, for the calls with a
+    literal path list, `(kind, pattern source, roles)`."""
+    import ast
+
+    tree = ast.parse(source)
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "grade_coherence"
+    )
+    total = 0
+    pinned: list[tuple[str, str, list[str]]] = []
+    for node in ast.walk(fn):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("must", "forbid")
+        ):
+            continue
+        total += 1
+        try:
+            paths = ast.literal_eval(node.args[1])
+        except (ValueError, SyntaxError):
+            continue
+        if any(p.startswith(("skills/planar", "evals/")) for p in paths):
+            continue
+        pinned.append(
+            (node.func.id, ast.unparse(node.args[0]), sorted({_role_of(p) for p in paths}))
+        )
+    return total, pinned
+
+
+def missing_coherence_phrases(source: str) -> list[str]:
+    """One line per pinned (phrase, role) pair absent from `source`."""
+    _, found = coherence_phrase_roles(source)
+    have = {(k, p, r) for k, p, roles in found for r in roles}
+    return [
+        f"{kind} {pattern} lost role {role}"
+        for kind, pattern, roles in COHERENCE_PHRASES
+        for role in roles
+        if (kind, pattern, role) not in have
+    ]
+
+
+class RoleAssertionRetargetTests(unittest.TestCase):
+    """Task 7214: every pl-<role> assertion now reads the agent file."""
+
+    def test_no_case_or_harness_list_names_a_path_under_skills_src(self) -> None:
+        offenders = [
+            str(path.relative_to(harness.ROOT))
+            for path in sorted((harness.ROOT / "evals").rglob("*"))
+            if path.suffix in (".json", ".py")
+            and path.name != "test_harness.py"
+            and "skills/src/" in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(offenders, [])
+
+    def test_every_case_assertion_keeps_its_roles_on_agent_paths(self) -> None:
+        found: dict[str, list[str]] = {}
+        for _, case in harness.load_cases():
+            for assertion in case.get("contract_assertions", []):
+                for path in assertion["paths"]:
+                    self.assertTrue((harness.ROOT / path).is_file(), path)
+                    self.assertFalse(path.startswith("skills/src/"), path)
+                found[f"{case['id']}/{assertion['id']}"] = sorted(
+                    {_role_of(p) for p in assertion["paths"]}
+                )
+        for key, roles in RETARGETED_CASE_ROLES.items():
+            self.assertEqual(found.get(key), roles, key)
+        self.assertEqual(
+            sum(1 for k in found if not k.startswith("skill-planar-contract/")),
+            len(RETARGETED_CASE_ROLES),
+        )
+        self.assertEqual(len(found), 62)  # 53 at bb9e5816; +9 for validation-cadence
+
+    def test_coherence_phrase_count_and_roles_are_unchanged(self) -> None:
+        source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(
+            encoding="utf-8"
+        )
+        total, _ = coherence_phrase_roles(source)
+        self.assertEqual(total, COHERENCE_CALL_TOTAL)
+        self.assertEqual(missing_coherence_phrases(source), [])
+        self.assertNotIn("skills/src/", source.split("def grade_coherence")[1].split("def grade_coherence_negative_control")[0])
+
+    def test_removing_one_phrase_fails_naming_the_phrase_and_role(self) -> None:
+        source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(
+            encoding="utf-8"
+        )
+        mutated = source.replace(
+            '    forbid(r"planar task done", ["agents/planar-coder.md"])\n', "", 1
+        )
+        self.assertNotEqual(mutated, source)
+        missing = missing_coherence_phrases(mutated)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("planar task done", missing[0])
+        self.assertIn("coder", missing[0])
+        total, _ = coherence_phrase_roles(mutated)
+        self.assertEqual(total, COHERENCE_CALL_TOTAL - 1)
+
+    def test_dropping_a_role_from_a_list_fails_naming_the_role(self) -> None:
+        source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(
+            encoding="utf-8"
+        )
+        mutated = source.replace('["agents/planar-coder.md"])', '[])', 1)
+        missing = missing_coherence_phrases(mutated)
+        self.assertTrue(any("coder" in line for line in missing), missing)
 
 
 if __name__ == "__main__":

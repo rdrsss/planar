@@ -10,21 +10,24 @@
 # deleted `zig/` outright, and the targets that drove it were removed rather
 # than stubbed — see the note above `test-cpp-report`.
 
+# No built-in suffix rules. With them, `make install` would match the repository's
+# install.sh through make's `%: %.sh` rule and copy it to a file named `install`
+# instead of refusing: the install and uninstall targets are retired (plan 1122)
+# and must fail with make's no-rule message.
+MAKEFLAGS += --no-builtin-rules
+.SUFFIXES:
+
 BINARY        := planar
 AGENT_BINARY  := planar-agent
 WATCH_BINARY  := planar-watch
 EXECUTE_BINARY := planar-execute
 EXT_BINARY    := planar-ext
-SCRIPTORIUM_BINARY := scriptorium
 BIN_DIR       := bin
 BIN           := $(BIN_DIR)/$(BINARY)
 AGENT_BIN     := $(BIN_DIR)/$(AGENT_BINARY)
 WATCH_BIN     := $(BIN_DIR)/$(WATCH_BINARY)
 EXECUTE_BIN   := $(BIN_DIR)/$(EXECUTE_BINARY)
 EXT_BIN       := $(BIN_DIR)/$(EXT_BINARY)
-SCRIPTORIUM_BIN := $(BIN_DIR)/$(SCRIPTORIUM_BINARY)
-
-PREFIX      ?= $(HOME)/.local
 
 # CMake build output — binaries land under `build/<preset>/bin` per
 # CMakePresets.json. Override to point a target at a different build
@@ -64,7 +67,7 @@ help:
 	@awk 'BEGIN {FS = ":.*##"; printf "Targets:\n"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 .PHONY: build
-build: ## Build the five Planar binaries and Scriptorium into ./bin/
+build: ## Build the five Planar binaries into ./bin/
 	@mkdir -p $(BIN_DIR)
 	cmake --preset release -DPLANAR_VERSION_META=OFF
 	cmake --build build/release $(ARGS)
@@ -73,32 +76,6 @@ build: ## Build the five Planar binaries and Scriptorium into ./bin/
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(WATCH_BINARY) $(WATCH_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXECUTE_BINARY) $(EXECUTE_BIN)
 	@cp -f $(CPP_RELEASE_BIN_DIR)/$(EXT_BINARY) $(EXT_BIN)
-	@cp -f $(CPP_RELEASE_BIN_DIR)/$(SCRIPTORIUM_BINARY) $(SCRIPTORIUM_BIN)
-
-.PHONY: install
-install: ## Build and install the five Planar executables and Scriptorium into PREFIX/bin
-	cmake --preset release -DPLANAR_VERSION_META=ON
-	cmake --build build/release $(ARGS)
-	cmake --install build/release --prefix $(PREFIX)
-
-.PHONY: install-bin
-install-bin: install ## Compatibility alias for the binary-only install
-
-.PHONY: install-full
-install-full: ## Legacy full install: binaries plus skills, agents, workflows, and vendor wiring
-	./install.sh $(INSTALL_FLAGS)
-
-.PHONY: uninstall
-uninstall: ## Remove the five Planar executables from PREFIX/bin
-	rm -f $(PREFIX)/bin/$(BINARY)
-	rm -f $(PREFIX)/bin/$(AGENT_BINARY)
-	rm -f $(PREFIX)/bin/$(WATCH_BINARY)
-	rm -f $(PREFIX)/bin/$(EXECUTE_BINARY)
-	rm -f $(PREFIX)/bin/$(EXT_BINARY)
-
-.PHONY: uninstall-full
-uninstall-full: ## Remove the legacy full install (preserves planar.db, its -wal/-shm sidecars and queue-logs/; removes the retired agent.db behind the live-queue guard)
-	./install.sh --uninstall $(INSTALL_FLAGS)
 
 # Scratch database for hand-run smoke tests, kept in the build dir.
 #
@@ -126,20 +103,36 @@ smoke-reset: ## Delete the throwaway smoke database
 	rm -rf $(dir $(SMOKE_DB))
 
 .PHONY: test-install-manifest
-test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures
+test-install-manifest: ## Run focused installer manifest ownership/atomicity fixtures (ctest install.manifest runs them under `make test`)
 	bash scripts/install-manifest-test.sh
 
+.PHONY: test-install-stage
+test-install-stage: ## Run focused installer staging and vendor-surface fixtures (the ctest `install.stage_*` tests run them under `make test`)
+	bash scripts/install-stage-test.sh
+
+.PHONY: test-install-prefix-guard
+test-install-prefix-guard: ## Run the install-root guard fixtures (ctest install.prefix_guard runs them under `make test`)
+	bash scripts/install-prefix-guard-test.sh
+
+.PHONY: test-install-data-paths
+test-install-data-paths: ## Run the data-path fixtures (ctest install.data_paths runs them under `make test`)
+	bash scripts/install-data-paths-test.sh
+
+.PHONY: test-install-prereq
+test-install-prereq: ## Run the prerequisite-listing fixture (ctest install.prereq runs it under `make test`)
+	bash scripts/install-prereq-test.sh
+
 .PHONY: test-install-deps
-test-install-deps: ## Run focused installer compiler-preflight fixture
+test-install-deps: ## Run focused installer compiler-preflight fixture (ctest install.deps runs it under `make test`)
 	bash scripts/install-deps-test.sh
 
 .PHONY: test
-test: test-install-manifest test-install-deps ## Run unit tests
+test: ## Run unit tests (the installer script tests are ctest cases)
 	$(configure_debug)
 	cmake --build build/debug --target all planar_tests $(ARGS)
 	ctest --test-dir build/debug --output-on-failure -j $(TEST_JOBS) $(ARGS)
 
-# Linux gate (task 7094): build + ctest on Debian trixie in Docker. See
+# Linux gate: build, ctest and queue observer Python checks on Debian trixie in Docker. See
 # docker/linux-gate.Dockerfile and docs/testing.md. Docker is a developer
 # tool, not a build dependency. Every dependency is committed under vendor/,
 # so the image needs no token and no extra build context.
@@ -149,17 +142,71 @@ LINUX_GATE_OUT      ?= build/linux-gate
 LINUX_GATE_CTEST_ARGS ?=
 
 .PHONY: linux-gate
-linux-gate: ## Build and run the whole ctest suite on Linux in Docker (arm64): make linux-gate [LINUX_GATE_JOBS=4 LINUX_GATE_CTEST_ARGS="-L process"]
+linux-gate: ## Build and run ctest plus queue observer Python checks on Linux in Docker (arm64): make linux-gate [LINUX_GATE_JOBS=4 LINUX_GATE_CTEST_ARGS="-L process"]
 	rm -rf $(LINUX_GATE_OUT)
 	DOCKER_BUILDKIT=1 docker build --platform $(LINUX_GATE_PLATFORM) \
 	  --target gate -f docker/linux-gate.Dockerfile \
 	  --build-arg JOBS=$(LINUX_GATE_JOBS) --build-arg CTEST_ARGS="$(LINUX_GATE_CTEST_ARGS)" \
 	  --progress=plain --output type=local,dest=$(LINUX_GATE_OUT) .
-	@echo "--- linux-gate: $(LINUX_GATE_OUT)/{configure,build,ctest}.log ---"
+	@echo "--- linux-gate: logs and status in $(LINUX_GATE_OUT)/ ---"
 	@cat $(LINUX_GATE_OUT)/status.txt
 	@grep -E "tests passed|tests failed|Total Test time" $(LINUX_GATE_OUT)/ctest.log || true
 	@grep -qx "status=0" $(LINUX_GATE_OUT)/status.txt || { \
 	  echo "make linux-gate: FAILED (see $(LINUX_GATE_OUT)/*.log)"; exit 1; }
+
+# Resolve bundle identity on
+# the host before Docker loses .git; tagged cuts require that exact clean HEAD.
+.PHONY: dist
+dist: ## Assemble the native portable bundle with embedded release identity
+	JOBS="$(or $(JOBS),4)" scripts/dist.sh
+
+LINUX_DIST_JOBS ?= 4
+LINUX_DIST_OUT  ?= dist
+export PLANAR_RELEASE_VERSION
+
+.PHONY: linux-dist
+linux-dist: ## Build the Linux x86_64 bundle on Debian Bookworm (amd64 emulation on Apple silicon)
+	@set -eu; \
+	  identity=$$(scripts/dist.sh --identity); \
+	  source_sha=$$(printf '%s\n' "$$identity" | sed -n '1p'); \
+	  source_dirty=$$(printf '%s\n' "$$identity" | sed -n '2p'); \
+	  DOCKER_BUILDKIT=1 docker build --platform linux/amd64 \
+	    --target dist -f docker/linux-gate.Dockerfile \
+	    --build-arg JOBS=$(LINUX_DIST_JOBS) \
+	    --build-arg PLANAR_RELEASE_VERSION="$${PLANAR_RELEASE_VERSION:-}" \
+	    --build-arg PLANAR_SOURCE_SHA="$$source_sha" \
+	    --build-arg PLANAR_SOURCE_DIRTY="$$source_dirty" \
+	    --progress=plain --output "type=local,dest=$(LINUX_DIST_OUT)" .
+
+# The local release path (decision 1337): both platforms from one existing stable
+# tag, each gated by scripts/release-gates.sh, then the common publisher. The
+# native bundle needs a macOS arm64 host; Linux builds and gates run in Docker.
+# DRY_RUN=1 runs every build, gate and publisher check and prints the command;
+# any other non-empty DRY_RUN is refused before anything runs.
+RELEASE_CUT_DIR ?= build/release-cut
+
+.PHONY: release-cut
+release-cut: ## Build, gate and publish both bundles from an existing stable tag: make release-cut TAG=vX.Y.Z [DRY_RUN=1]
+	@set -eu; \
+	  tag="$(TAG)"; \
+	  [ -n "$$tag" ] || { echo "make release-cut: TAG=vMAJOR.MINOR.PATCH is required" >&2; exit 2; }; \
+	  case "$(DRY_RUN)" in \
+	    '') publish_mode= ;; \
+	    1) publish_mode=--dry-run ;; \
+	    *) echo "make release-cut: DRY_RUN must be 1 (a dry run) or unset (publish), not '$(DRY_RUN)'" >&2; exit 2 ;; \
+	  esac; \
+	  host="$$(uname -s)-$$(uname -m)"; \
+	  [ "$$host" = Darwin-arm64 ] || { echo "make release-cut: the native macos-arm64 bundle needs a macOS arm64 host (this host is $$host)" >&2; exit 1; }; \
+	  scripts/release-publish.sh --preflight "$$tag" >/dev/null; \
+	  out="$(RELEASE_CUT_DIR)/$$tag"; \
+	  rm -rf "$$out"; \
+	  mkdir -p "$$out/macos-arm64"; \
+	  PLANAR_RELEASE_VERSION="$$tag" $(MAKE) dist; \
+	  cp dist/planar-macos-arm64.tar.gz dist/planar-macos-arm64.tar.gz.gates.json dist/get-planar.sh "$$out/macos-arm64/"; \
+	  scripts/release-gates.sh --platform macos-arm64 "$$out/macos-arm64"; \
+	  PLANAR_RELEASE_VERSION="$$tag" $(MAKE) linux-dist LINUX_DIST_OUT="$$out/linux-x86_64"; \
+	  scripts/release-gates.sh --platform linux-x86_64 "$$out/linux-x86_64"; \
+	  scripts/release-publish.sh $$publish_mode "$$tag" "$$out/macos-arm64" "$$out/linux-x86_64"
 
 .PHONY: linux-gate-prune
 linux-gate-prune: ## Reclaim the Docker build cache the Linux gate leaves behind (docker builder prune -f)
@@ -368,18 +415,20 @@ test-cpp-solver: ## Run the ctest suite against a solver-ON build (decision 1032
 # `install.sh` — not this target — is what catches that class.
 
 .PHONY: cli-usage-check
-cli-usage-check: ## Validate authored surfaces against the live CLI schema and semantic contracts
+cli-usage-check: ## Validate authored surfaces and catalog docs.examples against the live CLI schema and semantic contracts
 	$(configure_debug)
 	cmake --build $(CPP_BUILD_DIR) --target cli_usage_lint cli_docs_coverage surface_lint planar_cmd_planar planar_cmd_planar_agent planar_cmd_planar_watch planar_cmd_planar_ext planar_cmd_planar_execute
 	$(CLI_USAGE_LINT) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY) $(CPP_BIN_ABS)/$(AGENT_BINARY) $(CPP_BIN_ABS)/$(WATCH_BINARY) $(CPP_BIN_ABS)/$(EXT_BINARY) $(CPP_BIN_ABS)/$(EXECUTE_BINARY)
 	$(CLI_DOCS_COVERAGE) $(CURDIR) $(CPP_BIN_ABS)/$(BINARY)
-	$(SURFACE_LINT) $(CURDIR)
+	$(SURFACE_LINT) $(CURDIR) --enable-pending-retired
+	python3 scripts/check-md-anchors.py --self-test
+	python3 scripts/check-md-anchors.py docs/cli-reference.md INSTALL.md
 
 .PHONY: surface-lint
 surface-lint: ## Validate authored links, contracts, capabilities, commands, and retired references
 	$(configure_debug)
 	cmake --build $(CPP_BUILD_DIR) --target surface_lint
-	$(SURFACE_LINT) $(CURDIR)
+	$(SURFACE_LINT) $(CURDIR) --enable-pending-retired
 
 .PHONY: surface-check
 # Fast local gate for the CLI colocation refactor (task 6401/6612, decision
@@ -448,7 +497,7 @@ coverage-update: ## Re-seed scripts/coverage-baseline.txt with the current cover
 # discipline. Tidy drift still does, as does everything else, because this
 # repo has no .github/workflows at all today.
 .PHONY: test-all
-test-all: test ctest-registry-check coverage cli-usage-check surface-check exit-code-contract eval-contracts cpp-lint-gate ## Run the unit suite, coverage, the authored-surface and agent-contract gates, and the gating half of cpp-lint
+test-all: test ctest-registry-check coverage cli-usage-check surface-check exit-code-contract eval-contracts eval-queue-observation-integration cpp-lint-gate ## Run the unit suite, coverage, the authored-surface and agent-contract gates, and the gating half of cpp-lint
 
 # RE-POINTED AT clang-format (plan 996, task 6045). These ran `zig fmt` over
 # `zig/`. With that tree deleted the formatter of record is the PINNED LLVM's
@@ -475,16 +524,7 @@ clean: ## Remove build artifacts
 #    invoke a model host and are opt-in.
 
 .PHONY: eval
-eval: eval-render eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures ## Deterministic render, contract, negative-control, and lifecycle-fixture checks
-
-.PHONY: eval-render
-eval-render: ## Dry-run scriptorium render of skills/src + agents
-	cmake --build $(CPP_BUILD_DIR) --target scriptorium
-	$(CPP_BIN_DIR)/scriptorium render --config scriptorium.yaml --dry-run --json >/dev/null
-
-.PHONY: eval-installed
-eval-installed: ## Check installed projections match this checkout (run after ./install.sh)
-	./scripts/check-self-installed.sh
+eval: eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures ## Deterministic contract, negative-control, and lifecycle-fixture checks
 
 .PHONY: eval-orchestrator
 eval-orchestrator: ## Orchestrator contract evals
@@ -516,17 +556,21 @@ exit-code-contract: ## Prove the DOCUMENTED exit codes are the ones the binaries
 # surface_lint checks links and shapes, the parity pins cover specific leaves.
 # None compares a documented CONVENTION against observed behaviour.
 
+.PHONY: eval-queue-observation-integration
+eval-queue-observation-integration: ## Exercise one live scratch queue ticket through native wait and older-queue fallback
+	PYTHONDONTWRITEBYTECODE=1 python3 evals/orchestrator/integration_queue_observation.py
+
 .PHONY: eval-contracts
 eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-fixtures ## The PROVIDER-FREE eval lanes, composed into test-all
 
 # Why this exists separately from `make eval`, and why test-all uses it:
 #
-# `make eval` also runs `eval-render`, which builds the in-tree Scriptorium
-# target first. The three contract lanes below need only python3 and the
-# checkout, so they remain a separate fast gate.
+# `make eval` also runs `eval-orchestrator`, the shell-driven contract
+# lane. The three contract lanes below need only python3 and the checkout,
+# so they remain a separate fast gate.
 #
 # They are worth gating because they police the AGENT CONTRACTS: the
-# executable prompts under agents/ and skills/src/ that the orchestrator and
+# executable prompts under agents/ and skills/ that the orchestrator and
 # its specialists actually follow. Those had no gate at all until now, and a
 # real violation (a language-specific `.zig-cache` reference in
 # agents/methodology.md, forbidden because the core surfaces must stay

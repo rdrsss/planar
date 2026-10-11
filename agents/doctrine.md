@@ -41,7 +41,7 @@ Session-attributed defect log (add entries when a new defect class is observed):
 
 ## Verify independently
 
-Full doctrine lives in [`agents/reviewer.md` §What the reviewer does](reviewer.md#what-the-reviewer-does).
+Full doctrine lives in [`agents/planar-reviewer.md` §What the reviewer does](planar-reviewer.md#what-the-reviewer-does).
 
 Summary: the blind reviewer does not receive the coder's narrative report. It
 receives a structured validation packet and independently verifies the diff.
@@ -59,8 +59,10 @@ Summary: agents on one machine share its cores, so builds and test runs are
 ordered host-wide through one queue instead of each agent deciding when it is
 safe to start. The queue does not lock a build directory or a resource; it
 serializes execution, and a dead submitter cannot leave it stuck. Submit the
-command, poll for its outcome, and treat the ticket's recorded outcome as the
-truth rather than the command's exit code. A queue that refuses is reported to
+command, observe its ticket with a finite `queue wait` budget, and treat the
+structured reason and recorded outcome as the truth rather than the process
+exit code alone. A short observation slice can be resumed on the same ticket
+after an explicit decision. A queue that refuses is reported to
 the operator, never bypassed by running the command directly: the operator
 chose refusal over bypass. Only a Planar with no queue at all is the exception,
 and the agent then says Planar needs upgrading.
@@ -154,7 +156,7 @@ gate, weaken strict scope resolution, or bypass the cross-scope guard — no suc
 
 ## Work-complete report template
 
-Full template lives in [`agents/coder.md §Work-complete report template`](coder.md#work-complete-report-template).
+Full template lives in [`agents/planar-coder.md §Work-complete report template`](planar-coder.md#work-complete-report-template).
 
 Required sections (all six must be present; write "N/A" only if the section genuinely does not apply):
 
@@ -173,7 +175,7 @@ spec citations, confirmed validation profile, and structured evidence packet.
 
 ## When to skip agents
 
-Aggregated from [`agents/coder.md`](coder.md) and [`agents/reviewer.md`](reviewer.md) per the reviewer skip-condition rules:
+Aggregated from [`agents/planar-coder.md`](planar-coder.md) and [`agents/planar-reviewer.md`](planar-reviewer.md) per the reviewer skip-condition rules:
 
 | Agent | Skip when |
 |---|---|

@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_supersede(CLI::App& decision) -> CLI::App* {
   CLI::App* supersede = decision.add_subcommand("supersede", "Mark a decision as superseded by a newer decision.");
-  add_int_required(*supersede, "--by");
-  add_string(*supersede, "--scope");
-  add_json(*supersede);
-  add_positional(*supersede, "decision-id");
+  add_int_required(*supersede, "--by", "Id of the decision that replaces this one");
+  add_string(*supersede, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_json(*supersede, "Emit machine-readable JSON instead of text");
+  add_positional(*supersede, "decision-id", "Decision id");
   return supersede;
 }
 } // namespace planar::cmd::handlers::decision_cli

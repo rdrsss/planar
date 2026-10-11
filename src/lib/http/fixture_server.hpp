@@ -78,9 +78,14 @@ struct captured_request {
 
 /// @brief What the handler wants sent back.
 struct canned_response {
-  int         status = 200;                    ///< The HTTP status code.
-  std::string body;                            ///< The response body.
-  std::string content_type = "application/json"; ///< The `Content-Type` to send.
+  int                                              status = 200;                      ///< The HTTP status code.
+  std::string                                      body;                              ///< The response body.
+  std::string                                      content_type = "application/json"; ///< The `Content-Type` to send.
+  std::vector<std::pair<std::string, std::string>> extra_headers;   ///< Additional response headers, such as `Location`.
+  std::size_t                                      chunk_bytes = 0; ///< When non-zero, send the body in pieces of this size.
+  std::chrono::milliseconds                        chunk_delay{0};  ///< Pause after each piece (and before a stall).
+  bool                                             stall_after_first_chunk = false; ///< Send one piece, then pause `stall_delay`.
+  std::chrono::milliseconds                        stall_delay{0};                  ///< The stall length.
 };
 
 /// @brief An HTTP/1.1 server on an ephemeral loopback port, serving one
@@ -94,10 +99,10 @@ class server {
 private:
   using handler_fn = std::function<canned_response(const captured_request&)>;
 
-  handler_fn        _handler;
-  int               _listen_fd = -1;
-  std::uint16_t     _port      = 0;
-  std::atomic<bool> _stop{false};
+  handler_fn               _handler;
+  int                      _listen_fd = -1;
+  std::uint16_t            _port      = 0;
+  std::atomic<bool>        _stop{false};
   std::atomic<std::size_t> _requests{0};
   std::thread              _thread;
 
@@ -121,6 +126,40 @@ private:
     }
   }
 
+  /// @brief Write all of `data` without raising SIGPIPE when the peer has gone.
+  /// @param fd The connected socket.
+  /// @param data The bytes.
+  /// @return Whether every byte was written.
+  static auto send_all(int fd, std::string_view data) -> bool {
+    int flags = 0;
+#ifdef MSG_NOSIGNAL
+    flags = MSG_NOSIGNAL;
+#endif
+    std::size_t sent = 0;
+    while (sent < data.size()) {
+      auto const wrote = ::send(fd, data.data() + sent, data.size() - sent, flags);
+      if (wrote <= 0) {
+        return false;
+      }
+      sent += static_cast<std::size_t>(wrote);
+    }
+    return true;
+  }
+
+  /// @brief Sleep in short steps so the destructor is not held up.
+  /// @param total How long to pause.
+  /// @return false when the server was asked to stop meanwhile.
+  auto sleep_unless_stopped(std::chrono::milliseconds total) const -> bool {
+    auto const until = std::chrono::steady_clock::now() + total;
+    while (std::chrono::steady_clock::now() < until) {
+      if (_stop.load(std::memory_order_acquire)) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    return true;
+  }
+
   /// @brief Serve one accepted connection, then close it.
   /// @param fd The connected socket; closed before returning.
   auto serve_one(int fd) -> void {
@@ -133,25 +172,24 @@ private:
     std::string_view const head{raw.data(), head_end};
 
     captured_request req;
-    std::size_t      line_start = 0;
-    bool             first      = true;
+    std::size_t      line_start     = 0;
+    bool             first          = true;
     std::size_t      content_length = 0;
     while (line_start < head.size()) {
-      auto       line_end = head.find("\r\n", line_start);
+      auto line_end = head.find("\r\n", line_start);
       if (line_end == std::string_view::npos) {
         line_end = head.size();
       }
       std::string_view const line = head.substr(line_start, line_end - line_start);
       line_start                  = line_end + 2;
       if (first) {
-        first             = false;
+        first                = false;
         auto const first_sp  = line.find(' ');
         auto const second_sp = line.find(' ', first_sp == std::string_view::npos ? 0 : first_sp + 1);
         if (first_sp != std::string_view::npos) {
-          req.verb = std::string(line.substr(0, first_sp));
-          req.target =
-              std::string(line.substr(first_sp + 1, (second_sp == std::string_view::npos ? line.size() : second_sp) -
-                                                        first_sp - 1));
+          req.verb   = std::string(line.substr(0, first_sp));
+          req.target = std::string(
+              line.substr(first_sp + 1, (second_sp == std::string_view::npos ? line.size() : second_sp) - first_sp - 1));
         }
         continue;
       }
@@ -191,15 +229,30 @@ private:
     // including the empty ones: libcurl otherwise has to wait for the peer to
     // close before it can know a bodyless 204 is complete, which turns every
     // such case into a timeout-length pause.
-    auto const wire = std::format("HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                  reply.status, reply.content_type, reply.body.size(), reply.body);
-    std::size_t sent = 0;
-    while (sent < wire.size()) {
-      auto const wrote = ::write(fd, wire.data() + sent, wire.size() - sent);
-      if (wrote <= 0) {
+    std::string head_out = std::format("HTTP/1.1 {} X\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
+                                       reply.status, reply.content_type, reply.body.size());
+    for (auto const& [name, value] : reply.extra_headers) {
+      head_out += std::format("{}: {}\r\n", name, value);
+    }
+    head_out += "\r\n";
+    if (!send_all(fd, head_out)) {
+      ::close(fd);
+      return;
+    }
+    std::size_t const piece       = reply.chunk_bytes == 0 ? reply.body.size() : reply.chunk_bytes;
+    std::size_t       at          = 0;
+    bool              first_piece = true;
+    while (at < reply.body.size()) {
+      auto const take = std::min(piece, reply.body.size() - at);
+      if (!send_all(fd, std::string_view(reply.body).substr(at, take))) {
         break;
       }
-      sent += static_cast<std::size_t>(wrote);
+      at += take;
+      auto const pause = (first_piece && reply.stall_after_first_chunk) ? reply.stall_delay : reply.chunk_delay;
+      first_piece      = false;
+      if (!sleep_unless_stopped(pause)) {
+        break;
+      }
     }
     ::close(fd);
   }
@@ -210,7 +263,7 @@ private:
   /// does not reliably do that on macOS).
   auto run() -> void {
     while (!_stop.load(std::memory_order_acquire)) {
-      pollfd waiting{.fd = _listen_fd, .events = POLLIN, .revents = 0};
+      pollfd     waiting{.fd = _listen_fd, .events = POLLIN, .revents = 0};
       auto const ready = ::poll(&waiting, 1, 25);
       if (ready <= 0) {
         continue;
@@ -239,6 +292,9 @@ public:
     }
     int const on = 1;
     ::setsockopt(_listen_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+#ifdef SO_NOSIGPIPE
+    ::setsockopt(_listen_fd, SOL_SOCKET, SO_NOSIGPIPE, &on, sizeof(on)); // inherited by accepted sockets on macOS
+#endif
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -277,15 +333,21 @@ public:
 
   /// @brief The kernel-assigned loopback port.
   /// @return The port.
-  [[nodiscard]] auto port() const noexcept -> std::uint16_t { return _port; }
+  [[nodiscard]] auto port() const noexcept -> std::uint16_t {
+    return _port;
+  }
 
   /// @brief The origin to send to.
   /// @return `http://127.0.0.1:<port>`.
-  [[nodiscard]] auto base_url() const -> std::string { return std::format("http://127.0.0.1:{}", _port); }
+  [[nodiscard]] auto base_url() const -> std::string {
+    return std::format("http://127.0.0.1:{}", _port);
+  }
 
   /// @brief How many requests the server has served.
   /// @return The count.
-  [[nodiscard]] auto request_count() const noexcept -> std::size_t { return _requests.load(std::memory_order_acquire); }
+  [[nodiscard]] auto request_count() const noexcept -> std::size_t {
+    return _requests.load(std::memory_order_acquire);
+  }
 };
 
 } // namespace planar::http::fixture

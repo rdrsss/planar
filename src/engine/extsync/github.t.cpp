@@ -69,16 +69,20 @@ using planar::engine::extsync::github::github_adapter;
 /// a canned status/body. Opens no socket.
 class recording_transport final : public planar::http::transport {
 public:
-  std::uint16_t                       reply_status = 200;
-  std::string                         reply_body   = "{}";
-  std::size_t                         calls        = 0;
-  std::optional<planar::http::method> last_verb;
-  std::string                         last_url;
-  std::optional<std::string>          last_body;
-  std::vector<planar::http::header>   last_headers;
+  std::uint16_t                                reply_status = 200;
+  std::string                                  reply_body   = "{}";
+  std::size_t                                  calls        = 0;
+  std::optional<planar::http::transport_error> failure;
+  std::optional<planar::http::method>          last_verb;
+  std::string                                  last_url;
+  std::optional<std::string>                   last_body;
+  std::vector<planar::http::header>            last_headers;
 
   auto send(const planar::http::request& req) -> std::expected<planar::http::response, planar::http::transport_error> override {
     ++calls;
+    if (failure) {
+      return std::unexpected(*failure);
+    }
     last_verb    = req.verb;
     last_url     = req.url;
     last_body    = req.body;
@@ -552,4 +556,14 @@ TEST_CASE("github link_sub_issue_probe refuses a bearer credential with no token
   github_adapter const adapter("", auth_credential{.kind = auth_kind::bearer}, wire);
   CHECK(err(adapter.link_sub_issue_probe("o", "r")) == std::optional{adapter_error::invalid_auth});
   CHECK(wire.calls == 0);
+}
+
+TEST_CASE("github preserves certificate verification failure in the operator diagnostic", "[extsync][github]") {
+  recording_transport wire;
+  wire.failure = planar::http::transport_error::certificate_verification_failed;
+  planar::engine::extsync::github::github_adapter adapter{
+      "https://github.invalid", {.kind = planar::adapter::auth_kind::bearer, .token = "fixture-token"}, wire};
+  auto const pulled = adapter.pull("acme/api#42");
+  REQUIRE_FALSE(pulled.has_value());
+  CHECK(planar::adapter::adapter_error_name(pulled.error()) == "CertificateVerificationFailed");
 }

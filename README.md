@@ -99,11 +99,34 @@ claimable again, and whatever it captured remains in the store.
 
 Planar is harness-agnostic. A harness needs only to run commands and read their
 output; read commands accept `--json` for machine-readable results. The
-installer additionally renders Planar's bundled skills for Claude Code (slash
-commands), Codex, Copilot, and Gemini, and the role specifications under
+installer additionally places the `planar` skill and the role agents into each
+of six vendors it finds on the host, by presence marker: Claude Code
+(`~/.claude/`), Codex (`$CODEX_HOME` or `~/.codex/`), Copilot (`~/.copilot/`),
+Gemini CLI (`~/.gemini/settings.json`), Antigravity
+(`~/.gemini/antigravity-cli/`) and OpenCode (`~/.config/opencode/`). Skills go to
+`~/.claude/skills`, the shared `~/.agents/skills` (Codex, Copilot, Gemini CLI,
+OpenCode) and `~/.gemini/antigravity-cli/skills`; agents go to each vendor's own
+agents directory. The target table is in
+[INSTALL.md](INSTALL.md#install-layout-reference). The role specifications under
 [`agents/`](agents/) are vendor-neutral. For any other harness, the same
 operations are available as plain commands. The role specifications and skills
 are described in the [skill reference](docs/skill-reference.md).
+
+With the skill installed there is no command to type. Ask for the outcome from
+inside a project, and the harness loads the skill and dispatches the matching
+`planar-<role>` agent:
+
+```text
+Draft a Planar spec for adding multi-currency checkout.
+Review the spec for plan 42.
+Orchestrate plan 42.
+What needs my attention in this project?
+```
+
+In Claude Code, `/planar <request>` loads the skill explicitly. Applying an
+ingest, closing a plan and archiving its workbench wait for your confirmation.
+More requests, and a map from each retired `pl-*` skill to its replacement, are
+in the [skill reference](docs/skill-reference.md#using-it-day-to-day).
 
 ## Core objects
 
@@ -131,10 +154,32 @@ The [concepts](docs/concepts.md) document defines each of these precisely.
 - **Explicit synchronization.** Remote changes arrive as proposals, and
   conflicts are surfaced rather than resolved silently.
 
+## Install
+
+On Apple silicon macOS 26 or later, or x86_64 Linux with glibc 2.36 or later:
+
+```sh
+curl -fsSL https://github.com/rdrsss/planar/releases/latest/download/get-planar.sh | sh
+```
+
+The script downloads the latest release bundle, verifies it against the
+release's `SHA256SUMS`, and installs it into `~/.planar` with the `planar` skill
+and the `planar-<role>` agents placed into each harness it finds. Add
+`~/.planar/bin` to your `PATH`. To pin a release, fetch that release's script
+and set `PLANAR_VERSION` on the shell that reads it:
+
+```sh
+curl -fsSL https://github.com/rdrsss/planar/releases/download/vX.Y.Z/get-planar.sh | PLANAR_VERSION=vX.Y.Z sh
+```
+
+Later, `planar update` moves to a newer release and `planar-uninstall` removes
+the install. [INSTALL.md](INSTALL.md) has the prerequisites, the platform
+floors, the update and uninstall details, and the source install for
+contributors.
+
 ## Quick start
 
-Planar builds from source; see [INSTALL.md](INSTALL.md) for prerequisites and
-instructions. With the binaries on your path:
+With the binaries on your path:
 
 ```bash
 planar init --name "my-project"
@@ -162,6 +207,7 @@ The [documentation index](docs/README.md) gives a reading order. In brief:
 | Install and try it | [INSTALL.md](INSTALL.md), [Getting started](docs/getting-started.md) |
 | See how work flows | [Operations](docs/operations.md), [Lifecycles](docs/lifecycles.md), [Workflows](docs/workflows.md) |
 | Look up a command | [CLI reference](docs/cli-reference.md) |
+| Use the skill and role agents | [Skill and agent reference](docs/skill-reference.md) |
 | Understand the internals | [Architecture](docs/architecture.md), [Testing](docs/testing.md) |
 | Contribute | [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) |
 

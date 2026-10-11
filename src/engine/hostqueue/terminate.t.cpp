@@ -1342,6 +1342,9 @@ TEST_CASE("terminate: the kill an advance sends to a group of zombies is not rep
   CHECK_FALSE(advanced.kills.front().error.has_value());
 }
 
+// Platform gate (task 7362): macOS only. `group_only_zombies` reads the kernel's process list through
+// sysctl(KERN_PROC_PGRP) on macOS, where kill(-pgid) answers EPERM for a zombie-only group; the Linux
+// build takes a different path and has no such refusal. Listed in docs/testing.md, Platform-specific tests.
 #if defined(__APPLE__)
 TEST_CASE("terminate: on macOS a real group whose leader exited unreaped is never reported as a failed signal",
           "[engine][hostqueue][hq-eperm-zombie-group]") {

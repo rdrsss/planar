@@ -33,10 +33,9 @@ auto skills(context& ctx, const cliapp::parsed_args& args) -> handler_result {
 /// reports "no subcommands" rather than an unknown-verb error. With no
 /// children it is a LEAF and needs a handler — see `skills` above.
 auto declare_skills(CLI::App& root) -> void {
-  root.add_subcommand(
-      "skills", "The unified skill source tree under skills/src/ is rendered by the\n  external scriptorium binary (plan 918). "
-                "Planar no longer renders vendor\n  projections nor tracks their install-drift in-band; use `scriptorium\n  "
-                "check`/`scriptorium status` instead. This command has no subcommands.");
+  root.add_subcommand("skills",
+                      "The skill tree is skills/planar/, installed by install.sh. `planar health`\n  reports install drift. "
+                      "This verb is retired and will be removed next release.");
 }
 
 } // namespace planar::cmd::handlers

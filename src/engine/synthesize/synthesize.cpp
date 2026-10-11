@@ -440,7 +440,7 @@ auto run(const std::filesystem::path& root, const std::filesystem::path& planar_
     return std::unexpected(error::io);
   out.message = std::format(
       "Awaiting LLM synthesis. The vendor skill should:\n  1. read  {}\n  2. run the LLM at temperature 0\n  3. write the Result "
-      "to {}\n  4. re-invoke `planar synthesize <repo-root>`\nSee `commands/claude/pl-synthesize.md` for the full contract.",
+      "to {}\n  4. re-invoke `planar synthesize <repo-root>`\nSee `planar synthesize --help` for the full contract.",
       out.pending_path.string(), out.cache_path.string());
   return out;
 }

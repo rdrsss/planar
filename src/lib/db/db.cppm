@@ -52,6 +52,21 @@ export struct db_error {
 /// @return `true` when `err` is a busy-source failure.
 export auto is_busy(const db_error& err) noexcept -> bool;
 
+/// @brief True when `err` means this process may not open, read or write the
+/// database file or its folder: SQLite's `SQLITE_PERM`, `SQLITE_READONLY`,
+/// `SQLITE_IOERR` or `SQLITE_CANTOPEN` (extended codes compared by their low
+/// byte, as `is_busy` does). A sandbox that denies writes under the database's
+/// folder presents as one of these, so a caller can name the access problem
+/// rather than a generic query failure.
+/// @param err The failure to classify.
+/// @return `true` when `err` is an access failure.
+export auto is_access_failure(const db_error& err) noexcept -> bool;
+
+/// @brief The sentence every binary appends when it cannot open, read or
+/// write the database: what access Planar needs and the usual cause.
+/// @return The sentence, ending in a full stop and no newline.
+export auto access_requirement() noexcept -> std::string_view;
+
 /// @brief Outcome of a single `statement::step()` call.
 export enum class step_result {
   row, ///< A row is available; read columns before stepping again.
@@ -291,6 +306,8 @@ private:
   /// invalidates the address SQLite's authorizer callback was registered
   /// against — only the pointer moves, the pointee's heap address does not.
   std::unique_ptr<std::vector<std::string>> _write_allowlist;
+  /// @brief Heap-stable callback storage while SQLite owns its userdata pointer.
+  std::unique_ptr<std::function<bool()>> _busy_retry;
 
   /// @brief Takes ownership of an already-open handle.
   /// @param handle A live, non-null `sqlite3*` returned by `sqlite3_open_v2`.
@@ -347,9 +364,39 @@ public:
   /// `db_error`.
   static auto open_read_only(std::string_view path) -> std::expected<connection, db_error>;
 
+  /// @brief Opens read-only with a caller-supplied bound for all initial reads.
+  /// @param path Existing database path.
+  /// @param busy_timeout_ms Maximum SQLite lock wait in milliseconds.
+  /// @return The connection or SQLite failure.
+  static auto open_read_only(std::string_view path, int busy_timeout_ms) -> std::expected<connection, db_error>;
+
+  /// @brief Changes the SQLite lock-wait bound before a later read.
+  /// @param busy_timeout_ms Maximum SQLite lock wait in milliseconds.
+  void set_busy_timeout(int busy_timeout_ms) noexcept;
+
+  /// @brief Installs a caller-owned retry decision for SQLite lock contention.
+  /// The callback runs on the connection's calling thread and may sleep briefly;
+  /// return false to stop the current statement with SQLITE_BUSY. Replacing it
+  /// or destroying the connection unregisters the callback before freeing it.
+  /// @param retry Invoked on each SQLite busy event.
+  void set_busy_retry(std::function<bool()> retry);
+
   /// @brief True if this connection was opened via `open_read_only`.
   /// @return `true` if this connection is read-only.
   [[nodiscard]] auto is_read_only() const noexcept -> bool;
+
+  /// @brief True when SQLite opened the main database read-only although a
+  /// writable open was requested, which it does when the file is not writable
+  /// to this process. Also `true` for a connection from `open_read_only`.
+  /// @return `true` when writes to the main database will be refused.
+  [[nodiscard]] auto is_write_protected() const noexcept -> bool;
+
+  /// @brief The most recent SQLite failure on this connection, as SQLite still
+  /// holds it: its extended result code and message. `code_` is 0 when the
+  /// last call succeeded. Read it straight after the failing call; any later
+  /// call on the connection, a rollback included, replaces it.
+  /// @return The last failure, or `{0, ""}`.
+  [[nodiscard]] auto last_error() const -> db_error;
 
   /// @brief True while ANY transaction or savepoint is open on this
   /// connection -- SQLite's own autocommit flag, inverted.

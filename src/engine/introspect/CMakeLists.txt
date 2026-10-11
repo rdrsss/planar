@@ -32,6 +32,7 @@ planar_module(engine_introspect
   INTERFACE introspect.cppm
   SOURCES introspect.cpp
   DEPENDS
+    core
     db
     json_text
     introspection_preview)

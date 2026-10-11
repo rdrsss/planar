@@ -12,8 +12,8 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App& task) -> CLI::App* {
   CLI::App* show = task.add_subcommand("show", "Show full task details.");
-  add_json(*show);
-  add_positional(*show, "task-id");
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "task-id", "Task id");
   return show;
 }
 } // namespace planar::cmd::handlers::task_cli

@@ -282,7 +282,9 @@ auto github_adapter::pull(std::string_view external_id) const -> std::expected<a
       .headers = {{.name = "Accept", .value = "application/vnd.github+json"}, {.name = "Authorization", .value = *auth}},
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status == 404) {
     return std::unexpected(adapter_error::not_found);
@@ -351,7 +353,9 @@ auto github_adapter::push(std::string_view external_id, const adapter::field_cha
       .body    = body,
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status != 200) {
     return std::unexpected(adapter_error::unexpected_status);
@@ -384,7 +388,9 @@ auto github_adapter::post_comment(std::string_view external_id, std::string_view
       .body    = payload,
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status != 201 && sent->status != 200) {
     return std::unexpected(adapter_error::unexpected_status);
@@ -409,7 +415,9 @@ auto github_adapter::create_issue(std::string_view owner, std::string_view repo,
       .body    = payload,
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status != 201) {
     return std::unexpected(adapter_error::unexpected_status);
@@ -434,7 +442,9 @@ auto github_adapter::link_sub_issue(std::string_view owner, std::string_view rep
       .body    = payload,
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status == 404) {
     return std::unexpected(adapter_error::not_found);
@@ -460,7 +470,9 @@ auto github_adapter::link_sub_issue_probe(std::string_view owner, std::string_vi
       .body    = R"({"sub_issue_id":0})",
   });
   if (!sent) {
-    return std::unexpected(adapter_error::transport_failed);
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? adapter_error::certificate_verification_failed
+                               : adapter_error::transport_failed);
   }
   if (sent->status == 404) {
     return std::unexpected(adapter_error::not_found);

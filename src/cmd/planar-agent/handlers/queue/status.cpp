@@ -241,6 +241,20 @@ auto render_text(const hq::queue_status& s) -> std::string {
 
 } // namespace
 
+/// @brief The status JSON renderer shared by status and wait.
+/// @param status The typed status snapshot.
+/// @return One escaped JSON object and a newline.
+auto queue_status_json(const hq::queue_status& status) -> std::string {
+  return render_json(status);
+}
+
+/// @brief The escaped status text renderer shared by status and wait.
+/// @param status The typed status snapshot.
+/// @return Stable escaped status lines.
+auto queue_status_text(const hq::queue_status& status) -> std::string {
+  return render_text(status);
+}
+
 auto queue_status_with(context& ctx, const cliapp::parsed_args& args, queue_status_deps deps) -> handler_outcome {
   auto const as_json = cliapp::flag_bool(args, "--json");
 

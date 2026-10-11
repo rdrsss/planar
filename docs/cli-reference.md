@@ -71,7 +71,10 @@ the `planar` binary.
 | `6` | Precondition conflict: slug conflict, or the entity already exists. | `slug_conflict`, `already_exists` |
 | `7` | Database schema is **newer** than this binary supports. | `schema_version_ahead` |
 | `8` | **Worktree-gate refusal**: a planning verb was run from inside a git worktree. Outside the `domain_error_kind` bucket table entirely — `planar.cmd.planar.worktree_gate` returns it directly, before the parser even runs, so it fires even when the invocation's flags would also fail to parse. `--scope` does not bypass it. | `planar.cmd.planar.worktree_gate::check` |
+| `10` | **Update available** — not a failure. Only `planar update --check` returns it, when the installed release differs from the latest one (see [Domain: `update`](#domain-update)). Outside the `domain_error_kind` table; the handler returns it through `passthrough_code`. No other verb returns 10 of its own (`workflow run` passes a workflow's own status through verbatim). | `planar update --check` |
 | `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
+| `130` | **Interrupted by `SIGINT`** (128 + 2): a plain `planar update` caught it before its installer hand-off, removed its download directory and released the mutation lock. Outside the `domain_error_kind` table, through `passthrough_code`. | `planar update` |
+| `143` | **Interrupted by `SIGTERM`** (128 + 15), as for `130`. | `planar update` |
 
 **Usage errors exit `2`, not `64`.** An unknown flag, a missing required
 positional and a missing flag value are all `parse_error` on this binary. This
@@ -93,6 +96,23 @@ policy). Measured, and confirmed live:
 
 So a script that branches on an exit code must know which binary produced it.
 Do not port a `planar` expectation onto `planar-agent` unchanged.
+
+### Examples and exit codes in `--help` and `schema`
+
+Every leaf verb of `planar`, `planar-agent`, `planar-watch` and `planar-ext` ends its `--help` page with an `Examples:` section (one invocation per line) and an `Exit codes:` section (`<code>  <meaning>` per line). `planar task update --help` is the model:
+
+```text
+Examples:
+  planar task update 42 --status doing
+  planar task update 42 --title "Write the migration" --priority 1
+
+Exit codes:
+  0  Success.
+  1  Generic failure: entity not found, an unmapped error, or a busy source.
+  ...
+```
+
+Both sections come from the same table as the `docs.examples` and `docs.exitCodes` arrays of the `schema` catalog (`docs.exitCodes` holds `{"code":N,"meaning":"..."}` objects), so the page and the catalog cannot disagree; `planar schema --command "planar task update"` prints the data. A group such as `planar task` has no sections and `"examples":[]`. The table lives in each binary's `docs.cppm` (`src/cmd/<binary>/docs.cppm`) beside its summary table, and a leaf lists only the codes its handler can return, in ascending order. `planar` and `planar-agent` leaves other than `schema`, `completion`, `version` and `help` each carry at least one example. `planar-execute` publishes its exit codes and examples in `schema` only, because its usage banner is hand-written. `make cli-usage-check` validates every `docs.examples` entry against the live catalogs the same way it validates the invocations in these documents, and reports how many it checked.
 
 ### Error envelope tags — one vocabulary per binary (task 6902)
 
@@ -154,6 +174,18 @@ Vendor identity for auto-created sessions is taken from the `PLANAR_VENDOR` envi
 **Session auto-creation policy:** one session per `(vendor, vendor_session_id)` tuple. If `vendor_session_id` is unset (env var missing), one session per process for the duration of the active task. The `vendor` is read from `$PLANAR_VENDOR`; `vendor_session_id` is read from `$PLANAR_VENDOR_SESSION_ID`. Both are unset at install time; vendor harnesses are responsible for setting them on invocation.
 
 ---
+
+### Version metadata
+
+`planar version`, `planar-agent version`, `planar-watch version` and
+`planar-ext version` print six tokens: program, shortened sha (with
+`+dirty` when applicable), build date, `cxx`, compiler, and release tag.
+An untagged build prints `dev` in the last position. The sha token remains
+the install manifest's `build_id`.
+
+Each accepts `version --json`, which emits `release`, full `sha`, `date`,
+boolean `dirty`, and `compiler`. Version queries do not open the database.
+`planar-execute` has no version verb.
 
 ## Top-Level Usage
 
@@ -972,6 +1004,12 @@ the hard-evidence counts.
 - `ready=false` + `--dry-run` → exit 0 (preview; caller reads the JSON to decide).
 - `ready=false` + apply (no `--dry-run`) → non-zero exit; plan unchanged.
 
+**Diagnosis section (plan 1132, task 7384).** After the gate is evaluated and, on an apply, outside its transaction, `closeout` diagnoses the plan being closed over its lifetime window and appends the result, on `--dry-run`, on apply (including a refused one) and on the early-return path for a plan already `done`:
+
+- **Text:** the report, one newline (a blank line), then `diagnose: clean`, or `diagnose: <n> finding(s)` followed by one `<severity> <check-id> <entity> -> <recovery>` line per finding, or `diagnose: unavailable (<reason>)` with reason `busy`, `query-failed` or `schema-unsupported`. A run that could not read an input a check needs appends `(partial: <input> unavailable)` to the header.
+- **JSON:** `diagnose` is the LAST key of the single object, `{"plan_id":<id>,"state":"clean"|"findings"|"unavailable","outcome":"ok"|"partial"|"unavailable","reason":null|"<reason>","evaluated_at":"...","findings":[...],"incidents":{"state":"not_applicable","reason":null}}`, with the finding shape [`planar-watch diagnose`](#planar-watch-diagnose--check-recorded-orchestration-state-plan-1132) prints. Every earlier key is unchanged.
+- Findings and diagnosis failures never change `ready`, `blocked_by`, the hard gate or the exit status (decision 1342): a refused apply still exits 3 with the same `blocked_by`, and a diagnosis that cannot run still lets a ready plan close. The diagnosis reads only (a 250 ms busy timeout and a `query_only` guard) and records no incident.
+
 **Schema effects:** On apply, updates `plans(status, updated_at)` and records an `audit_log` row. No new table is created.
 
 **Exit codes:**
@@ -1728,7 +1766,7 @@ Each candidate is classified:
 | `resolved` only (default) | **14 / 46** |
 | `resolved` + `--wide` | 13 / 46 |
 
-Wide expansion bought zero additional eligible tasks and cost one. The mechanism is rule 2's drop-both-on-tie: an *undeclared* task removes only itself from the eligible set, but an *over-declared* one removes its peers too. In one plan, four tasks each mentioned `skills/src/` in prose; expanding it gave all four the same 35 paths, so they mutually overlapped and also dragged down the one task that had seven genuinely distinct real paths — 1 eligible became 0.
+Wide expansion bought zero additional eligible tasks and cost one. The mechanism is rule 2's drop-both-on-tie: an *undeclared* task removes only itself from the eligible set, but an *over-declared* one removes its peers too. In one plan, four tasks each mentioned a skills source directory in prose; expanding it gave all four the same 35 paths, so they mutually overlapped and also dragged down the one task that had seven genuinely distinct real paths — 1 eligible became 0.
 
 So over-declaration is only the safely-recoverable direction while the declaration stays narrow enough not to intersect everything. Pass `--wide` when you have judged a specific expansion to be right; the preview shows each candidate's expansion size for exactly that decision.
 
@@ -3307,7 +3345,7 @@ planar workbench extract-questions <plan-ref> [--json]
 
 **Description:** Scan every artifact in the named anchor plan's workbench directory for `## Open questions` sections. Each H3 heading (`### …`) that is a direct child of an `## Open questions` H2 is treated as one open question item. Returns a JSON array describing which artifact file each question item came from and the text of each heading. Artifact files with no `## Open questions` section are omitted from the output.
 
-This helper is consumed by `/pl-spec-draft` and `/pl-spec-ingest` to auto-register question entities during spec authoring and re-ingestion. Calling it directly is useful for auditing which open questions a spec body currently declares before running the ingest cycle.
+This helper is consumed by the `planar-planner` and `planar-ingestor` agents to auto-register question entities during spec authoring and re-ingestion. Calling it directly is useful for auditing which open questions a spec body currently declares before running the ingest cycle.
 
 **Arguments:**
 
@@ -3477,7 +3515,7 @@ planar workspace routing build [<workspace>] [--enrich]
 
 **Description:** Scan the workspace's member projects and rewrite `<state-dir>/routing-table.json`. Deterministic and in-process by default (no LLM): reads each project's README first paragraph (becomes `summary`), runs manifest detection for capability tags (loaded from `~/.planar/templates/workspace-capabilities.toml` when present), infers cross-repo dependencies from `go.mod` replace directives and `package.json` workspace deps, walks the repo for a language census and entry-point detection, and refreshes the `planar_focus` block via live DB queries (open tasks, open questions, active plans). Operator overrides from `<state-dir>/routing-table-overrides.json` are merged on every build and always win.
 
-With `--enrich`, the builder additionally consults the workspace-enrichment cache at `~/.planar/cache/workspace-enrichment/<org_id>/` and merges any LLM result whose fingerprint matches the project's current content. Cache misses emit a per-project hint to run the `pl-workspace-scan` skill. If the workspace's `config.toml` declares an `enrich_command`, the builder shells out to it on cache miss (stdin = Request JSON, stdout = Result JSON, bounded by `enrich_timeout_seconds`, default 30); validation failures are warnings, never build failures. Merge precedence (highest first): manual overrides → LLM enrichment → static signals.
+With `--enrich`, the builder additionally consults the workspace-enrichment cache at `~/.planar/cache/workspace-enrichment/<org_id>/` and merges any LLM result whose fingerprint matches the project's current content. Cache misses emit a per-project hint to run the workspace-scan flow. If the workspace's `config.toml` declares an `enrich_command`, the builder shells out to it on cache miss (stdin = Request JSON, stdout = Result JSON, bounded by `enrich_timeout_seconds`, default 30); validation failures are warnings, never build failures. Merge precedence (highest first): manual overrides → LLM enrichment → static signals.
 
 **Output (human):**
 ```
@@ -5136,13 +5174,23 @@ in the binary.
 
 ## Domain: `help`
 
-**Retirement notice.** There is no `planar help` verb: `planar help` fails at parse time with
-`error: planar: The following argument was not expected: help`, exit 2.
-Help is reached only through the `--help` / `-h` flag on any node —
-`planar --help` for the top-level command list, `planar <subcommand> --help`
-for a group or leaf. The text is rendered by Planar's own help renderer in
-`src/lib/cliapp/` (decision 948: CLI11 handles tokenization and value
-coercion only, because the help text is an oracle-pinned parity surface).
+### `planar help`
+
+**Synopsis:**
+```
+planar help
+```
+
+**Description:** Print the root help page and exit 0. The output is byte-identical to `planar --help`: the same
+`CLI::App::help()` rendering of the root node, so the two cannot drift apart. The root page leads with the
+binary's write surface (the planning entities and manual `tasks.status` transitions `planar` writes, and the
+tables `planar-agent` and `planar-ext` write) and then lists every top-level command.
+
+`planar help` takes no arguments. Per-node help stays on the flag: `planar <subcommand> [<sub-subcommand>] --help`
+for a group or leaf. Trailing words are not interpreted: `planar help task` prints the root page, not `task`'s.
+`help` is a leaf in the `planar schema`
+catalog. The text is rendered by Planar's own help renderer in `src/lib/cliapp/` (decision 948: CLI11 handles
+tokenization and value coercion only, because the help text is a pinned surface).
 
 **Output:** Plain text to stdout, exit 0. Not affected by `--json`.
 
@@ -5361,7 +5409,7 @@ Idempotency: items already present in the database (matched by title and source-
 | `--apply-removals` | off | When applying, also remove entities that are gone from the source. |
 | `--scope <slug>` | cwd-derived | Scope for all created entities. Overrides cwd derivation for this invocation. |
 | `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of status inference; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
-| `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `pl-import` skill). |
+| `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `planar-importer` agent). |
 | `--accept-spec <slugs>` | none | Non-interactive forward-spec selection — slug, comma-separated slugs, or `all`. |
 | `--no-forward-specs` | off | Skip forward-spec processing entirely. |
 
@@ -5534,6 +5582,8 @@ Writes (only with `--apply`):
 - `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
 - `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
 
+**Legacy source schemes.** Artifacts created by `synthesize` (and by `import` for forward-spec seeds) carry a stored `source` of `pl-synthesize://<kind>` or `pl-forward-spec://<kind>`. These are provenance identifiers kept for compatibility with existing databases; they name no skill and are not command references. The synthesize handler branches on the `pl-synthesize://` prefix when it decides which artifacts survive `--apply-removals`, so the literals must not be renamed. The generated artifact bodies and the operator messages name `planar synthesize` instead.
+
 **Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/importer/importer.cpp`). Both verbs converge on the same downstream pipeline.
 
 **Exit codes:**
@@ -5542,8 +5592,7 @@ Writes (only with `--apply`):
 - `2` — system error: database failure, filesystem I/O failure, cache I/O failure.
 
 **Related:**
-- [`skills/src/pl-synthesize.md`](../skills/src/pl-synthesize.md) — unified authored skill source and load-bearing LLM contract; vendor projections are generated at install time.
-- [`agents/synthesizer.md`](../agents/synthesizer.md) — vendor-neutral role spec.
+- [`agents/planar-synthesizer.md`](../agents/planar-synthesizer.md) — vendor-neutral role spec.
 - [Domain: `import`](#domain-import) — sibling transcription verb.
 - [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) — conceptual split.
 
@@ -5617,7 +5666,7 @@ list` — that discovery family was removed; `planar models resolve --role
 fallback produced it.) This is the **single authoritative routing source** — the
 skill-render Tier Table (hand-maintained in `agents/models.md`), the
 orchestrator's Phase 3 dispatch-preview routed-model column (`resolve(role,
-work_type)`; see `skills/src/pl-orchestrator.md` § Dispatch preview and model
+work_type)`; see the `planar-orchestrator` agent's Dispatch preview and model
 tiers), and other workflow callers all resolve through
 it; there is no separate `execute-config.toml`.
 
@@ -6049,29 +6098,59 @@ no positionals — a `<set> <system> <kind>` triple is refused at parse time
 
 ## Domain: `local`
 
-User-local sandbox for personal skills and agents. Skills live as dir-shape sources at `~/.planar/local/skills/<name>/SKILL.md`; agents are flat at `~/.planar/local/agents/<name>.md`. Both are installed (symlink with copy fallback) into each vendor's install directory. See `docs/concepts.md § Local sandbox` for the design — including why Codex / Copilot install via directory symlinks rather than file symlinks.
+User-local sandbox for personal skills and agents. Skills live as dir-shape sources at `~/.planar/local/skills/<name>/SKILL.md`; agents are flat at `~/.planar/local/agents/<name>.md`. Each is **projected by copy** into the vendors' directories under the name `planar-local-<name>`; the source is never edited. See `docs/concepts.md § Local sandbox` for the design.
+
+**Projection targets.** A vendor directory is written only when its presence marker exists, the same markers `install.sh` uses (`~/.claude/`; `~/.codex/` or an explicit `$CODEX_HOME`; `~/.copilot/`; `~/.gemini/settings.json`; `~/.gemini/antigravity-cli/`; `~/.config/opencode/`).
+
+| Source | Destination | Present when |
+|---|---|---|
+| skill | `~/.claude/skills/planar-local-<name>/` | `~/.claude/` exists |
+| skill | `~/.agents/skills/planar-local-<name>/` (shared root) | Codex, Copilot, Gemini CLI or OpenCode is present |
+| skill | `~/.gemini/antigravity-cli/skills/planar-local-<name>/` | `~/.gemini/antigravity-cli/` exists |
+| agent | `~/.claude/agents/planar-local-<name>.md` | Claude present |
+| agent | `$CODEX_HOME` or `~/.codex` `/agents/planar-local-<name>.toml` | Codex present |
+| agent | `~/.copilot/agents/planar-local-<name>.agent.md` | Copilot present |
+| agent | `~/.gemini/agents/planar-local-<name>.md` | Gemini CLI present |
+| agent | `~/.gemini/antigravity-cli/agents/planar-local-<name>.md` | Antigravity present |
+| agent | `~/.config/opencode/agents/planar-local-<name>.md` | OpenCode present |
+
+A skill copy is the whole skill directory with the frontmatter `name` rewritten to `planar-local-<name>`. A Markdown agent copy is the source with `name` rewritten (or added). The OpenCode copy keeps only `description` and `mode: subagent`. The Codex file is TOML with `name`, `description` and `developer_instructions`, byte-identical to what `scripts/render-codex-agents.py` writes. An agent without a `description` cannot take the OpenCode or Codex form and is skipped for those vendors. A skill's `vendors:` list narrows its copies (`claude` gates the Claude copy; `codex` and `copilot` gate the shared and Antigravity copies); agents ignore it.
+
+**Local names.** A local name is the source's directory name (skills) or file stem (agents), and it becomes part of an Agent Skills name, `planar-local-<name>`. A name must match `^[a-z0-9]+(-[a-z0-9]+)*$` (lowercase letters, digits and single hyphens, none leading, trailing or doubled) and be at most 51 characters, so the projected name stays within 64. `planar local import` and `planar local link` refuse any other name at exit 2 (`invalid_input`) with a message that states the pattern and the limit and names the offending name; nothing is written. Names are never normalized: `My_Skill` is refused, not linked as `my-skill`, because normalizing would let two sources collide on one projection. `link --reconcile` does not project a source whose name breaks the rule, and `list` and `unlink` still act on what was already recorded.
+
+**Retired `shadow` key.** A local source whose frontmatter sets `shadow` (any value) is refused by `planar local import` and `planar local link` at exit 2, naming the retired key. A local source can no longer take the name of a bundled skill; every projection carries the `planar-local-` prefix. `local link --json` no longer emits a `Shadow` field.
+
+**Ownership.** A destination that exists and differs from a fresh projection is replaced only when it is a prior Planar projection: recorded in a `.link-manifest.json`, or a symlink into `~/.planar/local/`. Anything else is refused at exit 6 (`already_exists`) naming the path, before any destination is written. A byte-identical destination is left alone.
 
 ### `planar local link [<name>]`
 
-Walk `~/.planar/local/{skills,agents}/`, parse each source file's YAML frontmatter, and install per-vendor symlinks pointing at the source.
+Walk `~/.planar/local/{skills,agents}/`, parse each source file's YAML frontmatter, and project a copy into every present vendor directory (table above).
 
 | Flag | Description |
 |---|---|
-| `--dry-run` | Preview the planned installs without touching the filesystem. |
-| `--vendor <v>` | Restrict to one or more vendors (`claude`, `codex`, `copilot`). Repeatable; can be combined with the per-file `vendors:` frontmatter list (intersection). |
+| `--dry-run` | Preview the planned projections without touching the filesystem. |
+| `--vendor <v>` | Restrict to one vendor (`claude`, `codex`, `copilot`, `gemini`, `antigravity`, `opencode`). `codex`, `copilot`, `gemini` and `opencode` also select the shared `~/.agents/skills` copy. `shared` selects it directly. |
 | `--reconcile` | Run the reconcile pass instead of linking. Takes no `<name>`; combining the two is refused as invalid input. Honours `--dry-run` and `--json`. |
 | `--json` | Emit JSON instead of human text. |
 
 **Behavior:**
-- Without `<name>`, links every source file under both `skills/` and `agents/`.
+- Without `<name>`, links every source file under both `skills/` and `agents/`. A source with an invalid name or the retired `shadow` key stops the whole run at exit 2 before anything is written.
 - With `<name>`, links only the matching source (errors if not found).
-- Idempotent: a re-link of an unchanged source produces `unchanged` actions.
-- Atomic: writes via temp-path + rename so the install file is never observed missing.
-- Copy fallback fires automatically when creating the symlink fails (e.g. Windows without developer mode); a warning calls out that future edits require re-linking.
+- Idempotent: a re-link of an unchanged source produces `unchanged` actions and writes nothing.
+- Atomic: each copy is written to a sibling temp path and renamed into place.
+- Edits to a source reach the copies only when `local link` (or `--reconcile`) runs again; `local list` reports the lag as `stale`.
+
+**`--reconcile`.** Makes the disk match the sources it already tracks (a manifest entry, or an old projection to migrate), in one pass that checks every destination before writing any:
+- `stale`: a prior projection differs from a fresh one; it is rewritten.
+- `target-missing`: a tracked projection is absent; it is written.
+- `legacy`: an old projection (`~/.claude/commands/local-<name>.md`, `~/.codex/skills/local-<name>`, `~/.copilot/skills/local-<name>`, `~/.planar/agents/local-<name>.md`) is removed when it is a symlink into `~/.planar/local/` or a copy equal to its recorded source; the new projections are written in its place. A foreign file at an old path is left alone.
+- `source-missing`: the source is gone; its recorded projections are removed and the manifest entry dropped.
+
+Text output prints `done: N change(s)` (`dry-run: N change(s) would be made`). A second run with nothing to change prints `reconcile: manifest already consistent with the filesystem` and modifies nothing: it compares bytes before writing.
 
 ### `planar local migrate [--dry-run]`
 
-Convert legacy flat sandbox skills (`~/.planar/local/skills/<name>.md`) into the dir-shape layout (`<name>/SKILL.md`) required by the dir-symlink installs.
+Convert legacy flat sandbox skills (`~/.planar/local/skills/<name>.md`) into the dir-shape layout (`<name>/SKILL.md`) that skill projection requires.
 
 | Flag | Description |
 |---|---|
@@ -6085,7 +6164,7 @@ Convert legacy flat sandbox skills (`~/.planar/local/skills/<name>.md`) into the
 
 ### `planar local import <path>`
 
-Import operator-authored skill or agent files from an external location into the sandbox and link them into every vendor surface. The operator points at a single flat `.md` file, a single dir-shape skill source (`foo/` containing `SKILL.md`), or a directory containing a mix of both. Each valid input is materialized in the sandbox in the correct shape — skills as `~/.planar/local/skills/<name>/SKILL.md` (auxiliary files inside dir-shape inputs travel along); agents as `~/.planar/local/agents/<name>.md`. Linking then runs via the same path as `planar local link`.
+Import operator-authored skill or agent files from an external location into the sandbox and project them into every present vendor directory. The operator points at a single flat `.md` file, a single dir-shape skill source (`foo/` containing `SKILL.md`), or a directory containing a mix of both. Each valid input is materialized in the sandbox in the correct shape — skills as `~/.planar/local/skills/<name>/SKILL.md` (auxiliary files inside dir-shape inputs travel along); agents as `~/.planar/local/agents/<name>.md`. Linking then runs via the same path as `planar local link`.
 
 | Flag | Description |
 |---|---|
@@ -6097,27 +6176,30 @@ Import operator-authored skill or agent files from an external location into the
 
 **Behavior:**
 - A single flat `.md` file source imports that file (wrapped into `<name>/SKILL.md` for skills). A single dir-shape source (a directory whose top-level contains `SKILL.md`) imports that whole tree. A directory source containing a mix of `*.md` files and `<name>/SKILL.md` subdirs imports each top-level entry — other subdirectories and non-`.md` files are ignored.
+- Every entry's name is checked against the local-name rule above, and a source that sets `shadow` is refused; either refuses the whole import at exit 2 before anything is copied, a dry run included.
 - Each file's frontmatter is validated by the same parser as `planar local link` (YAML frontmatter required; `vendors:` if present must be a subset of `{claude, codex, copilot}`; `kind:` if present must match `--kind`).
 - After a successful import, the link layer is invoked automatically (suppress with `--no-link`).
 - `.link-manifest.json` files in the source directory are explicitly ignored so pointing the importer at the sandbox itself does not corrupt it.
 
 ### `planar local unlink <name> [--purge]`
 
-Remove every per-vendor install recorded for `<name>` in the per-kind `.link-manifest.json`. With `--purge`, also delete the source file from `~/.planar/local/`. Accepts `--json`.
+Remove every projection recorded for `<name>` in the per-kind `.link-manifest.json`. With `--purge`, also delete the source file from `~/.planar/local/`. Accepts `--json`.
 
 ### `planar local list [--vendor <v>] [--json]`
 
-List every recorded install across both kinds and all vendors. Status column:
+List every recorded projection across both kinds and all vendors. The vendor column is `claude`, `shared` (the shared skills root), `antigravity`, `codex`, `copilot`, `gemini` or `opencode`. Status column, recomputed from disk:
 
-- `live` — install file exists and symlink (if any) resolves to the source.
-- `broken` — install is a symlink but the source is gone, or the symlink points elsewhere.
-- `missing` — install file is gone entirely.
+- `live` — the installed copy equals a fresh projection of the source.
+- `stale` — the copy exists and differs: the source (or the copy) was edited since the last link.
+- `missing` — nothing is at the destination.
+- `broken` — the recorded source is gone.
+- `legacy` — an old symlink or copy projection (see `--reconcile`); `local link --reconcile` migrates it.
 
-`live`/`broken`/`missing` colorize via the standard palette (green/red/gray) when colors are enabled. The status text comes from the recorded manifest plus live filesystem checks; the manifest itself is not authoritative.
+`live`/`stale`/`missing`/`broken`/`legacy` colorize via the standard palette when colors are enabled. The manifest is not authoritative: each state comes from comparing bytes on disk.
 
 ### `PLANAR_LOCAL_HOME` env var
 
-Test hook: when set, `planar local` uses this directory as the operator's `$HOME` for resolving `~/.planar/local/` and the per-vendor install targets. Production use never sets this.
+Test hook: when set, `planar local` uses this directory as the operator's `$HOME` for resolving `~/.planar/local/` and the per-vendor projection targets, and ignores `$CODEX_HOME`. Production use never sets this.
 
 ## The editflow quartet: `edit` / `view` / `diff` / `review`
 
@@ -6245,7 +6327,7 @@ The subcommand set is exactly `evals`, `resolve`, `experiments`, `outcomes`
 and `registry`. The plan-540 discovery family — `models list`, `models
 refresh`, `models routing`, `models apply`, `models candidates` — was
 removed with the curated catalog and the `[models]` / `[roles]` config
-blocks (see `skills/src/pl-models-config.md`); every one of them now fails
+blocks (see `docs/concepts.md` § Model routing); every one of them now fails
 at parse time with exit 2. Tier→model presets live in the orchestration
 layer's `agents/models.md`, hand-maintained, and no `planar` verb writes
 them.
@@ -6480,6 +6562,116 @@ tables. No planning entity is read or written.
 
 ---
 
+## Domain: `update`
+
+### `planar update`
+
+**Synopsis:**
+```
+planar update [--check] [--version <tag>]
+```
+
+**Description:** Update the Planar installation to a published release
+(plan 1122 M3; tech spec 677, "The update verb"). The installation root is
+`$PLANAR_HOME` when set, else `~/.planar`: the root `install.sh` itself uses.
+The verb opens no database; the database probe, migration and live-queue
+warning belong to the installer it hands off to. The release base is
+`https://github.com/rdrsss/planar/releases`, or `PLANAR_RELEASE_URL` under the
+bootstrap's grammar (`https://HOST[:PORT]/...`, `file:///PATH`, or
+`http://127.0.0.1[:PORT]/...` / `http://localhost[:PORT]/...`; no userinfo,
+query or fragment). A malformed value is refused at exit 2.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--check` | Print `installed <v> latest <v>` and change nothing. `<v>` is `release.json`'s `version`, or `none` without one; latest is `<base>/latest/download/VERSION`, which must be a release tag. Exit 0 when they are equal, 10 when they differ. Takes no lock. Cannot be combined with `--version` (exit 2). | off |
+| `--version <tag>` | Install this release (`vMAJOR.MINOR.PATCH`) instead of the latest. A malformed tag is refused at exit 2. | latest |
+
+A plain run, or `--version <tag>`:
+
+1. Takes the common mutation lock (`<root>.lock`, the protocol in
+   `scripts/install-lib/mutation-lock.sh`, which this verb implements natively)
+   as an `update`, recording its download directory
+   `<root>/.planar-update/update-<hex>/` before creating it. A running install,
+   update or uninstall refuses it at exit 1, naming the owner's operation and
+   pid. An updater that was killed is proven dead (its pid is gone, or was
+   reused) and its recorded download directory, and nothing else, is removed.
+2. Reads the recovery journal under the lock. An interrupted install
+   (`mutating`) or uninstall (`uninstalling`) is reported as an incomplete
+   installation at exit 1 with the journal's durable retry command, before any
+   verdict about the installed release; `--check` reports it the same way. The
+   verb never replays recovery itself: the version-pinned bootstrap does.
+   A `prepared` or aborted attempt leaves the previous completed release
+   authoritative.
+3. Resolves the tag. When it equals the installed release of a completed
+   install, prints that there are no changes and exits 0.
+4. Downloads `SHA256SUMS` (at most 1 MiB) and `planar-<os>-<arch>.tar.gz` (at
+   most 512 MiB) from `<base>/download/<tag>/`, following redirects with every
+   hop checked against the same grammar, sending no `Authorization` header,
+   within a 10-minute bound. Exactly one checksum record must name the asset;
+   the asset is verified with SHA-256.
+5. Lists and extracts the archive with the system `tar` (every entry under
+   `planar-<os>-<arch>/`, no `..`, no links), checks that the bundle's
+   `release.json` names the tag, on Linux that the host's glibc
+   (`ldd --version`) meets the bundle's `os_floor`, and that the bundle's
+   `schema_version` is not below this binary's own (an older release is never
+   installed over a newer database).
+6. Replaces itself with `bash <bundle>/install.sh --prebuilt <bundle> --cleanup
+   <download dir>`, passing `PLANAR_MUTATION_HANDOFF=<generation>:<nonce>`. The
+   lock is never released before the exec: the installer adopts it (the exec
+   keeps the pid and start time), removes the download directory and releases
+   the lock when it ends. If the exec fails, the verb removes the directory and
+   releases the lock itself.
+
+`SIGINT` (Ctrl-C) or `SIGTERM` from just before step 1 until the exec stops
+the run: a download in flight is abandoned within about a second, the download
+directory is removed, the lock is released (`released.<G>`, so the next update
+starts clean rather than reclaiming), and the verb prints `error: planar update
+was interrupted by SIGINT; ...` and exits `130` (`143` for `SIGTERM`), the
+codes the bootstrap's own traps use. The message ends "the mutation lock
+released" only when this run had taken the lock; a signal that arrives before
+the lock is taken says it came "before it took the mutation lock" and that no
+lock was held. A signal that was ignored when the verb
+started (a background job's `SIGINT`) stays ignored. Immediately before the
+exec the verb restores the signals' previous dispositions, so one arriving
+from then on is never lost: before the exec it ends the verb as a `KILL` would
+(the next owner proves the updater dead and removes its recorded directory);
+after it the installer owns the directory and the lock and handles it.
+`--check` holds nothing and does not catch either signal.
+
+The shadow check belongs to the installer, after placement: when `command -v
+planar` and `<root>/bin/planar` are different files (compared after resolving
+symlinks, so a `PATH` entry that links to the installed binary is not a
+shadow) it prints `<path> shadows the installed <root>/bin/planar: your shell
+runs <path>. Put <root>/bin first on PATH, or remove <path>`. It names
+`~/.local/bin/planar` for that path and appends `(the retired 'make install'
+put it there)` only when that is the shadowing path. The verb does not repeat
+it: it never regains control after the exec. The bootstrap prints the warning
+once: it leaves it to a bundled installer that carries the check and keeps the
+same check, with the same wording prefixed `get-planar: warning: `, only for an
+older bundle that lacks it.
+
+Refusals use the bootstrap's (`get-planar.sh`) messages, after `error: `:
+`cannot reach the release server at <base>: ...`, `release <tag> does not
+exist on the release server <base>: ...`, `checksum mismatch for <asset>: ...`,
+`<base>/latest/download/VERSION holds '<value>', which is not a release tag
+...`, `this host has glibc <host> but this release needs glibc <floor> or
+later; nothing was installed`, and `unsupported platform <os> <arch>; ...`.
+Every refusal before the exec, a failed exec, and an interrupt leave no
+download directory and no held lock.
+
+**Writes:** outside the database only: the lock record
+`<root>.lock/owner.<G>` and the download directory under
+`<root>/.planar-update/`; everything else is the installer's.
+
+**Exit codes:** `0` success or no changes, `1` a fault, refusal, competing
+owner or incomplete installation, `2` bad input, `10` (`--check` only) an
+update is available, `130` / `143` interrupted by `SIGINT` / `SIGTERM` before
+the hand-off.
+
+**Capture:** None.
+
+---
+
 ## Miscellaneous leaves
 
 Commands that do not group into a larger domain page.
@@ -6524,7 +6716,7 @@ planar skills
 ```
 
 **Description:** **Retired.** Rendering and drift detection moved to the
-external `scriptorium` binary (plan 918 M5). Planar no longer renders
+external renderer binary (plan 918 M5). Planar no longer renders
 vendor projections nor tracks their install-drift in-band. The command
 remains so that an operator running it gets told where the functionality
 went rather than a bare unknown-command error.
@@ -6724,7 +6916,7 @@ The `tree` domain provides a hierarchical view of Planar entities — plans, tas
 
 The walk follows `plans.parent_plan_id` for plan→plan, `tasks.plan_id` and `tasks.parent_task_id` for plan→task and task→subtask, and `entity_links(relationship='derives-from')` for artifacts / decisions / scenarios / questions attached to plans. Filters apply during the walk so excluded subtrees never enter the output.
 
-The flag surface deliberately mirrors `tree(1)` wherever the semantic translates. Filesystem-specific flags from `tree(1)` are explicitly rejected at parse time rather than silently ignored — see [Deliberately omitted flags](#deliberately-omitted-flags).
+The flag surface deliberately mirrors `tree(1)` wherever the semantic translates. Filesystem-specific flags from `tree(1)` are explicitly rejected at parse time rather than silently ignored — see [`tree(1)` flags with no Planar analog](#tree1-flags-with-no-planar-analog).
 
 ### `planar tree`
 
@@ -6949,6 +7141,7 @@ planar-agent dispatch confirm --token <preview-token> --dispatch-key <key> --now
 planar-agent queue run  [--detach] [--timeout <duration>] [--wait-timeout <duration>] [--label <text>] [--vendor <name>] [--role <name>] [--claim <token>] [--notices] -- <command> [args...]   # cli-lint-ignore: `--` is the argument terminator, not a flag
 planar-agent queue cancel [--vendor <name>] [--role <name>] <seq>
 planar-agent queue status <seq> [--json]
+planar-agent queue wait <seq> [--timeout <duration>] [--json]
 planar-agent queue rule
 
 # `version` prints the binary version; `schema` dumps the flat JSON catalog.
@@ -6959,6 +7152,13 @@ planar-agent schema
 **Duration grammar:** `--ttl`, `--stale-after`, and `--interval` accept either a bare integer (interpreted as seconds for the `--ttl` / `--stale-after` surface; `--interval` follows the same default for back-compat with the legacy parser) or a number with an ISO-style suffix: `ns`, `us`, `ms`, `s`, `m`, `h`. Examples: `--ttl 600` (10 minutes), `--ttl 10m` (same), `--ttl 1h`, `--interval 500ms`. The implementation is the shared `cli.duration` helper.
 
 **Terminal-verb envelope for a plan or plan_step claim (task 7118):** `release` is the only terminal verb that accepts a plan or plan_step claim (`complete`, `fail` and `block` refuse it with `ClaimNotOnTask`). Such a claim holds no task, so the response names none: `--json` emits `{"ok":true,"claim_token":"...","claim":{...},"task":null}` and the human line is `ok entity:<kind>:<id> claim_status:released`. A task claim's envelope (`"task":{...}`, `ok task:<id> status:<s> claim_status:<s>`) is unchanged. Before this fix the response looked up the task whose id equalled the plan's id and reported that unrelated row.
+
+**Milestone diagnosis on `complete` (plan 1132, task 7383).** When a `planar-agent complete` promotes a milestone plan to `done` (the in-transaction roll-up flipped it; only `complete` can, because `fail` and `release` return the task to `todo` and `block` sets `blocked`), the verb diagnoses that milestone after its transaction commits, over the milestone's lifetime window, and appends the result to its own output:
+
+- **Text:** the existing line, one newline (a blank line), then `diagnose: clean`, or `diagnose: <n> finding(s)` followed by one `<severity> <check-id> <entity> -> <recovery>` line per finding, or `diagnose: unavailable (<reason>)` with reason `busy` or `query-failed` (`schema-unsupported` cannot occur: `planar-agent` requires the exact schema version). A run that could not read an input a check needs appends `(partial: <input> unavailable)` to the header; an input the operator turned off (`[introspection].cli_log`) is not a partial run.
+- **JSON:** the single object gains `diagnose` as its LAST key: `{"plan_id":<milestone>,"state":"clean"|"findings"|"unavailable","outcome":"ok"|"partial"|"unavailable","reason":null|"busy"|"query-failed","evaluated_at":"...","findings":[...],"incidents":{"state":"not_applicable","reason":null}}`. Each finding has the shape [`planar-watch diagnose`](#planar-watch-diagnose--check-recorded-orchestration-state-plan-1132) prints. Every earlier key is byte-identical to the output without the feature; a call that promotes nothing has no `diagnose` key.
+- `fail`, `release` and `block` never print a section, even when they demote a `done` milestone, and a repeated engine `complete` (a replay) prints none. A `complete` on a task of an anchor plan promotes nothing and prints none.
+- Findings and diagnosis failures never change the verb's exit status, transaction or other output (decision 1342). The diagnosis reads only, under a 250 ms busy timeout and a `query_only` guard, and writes no row.
 
 **`planar-agent heartbeat --ttl` semantics (task 6093):** Omitting `--ttl` **renews the lease length the claim currently holds** — a heartbeat on a claim taken with `--ttl 8h` sets the new expiry to eight hours from now. It never shortens the lease it was sent to preserve. Passing `--ttl` sets the lease absolutely from now, in either direction, so a deliberate re-TTL (longer or shorter) is still available; a subsequent bare heartbeat then renews *that* new length. The renewed length is derived from the stored `(last_heartbeat_at, lease_expires_at)` pair, which already encodes the current TTL — there is no stored-TTL column and no migration involved.
 
@@ -6999,7 +7199,7 @@ A command that passes both checks can still fail to start at its turn: the progr
 
 The exit code passes the command's status through, so it is ambiguous by design (a command may exit `125` itself); `queue_history` records how each entry ended. The queue's own failure is exit **125** with one `error: queue: ...` line on standard error. `queue run` has no `--json`: standard output belongs to the command, so no envelope is written on any path.
 
-**Detached runs (`--detach`).** `queue run --detach` (with the flags above, then the argument terminator and the command) returns a ticket at once and leaves the waiting, the run and the history to a detached submitter, so a harness that stops long foreground commands can submit a build and poll for it. The refusals of step 1 (the command guard at exit **2**, resolution at **127** and **126**, and an invalid `--timeout` or `--wait-timeout` at **2**) still happen in the invoked process, before anything is forked, so a refused command detaches nothing, creates no log file and prints no ticket. Everything after that is done in a child, in this order:
+**Detached runs (`--detach`).** `queue run --detach` (with the flags above, then the argument terminator and the command) returns a ticket at once and leaves the waiting, the run and the history to a detached submitter, so a harness that stops long foreground commands can submit a build and observe it with a finite `queue wait` budget. The refusals of step 1 (the command guard at exit **2**, resolution at **127** and **126**, and an invalid `--timeout` or `--wait-timeout` at **2**) still happen in the invoked process, before anything is forked, so a refused command detaches nothing, creates no log file and prints no ticket. Everything after that is done in a child, in this order:
 
 1. The invoked process creates a pipe and forks, before it reads the configuration or opens the database. The fork is made only while the process has a single thread; a second thread aborts the process (an internal invariant) rather than risk a deadlocked child.
 2. The child starts a new session (`setsid`), so it survives its caller's process group being killed, closes every descriptor it inherited except the pipe (all of them, however high their number: `close_range` on Linux, a listing of the open descriptors on macOS), and reads standard input from `/dev/null`.
@@ -7058,6 +7258,31 @@ Without `--json` the same answer is printed as `key: value` lines, one per field
 
 A refusal writes `error: queue status: <message>` on standard error. With `--json` it also writes one object on standard output, `{"error":{"verb":"queue status","tag":"<tag>","message":"<message>"}}` (plus `"seq"` for exit 1), so a script reads the reason without parsing prose. The tags are `not_found` (exit 1), `invalid_input` (exit 2), and, all at exit 125, `store_unreachable` (no path, a missing file, an unopenable path or a file that is not a database), `store_unreadable` (a query failed or a lock outlasted the bound), `internal`, `schema_version_behind` (`planar.db` is older than this binary: run `planar init`), `queue_schema_incompatible` (`planar.db` is ahead and its queue tables are not usable by this binary) and `queue_schema_foreign` (the version is equal but the queue tables or a column differ: two branches shipped different migrations under one number). Neither of the last two is `schema_version_ahead`, which means exit 7 elsewhere, because their remedies differ: a newer build fixes the first and not the second.
 
+#### Waiting for a logical ticket (`queue wait`)
+
+`planar-agent queue wait <seq> [--timeout <duration>] [--json]` observes the logical job named by a detached ticket. `<seq>` is a positive integer within signed 64-bit range, normally the first line printed by `queue run --detach`. The observer follows recorded successors and stops at a final history outcome or an observation reason. Its `--timeout` is a **separate observation budget**: a positive integer followed by `ms`, `s`, `m` or `h`, default `30m`, maximum `24h`. Zero, negative, fractional, missing-unit and overflowing values exit 2. The monotonic budget starts before the read-only store open and covers lock waits, queue backlog, command runtime, reads, successor traversal and sleeps. It never resets when a successor appears. For a long gate, allow for both backlog and runtime, for example `queue wait <seq> --timeout 3h` after a submission with `queue run --timeout 2h` when backlog may take an hour.
+
+The three time limits have different owners: `queue run --wait-timeout` bounds how long a submitted entry waits for a slot; `queue run --timeout` bounds the command after it starts (default `30m`); `queue wait --timeout` bounds only this observer. `queue wait` does not renew a task claim. The detached submitter can renew a caller-supervised claim when `queue run --claim <token>` was supplied; an agent whose observer stops must still honor its claim ritual. Waiting is read-only: it cannot reap, cancel, rejoin, signal, refresh, migrate, alter history or logs, or stop the submitted command. Interruption by SIGINT/SIGTERM stops only the observer. A timeout or interruption is safe to follow with another `queue wait` on the **same original sequence number**; neither is reason to resubmit the build.
+
+The JSON result is one object with `seq` (requested), `observed_seq` (latest resolved successor or `null`), `wait_reason`, `elapsed_ms`, `timeout_ms`, `result_exit_code`, `status` (the existing [`queue status`](#queue-verbs) object or `null`) and `error` (a tagged `queue wait` error or `null`). Unavailable fields are `null`, including on invalid input. Text prints stable `key: value` lines with the reason, recorded status and error tag when present; errors also go to standard error. Neither form includes job log contents. `result_exit_code` is the process exit code, not proof of a command outcome. Interpret it together with `wait_reason`, `status.state`, `status.outcome`, `status.exit_code` and `status.signal`:
+
+| `wait_reason` / recorded outcome | Exit | Meaning |
+|---|---:|---|
+| `completed` / `exited` | recorded child exit, including 124 or 125 | The command ran and exited with that code. |
+| `completed` / `signaled` | 128 + recorded signal | The command ended by signal. |
+| `completed` / `timeout` | 124 | The queue stopped the command at its run limit. |
+| `completed` / `cancelled` or `wait_timeout` | 125 | The queue recorded cancellation or expiry of the slot wait. |
+| `completed` / `not_started` | recorded 126 or 127 | The command could not start. |
+| `timed_out` | 124 | This observer reached its budget; the job's final outcome is unknown. |
+| `interrupted` | 130 (SIGINT) or 143 (SIGTERM) | Only this observer stopped. |
+| `stalled` | 125 | The same active sequence was observed `live: false` twice at least one second apart; the job's outcome is unknown. |
+| `history_unavailable` | 1 | The requested ticket is missing, a previously observed ticket vanished, or an explicit successor has no entry or history row. |
+| `error` | 2 for invalid input; 125 for store, schema, read, clock or internal errors | Inspect `error.tag` and `error.message`; a refused observation gives no command verdict. |
+
+An active `waiting` or `running` entry remains pending while `live` is true **or null**, including when its `terminating` marker is set. `terminating` alone is not a final history outcome. A confirmed `live: false` result is `stalled`, not a reap or completion; a later observation of the same ticket is safe. An ended `abandoned` row with no successor can acquire one in a later rejoin transaction, so observation continues until its deadline and then returns `timed_out` with the latest abandoned status. If an explicit successor is missing or its history was pruned, the result is `history_unavailable`, not success. A broken `[queue]` configuration warns once and uses the default staleness window; slots and grace remain unknown. A behind, incompatible or foreign queue schema and an unreadable store fail with a tagged error. Unlike `queue status`, `queue wait` distinguishes a missing explicit successor from an abandoned row that has not acquired one.
+
+Exit 124 can mean an observer deadline, recorded run timeout, or child exit 124. Exit 125 can mean an observer failure or stall, recorded cancellation or wait timeout, or child exit 125. Never infer refusal or success from either exit code alone. An empty log, absent active row or `live: false` is also not completion evidence; use the recorded history outcome. A queue read refusal or missing history calls for diagnosis, not an unqueued build or automatic duplicate submission.
+
 #### Printing the agent rule (`queue rule`)
 
 ```
@@ -7069,7 +7294,7 @@ planar-agent queue rule
 The text is one authored file, `src/lib/queuerule/queue-rule.md`, embedded into `planar-agent` at build time. It holds:
 
 - what counts as a build or test command, with examples, and what does not;
-- the detached submit and poll procedure: submit with `queue run --detach`, then read `queue status <seq>` every 30 seconds until the entry has ended;
+- the detached submit and status polling procedure; the bounded `queue wait` recipe is being adopted in the agent guidance alongside this reference contract;
 - the instruction to pass `--vendor` and `--role`;
 - the instruction, for an agent that holds a task claim, to pass `--claim <token>` to `queue run` (detached and foreground) so the queue renews the claim while the entry waits and runs, in place of renewing it by hand between polls;
 - what to do on each outcome `queue status` reports;
@@ -7318,17 +7543,50 @@ Schema-version handshake: `planar-watch` is a **consumer** of the schema, not it
 
 A process invoked as `planar-watch` performs **no writes**. Two defenses:
 
-1. The command tree (`src/cmd/planar-watch/`) registers exactly ten read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `queue` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
+1. The command tree (`src/cmd/planar-watch/`) registers exactly eleven read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `queue`, `diagnose` — plus the conventional `version` / `completion` / `schema` helpers. There is no write verb anywhere in the tree.
 2. The bootstrap calls `db::connection::open_read_only` which opens the DB via `sqlite3_open_v2(..., SQLITE_OPEN_READONLY, ...)`. The SQLite driver itself returns `SQLITE_READONLY` on any attempted `INSERT` / `UPDATE` / `DELETE` / DDL — verified by the `a read-only connection refuses a write` unit test in `src/lib/db/db.t.cpp`. The `queue` verb reads a second store, the agent database, through the same kind of handle (`planar.db.agentdb::open_agent_db_read_only_at`); `capability.t.cpp` asserts that handle refuses a write and that running the verb leaves the store's bytes and modification time unchanged.
 
 A vendor hook or operator script configured with only `planar-watch` on its PATH cannot modify the database under any circumstances.
 
+### Interactive agent view
+
+A bare `planar-watch` whose stdin and stdout are both terminals opens a
+full-screen, live view of the agents at work. Every other invocation is
+unchanged: a bare `planar-watch` through a pipe, with any flag, or under
+`TERM=dumb` renders `planar-watch feed` exactly as before, so scripts and
+agents never enter the interactive view.
+
+Each claim is one agent. A plan claim (an orchestrator) is a row whose tree is
+that plan's milestones and tasks. A task claim nests under the nearest plan
+claim at or above its task's plan, as a marker on that task. A task claim with
+no plan claim above it is a row of its own, rooted at its task's plan.
+
+| Mark | Meaning |
+|------|---------|
+| green `●` | Working: the claim is active and its lease is live. |
+| yellow `●` | Waiting: as working, and the latest heartbeat `--status` starts with `awaiting:`. |
+| red `●` | Stopped: the lease expired, or the claim was completed, released, aborted or marked stale. |
+| `>` | On a task: the task a claim holds, in that claim's colour. |
+| `✓ ◐ · ⊘ ✗` | Task status: done, doing, todo, blocked, cancelled. A done task has a green `✓` and stays listed in dark grey, as do finished plans and cancelled tasks. |
+
+Stopped agents stay listed for an hour. Rows holding a claimed task start
+open; the rest start closed. Keys: `↑`/`↓` (`j`/`k`) move, `→`/`←` (`l`/`h`)
+open or close a row and step in or out, `enter` or `space` toggles, `s` shows
+or hides stopped agents, `r` refreshes now, `q` or `esc` quits. Clicking a
+row selects it and opens or closes it when it has children; the mouse wheel
+moves the selection.
+
+On a terminal that reports 24-bit colour, in-progress marks pulse from dark
+to bright green: the glyph of a `doing` task, and the `>` of a task held by a
+working agent. Waiting and stopped marks stay steady. `p` turns the pulse
+off and on. Other terminals show the marks without the pulse. The view
+refreshes once a second, each time in one short read transaction.
+
 ### Verbs
 
 ```
-# Cross-cutting activity feed (default invocation; `planar-watch` with no
-# args routes here).
-planar-watch              # alias for `planar-watch feed`
+# Interactive agent view on a terminal; the activity feed everywhere else.
+planar-watch              # see "Interactive agent view" below
 planar-watch feed     [--follow]  [--vendor <v>] [--plan <id>] [--task <id>] [--since <ISO>] [--limit N] [--tail N] [--json] [--interval <D>]
 
 # Snapshot: active (and stale) claims.
@@ -7359,6 +7617,9 @@ planar-watch sync-events [--plan <id>] [--system <slug>] [--entity <kind:id>] [-
 # Host build and test queue (plan 1080 — read-only view over the queue tables in planar.db).
 planar-watch queue [--json]
 planar-watch queue history [--since <duration>] [--json]
+
+# Orchestration diagnosis (plan 1132 — read-only checks over recorded state).
+planar-watch diagnose [--plan <id>] [--days <n>] [--check <id>]... [--json]
 
 # Conventional helpers.
 planar-watch version
@@ -7541,7 +7802,7 @@ SEQ  STATE    POS  NOTES     WAITED  RAN    VENDOR  ROLE    LABEL       DIRECTOR
 
 **Exit codes:**
 - `0` — success, an empty queue included.
-- `1` — `planar.db` is missing or cannot be read (`error: OpenFailed`); neither `PLANAR_DB` nor `HOME` is set; a parse failure.
+- `1` — `planar.db` is missing (`error: OpenFailed`) or this process cannot read it (`error: DatabaseUnreadable`, naming the path and SQLite's reason); neither `PLANAR_DB` nor `HOME` is set; a parse failure.
 - `7` — `planar.db` is behind or ahead of this binary's schema; both versions are named. The same rule as every other `planar-watch` verb.
 
 **Main database.** There is no exemption: `queue` and `queue history` need the main database's path like every other verb, and exit `1` with `neither PLANAR_DB nor HOME is set` when neither variable is.
@@ -7598,6 +7859,63 @@ SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES            
 - `7` — `planar.db` is behind or ahead of this binary's schema; both versions are named.
 
 Like `queue`, this verb follows every other `planar-watch` verb's main-database rules: it needs `PLANAR_DB` or `HOME` to locate `planar.db`, and exits `7` on a version mismatch in either direction.
+
+---
+
+### `planar-watch diagnose` — check recorded orchestration state (plan 1132)
+
+Evaluates the recorded state against Planar's documented orchestration rules and prints what it finds. It reads only: the handle is `SQLITE_OPEN_READONLY`, and the verb refuses to run on a writable one. It records nothing; persisting findings as incidents is a separate `planar-agent` step. The checks are a closed, versioned catalog (`catalog_version`), each with a stable id; this release ships the framework, the claim-liveness checks (including `heartbeat-gap`), the dispatch checks, `action-unended`, `handoff-stale`, `apply-without-preview`, `cli-failure-cluster`, `claim-failure-cluster` and `sync-conflict-unresolved`, and further checks are added one at a time.
+
+**Claim checks.** `claim-lease-lapsed` (an `active` claim past its lease that heartbeated, on a `doing` task or on a plan or plan step that is not finished; decision 1384 added the coordination claims, such as an orchestrator's claim on a plan), `claim-process-died` (an `active` claim past its lease that never heartbeated after `claimed_at`), `claim-superseded-active` (an `active` claim on a terminal task, plan or step, or a task claim behind a later exclusive claim on the same task that is no longer `active`; `error`; a plan or step claim is superseded only by a finished plan or step, because orchestrator sessions re-claim a plan one after another and an earlier lapsed claim behind a later ended one is `claim-lease-lapsed`'s, so the two checks never both report a plan or step claim; the evidence names the claim, its entity, the later claim and the claim's lease expiry and the later claim's release time; the fingerprint names only the claim and its entity, so the later claim appearing later is the same incident), `task-doing-unclaimed` (a `doing` task with no `active` claim whose lease runs to the evaluation instant or later) and `claim-closed-by-reconcile` (a claim that ended `stale` inside the window; `info`). The first four describe the state at the evaluation instant and ignore the window start; only the event is bounded by the window. A lease expiring exactly at the evaluation instant is still live.
+
+**Heartbeat gaps.** `heartbeat-gap` (decisions 1345 and 1381) treats `claimed_at`, each `heartbeat` action row and the claim's `last_heartbeat_at` as heartbeat points (a plain heartbeat or a `queue run --claim` renewal writes no row, only `last_heartbeat_at`). The lease is `lease_expires_at - last_heartbeat_at`. A gap between two points is `info` when strictly beyond half the lease, however long: a recorded heartbeat is written only while the lease is live, so a gap that ends in one is not a lapse. A `warning` is the trailing stretch from the last point to the release (a terminal claim) or to the evaluation instant (an active claim) when it is strictly beyond the lease. A claim that ended `stale` has no trailing warning (decision 1384, amending 1381): `claim-closed-by-reconcile` already reports it, and its release is the time of the reconcile sweep, not of the lapse, so the stretch measured the sweep cadence. Its gaps between recorded heartbeats are still `info`. Evidence is row timestamps only.
+
+**Dispatches and open actions.** A claim is a *dispatch* only when an orchestrator dispatch record exists for it (decisions 1344 and 1349): a `routing_dispatch_previews` row with the claim's task and claim token, or a `routing_dispatch_snapshots` row for the claim's task confirmed between `claimed_at` and the claim's end (its release, or its lease expiry while it is still `active`). A claim with neither is a direct claim, an agent doing its own work, and no dispatch check ever reports it. `dispatch-no-role-action` (`warning`, an event; an `error` until the calibration of decision 1384, because the work happened and only the role row is missing) reports a dispatch whose claim is no longer live (terminal, or `active` with an expired lease) and that has no `coder`, `reviewer` or `test_coder` action tied to the claim, or tied to its task and started inside the claim's lifetime; it waits for the claim to end because a live claim can still start its action, and it is bounded by the window on the claim's end. The evidence names the claim, its task, the lowest preview bound to it and the lowest snapshot that confirms it, and is timed by the claim's end; the fingerprint names only the claim and its task, so a record appearing later is the same incident. The names of the actions the claim did run are not part of a finding. `dispatch-unconfirmed` (`warning`, an event) reports a dispatch that has a preview bound to its claim and no snapshot confirming it: no preview of the claim was spent on one, and none exists for the task inside the claim's lifetime. A first preview abandoned beside a confirmed second one is a confirmed dispatch. It is reported once the claim has ended or a role action has started, since a live claim that has only been previewed can still be confirmed; the evidence names the claim, its task and its newest preview, is timed by that preview's `created_at`, and is bounded by the window on it. `dispatch-confirmed-late` (`warning`, an event) reports a dispatch whose earliest confirming snapshot was confirmed strictly after the first role action tied to the claim started; a confirm at the same instant is in time. A role action written with the claim itself is bookkeeping, not a spawn (decision 1384): a preview is bound to the claim's token, so it always follows the claim, and an action that started before that preview was created is ignored (one at the instant the preview was created counts). A dispatch with no preview bound to its claim, confirmed from a snapshot alone, has no preview to anchor on, so the claim itself is the anchor and an action at or before `claimed_at` is ignored. `dispatch confirm --now` stores the caller's RFC 3339 text, which has no fraction, so both timestamps are compared as instants. The evidence names the claim, its task, that snapshot and that action and is timed by the action's `started_at` and the snapshot's `confirmed_at`, in the stored millisecond format; the window bounds the confirm. Both dispatch checks fingerprint on the claim and its task. `action-unended` (`warning`, a state) reports an action with no `ended_at` whose claim is terminal or past its lease, naming the action, its claim and the claim's entity and timed by the action's `started_at`. Unlike the other state checks it is bounded by the window (decision 1384): an action is reported only when it started inside the window or its claim ended inside it (a claim ends at its release, else at its lease expiry), so an old backlog of dead claims is not repeated on every run; `--days` widens it. The recovery hint is `planar-agent action end --action <id> --outcome aborted`, which closes the row whatever state its claim is in (it does not look at the claim). `planar-agent reconcile` does not: it closes only a stale claim's `claim_check` marker, so any other open action on a dead claim stays reported until `action end` closes it. None of these checks needs an input beyond the planning, claim, action and routing tables.
+
+**Applies without a preview.** `apply-without-preview` (`warning`, an event) reads the capture log, `cli_invocations`: it reports a `spec ingest` invocation whose `args_shape` has the whole flag `--apply` (not `--apply-removals`) when no earlier `spec ingest` invocation without `--apply` exists from the window start to that apply. A plan-scoped run (`--plan`) also looks one hour before the window start for that preview (decision 1384): `spec ingest --apply` is what creates the plan, and the plan-lifetime window starts at the plan's creation, so the preview that preceded the apply by moments would otherwise fall outside it and every ingested plan would report one finding. An unscoped run has no such anchor and keeps the plain window. The exit status of neither side matters: a preview that exited non-zero still ran, and a failed apply was still attempted. One preview precedes every later apply. The evidence is the invocation's row reference and its `recorded_at`; the arguments are never part of a finding. **Positional-shape limit:** the capture log keeps flag names and only the arity of a positional (`<pos:1>`), never its value, so the check cannot tell which plan a preview or an apply named; a preview of any plan satisfies an apply of any other. The log has no plan column either, so `--plan` changes the window (and the one-hour look-back above) and nothing else. The input is named `cli_log`: it is `disabled` (reason `cli_log-off`) when `[introspection].cli_log` is off, which is the default, and then the check does not run and reports nothing rather than reading rows an earlier logging period left behind, without degrading the outcome. It is `unavailable` (reason `cli_log-config-unknown`) when the config file path cannot be resolved or the file cannot be parsed, which makes the outcome `partial` whenever the check is selected.
+
+**Failure clusters.** `cli-failure-cluster` (`warning`, an event) reports one `verb_path` with at least three failures of the same `error_category` whose `recorded_at` is inside the window and inside one 24-hour span of it (inclusive: failures exactly 24 hours apart count; decision 1384). The `usage` category is never counted: a usage error is the caller's mistake, and on the calibration database 33 of 63 clusters were usage and 56 of 63 spanned a day or more, because a count over a whole 30-day window fires for any busy verb. The members of a finding are the failures that lie in some qualifying 24-hour span; overlapping spans are one cluster, and failures outside every span are not members. The fingerprint does not depend on the window or the spans, so a narrower or wider run over the same failures keeps it. Its fingerprint is `cli-failure-cluster|<verb_path>|<error_category>|global`, and every failure in a qualifying span is a member of the cluster (the finding's evidence lists them, and the text line names the fingerprint and the member count). The scope part is always `global`: `cli_invocations` has a `scope_slug` column, but the capture writer never fills it, so no invocation has a scope to share. It reads the same `cli_log` input as `apply-without-preview`, so it is not run with the log off. A `verb_path` is part of the fingerprint, so a row written before write-time catalog checking cannot carry prose into it: rows are dropped before counting unless the path has the shape the writer produces (at most two tokens, each a lower-case word, a number, `word:number` with letters, hyphens or underscores in the word, or the `<unknown>` placeholder; the empty path of a bare `planar` call names no verb and forms no cluster). The recovery hint depends on the category (for the CLI cluster `validation` points at `planar <verb> --help`, `scope` at `planar scope show`, `db` at `planar health`, `internal` at `planar report`, and so on; for the claim cluster each failure category names its own next step after `planar-watch claims --status all`). **Limit:** `planar-watch` cannot read the `planar` command tree, so it has no catalog predicate, and a legacy row whose path is word-shaped but not a real verb is still counted there; `planar report`'s `<unrecognized>` mask has the predicate and does not share this gap. `claim-failure-cluster` (`warning`, an event) reports at least three claims that ended inside the window (by `released_at`) with the same `failure_category` other than `unknown` (set by `planar-agent fail --category`; a claim that ended without a category is not a failure here). Its fingerprint is `claim-failure-cluster|failure_category=<value>|<scope>`, where the scope is the members' common entity scope (`repo:<slug>` or `assoc:<slug>`, from the task, or the plan for a plan or plan-step claim) and `global` when they differ or any has none. It needs no input. For both, a narrower and a wider window over the same members keep one fingerprint and the same member identities (each member's id and row timestamp); `--plan` restricts claims to the plan and its descendants and changes only the window for the capture log.
+
+**Unresolved sync conflicts.** `sync-conflict-unresolved` (`warning`, a state) reports an external-scope `sync_events` row with outcome `conflict` and a link that no later event for the same link has ended. An event ends it when its outcome is `ok`, `noop` or `success` (a clean sync, including the `ok` event `planar-ext sync resolve` writes) or `resolved-fs`/`resolved-db`; an `error`, `partial` or `failure` ends nothing, and when the last attempt after the conflict errored the hint says to run `planar-ext sync pull <link>` again before resolving. Of several conflicts on one link only the latest is reported, because `sync resolve` accepts only a link's latest event. **Workbench conflicts are not reported**, nor is any event without a link: a workbench sync writes a new conflict row on every run, `sync resolve` refuses a link-less event, and a deleted link nulls `link_id`, so such a row would stay a finding permanently; covering them is a separate follow-up. The incident is the link's, not the event's: the fingerprint is `sync-conflict-unresolved|external_link:<id>|global`, because every `sync pull` on a still-conflicting link writes a new conflict event. The finding's entity is the latest `sync_event:<id>` (the `sync resolve` target), with the `external_link:<id>` in its evidence, timed by that event's `at`, so each new conflict is a new occurrence of the same incident. The check describes the state at the evaluation instant and ignores the window start. `--plan` reaches a link through its task or plan; a link to any other entity appears only without `--plan`. It needs no input.
+
+**Stale handoffs.** `handoff-stale` reports a `pending` or `validated` handoff more than 24 hours old at the evaluation instant (a handoff exactly 24 hours old is not stale). The cutoff is the one `planar health` and `planar report` apply, shared through `planar.core.thresholds`. A handoff is skipped when its task is `done` or `cancelled`, or when the task has a claim, in any status, taken after the handoff was created (decision 1384): the work moved on without consuming the handoff, which made 15 of 16 findings on the calibration database artifacts. A handoff whose snapshot has no task is still reported. It describes the state at the evaluation instant and ignores the window start; `--plan` reaches a handoff through its snapshot's task, so a handoff whose snapshot has no task appears only without `--plan`.
+
+**Synopsis:**
+```
+planar-watch diagnose [--plan <id>] [--days <n>] [--check <id>]... [--json]
+```
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--plan <id>` | Scope to this plan, its descendant plans and the tasks attached to it directly. | no entity filter |
+| `--days <n>` | Window of `n` days ending at the evaluation instant; at least 1. With `--plan` it replaces the plan-lifetime window. | plan lifetime with `--plan`, else 7 |
+| `--check <id>` | Run only this check; repeat the flag to select several. | every check |
+| `--json` | One `planar.diagnose/1` object. | text |
+
+`--session` and `--run` are not flags of this release; either is an unknown flag and exits `2`.
+
+**Window.** With `--plan` the window runs from the plan's `created_at` to the evaluation instant (`window.source` is `plan-lifetime`); `--days` replaces it (`days`). Without `--plan` it is the last `--days` days, default 7 (`default-days`). The evaluation instant is the current time.
+
+**Outcome.** `ok` when no input a selected check needs was `unavailable`. `partial` when one was: the checks that need it report nothing, so an absence of findings is then not "clean". An input the operator turned off reads `disabled` and does not degrade the outcome: the checks that need it are reported as not run (`input-unavailable` in `checks`) and the input is named, but the run stays `ok`. The capture log is the case today: with `[introspection].cli_log` off, the default, `apply-without-preview` does not run and the run can still read `ok`; a config file that cannot be located or parsed reads `unavailable` instead and the run is `partial`. An input that no selected, built check needs is `not_applicable` and never degrades the outcome. `unavailable` when the run could not read the database: it stayed locked past 250 ms (`busy`), a query failed (`query-failed`) or the planning tables are missing (`schema-unsupported`).
+
+**Human output.** A header (scope, window, outcome), one line per input that was `unavailable` or `disabled`, then one line per finding, `<severity> <check-id> <entity> -> <recovery>`. An unavailable run is the single line `diagnose: unavailable (<reason>)`. Findings are ordered by severity (`error`, `warning`, `info`), then check id, then primary entity (by kind, then numeric id), then earliest evidence time.
+
+```
+diagnose: plan 7 (3 plan(s)), window 2026-09-20T09:00:00.000Z to 2026-10-09T12:00:00.000Z (plan-lifetime), outcome ok
+error claim-superseded-active claim:4469 -> planar-agent abort --claim <token>
+```
+
+**JSON output.** One object, `planar.diagnose/1`: `schema`, `catalog_version`, `evaluated_at`, `scope` (`plan_id`, `plan_ids`, `window` with `from`, `to`, `source`, `days`), `outcome`, `reason` (`null` unless unavailable), `coverage` (one row per input: `input`, `state`, `reason`), `checks` (one row per catalog check: `id`, `kind`, `severity`, `category`, `state`, `findings`), `findings` and `would_resolve`. A finding has `check`, `severity`, `entity`, `evidence` (entity refs), `evidence_times`, `fingerprint`, `recovery` and `incident` (`null` until the incident ledger lands). Evidence holds ids and timestamps only: never a claim token, title, body or path.
+
+**Schema effects:** Reads the planning, claim, action and routing tables and `cli_invocations`. The config file is read for `[introspection].cli_log`. No writes. All reads run in one deferred read transaction with a 250 ms busy timeout.
+
+**Exit codes:**
+- `0` — the run completed, whatever it found; findings never change the exit status. A `partial` outcome is still `0`.
+- `1` — the run did not complete: `diagnose: unavailable (<reason>)` is printed and nothing else; or `planar.db` is missing or cannot be read; or neither `PLANAR_DB` nor `HOME` is set.
+- `2` — bad input: an unknown `--check` or plan id, `--days` below 1, an unknown flag (unlike the other `planar-watch` verbs, where a usage error exits `1`); the message names the value and nothing is printed on standard output.
+- `7` — `planar.db` is behind or ahead of this binary's schema.
 
 ---
 
@@ -7704,6 +8022,25 @@ planar-watch schema
 planar-ext schema
 planar-execute schema
 ```
+
+### Narrowing the catalog: `--command` and `--compact`
+
+The full `planar` catalog is about 350 KB, so every binary's `schema` takes two flags that cut it down. With neither flag the output is the full catalog, unchanged.
+
+| Flag | Effect |
+|------|--------|
+| `--command <path>` | Emit exactly that command's catalog object (the same object that appears in `commands[]`) and nothing else. `<path>` is the full path (`"planar task update"`) or relative to the root (`"task update"`, `task`); runs of whitespace are collapsed. |
+| `--compact` | Emit one row per command with only `command` (the full path) and `summary`, inside the usual envelope with `"layout":"compact"`. The row count equals the full catalog's command count; for `planar` the output is about 24 KB. |
+
+With both flags the output is the compact row for that one command. A path that names no command exits `2`, names the path on stderr (`error: schema: unknown command '<path>'`), and writes nothing to stdout. `--command` is bound to its value, so a bare verb name such as `task` is a lookup and never a subcommand: `planar schema --command task` prints the `planar task` object, wherever the flag sits relative to the verb.
+
+```sh
+planar schema --command "planar task update"
+planar schema --compact
+planar-agent schema --compact --command "queue status"
+```
+
+`planar-execute` reads the same two flags in its own parser (`--command=<path>` is accepted too) and takes the same exit code.
 
 `planar`, `planar-agent`, `planar-watch` and `planar-ext` each also expose a
 `version` verb (`planar version`, `planar-agent version`, `planar-watch version`,
@@ -7930,6 +8267,9 @@ stdout, exit `0`, nothing on stderr. Added by decision 1030 so
 `cli_usage_lint` polices authored references to `planar-execute` verbs; the
 catalog is a description of the hand-rolled parser, pinned against it by
 test, not a second parser.
+`--command <path>` and `--compact` narrow the output as described under
+[Introspection: `schema`](#introspection-schema-all-planning-state-binaries); an
+unknown path exits `2` with the message on stderr.
 
 ---
 
@@ -8114,26 +8454,28 @@ events:
 
 When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `claim_failure_categories`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
 
-**Privacy:** All queries are structurally redacted by construction in `src/engine/introspect/introspect.cpp`. The bundle selects only counts, closed categories, provider identities, verb paths, statuses, and timestamps — never entity `title`, `body`, or `summary` columns, never release reasons or action summaries, never scope slugs, and never path-bearing columns. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
+**Privacy:** The bundle's queries (`src/engine/introspect/introspect.cpp`) select counts, closed categories, provider identities, verb paths, statuses, timestamps and coverage counters. They read no entity `title`, `body` or `summary` column, no release reason or action summary, no scope slug, no path-bearing column, and never the `args_shape` column, so flag lists are never shown. A verb path is recorded, and shown, only when the live CLI tree names it at that depth; a structured operand in the second slot (digits or `word:digits`, such as `resume 6073` or `tree plan:42`) is kept as typed, at any length. The writer records `<unknown>` and `--<unknown>` for anything else, and `planar report` renders a stored verb path the live tree does not name (an older row) as `<unrecognized>`; stored rows are never purged. This is not a guarantee about the whole report: the `introspection_preview` signals are derived from transcripts and the capture log, and a finding filed from the bundle can carry free text, and neither is structurally redacted. The operator reviewing the full text before anything is posted is the redaction boundary. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
 
 **Flags:**
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--days <n>` | int | 30 | Window in days. Must be a positive integer. |
-| `--tail <n>` | int | 20 | Number of failure-tail rows to include in the text output. Must be a positive integer. |
+| `--tail <n>` | int | 20 | Number of failure-tail rows to include, in the text output and in the JSON `failure_tail`. Must be a positive integer. |
 | `--json` | bool | false | Emit stable machine-readable JSON. |
 
 **JSON wire format (`--json`):** Top-level fields are the contract consumed by downstream agents and skills:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `version` | string | Binary version string. |
+| `version` | string | The build's version token: the second token of the `planar version` line, which is the 12-character git sha (with `+dirty` appended for a dirty tree), or `dev` for a build without version metadata. Never the program name. |
 | `schema_version` | integer | Max schema_migrations version applied. |
 | `health` | string | `"ok"` or `"degraded"`. |
 | `window` | integer | The `--days` value queried. |
+| `logging_enabled` | boolean | Whether `[introspection].cli_log` is on. `false` means `invocations`, `failures` and `failure_tail` are empty because nothing was captured, not because nothing failed. |
 | `invocations` | array | Per-verb-path aggregate rows; empty array when logging disabled or no data. |
 | `failures` | array | Per-error-category failure counts; empty array when logging disabled or no data. |
+| `failure_tail` | array | The `--tail` most recent failed invocations, newest first, as `{verb_path, error_category, exit_code, recorded_at}` rows: the same rows the text output prints under `[failure tail]`. Empty array (never absent) when logging is disabled or no invocation failed. |
 | `actions` | array | Agent-action outcome aggregates (always-on). |
 | `sync` | array | Sync-event outcome aggregates (always-on). |
 | `claims` | object | `{stale_claims, never_consumed}` (always-on). |
@@ -8143,12 +8485,42 @@ When `[introspection].cli_log` is off (the default), the invocation and failure 
 
 Empty windows emit empty arrays, never nulls or missing fields.
 
+**Capture-log byte cap:** The 4 MiB retained budget (what the preview keeps and normalizes; the transcript read budget is separate, below) is split four ways: Claude, Codex and Copilot transcripts each get a quarter, and the `cli_log` adapter gets what the transcript adapters leave, never less than a quarter. When the window's `cli_invocations` rows would exceed its budget, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
+
+**Transcript scan (read wide, keep narrow):** Two budgets apply. The **read budget**, `[introspection].transcript_scan_bytes` (an integer above 0; default `67108864`, 64 MiB), bounds the bytes streamed from disk across the enabled transcript vendors. It is split evenly among them; a vendor with less to read than its share leaves the rest to the others. The **retained budget** is the fixed 4 MiB above and bounds what is kept and normalized. A value that is not an integer above 0 is a configuration error naming the key: `planar report`, `planar config show` and `planar config validate` refuse it (exit 2 for the first two).
+
+Each vendor scans only files modified inside the `--days` window, newest modification time first, ties broken by path, each file forward one line at a time. A file that does not fit the vendor's remaining read budget is skipped and counted rather than stopping the scan, so one large file does not hide the files after it. The one exception is the newest file: when it alone exceeds the read budget, its tail is read, starting at the first complete line, because the live session is usually the newest and largest file. The file-count cap is unchanged.
+
+A line is **kept** only if it contains `planar` and is that vendor's call shape (a Claude assistant `tool_use` or a Codex `function_call` whose command is a planar invocation, a failed Codex `CommandExecution` of one, a Copilot `tool.execution_start` of one), or if it carries the call id of a call kept earlier in the same file (a Claude `tool_result`, a Codex `function_call_output`, a Copilot `tool.execution_complete`). Every other line is discarded without being stored, copied or logged. A line longer than 1 MiB is skipped unread. Up to 4096 call ids are pending per file; a call past that is still kept, but its result cannot be paired. Reaching the retained budget stops that vendor's scan with a `byte_cap` warning carrying `"reason":"retained"`; reaching the read budget (a file skipped or the newest read from its tail) adds a `byte_cap` warning with `"reason":"scanned"`. Warnings without a reason carry no `reason` key.
+
+Each `introspection_preview.coverage` row (and the text report's coverage line) carries these counters, in this order, after `bytes_read`:
+
+| Counter | Meaning |
+|---------|---------|
+| `bytes_read` | Alias of `bytes_retained`, which is what it measured when every byte read was kept. |
+| `files_partial` | Files read from their tail only. |
+| `files_skipped_cap` | Files not read because the file, read-budget or record cap left no room, or the vendor's scan had stopped. The warning matching the cap that stopped it (`byte_cap`, `file_cap` or `record_cap`) accompanies a skipped or partial file. |
+| `files_skipped_window` | Files not read because their modification time is before the window. |
+| `bytes_scanned` | Bytes streamed from disk for the vendor, kept or not. A tail read counts the tail. |
+| `bytes_retained` | Bytes of the lines kept, newlines excluded. At most the vendor's share of the retained budget. |
+| `lines_oversize` | Lines longer than 1 MiB, skipped unread. |
+| `results_unpaired` | Results whose call was not kept: the call fell before the start of a tail read, or its id was past the pending cap. Only a tail read can miss a call, so a whole-file read never counts one. A result for a call that was seen and is not a planar call is not counted. |
+
+The `scanned`, `normalized`, `ignored`, `malformed` and `capped` counters describe the kept lines, plus one more class: a line that mentions `planar` but is not valid JSON or is a broken envelope of the vendor's format is dropped, not stored, and counted in `scanned` and `malformed` (with the `malformed` warning), so a changed vendor format does not read as a clean scan. Any other discarded line is in none of them. The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
+
+**Transcript recognition:** A transcript signal is a failed `planar` command, and its verb path comes from the same live-CLI catalog rule the capture log uses (a token the tree names, a structured operand in the second slot, otherwise `<unknown>`), so typed words, flag values and prose never reach a signal.
+
+- **Claude:** a `Bash` `tool_use` paired with an `is_error: true` `tool_result`.
+- **Codex:** an `event_msg` `item_completed` of type `CommandExecution` with a non-zero `exit_code` or `status: "failed"`. The `command` array is either an argv or a shell wrapper (`bash -lc "<script>"`). The older `schema_version`/`command_execution` records are still read. `custom_tool_call` and `custom_tool_call_output` records are validated and otherwise ignored. A `function_call` of a planar command and its `function_call_output` are kept by the scan (so they count in `scanned` and `ignored`) but yield no signal; a successful `CommandExecution` is discarded by the scan.
+- **Recognized command shapes:** `planar ...`, `./bin/planar ...`, `build/*/bin/planar ...` and any path ending in `/planar`, with `env`/`NAME=value` prefixes. The command may be a chain, but planar must be its last step, so the recorded exit status is planar's: a step joined by `;` may be anything, and every step joined to planar by `&&` must be `cd`, `pushd`, `export` or `NAME=value` only. A pipeline (`|`), command substitution, a here-document, a background job, a second planar step, or planar followed by another step (`planar ... && make test`) is not attributed to a verb.
+- **Copilot:** only `*.jsonl` files under the session-state path are read. When the directory holds none (the installed Copilot CLI writes YAML, Markdown and JSON metadata there), the Copilot row is `unavailable` and `warnings` carries `{"vendor":"copilot","kind":"unsupported_layout","count":1}`. Copilot's `session-store.db` and logs are not read.
+
 **Exit codes:**
 
 | Code | Meaning |
 |------|---------|
 | 0 | Bundle rendered successfully (including "logging disabled" path). |
-| 2 | Invalid flag value — `--days` or `--tail` must be a positive integer; no partial bundle is emitted. |
+| 2 | Invalid flag value (`--days` or `--tail` must be a positive integer) or an invalid `[introspection].transcript_scan_bytes`; no partial bundle is emitted. |
 | 1 | Database error. |
 
 **Example:**
@@ -8341,6 +8713,7 @@ For quick reference, all documented commands grouped by domain:
 | `workflow` | `workflow list`, `workflow list --local`, `workflow show <name>` |
 | `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
 | `schema` | `schema` (also on `planar-agent` and `planar-watch`) |
+| `update` | `update`, `update --check`, `update --version <tag>` |
 ## Domain: `closure`
 
 Derived-closure extraction: given a task's touched `(repo, path)` seeds, walk
@@ -8376,7 +8749,7 @@ to walk and is refused rather than silently writing an empty closure.
 Seed paths are resolved against `projects.root_path`, which is why a project
 registered with a path that does not match your checkout produces an empty or
 wrong result — see the association-less-repo advisory under
-[`task touches add`](#planar-task-touches-add-task-id).
+[`task touches add`](#planar-task-touches-add-task-id-repo-slug---path-p).
 
 **Scope guard:** Refuses when the operator's resolved write scope disagrees
 with the task's, using the membership-aware comparison (see

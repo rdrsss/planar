@@ -36,7 +36,7 @@ must_grep agents/methodology.md "--no-auto-promote"
 must_grep agents/methodology.md "Anchor exception"
 
 # Orchestrator's Phase 3 step 9 acknowledges the invariant.
-must_grep agents/orchestrator.md "plan-status auto-promotion invariant"
+must_grep agents/planar-orchestrator.md "plan-status auto-promotion invariant"
 
 # Concepts §Plan documents the auto-promotion contract.
 must_grep docs/concepts.md "Status auto-promotion"

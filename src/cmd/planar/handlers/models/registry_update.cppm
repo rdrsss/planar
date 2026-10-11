@@ -12,9 +12,9 @@ namespace planar::cmd::handlers::models_cli {
 /// @return Registered CLI node.
 export auto attach_registry_update(CLI::App& registry) -> CLI::App* {
   CLI::App* update = registry.add_subcommand("update", "Update enabled state and deterministic fallback order.");
-  add_int_required(*update, "--candidate");
-  add_int_required(*update, "--order");
-  add_bool(*update, "--disabled");
+  add_int_required(*update, "--candidate", "Registry candidate id");
+  add_int_required(*update, "--order", "Deterministic fallback order");
+  add_bool(*update, "--disabled", "Disable the candidate; omitting it enables it");
   return update;
 }
 } // namespace planar::cmd::handlers::models_cli

@@ -6,6 +6,7 @@ module;
 module planar.cmd.planar.cli_log;
 
 import std;
+import cli11;
 import planar.db;
 import planar.engine.config.effective;
 import planar.cmd.planar.context;
@@ -34,6 +35,73 @@ auto is_short_flag(std::string_view token) -> bool {
   return token.size() >= 2 && token[0] == '-' && token[1] != '-';
 }
 
+/// @brief The placeholder recorded for a verb-slot token the live CLI tree
+/// does not name at that depth.
+constexpr std::string_view unknown_verb = "<unknown>";
+
+/// @brief The placeholder recorded for a flag the resolved verb does not
+/// declare.
+constexpr std::string_view unknown_flag = "--<unknown>";
+
+/// @brief Whether `t` is a structured operand: a bare id (`6073`) or an
+/// entity ref (`plan:42`), the only shapes recorded verbatim in slot 2.
+/// @param t The token.
+/// @return `true` for digits, or `word:digits`.
+auto structured_operand(std::string_view t) -> bool {
+  if (t.empty()) {
+    return false;
+  }
+  auto const colon  = t.find(':');
+  auto const digits = [](std::string_view v) {
+    return !v.empty() && std::ranges::all_of(v, [](unsigned char c) { return std::isdigit(c) != 0; });
+  };
+  if (colon == std::string_view::npos) {
+    return digits(t);
+  }
+  auto const kind = t.substr(0, colon);
+  return !kind.empty() &&
+         std::ranges::all_of(kind, [](unsigned char c) { return std::isalpha(c) != 0 || c == '-' || c == '_'; }) &&
+         digits(t.substr(colon + 1));
+}
+
+/// @brief The live CLI tree, built once for membership checks.
+/// @return The root node; borrowed and valid for the process lifetime.
+auto live_root() -> const CLI::App& {
+  static const std::unique_ptr<CLI::App> root = root_app();
+  return *root;
+}
+
+/// @brief The visible direct subcommand of `parent` named `name`.
+/// @param parent The node to search.
+/// @param name The token as typed.
+/// @return The child, or `nullptr` when `parent` has no visible child by that name.
+auto named_child(const CLI::App& parent, std::string_view name) -> const CLI::App* {
+  for (auto const* child : cliapp::children(parent)) {
+    if (child->get_name() == name) {
+      return child;
+    }
+  }
+  return nullptr;
+}
+
+/// @brief Whether any node on `chain` declares the flag spelled `name`.
+///
+/// Hidden options count: they are declared, and their names are catalog
+/// controlled rather than operator typed.
+/// @param chain The resolved nodes, root first.
+/// @param name The flag name as typed, `--long` or `-s`, value excluded.
+/// @return `true` when an option on the chain answers to `name`.
+auto flag_declared(std::span<const CLI::App* const> chain, std::string const& name) -> bool {
+  for (auto const* node : chain) {
+    for (auto const* opt : node->get_options()) {
+      if (!opt->get_positional() && opt->check_name(name)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 } // namespace
 
 /// @brief Top-level verbs that HAVE subcommands, derived once from the live
@@ -50,8 +118,7 @@ auto is_short_flag(std::string_view token) -> bool {
 auto parent_verb_set() -> const std::set<std::string, std::less<>>& {
   static const std::set<std::string, std::less<>> verbs = [] {
     std::set<std::string, std::less<>> out;
-    auto const                         root = root_app();
-    for (auto const* child : cliapp::children(*root)) {
+    for (auto const* child : cliapp::children(live_root())) {
       if (!cliapp::children(*child).empty()) {
         out.insert(child->get_name());
       }
@@ -65,12 +132,25 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
   auto const&                   parent_verbs = parent_verb_set();
   std::vector<std::string_view> verb_parts;
   std::vector<std::string_view> flag_names;
-  std::size_t                   positional_count = 0;
+  // Verb-slot tokens as they will be recorded: the typed token only when the
+  // live tree names it (or it is a structured operand), else `<unknown>`.
+  std::vector<std::string> recorded_parts;
+  // The nodes the verb slot resolved to, root first. Flags are checked
+  // against these; an unresolved verb leaves only the root.
+  auto const&                  root = live_root();
+  std::vector<const CLI::App*> chain{&root};
+  std::size_t                  positional_count = 0;
 
   // Set by the first flag or by `--`; after it, no token can join the verb
   // path, so a positional that happens to be a bare word is counted rather
   // than recorded.
   bool past_verbs = false;
+
+  // Set by the first flag. Until then a token past the recorded verb depth
+  // can still name a third-level subcommand (`feedback triage set`), which
+  // only widens the chain flags are checked against; it is still counted as
+  // a positional and never recorded.
+  bool flag_seen = false;
 
   for (std::size_t i = 0; i < argv_tail.size(); ++i) {
     std::string_view const token = argv_tail[i];
@@ -84,6 +164,7 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
 
     if (is_long_flag(token) || is_short_flag(token)) {
       past_verbs = true;
+      flag_seen  = true;
 
       // The inline form `--flag=value`. Record the NAME only, `=` excluded
       // (this is what the Zig code does and what the oracle's rows show --
@@ -120,10 +201,14 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
       continue;
     }
 
-    // The verb slot. Token 2 is RECORDED VERBATIM only when it is
-    // STRUCTURED — a bare id (`resume 6073`) or an entity ref
-    // (`tree plan:42`) — or when token 1 is a verb that has subcommands
-    // (`task add`). Free-text operands are dropped (task 6351).
+    // The verb slot, three cases (tasks 6351 and 7369):
+    //   - Slot 1 is recorded only when the live CLI tree names it at the top
+    //     level; anything else, structured-looking or not, is `<unknown>`.
+    //   - Slot 2 is recorded when the tree names it under the resolved
+    //     slot 1 (`task add`), or when it is a structured operand: a bare
+    //     id (`resume 6073`) or an entity ref (`tree plan:42`).
+    //   - Any other slot-2 token is `<unknown>` after a parent verb, and a
+    //     counted positional otherwise.
     //
     // Three top-level verbs carry operator prose in that slot, and the leak
     // was measured with cli_log enabled, not reasoned about:
@@ -142,37 +227,42 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
     // the VALUE is safe by default, and `resume`/`tree` keep the verbatim
     // capture cli_log.cppm's header documents as the oracle's boundary.
     // `parent_verbs` is derived from the live CLI tree for the same reason.
-    auto const structured_operand = [](std::string_view t) {
-      if (t.empty()) {
-        return false;
-      }
-      auto const colon  = t.find(':');
-      auto const digits = [](std::string_view v) {
-        return !v.empty() && std::ranges::all_of(v, [](unsigned char c) { return std::isdigit(c) != 0; });
-      };
-      if (colon == std::string_view::npos) {
-        return digits(t);
-      }
-      auto const kind = t.substr(0, colon);
-      return !kind.empty() &&
-             std::ranges::all_of(kind, [](unsigned char c) { return std::isalpha(c) != 0 || c == '-' || c == '_'; }) &&
-             digits(t.substr(colon + 1));
-    };
     const bool verb_slot_open =
         !past_verbs && (verb_parts.empty() || (verb_parts.size() < max_verb_depth &&
                                                (parent_verbs.contains(verb_parts.front()) || structured_operand(token))));
     if (verb_slot_open) {
+      const CLI::App* resolved = nullptr;
+      if (verb_parts.empty()) {
+        resolved = named_child(root, token);
+      } else if (chain.size() == verb_parts.size() + 1) {
+        resolved = named_child(*chain.back(), token);
+      }
+      if (resolved != nullptr) {
+        chain.push_back(resolved);
+        recorded_parts.emplace_back(token);
+      } else if (!verb_parts.empty() && structured_operand(token)) {
+        recorded_parts.emplace_back(token);
+      } else {
+        recorded_parts.emplace_back(unknown_verb);
+      }
       verb_parts.push_back(token);
       continue;
     }
 
-    // A positional: past the verb depth, or after the first flag.
+    // A positional: past the verb depth, or after the first flag. A token
+    // past the depth that names a subcommand of the resolved leaf widens the
+    // flag chain; it is not recorded.
+    if (!flag_seen && chain.size() == verb_parts.size() + 1) {
+      if (auto const* deeper = named_child(*chain.back(), token); deeper != nullptr) {
+        chain.push_back(deeper);
+      }
+    }
     past_verbs = true;
     ++positional_count;
   }
 
   parsed_args_shape shape;
-  for (auto const& part : verb_parts) {
+  for (auto const& part : recorded_parts) {
     if (!shape.verb_path.empty()) {
       shape.verb_path += ' ';
     }
@@ -186,9 +276,42 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
     if (!shape.args_shape.empty()) {
       shape.args_shape += ' ';
     }
-    shape.args_shape += flag;
+    if (flag_declared(chain, std::string{flag})) {
+      shape.args_shape += flag;
+    } else {
+      shape.args_shape += unknown_flag;
+    }
   }
   return shape;
+}
+
+auto verb_path_recognized(std::string_view verb_path) -> bool {
+  if (verb_path.empty()) {
+    return true; // A bare `planar` records no verb.
+  }
+  std::vector<std::string_view> parts;
+  for (auto const part : std::views::split(verb_path, ' ')) {
+    parts.emplace_back(part.begin(), part.end());
+  }
+  if (parts.size() > max_verb_depth) {
+    return false;
+  }
+  auto const& root = live_root();
+
+  // Slot 1: a top-level verb, or the writer's own placeholder.
+  const CLI::App* top = nullptr;
+  if (parts[0] != unknown_verb) {
+    top = named_child(root, parts[0]);
+    if (top == nullptr) {
+      return false;
+    }
+  }
+  if (parts.size() == 1) {
+    return true;
+  }
+
+  // Slot 2: the placeholder, a structured operand, or a subcommand of slot 1.
+  return parts[1] == unknown_verb || structured_operand(parts[1]) || (top != nullptr && named_child(*top, parts[1]) != nullptr);
 }
 
 auto category_for(domain_error_kind kind) -> std::optional<std::string_view> {

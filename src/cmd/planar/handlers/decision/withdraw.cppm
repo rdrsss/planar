@@ -14,9 +14,9 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_withdraw(CLI::App& decision) -> CLI::App* {
   CLI::App* withdraw = decision.add_subcommand("withdraw", "Withdraw a decision.");
-  add_string(*withdraw, "--scope");
-  add_json(*withdraw);
-  add_positional(*withdraw, "decision-id");
+  add_string(*withdraw, "--scope", "Scope slug to resolve against instead of the cwd-derived scope");
+  add_json(*withdraw, "Emit machine-readable JSON instead of text");
+  add_positional(*withdraw, "decision-id", "Decision id");
   return withdraw;
 }
 } // namespace planar::cmd::handlers::decision_cli

@@ -7,10 +7,11 @@
 ///
 /// ## A verb that does nothing, and why it still needs a handler
 ///
-/// Plan 918 M5 retired `skills render` / `status` / `repair` — scriptorium
-/// is the sole renderer and owns install-drift detection through its own
-/// manifest. The node stays registered as a placeholder so `planar skills`
-/// reports "no subcommands" rather than an unknown-verb error.
+/// Plan 918 M5 retired `skills render` / `status` / `repair`; the skill tree
+/// is now `skills/planar/`, installed by `install.sh`, and `planar health`
+/// reports install drift. The node stays registered as a placeholder, pending
+/// removal in the next release, so `planar skills` reports "no subcommands"
+/// rather than an unknown-verb error.
 ///
 /// On the Zig side that falls out for free: a `Cmd` with no children and
 /// no `.run` renders its own help page. In this tree it does not, and the

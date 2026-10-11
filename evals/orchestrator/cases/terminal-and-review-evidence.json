@@ -10,7 +10,7 @@
       "id": "no-coder-task-done",
       "description": "Coder surfaces never use the non-atomic task-done verb.",
       "mode": "none",
-      "paths": ["skills/src/pl-coder.md", "agents/coder.md"],
+      "paths": ["agents/planar-coder.md"],
       "pattern": "planar task done"
     },
     {
@@ -18,10 +18,8 @@
       "description": "Coder and orchestrator agree on the narrow terminal exception.",
       "mode": "all",
       "paths": [
-        "skills/src/pl-coder.md",
-        "agents/coder.md",
-        "skills/src/pl-orchestrator.md",
-        "agents/orchestrator.md"
+        "agents/planar-coder.md",
+        "agents/planar-orchestrator.md"
       ],
       "pattern": "in-pwd.*barrel-bypass|barrel-bypass.*in-pwd",
       "multiline": true
@@ -30,7 +28,7 @@
       "id": "blind-structured-packet",
       "description": "Reviewer surfaces exclude coder narrative and consume structured validation evidence.",
       "mode": "all",
-      "paths": ["skills/src/pl-reviewer.md", "agents/reviewer.md"],
+      "paths": ["agents/planar-reviewer.md"],
       "pattern": "structured.*evidence|structured validation",
       "multiline": true
     }

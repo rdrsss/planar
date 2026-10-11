@@ -6,8 +6,11 @@ module planar.cmd.planar.handlers.plan;
 import std;
 import cli11;
 import planar.cliapp.args;
+import planar.cmd.internal.config_path;
 import planar.db;
 import planar.json_text;
+import planar.engine.config.effective;
+import planar.engine.diagnose;
 import planar.engine.identity;
 import planar.engine.planning;
 import planar.engine.ingest;
@@ -1205,6 +1208,13 @@ auto plan_divergence(context& ctx, const cliapp::parsed_args& args) -> handler_r
   return {};
 }
 
+/// @brief The current instant as `YYYY-MM-DDTHH:MM:SS.mmmZ`, the form the diagnose engine takes.
+/// @return The UTC instant.
+auto closeout_now_iso() -> std::string {
+  auto const now = std::chrono::floor<std::chrono::milliseconds>(std::chrono::system_clock::now());
+  return std::format("{:%Y-%m-%dT%H:%M:%S}Z", now);
+}
+
 auto plan_closeout(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   namespace co = engine::planning::closeout;
 
@@ -1234,9 +1244,20 @@ auto plan_closeout(context& ctx, const cliapp::parsed_args& args) -> handler_res
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "plan closeout: QueryFailed"));
   }
 
+  // The diagnosis runs after the gate evaluation and outside its apply transaction (the plan is
+  // already `done` on an apply or an already-terminal plan; its lifetime window is the same), on
+  // every path that reached a result. It reads only and cannot fail the verb: an unavailable run
+  // is a section, and nothing here feeds `ready`, `blocked_by` or the exit status (decision 1342).
+  auto const section = engine::diagnose::run_section(
+      **conn, *id, closeout_now_iso(), engine::config::introspection_cli_log(internal::resolve_config_path(ctx.env())));
+
   // The report goes out FIRST and unconditionally — the refusal below is an
   // additional stderr line, not a replacement for it.
-  ctx.out() << (cliapp::flag_bool(args, "--json") ? co::render_json(*result) : co::render_text(*result, dry_run));
+  if (cliapp::flag_bool(args, "--json")) {
+    ctx.out() << co::render_json(*result, std::format(",\"diagnose\":{}", section.json));
+  } else {
+    ctx.out() << co::render_text(*result, dry_run) << '\n' << section.text;
+  }
 
   // Only the APPLY path refuses. See this leaf's declaration in plan.cppm
   // for why `--dry-run` exits 0 here despite the help text saying otherwise.

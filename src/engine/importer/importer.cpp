@@ -171,7 +171,7 @@ auto cache_anchor(std::string_view body, const request& req) -> std::optional<st
   }
 
   // Decisions carry PROVENANCE the apply pass records as fact. The contract
-  // is `skills/src/pl-import.md` § "Hard contract rules", which requires a
+  // is `agents/planar-importer.md` § "Sequencing" (the Result rules), which requires a
   // citation only of an `llm-inferred` decision -- `source` itself is
   // OPTIONAL. The sibling `synthesize` validator demands both unconditionally
   // and is NOT the contract here: transcribing it verbatim rejected the
@@ -336,7 +336,7 @@ auto run(const std::filesystem::path& root, const std::filesystem::path& planar_
   out.mode_   = outcome::mode::pending;
   out.message = std::format("Awaiting LLM interpretation. The vendor skill should:\n  1. read  {}\n  2. run the LLM at "
                             "temperature 0\n  3. write the Result to {}\n  4. re-invoke `planar import <repo> --interpret`\nSee "
-                            "`commands/claude/pl-import.md` for the full contract.",
+                            "`planar import --help` for the full contract.",
                             out.pending_path.string(), out.cache_path.string());
   return out;
 }

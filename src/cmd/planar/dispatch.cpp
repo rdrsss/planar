@@ -52,6 +52,7 @@ import planar.cmd.planar.handlers.drafting;
 import planar.cmd.planar.handlers.links;
 import planar.cmd.planar.handlers.link;
 import planar.cmd.planar.handlers.unlink;
+import planar.cmd.planar.handlers.update;
 import planar.cmd.planar.handlers.version;
 import planar.cmd.planar.handlers.workbench;
 import planar.cmd.planar.handlers.workflow;
@@ -197,6 +198,21 @@ auto not_implemented_for(std::string_view verb) -> handler_fn {
 auto explore_fallback(const CLI::App* node) -> handler_fn {
   return [node](context& ctx, const cliapp::parsed_args&) -> handler_result {
     ctx.out() << node->help();
+    return {};
+  };
+}
+
+/// @brief `help`'s handler: print the root help page, as `planar --help` does.
+///
+/// `root` is captured by reference and rendered through its own formatter,
+/// the call `CLI::App::help()` makes for a root with no parsed subcommand
+/// (the `--help` path). `help()` itself is not usable here: `help` is the
+/// parsed subcommand when this handler runs, and `help()` delegates to it.
+/// @param root The root CLI11 node.
+/// @return A handler that always succeeds, printing the root help text.
+auto help_handler(const CLI::App& root) -> handler_fn {
+  return [&root](context& ctx, const cliapp::parsed_args&) -> handler_result {
+    ctx.out() << root.get_formatter()->make_help(&root, root.get_name(), CLI::AppFormatMode::Normal);
     return {};
   };
 }
@@ -519,6 +535,9 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("task link", handlers::task_link);
   table.emplace("question link", handlers::question_link);
   table.emplace("version", handlers::version);
+  // `update` (plan 1122 M3, task 7319) opens no database: it downloads a
+  // release under the common mutation lock and execs the bundled installer.
+  table.emplace("update", handlers::update);
   // `schema` and `completion` describe the TREE, so they take it; every
   // other handler describes DATA and does not. Same shape as the
   // `planar-agent` and `planar-watch` tables.
@@ -689,6 +708,7 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // refusal in the oracle prints the verb's help text, not an error. See
   // `explore_fallback`'s header just above.
   table.emplace("explore", explore_fallback(root.get_subcommand("explore")));
+  table.emplace("help", help_handler(root));
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
   // refuses at exit 64. The inventory is generated alongside the surface

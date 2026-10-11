@@ -11,3 +11,6 @@ doxygen-lint-output
 .codex
 .copilot
 **/.DS_Store
+
+# Owned release bundle outputs; foreign source dirt still refuses tagged cuts.
+dist

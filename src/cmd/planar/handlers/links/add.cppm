@@ -14,10 +14,11 @@ namespace planar::cmd::handlers::links_cli {
 /// @return Registered CLI node.
 export auto attach_add(CLI::App* links) -> CLI::App* {
   CLI::App* add = links->add_subcommand("add", "Create an entity_links row between two entities.");
-  add_string_required(*add, "--relationship");
-  add_json(*add);
-  add_positional(*add, "from-ref");
-  add_positional(*add, "to-ref");
+  add_string_required(*add, "--relationship",
+                      "Relationship kind: derives-from, depends-on, addresses, verifies, cites, supersedes, touches");
+  add_json(*add, "Emit machine-readable JSON instead of text");
+  add_positional(*add, "from-ref", "Source entity ref (kind:id)");
+  add_positional(*add, "to-ref", "Target entity ref (kind:id)");
   return add;
 }
 } // namespace planar::cmd::handlers::links_cli

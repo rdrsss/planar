@@ -117,6 +117,33 @@ export struct status_error {
   std::string       message;                         ///< A complete, printable description.
 };
 
+/// @brief A successor-chain condition that a logical-job observer must not treat as completion.
+export enum class wait_lookup_issue : std::uint8_t {
+  none,                          ///< The terminal entry or history row was found, or the initial ticket was absent.
+  successor_history_unavailable, ///< An explicit successor has no active or history row.
+  invalid_successor,             ///< A successor is cyclic or does not increase the sequence number.
+};
+
+/// @brief A strict, read-only status lookup for a logical queue submission.
+export struct wait_status_lookup {
+  std::optional<queue_status> status;       ///< The latest resolved entry or history row, when one exists.
+  std::optional<std::int64_t> observed_seq; ///< The sequence of that row, independent of the requested sequence.
+  wait_lookup_issue           issue = wait_lookup_issue::none; ///< Uncertainty or corruption in the successor chain.
+};
+
+/// @brief Checks an observation budget or interruption before each successor hop and store read.
+/// @return Success, or a caller-owned error that stops the lookup.
+export using wait_lookup_check = std::function<std::expected<void, status_error>()>;
+
+/// @brief Reads one strict logical-job snapshot without retaining a transaction or statement.
+/// @param conn An open queue store; a read-only connection is enough.
+/// @param seq The originally submitted sequence number.
+/// @param request Identity, clocks, settings and process probe for active-entry status.
+/// @param check Optional deadline/interruption check, called before every read and successor hop.
+/// @return The latest row and its sequence, missing-history condition, or read/check error.
+export auto query_wait_status(db::connection& conn, std::int64_t seq, const status_request& request,
+                              const wait_lookup_check& check = {}) -> std::expected<wait_status_lookup, status_error>;
+
 /// @brief Reads what is known about `seq`, as this module's description states.
 /// @param conn An open `planar.db`; a read-only connection is enough.
 /// @param seq The sequence number asked for.

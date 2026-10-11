@@ -63,7 +63,7 @@ auto build_planar_root(CLI::App& app) -> void {
   add->add_flag("--json");
   add->add_option("title")->required();
 
-  CLI::App* done = task->add_subcommand("done", "Mark a task as done (single-arg form; Go supports variadic).");
+  CLI::App* done = task->add_subcommand("done", "Mark a task as done.");
   done->add_option("--scope");
   done->add_flag("--force")->description("Override active-claim guard and flip status anyway.");
   done->add_flag("--json");

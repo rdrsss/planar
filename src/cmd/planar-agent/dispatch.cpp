@@ -5,6 +5,7 @@ module planar.cmd.planar_agent.dispatch;
 
 import std;
 import cli11;
+import planar.db;
 import planar.cmd.planar_agent.handlers.dispatch;
 import planar.cmd.planar_agent.handlers.context;
 import planar.cliapp.args;
@@ -19,6 +20,7 @@ import planar.cmd.planar_agent.handlers.claims;
 import planar.cmd.planar_agent.handlers.queue;
 import planar.cmd.planar_agent.handlers.queue.rule;
 import planar.cmd.planar_agent.handlers.queue.status;
+import planar.cmd.planar_agent.handlers.queue.wait;
 import planar.cmd.planar_agent.handlers.recovery;
 import planar.cmd.planar_agent.handlers.runs;
 import planar.cmd.planar_agent.handlers.schema;
@@ -26,6 +28,42 @@ import planar.cmd.planar_agent.handlers.terminal;
 import planar.cmd.planar_agent.handlers.version;
 
 namespace planar::cmd::agent {
+
+namespace {
+
+/// @brief After a `QueryFailed`, say what the database itself refused, so a
+/// read-only database or a sandbox is recognisable. The pinned
+/// `error: <verb>: QueryFailed` line and the JSON envelope's tag are unchanged;
+/// this adds one line after them. A transaction's rollback clears SQLite's
+/// own message, so a database SQLite opened read-only is detected directly.
+/// @param err The handler failure that was just reported.
+/// @param ctx The invocation context, whose database may be open.
+auto explain_query_failure(const domain_error& err, context& ctx) -> void {
+  if (!err.text.ends_with("QueryFailed")) {
+    return;
+  }
+  auto* const conn = ctx.db().connection_if_open();
+  if (conn == nullptr) {
+    return;
+  }
+  auto const path = ctx.db_path().string();
+  if (conn->is_write_protected()) {
+    ctx.err() << std::format("error: the database at {} is read-only to this process. {}\n", path, db::access_requirement());
+    return;
+  }
+  auto const why = conn->last_error();
+  if (why.code_ == 0) {
+    return;
+  }
+  if (db::is_access_failure(why)) {
+    ctx.err() << std::format("error: the database at {} refused the operation: {}. {}\n", path, why.message_,
+                             db::access_requirement());
+    return;
+  }
+  ctx.err() << std::format("error: the database at {} reported: {}\n", path, why.message_);
+}
+
+} // namespace
 
 namespace {
 
@@ -110,6 +148,7 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("queue cancel", handlers::queue_cancel);
   // Read-only: what became of one entry. Returns its own exit status too.
   table.emplace("queue status", handlers::queue_status);
+  table.emplace("queue wait", handlers::queue_wait);
   // Prints the embedded agent rule text; opens no database.
   table.emplace("queue rule", handlers::queue_rule);
   // Everything above is IMPLEMENTED. Everything below is DECLARED and
@@ -168,6 +207,11 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
     // which is exactly the asymmetry this decision closes. Nothing is
     // written to stdout on a parse failure.
     ctx.err() << "error: " << e.what() << '\n';
+    if (argv.size() >= 3 && argv[1] == "queue" && argv[2] == "wait" && std::ranges::find(argv, "--json") != argv.end()) {
+      ctx.out() << "{\"seq\":null,\"observed_seq\":null,\"wait_reason\":\"error\",\"elapsed_ms\":null,"
+                   "\"timeout_ms\":null,\"result_exit_code\":null,\"status\":null,\"error\":{\"verb\":\"queue wait\","
+                   "\"tag\":\"invalid_input\",\"message\":\"invalid command line\"}}\n";
+    }
     // This binary's policy is exit 1, NOT the operator binary's 2.
     return exit_code_for(domain_error_kind::parse_error);
   }
@@ -212,6 +256,7 @@ auto run(context& ctx, CLI::App& root, const handler_table& table) -> int {
   auto const& outcome = std::get<handler_result>(handled);
   if (!outcome) {
     report(outcome.error(), ctx.err());
+    explain_query_failure(outcome.error(), ctx);
     if (want_json_envelope) {
       report_json_envelope(key, outcome.error(), ctx.out());
     }

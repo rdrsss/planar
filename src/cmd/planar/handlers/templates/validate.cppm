@@ -14,10 +14,10 @@ namespace planar::cmd::handlers::templates_cli {
 /// @return Registered CLI node.
 export auto attach_validate(CLI::App* templates) -> CLI::App* {
   CLI::App* validate = templates->add_subcommand("validate", "Validate template syntax.");
-  add_json(*validate);
-  add_positional(*validate, "set");
-  add_positional(*validate, "system");
-  add_positional(*validate, "kind");
+  add_json(*validate, "Emit machine-readable JSON instead of text");
+  add_positional(*validate, "set", "Template set name");
+  add_positional(*validate, "system", "External system name, e.g. jira, github-issues");
+  add_positional(*validate, "kind", "Template kind, e.g. epic");
   return validate;
 }
 } // namespace planar::cmd::handlers::templates_cli

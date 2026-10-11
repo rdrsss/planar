@@ -14,11 +14,11 @@ namespace planar::cmd::handlers::scenario_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& scenario) -> CLI::App* {
   CLI::App* list = scenario.add_subcommand("list", "List scenarios.");
-  add_string(*list, "--scope");
-  add_string(*list, "--status");
-  add_int(*list, "--related");
-  add_string(*list, "--touches");
-  add_json(*list);
+  add_string(*list, "--scope", "Scope slug to filter by (default: cwd-derived read set)");
+  add_string(*list, "--status", "Filter by scenario status: draft, ready, verified, failing, retired");
+  add_int(*list, "--related", "Restrict to scenarios related to this artifact id");
+  add_string(*list, "--touches", "Restrict to scenarios touching this repo slug");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::scenario_cli

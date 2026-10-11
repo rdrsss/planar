@@ -299,7 +299,9 @@ auto create_remote(const adapter_handle& handle, const engine::external::system:
 
   auto sent = handle.transport().send(req);
   if (!sent) {
-    return std::unexpected(std::string_view{"TransportFailed"});
+    return std::unexpected(sent.error() == http::transport_error::certificate_verification_failed
+                               ? std::string_view{"CertificateVerificationFailed"}
+                               : std::string_view{"TransportFailed"});
   }
   if (sent->status < 200 || sent->status >= 300) {
     return std::unexpected(std::string_view{"UnexpectedStatus"});

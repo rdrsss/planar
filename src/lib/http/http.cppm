@@ -44,6 +44,20 @@
 /// `std.http.Client.fetch` call sites do not enable redirect following
 /// either, and a silently-followed redirect would send the `Authorization`
 /// header this transport carries to whatever host the redirect names.
+///
+/// ## The download policy is a separate entry point
+///
+/// `download()` is the policy for fetching release assets (`planar update`).
+/// It follows redirects, because GitHub answers release URLs with 302s to its
+/// object store, and it is safe to do so because it has no way to set a
+/// header: no `Authorization` header is ever sent. libcurl's own
+/// `FOLLOWLOCATION` cannot check the authority of each hop, so redirects are
+/// followed by hand: the first URL and every `Location` target pass
+/// `check_download_url()` before curl sees them, and an HTTPS chain can never
+/// step down to HTTP or `file`. The whole request is bounded by 10 minutes
+/// plus a low-speed abort, instead of the adapter's 30 seconds. A caller's
+/// `download_policy::cancelled` hook abandons it early (`planar update` stops
+/// on SIGINT or SIGTERM through it).
 module;
 
 export module planar.http;
@@ -92,11 +106,11 @@ export struct response {
 
 /// @brief Why a `send` failed to produce a response at all.
 ///
-/// Deliberately coarse: the Zig adapters collapse every transport failure
-/// into a single `TransportFailed` regardless of cause, so distinguishing
-/// them here would produce a distinction no caller can observe.
+/// Certificate verification failures retain their cause for operator
+/// diagnostics. Other failures keep the generic transport error.
 export enum class transport_error : std::uint8_t {
-  send_failed, ///< No response was obtained (DNS, connect, timeout, TLS, write).
+  send_failed,                     ///< No response was obtained (DNS, connect, timeout, TLS, write).
+  certificate_verification_failed, ///< The peer certificate could not be verified.
 };
 
 /// @brief The abstract transport an adapter sends through.
@@ -111,7 +125,7 @@ public:
 
   /// @brief Perform one request.
   /// @param req The request to send.
-  /// @return The response, or `transport_error::send_failed`. A non-2xx
+  /// @return The response, or a transport error. A non-2xx
   /// status is a RESPONSE, not an error — status interpretation belongs to
   /// the adapter, exactly as in the Zig original.
   virtual auto send(const request& req) -> std::expected<response, transport_error> = 0;
@@ -143,13 +157,92 @@ public:
 
   /// @brief Perform one request over libcurl.
   /// @param req The request to send.
-  /// @return The response, or `transport_error::send_failed`.
+  /// @return The response, or a transport error.
   auto send(const request& req) -> std::expected<response, transport_error> override;
 
   /// @brief The configured timeout.
   /// @return The whole-request and connect timeout in seconds.
   [[nodiscard]] auto timeout() const noexcept -> std::chrono::seconds;
 };
+
+/// @brief The scheme of a URL accepted by the download policy.
+export enum class url_scheme : std::uint8_t {
+  https, ///< Production transport.
+  http,  ///< Fixture transport; loopback hosts only.
+  file,  ///< Fixture transport; local files only.
+};
+
+/// @brief Validate one URL against the download policy's authority and protocol rules.
+///
+/// Accepts `https://host[:port]/...` for any plain DNS or IPv4 host, `http://`
+/// only with the exact host `127.0.0.1` or `localhost`, and `file://` only with
+/// an empty authority or exactly `localhost`. The port, when present, is
+/// digits only and 1..65535. Userinfo, bracketed hosts, whitespace, control
+/// characters, backslashes, percent-encoded hosts and misleading suffixes such
+/// as `localhost.evil.com` are refused.
+/// @param url The absolute URL.
+/// @param previous The scheme of the hop that produced `url` as a redirect
+/// target, or unset for the initial URL. A redirect to `file` is always
+/// refused, and a hop that follows `https` must itself be `https`.
+/// @return The URL's scheme, or a message naming the refusal.
+export auto check_download_url(std::string_view url, std::optional<url_scheme> previous = std::nullopt)
+    -> std::expected<url_scheme, std::string>;
+
+/// @brief Bounds for one `download`.
+export struct download_policy {
+  std::chrono::seconds total_timeout{600};     ///< One deadline for the whole redirect chain; each hop gets the time left.
+  std::chrono::seconds connect_timeout{30};    ///< Connection establishment bound per hop.
+  std::uint32_t        low_speed_limit = 1024; ///< Bytes per second below which the transfer counts as stalled.
+  std::chrono::seconds low_speed_time{60};     ///< How long the rate may stay below `low_speed_limit` before abort.
+  std::uint32_t        max_redirects  = 10;    ///< Redirect hops followed before giving up.
+  std::uint64_t        max_body_bytes = 0;     ///< Largest body accepted, in bytes; 0 accepts any size.
+  /// @brief Polled before each hop and during the transfer (at least about
+  /// once a second, even while nothing arrives); returning true abandons the
+  /// download as `download_error_kind::cancelled`. Unset never cancels. It
+  /// runs on the calling thread.
+  std::function<bool()> cancelled;
+};
+
+/// @brief Why a `download` failed.
+export enum class download_error_kind : std::uint8_t {
+  invalid_url,                     ///< The initial URL failed `check_download_url`.
+  redirect_refused,                ///< A redirect target failed `check_download_url`.
+  too_many_redirects,              ///< The chain exceeded `max_redirects`.
+  timeout,                         ///< The total bound or the low-speed bound fired.
+  certificate_verification_failed, ///< The peer certificate could not be verified.
+  transport_failed,                ///< Any other failure to obtain a response.
+  body_too_large,                  ///< The body passed `max_body_bytes`; the transfer was aborted.
+  cancelled,                       ///< `download_policy::cancelled` returned true; the transfer was abandoned.
+};
+
+/// @brief A failed `download`.
+export struct download_error {
+  download_error_kind kind = download_error_kind::transport_failed; ///< What went wrong.
+  std::string         url;     ///< The URL being fetched when it went wrong (the refused target for a refused redirect).
+  std::string         message; ///< A human-readable explanation that names the URL.
+};
+
+/// @brief A completed `download`.
+export struct download_result {
+  std::uint16_t status = 0;    ///< The final HTTP status (200 for a read `file://` fixture).
+  std::string   body;          ///< The whole final body.
+  std::string   final_url;     ///< The URL that produced the body.
+  std::uint32_t redirects = 0; ///< How many redirects were followed.
+};
+
+/// @brief GET `url` under the download policy.
+///
+/// The entry point for release-asset downloads. Redirects are followed with
+/// every hop validated by `check_download_url`; no header is ever sent, so no
+/// `Authorization`; the request obeys `policy`'s total and low-speed bounds. A
+/// non-2xx final status is a result, not an error, as with `curl_transport`.
+/// A body larger than a non-zero `max_body_bytes` aborts the transfer as soon
+/// as the limit is passed, so memory never holds more than the limit.
+/// Adapters must keep using `curl_transport`, which does not follow redirects.
+/// @param url The absolute initial URL.
+/// @param policy The bounds to apply.
+/// @return The final response, or the failure.
+export auto download(std::string_view url, const download_policy& policy = {}) -> std::expected<download_result, download_error>;
 
 /// @brief Percent-encode `s` for use inside a URL query component.
 ///

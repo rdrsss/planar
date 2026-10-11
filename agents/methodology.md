@@ -28,24 +28,24 @@ Tier-to-model resolution: [`agents/models.md`](models.md).
 The orchestrator manages the lifecycle phases below. Phases 1–2 apply only
 when the anchor plan is `draft`; execution and later phases apply to active or
 completed work. Full phase documentation lives in
-[`agents/orchestrator.md`](orchestrator.md#phases).
+[`agents/planar-orchestrator.md`](planar-orchestrator.md#phases).
 
-| Phase | Skill | Trigger | User gate |
+| Phase | Agent or verb | Trigger | User gate |
 |-------|-------|---------|-----------|
-| 1 — Planning | `pl-spec-draft` | Goal given; no anchor plan or `draft` with no artifacts | After artifacts are drafted — user reviews before Phase 1.5 |
-| 1.5 — Spec review | `pl-spec-review` | Draft artifacts have received the user's initial review signal | Findings are resolved or explicitly accepted before ingestion preview |
-| 2 — Ingestion | `pl-spec-ingest` | Anchor plan `draft` with reviewed, ready-for-ingest workbench artifacts present | After preview diff — user confirms before `--apply` |
+| 1 — Planning | `planar-planner` | Goal given; no anchor plan or `draft` with no artifacts | After artifacts are drafted — user reviews before Phase 1.5 |
+| 1.5 — Spec review | `planar-spec-reviewer` | Draft artifacts have received the user's initial review signal | Findings are resolved or explicitly accepted before ingestion preview |
+| 2 — Ingestion | `planar-ingestor` | Anchor plan `draft` with reviewed, ready-for-ingest workbench artifacts present | After preview diff — user confirms before `--apply` |
 | 3 — Execution | coder + (optional test-coder) + reviewer | Anchor plan `active` or `paused` with `todo`/`doing` tasks | Strategy/isolation/model/wave preview, then nested dispatch shape; Phase 3.5 is coverage-driven per cycle; reviewer loop capped at 5 |
 | 3.7 — Finalization | `janitor` (spawned subagent) | Phase 3 cycles complete with approval, validation evidence, and a confirmed Git delivery profile; user requests `--finalize` or confirms interactively | Explicit per invocation; integration must be proven and `planar plan closeout --dry-run` must pass before apply |
-| 4 — Propagation | `pl-ext-propagate` | User requests `--propagate` | Explicit per invocation |
-| 5 — Archive | `pl-workbench-archive` | Anchor plan `done`, user requests `--archive` | Explicit per invocation |
+| 4 — Propagation | `planar-ext-sync` | User requests `--propagate` | Explicit per invocation |
+| 5 — Archive | `planar workbench archive` | Anchor plan `done`, user requests `--archive` | Explicit per invocation |
 
 **Key invariants:**
 - The orchestrator never auto-applies ingestion. The ingestor always runs in preview mode first; `--apply` is gated on explicit user confirmation.
 - The orchestrator never ingests unreviewed planning artifacts. Phase 1.5 runs
-  `pl-spec-review` after the user's initial artifact review. `needs-answers`,
+  `planar-spec-reviewer` after the user's initial artifact review. `needs-answers`,
   `needs-spec-work`, or `abort-replan` stops the lifecycle; operator-approved edits are applied
-  through that skill's write path and the adversarial review is rerun.
+  through that agent's write path and the adversarial review is rerun.
 - The orchestrator never auto-archives. Archive is always an explicit user action.
 - The orchestrator never finalizes silently. Phase 3.7 is gated on explicit operator opt-in (`--finalize` flag or interactive confirm). Coders never close plans; the janitor is the only agent role that runs `planar plan closeout`.
 - The orchestrator never picks dispatch granularity silently. Phase 3 begins with a strict/grouped/single proposal that the user must confirm (unless an explicit `--strict`/`--grouped`/`--batch` flag was supplied at invocation).
@@ -236,7 +236,7 @@ These tasks follow the same terminal rules as any task — they must reach `done
    id, owned worktrees/branches, reviewer or bypass disposition, structured
    validation evidence, and session context.
 4. **Janitor executes its six-step flow.** See
-   [`agents/janitor.md`](janitor.md): verify evidence → integrate and prove Git
+   [`agents/planar-janitor.md`](planar-janitor.md): verify evidence → integrate and prove Git
    state → post-integration validation → reconcile Planar → clean owned Git
    state → `planar plan closeout`.
 5. **Gate verdict surfaces to operator.** The orchestrator reports the janitor's result:
@@ -548,7 +548,7 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 
 **Planning-class verbs (refused in worktree):** `init`, `promote`, `demote`, `link`, `unlink`, every `links` subverb (including `links list`), every `annotate` subverb, `spec ingest`, every `workbench` subverb other than the five listed below, `feedback triage set`, and every non-read subverb of `plan`, `task`, `question`, `scenario`, `decision`, `artifact`, and `assoc` — for example `plan {create,update,closeout,step}`, `task {add,update,done,cancel,block,reopen}`, `task touches {add,remove,infer}`, `question {add,answer,wontfix}`, `decision {add,accept,withdraw,supersede}`, `artifact {add,update}`, `scenario {add,verify,retire}`, `assoc {create,add,remove}`. A verb the classifier does not recognize is refused.
 
-**Execution / read (allowed in worktree):** every `planar-agent *`, every `planar-watch *`, `planar resume`, `planar dashboard`, `planar handoff *`, `planar capture *`, `planar audit *`, `planar health`, `planar tree`, `planar search`, `planar report`, `planar import`, `planar synthesize`, `planar bench *`, the read leaves of the entity groups (`show`, `list`, `packet`, `view`, `diff`, `next`, `recommend-strategy`, `divergence`, `review`), `planar task touches list`, `planar feedback triage {list,show}`, `planar workbench {pull,push,status,sync,resolve}`, and every `planar workspace`, `config`, `models`, `templates`, `scope`, `local`, `test-spec`, and `workflow` subverb.
+**Execution / read (allowed in worktree):** every `planar-agent *`, every `planar-watch *`, `planar resume`, `planar dashboard`, `planar handoff *`, `planar capture *`, `planar audit *`, `planar health`, `planar tree`, `planar search`, `planar report`, `planar update`, `planar import`, `planar synthesize`, `planar bench *`, the read leaves of the entity groups (`show`, `list`, `packet`, `view`, `diff`, `next`, `recommend-strategy`, `divergence`, `review`), `planar task touches list`, `planar feedback triage {list,show}`, `planar workbench {pull,push,status,sync,resolve}`, and every `planar workspace`, `config`, `models`, `templates`, `scope`, `local`, `test-spec`, and `workflow` subverb.
 
 **`task done` is refused on purpose.** Outside the explicitly selected in-pwd
 `barrel-bypass` exception, coders return evidence and the orchestrator advances
@@ -580,7 +580,7 @@ triviality, and model tier.
 The orchestrator never authors source content. It may run coordination CLIs and
 the documented Git topology operations for worktrees, commits, fan-in, and
 cleanup. "Dispatch" means spawning through the host's subagent surface, never
-invoking `/pl-coder` inline in the orchestrator's context.
+invoking the `planar-coder` role inline in the orchestrator's context.
 
 Isolation is always-on for source authoring. Coordination and Git topology
 operations remain the orchestrator's responsibility.
@@ -613,22 +613,59 @@ group is partitioned by tier or dispatched per task. Classification ambiguity
 is surfaced at the gate as `tier: ?`, never rounded up silently. See
 [`agents/models.md` §Coder tier policy](models.md#coder-tier-policy).
 
+## Validation cadence: task checks and milestone barrier
+
+Validation cadence is independent of review cadence and dispatch isolation.
+Every task, including a corrective iteration, runs focused tests for its
+acceptance signal and affected behavior, plus relevant formatting, static,
+type, build/packaging, generated/rendered parity, and repository policy checks.
+The full regression and end-to-end suite runs at the milestone barrier against
+the accumulated exact candidate after task fan-in. For standalone work, the
+final delivery boundary serves as that barrier. Deferred review keeps its
+selected milestone or plan boundary; focused testing does not add a reviewer
+per task.
+
+The orchestrator derives task and milestone validation profiles from the target
+repository's contributor guidance, manifests, CI, task runners, package metadata,
+and subsystem instructions. Preserve every applicable required gate class at
+its appropriate scope; mark a class `not-configured` only when the repository
+has none. Present both profiles with the strategy preview, using existing
+operator authorization rather than adding an approval loop for routine fixes.
+Record scope, commands, source guidance, and candidate identity in workflow
+briefs and evidence; these are workflow metadata, not new CLI flags or executable
+profile fields. The default repeat count is 1. Additional stability runs need an
+explicit repository or confirmed-profile requirement; never retry until green.
+
+Task completion and epic fan-in require passing task checks and the selected
+review disposition (approval, explicit bypass, or recorded deferred review).
+Future milestone gates are scheduled evidence, not missing task checks. A failed
+required task gate blocks that task; a failed required milestone gate blocks
+the barrier. Task passes never prove a milestone/full-suite pass or authorize
+final closeout. Automatic child-plan status promotion is not barrier evidence.
+Milestone promotion and final closeout require all required barrier evidence
+and the review disposition due at that boundary.
+
+A failed milestone gate enters corrective task cycles. Run focused checks for
+each correction; do not rerun the full suite after every fix. Re-enter the
+barrier once corrections are accumulated on the final candidate, and rerun the
+required milestone profile there. Preserve historical failures and each run's
+source identity (revision and dirty/diff state); a later pass does not erase
+an earlier failure or transfer evidence to a different candidate. A change
+following a barrier pass invalidates that pass for the new candidate.
+
 ## Common defects pre-flight checklist
 
-Run this checklist before every work-complete declaration. The orchestrator
-first derives a validation profile from the target repository's own documented
-surfaces: contributor guidance, manifest or task-runner definitions, CI
-workflow, package metadata, and changed subsystem instructions. It presents the
-profile at the strategy gate and the operator confirms or edits it. Global
-orchestration definitions name gate classes, never programming languages or
-target-specific commands.
+Run this checklist before every work-complete declaration, at its stated scope.
+Global orchestration definitions name gate classes, never programming languages
+or target-specific commands.
 
-- [ ] Every required validation-profile entry ran with its exact confirmed
-      command and returned a recorded exit status.
-- [ ] The profile covers formatting/static analysis, build or packaging,
-      focused verification, broader regression verification, generated/rendered
-      artifact parity, and repository-specific policy checks when those classes
-      exist for the changed surfaces.
+- [ ] Every required entry in the current task or milestone profile ran with
+      its exact confirmed command and recorded exit status and source identity.
+- [ ] Task checks cover focused verification and all relevant static/type,
+      format, build, artifact parity, and policy checks; full regression and
+      end-to-end checks are assigned to the milestone barrier.
+- [ ] Scheduled barrier checks are identified separately from task evidence;
+      the report makes no full-pass or final-closeout claim from task passes.
 - [ ] Bulk or mechanical edits were followed by the relevant format, search,
       and completeness validators from the confirmed profile.
 - [ ] For any reference to a schema value, confirm it in the target
@@ -646,8 +683,8 @@ target-specific commands.
 
 Every build and every test run on this machine goes through one host-wide
 queue, so that agents in different projects do not build at the same time.
-Submit the command to the queue and poll for its result. Do not run it
-yourself.
+Submit the command to the queue and collect its recorded outcome. Do not run
+it yourself.
 
 ### What counts as a build or test command
 
@@ -673,24 +710,30 @@ Check once per session that the installed Planar has the queue:
 planar-agent queue rule >/dev/null
 ```
 
-If it exits 0, use the queue as described below. If it exits with any other
-status, follow "If Planar has no queue" below. Do not use `--help` for this
-check: an older Planar answers an unknown command's `--help` with its general
-help and exits 0, so the check would pass when there is no queue.
+Exit 0 establishes that the queue exists. For a nonzero exit, inspect the
+diagnostic and installed command catalog; only a verified absence of the
+`queue` verb permits the no-queue path below. A queue that exists but cannot
+be read has refused. Do not use general `--help` alone as an absence test:
+older Planar versions can answer unknown-command help with general help and
+exit 0. If the queue exists, discover the `wait` leaf once using the compact
+schema or leaf help. A queue-capable older install can lack `wait`; use the
+finite compatibility path below. A failed queue command is not proof that
+the leaf is unsupported.
 
-### Submit, then poll
+### Submit, then observe one ticket
 
 Submit the command detached. Agent harnesses stop long foreground commands,
 and a wait behind other builds can be long.
 
 ```
-planar-agent queue run --detach --vendor <vendor> --role <role> -- <command> [args...]
+planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> --claim <token> -- <command> [args...]
 ```
 
 Run it from the directory the command needs. The command runs there, with
 your environment.
 
-Always pass `--vendor` and `--role`. Give your own vendor (`claude`,
+Pass `--claim` only when holding a caller-supervised claim. Always pass
+`--vendor` and `--role`. Give your own vendor (`claude`,
 `codex`, `copilot`, `gemini`) and your own role (`coder`, `test-coder`,
 `reviewer`, `janitor`, `orchestrator`). The operator reads them in the
 queue's listing and history to see which agents use the queue. Planar does
@@ -706,28 +749,36 @@ fix the command line. With 1 or 2 the invocation is wrong, the program is a
 model launcher, or a duration is invalid: fix the invocation. With 125 the
 queue failed: stop and report, as in "If the queue refuses" below.
 
-Then ask for the ticket's state every 30 seconds:
+Wait for the issued ticket with a finite observation budget covering expected
+queue backlog plus command runtime. For example, three hours covers an
+expected hour of backlog and a two-hour run limit:
 
 ```
-planar-agent queue status <seq>
+planar-agent queue wait <seq> --timeout 3h --json
 ```
 
-Use 30 seconds. The waiting entry advances on its own every second, so a
-faster poll finishes nothing sooner. It only spends your turns. A longer
-interval makes you notice a finished build late. Keep doing any work that
-does not need the build's result between polls. If you hold a task claim,
-add `--claim <token>` to the submit: the queue renews that claim while the
-entry waits and while the command runs, so you do not renew it between polls.
-A renewal that fails is reported in the output file and does not stop the
-command.
+The observer defaults to 30 minutes; an explicit duration must be positive
+and at most 24 hours. `queue run --timeout` limits runtime after the command
+starts, and `queue run --wait-timeout` separately limits its time in backlog.
+Neither is the observer budget. If an agent needs a shorter turn, use one
+finite slice such as `queue wait <seq> --timeout 10m --json`. Record the
+result and explicitly decide whether to do independent work, hand off the
+same ticket, or wait again. Do not wrap slices in an unbounded retry loop.
+A suspended agent session will not be woken by the queued command; a later
+session must resume from the saved ticket.
 
-Read the `state` line:
-
-- `waiting`: the `position` line gives its place. Poll again.
-- `running`: the command is running. Poll again.
-- `ended`: read the `outcome` line and act as below.
-
-Add `--json` to `queue status` to read the same answer as one JSON object.
+Read `wait_reason` and `status.outcome` together. `completed` means the
+logical ticket has a recorded final outcome. `timed_out` or `interrupted`
+stops only the observation: the command can remain queued or running. Inspect
+or wait again on the **same sequence number** after an explicit decision.
+Never duplicate submission or start a conflicting build merely because
+observation stopped. `stalled`, `history_unavailable`, and `error` leave the
+job outcome unknown; inspect the ticket and queue health and report the gap.
+An empty log, absent `status`, or empty active queue proves no result.
+`queue wait` is read-only and never renews a claim. `queue run --claim`
+renews a caller-supervised claim while the submitter waits and runs; a failed
+renewal appears in the output file without stopping the command. Heartbeat
+separately when that renewal is unavailable.
 
 The command's output, standard output and standard error together, is in the
 output file from the ticket. Read the end of it first. It is kept for a
@@ -735,8 +786,9 @@ limited time after the command ends.
 
 ### What to do on each outcome
 
-The `outcome` line of `queue status` is the record of how the command ended.
-Use it, not a guess from other output.
+Only `wait_reason: completed` with `status.outcome: exited` and
+`status.exit_code: 0` proves a passing command. Use the recorded outcome,
+not a guess from the process exit or other output.
 
 | Outcome | What happened | What to do |
 |---|---|---|
@@ -747,13 +799,13 @@ Use it, not a guess from other output.
 | `cancelled` | Someone cancelled the entry; `cancelled_by` says who | Do not resubmit unless told to. Report it |
 | `wait_timeout` | The `--wait-timeout` you set ran out before the command's turn | Report it, or submit again with a longer limit |
 | `not_started` | The command could not be started at its turn: not found (127) or not executable (126) | Fix the command line and submit again |
-| `abandoned` | The entry was removed before it finished: its submitter died, or another process removed it. The command may not have run | Read the output file to see whether it ran, then submit again once. If it is abandoned again, report it |
+| `abandoned` | The entry has no recorded final logical-job result | Await a successor within the finite budget, or report uncertainty; never assume completion or resubmit automatically |
 
-An entry that has not ended and shows `live: false` has lost its submitter.
-Poll again. If it is still there after two polls, report it.
-
-`queue status` exits 1 when no such ticket exists, and 125 when the queue's
-store cannot be read; for 125, follow "If the queue refuses" below.
+A child can itself exit 124 or 125. An observer timeout can exit 124; queue
+refusal, stalled observation, or another observer error can exit 125. The
+structured reason and recorded outcome distinguish them. An abandoned row
+without a successor remains pending to the finite deadline; missing
+successor history is uncertainty, never success.
 
 Do not queue a model launcher (`claude`, `codex`, `gemini` and similar). The
 queue refuses one at exit 2 and runs nothing.
@@ -773,16 +825,52 @@ was stopped at its run limit; 125, the queue failed; 126, the command could
 not be executed; 127, the command was not found; 128 plus N, a signal N
 terminated it. A command can exit with any of those itself, so when the code
 matters, add `--notices`. The last line on standard error then names the
-sequence number and the outcome, and `queue status <seq>` gives the record.
+sequence number and the outcome, and `queue status <seq> --json` gives the
+authoritative record.
+
+### Older queue-capable installs without native wait
+
+Use foreground `queue run` only for short commands or scripts that can wait
+through backlog and runtime. For a long command under an agent harness, keep
+the detached ticket and use a bounded, error-checking JSON status observer.
+An already-issued ticket uses the same observer without resubmission.
+
+The fallback has one fixed overall deadline covering backlog, runtime,
+status-helper calls, and cleanup. Its read is:
+
+```
+planar-agent queue status <seq> --json
+```
+
+Give each status helper a finite timeout. Reserve a finite cleanup allowance
+*before* launching it;
+do not launch another helper if the remaining budget cannot cover its timeout
+and cleanup. Check its exit and parse its JSON. Stop on status errors instead
+of retrying an unreadable store. `state: ended` is terminal only with a
+recorded logical-job outcome; never infer completion from a missing `live`
+line. Follow explicit successors. An abandoned row without a successor stays
+uncertain until the deadline, and missing successor history is an error.
+Active `live: null` is unknown. Confirm active `live: false` on the same
+sequence at least one second later before reporting stalled, never completed.
+Do not add an unbounded outer retry. On expiry or interruption, return
+control and preserve the same ticket for later observation.
+
+The fallback owns only its status subprocesses and pipes. On success, error,
+timeout, interruption, or partial startup, close its pipes, stop a still
+running status helper, and reap it within the reserved cleanup allowance.
+Address only its own helper identity or process group. Never signal, cancel,
+or reap the detached submitter, queued command, or their process group; never
+release the claim or delete logs. No helper or background poller survives the
+observation episode.
 
 ### If the queue refuses (exit 125): stop and report
 
-A queue command that exits 125 means the queue exists and failed: its store
-cannot be opened, the wait limit was reached, the entry was cancelled, or the
-queue failed inside. Usually the command did not run. It may have, if a
-running entry was cancelled, and a command can itself exit 125. If you passed
-`--notices`, the last line on standard error says whether the queue or the
-command produced the 125. `queue status <seq>` gives the record.
+A submit that exits 125 means the queue exists and failed. A wait that exits
+125 can instead report a recorded child exit 125, cancellation, pre-run wait
+timeout, stalled observation, or observer error. Inspect `wait_reason` and
+`status.outcome`; process exit alone is ambiguous. For a foreground run,
+`--notices` gives the sequence number and outcome. Its record is available
+with `queue status <seq> --json`.
 
 When a submit exits 125, or the queue cannot be used (its store cannot be
 opened, or it failed inside), stop. Report the `error:` line to the operator,
@@ -797,9 +885,9 @@ command is still never run directly.
 
 ### If Planar has no queue: run directly and say so
 
-Use this only when `planar-agent queue rule >/dev/null` exits with a non-zero
-status. That means the installed Planar is older than the queue, or
-`planar-agent` is not installed, and there is no queue to use.
+Use this only after verifying the installed Planar lacks the `queue` verb.
+Nonzero `queue rule` alone does not establish absence. An older install with
+`queue` but without `wait` uses the finite compatibility path above.
 
 Run the build or test command directly. Then tell the operator that Planar
 needs upgrading so that builds and tests can go through the queue.
@@ -808,12 +896,11 @@ needs upgrading so that builds and tests can go through the queue.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `planar-agent queue rule >/dev/null` exits with a non-zero status | There is no queue | Run the command directly and tell the operator Planar needs upgrading |
-| Any queue command exits 125 | The queue exists and refused | Stop and report. Do not run the command directly |
+| Installed catalog confirms no `queue` verb | No queue exists | Run the command directly and tell the operator Planar needs upgrading |
+| Queue exists but `wait` is unsupported | Older queue-capable install | Use foreground for short/script work or finite JSON status observation of a detached ticket |
+| Queue refuses or its store is unreadable | No valid gate result | Stop and report. Do not run the command directly |
 
-The first row is a fact about the installed Planar, checked once with `queue rule`.
-The second is an answer from a queue that is there. Never treat the second as
-the first.
+Discover the capability once; never treat a refused queue as an absent one.
 
 <!-- queue-lint-ignore-end -->
 
@@ -1108,7 +1195,7 @@ iteration 5 operates under different rules than iterations 1–4:
 
 The three `barrel-*` shapes formalize what was previously an emergent shortcut: barrel through milestones back-to-back, accept the gates as the entire signal, and defer (or skip) the reviewer. Naming them turns the shortcut into a contract — the operator picks at the gate, the audit trail records the choice, and the reviewer-skip decision is explicit rather than emergent.
 
-Each barrel mode picks a distinct point on the *grouping* × *reviewer disposition* matrix. They are **not** mutually exclusive with `strict`, `grouped`, or `single` — they are siblings on the same gate. The operator picks one shape per `/pl-orchestrator` invocation against one anchor plan.
+Each barrel mode picks a distinct point on the *grouping* × *reviewer disposition* matrix. They are **not** mutually exclusive with `strict`, `grouped`, or `single` — they are siblings on the same gate. The operator picks one shape per `planar-orchestrator` invocation against one anchor plan.
 
 ### `barrel-grouped`
 
@@ -1132,19 +1219,21 @@ The orchestrator's queue of pending cycles is recoverable from `session_entries`
 ### `barrel-bypass`
 
 No reviewer dispatch occurs. Coder cycles run back-to-back; every required
-entry in the target repository's confirmed validation profile is the entire
-signal. The iteration cap is undefined because there is no reviewer loop.
+entry in the current task profile is the task signal; the milestone profile
+still gates the accumulated candidate at the barrier. The iteration cap is
+undefined because there is no reviewer loop.
 
 This mode is supported only as an explicit expert choice and is never the
 orchestrator's recommendation. The coder returns a structured evidence row for
 each profile entry: validation id, exact command, required flag, exit status,
 result, and artifact or bounded citation. A missing, skipped, flaky, or failed
-required entry blocks completion. No universal command, language, or repeat
+required entry at the current scope blocks that scope. Scheduled milestone
+entries do not block task completion. No universal command, language, or repeat
 count is implied; repetition is required only when the confirmed profile says
 so. A coder dispatched under `barrel-bypass` must be told that the operator
 selected this risk profile explicitly.
 
-Operators picking `barrel-bypass` accept that uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + `/pl-reviewer <task-id> <iteration>` against a still-active task; there is no orchestrator-driven "review this old cycle" workflow.
+Operators picking `barrel-bypass` accept that uncaught defects must surface via runtime testing or out-of-band review. The closest retroactive surface is `git blame` + a `planar-reviewer` dispatch for `<task-id>` and `<iteration>` against a still-active task; there is no orchestrator-driven "review this old cycle" workflow.
 
 ### Phase 3.5 composition (all barrel modes)
 
@@ -1174,7 +1263,7 @@ The `reviewer_disposition` field captures the precedence rule: `barrel-bypass` m
 
 ### Phase 3.5 — Test-coder dispatch
 
-Between the coder's report-done and the reviewer's dispatch, the orchestrator may dispatch a [`test-coder`](test-coder.md) cycle. The gating decision is delegated to `planar test-spec status <plan> --json` — the orchestrator does NOT re-implement coverage calculation.
+Between the coder's report-done and the reviewer's dispatch, the orchestrator may dispatch a [`test-coder`](planar-test-coder.md) cycle. The gating decision is delegated to `planar test-spec status <plan> --json` — the orchestrator does NOT re-implement coverage calculation.
 
 **Gating condition.** Dispatch test-coder when:
 - The cycle's dispatched tasks carry `[slug: …]` annotations, AND
@@ -1217,7 +1306,7 @@ the operator's explicit `barrel-bypass` choice.
 | Docs changes | Reviewer-on unless operator explicitly selects bypass | Documentation can encode contracts and executable examples. |
 
 When the reviewer IS dispatched, see the role spec at
-[`agents/reviewer.md`](reviewer.md) for the focused responsibilities and
+[`agents/planar-reviewer.md`](planar-reviewer.md) for the focused responsibilities and
 the explicit NOT-do list. The blind-read contract below governs how the
 brief is composed.
 
@@ -1261,14 +1350,16 @@ Every coder brief MUST:
   so the coder does not re-litigate them. A decision restated in the
   brief is faster to honor than one buried in an ADR the coder may not
   reach.
-- **Specify the confirmed validation profile.** List an id, exact command,
+- **Specify task and milestone validation profiles.** Identify the current
+  scope and candidate, and separately list scheduled barrier gates. List an id,
+  exact command,
   required/optional status, changed surfaces covered, and any required repeat
   count for every entry. The profile comes from the target repository's own
   guidance and automation; the orchestrator does not invent commands from a
   language or framework assumption.
 - **Specify the report shape.** A word ceiling (the work-complete
   report has a cap — keep it tight) and the required sections per
-  [`agents/coder.md` §Work-complete report template](coder.md#work-complete-report-template).
+  [`agents/planar-coder.md` §Work-complete report template](planar-coder.md#work-complete-report-template).
   The dispatcher reads the report; vague shape produces vague reports.
 - **Pose the problem; do not include the solution.** State the
   invariant, the constraint, and the acceptance signal. Let the coder
@@ -1411,7 +1502,7 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 ### Cross-references
 
-- Per-role canonical status strings: see the "Status reporting" sections in [`agents/coder.md`](coder.md#status-reporting), [`agents/orchestrator.md`](orchestrator.md#status-reporting), [`agents/planner.md`](planner.md#status-reporting), [`agents/reviewer.md`](reviewer.md#status-reporting), [`agents/test-coder.md`](test-coder.md#iteration-and-status), and [`agents/ingestor.md`](ingestor.md#status-reporting).
+- Per-role canonical status strings: see the "Status reporting" sections in [`agents/planar-coder.md`](planar-coder.md#status-reporting), [`agents/planar-orchestrator.md`](planar-orchestrator.md#status-reporting), [`agents/planar-planner.md`](planar-planner.md#status-reporting), [`agents/planar-reviewer.md`](planar-reviewer.md#status-reporting), [`agents/planar-test-coder.md`](planar-test-coder.md#iteration-and-status), and [`agents/planar-ingestor.md`](planar-ingestor.md#status-reporting).
 - `agent_actions` schema: see the installed Planar version's authoritative
   schema documentation.
 - Claim ritual: see [Coordination claims](#coordination-claims) above.

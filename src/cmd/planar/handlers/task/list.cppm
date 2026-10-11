@@ -12,12 +12,12 @@ namespace planar::cmd::handlers::task_cli {
 /// @return Registered CLI node.
 export auto attach_list(CLI::App& task) -> CLI::App* {
   CLI::App* list = task.add_subcommand("list", "List tasks.");
-  add_string(*list, "--scope");
-  add_string(*list, "--status");
-  add_int(*list, "--plan");
-  add_int(*list, "--priority-max");
-  add_string(*list, "--touches");
-  add_json(*list);
+  add_string(*list, "--scope", "Restrict to this scope slug instead of the cwd-derived read set");
+  add_string(*list, "--status", "Restrict to a status: todo, doing, blocked, done, cancelled (default: open statuses)");
+  add_int(*list, "--plan", "Restrict to tasks of this plan id");
+  add_int(*list, "--priority-max", "Only tasks with priority at or below this value");
+  add_string(*list, "--touches", "Restrict to tasks scoped to or touching this repo slug");
+  add_json(*list, "Emit machine-readable JSON instead of text");
   return list;
 }
 } // namespace planar::cmd::handlers::task_cli

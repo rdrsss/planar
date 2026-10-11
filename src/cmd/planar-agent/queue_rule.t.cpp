@@ -267,10 +267,14 @@ TEST_CASE("the rule text carries every element an agent needs", "[cmd][agent][qu
     CHECK(contains(text, "unsure"));
   }
 
-  SECTION("the detached submit and poll procedure, with an interval") {
+  SECTION("the detached submit and finite observation procedure") {
     CHECK(contains(source, "planar-agent queue run --detach"));
-    CHECK(contains(source, "planar-agent queue status <seq>"));
-    CHECK(contains(text, "every 30 seconds"));
+    CHECK(contains(source, "planar-agent queue wait <seq> --timeout 3h --json"));
+    CHECK(contains(text, "backlog"));
+    CHECK(contains(text, "runtime"));
+    CHECK(contains(text, "same sequence number"));
+    CHECK(contains(text, "unbounded retry loop"));
+    CHECK_FALSE(contains(text, "every 30 seconds"));
     CHECK(contains(text, "sequence number"));
     CHECK(contains(text, "output file"));
   }
@@ -295,24 +299,20 @@ TEST_CASE("the rule text carries every element an agent needs", "[cmd][agent][qu
       // A table row names it; the bare word also appears in prose.
       CHECK(contains(source, std::format("| `{}`", outcome)));
     }
-    // An abandoned entry may have started: the text must not say it never ran.
-    CHECK(contains(text, "| `abandoned` | the entry was removed before it finished"));
-    CHECK(contains(text, "may not have run"));
+    CHECK(contains(text, "| `abandoned` |"));
+    CHECK(contains(text, "never assume completion or resubmit automatically"));
   }
 
-  SECTION("an agent holding a task claim passes --claim instead of renewing by hand") {
-    // Submit (detached) and the foreground form each name the flag; the
-    // hand-renewal instruction it replaces is gone.
+  SECTION("the submitter renews a caller-supervised claim while the observer does not") {
     CHECK(contains(source, "`--claim <token>`"));
-    CHECK(contains(text, "the queue renews that claim"));
-    CHECK(contains(text, "while the entry waits and while the command runs"));
-    CHECK_FALSE(contains(text, "keep renewing it between polls"));
+    CHECK(contains(text, "queue wait` is read-only and never renews a claim"));
+    CHECK(contains(text, "renews a caller-supervised claim"));
     std::size_t mentions = 0;
     for (std::size_t at = source.find("`--claim <token>`"); at != std::string::npos;
          at             = source.find("`--claim <token>`", at + 1)) {
       ++mentions;
     }
-    CHECK(mentions >= 2); // detached and foreground
+    CHECK(mentions >= 1);
     // The flag it names is a real flag of `queue run`.
     auto const  root = planar::cmd::agent::root_app();
     auto const* run  = root->get_subcommand_no_throw("queue")->get_subcommand_no_throw("run");
@@ -339,11 +339,10 @@ TEST_CASE("the rule text cannot be read as permission to bypass the queue on exi
 
   auto const fallback = lower(section(source, "has no queue"));
   REQUIRE_FALSE(fallback.empty());
-  // The fallback's only trigger is the `queue rule` check, and it does not name 125.
-  CHECK(contains(fallback, "planar-agent queue rule >/dev/null"));
-  CHECK(contains(fallback, "non-zero"));
+  CHECK(contains(fallback, "verifying the installed planar lacks the `queue` verb"));
+  CHECK(contains(fallback, "nonzero `queue rule` alone does not establish absence"));
   CHECK(contains(fallback, "needs upgrading"));
-  CHECK_FALSE(contains(fallback, "125"));
+  CHECK(contains(fallback, "finite compatibility path"));
 
   // The refusal names no `queue rule` check, so it cannot be read as the fallback.
   CHECK_FALSE(contains(refusal, "queue rule"));
@@ -363,8 +362,8 @@ TEST_CASE("the rule text cannot be read as permission to bypass the queue on exi
   // The two are also set side by side in one labelled table.
   auto const confused = lower(section(source, "Do not confuse"));
   REQUIRE_FALSE(confused.empty());
-  CHECK(contains(confused, "125"));
-  CHECK(contains(confused, "queue rule"));
+  CHECK(contains(confused, "refuses"));
+  CHECK(contains(confused, "catalog"));
 }
 
 TEST_CASE("the no-queue check discriminates: it passes on this binary and fails where the verb is unknown",

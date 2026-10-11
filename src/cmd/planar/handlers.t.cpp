@@ -221,18 +221,10 @@ TEST_CASE("version writes the build line and exits 0 without opening the databas
   CHECK(got.out.starts_with("planar dev dev cxx "));
   CHECK(got.out.ends_with("\n"));
 
-  // Task 6117, CLOSED. This used to assert SIX tokens and carry a comment
-  // recording that `planar.cliapp.version`'s header promised five while
-  // `compiler_version_string()` returned `Clang 22.1.8` — a space — and so
-  // handed a script reading field 5 the word `Clang` where the oracle hands
-  // it `0.16.0`. The separator is now a hyphen, so the promise holds:
-  // `planar dev dev cxx Clang-22.1.8` splits into five, exactly like the
-  // oracle's `planar dev dev zig 0.16.0`.
+  // The release extends the stable five-position prefix with token 5.
   auto const tokens = std::ranges::count(got.out, ' ') + 1;
-  CHECK(tokens == 5);
-  // The guard that keeps it that way: whatever toolchain builds this, the
-  // identifier it reports must not reintroduce whitespace.
-  CHECK(got.out.find(' ', got.out.find("cxx ") + 4) == std::string::npos);
+  CHECK(tokens == 6);
+  CHECK(got.out.ends_with(" dev\n"));
 }
 
 TEST_CASE("workflow list on an empty catalog names the sources it searched", "[cmd][handlers][parity]") {
@@ -821,20 +813,27 @@ TEST_CASE("skills renders its own help page and exits 0 without a database", "[c
   CHECK(got.err.empty());
   CHECK_FALSE(got.db_open);
   // Re-baselined onto CLI11's formatter by task 6123 and pinned exactly.
-  // The PROSE is still the oracle's, verbatim — that text is the operator's
-  // only pointer to scriptorium, and losing it would silently strand
-  // anyone who runs the retired verb.
-  CHECK(got.out == "The unified skill source tree under skills/src/ is rendered by the\n"
-                   "external scriptorium binary (plan 918). Planar no longer renders vendor\n"
-                   "projections nor tracks their install-drift in-band; use `scriptorium\n"
-                   "check`/`scriptorium status` instead. This command has no subcommands.\n"
-                   "\n"
-                   "\n"
-                   "skills [OPTIONS]\n"
-                   "\n"
-                   "\n"
-                   "OPTIONS:\n"
-                   "  -h,     --help              Print this help message and exit\n");
+  // The prose is the operator's only pointer to where the skill lives now
+  // and to `planar health`, and losing it would silently strand anyone who
+  // runs the retired verb.
+  CHECK(got.out ==
+        "The skill tree is skills/planar/, installed by install.sh. `planar health`\n"
+        "reports install drift. This verb is retired and will be removed next release.\n"
+        "\n"
+        "\n"
+        "skills [OPTIONS]\n"
+        "\n"
+        "\n"
+        "OPTIONS:\n"
+        "  -h,     --help              Print this help message and exit\n"
+        "\n"
+        "Examples:\n"
+        "  planar skills\n"
+        "\n"
+        "Exit codes:\n"
+        "  0  Success.\n"
+        "  1  Generic failure: entity not found, an unmapped error, or a busy source.\n"
+        "  2  Bad input: an invalid value or entity ref, or a parse failure such as an unknown flag or a missing argument.\n");
 
   // `planar skills --help` renders the SAME page through dispatch's help
   // path rather than the handler. Both routes must agree — if they did not,

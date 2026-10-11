@@ -1,0 +1,21 @@
+# Native Linux toolchain loading happens before CMake initializes the target
+# system name. Probe that first read, where a portable runtime must already
+# include its static unwinder and suppress the driver's shared unwinder.
+if(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "This probe requires a native Linux host")
+endif()
+if(DEFINED CMAKE_SYSTEM_NAME)
+  message(FATAL_ERROR "Run with cmake -P before target system initialization")
+endif()
+set(PLANAR_PORTABLE ON CACHE BOOL "Portable runtime probe")
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/llvm-toolchain.cmake")
+if(NOT CMAKE_CXX_STANDARD_LIBRARIES MATCHES "libunwind\\.a")
+  message(FATAL_ERROR "Portable Linux link omitted the static unwinder")
+endif()
+if(NOT CMAKE_EXE_LINKER_FLAGS MATCHES "--unwindlib=none")
+  message(FATAL_ERROR "Portable Linux link retained the driver's default unwinder")
+endif()
+if(CMAKE_EXE_LINKER_FLAGS MATCHES "rpath")
+  message(FATAL_ERROR "Portable Linux link retained a toolchain rpath")
+endif()
+message(STATUS "Portable Linux first-read runtime: ${CMAKE_CXX_STANDARD_LIBRARIES}")

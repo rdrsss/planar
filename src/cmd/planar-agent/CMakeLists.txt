@@ -146,6 +146,7 @@ planar_binary(planar_agent
     handlers/queue/command.cppm
 
     surface.cppm
+    docs.cppm
     handlers/shared/support.cppm
     handlers/version/version.cppm
     handlers/schema/schema.cppm
@@ -158,6 +159,7 @@ planar_binary(planar_agent
     handlers/run/runs.cppm
     handlers/queue/queue.cppm
     handlers/queue/status.cppm
+    handlers/queue/wait.cppm
     handlers/queue/rule.cppm
     dispatch.cppm
   SOURCES
@@ -178,6 +180,7 @@ planar_binary(planar_agent
     handlers/run/runs.cpp
     handlers/queue/queue.cpp
     handlers/queue/status.cpp
+    handlers/queue/wait.cpp
     handlers/queue/rule.cpp
     dispatch.cpp
   DEPENDS
@@ -193,6 +196,7 @@ planar_binary(planar_agent
     engine_planning
     engine_hostqueue
     engine_config
+    engine_diagnose
     core
     process)
 

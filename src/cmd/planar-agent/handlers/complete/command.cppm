@@ -17,6 +17,6 @@ export auto add(CLI::App& root) -> void {
   complete->add_option("--summary")->description("Free-text completion summary recorded on the action");
   shared::add_no_locality_probe(*complete, "Skip the git locality probe and commit collection");
   shared::add_supervision(*complete, true);
-  shared::add_json(*complete);
+  shared::add_json(*complete, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::complete_cli

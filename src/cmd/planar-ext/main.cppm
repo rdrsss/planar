@@ -4,7 +4,9 @@ module;
 export module planar.cmd.planar_ext.main;
 import std;
 import cli11;
+import planar.cliapp.schema;
 import planar.cliapp.surface;
+import planar.cmd.planar_ext.docs;
 import planar.cmd.planar_ext.handlers.version.command;
 import planar.cmd.planar_ext.handlers.schema.command;
 import planar.cmd.planar_ext.handlers.ext.command;
@@ -39,6 +41,7 @@ export auto root_app() -> std::unique_ptr<CLI::App> {
   // Help renders the same page it rendered before every bool flag gained
   // its `--no-X` negation.
   cliapp::hide_negations_in_help(*app);
+  cliapp::install_docs_footers(*app, surface_docs());
   return app;
 }
 

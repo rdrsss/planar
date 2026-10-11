@@ -131,17 +131,19 @@ export struct update_outcome {
 /// @brief Why an adapter operation failed.
 ///
 /// The union of the Zig `jira.Error` and `github.Error` sets. Both declare
-/// the same eight tags; see `adapter_error_name` for why the spelling of each
+/// the same eight tags, extended with certificate verification failure;
+/// see `adapter_error_name` for why the spelling of each
 /// is a parity contract.
 export enum class adapter_error : std::uint8_t {
-  invalid_external_id, ///< The id does not match the provider's format.
-  not_found,           ///< The provider returned 404.
-  unexpected_status,   ///< The provider returned a status the operation does not accept.
-  transport_failed,    ///< No response was obtained at all.
-  parse_failed,        ///< The response body did not parse as the expected shape.
-  encode_failed,       ///< The request body could not be built.
-  invalid_auth,        ///< The credential is missing the field its scheme needs.
-  write_failed,        ///< A write to the response buffer failed.
+  invalid_external_id,             ///< The id does not match the provider's format.
+  not_found,                       ///< The provider returned 404.
+  unexpected_status,               ///< The provider returned a status the operation does not accept.
+  transport_failed,                ///< No response was obtained at all.
+  parse_failed,                    ///< The response body did not parse as the expected shape.
+  encode_failed,                   ///< The request body could not be built.
+  invalid_auth,                    ///< The credential is missing the field its scheme needs.
+  write_failed,                    ///< A write to the response buffer failed.
+  certificate_verification_failed, ///< The peer certificate could not be verified.
 };
 
 /// @brief The Zig error tag for `err`, as `sync_events.detail` records it.

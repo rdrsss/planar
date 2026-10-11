@@ -100,4 +100,14 @@ export auto queue_status(context& ctx, const cliapp::parsed_args& args) -> handl
 /// @return The exit status described in this module's description.
 export auto queue_status_with(context& ctx, const cliapp::parsed_args& args, queue_status_deps deps) -> handler_outcome;
 
+/// @brief Render the existing queue status object as one JSON object with a newline.
+/// @param status The typed status snapshot.
+/// @return One escaped JSON object and a newline.
+export auto queue_status_json(const engine::hostqueue::queue_status& status) -> std::string;
+
+/// @brief Render the existing queue status as stable escaped text lines.
+/// @param status The typed status snapshot.
+/// @return Stable escaped status lines.
+export auto queue_status_text(const engine::hostqueue::queue_status& status) -> std::string;
+
 } // namespace planar::cmd::agent::handlers

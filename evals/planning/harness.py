@@ -334,20 +334,17 @@ def assert_live_drafter_model_required(case: dict[str, Any], drafter_model: str 
 
 
 def build_draft_prompt(goal: str) -> str:
-    """Build the `/pl-spec-draft "<goal>"` prompt, escaping embedded quotes.
+    """Build the by-name dispatch prompt for the `planar-planner` agent.
 
-    The prompt is passed as a single subprocess argv element (never through
-    a shell — see `run_model`), so shell injection is not the risk here; an
-    UNESCAPED embedded `"` in the goal text would terminate the slash
-    command's own quoted argument early from the CLI's own argument-parsing
-    perspective, truncating or corrupting the goal it actually receives.
-    Backslashes are escaped first so an escaped quote in the source text
-    (`\\"`) does not collide with one this function inserts. Newlines are
-    left as literal content — the goal fixture is itself multi-line prose,
-    and this function must round-trip it, not collapse it to one line.
+    The goal follows the instruction verbatim as plain prose: it is passed
+    as a single subprocess argv element (never through a shell or a slash
+    command's quoted argument), so it needs no escaping, and the multi-line
+    goal fixture round-trips unchanged.
     """
-    escaped = goal.replace("\\", "\\\\").replace('"', '\\"')
-    return f'/pl-spec-draft "{escaped}"'
+    return (
+        f"Use the {vendors.PLANNER_AGENT} agent to draft the specs for this "
+        f"goal:\n\n{goal}"
+    )
 
 
 def load_manifest(case: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1082,9 +1079,9 @@ def main() -> int:
     grader_model = case["grader_model"]
     results: list[TrialResult] = []
     for i in range(1, trials + 1):
-        # Invoke the installed `pl-spec-draft` surface the way an operator
-        # would, not bare prose (task hh-planning-grader-split): a bare-prose
-        # prompt never exercises the skill's own four-phase authoring
+        # Invoke the installed `planar-planner` agent by name the way an
+        # operator would, not bare prose (task hh-planning-grader-split): a
+        # bare-prose prompt never exercises the agent's own authoring
         # discipline, self-check, or artifact registration, so a pass here
         # would say nothing about the surface operators actually run.
         draft_prompt = build_draft_prompt(goal)
@@ -1097,15 +1094,18 @@ def main() -> int:
             trial_root = Path(trial_dir)
             try:
                 trial_env = build_host_env(trial_root)
-                # `/pl-spec-draft` is a slash command, so — unlike a
-                # bare-prose prompt — this harness now needs the claude
-                # CLI's `commands/` surface staged into the scratch
-                # CLAUDE_CONFIG_DIR to resolve it (arena.py
-                # stage_vendor_config; Planar question 983). Stage before
-                # the auth check, per the canonical arena call order:
-                # make_arena -> assert_isolated -> stage_vendor_config ->
-                # assert_vendor_auth.
-                arena.stage_vendor_config(trial_env, "claude")
+                # The `planar-planner` agent and the `planar` skill resolve
+                # from the scratch CLAUDE_CONFIG_DIR, so stage them from this
+                # checkout (arena.py stage_vendor_config; Planar question
+                # 983). Stage before the auth check, per the canonical arena
+                # call order: make_arena -> assert_isolated ->
+                # stage_vendor_config -> assert_vendor_auth.
+                arena.stage_vendor_config(
+                    trial_env,
+                    "claude",
+                    repo_root=REPO_ROOT,
+                    required_agents=(vendors.PLANNER_AGENT,),
+                )
                 # This harness always spawns the claude CLI (host_argv);
                 # staged config is not the same as authenticated — Keychain
                 # login does not follow into a scratch CLAUDE_CONFIG_DIR

@@ -33,32 +33,32 @@ operator-gated; the anchor plan does not become `active` until ingest applies.
 flowchart TD
     OP(["Operator states goal"]) --> LT{"Known feature shape?"}
     LT -->|"no, exploring"| LTB["Light-touch capture<br/>1 active plan plus direct<br/>artifact / decision / question / task rows"]
-    LTB -.->|"graduates via /pl-spec-draft"| DR
-    LT -->|"yes"| DR["Planner / pl-spec-draft<br/>draft plan + workbench tree<br/>product, tech, roadmap, test specs"]
+    LTB -.->|"graduates via the planner agent"| DR
+    LT -->|"yes"| DR["Planner agent<br/>draft plan + workbench tree<br/>product, tech, roadmap, test specs"]
     DR --> SC["self-check<br/>spec ingest --strict preview"]
-    SC --> RV["Spec-reviewer / pl-spec-review<br/>adversarial pass"]
+    SC --> RV["Spec reviewer agent<br/>adversarial pass"]
     RV --> VD{"Verdict"}
     VD -->|"needs-answers / needs-spec-work"| ED["operator edits workbench<br/>or answers questions"]
     ED --> RV
     VD -->|"abort-replan"| DR
-    VD -->|"ready-for-ingest"| IP["Ingestor / pl-spec-ingest<br/>read-only tree diff"]
+    VD -->|"ready-for-ingest"| IP["Ingestor agent<br/>read-only tree diff"]
     IP --> IG{{"Gate: operator confirms"}}
     IG -->|"--apply"| AP["atomic per anchor plan:<br/>child plans, tasks, decisions,<br/>scenarios, questions, links,<br/>anchor draft -> active"]
     AP --> DONE(["task graph in DB<br/>ready for orchestration"])
 ```
 
-**Draft.** `/pl-spec-draft` creates the anchor plan in `draft`, lays down the
+**Draft.** The `planar-planner` agent creates the anchor plan in `draft`, lays down the
 workbench tree, and authors `product-spec.md`, `tech-spec.md`, `roadmap.md`,
 and `test-spec.md`. Each file is registered as an artifact and mirrored to the
 workbench. The planner also extracts `## Open questions` into first-class
 question rows and runs a read-only strict ingest self-check before handing back.
 
-**Review.** `/pl-spec-review` runs between planner and ingestor. It checks
+**Review.** The `planar-spec-reviewer` agent runs between planner and ingestor. It checks
 intent fit, feature gaps, hazards, open questions, roadmap readiness, and
 test coverage. Its verdict is one of `ready-for-ingest`, `needs-answers`,
 `needs-spec-work`, or `abort-replan`. It never runs `spec ingest --apply`.
 
-**Ingest.** `/pl-spec-ingest` without `--apply` is a read-only preview. It
+**Ingest.** `planar spec ingest` without `--apply`, which the `planar-ingestor` agent drives, is a read-only preview. It
 reads `roadmap.md`, `tech-spec.md`, and `test-spec.md`, computes additions,
 updates, proposed removals, slug coverage, and orphan scenarios, then prints a
 tree-shaped diff. `--apply` commits atomically per anchor plan: derived rows
@@ -96,7 +96,7 @@ Two annotations are load-bearing:
 
 **Light-touch bypass.** When the feature shape is not ready for specs, start
 with one `active` plan and direct `artifact`, `decision`, `question`, and
-`task add` rows. When the work matures, `/pl-spec-draft` can read that captured
+`task add` rows. When the work matures, the `planar-planner` agent can read that captured
 material and graduate it into the spec pipeline. See
 [`light-touch.md`](light-touch.md).
 
@@ -266,8 +266,9 @@ and test-coder action outcomes into a per-`(work_type, candidate)` scorecard.
 It is read-only: recommendations are previews, not config writes.
 
 Detail: [`concepts.md` §Model routing](concepts.md#model-routing),
-[`cli-reference.md` §Domain: models](cli-reference.md#domain-models), and
-the [`pl-models-config`](../skills/src/pl-models-config.md) skill.
+and
+[`cli-reference.md` §Domain: models](cli-reference.md#domain-models); each
+verb's `--help` carries the flags, examples and exit codes.
 
 ---
 
@@ -318,6 +319,40 @@ ended, with the outcome, exit code or signal, and who cancelled or replaced
 them. Both take `--json`. One entry's full record is `planar-agent queue status
 <seq>`.
 
+**Waiting for a detached gate.** Submit with `planar-agent queue run --detach
+--timeout 2h --vendor <vendor> --role <role> --claim <token> -- <command>` and
+save the first output line, its ticket sequence. The command's run limit here
+is two hours after it starts; `--claim` lets the submitter renew a
+caller-supervised task claim while it waits and runs. Then observe that ticket:
+
+```sh
+planar-agent queue wait <seq> --timeout 3h --json
+```
+
+The three-hour observation budget can cover an expected hour of backlog plus
+two hours of runtime. The separate `queue run --wait-timeout`, if supplied,
+limits the entry's time waiting for a slot. The observer's default is `30m`
+and an explicit positive budget may be at most `24h`; it does not change
+either submitted limit or renew the claim. The wait result's `wait_reason`
+describes **why observation stopped**, while `status.outcome` describes a
+**recorded job end**. Read both before judging the gate: `completed` with
+`exited` and exit code 0 is a pass; other completed outcomes need their
+recorded code or signal handled as a gate result. Exit 124 or 125 alone is
+ambiguous because the child can return either code itself. The log path in
+`status.log_path` is for output; a blank log does not prove completion. See
+[`queue wait` in the CLI reference](cli-reference.md#waiting-for-a-logical-ticket-queue-wait)
+for every outcome and error code.
+
+If a harness needs shorter turns, use a finite slice such as `queue wait
+<seq> --timeout 10m --json`, do independent work, and wait again on the **same
+ticket**. `timed_out` and `interrupted` stop only the observer; the detached
+command may still be queued or running. `stalled`, missing history, and read
+errors also give no completion verdict. Inspect the ticket and queue health
+before deciding what to do. Never resubmit or start a conflicting build just
+because observation stopped, and never run a command directly after the queue
+refuses it. Avoid an outer loop with no finite bound: each wait slice must
+return control for an explicit decision.
+
 **Cancelling.** `planar-agent queue cancel <seq>` removes a waiting entry, or
 stops a running one (SIGTERM to its command's process group, SIGKILL after the
 grace period) and returns when the group is empty. Any caller that can open the
@@ -332,9 +367,13 @@ queue their builds, how long they wait, how often a command times out and how
 often entries end `abandoned`. An entry with no vendor or role was submitted by
 an agent or script that did not say who it is.
 
-**Preservation and file modes.** `install.sh --uninstall` keeps `planar.db`
-(with its `-wal` and `-shm`) and `queue-logs/`; remove them by hand, or pass
-`--force`, when you want them gone. A live entry stores the submitter's task
+**Preservation and file modes.** `planar-uninstall` (`~/.planar/bin/planar-uninstall`,
+also run by `install.sh --uninstall`) keeps and names every data path, `planar.db`
+(with its `-wal` and `-shm`) and `queue-logs/` among them, and the retired old
+queue database; the full list is in
+[INSTALL.md § Preserved paths](../INSTALL.md#preserved-paths). `planar-uninstall --purge`
+removes them too, except a relocated one, which it names and leaves; there is no
+`--force` (see [INSTALL.md § Uninstall](../INSTALL.md#uninstall)). (`install.sh --prebuilt` moves the retired queue database and its old logs into `~/.planar/retired/<date>/` instead of removing them; see [INSTALL.md § Prebuilt install](../INSTALL.md#prebuilt-install---prebuilt).) A live entry stores the submitter's task
 claim token in the clear (`queue_entries.claim_token`, written when `queue run`
 is given `--claim`; the history row does not keep it), and a claim token
 authorises heartbeats and terminal verbs on that claim. `planar.db` holds claim
@@ -345,8 +384,12 @@ tokens too. So the files are owner-only:
 - `queue-logs/` is created `0700` and its logs `0600`. A log directory that
   already exists must be owned by you and not writable by group or others, or a
   detached run refuses.
-- A `PLANAR_DB` outside the install root is yours: `install.sh` only touches
-  the database directly under the install root.
+- A `PLANAR_DB` outside the install root is yours: `install.sh` changes the
+  modes of the database directly under the install root only. It does create
+  a missing database, or migrate a behind one, at the resolved path (`PLANAR_DB`
+  when set) with the installed `planar init --skip-project --allow-no-repo`,
+  and refuses, changing nothing, a database ahead of the release it installs
+  ([INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install)).
 - An install root shared by several users (a `--prefix` such as `/opt/planar`
   that more than one account runs from) is unsupported under the `0700` rule:
   only the owner can open the database. Run one install per user.
@@ -358,10 +401,170 @@ tokens too. So the files are owner-only:
 past its run limit with no submitter polling is stopped by the next poll or by
 `queue cancel`. Both are accepted limits, listed with the others in
 [`cli-reference.md` §Known limits](cli-reference.md#known-limits). Exit 125 from
-a queue verb means the queue refused; agents stop and report it and never run
-the command directly.
+`queue run` before it issues a ticket means the queue refused; agents stop and
+report it and never run the command directly. Exit 125 from `queue wait` may
+instead be a recorded child exit, cancellation, wait timeout, stalled
+observation or observer error; inspect `wait_reason` and `status.outcome`.
+
+On an older queue-capable install without `queue wait`, discover support once
+from the compact schema or leaf help. Short commands, or scripts that can wait
+for the whole job, may use foreground `queue run`. For a long command under an
+agent harness, keep the detached ticket and use a finite, error-checking JSON
+`queue status` observer with a fixed overall deadline and bounded status
+subprocesses. Treat `state: ended` only through its recorded `outcome`; an
+abandoned row without a successor and missing successor history remain
+uncertain. On timeout or interruption, stop only the observer and keep the
+ticket for a later check. The fallback must clean up only its own status
+helpers, never the queued job, submitter, log or claim. Queue present but
+refusing is not an absent-queue fallback.
 
 ---
+
+## 6. Release Gate Evidence
+
+A release publishes only bundles whose gates passed on the exact archive being
+uploaded. Three scripts share one evidence file per archive,
+`planar-<platform>.tar.gz.gates.json`, beside the archive:
+
+- `scripts/dist.sh` (`make dist`, `make linux-dist`) writes `format_version: 1`:
+  the archive name, its `sha256`, the bundled `release.json` as `release`, and
+  `gates.portable` (`result`, `matched_count`, `staged_binaries`). Format 1 is
+  assembly evidence and never authorizes publication.
+- `scripts/release-gates.sh --platform <macos-arm64|linux-x86_64> <dir>` checks
+  the format 1 record against the archive's SHA-256 and `release.json`, refuses a
+  portable gate that did not pass or matched zero tests, extracts the archive and
+  runs the clean-host gates on its binaries. It then rewrites the file as
+  `format_version: 2`: `archive`, `sha256` (recomputed after the gates ran),
+  `platform`, `release`, `recorded_at` and `gates`. Each gate records `result`,
+  `matched_count`, `expected_count`, and its log under
+  `<dir>/planar-<platform>.gate-logs/`.
+  - `smoke`, both platforms: `scripts/release-smoke.sh` runs `version --json` on
+    the four version-bearing binaries (release and sha must match
+    `release.json`), `planar-execute --help`, `init` and `health --json` (current
+    schema equal to `release.json`), seven checks in a scratch HOME and
+    database. macOS runs it on a macOS arm64 host under `env -i` with a
+    system-only PATH; Linux runs it in a bare `debian:bookworm-slim` linux/amd64
+    container with no network (`PLANAR_GATE_RUNTIME_IMAGE` overrides the image).
+    The macOS smoke gate is a PATH and environment test: the developer toolchain
+    stays installed on that host, so it cannot show that the binaries never load
+    it. The assembly step proves that instead: `scripts/dist.sh` runs
+    `scripts/portable-check.py --toolchain-prefix` over the staged binaries and
+    refuses a binary whose load commands or library dependencies name the
+    toolchain prefix, carry a runtime search path, or link anything beyond the
+    system libraries.
+  - `ca_debian` (trusted through `/etc/ssl/certs`, refused with the CA removed)
+    and `ca_redhat` (trusted through `/etc/pki/tls/certs/ca-bundle.crt`), Linux
+    only, through `scripts/test-portable-tls.py`. The fixture image is the
+    Dockerfile's `dist-toolchain` stage unless `PLANAR_GATE_TOOLCHAIN_IMAGE`
+    names one.
+  A failed gate is recorded as `result: "fail"` and the script exits 1.
+- `scripts/release-publish.sh [--dry-run] <tag> <dir>...` requires format 2 for
+  both platforms, with the recorded `sha256` and `release` equal to the archive
+  as it is now, and `portable` and `smoke` passed (and `ca_debian` and
+  `ca_redhat` on Linux). The publisher, not the evidence, holds the size of a
+  complete run of each gate: `portable` 2, `smoke` 7, `ca_debian` 2 and
+  `ca_redhat` 1. It refuses, as missing checks, a gate whose `matched_count` is
+  below that size; a `smoke`, `ca_debian` or `ca_redhat` record with no
+  `expected_count`, or with an `expected_count` below the size or different
+  from `matched_count`; and CA records whose `cases` are not exactly
+  `["debian", "removed"]` and `["redhat"]`. The refusal names the platform, the
+  gate and both counts. `portable` records no `expected_count`; its size is
+  checked against `matched_count` alone. The same checks run with and without
+  `--dry-run`.
+
+Rebuilding an archive writes format 1 again, and any change to an archive's
+bytes breaks its recorded checksum, so either one requires a new gate run.
+`make release-cut TAG=vX.Y.Z [DRY_RUN=1]` runs the whole sequence on a macOS
+arm64 host (only `DRY_RUN=1` is a dry run; any other non-empty value, such as
+`DRY_RUN=0`, is refused before anything runs): tag and clean-checkout
+preflight, `make dist`, macOS gates, `make linux-dist`, Linux gates and the
+publisher, with outputs under `build/release-cut/<tag>/<platform>/` and the
+staged assets under `dist/release/<tag>/`. The steps to run it are in
+[Cutting a release](#cutting-a-release).
+
+`.github/workflows/release.yml` is the CI path for the same contract. It runs
+only on a pushed stable `vMAJOR.MINOR.PATCH` tag, with `contents: read` in every
+job except the publisher. The `macos-arm64` job (`make dist`) and the
+`linux-x86_64` job (`make linux-dist`, the Docker `dist` stage) each build from
+the checked-out tag commit, verify it with `scripts/release-publish.sh
+--preflight`, run `scripts/release-gates.sh` for their platform and only then
+upload the archive, its `.gates.json`, `get-planar.sh` and the gate logs. The
+`publish` job `needs` both, downloads each platform into its own directory and
+runs `scripts/release-publish.sh`, the only step that calls `gh release`; it
+re-validates the evidence exactly as `make release-cut` does, so a failed,
+skipped or missing gate on either platform publishes nothing. Releases are cut
+locally until hosted CI returns (decision 1337);
+`scripts/release-workflow.test.py` (ctest label `release_workflow`) lints the
+workflow and runs its steps against fakes.
+`scripts/release-workflow-crosscheck.py` is a manual check, outside ctest, that
+compares the reader with PyYAML and runs `actionlint`; it fails when either
+tool is missing.
+
+### Cutting a release
+
+A release is a stable annotated tag, two portable bundles built from that tag's
+commit, and the five public assets: both `planar-<platform>.tar.gz` bundles,
+the merged `SHA256SUMS`, `VERSION` and the standalone `get-planar.sh`. Under
+decision 1337 the maintainer cuts it locally with `make release-cut` until
+hosted CI returns; `.github/workflows/release.yml` is the CI path for the same
+contract. The gates, the evidence format and the publisher's checks are the
+ones in [Release Gate Evidence](#6-release-gate-evidence); this recipe does not
+repeat them.
+
+Requirements:
+
+- A macOS arm64 host. The target refuses any other host. Docker builds the
+  Linux x86_64 bundle (`make linux-dist`; amd64 emulation on Apple silicon).
+- A `gh` on `PATH` recent enough to support `gh release create
+  --notes-from-tag`, authenticated for the repository. The publisher takes the
+  release notes from the tag annotation. A dry run does not need `gh`.
+- `HEAD` at the tag's commit, and a clean working tree. The preflight resolves
+  the tag to a full commit SHA and refuses any other `HEAD` or a dirty tree.
+
+Steps:
+
+1. Create an **annotated** stable tag on the commit to release. The tag grammar
+   is `vMAJOR.MINOR.PATCH`; a lightweight tag is refused, and the annotation
+   becomes the release notes.
+
+   ```sh
+   git tag -a vX.Y.Z
+   git checkout vX.Y.Z   # or leave HEAD on the tagged commit
+   ```
+
+   The cut never creates or pushes a tag.
+2. Rehearse. Every build and gate runs, and the publisher validates the whole
+   asset set and prints the `gh release create` command it would run, without
+   running it:
+
+   ```sh
+   make release-cut TAG=vX.Y.Z DRY_RUN=1
+   ```
+
+   Only `DRY_RUN=1` is a dry run; any other non-empty value is refused before
+   anything runs.
+3. Publish:
+
+   ```sh
+   make release-cut TAG=vX.Y.Z
+   ```
+
+   This runs the same sequence and then calls `gh release create <tag>
+   --verify-tag --title <tag> --notes-from-tag` with the five assets. `gh`
+   aborts `--verify-tag` when the tag is not on the remote, so push the tag
+   (`git push origin vX.Y.Z`) before the real run; the dry run needs only the
+   local tag. A failed or missing gate on either platform publishes nothing.
+   Cut a tag one way only: `release.yml` also runs on a pushed stable tag
+   whenever hosted CI is available.
+4. Check the release: `curl -fsSL
+   https://github.com/rdrsss/planar/releases/latest/download/VERSION` prints the
+   tag, and the [bootstrap](../INSTALL.md#install) installs it.
+
+Outputs: each platform's archive, `.gates.json` and gate logs land in
+`build/release-cut/<tag>/<platform>/`, and the staged assets in
+`dist/release/<tag>/`. `DRY_RUN=1` stages nothing under `dist/release/<tag>/`:
+`scripts/release-publish.sh` exits before staging. Rebuilding an archive invalidates its gate evidence, so
+rerun the whole target rather than a single step.
 
 ## See Also
 

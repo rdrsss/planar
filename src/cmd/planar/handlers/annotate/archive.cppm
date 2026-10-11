@@ -14,8 +14,8 @@ namespace planar::cmd::handlers::annotate_cli {
 /// @return Registered CLI node.
 export auto attach_archive(CLI::App& annotate) -> CLI::App* {
   CLI::App* archive = annotate.add_subcommand("archive", "Archive an annotation.");
-  add_json(*archive);
-  add_positional(*archive, "annotation-id");
+  add_json(*archive, "Emit machine-readable JSON instead of text");
+  add_positional(*archive, "annotation-id", "Annotation id");
   return archive;
 }
 } // namespace planar::cmd::handlers::annotate_cli

@@ -12,10 +12,10 @@ namespace planar::cmd::handlers::handoff_cli {
 /// @return Registered CLI node.
 export auto attach_show(CLI::App* handoff) -> CLI::App* {
   CLI::App* show = handoff->add_subcommand("show", "Show a handoff's details.");
-  add_string(*show, "--vendor");
-  add_string(*show, "--note");
-  add_json(*show);
-  add_positional(*show, "handoff-id");
+  add_string(*show, "--vendor", "Vendor name; accepted but not read by this verb");
+  add_string(*show, "--note", "Free-form note; accepted but not read by this verb");
+  add_json(*show, "Emit machine-readable JSON instead of text");
+  add_positional(*show, "handoff-id", "Handoff id");
   return show;
 }
 } // namespace planar::cmd::handlers::handoff_cli

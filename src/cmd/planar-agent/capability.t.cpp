@@ -84,7 +84,7 @@ TEST_CASE("planar-agent refuses every planning-entity verb, at any depth", "[cmd
   }
 }
 
-TEST_CASE("planar-agent's declared verb set is exactly the oracle's", "[cmd][agent][capability]") {
+TEST_CASE("planar-agent's declared verb set includes the bounded queue observer", "[cmd][agent][capability]") {
   auto const root  = planar::cmd::agent::root_app();
   auto const names = all_node_names(*root);
 
@@ -122,7 +122,7 @@ TEST_CASE("planar-agent's declared verb set is exactly the oracle's", "[cmd][age
                      // and its verbs. `run` is already a name above; `cancel`
                      // (task hq-queue-cancel), `status` and `rule` (task
                      // hq-queue-rule-verb) are new.
-                     "queue", "cancel", "status", "rule",
+                     "queue", "cancel", "status", "rule", "wait",
                      // The nine declared by task 6065, which refuse at 64.
                      "add", "capsule", "confirm", "context", "dispatch", "ingest", "list", "preview", "resolve", "run"});
 }
@@ -143,7 +143,7 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  CHECK(leaves.size() == 29);
+  CHECK(leaves.size() == 30);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
@@ -151,14 +151,13 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   // Non-vacuous: the inventory must not have swallowed a verb that has a
   // real handler, which is the failure mode a bulk registration invites.
   for (auto const& implemented : {"pull", "complete", "action start", "run start", "run end", "queue run", "queue cancel",
-                                  "queue rule", "schema", "version"}) {
+                                  "queue rule", "queue wait", "schema", "version"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }
 }
 
-TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs the foreground milestone defines",
-          "[cmd][agent][capability][queue]") {
+TEST_CASE("planar-agent's queue domain holds exactly the registered queue verbs", "[cmd][agent][capability][queue]") {
   // Plan 1080, tasks hq-queue-run-verb and hq-agent-boundary: `planar-agent`
   // gained the `queue` domain (it executes a command its caller names and
   // writes the separate agent database). The boundary is still each binary's
@@ -174,7 +173,7 @@ TEST_CASE("planar-agent's queue domain is accepted and holds exactly the verbs t
   for (auto const* sub : planar::cliapp::children(*queue)) {
     verbs.insert(sub->get_name());
   }
-  CHECK(verbs == std::set<std::string, std::less<>>{"cancel", "rule", "run", "status"});
+  CHECK(verbs == std::set<std::string, std::less<>>{"cancel", "rule", "run", "status", "wait"});
 
   // `queue run`'s surface: the label, time-limit, vendor, role, claim and notices flags, the command
   // positional, and nothing else (no `--json`: standard output belongs to the command).

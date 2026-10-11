@@ -457,10 +457,10 @@ auto declare_handoff(CLI::App& root) -> void {
       "a handoffs row with status='pending'.\n    3. Validate the handoff (pending → validated, validated_at set).\n\n  "
       "Subcommands manage the handoff lifecycle: create / validate /\n  consume / abandon / list / show.");
   handoff->require_subcommand(0);
-  add_string(*handoff, "--vendor");
-  add_string(*handoff, "--note");
-  add_json(*handoff);
-  add_positional_optional(*handoff, "task-id");
+  add_string(*handoff, "--vendor", "Expected destination vendor (stored as the handoff's to_vendor)");
+  add_string(*handoff, "--note", "Free-form handoff message; @<file> reads it from a file");
+  add_json(*handoff, "Emit machine-readable JSON instead of text");
+  add_positional_optional(*handoff, "task-id", "Task id to hand off (optional)");
 
   // The two parent flags every child redeclares, plus --json -- see
   // `declare_handoff`'s header in handoff.cppm for why redeclaration

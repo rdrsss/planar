@@ -508,6 +508,9 @@ TEST_CASE("group_only_zombies: a live group, an empty group and an id no group c
   }
 }
 
+// Platform gate (task 7362): macOS only. `group_only_zombies` reads the kernel's process list through
+// sysctl(KERN_PROC_PGRP) on macOS, where kill(-pgid) answers EPERM for a zombie-only group; the Linux
+// build takes a different path and has no such refusal. Listed in docs/testing.md, Platform-specific tests.
 #if defined(__APPLE__)
 TEST_CASE("group_only_zombies: a group whose only member is an exited leader nobody reaped is all zombies, and a signal to it is "
           "either accepted or refused as not permitted",

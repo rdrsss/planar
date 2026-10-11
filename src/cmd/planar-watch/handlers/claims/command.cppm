@@ -24,7 +24,7 @@ export auto add(CLI::App& root) -> void {
   shared::add_vendor(*claims, "Filter by vendor");
   shared::add_int(*claims, "--plan", "Filter by plan id (matches plan-direct, task-on-plan, and plan_step-on-plan claims)");
   claims->add_option("--status")->description("active (default) | stale | all");
-  shared::add_json(*claims);
+  shared::add_json(*claims, "Emit machine-readable JSON instead of text");
   shared::add_follow(*claims, "Stream snapshots until SIGINT", "Poll interval for --follow (default 1s)");
 }
 } // namespace planar::cmd::watch::handlers::claims_cli

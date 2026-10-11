@@ -10,8 +10,8 @@ import planar.cliapp.surface;
 
 namespace planar::cmd {
 
-auto add_json(CLI::App& app) -> void {
-  cliapp::add_bool_flag(app, "--json");
+auto add_json(CLI::App& app, std::string_view desc) -> void {
+  cliapp::add_bool_flag(app, "--json", desc);
 }
 
 auto add_bool(CLI::App& app, std::string_view name, std::string_view desc) -> void {
@@ -75,16 +75,19 @@ auto add_int_required(CLI::App& app, std::string_view name, std::string_view des
   opt->required();
 }
 
-auto add_positional(CLI::App& app, std::string_view name) -> void {
-  app.add_option(std::string{name})->required();
+auto add_positional(CLI::App& app, std::string_view name, std::string_view desc) -> void {
+  CLI::Option* opt = app.add_option(std::string{name});
+  if (!desc.empty()) {
+    opt->description(std::string{desc});
+  }
+  opt->required();
 }
 
-auto add_positional_optional(CLI::App& app, std::string_view name) -> void {
-  app.add_option(std::string{name});
-}
-
-auto add_positional_described(CLI::App& app, std::string_view name, std::string_view desc) -> void {
-  app.add_option(std::string{name})->description(std::string{desc})->required();
+auto add_positional_optional(CLI::App& app, std::string_view name, std::string_view desc) -> void {
+  CLI::Option* opt = app.add_option(std::string{name});
+  if (!desc.empty()) {
+    opt->description(std::string{desc});
+  }
 }
 
 auto set_allow_extras(CLI::App& app) -> void {

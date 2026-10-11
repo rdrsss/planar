@@ -96,6 +96,23 @@ export struct result {
 export enum class import_error {
   invalid_input, ///< Empty arguments, or a source file that is not `.md`.
   not_found,     ///< The source resolved to zero importable entries.
+  invalid_name,  ///< An entry's name breaks the local-name rule (exit 2); see `import_failure::detail`.
+  retired_key,   ///< An entry sets the retired `shadow` key (exit 2); see `import_failure::detail`.
+};
+
+/// @brief Why an import could not run, with the operator-facing detail.
+///
+/// Compares equal to a bare import_error so callers that only classify can ignore `detail`.
+export struct import_failure {
+  import_error code = import_error::invalid_input; ///< The failure class.
+  std::string  detail;                             ///< Refusal text for `invalid_name` / `retired_key`; empty otherwise.
+
+  /// @brief Compare the failure class only.
+  /// @param other The class to compare with.
+  /// @return True when `code` equals `other`.
+  auto operator==(import_error other) const -> bool {
+    return code == other;
+  }
 };
 
 /// @brief Options for import().
@@ -112,9 +129,13 @@ export struct options {
 /// Skills land as `skills/<name>/SKILL.md` — a flat source file is promoted into
 /// directory shape on the way in, so `local migrate` never has to run on
 /// something imported. Agents land as `agents/<name>.md`.
+///
+/// Before anything is copied (a dry run included) every entry's name is checked
+/// with manifest::local_name_violation() and every entry that parses is checked
+/// for the retired `shadow` key; either refuses the WHOLE pass.
 /// @param opts Where from, where to, and how.
 /// @return The outcome, or why the pass could not run.
-export auto import_sources(const options& opts) -> std::expected<result, import_error>;
+export auto import_sources(const options& opts) -> std::expected<result, import_failure>;
 
 /// @brief The destination path an entry of `name` would occupy.
 ///

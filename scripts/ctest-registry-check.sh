@@ -107,6 +107,28 @@ fi
 printf 'ctest-registry-check: %d targets, %d cases in binaries, %d registered\n' \
   "$targets" "$total_binary" "$total_registered"
 
+# Script tests. The Catch2 comparison above cannot see an add_test() that wraps a
+# shell script, so a fixture script nobody registered ran under no ctest run and
+# no gate (the installer's manifest, stage and deps fixtures sat that way, run only
+# by `make test`'s prerequisites). Every scripts/install-*-test.sh must be named by
+# a registered test in the build's CTestTestfile.cmake files.
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+testfiles="$(find "$build_dir" -name CTestTestfile.cmake -not -path '*/_deps/*' 2>/dev/null)"
+script_tests=0
+for s in "$script_dir"/install-*-test.sh; do
+  [ -e "$s" ] || continue
+  name="$(basename "$s")"
+  script_tests=$((script_tests + 1))
+  # shellcheck disable=SC2086
+  if [ -z "$testfiles" ] || ! grep -Fq "/scripts/$name" $testfiles 2>/dev/null; then
+    printf 'MISMATCH %-46s script test is NOT REGISTERED with ctest (add an add_test for scripts/%s)\n' "$name" "$name"
+    mismatches=$((mismatches + 1))
+  else
+    printf 'registered %-46s script test\n' "$name"
+  fi
+done
+printf 'ctest-registry-check: %d installer script tests, each registered with ctest\n' "$script_tests"
+
 if [ "$mismatches" -ne 0 ]; then
   printf 'ctest-registry-check: FAILED — %d target(s) disagree.\n' "$mismatches" >&2
   printf 'Rebuild refreshes a stale file:  cmake --build %s --target planar_tests\n' "$build_dir" >&2

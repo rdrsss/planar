@@ -14,11 +14,12 @@ namespace planar::cmd::handlers::decision_cli {
 /// @return Registered CLI node.
 export auto attach_link(CLI::App& decision) -> CLI::App* {
   CLI::App* link = decision.add_subcommand("link", "Create an entity link from a decision to another entity.");
-  add_string(*link, "--relationship");
-  add_string(*link, "--scope");
-  add_json(*link);
-  add_positional(*link, "decision-id");
-  add_positional(*link, "ref");
+  add_string(*link, "--relationship",
+             "Link relationship: derives-from, depends-on, addresses, verifies, cites, supersedes, touches");
+  add_string(*link, "--scope", "Accepted but not read by this verb; no scope check is made");
+  add_json(*link, "Emit machine-readable JSON instead of text");
+  add_positional(*link, "decision-id", "Decision id");
+  add_positional(*link, "ref", "Target entity ref (kind:id)");
   return link;
 }
 } // namespace planar::cmd::handlers::decision_cli

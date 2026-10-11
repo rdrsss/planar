@@ -26,7 +26,7 @@ This repository has no automated continuous-build configuration (no
 `.github/` directory or equivalent). The gates above are what actually runs,
 and when: `make test-all` composes `eval-contracts` (= `eval-orchestrator-unit`
 + `eval-orchestrator-fast` + `eval-orchestrator-fixtures`), and `make eval` runs
-`eval-render eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures`.
+`eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures`.
 Live and lifecycle host modes (`eval-orchestrator-live`,
 `eval-orchestrator-lifecycle`, `eval-planning`, `eval-candidate-spawn`) are
 operator-invoked only; no result of one is retained in this repository today.
@@ -134,7 +134,7 @@ make eval-orchestrator-live VENDOR=codex SURFACE=skill
 ```
 
 Lifecycle cases use the real project-scoped orchestrator agent and replace only
-`coder`, `reviewer`, and `test-coder` with fixture agents whose behavior is
+`planar-coder`, `planar-reviewer`, and `planar-test-coder` with fixture agents whose behavior is
 defined under `evals/orchestrator/fixtures/`. First validate the fixture and
 grader without a model, then invoke a configured host:
 
@@ -249,11 +249,8 @@ Each new artifact directory includes `run.json`, which binds the case, mode,
 vendor, surface, repository, and Planar identifiers needed for deterministic
 regrading.
 
-`make eval` also renders the current checkout. Live and lifecycle host modes
-run the repo-scoped installed-projection check and refuse stale Planar
-artifacts, preventing a green result against an older global install. The
-helper filters Scriptorium status to artifacts defined by this config so
-separately installed artifacts are not misreported as Planar orphans.
+Live and lifecycle host modes stage the checkout's Planar skill and agents into
+an isolated arena, so a run never reads an older global install.
 
 ## Artifacts
 

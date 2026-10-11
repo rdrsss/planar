@@ -7,10 +7,15 @@ import cli11;
 import planar.cliapp.args;
 import planar.cliapp.surface;
 namespace planar::cmd::agent::handlers::shared {
-/// @brief Register this CLI declaration.
-/// @param app Input app.
-export auto add_json(CLI::App& app) -> void {
-  cliapp::add_bool_flag(app, "--json");
+/// @brief The explicit "no help text authored yet" marker, re-exported from
+/// `planar.cliapp.surface` for the verb declarations.
+export using cliapp::k_undocumented;
+
+/// @brief Declare the `--json` flag.
+/// @param app The node to declare it on.
+/// @param desc The help line; pass `k_undocumented` only where no text has been authored yet.
+export auto add_json(CLI::App& app, std::string_view desc) -> void {
+  cliapp::add_bool_flag(app, "--json", desc);
 }
 
 /// @brief The `--claim <token>` flag the eight token-addressed verbs carry.

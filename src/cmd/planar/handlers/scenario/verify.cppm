@@ -15,10 +15,10 @@ namespace planar::cmd::handlers::scenario_cli {
 export auto attach_verify(CLI::App& scenario) -> CLI::App* {
   CLI::App* verify = scenario.add_subcommand(
       "verify", "Record a test run for a scenario (--outcome pass|fail|error|skipped; defaults to pass).");
-  add_string(*verify, "--outcome");
-  add_string(*verify, "--summary");
-  add_json(*verify);
-  add_positional(*verify, "scenario-id");
+  add_string(*verify, "--outcome", "Run outcome: pass, fail, error, skipped (default: pass)");
+  add_string(*verify, "--summary", "Free-text summary of the run");
+  add_json(*verify, "Emit machine-readable JSON instead of text");
+  add_positional(*verify, "scenario-id", "Scenario id");
   return verify;
 }
 } // namespace planar::cmd::handlers::scenario_cli

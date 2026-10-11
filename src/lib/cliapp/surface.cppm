@@ -2,7 +2,8 @@
 /// @brief `planar.cliapp.surface` — the parser-agreement primitives shared
 /// by every binary's hand-written `CLI::App` tree: the `--no-X` negation
 /// synthesis (`add_bool_flag`), the help formatter that keeps it out of
-/// `--help` (`hide_negations_in_help`), and the position-independent-flag
+/// `--help` and lists each subcommand by its one-line summary
+/// (`hide_negations_in_help`), and the position-independent-flag
 /// argv reordering (`hoist_subcommands`).
 ///
 /// ## What used to be here, and where it went
@@ -53,6 +54,15 @@ import std;
 import cli11;
 
 namespace planar::cliapp {
+
+/// @brief The explicit marker for a flag or positional whose help text has
+/// not been written yet.
+///
+/// Every flag-declaration helper requires a description. Passing this
+/// empty view says "undocumented" at the call site, where a defaulted
+/// parameter said nothing, and `grep -rn k_undocumented src` lists the
+/// sweep that remains.
+export constexpr std::string_view k_undocumented{};
 
 /// @brief Declare a boolean flag together with the `--no-<name>` negation
 /// the oracle's parser SYNTHESIZES for it (plan 996, task 6138).
@@ -121,9 +131,10 @@ namespace planar::cliapp {
 /// So the rule is unconditional and needs no exception list.
 /// @param app The node to declare it on.
 /// @param canonical The canonical long name, `--` included.
-/// @param description The help line, or empty to leave it unset.
+/// @param description The help line. Required: a call without one does not
+/// compile. Pass `k_undocumented` only where no text has been authored yet.
 /// @return The created option.
-export auto add_bool_flag(CLI::App& app, std::string_view canonical, std::string_view description = {}) -> CLI::Option*;
+export auto add_bool_flag(CLI::App& app, std::string_view canonical, std::string_view description) -> CLI::Option*;
 
 /// @brief Install, on `root` and every node beneath it, the help formatter
 /// that keeps synthesized negations OUT of the rendered help page.
@@ -145,6 +156,13 @@ export auto add_bool_flag(CLI::App& app, std::string_view canonical, std::string
 /// So the negation is accepted, absent from the schema catalog (see
 /// `planar.cliapp.schema::aliases_of`), and absent from help — three
 /// surfaces, one answer, all three matching the oracle.
+///
+/// ## Subcommand lists show summaries
+///
+/// The same formatter lists each child of a command by its summary: the
+/// first paragraph of the child's description, collapsed to one line and
+/// wrapped to the right column. A group's full prose stays on the group's
+/// own `--help` page, so a parent's list stays short.
 ///
 /// Must be called AFTER the tree is fully declared: CLI11 hands each
 /// subcommand the formatter its parent held AT `add_subcommand` TIME, so a

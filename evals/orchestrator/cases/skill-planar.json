@@ -1,0 +1,242 @@
+{
+  "schema_version": 1,
+  "id": "skill-planar-contract",
+  "skill": "orchestrator",
+  "description": "The unified planar skill states the thirteen invariants, names the five binaries, cites the feedback contract, and carries no legacy /pl- command, scriptorium reference or split terminal verb.",
+  "tags": [
+    "skill",
+    "planar",
+    "invariants"
+  ],
+  "tiers": [
+    "contract"
+  ],
+  "contract_assertions": [
+    {
+      "id": "invariant-01-claim-heartbeat-terminal",
+      "description": "SKILL.md states invariant 1: Claim, heartbeat, one terminal verb.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Claim, heartbeat, one terminal verb\\."
+    },
+    {
+      "id": "invariant-02-never-split-terminal",
+      "description": "SKILL.md states invariant 2: Never split the terminal verb.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Never split the terminal verb\\."
+    },
+    {
+      "id": "invariant-03-write-through-owner",
+      "description": "SKILL.md states invariant 3: Write through the owning binary.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Write through the owning binary\\."
+    },
+    {
+      "id": "invariant-04-guard-ten-verbs",
+      "description": "SKILL.md states invariant 4: Cross-scope guard: ten verbs.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Cross-scope guard: ten verbs\\."
+    },
+    {
+      "id": "invariant-05-scope-four-things",
+      "description": "SKILL.md states invariant 5: `--scope` means four things.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "`--scope` means four things\\."
+    },
+    {
+      "id": "invariant-06-read-back-mutations",
+      "description": "SKILL.md states invariant 6: Read back every mutation.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Read back every mutation\\."
+    },
+    {
+      "id": "invariant-07-worktree-planning-refusal",
+      "description": "SKILL.md states invariant 7: Planning verbs refuse in worktrees.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Planning verbs refuse in worktrees\\."
+    },
+    {
+      "id": "invariant-08-claim-aware-next",
+      "description": "SKILL.md states invariant 8: Next work is claim-aware.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Next work is claim-aware\\."
+    },
+    {
+      "id": "invariant-09-plan-status-follows-tasks",
+      "description": "SKILL.md states invariant 9: Plan status follows its tasks.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Plan status follows its tasks\\."
+    },
+    {
+      "id": "invariant-10-operator-gates",
+      "description": "SKILL.md states invariant 10: Operator gates are never automatic.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Operator gates are never automatic\\."
+    },
+    {
+      "id": "invariant-11-sync-pull-no-write",
+      "description": "SKILL.md states invariant 11: Sync pull writes no planning entity.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Sync pull writes no planning entity\\."
+    },
+    {
+      "id": "invariant-12-announce-cross-scope",
+      "description": "SKILL.md states invariant 12: Announce cross-scope writes exactly.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Announce cross-scope writes exactly\\."
+    },
+    {
+      "id": "invariant-13-isolate-from-source",
+      "description": "SKILL.md states invariant 13: Isolate from-source binaries.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "Isolate from-source binaries\\."
+    },
+    {
+      "id": "binary-planar",
+      "description": "SKILL.md names the planar binary in the write-surface table.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "\\| `planar` \\|"
+    },
+    {
+      "id": "binary-planar-agent",
+      "description": "SKILL.md names the planar-agent binary in the write-surface table.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "\\| `planar-agent` \\|"
+    },
+    {
+      "id": "binary-planar-watch",
+      "description": "SKILL.md names the planar-watch binary in the write-surface table.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "\\| `planar-watch` \\|"
+    },
+    {
+      "id": "binary-planar-ext",
+      "description": "SKILL.md names the planar-ext binary in the write-surface table.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "\\| `planar-ext` \\|"
+    },
+    {
+      "id": "binary-planar-execute",
+      "description": "SKILL.md names the planar-execute binary in the write-surface table.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "\\| `planar-execute` \\|"
+    },
+    {
+      "id": "cites-feedback-contract",
+      "description": "SKILL.md cites references/feedback-contract.md.",
+      "mode": "all",
+      "paths": [
+        "skills/planar/SKILL.md"
+      ],
+      "pattern": "references/feedback-contract\\.md"
+    },
+    {
+      "id": "forbid-legacy-pl-commands",
+      "description": "No skill file names a legacy /pl- command.",
+      "mode": "none",
+      "paths": [
+        "skills/planar/SKILL.md",
+        "skills/planar/references/claim-ritual.md",
+        "skills/planar/references/external-sync.md",
+        "skills/planar/references/feedback-contract.md",
+        "skills/planar/references/knowledge.md",
+        "skills/planar/references/local.md",
+        "skills/planar/references/recovery.md",
+        "skills/planar/references/resume-handoff.md",
+        "skills/planar/references/spec-pipeline.md",
+        "skills/planar/references/status.md"
+      ],
+      "pattern": "/pl-"
+    },
+    {
+      "id": "forbid-scriptorium",
+      "description": "No skill file names scriptorium.",
+      "mode": "none",
+      "paths": [
+        "skills/planar/SKILL.md",
+        "skills/planar/references/claim-ritual.md",
+        "skills/planar/references/external-sync.md",
+        "skills/planar/references/feedback-contract.md",
+        "skills/planar/references/knowledge.md",
+        "skills/planar/references/local.md",
+        "skills/planar/references/recovery.md",
+        "skills/planar/references/resume-handoff.md",
+        "skills/planar/references/spec-pipeline.md",
+        "skills/planar/references/status.md"
+      ],
+      "pattern": "scriptorium"
+    },
+    {
+      "id": "forbid-split-terminal-verb",
+      "description": "No skill file instructs `planar task done` then `planar-agent release`. The pattern needs the bare 'then' joiner, so it cannot match the prohibition prose ('... and then', '... followed by'); the coherence grader applies the stronger negation-aware check.",
+      "mode": "none",
+      "paths": [
+        "skills/planar/SKILL.md",
+        "skills/planar/references/claim-ritual.md",
+        "skills/planar/references/external-sync.md",
+        "skills/planar/references/feedback-contract.md",
+        "skills/planar/references/knowledge.md",
+        "skills/planar/references/local.md",
+        "skills/planar/references/recovery.md",
+        "skills/planar/references/resume-handoff.md",
+        "skills/planar/references/spec-pipeline.md",
+        "skills/planar/references/status.md"
+      ],
+      "pattern": "planar task done` then `planar-agent release"
+    }
+  ],
+  "expected": {}
+}

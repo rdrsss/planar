@@ -144,6 +144,7 @@ auto to_absolute(const std::filesystem::path& path) -> std::filesystem::path {
 auto parse_frontmatter_block(std::string_view raw) -> frontmatter {
   frontmatter out;
   bool        mode_vendors = false;
+  bool        mode_planar  = false; // inside the `planar:` map of the namespaced form
 
   std::size_t pos = 0;
   while (pos <= raw.size()) {
@@ -171,12 +172,31 @@ auto parse_frontmatter_block(std::string_view raw) -> frontmatter {
     }
     mode_vendors = false;
 
+    // An indented line belongs to the block opened above it; a column-0 line closes it.
+    const bool indented = !seg.empty() && (seg.front() == ' ' || seg.front() == '\t');
+    if (!indented) {
+      mode_planar = false;
+    }
+
     const auto colon = line.find(':');
     if (colon == std::string_view::npos) {
       continue;
     }
     const auto key = trim(line.substr(0, colon), k_trim_chars);
     const auto val = trim(line.substr(colon + 1), k_trim_chars);
+
+    if (mode_planar && indented) {
+      // Namespaced form: only `planar.kind` is read; `planar.slug` is not used because a local
+      // source's name comes from its filename.
+      if (key == "kind") {
+        out.kind = trim_quotes(val);
+      }
+      continue;
+    }
+    if (!indented && key == "planar" && val.empty()) {
+      mode_planar = true;
+      continue;
+    }
 
     if (key == "description") {
       out.description = trim_quotes(val);
@@ -187,9 +207,11 @@ auto parse_frontmatter_block(std::string_view raw) -> frontmatter {
     } else if (key == "model") {
       out.model = trim_quotes(val);
     } else if (key == "kind") {
+      // Deprecated: a top-level `kind:` is the pre-namespacing form. It is still accepted because
+      // operator-local files are not ours to rename; Planar's own agents use `planar.kind`.
       out.kind = trim_quotes(val);
     } else if (key == "shadow") {
-      out.shadow = trim_quotes(val) == "true";
+      out.shadow_set = true;
     } else if (key == "vendors") {
       if (val.empty()) {
         mode_vendors = true;
@@ -319,18 +341,36 @@ auto resolved_vendors(const frontmatter& value) -> std::vector<std::string> {
   return out;
 }
 
-auto lint(const frontmatter& value, std::string_view name) -> std::vector<lint_issue> {
+auto lint(const frontmatter& value) -> std::vector<lint_issue> {
   std::vector<lint_issue> out;
   if (value.description.empty()) {
     out.push_back({lint_severity::warning, "description", "description is empty; vendors surface this as the skill summary"});
   }
-  if (value.shadow) {
-    out.push_back({lint_severity::warning, "shadow",
-                   std::format("shadow:true — install will land as \"{}.md\" (no local- prefix) and may "
-                               "replace a canonical install of the same name",
-                               name)});
-  }
   return out;
+}
+
+auto local_name_violation(std::string_view name) -> std::optional<std::string> {
+  bool ok = !name.empty() && name.size() <= max_local_name_length;
+  for (std::size_t i = 0; ok && i < name.size(); ++i) {
+    const char ch = name[i];
+    if (ch == '-') {
+      ok = i != 0 && i + 1 != name.size() && name[i - 1] != '-';
+    } else {
+      ok = (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+    }
+  }
+  if (ok) {
+    return std::nullopt;
+  }
+  return std::format("invalid local name \"{}\": a name must match ^[a-z0-9]+(-[a-z0-9]+)*$ (lowercase letters, digits and "
+                     "single hyphens) and be at most {} characters; names are never normalized, so rename the source",
+                     name, max_local_name_length);
+}
+
+auto retired_shadow_message(std::string_view name) -> std::string {
+  return std::format("local source \"{}\" sets the retired frontmatter key \"shadow\"; remove it (a local source can no longer "
+                     "take the name of a bundled skill)",
+                     name);
 }
 
 auto split_frontmatter(std::string_view content) -> std::expected<std::pair<frontmatter, std::string>, parse_error> {

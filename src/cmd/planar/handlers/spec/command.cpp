@@ -1649,7 +1649,8 @@ auto declare_spec(CLI::App& root) -> void {
   CLI::App* spec = root.add_subcommand(
       "spec",
       "Commands for the planning pipeline spec surface.\n\n  'spec ingest' decomposes workbench planning documents into a\n  "
-      "structured task graph in the database.\n  'spec draft' generates initial spec artifacts from a goal statement.");
+      "structured task graph in the database. There is no draft verb: the\n  planar-planner agent drafts the documents "
+      "that 'spec ingest' reads.");
   spec->require_subcommand(0);
 
   spec_cli::attach_ingest(spec);

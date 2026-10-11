@@ -7,7 +7,7 @@
 //   $ ./zig/zig-out/bin/planar version
 //   planar dev dev zig 0.16.0
 //
-// `render_version_text` is checked against the SHAPE of that line (five
+// `render_version_text` is checked against the six-position release contract (six
 // whitespace-splittable tokens, sha+dirty-marker combined into token[1],
 // dev sentinel by default) rather than the literal `zig <ver>` tail — see
 // version.cppm's file comment for why the runtime tag differs by
@@ -43,10 +43,10 @@ TEST_CASE("shorten_sha: exactly 12 chars passes through unchanged", "[cli][versi
 TEST_CASE("render_version_text: dev sentinel default, matches oracle SHAPE", "[cli][version]") {
   build_info info{}; // default-constructed: sha="dev", date="dev", dirty=false
   auto       text = render_version_text(info, "22.1.8");
-  REQUIRE(text == "planar dev dev cxx 22.1.8\n");
+  REQUIRE(text == "planar dev dev cxx 22.1.8 dev\n");
 
-  // Whitespace-splittable into exactly 5 tokens, same as the Zig oracle
-  // "planar dev dev zig 0.16.0" (5 tokens: planar/dev/dev/zig/0.16.0).
+  // Whitespace-splittable into exactly 6 tokens, with the release appended to
+  // the stable program/sha/date/cxx/compiler prefix.
   // trailing newline included in `text` produces one trailing empty token
   // via views::split, which we drop before counting.
   std::vector<std::string> tokens;
@@ -62,14 +62,15 @@ TEST_CASE("render_version_text: dev sentinel default, matches oracle SHAPE", "[c
       }
     }
   }
-  REQUIRE(tokens.size() == 5);
+  REQUIRE(tokens.size() == 6);
   REQUIRE(tokens[0] == "planar");
+  REQUIRE(tokens[5] == "dev");
 }
 
 TEST_CASE("render_version_text: real sha is truncated and dirty marker appended", "[cli][version]") {
   build_info info{.sha = "0123456789abcdef0123456789abcdef01234567", .date = "2026-08-22T00:00:00Z", .dirty = true};
   auto       text = render_version_text(info, "22.1.8");
-  REQUIRE(text == "planar 0123456789ab+dirty 2026-08-22T00:00:00Z cxx 22.1.8\n");
+  REQUIRE(text == "planar 0123456789ab+dirty 2026-08-22T00:00:00Z cxx 22.1.8 dev\n");
 }
 
 TEST_CASE("render_version_text: clean (non-dirty) real sha has no dirty marker", "[cli][version]") {
@@ -100,4 +101,13 @@ TEST_CASE("current_build_info: default (dev) configure never claims dirty=true",
   REQUIRE_FALSE(info.sha.empty());
   REQUIRE_FALSE(info.date.empty());
 #endif
+}
+
+TEST_CASE("version rendering preserves build identity while appending the release", "[cli][version]") {
+  build_info info{
+      .sha = "0123456789abcdef0123456789abcdef01234567", .date = "2026-10-06T00:00:00Z", .dirty = true, .release = "v1.2.0"};
+  CHECK(render_version_text(info, "Clang-23.1.0") == "planar 0123456789ab+dirty 2026-10-06T00:00:00Z cxx Clang-23.1.0 v1.2.0\n");
+  CHECK(planar::cliapp::render_version_json(info, "Clang-23.1.0") ==
+        "{\"release\":\"v1.2.0\",\"sha\":\"0123456789abcdef0123456789abcdef01234567\","
+        "\"date\":\"2026-10-06T00:00:00Z\",\"dirty\":true,\"compiler\":\"Clang-23.1.0\"}\n");
 }

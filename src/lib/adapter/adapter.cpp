@@ -21,6 +21,8 @@ auto adapter_error_name(adapter_error err) -> std::string_view {
     return "NotFound";
   case adapter_error::unexpected_status:
     return "UnexpectedStatus";
+  case adapter_error::certificate_verification_failed:
+    return "CertificateVerificationFailed";
   case adapter_error::transport_failed:
     return "TransportFailed";
   case adapter_error::parse_failed:

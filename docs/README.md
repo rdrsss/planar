@@ -32,6 +32,8 @@ it works and how to use it.
 - [Light touch](light-touch.md). Capturing research and exploration with the
   base capture verbs, without the agent-driven workflow.
 - [Workflows](workflows.md). End-to-end recipes for common operations.
+- [Using the skill and agents](skill-reference.md#using-it-day-to-day). What to
+  ask a coding agent, and the replacement for each retired `pl-*` skill.
 
 ## How work flows
 
@@ -40,8 +42,8 @@ it works and how to use it.
   plus the host build and test queue.
 - [Lifecycles](lifecycles.md). Every state machine Planar enforces, as diagrams
   with the command that fires each transition.
-- [Skill reference](skill-reference.md). The bundled skills and agent roles,
-  grouped by purpose.
+- [Skill reference](skill-reference.md). The `planar` skill, the `planar-<role>`
+  agents, and where the installer places them.
 
 ## Reference
 
@@ -57,8 +59,6 @@ it works and how to use it.
 - [Testing](testing.md). Test layers, what each gate proves, and the continuous
   integration tiers.
 - [Toolchain parity](toolchain-parity.md). The pinned compiler and build tools.
-- [Scriptorium](tools/scriptorium-tech-spec.md). The renderer that produces the
-  per-harness skill and agent files.
 
 ## Project history and research
 

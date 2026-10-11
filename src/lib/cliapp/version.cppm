@@ -2,31 +2,17 @@
 /// @brief `planar.cliapp.version` — build-metadata resolution and the
 /// `planar version` text rendering (task cpp-cli-output-logging).
 ///
-/// Behavior-preserving in *contract*, not in literal wording, of
-/// zig/src/cmd/planar/handlers/version.zig: same opt-in build-metadata
-/// contract (a dev build embeds the sentinel `"dev"` for sha and date and
-/// never bakes in a live git sha/dirty flag — CLAUDE.md § Build And Test
-/// documents this as a deliberate Zig-side build-cache fix, and regressing
-/// it here would be a real defect, not a cosmetic gap), same sha-truncation
-/// and dirty-marker shape, same whitespace-splittable five-token line
-/// layout. The runtime tag differs by construction: Zig's line ends
-/// `zig <zig-version>`; this port has no Zig runtime to report, so it ends
-/// `cxx <compiler-version>` instead — the field *position* and *count*
-/// match (a script splitting on whitespace still finds five tokens), only
-/// the literal word for "which toolchain built this" differs. That count
-/// claim was FALSE as implemented until task 6117:
-/// `compiler_version_string()` returned `"Clang 22.1.8"`, whose embedded
-/// space made the line six tokens and handed a field-5 reader `Clang`
-/// instead of a version. The separator is a hyphen now, and both
-/// `version.t.cpp` and `cmd/planar/handlers.t.cpp` assert five. See
-/// version.cpp's header comment for the oracle capture this was checked
-/// against (`./zig/zig-out/bin/planar version` → `planar dev dev zig
-/// 0.16.0`).
+/// The text line has six whitespace-separated positions: 0 program,
+/// 1 shortened sha with an optional +dirty suffix, 2 build date, 3 cxx,
+/// 4 compiler identifier/version joined by a hyphen, and 5 release tag.
+/// An unset release is dev. The first five positions are stable; installers
+/// continue to read the sha at position 1 as their build_id.
 module;
 
 export module planar.cliapp.version;
 
 import std;
+import planar.json_text;
 
 namespace planar::cliapp {
 
@@ -43,6 +29,8 @@ export struct build_info {
   /// time. Always `false` when metadata resolution is disabled — a dev
   /// build never claims dirty state it did not actually resolve.
   bool dirty = false;
+  /// @brief Release tag, or dev when PLANAR_RELEASE_VERSION is unset.
+  std::string release = "dev";
 };
 
 /// @brief Truncate a 40-char git sha to 12 hex characters, matching Go's
@@ -63,7 +51,7 @@ export auto shorten_sha(std::string_view sha) -> std::string_view {
 /// `PLANAR_GIT_DIRTY` (set by src/lib/cliapp/CMakeLists.txt only when the
 /// `PLANAR_VERSION_META` CMake option is explicitly enabled — default
 /// off, mirroring zig's `-Dversion-meta` opt-in). When the option is off
-/// (the default dev-build configuration), every field is the `"dev"`
+/// (the default dev-build configuration), sha and date use the `"dev"`
 /// sentinel and `dirty` is `false` — the build cache never thrashes on a
 /// commit or a clean<->dirty flip because these macros are not
 /// recompiled unless the option itself changes.
@@ -71,7 +59,7 @@ export auto shorten_sha(std::string_view sha) -> std::string_view {
 export auto current_build_info() -> build_info;
 
 /// @brief Render `info` as the one-line version text form for a NAMED
-/// binary: `"<program> <sha><dirty-marker> <date> cxx <compiler-version>\n"`.
+/// binary: `"<program> <sha><dirty-marker> <date> cxx <compiler-version> <release>\n"`.
 ///
 /// The leading program name is a parameter because it is operator-visible
 /// and per-binary, exactly as it is on the Zig side: each of
@@ -106,12 +94,14 @@ export auto render_version_text(std::string_view program, build_info const& info
   out += info.date;
   out += " cxx ";
   out += compiler_version;
+  out += " ";
+  out += info.release;
   out += "\n";
   return out;
 }
 
 /// @brief Render `info` as the one-line `planar version` text form:
-/// `"planar <sha><dirty-marker> <date> cxx <compiler-version>\n"`.
+/// `"planar <sha><dirty-marker> <date> cxx <compiler-version> <release>\n"`.
 ///
 /// The operator binary's spelling of the overload above; kept as its own
 /// name so the `planar` handler and this module's existing tests read
@@ -124,12 +114,22 @@ export auto render_version_text(build_info const& info, std::string_view compile
   return render_version_text("planar", info, compiler_version);
 }
 
+/// @brief Render build metadata as newline-terminated machine-readable JSON.
+/// @param info The resolved build metadata; sha retains its full value.
+/// @param compiler_version The compiler identifier and version.
+/// @return An object with release, sha, date, dirty and compiler fields.
+export auto render_version_json(build_info const& info, std::string_view compiler_version) -> std::string {
+  return std::format("{{\"release\":{},\"sha\":{},\"date\":{},\"dirty\":{},\"compiler\":{}}}\n",
+                     json_text::json_string(info.release), json_text::json_string(info.sha), json_text::json_string(info.date),
+                     info.dirty, json_text::json_string(compiler_version));
+}
+
 /// @brief The compiler identifier + version string this translation unit
-/// was itself compiled with (e.g. `"Clang 22.1.8"`). Resolved via
+/// was itself compiled with (e.g. `"Clang-23.1.0"`). Resolved via
 /// preprocessor macros in version.cpp; exported as a function (not a
 /// constant) so it is trivially fakeable in tests without needing a
 /// second build.
-/// @return The compiler name and version, space-separated.
+/// @return The compiler name and version, hyphen-separated.
 export auto compiler_version_string() -> std::string;
 
 } // namespace planar::cliapp
