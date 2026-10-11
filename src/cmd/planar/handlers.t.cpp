@@ -2717,8 +2717,7 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
   // single-task fixture and the assertions below cannot tell the
   // difference — confirmed as live SURVIVORS by break-probing the
   // decisions/questions/recent-activity filters against an earlier,
-  // single-task version of this fixture (see
-  // scripts/break-probe-logs/6455-resume-packet.jsonl).
+  // single-task version of this fixture.
   auto const other_task = seed_task(fx, "OTHER_TASK", "unrelated");
   REQUIRE(
       dispatch(fx, {"capture", "session", "--task", std::to_string(other_task), "--vendor-session-id", "other", "--json"}).code ==

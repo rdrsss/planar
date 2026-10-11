@@ -26,7 +26,6 @@
 #     skills/planar/                  # staged planar skill (SKILL.md + references/)
 #     codex-agents/planar-*.toml      # Codex custom agents rendered from agents/
 #     templates/                      # operator-editable defaults
-#     scripts/validate-{barrel-modes,plan-status}-acceptance
 #
 # Then places the staged skill and agents into each vendor that is present on
 # the host (a presence marker per vendor; --vendors narrows the set):
