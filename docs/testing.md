@@ -13,7 +13,7 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make test-cpp-report` | The same suite, plus its skip tally. The expected tally is zero. |
 | `make ctest-registry-check` | ctest runs exactly the cases the test binaries contain. Needs `build/debug` built. |
 | `make coverage` | The `(verb, subcommand)` leaf-coverage ratio has not dropped below `scripts/coverage-baseline.txt`. |
-| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the five binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)), and `scripts/check-md-anchors.py` fails on a broken in-page anchor in `docs/cli-reference.md` and `INSTALL.md`. |
+| `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the four binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)), and `scripts/check-md-anchors.py` fails on a broken in-page anchor in `docs/cli-reference.md` and `INSTALL.md`. |
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
 | `make eval-contracts` | The provider-free eval lanes. |
@@ -42,7 +42,7 @@ the checks are on the source.
   checks the `docs.examples` the binaries publish the same way.
 - **Contract.** The eval contract tier (`make eval-contracts`) asserts, through
   `evals/orchestrator/cases/skill-planar.json`, that `SKILL.md` states each of
-  the thirteen invariants, names the five binaries and cites the feedback
+  the thirteen invariants, names the four binaries and cites the feedback
   contract.
 
 The orchestrator lifecycle fixture's final repository test uses a detached
@@ -160,7 +160,7 @@ the gate to run before a pull request; CI is the independent backstop.
 |---|---|---|
 | `ci.yml` (fast tier) | Pull requests into `master`, and pushes to `master` | `make fmt-check`, the installer fixtures, and the planning eval harness unit tests. It does not build the C++ tree. A newer push cancels the older run. |
 | `full.yml` (full tier) | Nightly, on manual dispatch, on `v*` tags, and on a pull request labelled `ci:full` | The `debug` build, the whole ctest suite, the orchestrator eval harness unit tests and the scratch queue observer integration test, on Linux in the same pinned toolchain image as `make linux-gate`. Builds from cold. |
-| `release.yml` (release) | A pushed stable `vX.Y.Z` tag only; never a branch, a pull request or a pre-release tag | One job per platform builds the release bundle from the tag commit and runs that platform's portable and clean-host gates before uploading; the final job runs the publisher, the only step that calls `gh release`, and a failed or missing platform publishes nothing. It reuses the scripts and evidence files of `make release-cut`. See [Release Gate Evidence and Cutting a release](operations.md#6-release-gate-evidence). Under decision 1337 releases are cut locally with `make release-cut` until hosted CI returns. |
+| `release.yml` (release) | A pushed stable `vX.Y.Z` tag only; never a branch, a pull request or a pre-release tag | One job per platform builds the release bundle from the tag commit and runs that platform's portable and clean-host gates before uploading; the final job runs the publisher, the only step that calls `gh release`, and a failed or missing platform publishes nothing. It reuses the scripts and evidence files of `make release-cut`. See [Release Gate Evidence and Cutting a release](operations.md#5-release-gate-evidence). Under decision 1337 releases are cut locally with `make release-cut` until hosted CI returns. |
 
 The fast tier does nothing for a change that touches only `agents/`, `skills/`,
 `docs/`, `.github/ISSUE_TEMPLATE/`, `.github/PULL_REQUEST_TEMPLATE.md`, or a
@@ -184,7 +184,7 @@ On a machine shared by several agents and projects, a build or test is not
 started directly. It is submitted to the host-wide queue, so two builds do
 not run at once and one agent's `make test` does not starve another's. The
 queue is `planar-agent queue`; see [the queue verbs](cli-reference.md#queue-verbs)
-for the full contract and [operations.md](operations.md#5-the-host-build-and-test-queue)
+for the full contract and [operations.md](operations.md#4-the-host-build-and-test-queue)
 for running it. `planar-agent queue rule` prints the rule agents follow.
 
 Every gate above has a queued form: the gate's own command after the argument
@@ -228,7 +228,7 @@ Do not hide an unbounded retry loop around finite slices. A `stalled`,
 `history_unavailable` or `error` result needs inspection; a queue refusal
 never authorizes a direct build. `queue wait` only reads state and never
 renews a claim. See [the wait contract](cli-reference.md#waiting-for-a-logical-ticket-queue-wait)
-and [operations](operations.md#5-the-host-build-and-test-queue).
+and [operations](operations.md#4-the-host-build-and-test-queue).
 
 The queue is for builds and tests that would otherwise run side by side. It
 does not replace the gates: a queued `make test` is the same `make test`.
@@ -543,12 +543,12 @@ sqlite3 /tmp/cp-smoke.db < migrations/00001_foundation.up.sql
 
 `make dist` configures and builds the `dist` preset (`PLANAR_PORTABLE=ON`,
 version metadata, a macOS 26.0 deployment target), runs the portable-binary
-checks on the five staged binaries, and assembles
+checks on the four staged binaries, and assembles
 `dist/planar-<platform>.tar.gz` with `SHA256SUMS`, `VERSION`, a standalone
 `get-planar.sh` and the archive's `.gates.json` evidence (`scripts/dist.sh`).
 `make linux-dist` does the same for Linux x86_64 in Docker on Debian bookworm.
 Both are release builds and not part of `make test` or `make test-all`; the
-gates they feed are in [operations.md § 6](operations.md#6-release-gate-evidence)
+gates they feed are in [operations.md § 5](operations.md#5-release-gate-evidence)
 and [toolchain-parity.md](toolchain-parity.md#portable-distribution-builds).
 Run them through the host queue and never with a validation tag in the real
 repository.

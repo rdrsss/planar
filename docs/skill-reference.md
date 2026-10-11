@@ -21,7 +21,7 @@ planar schema --command "task update"
 planar schema --compact
 ```
 
-The same works on `planar-agent`, `planar-watch`, `planar-ext` and `planar-execute`. Ask the
+The same works on `planar-agent`, `planar-watch` and `planar-ext`. Ask the
 catalog for one command or for the compact tree, never for the whole catalog: for `planar`
 it is about 338 KB. Every verb, flag and exit code is in [cli-reference.md](cli-reference.md).
 
@@ -82,7 +82,6 @@ maps to a request, an agent or a command:
 | `pl-ext-create`, `pl-ext-propagate`, `pl-sync`, `pl-audit-trail`, `pl-templates` | `references/external-sync.md` and the `planar-ext-sync` agent, over `planar-ext`, `planar audit trail` and `planar templates` |
 | `pl-feedback-triage`, `pl-introspect`, `pl-report-issue` | the `planar-feedback-triager` and `planar-introspector` agents, over `planar feedback` and `planar report` |
 | `pl-local`, `pl-local-import`, `pl-workspace-scan` | `references/local.md`, over `planar local` and `planar workspace` |
-| `pl-models-config` | `planar models`; see [concepts.md](concepts.md#model-routing) |
 | `pl-init`, `pl-scope` | `planar init` and `planar scope show` |
 | `pl-help` | `planar --help`, `planar help` and `planar schema --command "<verb>"` |
 
@@ -167,7 +166,7 @@ references. The installed copy lives in the skill roots above and in
 
 ### The four parts of `SKILL.md`
 
-1. **Write surface.** The five binaries and what each one writes. The boundary is each
+1. **Write surface.** The four binaries and what each one writes. The boundary is each
    binary's verb set, not a runtime ACL, so choosing the binary is the agent's job.
 2. **Invariants.** Thirteen rules that hold across verbs, listed below.
 3. **Discovery rule.** Read a verb's `--help` before using it; use `schema --command` or
@@ -280,22 +279,18 @@ derived from this one source at install time.
 
 ### Doctrine documents
 
-Four shared documents sit beside the agents: `methodology.md` (the procedural flow and the
+Three shared documents sit beside the agents: `methodology.md` (the procedural flow and the
 claim ritual), `doctrine.md` (cross-cutting judgment, and the canonical operator feedback
-contract), `models.md` (tiers and role assignments) and `cross-scope-writes.md` (the
-cross-scope write cue). They install under `$PLANAR_HOME/agents/` and are never placed into
+contract) and `cross-scope-writes.md` (the cross-scope write cue). They install under `$PLANAR_HOME/agents/` and are never placed into
 a vendor agent directory; an agent refers to them by name.
 
 ### Role values on flags
 
-The `planar-` prefix belongs to agent names only. The role values that flags and routing
-bindings carry are bare:
+The `planar-` prefix belongs to agent names only. The role values that flags carry are bare:
 
 - `planar-agent queue run --role coder` records the submitting role on a queue entry.
 - `planar-agent claim --role` and `planar-agent pull --role` record the role on a claim.
-- `planar models resolve --role coder` answers which tier a role runs at.
-- The role column of `models.md`'s assignment table and the `roles.<name>` config keys use
-  the bare role (`coder`, `spec-reviewer`, `test-coder`).
+- The `roles.<name>` config keys use the bare role (`coder`, `spec-reviewer`, `test-coder`).
 
 `--role` accepts the hyphenated and the underscored spelling; the stored form is
 underscored (`spec_reviewer`, `test_coder`).
@@ -352,6 +347,5 @@ retires an anchor's artifacts it keeps those whose source starts with the
 | The cross-scope guard and scope resolution | [concepts.md § Cross-scope guard](concepts.md#cross-scope-guard) |
 | Orchestration flow and the claim ritual | [`agents/methodology.md`](../agents/methodology.md) |
 | Cross-cutting agent judgment | [`agents/doctrine.md`](../agents/doctrine.md) |
-| Role tiers and model routing | [`agents/models.md`](../agents/models.md) |
 | The cross-scope write cue | [`agents/cross-scope-writes.md`](../agents/cross-scope-writes.md) |
 | Capture without the agent workflow | [light-touch.md](light-touch.md) |

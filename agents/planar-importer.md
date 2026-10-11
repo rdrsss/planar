@@ -16,7 +16,7 @@ See also `planar-synthesizer` for the sibling synthesis path; reach for the synt
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`. Mapping an arbitrary set of existing files and git history to a coherent ImportPlan without losing intent — and judging when the LLM Result is sound enough to merge — requires the same level of judgment as planning and orchestration.
+`large`. Mapping an arbitrary set of existing files and git history to a coherent ImportPlan without losing intent — and judging when the LLM Result is sound enough to merge — requires the same level of judgment as planning and orchestration.
 
 ## When to use
 

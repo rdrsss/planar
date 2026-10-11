@@ -1,7 +1,7 @@
 # Planar Operations
 
 How a unit of work moves from a goal to merged code through Planar's agents
-and the five-binary boundary. This is the operational spine: the moving parts
+and the four-binary boundary. This is the operational spine: the moving parts
 that the reference docs describe statically, drawn as the flows they actually
 run.
 
@@ -116,7 +116,7 @@ execution runs a reviewer loop capped at five iterations.
 
 The orchestrator, coder, reviewer, test-coder, and janitor roles that drive
 this lifecycle live in this repo's `agents/`, alongside their companion
-methodology, doctrine, and model-tier-routing docs. Planar itself
+methodology and doctrine docs. Planar itself
 drives the primitive these roles compose: the `planar-agent` claim ritual
 (§3 below).
 
@@ -133,7 +133,7 @@ flowchart TD
     G2 -->|"--apply -> active"| EXE
     subgraph EXE["Phase 3 Execution"]
       direction TB
-      SG{{"Gate 1: strategy + isolation<br/>dispatch preview: tier + routed model"}} --> SH{{"Gate 2: dispatch shape"}}
+      SG{{"Gate 1: strategy + isolation"}} --> SH{{"Gate 2: dispatch shape"}}
       SH --> PULL["planar-agent pull / claim"]
       PULL --> COD["spawn coder<br/>fresh context + heartbeat"]
       COD --> TC{"Phase 3.5<br/>test-coder needed?"}
@@ -158,8 +158,7 @@ artifacts and ingest diffs; it never auto-advances those gates.
 
 **Phase 3** has two operator gates. Gate 1 recommends a strategy (`classic`,
 `barrel-deferred`, `barrel-bypass`, or `parallel-fanout`) and isolation mode
-(`pwd` or `worktree` where applicable), then shows the dispatch preview. The
-preview includes each task's model tier and routed-model candidate. Gate 2
+(`pwd` or `worktree` where applicable), then lists the tasks by wave. Gate 2
 selects the dispatch shape nested under that strategy.
 
 **Phase 3.5** runs after coder output when the cycle's task slugs intersect
@@ -247,38 +246,13 @@ and `agents/methodology.md` § Coordination claims.
 
 ---
 
-## 4. Model Routing
-
-Model choice is config-driven. `[models.<vendor>]` maps tiers to scalar model
-ids or ordered candidate lists, `[routing.<vendor>.<tier>]` maps work types
-(`schema`, `engine`, `architectural`, `cli`, `feature`, `mechanical`) to a
-candidate inside the tier, `[roles]` maps agent roles to tiers, and
-`[role_vendors]` can route a role to a non-default vendor.
-
-The orchestrator's Phase 3 preview classifies each task's work type and calls
-the shared resolver to show both the tier and routed candidate. The operator
-may override either before confirming. The confirmed `{tier, candidate,
-work_type}` triple is persisted in the cycle's dispatch note as
-`model_choice`.
-
-`planar models evals` later mines those dispatch notes, terminal claim status,
-and test-coder action outcomes into a per-`(work_type, candidate)` scorecard.
-It is read-only: recommendations are previews, not config writes.
-
-Detail: [`concepts.md` §Model routing](concepts.md#model-routing),
-and
-[`cli-reference.md` §Domain: models](cli-reference.md#domain-models); each
-verb's `--help` carries the flags, examples and exit codes.
-
----
-
-## 5. The Host Build and Test Queue
+## 4. The Host Build and Test Queue
 
 Builds and tests on one machine go through a single queue, so agents in
 different projects do not compile or run suites at the same time. The queue is
 `planar-agent queue`; it has no daemon, because the process that submits a
 command is the process that runs it. The states an entry moves through are the
-diagram in [`lifecycles.md` §3.6](lifecycles.md#36-host-queue-entry), the verbs
+diagram in [`lifecycles.md` §3.4](lifecycles.md#34-host-queue-entry), the verbs
 and exit codes are in [`cli-reference.md` §Queue verbs](cli-reference.md#queue-verbs),
 and the rule agents follow is printed by `planar-agent queue rule`.
 
@@ -420,7 +394,7 @@ refusing is not an absent-queue fallback.
 
 ---
 
-## 6. Release Gate Evidence
+## 5. Release Gate Evidence
 
 A release publishes only bundles whose gates passed on the exact archive being
 uploaded. Three scripts share one evidence file per archive,
@@ -440,8 +414,8 @@ uploaded. Three scripts share one evidence file per archive,
   `<dir>/planar-<platform>.gate-logs/`.
   - `smoke`, both platforms: `scripts/release-smoke.sh` runs `version --json` on
     the four version-bearing binaries (release and sha must match
-    `release.json`), `planar-execute --help`, `init` and `health --json` (current
-    schema equal to `release.json`), seven checks in a scratch HOME and
+    `release.json`), `init` and `health --json` (current
+    schema equal to `release.json`), six checks in a scratch HOME and
     database. macOS runs it on a macOS arm64 host under `env -i` with a
     system-only PATH; Linux runs it in a bare `debian:bookworm-slim` linux/amd64
     container with no network (`PLANAR_GATE_RUNTIME_IMAGE` overrides the image).
@@ -462,7 +436,7 @@ uploaded. Three scripts share one evidence file per archive,
   both platforms, with the recorded `sha256` and `release` equal to the archive
   as it is now, and `portable` and `smoke` passed (and `ca_debian` and
   `ca_redhat` on Linux). The publisher, not the evidence, holds the size of a
-  complete run of each gate: `portable` 2, `smoke` 7, `ca_debian` 2 and
+  complete run of each gate: `portable` 2, `smoke` 6, `ca_debian` 2 and
   `ca_redhat` 1. It refuses, as missing checks, a gate whose `matched_count` is
   below that size; a `smoke`, `ca_debian` or `ca_redhat` record with no
   `expected_count`, or with an `expected_count` below the size or different
@@ -508,7 +482,7 @@ the merged `SHA256SUMS`, `VERSION` and the standalone `get-planar.sh`. Under
 decision 1337 the maintainer cuts it locally with `make release-cut` until
 hosted CI returns; `.github/workflows/release.yml` is the CI path for the same
 contract. The gates, the evidence format and the publisher's checks are the
-ones in [Release Gate Evidence](#6-release-gate-evidence); this recipe does not
+ones in [Release Gate Evidence](#5-release-gate-evidence); this recipe does not
 repeat them.
 
 Requirements:

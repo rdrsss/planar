@@ -49,7 +49,7 @@ through `planar plan create`, `planar question add`, and `planar task add`.
 
 ## Tier
 
-`medium`. Resolved to a concrete model per the Tier Table in `agents/models.md`.
+`medium`.
 
 ## When to use
 

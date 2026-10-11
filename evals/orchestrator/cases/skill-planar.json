@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "skill-planar-contract",
   "skill": "orchestrator",
-  "description": "The unified planar skill states the thirteen invariants, names the five binaries, cites the feedback contract, and carries no legacy /pl- command, scriptorium reference or split terminal verb.",
+  "description": "The unified planar skill states the thirteen invariants, names the four binaries, cites the feedback contract, and carries no legacy /pl- command, scriptorium reference or split terminal verb.",
   "tags": [
     "skill",
     "planar",
@@ -164,15 +164,6 @@
         "skills/planar/SKILL.md"
       ],
       "pattern": "\\| `planar-ext` \\|"
-    },
-    {
-      "id": "binary-planar-execute",
-      "description": "SKILL.md names the planar-execute binary in the write-surface table.",
-      "mode": "all",
-      "paths": [
-        "skills/planar/SKILL.md"
-      ],
-      "pattern": "\\| `planar-execute` \\|"
     },
     {
       "id": "cites-feedback-contract",

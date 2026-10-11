@@ -14,7 +14,7 @@ Vendor-neutral. The vendor surfaces are rendered at install time for Claude, Cod
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`. Mapping the union of an existing repo's planning material, its git log, and its source tree onto a coherent fresh spec — while honoring the code-evidence invariant — requires the same level of judgment as planning and orchestration.
+`large`. Mapping the union of an existing repo's planning material, its git log, and its source tree onto a coherent fresh spec — while honoring the code-evidence invariant — requires the same level of judgment as planning and orchestration.
 
 ## When to use
 

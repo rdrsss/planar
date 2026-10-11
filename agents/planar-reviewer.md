@@ -120,7 +120,7 @@ Every build and test run goes through the host queue, as the host build queue ru
 
 ## Tier
 
-`large`. Resolved to a concrete model per `models.md` in the Planar agents directory.
+`large`.
 
 ## When to use
 

@@ -148,8 +148,8 @@ The [concepts](docs/concepts.md) document defines each of these precisely.
   the machine until operational synchronization is explicitly enabled.
 - **The schema is the contract.** Ordered migrations define the schema, and
   readers verify its version before use.
-- **Disjoint write surfaces.** Planar is five binaries. The four that open the
-  database each write to a distinct set of tables, and one of them is read-only.
+- **Disjoint write surfaces.** Planar is four binaries. Each opens the
+  database and writes a distinct set of tables, and one of them is read-only.
   The boundary is the set of verbs a binary provides.
 - **Explicit synchronization.** Remote changes arrive as proposals, and
   conflicts are surfaced rather than resolved silently.

@@ -19,7 +19,7 @@ agent directory, rendering the Codex TOML with `scripts/render-codex-agents.py`.
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`.
+`large`.
 Reconciliation requires comparing local state, remote observations, link
 metadata, and sync history without confusing a plausible merge with authority
 to mutate either plane.

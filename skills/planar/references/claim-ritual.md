@@ -81,10 +81,6 @@ releases its coordination claim explicitly rather than waiting out the lease.
   can report "Already up to date" and exit 0.
 - **Direct.** The agent that claimed the work runs the terminal verb itself, after its
   validation evidence is green.
-- **Engine-supervised.** Not live in this build: every claim here is caller-supervised.
-  If a brief says a claim is engine-supervised, heartbeat only with `--status` and no
-  `--ttl`, and run no terminal verb. A bare heartbeat and any terminal verb are refused
-  with `SupervisorMismatch`; only the engine extends or ends that lease.
 
 ## Lapsed-claim recovery
 

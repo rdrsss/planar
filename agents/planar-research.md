@@ -85,7 +85,7 @@ dispatched it.
 
 ## Tier
 
-`large`. Resolved to a concrete model per `models.md` in the Planar agents directory.
+`large`.
 
 Rationale: research's job is closer to the reviewer's than the coder's.
 The coder executes against a locked decomposition — the hard reasoning
@@ -95,10 +95,8 @@ matter, weigh conflicting or partial evidence, and judge when confidence
 is sufficient to stop — the same deliberation-under-ambiguity class of
 work the reviewer does (also `large`, also `read-only` capability), not
 the bounded-execution class `coder` (`medium`) does. Routing a specific
-investigation to a cheaper tier for narrow, mechanical lookups is a
-work-type routing concern for the orchestration layer
-(`models.md` in the Planar agents directory §Candidate lists and work-type routing),
-not a role-tier decision.
+investigation to a cheaper tier for narrow, mechanical lookups is not a
+role-tier decision.
 
 ## When to use
 

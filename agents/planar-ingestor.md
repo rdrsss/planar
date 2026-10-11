@@ -12,7 +12,7 @@ Given a feature anchor plan id, reads `tech-spec.md` and `roadmap.md` from the w
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `models.md` in the Planar agents directory. Reasoning over the full spec + current DB state to produce a correct idempotent diff requires the same level of judgment as orchestration.
+`large`. Reasoning over the full spec + current DB state to produce a correct idempotent diff requires the same level of judgment as orchestration.
 
 ## When to use
 

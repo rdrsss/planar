@@ -11,10 +11,9 @@ about 30 minutes the first time and 5 minutes the second.
 
 ## 1. Install
 
-Planar is five C++26 binaries — the operator CLI `planar`, the
-agent-callable `planar-agent`, the read-only `planar-watch`, the
-workflow runner `planar-execute`, and the external-system binary
-`planar-ext` — backed by SQLite. Install a release bundle with the
+Planar is four C++26 binaries — the operator CLI `planar`, the
+agent-callable `planar-agent`, the read-only `planar-watch`, and the
+external-system binary `planar-ext` — backed by SQLite. Install a release bundle with the
 bootstrap (Apple silicon macOS 26 or later, or x86_64 Linux with glibc
 2.36 or later):
 
@@ -57,7 +56,7 @@ guessing, `planar schema --compact` prints one row per command with its
 summary, and `planar schema --command "task add"` prints the full entry
 for one command. Ask the catalog for one command or the compact tree,
 never the whole catalog. The same works on `planar-agent`, `planar-watch`,
-`planar-ext` and `planar-execute`.
+and `planar-ext`.
 
 Everything in the rest of this tutorial is plain CLI. No skill is needed.
 

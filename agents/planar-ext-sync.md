@@ -16,7 +16,7 @@ Vendor-neutral. The vendor surfaces are rendered at install time for Claude, Cod
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`. Top-down tree traversal with per-entity decisions (skip vs create) and per-system strategy selection requires the same level of judgment as orchestration.
+`large`. Top-down tree traversal with per-entity decisions (skip vs create) and per-system strategy selection requires the same level of judgment as orchestration.
 
 ## When to use
 

@@ -12,7 +12,7 @@ Given a goal statement and the cwd-derived scope (or an explicit `--scope` overr
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `models.md` in the Planar agents directory. Drafting a coherent product spec, tech spec, roadmap, and test spec from an open-ended goal requires the same level of judgment as orchestration and review.
+`large`. Drafting a coherent product spec, tech spec, roadmap, and test spec from an open-ended goal requires the same level of judgment as orchestration and review.
 
 ## When to use
 

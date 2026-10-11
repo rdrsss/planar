@@ -288,7 +288,7 @@ runtime image; run it through the host queue. The removed-CA case requires
 The sync result remains exit 0, as for other per-link adapter errors.
 
 The `portable.binaries` ctest case is registered only with `PLANAR_PORTABLE`.
-It logs each of the five product binaries, inspects macOS dependencies and load
+It logs each of the four product binaries, inspects macOS dependencies and load
 commands with `otool`, or Linux dynamic entries and symbol versions with
 `readelf`, and then runs each CLI's `--help` in a disposable HOME/database.
 This startup check also detects static-runtime initialization failures that
@@ -574,7 +574,7 @@ identical across cuts. `SHA256SUMS` uses two spaces before each bare asset name
 and covers every tarball in `dist/` and `get-planar.sh`, one record each, and
 `VERSION` contains the bare tag (or `dev`).
 
-Assembly requires exactly the two `portable` tests and inspects all five
+Assembly requires exactly the two `portable` tests and inspects all four
 installed copies again. A sibling `<archive>.gates.json` records
 `format_version: 1`, the archive name, SHA-256, the complete `release` identity,
 and `gates.portable` with `result: "pass"`, `matched_count: 2` and
@@ -584,5 +584,5 @@ It contains no smoke or CA verdict, so it cannot authorize publication:
 `format_version: 2`, and `scripts/release-publish.sh` requires that record for
 both platforms, bound to the same final checksum and release identity, and
 refuses missing evidence or `dev`. The contract is in
-[operations.md § Release Gate Evidence](operations.md#6-release-gate-evidence).
+[operations.md § Release Gate Evidence](operations.md#5-release-gate-evidence).
 Assembly does not publish anything.

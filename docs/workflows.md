@@ -143,7 +143,7 @@ planar plan show 42
 
 Use this when an anchor plan is `active` and you want to execute tasks.
 
-**What happens:** Phase 3 runs two gates in order before dispatching any coder. Gate 1 — strategy + isolation — recommends an execution strategy (`classic`, `barrel-deferred`, `barrel-bypass`, or `parallel-fanout`) and isolation mode (`pwd` or `worktree`), then renders a dispatch preview showing each task with its proposed model tier and routed-model candidate. Gate 2 picks the dispatch shape nested under that strategy. Each coder output goes through the test-coder coverage gate when needed and then the reviewer unless the confirmed mode bypasses or defers review. The reviewer loop cap is 5 iterations per dispatch cycle.
+**What happens:** Phase 3 runs two gates in order before dispatching any coder. Gate 1 — strategy + isolation — recommends an execution strategy (`classic`, `barrel-deferred`, `barrel-bypass`, or `parallel-fanout`) and isolation mode (`pwd` or `worktree`), then lists the tasks by wave. Gate 2 picks the dispatch shape nested under that strategy. Each coder output goes through the test-coder coverage gate when needed and then the reviewer unless the confirmed mode bypasses or defers review. The reviewer loop cap is 5 iterations per dispatch cycle.
 
 ### Invoke
 
@@ -158,15 +158,15 @@ The orchestrator reads claim-aware task state, then opens Gate 1:
 ```
 Plan 42 "billing-export-csv" — 5 todo tasks
 
-Phase 3 dispatch preview:
+Phase 3 plan:
 
   wave 1
-    #43  add-export-jobs-table     blocks: 45        tier: large   model: claude-opus-5-5    (schema)
-    #44  add-billing-exports-table —                 tier: large   model: claude-opus-5-5    (schema)
+    #43  add-export-jobs-table     blocks: 45
+    #44  add-billing-exports-table —
   wave 2 — unblocks when #43 is done
-    #45  write-migration-0008      blocked_by: 43    tier: large   model: claude-opus-5-5    (schema)
-    #46  implement-csv-serialiser  —                 tier: medium  model: claude-sonnet-5-5  (feature)
-    #47  wire-up-export-endpoint   —                 tier: medium  model: claude-sonnet-5-5  (feature)
+    #45  write-migration-0008      blocked_by: 43
+    #46  implement-csv-serialiser  —
+    #47  wire-up-export-endpoint   —
 
 Recommended strategy: classic  pwd
 Rationale: 5-task plan, sequential migration dependencies across 2 waves
@@ -178,7 +178,7 @@ Rationale: 5-task plan, sequential migration dependencies across 2 waves
   parallel-fanout   — staged worktree fan-out; N coders concurrently.
 
 Confirm strategy and isolation? [classic pwd / classic worktree / barrel-deferred pwd /
-  barrel-deferred worktree / barrel-bypass / parallel-fanout / task <id> -> <tier>]
+  barrel-deferred worktree / barrel-bypass / parallel-fanout]
 ```
 
 After confirming the strategy, Gate 2 opens:
@@ -190,8 +190,8 @@ Proposed dispatch shape: grouped
   Group A: tasks 43, 44, 45  (all touch migrations/ — one coder cycle)
   Group B: tasks 46, 47      (independent of Group A)
 
-Accept this shape, the tier assignments, and the routed candidates?
-[yes / edit / strict / single / task <id> -> <tier> / task <id> -> <candidate>]
+Accept this shape?
+[yes / edit / strict / single]
 ```
 
 Confirm (`yes`) or adjust. The orchestrator then dispatches Group A to a freshly spawned coder subagent, routes the output through Phase 3.5 when needed, and either dispatches the reviewer or records the confirmed reviewer disposition. On `approve`, tasks flip to `done` through `planar-agent complete` and Group B is dispatched.
@@ -1880,7 +1880,7 @@ Both error paths are atomic — the surrounding `BEGIN IMMEDIATE` transaction ro
 
 ## Recipe 19 — Live agent cockpit with `planar-watch`
 
-`planar-watch` is the third binary in the five-binary architecture — the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains exactly nine read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events` — plus the conventional `version`, `completion` and `schema` helpers, and zero anything that mutates state.
+`planar-watch` is the **human-facing read-only viewer**. It opens the database in strict read-only mode (`SQLITE_OPEN_READONLY`); the SQLite driver itself refuses every write SQL string, which is the second line of defense behind the binary's "no write verbs registered" capability boundary. The first defense is the verb tree itself: it contains only read verbs — `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `sync-events`, `queue` and `diagnose` — plus the conventional `version`, `completion` and `schema` helpers, and zero anything that mutates state.
 
 This recipe walks the streaming-cockpit workflow. The companion recipe for the operator's read-fold-ins on the `planar` binary lives in Recipe 16.
 
@@ -2082,9 +2082,7 @@ Alternatives:
   classic                Sequential cycles, reviewer per cycle. Isolation: pwd or worktree.
                          [continuity guarantee — today's behavior bit-for-bit]
   parallel-fanout        Fan out to N coders on the parallel-eligible subset, staged by the
-                         `blocks` graph; reviewer at fan-in. workflows/parallel-dispatch.lua
-                         is an optional deterministic helper; the orchestrator, a host-native
-                         workflow, or a background agent may run this path.
+                         `blocks` graph; reviewer at fan-in.
                          [throughput + integrated review]                                 ← recommended
   barrel-deferred        Back-to-back coder cycles; reviewer at boundary on union diff.
                          Isolation: pwd or worktree.
@@ -2144,7 +2142,7 @@ The orchestrator records the choice and moves on to the parallel-fanout per-cycl
 
 ## Recipe 22 — Orchestrate a multi-task plan with parallel coders
 
-> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is **model-runnable via the spawn-free `workflows/parallel-dispatch.lua` seam** (plan 760): `cycle_plan` computes one sequential lane, while `plan`/`waves` compute parallel lanes. The seam computes worktree paths, branch names, merge order, and teardown lists and HANDS BACK; the runner that acts on that output — running the git worktree/branch/merge ops and spawning coders — may be the model orchestrator through the host's subagent dispatch surface, a host-native workflow, or a background agent (decision 1007, plan 1033). The seam is an optional deterministic helper, not the only permitted path. The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.cpp`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
+> **Ownership note.** The worktree lifecycle — epic-branch cut, per-lane worktree creation, fan-in merge, failed-lane retention, and full teardown — is run by the orchestrator through the host's subagent dispatch surface, a host-native workflow, or a background agent. The six eligibility rules are the engine's (`recommend-strategy`, `src/engine/planning/strategy.cpp`), consumed by the fan-out phases and never re-derived. They apply to `parallel-fanout`, not to a single sequential worktree lane. For the staged-wave (dependency-respecting) variant — proto lands first, then identity + web in parallel — see [Step 11 — Staged waves](#step-11--staged-waves-contract-lane-first) below. In-flight worktree execution is watched through `planar-watch ps --plan <id>` (claims + each claim's `worktree_path`) — there is no separate wave/barrier view.
 
 The full `parallel-fanout` lifecycle, from strategy confirmation through fan-in and reviewer to cleanup. Use this when you have a plan in `active` status with ≥3 tasks, at least 2 of which are parallel-eligible (disjoint `task_touches`, no migration, no singleton-file touch, no blocking open question or proposed-decision dependency).
 
@@ -2303,29 +2301,15 @@ git -C /repo branch -D epic/worktree-management
 
 ### Step 11 — Staged waves (contract lane first)
 
-The steps above fan out a **single wave** of mutually-disjoint lanes. When the plan's lanes have `blocks` dependencies — the plan-753 shape, where a `proto` contract lane must land before `identity` and `web` build against its generated stubs — the orchestrator drives **staged waves** so downstream lanes never build against a moving API. Eligibility gating stays the engine's (`recommend-strategy`); the seam walks the `blocks` graph only to ORDER and LABEL the waves.
+The steps above fan out a **single wave** of mutually-disjoint lanes. When the plan's lanes have `blocks` dependencies — the plan-753 shape, where a `proto` contract lane must land before `identity` and `web` build against its generated stubs — the orchestrator drives **staged waves** so downstream lanes never build against a moving API. Eligibility gating stays the engine's (`recommend-strategy`); the `blocks` graph only orders and labels the waves.
 
-1. **Present the ordered wave plan at the gate.** Run the seam's `waves` phase:
+1. **Present the ordered wave plan at the gate.** On the plan-753 shape, `proto` is wave 1; `identity` + `web` are wave 2 (each `blocked_by: [proto]`); and a terminal **cross-lane integration pass** is the last wave. A task the engine serialized for a non-blocks reason (migration / singleton / empty-touches / open-question / proposed-decision) is never placed in a wave. Present the full ordered picture to the operator and wait for confirmation before creating any worktree.
 
-   ```bash
-   planar-execute run workflows/parallel-dispatch.lua --phase waves \
-       --args '{"plan_id":753}'
-   ```
+2. **Drive one barrier at a time.** For the current wave, take the lanes `recommend-strategy` reports as eligible, create their worktrees, and fan out their coders (Steps 4–6 above).
 
-   It emits byte-stable JSON: `{ epic_branch, wave_count, integration_pass_wave, waves:[…], serialized:[…] }`. Each wave carries `{ wave, lane_count, lanes:[{task_id, slug, branch, worktree, blocked_by:[…]}], integration_pass }`. On the plan-753 shape, `proto` is wave 1; `identity` + `web` are wave 2 (each labeled `blocked_by: [proto]`); and a terminal **cross-lane integration pass** is the last wave (`integration_pass: true`, no lanes, named by `integration_pass_wave`). A task the engine serialized for a NON-blocks reason (migration / singleton / empty-touches / open-question / proposed-decision) is carried in `serialized` and NEVER placed in a wave. Present the full ordered picture to the operator and wait for confirmation before creating any worktree.
+3. **Enforce the wave barrier before the next wave.** The barrier is on fan-in completion, not coder completion: a lane whose coder reported done but whose branch has not been merged does not satisfy it. Create no wave-N+1 worktree until every wave-N lane has fanned in. Once it has, re-run `recommend-strategy` — the just-landed lanes have dropped out and their dependents are now eligible — and repeat for the next wave.
 
-2. **Drive one barrier at a time.** The `waves` output is the projection for the gate, not a schedule. For the CURRENT wave, run the `plan` phase (it returns exactly the currently-eligible lanes), create its worktrees, and fan out its coders (Steps 4–6 above).
-
-3. **Enforce the wave barrier before the next wave.** After fanning the current wave in, run the `barrier_check` phase:
-
-   ```bash
-   planar-execute run workflows/parallel-dispatch.lua --phase barrier_check \
-       --args '{"plan_id":753,"lanes":[{"task_id":…,"landed":true,"fanned_in":true}]}'
-   ```
-
-   It emits `{ proceed, blocking:[{task_id, reason}] }`. Do NOT create any wave-N+1 worktree until `proceed:true`. The barrier is on FAN-IN completion, not coder completion: a lane whose coder reported done (`landed:true`) but whose branch has not been merged (`fanned_in:false`) does NOT satisfy the barrier (`reason: not_fanned_in`). Once `proceed:true`, re-run `plan` — the just-landed lanes have dropped out of `recommend-strategy` and their dependents are now eligible — and repeat for the next wave.
-
-4. **Fan-in retention + resume.** At each wave's `fan_in`, a lane may carry `"outcome":"succeeded"|"failed"`: a succeeded lane's worktree is torn down eagerly (in `teardown_worktrees`); a **failed lane's worktree is RETAINED** for inspection (in `retained_worktrees`). On a mid-wave failure, resume via the `reconcile_plan` phase — a `failed_clean` lane needs no reconcile (available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0` — then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, the `teardown` phase computes the full sweep (every lane worktree + branch removed; the epic branch retained until its PR merges).
+4. **Fan-in retention and resume.** A succeeded lane's worktree is torn down at fan-in; a failed lane's worktree is retained for inspection. On a mid-wave failure, a `failed_clean` lane needs no reconcile (it is available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0`. Then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, remove every lane worktree and branch; keep the epic branch until its PR merges.
 
 For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see `agents/planar-orchestrator.md` and `agents/methodology.md`.
 
@@ -2442,89 +2426,6 @@ The persisted `worktree_path` on the (now stale or aborted) claim is the recover
 For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the canonical claim ritual see `agents/methodology.md` § Coordination claims.
 
 ---
-
-## Recipe 25 — Inspect model routing evidence and resolve a role's tier
-
-Inspect which tier an agent role resolves to, which opaque candidates are
-registered and eligible on this host, and what the recorded routing evidence
-says — then, if a change is warranted, edit the preset in `agents/models.md`.
-Planar stores candidate ids as opaque strings, records evidence, and resolves
-a role to a *tier* from the task's own packet; it never decides which models
-exist. The tier→model presets are hand-maintained in `agents/models.md` (the
-Tier Table); there is no `[models]` / `[roles]` scaffold verb and no
-`planar models apply` — that family (`list`, `refresh`, `routing`,
-`candidates`, `apply`) was removed with the curated catalog.
-
-**1. Inspect the candidate registry.**
-
-```bash
-planar models registry list --json
-```
-
-Each row is one exact candidate id with its role/tier bindings and the
-latest host observation. A candidate whose id has not been verified
-spawn-safe on this host is ineligible for routing, not merely unproven;
-`planar models registry eligibility --candidate <id> --host <host> --role <r> --tier <t> --now <rfc3339>`
-reports every gate and the named exclusion reason.
-
-**2. Resolve a role's tier — with provenance.**
-
-```bash
-planar models resolve --role coder --task 142 --json
-#   {"source":"packet","tier":"medium","work_type":"engine","complexity":"standard", ...}
-planar models resolve --role planner --plan 42 --json
-#   {"source":"static_fallback","tier":"medium","reason":"packet_not_ready","work_type":null, ...}
-```
-
-Task-bound roles (`coder`, `test-coder`, `reviewer`, `research`, `janitor`)
-take `--task`; pre-task roles (`planner`, `spec-reviewer`, `ingestor`,
-`orchestrator`) take `--plan`. `source: packet` means the tier came from the
-task's compiled profile; `static_fallback` names why it did not
-(`no_packet`, `packet_not_ready`, `policy_not_ready`) and reports work type
-and complexity as null. Report a fallback with its reason, never as a derived
-tier. `--fallback-tier` overrides the configured static fallback (default
-`medium`).
-
-**3. Review the evidence.**
-
-```bash
-planar models experiments --json    # declared experiments: recorded vs counted samples
-planar models outcomes --json       # terminal outcomes, INCLUDING excluded rows and why
-```
-
-The two totals in `experiments` differ whenever a run was recorded but
-excluded from the evidence boundary; `outcomes` shows each excluded row with
-its reason so a thin-looking cohort can be traced to the rows behind it.
-
-**4. Rank candidates in one exact cohort.**
-
-```bash
-planar models evals --vendor claude --role coder --tier medium --work-type engine \
-  --complexity standard --project 3 --validation-policy v1 --routing-policy v1 \
-  --min-samples 5 --quality-floor 0.5 --json
-```
-
-Ranking is by the 95% Wilson lower bound over declared-experiment terminal
-samples in that cohort and is read-only. Candidates under `--min-samples`
-report `insufficient_data` and are never ranked; candidates below
-`--quality-floor` are excluded before any iteration or cost ordering. "No
-recommendation" is a valid outcome and means keep the configured default.
-Without `--vendor` the command falls back to the legacy note-convention
-scorecard, which is inspectable but not evidence-backed.
-
-**5. Change a preset (operator-gated).**
-
-Presets live in the orchestration layer's `agents/models.md`, not in the
-database or `~/.planar/config.toml`. Guide the operator to edit that file; a
-`Use when` cell must rest on a product fact or recorded dispatch evidence
-(vendor capability claims, benchmark scores and release ordering are not
-admissible). Nothing in `planar models` writes.
-
-**6. Confirm the change took.** Re-run step 2 for the affected role; the
-resolved tier is what the preset table in `agents/models.md` is keyed by.
-
-See [`docs/concepts.md § Model routing`](./concepts.md#model-routing) and
-[`docs/cli-reference.md § Domain: models`](./cli-reference.md#domain-models).
 
 ## Recipe 26 — Self-report a usage finding to GitHub Issues
 
@@ -2702,105 +2603,6 @@ cd /path/to/planar-repo && ./install.sh
 
 **Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and `agents/planar-janitor.md` § Capability and hard boundary for the full detail.
 
-## Recipe 28 — Author and graduate a workflow
-
-Use the personal sandbox at `~/.planar/local/workflows/` to draft, test, and iterate on a new Lua workflow before promoting it to the repo's `workflows/` directory. The flow mirrors Recipe 14 (skill sandbox), but the surface is `planar-execute` rather than a vendor CLI.
-
-**When to use:** You want to automate a deterministic multi-step operation (a composed read, a traced propagation, a closeout gate) that fits the `planar-execute` model — spawning a clean process per phase, shelling only allowlisted binaries (`planar`, `planar-agent`, `planar-watch`), and never opening SQLite directly.
-
-### Step 1 — Draft the workflow in the sandbox
-
-```bash
-mkdir -p ~/.planar/local/workflows/
-cat > ~/.planar/local/workflows/my-workflow.lua <<'EOF'
---[[ @meta
-name: my-workflow
-description: Describe what this workflow does.
-phases: run
-seam: planar plan list --json, planar task list --json
---]]
-
--- my-workflow.lua — a personal sandbox workflow.
-
-function run()
-  flow.phase("run")
-  flow.log("my-workflow: starting")
-
-  -- Shell an allowlisted planar verb and parse the result.
-  local plans = cli.planar_json({"plan", "list", "--status", "active", "--json"})
-  flow.log("my-workflow: " .. tostring(#plans) .. " active plan(s)")
-
-  flow.result({ plan_count = #plans })
-end
-EOF
-```
-
-The `@meta` block is optional but strongly recommended — it is what `planar workflow list/show` displays to the operator.
-
-### Step 2 — Verify it appears in the discovery surface
-
-```bash
-planar workflow list --local
-```
-
-Expected output (text):
-```
-name           kind    phases  description
-my-workflow    local   run     Describe what this workflow does.
-```
-
-```bash
-planar workflow show my-workflow
-```
-
-Expected:
-```
-name:        my-workflow
-kind:        local
-path:        /Users/<you>/.planar/local/workflows/my-workflow.lua
-meta:        present
-description: Describe what this workflow does.
-phases:      run
-seam:        planar plan list --json, planar task list --json
-```
-
-### Step 3 — Run it with planar-execute
-
-```bash
-planar-execute run ~/.planar/local/workflows/my-workflow.lua --phase run
-```
-
-The engine runs the `run` phase in the sandbox (no `os`/`io`/`require`; only the D7 host surface). Iterate until the output looks right.
-
-For workflows that need `--args`:
-
-```bash
-planar-execute run ~/.planar/local/workflows/my-workflow.lua \
-    --phase run \
-    --args '{"plan_id": 42}'
-```
-
-### Step 4 — Graduate to the repo (manual)
-
-When the workflow is stable, copy it into the repo's `workflows/` directory:
-
-```bash
-cp ~/.planar/local/workflows/my-workflow.lua /path/to/planar-repo/workflows/my-workflow.lua
-```
-
-Then follow the normal contribution flow: add a `@meta` block if not already present, open a PR, run `make test`. There is no `planar workflow promote` shortcut — graduation is explicit so the operator reviews what ships.
-
-After the next `./install.sh` run, `planar workflow list` will show the workflow as `shipped` rather than `local`.
-
-**Author contract.** A workflow running under `planar-execute` operates in a spawn-free sandbox that Planar enforces by construction:
-
-- **No SQLite handle.** The engine never opens a database; the workflow reaches Planar state exclusively by shelling allowlisted CLI verbs.
-- **No general exec.** `os.execute`, `io.popen`, `load`, `require`, and spawn-shaped host functions (`agent`, `exec`, `spawn`, `parallel`, etc.) are all nil or blocked. The only host reach is the D7 surface (`cli.planar`, `cli.planar_json`, `cli.planar_watch`, `cli.planar_watch_json`, `git.*`, `fs.*`, `flow.*`, `ctx.*`).
-- **Trace by convention.** Tracing (opening a run record via `planar run start`, emitting events, finishing the run) is the workflow's responsibility, not the engine's. The shipped workflows all open trace runs when a `plan_id` is available. Personal sandbox workflows should follow the same pattern for observability.
-- **Scope-checked by the CLI.** Every CLI verb the workflow shells goes through the normal scope resolver. A workflow that passes `--scope` to its inner CLI calls is explicit; one that relies on cwd-derived scope should document that assumption.
-
----
-
 ## Recipe 29 — Orient, diagnose, and choose work
 
 Use the skill's references instead of reconstructing state from unrelated
@@ -2913,33 +2715,7 @@ events and reports failed or deferred events with exact recovery commands.
 
 ---
 
-## Recipe 34 — Close a capacity-aware orchestration cycle
-
-### Contain a provider-capacity failure
-
-Start parallel work in an operator-confirmed bounded wave. If a lane reports a
-systemic category, classify the whole supplied wave without mutating it:
-
-```bash
-planar-execute run workflows/parallel-dispatch.lua \
-  --phase capacity_reconcile \
-  --args '{"plan_id":42,"lanes":[
-    {"task_id":101,"provider":"codex","outcome":"landed"},
-    {"task_id":102,"provider":"claude","outcome":"failed_clean","category":"usage_limit"},
-    {"task_id":103,"provider":"claude","outcome":"pending"}
-  ]}'
-```
-
-The result preserves landed and already-running lanes, opens a breaker only for
-the affected provider, and partitions the remainder into retryable,
-provider-blocked, abandoned, and unfinished sets. Run its `planar resume
-<task-id> --json` reads. For an abandoned lane, inspect
-`planar-watch claims --plan 42 --status all --json`, then preview
-`planar-agent reconcile --plan 42 --dry-run --json`. The workflow itself never
-spawns, aborts, reconciles, or resets the provider. Resume that provider only
-after an explicit dispatch decision with a newly confirmed maximum wave size.
-
-### Review recurring design hazards before ingestion
+## Recipe 34 — Review recurring design hazards before ingestion
 
 Dispatch `planar-spec-reviewer` for the plan and inspect all four hazard-lens rows:
 
@@ -2952,20 +2728,3 @@ Each row must be `finding`, `covered`, or `not applicable` with artifact
 evidence. Resolve applicable findings in the draft and rerun the read-only
 review before ingestion; make draft edits only as separately
 operator-approved changes.
-
-### Run a shipped deterministic workflow
-
-Use `planar-execute run <file> --phase <name> [--args <json>]`. The shipped
-workflows are source-controlled seams, not model-spawning harnesses:
-
-| Workflow | Shipped phases / purpose |
-|---|---|
-| `bench_run_ritual.lua` | `setup`, `measure` — clean-slate measurement ritual |
-| `example.lua` | `setup` — minimal host-surface example |
-| `finalize_closeout.lua` | `closeout` — evaluate and apply the non-force closeout gate |
-| `parallel-dispatch.lua` | lane/wave, fan-in, recovery, capacity, and teardown computation |
-
-Read each file's `@meta` block for its exact phase names and argument contract.
-The engine has no SQLite handle or model-spawn function; it reaches state only
-through its allowlisted host calls and hands control back for judgment or
-agent dispatch.

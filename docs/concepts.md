@@ -14,36 +14,6 @@ Three threads run through everything below:
 
 ---
 
-## Context plane
-
-The context plane is the durable working-memory layer that lets one workflow stage pass structured information to the next. It is distinct from the session timeline (`session_entries`) by deliberate design (decision 445): `session_entries` is a narrative record of what happened; `context_records` is working memory — typed, lifecycle-managed rows that the next stage reads and acts on. The two tables have different consumers, different lifecycles, and overloading the timeline with working-memory noise would force every downstream reader to filter it out forever.
-
-### Tables
-
-**`workflow_runs`** is the identity and audit record for one external workflow harness invocation. A row is opened by `planar-agent run start` before the Lua `run()` function is entered, and closed by `planar-agent run end` after it returns. The harness itself holds no DB handle (decision 444) — it shells those verbs exactly as it shells the coordination verbs (`pull`, `complete`, etc.). The row carries `plan_id`, `workflow_name`, a unique `run_identifier` (`run-<pid>-<nanos>`), `pid`, `repo_root`, and a `status` in `running | completed | failed | interrupted | abandoned`. Since migration 00039 `pid` is nullable: a pid-less run instead carries an `expires_at` lease deadline, extended by `planar-agent run heartbeat`. `abandoned` is written only by `planar-agent reconcile`, which pid-probes stalled pid-bound rows whose process is no longer alive and abandons a pid-less row once its lease has lapsed. Dry-run (`--dry-run`) creates no run row.
-
-**`context_records`** is run-scoped working memory. Every record is keyed `(run_id, stage, session_id, claim_id)` and carries a `kind` (`finding`, `risk`, `artifact`, `followup`, `summary`, `capsule`) plus a free-text `body`. The `status` column (`active | consumed | superseded`) is the lifecycle signal. A nullable `compiled_from` column on `capsule` records stores the integer ids of the raw records the capsule distilled — full provenance without deletion.
-
-### Accumulate → read → compose loop
-
-**Accumulate.** A worker writes records via `planar-agent context add --claim <token> --kind <kind> --body <text>`. The claim token is the only envelope the worker needs to thread (decision 447): `planar-agent` stamps `run_id`, `stage`, `session_id`, and `task_id` server-side from the claim row. The claim row gains nullable `run_id` and `stage` columns (migration 00023), populated at `pull`/`claim` time when the orchestrator passes `--run <id> --stage <name>` (decision 450). Interactive claims leave these null; the context verb is a no-op for claims without a run row.
-
-**Read.** A workflow script reads accumulated records from a prior stage via `ctx.context([stage])`. With no argument it returns all records for the current run; with a stage name it returns only that stage's records. The Lua return value is a 1-based sequence of tables, each carrying `id`, `run_id`, `stage`, `kind`, `body`, `status`, `compiled_from` (nil when absent), and `created_at`. Under the hood the external harness shells `planar-agent context list --run <run_db_id> [--stage <s>] --json` and maps the parsed JSON into the Lua table — no DB handle is opened.
-
-**Compose.** `ctx.brief({...})` assembles a methodology-compliant coder brief and automatically injects the current run's context records into the "Prior-stage context" section. Any `capsule`-kind record is promoted to a compiled-capsule sub-section; remaining records render as a `kind: body` bullet list. The caller supplies the `problem_statement`, `claim_token`, `gates`, and optional `spec_citations`/`locked_decisions`; the context injection is automatic when `active_run` is non-null.
-
-### Lifecycle: active → consumed | superseded, never deletion
-
-Raw records start life as `active`. Stage close marks them `consumed` (records incorporated into the capsule) or `superseded` (records overridden by a later record in the same stage) and writes one compiled `capsule` record whose `compiled_from` column points back to the raw record ids (decision 446). Raw records are retained permanently — the audit trail is preserved for the `planar-introspector` agent and journal-based resume. The three-value status is the machine-readable lifecycle signal; `compiled_from` is the provenance trace.
-
-### Observability
-
-`planar-watch run list [--plan <id>] [--status <s>]` lists runs. `planar-watch run show <id> [--json]` returns the full run row plus all `context_records`, grouped and ordered by stage then `created_at`. The JSON shape is `{run: RunRow, context_records: [...]}`.
-
-**SQLite tables:** `workflow_runs` (migration 00022; lease columns in 00039), `context_records` (migration 00022), `agent_work_claims.run_id/stage` (migration 00023). **Primary verbs:** `planar-agent run start/end/heartbeat`, `planar-agent context add/capsule/list/resolve`, `ctx.context([stage])`, `ctx.brief({...})` (host functions on the external workflow harness), `planar-watch run list/show`. **Decisions:** 444 (run row owned by `planar-agent`; harness is DB-handle-free), 445 (separate table — timeline vs working memory), 446 (lifecycle not deletion; capsule provenance), 447 (claim is the correlation key), 450 (claims carry run/stage).
-
----
-
 ## Scope
 
 Scope determines which entities are included in queries by default and where new entities are created when the target is unambiguous from the current working directory.
@@ -565,11 +535,9 @@ reviewer_disposition: <dispatched|skipped-by-profile|deferred|bypassed>
 cycle_scope: plan:N milestone:M | task:T...
 tasks: [<id>, <id>, ...]
 claim_tokens: [<token>, <token>, ...]
-model_tiers: {<task-id>: <tier>, ...}
-model_choice: {"<task-id>":{"tier":"<tier>","candidate":"<model-id>","work_type":"<work-type>"}, ...}
 ```
 
-Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"`. `model_tiers` records the confirmed tier assignment, and `model_choice` records the concrete routed candidate and work type used by `planar models evals`. No schema change; the sentinel-body convention is the contract.
+Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id> --grep "^dispatch_shape:"`. No schema change; the sentinel-body convention is the contract.
 
 **Pick-when summary:** when in doubt, pick `strict`. Move up the table (toward throughput) when you have high confidence in the gates and the spec, or when the diff cadence makes per-cycle reviewer dispatch wasteful. The orchestrator never picks a barrel mode silently — every shape change is an explicit operator choice at the gate.
 
@@ -588,12 +556,12 @@ An orchestration strategy is the operator-facing dispatch frame for a plan. It b
 | Strategy | One-line description |
 |----------|----------------------|
 | `classic` | Sequential cycles, reviewer per cycle. Default isolation is `pwd` on the current branch; `worktree` isolation is selectable when rollback or pwd hygiene matters. |
-| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; staged into dependency-respecting waves; one consolidated reviewer pass at fan-in. **Model-runnable** via the spawn-free `workflows/parallel-dispatch.lua` seam (plan 760), an optional deterministic helper — the model orchestrator, a host-native workflow, or a background agent may run this path (decision 1007). |
+| `parallel-fanout` | Fan out to N parallel coders on the parallel-eligible subset of the plan's open tasks; each in its own worktree off the shared epic branch; staged into dependency-respecting waves; one consolidated reviewer pass at fan-in. The model orchestrator, a host-native workflow, or a background agent may run this path (decision 1007). |
 | `isolated-sequential` | Descriptive alias for `classic` + `worktree` isolation: one cycle worktree per task, reviewer per cycle. |
 | `barrel-deferred` | Coder cycles run back-to-back; reviewer fires once at a milestone or plan boundary on the union diff. Supports both `pwd` and `worktree` isolation. |
 | `barrel-bypass` | No reviewer dispatch at all. Quality gates (`make fmt-check` + `make build` + `make test` twice + `make coverage` + `make cli-usage-check` + `make surface-lint` + remaining validators) are the entire signal. Supports both `pwd` and `worktree` isolation. |
 
-The model-driven `planar-orchestrator` agent runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. Worktree bookkeeping is driven via the spawn-free `workflows/parallel-dispatch.lua` seam: `cycle_plan` computes one sequential lane; `plan`/`waves` compute fan-out lanes. The seam only computes and hands back — it is an optional deterministic helper, not the only permitted path. The runner that acts on the hand-back, running the git worktree/branch/merge ops and spawning the coders, may be the model orchestrator, a host-native workflow, or a background agent (decision 1007, plan 1033). In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
+The model-driven `planar-orchestrator` agent runs the sequential strategies in either `pwd` or `worktree` isolation and runs `parallel-fanout` in worktrees. The runner that acts on the worktree bookkeeping, running the git worktree/branch/merge ops and spawning the coders, may be the model orchestrator, a host-native workflow, or a background agent (decision 1007, plan 1033). In-flight worktree execution is watched through the existing `planar-watch ps --plan <id>` surface (claims + each claim's `worktree_path`); there is no dedicated wave/barrier view (a recorded non-goal).
 
 ### Declaring what a task touches
 
@@ -660,13 +628,7 @@ provider until the operator explicitly resets dispatch and confirms a new
 maximum wave size. `tool_failure`, `validation`, and `unknown` remain
 non-systemic lane failures.
 
-`workflows/parallel-dispatch.lua --phase capacity_reconcile` computes this
-partition from supplied lane outcomes and returns `landed`, `running`,
-`unaffected`, `provider_blocked`, `retryable`, `abandoned`, and `unfinished`
-sets plus exact resume and recovery reads. It is not a daemon or provider API:
-the phase uses only `flow.*`, persists no breaker, performs no spawn, and never
-aborts or reconciles a claim. A dead lane remains an explicit operator recovery
-choice after claim inspection and a reconciliation dry-run.
+No Planar verb computes this partition: the orchestrator (or the operator) reads the lane outcomes and the claim state. A dead lane remains an explicit operator recovery choice after claim inspection and a reconciliation dry-run.
 
 ### Persistence
 
@@ -682,7 +644,7 @@ For the canonical axis table, named bundles, invalid-combination list, and recom
 
 A Planar worktree is a git working tree created for an isolated coder cycle. It is a real `git worktree add` checkout — Planar does not reinvent the git primitive, it just owns the path convention and the persistence of which claim owns which worktree.
 
-**Worktree lifecycle — creation, the epic/cycle branch model, fan-in merge, failed-lane retention, and full teardown on plan completion — is driven by the model orchestrator, a host-native workflow, or a background agent (decision 1007) for both sequential worktree isolation and `parallel-fanout`**. The deterministic wave/lane/merge/teardown computation lives in the spawn-free `workflows/parallel-dispatch.lua` seam, an optional deterministic helper: `cycle_plan` computes one sequential lane, and `plan`/`waves` compute fan-out lanes. Whichever of the three is driving still runs the git ops and spawns the coders itself. Parallel eligibility applies only to `parallel-fanout`; a single sequential worktree lane does not require `task_touches`.
+**Worktree lifecycle — creation, the epic/cycle branch model, fan-in merge, failed-lane retention, and full teardown on plan completion — is driven by the model orchestrator, a host-native workflow, or a background agent (decision 1007) for both sequential worktree isolation and `parallel-fanout`**. Whichever of the three is driving runs the git ops and spawns the coders itself. Parallel eligibility applies only to `parallel-fanout`; a single sequential worktree lane does not require `task_touches`.
 
 ### Topology — epic + child, main checkout stays on master
 
@@ -712,7 +674,7 @@ The standalone-entity alternative remains available — the forward-compat `vali
 | Strategy | Worktree? |
 |----------|-----------|
 | `classic` | Operator choice: `pwd` by default, or one cycle worktree per task. |
-| `parallel-fanout` | Yes — N cycle worktrees per wave off the persistent epic worktree, dispatched concurrently. *(model-runnable via `workflows/parallel-dispatch.lua`, plan 760)* |
+| `parallel-fanout` | Yes — N cycle worktrees per wave off the persistent epic worktree, dispatched concurrently. |
 | `isolated-sequential` | Yes — alias for `classic` + `worktree`. |
 | `barrel-deferred` | Operator choice: `pwd` by default, or sequential cycle worktrees with reviewer at boundary. |
 | `barrel-bypass` | Operator choice: `pwd` by default, or sequential cycle worktrees with gates-only review. |
@@ -978,24 +940,9 @@ Planar's template plane is the **external-system propagation** templates: JSON d
 <!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ reader path this removed section never used, for history -->
 > **Removed (2026-08-07).** An earlier revision of this section described a second, unrelated templates layer: per-entity-kind Markdown files under `templates/entity/` that seeded new entities created through the editor-first `add` verbs, with a `{{.Title}}` placeholder language and an install-time validator. **That layer never existed in this binary.** The files and this documentation both arrived in the Go→Zig bootstrap (`bfa3abc`); the reader was never ported, and `src/cmd/planar/editflow.zig` has never contained the word "template". `templates/entity/` has been deleted rather than left installed and inert. See planar task 5918.
 
-## Model routing
+## Model configuration keys
 
-Which model an agent role spawns is **config-driven and unified** (plan 540, extended plan 899). The Planar config (`~/.planar/config.toml`, embedded defaults in `src/engine/config/defaults.toml`) carries:
-
-- `[models.<vendor>]` — per-vendor **tier maps**: the canonical `small` / `medium` / `large` tiers → a **scalar-or-list** candidate value (e.g. `[models.claude] medium = "claude-sonnet-5-5"`). A scalar is one candidate; an ordered list (`large = ["gpt-5.6-sol", "gpt-5.5"]`) names several — `list[0]` is always the **tier default**, the model any caller gets when it resolves a bare `(vendor, tier)`/`(vendor, role)` pair with no work type in hand. Every existing scalar config resolves unchanged.
-- `[routing.<vendor>.<tier>]` — a **work-type → candidate** map (plan 899 D4/D9/D10/D11): each key is one of `schema | engine | architectural | cli | feature | mechanical` and its value is a candidate **model id string** naming one member of that tier's candidate list (never a list index — index values silently re-route when the list is reordered). Ships as an embedded default (only `mechanical` is routed by default, to the tier default) and is fully operator-overridable. `planar config validate` rejects a routing entry naming a model id absent from the matching tier's candidate list.
-- `[roles]` — **role → tier** (e.g. `coder = "medium"`, `reviewer = "large"` — the "sonnet coder, opus reviewer" default).
-- `[role_vendors]` — optional **role → vendor** override; unset roles use `[defaults].vendor`.
-
-A single **shared resolver** (`src/engine/config/effective.cppm` plus `src/engine/models/`) composes these into a concrete `(vendor, model)`. The tier-only path (`resolveTier`, `resolveRole`, `resolveRoleAuto`) is unchanged and always returns the tier default (`list[0]`). A parallel `resolve(role, work_type)` entry point (`resolveTierWorkType` / `resolveRoleWorkType` / `resolveRoleAutoWorkType`) additionally consults the routing map: a hit returns the named candidate, a miss (or a stale routing target absent from the candidate list) falls back to the tier default. Every consumer resolves through one of these — there are no parallel per-tool model tables:
-
-- **`planar models`** — `resolve --role <role> [--task <id>|--plan <id>]` (the tier a role gets from its packet, or the static fallback with its reason), `registry list|add|update|remove|bind|unbind|observe|eligibility|verify-identity|export` (the opaque candidate registry), `experiments` and `outcomes` (routing evidence), and `evals` (below). The plan-540 discovery family — `list`, `routing`, `candidates`, `refresh`, `apply` — was removed with the curated catalog; `planar config show --effective` is where the resolved `models.*` / `routing.*` / `roles.*` keys are inspected.
-- **The Tier Table** (hand-maintained in `agents/models.md`; Planar does not generate it) — the agent files carry no `model:` field; the tier resolves at dispatch through `planar models resolve --role <role>`, and per-task routing is runtime-only.
-- **External workflow harnesses** — shell `planar models resolve --role <role> --json` per role (no engine handle), falling back to compiled defaults when `planar` is unreachable.
-- **Orchestrator dispatch (Phase 3)** — the dispatch preview's routed-model column classifies each task's work type and calls `resolve(role, work_type)` to show the routed candidate alongside the tier column; the operator may override either before confirming. The confirmed `{tier, candidate, work_type}` triple persists per task in the dispatch session entry's `model_choice` map (a convention extension, no schema change — see `agents/planar-orchestrator.md` dispatch step 8a and the planar skill's `spec-pipeline.md` reference).
-- **`planar models evals`** — read-only routing evaluation. With `--vendor` and the cohort flags it ranks candidates in one exact cohort by the 95% Wilson lower bound over declared-experiment evidence; without them it falls back to the legacy scorecard mined from dispatch notes (`dispatch_shape:` / `model_choice:`), terminal claim status, and test-coder action outcomes. Quality-gate pass/fail is not persisted today, so the legacy path reports that signal as unsourced rather than guessing. It writes nothing; applying a recommendation is a separate operator-gated edit to `agents/models.md`.
-
-Planar does not discover or validate provider model lists: candidate ids are opaque strings recorded as agents report them, and spawn verification belongs to the host adapter. See `docs/cli-reference.md` § Domain `config` (Model routing) and § Domain `models`, and the planar skill's discovery rule (`planar models --help`).
+Planar starts no model and resolves no model. `~/.planar/config.toml` can carry `[models.<vendor>]` tier maps, `[routing.<vendor>.<tier>]` work-type maps, `[roles]` role-to-tier entries and `[role_vendors]` role-to-vendor entries, and `planar config show --effective` lists the keys it finds with their provenance. Nothing in Planar reads a model id from them to run an agent. Candidate ids are opaque strings, and which model answers a request is the host's decision.
 
 ## Color output
 
@@ -1261,31 +1208,27 @@ The remaining sections describe Planar's executables and supporting components: 
 
 ## Binaries
 
-Planar ships as five executables. Four are **planning-state executables**, each with a disjoint capability boundary over the shared SQLite DB enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
-
-The fifth, `planar-execute`, is **not** a planning-state executable: it is the deterministic, spawn-free Lua workflow engine (plan 633) and holds no DB handle at all. A caller invokes `planar-execute run <wf.lua> --phase <name>` to run a deterministic workflow over an allowlisted host surface (`cli`/`git`/`fs`/`flow`/`ctx`) and collect its JSON result; it reaches Planar state only by shelling the planning-state binaries. It exposes no model-spawning host function, so it is a workflow *runner*, not a harness. See [the workflow-engine section](#deterministic-workflow-engine) below; do not conflate it with an external full-harness project described under [External workflow harness control plane](#external-workflow-harness-control-plane).
+Planar ships as four executables, each with a disjoint capability boundary over the shared SQLite DB enforced **by the verb set the binary registers** (not by runtime ACLs). The boundary is a compile-time and install-time property: the binary on PATH literally has no verb for the work it is not allowed to do. This makes vendor-hook blast radius bounded — a hook configured with only `planar-agent` on its PATH cannot mutate planning state regardless of how it is invoked.
 
 | Binary | Audience | Writes to |
 |---|---|---|
 | `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. Also registers the `explore` leaf, which is reserved for launching Planar Explorer and currently prints its help and exits 0 (see [`planar explore`](cli-reference.md#domain-explore)). |
-| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`), `workflow_runs` (via `run start`/`end`/`heartbeat`), `context_records` (via `context add`/`capsule`/`resolve`), and the `routing_dispatch_previews` / `routing_dispatch_snapshots` authorization tables (via `dispatch preview`/`confirm`). It also writes `queue_entries` and `queue_history` in `planar.db`, the host-wide build and test queue (via `queue run` and `queue cancel`). **Never** to plan / decision / question / scenario / artifact / annotation. |
+| `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`). It also writes `queue_entries` and `queue_history` in `planar.db`, the host-wide build and test queue (via `queue run` and `queue cancel`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
 | `planar-ext` | Operator + ext-sync agent (operational plane) | Exactly `external_links`, `external_systems`, `sync_events`. Planning tables (`plans`, `tasks`, `questions`, `artifacts`, …) are opened read-only, and the allowlist is enforced at the SQLite layer by a `sqlite3_set_authorizer` callback that fires on the parsed table name, not by convention (decisions 995–1001). Owns both operational adapters, Jira and GitHub Issues. |
 
-The capability boundary is each binary's verb set, not a runtime ACL, and three of the five — `planar-agent`, `planar-watch` and `planar-ext` — have capability-boundary tests (`src/cmd/<binary>/capability.t.cpp`) that pin it. `planar` is the only supported access layer for workflows: skills and agents compose its verbs rather than writing to the database directly. `planar-watch` is where agent observability lives: action topology, live claims and feeds.
+The capability boundary is each binary's verb set, not a runtime ACL, and three of the four — `planar-agent`, `planar-watch` and `planar-ext` — have capability-boundary tests (`src/cmd/<binary>/capability.t.cpp`) that pin it. `planar` is the only supported access layer for workflows: skills and agents compose its verbs rather than writing to the database directly. `planar-watch` is where agent observability lives: action topology, live claims and feeds.
 
-**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `claim-associate`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `run start`/`end`/`heartbeat`, `context add`/`capsule`/`list`/`resolve`, `dispatch preview`/`confirm`, `ingest`, `reconcile`, `abort`, `queue run`, `queue cancel`, `queue status`, `queue rule`, `version`, `schema`.
+**Capability invariant — `planar-agent`:** a process invoked as `planar-agent` has no verbs that mutate any planning entity. The verb set is exactly `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`action end`, `ingest`, `reconcile`, `abort`, `queue run`, `queue cancel`, `queue status`, `queue rule`, `version`, `schema`.
 
 **Two capabilities `planar-agent` gained with the queue (plan 1080).** `planar-agent queue run` with a command after the argument terminator *executes a command its caller names*: it waits in the host-wide queue for its turn, runs the command in the caller's working directory with the caller's environment, and exits with the command's own status (so a build or test started by one agent does not run on top of another's). And `planar-agent` *owns the queue's tables*: `queue_entries`, `queue_history` and the `queue_schema` compatibility marker, all in `planar.db`. The queue verbs open `planar.db` themselves and never create or migrate it. They refuse a `planar.db` that is behind their binary, but keep working against one that is ahead while the marker admits them, so agents keep queueing builds while a newer build migrates the file. Nothing in the queue writes a planning entity or an existing agent table, and no transaction spans a queue table and a planning table. The queue is not a security boundary: it is a coordination convenience, and the verb set stays the capability boundary.
 
-**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run`, `sync-events`, `queue`, `queue history`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle. It also links the host queue engine but sends no signal to any process: a source scan and a link-level check of the built binary fail if a handler reaches the queue's process-group signaller (its liveness check is a signal-0 existence probe). `planar-watch` is the scriptable, read-only NDJSON streaming viewer; it is not, and was never, the cockpit.
+**Capability invariant — `planar-watch`:** the binary's verb set contains zero write verbs (`feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `sync-events`, `diagnose`, `queue`, `queue history`, `version`, `completion`, `schema` only). Enforced two ways: (1) the verb set; (2) the read-only DB handle. It also links the host queue engine but sends no signal to any process: a source scan and a link-level check of the built binary fail if a handler reaches the queue's process-group signaller (its liveness check is a signal-0 existence probe). `planar-watch` is the scriptable, read-only NDJSON streaming viewer; it is not, and was never, the cockpit.
 
 **Capability invariant — `planar-ext`:** the verb set is `ext register jira|github`, `ext list`, `ext test`, `ext create`, `ext propagate`, `ext propagate-one`, `sync pull`, `sync push`, `sync status`, `sync resolve`, `version`, `schema`. A write to any table outside the three-table allowlist is refused by the authorizer before it executes; `sync pull` emits `remote_title`/`remote_status` proposals rather than writing planning entities (decision 996).
 
 
 The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). The terminal verbs (`complete` / `fail` / `release` / `block`) flip the claim and the task status in a single transaction, which is why the claim ritual must not be split across two commands. See `agents/methodology.md` § Coordination claims and the tech spec § "Agent methodology contract" for the full sequence.
-
-`planar-execute` is deliberately **outside** this ritual: it is a workflow engine the caller invokes, not an agent-table writer, and holds no DB handle. When a workflow needs to participate in a claim, it does so by shelling `planar-agent` verbs through the `cli` host function — exactly as any other caller would — never by holding a claim itself.
 
 **Ordering contract — `planar-ext` does not migrate the database; `planar` must run first.** `planar-ext` (decisions 995–1001) is read-only on planning tables and read-write on exactly `external_links`/`external_systems`/`sync_events`, enforced by a `sqlite3_set_authorizer` allowlist — it is deliberately not the migration owner, so — like `planar-agent` and `planar-watch`, and unlike `planar` — it does **not** auto-apply pending migrations on open. Pointed at a database with no `schema_migrations` table (or one behind the binary's minimum schema version), it refuses with `SchemaVersionBehind` rather than migrating. A database the process cannot open or read, such as one a sandbox blocks, is reported as `DatabaseUnreadable` instead, never as behind. Any operator or agent workflow that talks to `planar-ext` — including test harnesses that allocate a fresh scratch DB per run — must invoke `planar` (any verb; `plan list` and `init` both trigger the auto-migration) against that same `PLANAR_DB` at least once before the first `planar-ext` call.
 
@@ -1296,62 +1239,11 @@ The ritual every code-writing agent dispatch follows is `planar-agent pull → h
 Several agents on one machine, often in different projects, each start builds and test suites. Run side by side they slow each other down and fail in ways that look like real defects. The **host queue** serializes them: one queue per user per host, shared by every project, in which a command waits for its turn and then runs. `planar-agent queue run -- <command>` submits it.
 
 - **No daemon, no lock.** The process that submits a command is the process that runs it, in the caller's directory with the caller's environment, and it exits with the command's own status. The queue is ordered by arrival and holds no lock a dead process could leave behind: an entry is live while its submitter's process exists and keeps refreshing it, and any submitter's poll reaps an entry that is not live. `[queue] slots` (default 1) sets how many commands run at once.
-- **Entries and outcomes.** An entry is `waiting`, `running`, or `running` and being stopped; when it ends it is replaced by one history row whose outcome is `exited`, `signaled`, `timeout`, `cancelled`, `wait_timeout`, `not_started` or `abandoned`. [`lifecycles.md` §3.6](lifecycles.md#36-host-queue-entry) draws the transitions. The exit code of `queue run` is ambiguous by design; `queue status <seq>` is the record.
+- **Entries and outcomes.** An entry is `waiting`, `running`, or `running` and being stopped; when it ends it is replaced by one history row whose outcome is `exited`, `signaled`, `timeout`, `cancelled`, `wait_timeout`, `not_started` or `abandoned`. [`lifecycles.md` §3.4](lifecycles.md#34-host-queue-entry) draws the transitions. The exit code of `queue run` is ambiguous by design; `queue status <seq>` is the record.
 - **Time is bounded.** A command has a run limit (default 30 minutes, `--timeout`) and may be given a wait limit (`--wait-timeout`). A command past its limit gets SIGTERM, then SIGKILL after `[queue] grace`, and keeps its slot until its process group is empty.
 - **Detached runs.** `queue run --detach` returns a sequence number and an output-file path at once, so a harness that stops long foreground commands can submit a build and observe the saved ticket with finite `queue wait` slices. A later observation uses the same sequence number.
 - **A coordination aid, not a security boundary.** Any caller that can open the store may cancel any entry, and the canceller is recorded. The queue refuses a command that would start a model (`claude`, `codex` and similar), because that would hold a slot for a whole conversation. It does not sandbox the command.
 - **Agents are told to use it.** The rule (`planar-agent queue rule` prints it, for pasting into a project's own agent guide) says builds and tests are queued host-wide and never run directly, and that a queue refusal (exit 125) is reported, not bypassed. It reaches agents through the role files, the skills and the generated workspace guides, and [`agents/doctrine.md`](../agents/doctrine.md) states its principle.
 - **Where it sits in the binary boundary.** The queue is a `planar-agent` domain and never `planar`'s. It writes tables that no planning entity and no existing agent table shares, and it is outside the claim ritual: the only touch is `queue run --claim <token>`, which renews a claim the way `planar-agent heartbeat` does. `planar-watch queue` and `queue history` read it.
 
-Operating the queue (watching, cancelling, settings, file modes) is in [`operations.md` §5](operations.md#5-the-host-build-and-test-queue); the schema contract for read-side tools is in [`architecture.md`](architecture.md#reading-the-queue-tables-from-another-tool).
-
----
-
-## Deterministic workflow engine
-
-`planar-execute` (revived in plan 633) is a deterministic, spawn-free Lua workflow engine — the fourth binary. An LLM caller (or any script) invokes `planar-execute run <wf.lua> --phase <name> [--args <json>]`; the engine loads the workflow in a Lua sandbox, registers an allowlisted, deterministic host surface, runs the named phase, and prints the workflow's `flow.result(table)` payload as JSON on stdout. It is the deterministic, spawn-free complement to a full external workflow harness: `planar-execute` runs only deterministic work and hands control back to its caller for any model step.
-
-> **Centurion engine verbs are not part of this build.** In this tree `planar-execute` is the deterministic Lua workflow engine described in this section; its `run` path (and `profile show`) is the shipped surface. The Centurion client verbs (`submit`, `status`, `cancel`, `follow`, `host status|drain|stop`) require a Centurion-enabled build, available on the `dev/centurion-integration` branch. This build refuses them with `planar-execute was built without the Centurion engine` and exit `1`. See [INSTALL.md](../INSTALL.md) and the [CLI reference](cli-reference.md).
-
-### No DB handle, no model spawn
-
-`planar-execute` holds **no SQLite handle**. It reaches Planar state only by shelling the planning-state binaries via the `cli` host function (`cli.planar` / `cli.planar_json` — binary hardcoded to `planar`/`planar-agent`/`planar-watch`, the script supplies only args). It exposes **no** model-spawning primitive — no `agent`, `parallel`, `pipeline`, `dispatch`, `exec`, or any process-spawn function. This is the load-bearing invariant: an earlier `planar-execute` grew re-entrant headless LLM spawning and became a harness in its own right, which is why it was extracted to a separate external project; the revival reigns that scope back in by construction. A unit test asserts the registered host-fn set equals a frozen allowlist and contains none of the denied spawn-surface names.
-
-### Confined host surface
-
-The host functions are grouped: `cli.*` (allowlisted shell of the planar binaries), `git.*` (a `-C <worktree>`-confined group — the host injects the worktree dir, the script cannot name it), `fs.*` (read/write/exists/mkdir, path-confined to the sandbox root — `..` and absolute paths rejected), `flow.*` (pure: `log`, `phase`, `fail`, `result`), and `ctx.*` (deterministic planner reads — `plan_show`, `task_show`, `recommend_strategy`, `brief`, etc.). The Lua sandbox additionally nils `os`, `io`, `load`, `loadfile`, `loadstring`, `require`, `dofile`, and `math.random` so a workflow script cannot perform I/O or nondeterministic work from Lua itself.
-
-### Hand-back model
-
-Phases are discrete entrypoints — one clean process per deterministic segment. A setup phase runs, the engine exits, the caller does the LLM coder/reviewer step, then a measure phase runs in a fresh process. No coroutine parks awaiting a worker (that resume point is exactly where re-entrant spawning regrew); arm/repetition sequencing lives in the caller's loop, not in the engine.
-
----
-
-## External workflow harness control plane
-
-This section describes a separate external project that is neither part of this repository nor part of this build; it is documented here only to contrast it with `planar-execute`. An external Lua-based workflow harness drives agent workers through a host-function surface. It is a **separate external project**, not part of the Planar binary set, and must not be confused with the in-repo deterministic `planar-execute` engine described above: an external harness orchestrates LLM calls (it *is* a harness, with spawn surfaces), whereas `planar-execute` runs only deterministic work and exposes no model-spawn function. An external harness is architecturally distinct from the four planning-state binaries: it holds **no DB handle** and never opens SQLite. All state reads go through `planar` / `planar-agent` subprocesses; the workflow script cannot write directly to any database or planning entity.
-
-### No-DB-handle stance
-
-An external harness is a **pure CLI driver**. Every read operation shells `planar` or `planar-agent`, parses their JSON stdout, and returns the result to the Lua layer. Every write operation is similarly mediated: the workflow script calls a spawn primitive, which shells `claude -p` inside a constrained environment; the worker calls `planar-agent` verbs (claim, heartbeat, complete/fail/release/block) — never `planar` directly.
-
-This makes the capability boundary physical, not just policy: the harness process cannot edit files, write DB rows, or call planning-entity mutations. Only the binaries it shells can, and only along the verbs those binaries expose. The Lua sandbox additionally strips `os`, `io`, and dangerous `math` functions so that workflow scripts cannot perform filesystem or network I/O from Lua itself.
-
-### Constrained worker PATH
-
-Agent workers run with a PATH restricted to:
-
-- `planar-agent` — agent-table writes and coordination.
-- `git` — source-tree reads and commits.
-- System bin directories (for standard POSIX tools).
-
-`planar` (the operator binary) is intentionally absent from the worker PATH. This preserves the no-bare-operator-binary invariant: a worker cannot call planning-entity mutations, trigger scope resolution, or open the DB read-write. The worker's only write surface is `planar-agent`'s bounded verb set.
-
-### Lua control-plane internals
-
-Inside the harness:
-
-- A single `lua_State` is created per invocation and reused for the workflow's lifetime.
-- A cooperative scheduler drives `ctx.parallel` (N-way barrier) and `ctx.pipeline` (per-item stage chains).
-- A preemptive heartbeat thread fires at TTL/2 cadence independently of the Lua scheduler to keep active claims alive during long-running workflows.
-- The journal (`ctx.phase`, `ctx.log`) records the execution arc as a sequence of timestamped entries; the journal is printed to stdout as the workflow progresses.
+Operating the queue (watching, cancelling, settings, file modes) is in [`operations.md` §4](operations.md#4-the-host-build-and-test-queue); the schema contract for read-side tools is in [`architecture.md`](architecture.md#reading-the-queue-tables-from-another-tool).

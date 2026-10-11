@@ -16,7 +16,7 @@ triage metadata, and verify the post-state. It never reports externally.
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `agents/models.md`.
+`large`.
 Triage requires sustained judgment across evidence, reproducibility, impact,
 duplicates, and the boundary between actionable defects and retained product
 questions.

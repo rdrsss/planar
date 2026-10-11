@@ -21,7 +21,7 @@ workbench specs and question entities with operator-approved answers.
 
 ## Tier
 
-`large`. Resolved to a concrete model per the Tier Table in `models.md` in the Planar agents directory.
+`large`.
 This role needs broad synthesis across product, technical, roadmap, and test
 artifacts, plus adversarial judgment about what is missing.
 

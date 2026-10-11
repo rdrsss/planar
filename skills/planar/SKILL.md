@@ -3,7 +3,7 @@ name: planar
 description: >-
   Planar is local agent-operations infrastructure: plans, tasks, work claims, decisions,
   specs, handoffs and Jira or GitHub Issues sync, kept in one SQLite database behind the
-  planar, planar-agent, planar-watch, planar-ext and planar-execute CLIs. Use this skill
+  planar, planar-agent, planar-watch and planar-ext CLIs. Use this skill
   whenever a session plans, claims, implements, reviews, hands off or syncs work through
   those CLIs.
 license: MIT
@@ -17,16 +17,15 @@ metadata:
 ## What Planar is and who writes what
 
 Planar keeps planning and agent-coordination state in one SQLite database and exposes it
-through five binaries. Each binary has a disjoint write surface. The boundary is each
+through four binaries. Each binary has a disjoint write surface. The boundary is each
 binary's verb set, not a runtime ACL, so choosing the right binary is the agent's job.
 
 | Binary | Role | Writes |
 |--------|------|--------|
 | `planar` | Operator surface | Planning entities, and manual `tasks.status` transitions. |
-| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, `routing_dispatch_*`, `queue_*`, and `tasks.status` inside a coordinated operation. |
+| `planar-agent` | Agent-callable | `agent_actions`, `agent_work_claims`, `queue_*`, and `tasks.status` inside a coordinated operation. |
 | `planar-watch` | Read-only viewer | Nothing. Opens the database read-only. |
 | `planar-ext` | Jira and GitHub Issues | `external_links`, `external_systems`, `sync_events`. |
-| `planar-execute` | Workflow entry point | Nothing. No database handle; shells the other CLIs. |
 
 This skill teaches only the rules that cross verbs. Everything verb-shaped (flags,
 arguments, output fields, exit codes) comes from the binaries; see the discovery rule.
@@ -43,7 +42,7 @@ arguments, output fields, exit codes) comes from the binaries; see the discovery
    it; a dispatched coder heartbeats and returns.
 3. **Write through the owning binary.** Planning entities go through `planar`, claims and
    agent actions through `planar-agent`, external links through `planar-ext`; `planar-watch`
-   and `planar-execute` never write. The table above is the boundary; it is enforced by
+   never writes. The table above is the boundary; it is enforced by
    each binary's verb set, not by a runtime ACL, so nothing stops a wrong-binary write.
 4. **Cross-scope guard: ten verbs.** Only ten verbs compare scopes (among them
    `spec ingest --apply`, `task update`, `decision accept` and `planar-ext sync push`).
@@ -94,7 +93,7 @@ planar schema --command "task update"
 planar schema --compact
 ```
 
-The same works on `planar-agent`, `planar-watch`, `planar-ext` and `planar-execute`.
+The same works on `planar-agent`, `planar-watch` and `planar-ext`.
 Never load the full `schema` catalog; for `planar` it is about 338 KB.
 
 ## Routing
