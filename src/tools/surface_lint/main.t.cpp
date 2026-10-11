@@ -15,7 +15,7 @@
 // `surface_lint`'s entire correctness argument to date is the differential
 // against the zig original: task 6402 ran both over the same repo and got
 // byte-identical results on clean-repo, seeded-violation, and a
-// token-for-token diff of the 252-entry `command_classes` table. That
+// token-for-token diff of the 232-entry `command_classes` table. That
 // argument DIES at M10 when `zig/` is deleted — after that there is no
 // reference implementation and no standing gate of surface_lint's own. A
 // regression here would be silent, in the one tool whose whole job is
@@ -561,15 +561,15 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 4 finding(s) across 2 files\n");
   }
 
-  SECTION("--command-inventory-json: the pinned 252-entry command_classes table") {
+  SECTION("--command-inventory-json: the pinned 232-entry command_classes table") {
     auto const [out, status] = capture(bin.string(), {"--command-inventory-json"});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);
     CHECK(out.starts_with(R"({"version":1,"commands":[)"));
-    CHECK(count_occurrences(out, "\"command\":") == 252);
+    CHECK(count_occurrences(out, "\"command\":") == 232);
     CHECK(out.contains(R"({"command":"planar init","access":"mutate"})"));
-    CHECK(count_occurrences(out, "\"access\":\"read\"") + count_occurrences(out, "\"access\":\"mutate\"") == 252);
+    CHECK(count_occurrences(out, "\"access\":\"read\"") + count_occurrences(out, "\"access\":\"mutate\"") == 232);
   }
 
   SECTION("usage error: no repo-root argument is a usage error, not a crash") {

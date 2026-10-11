@@ -60,22 +60,6 @@ export auto add_ttl(CLI::App& app, std::string desc) -> void {
   app.add_option("--ttl")->description(std::move(desc))->default_str("600");
 }
 
-/// @brief The engine-supervision flags `heartbeat` alone carries (plan 1033
-/// D3/D4, task 6488).
-///
-/// `--as engine --attempt <id>` names the engine supervisor and the Centurion
-/// attempt it acts for. Absent, the verb acts as the caller. No verb hands a
-/// claim to the engine any more, so these flags only ever meet a claim with a
-/// legacy supervisor value.
-/// @param app The verb.
-export auto add_supervision(CLI::App& app) -> void {
-  app.add_option("--as")
-      ->description("Who is acting: caller (default) or engine (the supervisor of an engine-associated claim; needs --attempt)")
-      ->check(CLI::IsMember{std::vector<std::string>{"caller", "engine"}});
-  app.add_option("--attempt")
-      ->description("The Centurion attempt the engine acts for; must match the claim's associated attempt");
-}
-
 /// @brief The `heartbeat` verb's `--ttl`, declared WITHOUT a default.
 ///
 /// Deliberately not `add_ttl`. That helper's `default_str("600")` is

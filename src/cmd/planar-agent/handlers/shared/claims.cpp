@@ -304,10 +304,6 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     ttl = *parsed;
   }
   auto const token = cliapp::flag_string(args, "--claim").value_or(std::string{});
-  auto const flags = parse_gate_flags(args);
-  if (!flags) {
-    return std::unexpected(flags.error());
-  }
 
   // `--status` present-and-empty is NOT the same as absent: an omitted
   // flag writes no action row at all, while `--status ""` writes one with
@@ -324,8 +320,10 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
 
   // One immediate transaction in the engine: the supervisor check, the
   // lease (untouched for a caller status report on an engine claim, plan
-  // 1033 D3), and the status action land together or not at all.
-  auto const refreshed = atomic::supervised_heartbeat(**conn, token, ttl, view(status), flags->gate());
+  // 1033 D3), and the status action land together or not at all. The
+  // heartbeat acts only as the caller; the engine actor is no longer
+  // reachable from this binary (task 7458).
+  auto const refreshed = atomic::supervised_heartbeat(**conn, token, ttl, view(status), atomic::supervisor_gate{});
   if (!refreshed) {
     return std::unexpected(verb_error("heartbeat", refreshed.error()));
   }

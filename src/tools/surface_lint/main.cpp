@@ -772,7 +772,7 @@ constexpr command_class_t m_(std::string_view s) {
   return {s, access_t::mutate};
 }
 
-constexpr std::array<command_class_t, 252> k_command_classes{
+constexpr std::array<command_class_t, 232> k_command_classes{
     m_("planar init"),
     r_("planar scope show"),
     r_("planar scope suggest"),
@@ -934,17 +934,6 @@ constexpr std::array<command_class_t, 252> k_command_classes{
     m_("planar audit publish-decision"),
     r_("planar audit handoff-readiness"),
     r_("planar health hygiene"),
-    r_("planar models evals"),
-    r_("planar models registry list"),
-    m_("planar models registry add"),
-    m_("planar models registry update"),
-    m_("planar models registry remove"),
-    m_("planar models registry bind"),
-    m_("planar models registry unbind"),
-    m_("planar models registry observe"),
-    r_("planar models registry eligibility"),
-    r_("planar models registry export"),
-    r_("planar models registry verify-identity"),
     r_("planar dashboard"),
     m_("planar spec ingest"),
     r_("planar test-spec status"),
@@ -1005,11 +994,6 @@ constexpr std::array<command_class_t, 252> k_command_classes{
     m_("planar-agent reconcile"),
     m_("planar-agent abort"),
     r_("planar-agent schema"),
-    r_("planar models experiments"),
-    r_("planar models outcomes"),
-    r_("planar models resolve"),
-    m_("planar-agent dispatch preview"),
-    m_("planar-agent dispatch confirm"),
     r_("planar-watch feed"),
     r_("planar-watch ps"),
     r_("planar-watch claims"),

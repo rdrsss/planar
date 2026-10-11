@@ -189,6 +189,16 @@ TEST_CASE("an unknown subcommand writes stderr ONLY and exits 2", "[cmd][dispatc
   CHECK(got.err == "error: planar: The following argument was not expected: nosuchverb\n");
 }
 
+TEST_CASE("planar models resolve is an unknown subcommand, not a live verb", "[cmd][dispatch][parity][routing]") {
+  // The `models` family left the binary with the routing dispatch removal
+  // (plan 1142, task 7455): its root is gone from the tree, so argv is
+  // refused at the root with exit 2 and stderr ONLY, as for any unknown verb.
+  auto const got = dispatch({"models", "resolve", "--role", "coder", "--task", "1"});
+  CHECK(got.code == 2);
+  CHECK(got.out.empty());
+  CHECK(got.err == "error: planar: The following arguments were not expected: models resolve --role coder --task 1\n");
+}
+
 TEST_CASE("an unknown subcommand under a group names the group", "[cmd][dispatch][parity]") {
   auto const got = dispatch({"annotate", "nosuchsub"});
   CHECK(got.code == 2);
@@ -1182,8 +1192,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("dashboard"));
   INFO("moved by task 6329: audit handoff-readiness");
   CHECK_FALSE(unported.contains("audit handoff-readiness"));
-  INFO("moved by task 6343: models resolve");
-  CHECK_FALSE(unported.contains("models resolve"));
   INFO("moved by task 6352: report");
   CHECK_FALSE(unported.contains("report"));
   INFO("moved by task 6357: health");
@@ -1395,8 +1403,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // as "773 lines of git-diff and language-aware path inference" — a
   // description running the oracle showed to be wrong on both counts. It is
   // asserted ABSENT at the top of this test alongside the count.
-  INFO("moved by task 6343: models resolve");
-  CHECK_FALSE(unported.contains("models resolve"));
   // 92 before task 6205 ported SIXTEEN out of it in one change -- the
   // drafting quartet on all four link-anchored planning families, wired
   // together with the `editflow` port that four consecutive cycles had
@@ -1537,8 +1543,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   auto const leaves = planar::cliapp::leaf_keys(*tree);
   // Task 7205 adds the `help` leaf (218 -> 219).
   // Task 7319 adds the `update` leaf (219 -> 220).
-  // Task 7453 removes the three `workflow` leaves (220 -> 217).
-  CHECK(leaves.size() == 217);
+  // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
+  CHECK(leaves.size() == 203);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

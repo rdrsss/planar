@@ -401,9 +401,9 @@ auto append_evidence_field(std::string& out, std::string_view name, const std::v
 }
 
 /// @brief The canonical body.
-/// @param include_display_labels True for the `canonical` field, false for the
-/// bytes the digest is taken over. The two forms differ by exactly the
-/// `display_label` key, which is what makes the digest ignore cosmetic edits.
+/// @param include_display_labels True for the `canonical` field, which is the
+/// display form. The false form (no `display_label` keys) is what the planning
+/// packet's digest is taken over.
 [[nodiscard]] auto canonical_task(const task_input& input, bool include_display_labels) -> std::string {
   std::string out;
   out.append("{\"policy\":");
@@ -1505,10 +1505,7 @@ auto compile_task(const task_input& input) -> task_packet {
   }
   validate_evidence_classes(reasons, input);
 
-  return {.input     = input,
-          .canonical = canonical_task(input, true),
-          .digest    = digest(canonical_task(input, false)),
-          .reasons   = std::move(reasons)};
+  return {.input = input, .canonical = canonical_task(input, true), .reasons = std::move(reasons)};
 }
 
 auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<task_packet, packet_error> {
@@ -1855,7 +1852,6 @@ auto assemble_planning(db::connection& conn, planning_role role, std::int64_t an
 
 auto render_text(const task_packet& packet) -> std::string {
   std::string out = std::format("task packet {}: {}\n", packet.input.task_id, packet.ready() ? "ready" : "not_ready");
-  out.append(std::format("digest: {}\n", packet.digest));
   if (!packet.reasons.empty()) {
     out.append("reasons:\n");
     for (const auto reason : packet.reasons) {
@@ -1937,8 +1933,6 @@ auto render_json(const task_packet& packet) -> std::string {
   emit("facts", in.facts);
   out.append("},\"canonical\":");
   append_json_string(out, packet.canonical);
-  out.append(",\"digest\":");
-  append_json_string(out, packet.digest);
   out.append(",\"reasons\":[");
   bool first = true;
   for (const auto reason : packet.reasons) {

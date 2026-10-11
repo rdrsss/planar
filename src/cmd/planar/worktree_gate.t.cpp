@@ -215,8 +215,8 @@ TEST_CASE("classify: annotate, init, promote, demote, link, unlink, links are pl
 }
 
 TEST_CASE("classify: read groups pass wholesale", "[cmd][worktree-gate]") {
-  for (auto const& v : {"handoff", "capture", "audit", "workspace", "config", "models", "templates", "scope", "doc", "local",
-                        "skills", "test-spec", "sync"}) {
+  for (auto const& v : {"handoff", "capture", "audit", "workspace", "config", "templates", "scope", "doc", "local", "skills",
+                        "test-spec", "sync"}) {
     INFO(v);
     CHECK(cls({v}) == verb_class::execution_or_read);
     CHECK(cls({v, "show"}) == verb_class::execution_or_read);

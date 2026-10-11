@@ -2,7 +2,7 @@
 // @brief Diagnose workflow scenarios through the real binaries, end to end (plan 1132, task 7385).
 //
 // Each case builds a scratch database with `planar` (anchor plan, milestone plan, tasks) and
-// `planar-agent` (claim, dispatch preview and confirm, action, heartbeat, complete), then reads the
+// `planar-agent` (claim, action, heartbeat, complete), then reads the
 // same findings from the three places an operator meets them: `planar-watch diagnose --json` on the
 // anchor and on the milestone, the `planar-agent complete` that promotes the milestone to `done`
 // (its `diagnose` key), and `planar plan closeout --dry-run --json` on the anchor. The three must
@@ -16,9 +16,9 @@
 //   `claim-closed-by-reconcile`;
 //   * a direct claim doing its own work, and a healthy orchestrated run, give no finding.
 //
-// The one write outside a verb is TIME TRAVEL: a lease cannot be waited out, so a lease timestamp
-// is moved afterwards. Dispatch previews need a routing candidate no verb creates; that row is the
-// only one inserted by hand.
+// Writes outside a verb are TIME TRAVEL (a lease cannot be waited out, so a lease timestamp is moved
+// afterwards) and the dispatch rows no verb writes any more (plan 1142, task 7455): the preview, the
+// confirmed snapshot that spends it, and the routing candidate and project they name.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -71,6 +71,7 @@ struct world {
       planar({"task", "add", std::format("Task {}", i), "--plan", "2"});
     }
     planar({"plan", "update", "1", "--status", "active"});
+    sql("insert or ignore into projects (id, slug, name) values (1, 'routing-project', 'Routing Project')");
     sql("insert into routing_candidates (vendor, candidate_id, fallback_order) values ('claude', 'candidate', 0)");
   }
 
@@ -115,86 +116,31 @@ struct world {
                                                                                          std::chrono::seconds{offset_seconds}));
   }
 
-  /// The orchestrator's dispatch, in its order: preview (no claim yet) then confirm. Synthetic digests, consistent.
+  /// The orchestrator's dispatch as the rows it leaves: a preview (no claim yet) spent by a confirmed
+  /// snapshot a minute in the past. Synthetic digests, consistent. No verb writes these rows (plan 1142,
+  /// task 7455), so they are inserted directly.
   auto dispatch(int task_id) -> void {
-    auto const got = planar_agent({"dispatch",
-                                   "preview",
-                                   "--task",
-                                   std::to_string(task_id),
-                                   "--work-item",
-                                   std::format("w{}", task_id),
-                                   "--project",
-                                   "1",
-                                   "--validation-policy",
-                                   "v1",
-                                   "--routing-policy",
-                                   "r1",
-                                   "--profile-rule",
-                                   "p1",
-                                   "--vendor",
-                                   "claude",
-                                   "--role",
-                                   "coder",
-                                   "--tier",
-                                   "medium",
-                                   "--work-type",
-                                   "feature",
-                                   "--complexity",
-                                   "standard",
-                                   "--packet-digest",
-                                   "pk",
-                                   "--profile-digest",
-                                   "pf",
-                                   "--policy-digest",
-                                   "po",
-                                   "--capability-digest",
-                                   "cp",
-                                   "--candidate",
-                                   "1",
-                                   "--host",
-                                   "host",
-                                   "--class",
-                                   "default",
-                                   "--evidence-state",
-                                   "evidential",
-                                   "--expires-at",
-                                   "2099-01-01T00:00:00Z"});
-    auto const at  = got.out.find("preview:");
-    REQUIRE(at != std::string::npos);
-    auto const start = got.out.find_first_not_of(' ', at + 8);
-    auto const token = got.out.substr(start, got.out.find_first_of(" \n", start) - start);
-    planar_agent({"dispatch",
-                  "confirm",
-                  "--token",
-                  token,
-                  "--dispatch-key",
-                  "key-" + token,
-                  "--now",
-                  now_text(-60),
-                  "--packet-digest",
-                  "pk",
-                  "--profile-digest",
-                  "pf",
-                  "--policy-digest",
-                  "po",
-                  "--capability-digest",
-                  "cp",
-                  "--candidate",
-                  "1",
-                  "--vendor",
-                  "claude",
-                  "--role",
-                  "coder",
-                  "--tier",
-                  "medium",
-                  "--work-type",
-                  "feature",
-                  "--complexity",
-                  "standard",
-                  "--validation-policy",
-                  "v1",
-                  "--routing-policy",
-                  "r1"});
+    auto const token = std::format("ptok{}", task_id);
+    auto const at    = now_text(-60);
+    sql(std::format("insert into routing_dispatch_previews (preview_token, task_id, logical_work_item_id, project_id, "
+                    "validation_policy_version, routing_policy_version, profile_rule_version, vendor, role, tier, "
+                    "work_type, complexity, packet_digest, profile_digest, policy_digest, capability_digest, "
+                    "requested_candidate_id, host_id, assignment_class, evidence_state, expires_at) values ('{}', {}, "
+                    "'w{}', 1, 'v1', 'r1', 'p1', 'claude', 'coder', 'medium', 'feature', 'standard', 'pk', 'pf', 'po', "
+                    "'cp', 1, 'host', 'default', 'evidential', '2099-01-01T00:00:00.000Z')",
+                    token, task_id, task_id));
+    sql(std::format("insert into routing_dispatch_snapshots (dispatch_key, task_id, logical_work_item_id, project_id, "
+                    "validation_policy_version, routing_policy_version, profile_rule_version, vendor, role, tier, "
+                    "work_type, complexity, packet_digest, policy_digest, capability_digest, requested_candidate_id, "
+                    "assignment_class, operator_decision, reviewer_disposition, confirmed_at) select 'key-{0}', task_id, "
+                    "logical_work_item_id, project_id, validation_policy_version, routing_policy_version, "
+                    "profile_rule_version, vendor, role, tier, work_type, complexity, packet_digest, policy_digest, "
+                    "capability_digest, requested_candidate_id, assignment_class, 'confirmed', 'required', '{1}' "
+                    "from routing_dispatch_previews where preview_token = '{0}'",
+                    token, at));
+    sql(std::format("update routing_dispatch_previews set consumed_at = '{1}', "
+                    "consumed_dispatch_id = (select max(id) from routing_dispatch_snapshots) where preview_token = '{0}'",
+                    token, at));
   }
 
   /// `check entity severity` for each finding in a diagnose result object, sorted.

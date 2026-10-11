@@ -201,7 +201,8 @@ TEST_CASE("task packet: the ready arm is genuinely reachable through the CLI", "
   // The envelope's shape, in the order a consumer reads it.
   CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{"task_id":100,)"));
   CHECK(res.out.find(R"("canonical":)") != std::string::npos);
-  CHECK(res.out.find(R"("digest":)") != std::string::npos);
+  // No routing digest: the envelope ends at `reasons`, with no `digest` key.
+  CHECK(res.out.find(R"("digest":)") == std::string::npos);
   CHECK(res.out.ends_with("]}\n"));
   CHECK(res.err.empty());
 }
@@ -244,51 +245,42 @@ TEST_CASE("task packet: the policy version rides in the envelope, not only the b
   CHECK(res.out.find(R"(\"policy\":\"routing-packet-v2\")") != std::string::npos);
 }
 
-TEST_CASE("task packet: the digest is a change detector", "[task-packet]") {
-  auto const fx = make_fixture("digest");
+TEST_CASE("task packet: an edit changes the packet, which carries no routing digest", "[task-packet]") {
+  auto const fx = make_fixture("nodigest");
   seed(fx);
-
-  auto const digest_of = [](std::string_view payload) -> std::string {
-    constexpr std::string_view key   = R"("digest":")";
-    auto const                 start = payload.find(key);
-    REQUIRE(start != std::string_view::npos);
-    auto const from = start + key.size();
-    auto const end  = payload.find('"', from);
-    REQUIRE(end != std::string_view::npos);
-    return std::string{payload.substr(from, end - from)};
-  };
 
   auto const first = dispatch(fx, {"task", "packet", "100", "--json"});
   REQUIRE(first.code == 0);
   auto const again = dispatch(fx, {"task", "packet", "100", "--json"});
   REQUIRE(again.code == 0);
-  // Recompiling unchanged state reproduces it, or it could never certify
-  // "this is the packet the dispatch was authorized against".
-  CHECK(digest_of(first.out) == digest_of(again.out));
+  CHECK(again.out == first.out);
+  CHECK(first.out.find("\"digest\":") == std::string::npos);
 
   auto const edited = dispatch(fx, {"task", "update", "100", "--next-action", "Something materially different."});
   REQUIRE(edited.code == 0);
   auto const after = dispatch(fx, {"task", "packet", "100", "--json"});
   REQUIRE(after.code == 0);
-  // A packet that ignored an edit would authorize a dispatch against state
-  // that no longer exists.
-  CHECK(digest_of(after.out) != digest_of(first.out));
+  // A packet that ignored an edit would show state that no longer exists.
+  CHECK(after.out != first.out);
+  CHECK(after.out.find("\"digest\":") == std::string::npos);
 }
 
-TEST_CASE("task packet: the text rendering names ready, digest, reasons and body", "[task-packet]") {
+TEST_CASE("task packet: the text rendering names ready, reasons and body, with no digest line", "[task-packet]") {
   auto const fx = make_fixture("text");
   seed(fx);
 
   auto const ready = dispatch(fx, {"task", "packet", "100"});
   REQUIRE(ready.code == 0);
-  CHECK(ready.out.starts_with("task packet 100: ready\ndigest: "));
+  CHECK(ready.out.starts_with("task packet 100: ready\n"));
+  CHECK(ready.out.find("digest: ") == std::string::npos);
   // A ready packet prints NO reasons block — not an empty one.
   CHECK(ready.out.find("reasons:") == std::string::npos);
   CHECK(ready.out.find(R"({"policy":"routing-packet-v2","task_id":100)") != std::string::npos);
 
   auto const blocked = dispatch(fx, {"task", "packet", "200"});
   REQUIRE(blocked.code == 0);
-  CHECK(blocked.out.starts_with("task packet 200: not_ready\ndigest: "));
+  CHECK(blocked.out.starts_with("task packet 200: not_ready\n"));
+  CHECK(blocked.out.find("digest: ") == std::string::npos);
   CHECK(blocked.out.find("\nreasons:\n- missing_body\n- missing_acceptance_section\n") != std::string::npos);
   CHECK(blocked.out.ends_with("\n"));
 }
