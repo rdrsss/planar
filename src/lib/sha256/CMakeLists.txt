@@ -6,6 +6,5 @@
 # parser cannot associate hex()'s doc comment with the merged declaration
 # when the declaration and definition are split across the interface unit
 # and a separate implementation file for a module this small — confirmed
-# by isolated repro, see sha256.cppm's header. Matches core/version.cppm's
-# existing interface-only precedent in this tree.
+# by isolated repro, see sha256.cppm's header.
 planar_module(sha256 INTERFACE sha256.cppm)

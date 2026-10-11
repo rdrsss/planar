@@ -21,7 +21,7 @@
 // (PLANAR_HOSTQUEUE_SOURCE_DIR), exactly as rule_methodology.t.cpp reads
 // agents/methodology.md.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 import std;

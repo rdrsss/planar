@@ -249,8 +249,7 @@ auto parse_frontmatter_block(std::string_view raw) -> frontmatter {
 // reflected types to have EXTERNAL LINKAGE — it materialises a variable
 // template keyed on the type, which cannot be defined for a type declared in
 // an anonymous namespace. So these three sit in a named detail namespace
-// rather than the file-local one every other helper here uses. `core/
-// vendor_probe.cpp` documents the same constraint.
+// rather than the file-local one every other helper here uses.
 namespace wire {
 
 /// @brief The Glaze-facing mirror of manifest_record.

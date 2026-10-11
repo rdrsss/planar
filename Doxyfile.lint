@@ -1067,7 +1067,7 @@ INPUT_FILE_ENCODING    =
 # *.f18, *.f, *.for, *.vhd, *.vhdl, *.ucf, *.qsf and *.ice.
 
 # *.t.cpp files are matched by the *.cpp pattern (a glob matches on filename
-# suffix, and "version.t.cpp" ends in ".cpp") — no separate *.t.cpp entry
+# suffix, and "db.t.cpp" ends in ".cpp") — no separate *.t.cpp entry
 # needed; verified empirically (task 6049, F2).
 FILE_PATTERNS                       = *.cppm *.cpp
 

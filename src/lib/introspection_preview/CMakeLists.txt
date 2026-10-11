@@ -13,7 +13,7 @@
 # Pure data, no behavior: `vendor`/`category`/`coverage_state`/
 # `warning_kind` and the `warning_row`/`signal_row`/`coverage_row`/`preview`
 # structs it composes. No SOURCES — nothing here has a definition to put in
-# one (same shape as `core`'s INTERFACE-only version.cppm). DEPENDS nothing.
+# one. DEPENDS nothing.
 
 planar_module(introspection_preview
   INTERFACE introspection_preview.cppm)

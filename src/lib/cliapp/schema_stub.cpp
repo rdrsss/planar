@@ -25,8 +25,7 @@
 /// is retired along with the tool it referred to.
 ///
 /// Deliberately NOT a `planar_module()` target and NOT registered under
-/// `PLANAR_MODULE_TARGETS` — same pattern as `planar.core`'s
-/// `vendor_probe.cpp`: pure test-proof scaffolding, never dispatches a
+/// `PLANAR_MODULE_TARGETS`: pure test-proof scaffolding, never dispatches a
 /// real verb, carries no engine/cmd surface.
 #include <cstdio>
 #include <cstring>
