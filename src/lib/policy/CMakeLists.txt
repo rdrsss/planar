@@ -3,7 +3,7 @@
 # Today this is exactly one thing: `policy.audit`, the append-only
 # `audit_log` write path. It closes the omission thirteen ported engine
 # buckets' CMakeLists had each recorded independently (closure, entitylink,
-# external, grouping, local, models, planning, promotion, runs, runtime,
+# external, grouping, local, planning, promotion, runs, runtime,
 # workbench, workflows, workspace), plus `engine_identity`'s
 # association.cppm. The Zig oracle's live database holds tens of thousands
 # of these rows and the C++ binaries wrote none — invisible to an exit-code

@@ -18,7 +18,6 @@
 ///     engine/closure/store.cpp        engine/planning/annotation.cpp
 ///     engine/grouping/load.cpp        engine/runtime/capture.cpp
 ///     engine/ingest/render.cpp        engine/promotion/promotion.cpp
-///     engine/models/render.cpp
 ///     engine/planning/test_spec_status.cpp
 ///     engine/runs/render.cpp
 ///     engine/workflows/render.cpp (removed, task 7453)
@@ -98,10 +97,10 @@ export auto json_string(std::string_view text) -> std::string;
 //   src/lib/json_dom/json_dom.cpp        `format_double`      (WRONG --
 //       plain `std::to_chars` default, so `1.375e-06` where the correct
 //       site prints `0.000001375`; task 6261)
-//   src/engine/models/render.cpp     `json_number`        (WRONG --
+//   (removed) models render          `json_number`        (WRONG --
 //       `std::format("{}", v)`, scientific notation AND a bare `inf`;
 //       tasks 6186/6261)
-//   src/engine/models/legacy.cpp     `json_number`        (WRONG --
+//   (removed) models legacy          `json_number`        (WRONG --
 //       the same `std::format("{}", v)` body; feeds `approval_rate` and
 //       `avg_iterations`. Non-finite is unreachable there (the
 //       denominator is a dispatch count of at least one), so it was not a

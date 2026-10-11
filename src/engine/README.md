@@ -30,7 +30,7 @@ and the transition code are authoritative.
 | Agent action | Open or closed (`ended_at` is null or set) | A claim or nested action opens a row; action end or a claim terminal verb closes it. Outcomes: `ok`, `error`, `aborted`, `timeout`. [`runtime/`](runtime/) |
 | Workflow run (`workflow_runs`) | `running`, `completed`, `failed`, `interrupted`, `abandoned` | `run start → running`; `run end` closes it; reconciliation abandons a dead run. [`runtime/`](runtime/) |
 | Context record | `active`, `consumed`, `superseded` | Stage close folds a record into a capsule or supersedes it. [`runtime/`](runtime/) |
-| Routing experiment | `declared`, `running`, `stopped`, `completed`, `cancelled` | Stored experiment phase; consult routing operations for allowed updates. [`models/`](models/), [`routing/`](routing/) |
+| Routing experiment | `declared`, `running`, `stopped`, `completed`, `cancelled` | Stored experiment phase; consult routing operations for allowed updates. [`routing/`](routing/) |
 | Routing dispatch preview | Unconsumed or consumed (`consumed_at` is null or set); evidence state `evidential` or `observational` | A single-use token binds the reviewed evidence until confirmation or expiry. [`routing/`](routing/) |
 | Routing dispatch snapshot | `pending`, `completed`, `quality_failed`, `spawn_failed`, `cancelled`, `aborted`, `candidate_mismatch`, `missing_evidence` | Confirm consumes a preview and creates immutable evidence; outcome events record the terminal result. [`routing/`](routing/) |
 | Feedback triage disposition | `untriaged`, `needs-reproduction`, `accepted`, `retained-question`, `dismissed`, `reported-external`, `duplicate` | Triage disposition; reproduction status is `not-run`, `reproduced`, `not-reproduced`, or `inconclusive`. [`planning/`](planning/) |
@@ -68,7 +68,6 @@ side effects and the executable source index.
 | [`introspect/`](introspect/) | Usage introspection and findings. |
 | [`introspection_adapters/`](introspection_adapters/) | Inputs to introspection. |
 | [`local/`](local/) | Operator local skill and agent lifecycle. |
-| [`models/`](models/) | Model routing data, views and ranking. |
 | [`planning/`](planning/) | Plans, tasks, decisions, scenarios and other planning entities. |
 | [`promotion/`](promotion/) | Scope promotion and demotion. |
 | [`routing/`](routing/) | Dispatch preview, confirmation and evidence. |

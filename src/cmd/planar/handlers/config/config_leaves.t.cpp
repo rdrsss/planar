@@ -354,8 +354,8 @@ TEST_CASE("config init creates missing parent directories", "[cmd][config][init]
 }
 
 TEST_CASE("config init writes the LONGER of the two starter blobs", "[cmd][config][init][oracle-defect]") {
-  // ORACLE-MEASURED, not read off the constant: `config init` writes 1267
-  // bytes and `config edit` writes 1048, and the 219-byte difference is an
+  // MEASURED, not read off the constant: `config init` writes 1246
+  // bytes and `config edit` writes 1048, and the 198-byte difference is an
   // eight-line `[models.codex]` / `[roles]` example block that plan 540
   // added to `init.zig`'s copy and never back-ported to `edit.zig`'s —
   // whose comment still claims it "mirrors init.zig's starter_config
@@ -365,7 +365,7 @@ TEST_CASE("config init writes the LONGER of the two starter blobs", "[cmd][confi
   REQUIRE(dispatch(fx, {"config", "init"}).code == 0);
   auto const body = read_file(fx.cfg);
   REQUIRE_FALSE(body.empty());
-  CHECK(body.size() == 1267);
+  CHECK(body.size() == 1246);
   CHECK(body.starts_with("# ~/.planar/config.toml"));
   CHECK(body.ends_with("# done = \"Closed\"\n"));
   CHECK(body.contains("# [models.codex]"));
@@ -941,12 +941,11 @@ TEST_CASE("config validate reads auth from the FILE, never from the embedded def
   cleanup(fx);
 }
 
-TEST_CASE("config validate rejects a routed model that is not in its tier's candidate list", "[cmd][config][validate][routing]") {
-  // The finding ORDER is observable and is vendor x tier x work-type, NOT
-  // sorted key order: `schema` precedes `cli` precedes `feature` in the
-  // work-type enum, so `schema` reports before `feature` even though
-  // `feature` sorts earlier. Oracle-captured; pinned as one exact payload
-  // rather than two `contains` checks, which would pass in either order.
+TEST_CASE("config validate has no work-type routing cross-check output", "[cmd][config][validate][routing]") {
+  // The routed-model-versus-candidate-list check left with the models engine
+  // (plan 1142, task 7456). A file that the old check refused for a routed
+  // model absent from its tier's candidate list now validates clean, and the
+  // verb prints no `routing.*` finding and no `candidate list` text.
   auto const fx = make_fixture("valrouting");
   write_config(fx, R"TOML([models.claude]
 medium = ["claude-sonnet-5", "claude-fable-5"]
@@ -957,46 +956,17 @@ feature = "bogus-model"
 schema = "another-bogus"
 )TOML");
   auto const r = dispatch(fx, {"config", "validate"});
-  CHECK(r.code == 1);
-  CHECK(r.out.empty());
-  CHECK(r.err == "error: routing.claude.medium.schema: routed model id \"another-bogus\" is not in the "
-                 "models.claude.medium candidate list\n"
-                 "error: routing.claude.medium.feature: routed model id \"bogus-model\" is not in the "
-                 "models.claude.medium candidate list\n");
-  cleanup(fx);
-}
-
-TEST_CASE("config validate does NOT validate a routing key whose tier has no models entry", "[cmd][config][validate][routing]") {
-  // The oracle's `orelse continue`, and it is the single most
-  // counter-intuitive rule in this verb: `routing.codex.medium.cli` names a
-  // model that exists nowhere at all, and the file is CLEAN — because
-  // `models.codex.medium` is absent, so there is no candidate list to check
-  // against. An implementation that validated it would refuse configs the
-  // oracle accepts.
-  //
-  // The claude half of the same file is present so the case cannot pass
-  // vacuously: it proves the cross-check is running and simply skipping
-  // codex.
-  auto const fx = make_fixture("valrouteorphan");
-  write_config(fx, R"TOML([models.claude]
-medium = ["claude-sonnet-5"]
-
-[routing.claude.medium]
-cli = "claude-sonnet-5"
-
-[routing.codex.medium]
-cli = "a-model-that-exists-nowhere"
-)TOML");
-  auto const shown = dispatch(fx, {"config", "show"});
-  REQUIRE(line_for(shown.out, "routing.codex.medium.cli") == "routing.codex.medium.cli = a-model-that-exists-nowhere");
-  auto const r = dispatch(fx, {"config", "validate"});
   CHECK(r.code == 0);
   CHECK(r.out == "config validate: ok\n");
   CHECK(r.err.empty());
+  CHECK_FALSE(r.err.contains("candidate list"));
+  CHECK_FALSE(r.err.contains("routing."));
   cleanup(fx);
 }
 
-TEST_CASE("config validate treats a scalar model tier as a one-element candidate list", "[cmd][config][validate][routing]") {
+TEST_CASE("config validate treats a scalar model tier and an orphan routing key as clean", "[cmd][config][validate][routing]") {
+  // Neither shape is a finding any more: a scalar tier needs no candidate-list
+  // check, and a routing key whose tier has no `models` entry is not inspected.
   auto const fx = make_fixture("valroutescalar");
   write_config(fx, R"TOML([models.claude]
 medium = "m1"
@@ -1004,48 +974,42 @@ medium = "m1"
 [routing.claude.medium]
 cli = "m1"
 feature = "m2"
+
+[routing.codex.medium]
+cli = "a-model-that-exists-nowhere"
 )TOML");
   auto const r = dispatch(fx, {"config", "validate"});
-  CHECK(r.code == 1);
-  CHECK(r.err == "error: routing.claude.medium.feature: routed model id \"m2\" is not in the models.claude.medium "
-                 "candidate list\n");
+  CHECK(r.code == 0);
+  CHECK(r.out == "config validate: ok\n");
+  CHECK(r.err.empty());
   cleanup(fx);
 }
 
-TEST_CASE("config validate ACCUMULATES findings across steps two through four", "[cmd][config][validate]") {
-  // Three different rules, one invocation, one exit — and in the fixed
-  // step order: the sensitive scan, then the auth cross-check, then
-  // routing. A handler that returned on the first finding would report
-  // only the first line and still exit 1, which no exit-code assertion
-  // would catch.
+TEST_CASE("config validate ACCUMULATES findings across steps two and three", "[cmd][config][validate]") {
+  // Two different rules, one invocation, one exit — and in the fixed step
+  // order: the sensitive scan, then the auth cross-check. A handler that
+  // returned on the first finding would report only the first line and
+  // still exit 1, which no exit-code assertion would catch.
   auto const fx = make_fixture("valmulti");
   write_config(fx, R"TOML([external.github-issues]
 auth = "token-env"
 
 [external.jira]
 token = "literal"
-
-[models.claude]
-small = ["a"]
-
-[routing.claude.small]
-mechanical = "b"
 )TOML");
   auto const r = dispatch(fx, {"config", "validate"});
   CHECK(r.code == 1);
   CHECK(r.out.empty());
   CHECK(r.err == "error: line 5: token: sensitive key must not carry a literal value in the config file "
                  "(use *_env convention instead)\n"
-                 "error: external.github-issues.token_env: auth = \"token-env\" requires token_env to name an env var\n"
-                 "error: routing.claude.small.mechanical: routed model id \"b\" is not in the models.claude.small "
-                 "candidate list\n");
+                 "error: external.github-issues.token_env: auth = \"token-env\" requires token_env to name an env var\n");
   cleanup(fx);
 }
 
 TEST_CASE("config validate stops at a parse failure and reports nothing else", "[cmd][config][validate]") {
   // Step 1 returns IMMEDIATELY. A file that is BOTH unparseable and
   // carries a literal secret reports only the parse error — asserted
-  // directly, because the accumulating shape of steps 2-4 makes "report
+  // directly, because the accumulating shape of steps 2-6 makes "report
   // everything" the tempting generalisation.
   auto const fx = make_fixture("valparsefirst");
   write_config(fx, "[defaults\ntoken = \"abc\"\n");

@@ -24,13 +24,9 @@
 /// on the grounds that `defaults.toml` ships no embedded default for any
 /// of them, which is true but NOT a reason to drop the walk: every one of
 /// those keys is OPERATOR-SUPPLIED, so the walk is precisely what carries a
-/// hand-written `~/.planar/config.toml` into the effective map. Two live
-/// consumers read the result — `config validate` cross-checks every
-/// `routing.<vendor>.<tier>.<work-type>` against its tier's candidate list
-/// and exits 1 on a miss
-/// (zig/src/cmd/planar/handlers/config/validate.zig:117-165, pinned by
-/// zig/integration_tests/config_test.zig:252-284), and `config show
-/// --effective` prints them with provenance and renders multi-candidate
+/// hand-written `~/.planar/config.toml` into the effective map. The live
+/// consumer that reads the result is `config show --effective`, which prints
+/// them with provenance and renders multi-candidate
 /// tiers as `(candidates: a, b)` / a JSON `candidates` array
 /// (zig/src/cmd/planar/handlers/config/show.zig:92-171, pinned at
 /// :205-245). None of these keys carry an env or per-association override

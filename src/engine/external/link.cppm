@@ -47,7 +47,7 @@
 /// `NotFound`. `planar.db`'s connection exposes no `sqlite3_changes`
 /// accessor, so this port uses `delete ... returning id` — a row comes
 /// back exactly when one matched. Same signal, same distinction, and the
-/// same shape `engine_models`' `update` already uses for its own
+/// same shape the removed models registry's `update` used for its own
 /// `changes() != 1` check.
 module;
 
