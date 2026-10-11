@@ -444,7 +444,7 @@ Each artifact the task cites is a reference. A reference is derived from an `ent
 
 ### Claim-atomic operator transitions
 
-Operator-driven status transitions (`task done`, `task block`, `task reopen`, `task update --status`) are **claim-atomic**: when the task has an active work claim (`agent_work_claims.status = 'active'` and `lease_expires_at >= now()`), the operator verb refuses the status flip and exits non-zero with a message identifying the active claim.
+Operator-driven status transitions (`task done`, `task block`, `task reopen`, `task update --status`) are **claim-atomic**: when the task has an active work claim (`agent_work_claims.status = 'active'` and `lease_expires_at >= now()`), the operator verb refuses the status flip and exits non-zero with a message that names the claim's token and the `planar-agent complete --claim <token>` command (or `fail`, `release`, `block`) that would succeed.
 
 This closes the TOCTOU window where an operator `task done` would strand a live agent lease mid-flight. The correct closure path for a claimed task is the agent terminal verb (`planar-agent complete | fail | release`). The operator override is `--force`, which bypasses the claim guard AND the status-transition matrix — use it only when the agent is known to be no longer active (e.g. the process crashed without releasing its claim).
 

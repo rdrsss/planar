@@ -4878,9 +4878,8 @@ TEST_CASE("an active work claim refuses every operator status flip until --force
                 .has_value());
   }
 
-  auto const two_line = std::string{"error: task 1 has an active work claim — operator status flip refused.\n"
-                                    "Release or complete the claim via the agent path, or re-run with --force to "
-                                    "override.\n"};
+  auto const two_line = std::string{"error: task 1 is claimed (token tok6141); finish it with: planar-agent complete "
+                                    "--claim tok6141 (or fail|release|block), or pass --force to override\n"};
 
   auto const done = dispatch(fx, {"task", "done", "1"});
   CHECK(done.code == 1);
@@ -4891,10 +4890,11 @@ TEST_CASE("an active work claim refuses every operator status flip until --force
   CHECK(dispatch(fx, {"task", "reopen", "1", "--reason", "r"}).err == two_line);
   CHECK(dispatch(fx, {"task", "update", "1", "--status", "blocked"}).err == two_line);
 
-  // `task cancel` has no --force and renders the GENERIC shape instead.
+  // `task cancel` has no --force, so its refusal names the terminal verb and offers no override.
   auto const cancelled = dispatch(fx, {"task", "cancel", "1"});
   CHECK(cancelled.code == 1);
-  CHECK(cancelled.err == "error: task cancel: TaskClaimed\n");
+  CHECK(cancelled.err == "error: task 1 is claimed (token tok6141); finish it with: planar-agent complete "
+                         "--claim tok6141 (or fail|release|block)\n");
 
   // A NON-status patch is allowed on a claimed task — the guard is gated on
   // a status change. Gating it unconditionally would refuse a write the

@@ -164,11 +164,9 @@ export auto task_done(context& ctx, const cliapp::parsed_args& args) -> handler_
 
 /// @brief Handle `planar task cancel <task-id> [--json]`.
 ///
-/// Note the missing `--force`: this verb has no override at all, and its
-/// claim refusal therefore renders as the GENERIC `task cancel: TaskClaimed`
-/// rather than the two-line advisory its siblings print. That is the
-/// oracle's own asymmetry — `cancel.zig` has no `error.TaskClaimed` arm, so
-/// the error falls to the catch-all `else`. Captured, not inferred.
+/// Note the missing `--force`: this verb has no override at all, so its
+/// claim refusal names the `planar-agent` terminal verb that would succeed
+/// and does not offer one.
 /// @param ctx The invocation context.
 /// @param args The parsed arguments.
 /// @return Success, or `invalid_input` (exit 2), or `generic_failure` (exit 1).

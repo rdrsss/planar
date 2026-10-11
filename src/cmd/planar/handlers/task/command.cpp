@@ -121,23 +121,22 @@ auto map_task_error_for(pl::task_error err, std::string_view verb) -> domain_err
   return error_from_body(kind, std::format("{}: {}", verb, zig_error_name(err)));
 }
 
-/// @brief The oracle's TWO-LINE active-claim refusal, verbatim.
+/// @brief The active-claim refusal, naming the command that would succeed.
 ///
-/// Four of the five status-flip verbs print this; `task cancel` does NOT —
-/// its handler has no `error.TaskClaimed` arm, so its refusal falls through
-/// to the generic `task cancel: TaskClaimed`. Both captured against a live
-/// claim rather than reasoned about.
-///
-/// `rendered` stays false: this is a message BODY, so the reporting site
-/// composes the `error: ` prefix and the terminator around it. The embedded
-/// newline is inside the body, which is why the second line has no prefix.
+/// One line: the claimed task, the live claim's token, the `planar-agent`
+/// terminal verb that closes that claim, and (where the verb has one) the
+/// `--force` override. `rendered` stays false: this is a message BODY, so the
+/// reporting site composes the `error: ` prefix and the terminator around it.
 /// @param id The claimed task's row id.
-/// @return The refusal (exit 1 — `error.TaskClaimed` has no arm in `codeFor`).
-auto task_claimed_error(std::int64_t id) -> domain_error {
+/// @param token The live claim's token.
+/// @param offer_force Whether the verb has a `--force` override to mention
+/// (`task cancel` has none).
+/// @return The refusal (exit 1).
+auto task_claimed_error(std::int64_t id, std::string_view token, bool offer_force) -> domain_error {
   return error_from_body(domain_error_kind::generic_failure,
-                         std::format("task {} has an active work claim — operator status flip refused.\n"
-                                     "Release or complete the claim via the agent path, or re-run with --force to override.",
-                                     id));
+                         std::format("task {} is claimed (token {}); finish it with: planar-agent complete --claim {} "
+                                     "(or fail|release|block){}",
+                                     id, token, token, offer_force ? ", or pass --force to override" : ""));
 }
 
 /// @brief Run the active-work-claim guard, composed at layer 3.
@@ -150,26 +149,20 @@ auto task_claimed_error(std::int64_t id) -> domain_error {
 /// @param id The task's row id.
 /// @param force When true, the guard is skipped entirely (the `--force`
 /// override the refusal text advertises).
-/// @param generic_verb When set, render the refusal as
-/// `"<verb>: TaskClaimed"` instead of the two-line advisory — `task
-/// cancel`'s shape.
+/// @param offer_force Whether the refusal mentions `--force`; false for `task cancel`, which has no override.
 /// @return Success when the flip may proceed, else the refusal.
-auto check_task_claim(db::connection& conn, std::int64_t id, bool force, std::optional<std::string_view> generic_verb)
-    -> std::expected<void, domain_error> {
+auto check_task_claim(db::connection& conn, std::int64_t id, bool force, bool offer_force) -> std::expected<void, domain_error> {
   if (force) {
     return {};
   }
-  auto held = engine::runtime::agentactivity::has_active_claim_on_task(conn, id);
+  auto held = engine::runtime::agentactivity::active_claim_token_on_task(conn, id);
   if (!held) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "checking active work claims: QueryFailed"));
   }
-  if (!*held) {
+  if (!held->has_value()) {
     return {};
   }
-  if (generic_verb.has_value()) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{}: TaskClaimed", *generic_verb)));
-  }
-  return std::unexpected(task_claimed_error(id));
+  return std::unexpected(task_claimed_error(id, **held, offer_force));
 }
 
 /// @brief Run the cross-scope write guard for `task update`.
@@ -657,7 +650,7 @@ auto task_update(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   // confirmed by running `task update <claimed> --title X`, which exits 0.
   // Gating unconditionally here would refuse a write the oracle permits.
   if (patch.status.has_value()) {
-    if (auto guarded = check_task_claim(**conn, *id, patch.force, std::nullopt); !guarded) {
+    if (auto guarded = check_task_claim(**conn, *id, patch.force, true); !guarded) {
       return std::unexpected(guarded.error());
     }
   }
@@ -689,7 +682,7 @@ auto task_done(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   }
   auto const force = cliapp::flag_bool(args, "--force");
 
-  if (auto guarded = check_task_claim(**conn, *id, force, std::nullopt); !guarded) {
+  if (auto guarded = check_task_claim(**conn, *id, force, true); !guarded) {
     return std::unexpected(guarded.error());
   }
 
@@ -714,9 +707,8 @@ auto task_cancel(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(id.error());
   }
 
-  // No `--force` on this verb at all, and the refusal renders in the
-  // GENERIC shape. Both are the oracle's; see this verb's declaration.
-  if (auto guarded = check_task_claim(**conn, *id, false, std::string_view{"task cancel"}); !guarded) {
+  // No `--force` on this verb at all, so the refusal does not offer one.
+  if (auto guarded = check_task_claim(**conn, *id, false, false); !guarded) {
     return std::unexpected(guarded.error());
   }
 
@@ -749,7 +741,7 @@ auto task_block(context& ctx, const cliapp::parsed_args& args) -> handler_result
   auto const force  = cliapp::flag_bool(args, "--force");
   auto const reason = cliapp::flag_string(args, "--reason");
 
-  if (auto guarded = check_task_claim(**conn, *id, force, std::nullopt); !guarded) {
+  if (auto guarded = check_task_claim(**conn, *id, force, true); !guarded) {
     return std::unexpected(guarded.error());
   }
 
@@ -796,7 +788,7 @@ auto task_reopen(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   }
 
   auto const force = cliapp::flag_bool(args, "--force");
-  if (auto guarded = check_task_claim(**conn, *id, force, std::nullopt); !guarded) {
+  if (auto guarded = check_task_claim(**conn, *id, force, true); !guarded) {
     return std::unexpected(guarded.error());
   }
 

@@ -76,7 +76,9 @@ under the active claim, and a manual echo duplicates the action row.
 
 Each terminal verb flips the claim and the task status in one transaction and recomputes
 the owning plan's status. Never split it into `planar task done` followed by
-`planar-agent release`: a process death between the two strands the claim.
+`planar-agent release`: a process death between the two strands the claim. An operator
+`task done`, `task cancel` or `task update --status` on a live-claimed task refuses and prints
+the `planar-agent complete --claim <token>` command that would succeed.
 
 `complete`, `fail` and `block` refuse a plan or plan-step claim (`ClaimNotOnTask`).
 `release` is the one verb that also ends a plan or plan-step claim, so an orchestrator

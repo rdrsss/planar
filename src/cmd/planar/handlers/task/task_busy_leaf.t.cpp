@@ -185,3 +185,49 @@ TEST_CASE("planar task done reports Busy / busy_source, not QueryFailed / generi
   CHECK(retried.code == 0);
   CHECK(retried.err.empty());
 }
+
+TEST_CASE("task status flips under a live claim name the terminal verb and the claim token", "[cmd][task][busy][claimed][7484]") {
+  // Plan 1142: the refusal says which command would succeed, with THIS claim's token, and changes nothing.
+  auto const fx = make_fixture("claimed");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+
+  auto       conn    = open_db(fx);
+  auto const created = planar::engine::planning::create_task(
+      conn, planar::engine::planning::task_create_args{.title = "Claimed", .scope = "global"});
+  REQUIRE(created.has_value());
+  auto const id = std::to_string(created->id);
+  REQUIRE(dispatch(fx, {"task", "update", id, "--status", "doing"}).code == 0);
+
+  REQUIRE(conn.execute("insert into sessions (id, vendor) values (1, 'test')").has_value());
+  REQUIRE(conn.execute(std::format("insert into agent_work_claims "
+                                   "  (claim_token, session_id, entity_kind, entity_id, status, vendor, lease_expires_at) "
+                                   "values ('tok7484live', 1, 'task', {}, 'active', 'test', "
+                                   "        strftime('%Y-%m-%dT%H:%M:%fZ','now','+1 hour'))",
+                                   id))
+              .has_value());
+
+  auto const unchanged = [&] {
+    auto const shown = planar::engine::planning::show_task(conn, created->id);
+    REQUIRE(shown.has_value());
+    CHECK(shown->status == planar::engine::planning::task_status::doing);
+  };
+
+  for (auto const& args : {std::vector<std::string>{"task", "update", id, "--status", "done"},
+                           std::vector<std::string>{"task", "done", id}, std::vector<std::string>{"task", "cancel", id}}) {
+    INFO(args[1]);
+    auto const refused = dispatch(fx, args);
+    CHECK(refused.code == 1);
+    CHECK(refused.out.empty());
+    CHECK(refused.err.starts_with(std::format("error: task {} is claimed (token tok7484live); finish it with: ", id)));
+    CHECK(refused.err.contains("planar-agent complete --claim tok7484live (or fail|release|block)"));
+    unchanged();
+  }
+
+  // Only the verbs that have a --force override offer it.
+  CHECK(dispatch(fx, {"task", "done", id}).err.contains("or pass --force to override"));
+  CHECK_FALSE(dispatch(fx, {"task", "cancel", id}).err.contains("--force"));
+
+  // An expired lease is not a live claim: the same verb proceeds.
+  REQUIRE(conn.execute("update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z'").has_value());
+  CHECK(dispatch(fx, {"task", "done", id}).code == 0);
+}

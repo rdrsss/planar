@@ -652,6 +652,19 @@ export auto is_claim_active_unexpired(db::connection& conn, std::string_view cla
 /// lease exists on this task, or `query_failed`.
 export auto has_active_claim_on_task(db::connection& conn, std::int64_t task_id) -> std::expected<bool, agent_error>;
 
+/// @brief The token of the live claim holding this task, when one does.
+///
+/// The same predicate as `has_active_claim_on_task`, answered with the token
+/// so a refusal can name the `planar-agent <terminal verb> --claim <token>`
+/// that would succeed. When more than one live claim holds the task (a
+/// `shared` claim), the newest row's token is returned.
+/// @param conn An open, migrated connection.
+/// @param task_id The task's row id.
+/// @return The newest live claim's token, `nullopt` when none holds the task,
+/// or `query_failed`.
+export auto active_claim_token_on_task(db::connection& conn, std::int64_t task_id)
+    -> std::expected<std::optional<std::string>, agent_error>;
+
 // =========================================================================
 // Reads
 // =========================================================================

@@ -1458,7 +1458,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 | `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
 | `--slug <slug>` | Replace the task's slug. `tasks.slug` is globally unique. | none |
 
-**Claim-atomic guard:** When `--status` is supplied and the task has an active work claim (`agent_work_claims.status='active'` and lease not yet expired), the status flip is refused with exit code `1` and a message identifying the active claim. This prevents an operator `task update --status done` from stranding a live agent lease. Pass `--force` to override and flip the status anyway — use this only when you know the agent is no longer working the task (e.g. it crashed without releasing the claim).
+**Claim-atomic guard:** When `--status` is supplied and the task has an active work claim (`agent_work_claims.status='active'` and lease not yet expired), the status flip is refused with exit code `1`, nothing is written, and the message names the claim's token and the command that would succeed: `error: task <id> is claimed (token <token>); finish it with: planar-agent complete --claim <token> (or fail|release|block), or pass --force to override`. This prevents an operator `task update --status done` from stranding a live agent lease. Pass `--force` to override and flip the status anyway — use this only when you know the agent is no longer working the task (e.g. it crashed without releasing the claim).
 
 **Schema effects:** Updates `tasks(title, body, status, priority, next_action, due_at, plan_id, updated_at)`. When `--force` triggers a terminal → non-terminal transition, also inserts into `task_reopens(task_id, from_status, to_status, source='task-update-force', reason)`.
 
@@ -1483,7 +1483,7 @@ planar task done <task-id> [--force] [--json]
 
 **Scope guard:** NONE. `task done` declares `--scope` and never reads it; the flag is inert here and no comparison is made. See [Cross-scope guard](#cross-scope-guard).
 
-**Claim-atomic guard:** Refuses if the task has an active work claim. The agent path (`planar-agent complete`) is the correct way to close out a claimed task. Pass `--force` to override and mark done anyway — use this only when the agent is known to be no longer active.
+**Claim-atomic guard:** Refuses if the task has an active work claim, exit `1`, writing nothing. The message names the claim's token and the command that would succeed: `error: task <id> is claimed (token <token>); finish it with: planar-agent complete --claim <token> (or fail|release|block), or pass --force to override`. Pass `--force` to override and mark done anyway — use this only when the agent is known to be no longer active.
 
 **Options:**
 
@@ -1513,7 +1513,7 @@ planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--
 
 **Scope guard:** NONE. `task reopen` declares `--scope` and never reads it; the flag is inert here and no comparison is made. See [Cross-scope guard](#cross-scope-guard).
 
-**Claim-atomic guard:** Refuses if the task has an active work claim. Pass `--force` to override.
+**Claim-atomic guard:** Refuses if the task has an active work claim, with the same message as `task done` (claim token and the `planar-agent` terminal verb that would succeed). Pass `--force` to override.
 
 **Options:**
 
@@ -1548,7 +1548,7 @@ planar task block <task-id> --on <task-id> [--force] [--json] [--reason <text>]
 
 **Scope guard:** NONE. `task block` declares `--scope` and never reads it; neither endpoint is compared. See [Cross-scope guard](#cross-scope-guard).
 
-**Claim-atomic guard:** Refuses if the task being blocked has an active work claim. Pass `--force` to override.
+**Claim-atomic guard:** Refuses if the task being blocked has an active work claim, with the same message as `task done`. Pass `--force` to override.
 
 **Options:**
 
@@ -6115,6 +6115,8 @@ planar task cancel <task-id> [--json] [--scope <scope>]
 **Description:** Cancel a task. `cancelled` is a terminal status, reachable
 from `todo` or `doing`; see the status lifecycle under `planar task`.
 Single-argument form only.
+
+**Claim-atomic guard:** Refuses, exit `1` and writing nothing, while the task has an active work claim. The verb has no `--force`; the message names the claim's token and the command that would succeed: `error: task <id> is claimed (token <token>); finish it with: planar-agent complete --claim <token> (or fail|release|block)`.
 
 **Schema effects:** Writes `tasks.status`.
 

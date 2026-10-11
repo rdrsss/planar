@@ -995,6 +995,29 @@ auto has_active_claim_on_task(db::connection& conn, std::int64_t task_id) -> std
   return *stepped == db::step_result::row;
 }
 
+auto active_claim_token_on_task(db::connection& conn, std::int64_t task_id)
+    -> std::expected<std::optional<std::string>, agent_error> {
+  auto stmt = conn.prepare(std::format("select claim_token from agent_work_claims\n"
+                                       "where entity_kind = 'task'\n"
+                                       "  and entity_id = ?\n"
+                                       "  and status = 'active'\n"
+                                       "  and lease_expires_at >= {}\n"
+                                       "order by id desc\n"
+                                       "limit 1",
+                                       k_now));
+  if (!stmt || !stmt->bind_int64(1, task_id)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  if (*stepped != db::step_result::row) {
+    return std::optional<std::string>{};
+  }
+  return std::optional<std::string>{stmt->column_text(0)};
+}
+
 // =========================================================================
 // Reads
 // =========================================================================
