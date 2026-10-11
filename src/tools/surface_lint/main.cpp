@@ -260,8 +260,7 @@ struct projection_link_t {
   std::string_view file;
   std::string_view target;
 };
-constexpr std::array<projection_link_t, 2> k_projection_links{
-    projection_link_t{"docs/cli-reference.md", "../commands/claude/pl-synthesize.md"},
+constexpr std::array<projection_link_t, 1> k_projection_links{
     projection_link_t{"docs/workflows.md", "../commands/claude/pl-workspace-scan.md"},
 };
 auto is_projection_only_link(std::string const& file, std::string_view target) -> bool {
@@ -772,7 +771,7 @@ constexpr command_class_t m_(std::string_view s) {
   return {s, access_t::mutate};
 }
 
-constexpr std::array<command_class_t, 227> k_command_classes{
+constexpr std::array<command_class_t, 210> k_command_classes{
     m_("planar init"),
     r_("planar scope show"),
     r_("planar scope suggest"),
@@ -949,24 +948,9 @@ constexpr std::array<command_class_t, 227> k_command_classes{
     m_("planar local unlink"),
     m_("planar local import"),
     m_("planar local migrate"),
-    m_("planar import"),
-    m_("planar synthesize"),
     r_("planar version"),
     r_("planar completion"),
     r_("planar schema"),
-    m_("planar bench start"),
-    m_("planar bench event"),
-    m_("planar bench touch"),
-    m_("planar bench harvest"),
-    m_("planar bench finish"),
-    r_("planar bench show"),
-    m_("planar closure compute"),
-    r_("planar closure show"),
-    m_("planar run start"),
-    m_("planar run event"),
-    m_("planar run finish"),
-    r_("planar run show"),
-    r_("planar groups recommend"),
     r_("planar-agent version"),
     m_("planar-agent pull"),
     r_("planar-agent peek"),

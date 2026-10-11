@@ -450,7 +450,7 @@ def resolve_arglist(toks: list[Tok], lo: int, hi: int) -> list[str] | None:
     Deliberately positional, NOT "every element must be a literal": a
     real dispatch call frequently mixes a literal verb/subcommand with a
     runtime-computed positional argument afterward — e.g. `dispatch(fx,
-    {"synthesize", (fx.root / "repo").string(), "--json"})`. Requiring
+    {"search", (fx.root / "repo").string(), "--json"})`. Requiring
     every element to be a plain string literal would silently drop that
     leaf's verb-only credit even though argv[0] is pinned. Only the first
     two POSITIONS are examined (argv[0]=verb, argv[1]=subcommand), never

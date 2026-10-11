@@ -129,7 +129,7 @@ export auto add_string_required(CLI::App& app, std::string_view name, std::strin
 ///
 /// `expected(1, -1)` is CLI11's unbounded form, and it is what makes the
 /// catalog report `"list":true` as well as what lets the flag be supplied
-/// more than once. `bench start --task` is the only site today; the shape
+/// more than once. The shape
 /// carries no default and is never required, so those two parameters are
 /// deliberately absent rather than defaulted.
 /// @param app The node to declare it on.

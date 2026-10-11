@@ -405,7 +405,11 @@ TEST_CASE("handoff-stale agrees with the stale-handoff count planar health print
   w.move_time("update handoffs set created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-23 hours') where id = 2");
   CHECK(w.findings({"handoff-stale"}) == std::vector<std::string>{"handoff-stale handoff:1 warning"});
 
-  auto health = op({"health", "--json"});
+  // A stale handoff makes the report `degraded`, and `planar health` exits 1 on degraded after it has
+  // printed the report, so this is the one call that does not go through `op`.
+  auto health = parity::run_pinned(w.op, std::vector<std::string>{"health", "--json"}, w.root, w.tag(), env);
+  INFO("planar health: " << health.err);
+  CHECK(health.code == 1);
   auto parsed = planar::json_dom::parse_json(health.out);
   REQUIRE(parsed.has_value());
   CHECK(parsed->find("stale_handoffs")->integer == 1);

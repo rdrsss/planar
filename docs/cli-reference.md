@@ -283,7 +283,6 @@ table claimed for years — performs **no** scope comparison.
 | `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task/command.cpp` |
-| `closure compute` | resolved write scope | membership-aware | `src/cmd/planar/handlers/closure/command.cpp` |
 | `planar-ext sync push <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
 | `planar-ext sync pull <link\|kind:id>` | `plan` or `task` | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
 | `planar-ext sync resolve <event-id>` | the event's target entity | membership-aware | `src/cmd/planar-ext/handlers/sync/sync.cpp` |
@@ -1524,7 +1523,7 @@ planar task done <task-id> [--force] [--json]
 planar task reopen <task-id> [--status todo|doing|blocked] [--reason <text>] [--scope <slug>] [--force] [--json]
 ```
 
-**Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks — see [`import`](#planar-import-repo-root) for the producer of the most common false-done case. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
+**Description:** Reopen a task currently in a terminal status (`done` or `cancelled`). The dedicated recovery path for wrongly-marked tasks. Refuses if the task is not in a terminal status; use `task update --status <s>` for ordinary transitions.
 
 **Scope guard:** NONE. `task reopen` declares `--scope` and never reads it; the flag is inert here and no comparison is made. See [Cross-scope guard](#cross-scope-guard).
 
@@ -5272,242 +5271,6 @@ test-spec status for plan 42 (billing-export-csv)
 
 ---
 
-## Domain: `import`
-
-Import an existing repository's planning artefacts (tech specs, roadmaps, ADRs, backlog files, GitHub issues) into Planar's data model. A translator, not a generator: imports what is already there rather than drafting new documents from a goal statement.
-
-**Sibling verb.** `synthesize` is the synthesis counterpart to import's transcription. Use `import` for clean structured docs; use `synthesize` for messy / docs-only / mid-evolution repos. See [Domain: synthesize](#domain-synthesize) for the full surface, and [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) for the conceptual split.
-
-See also: `spec ingest` (decompose workbench planning docs), `ext propagate` (push the imported tree to an external system).
-
----
-
-### `planar import <repo-root>`
-
-**Synopsis:**
-```
-planar import <repo-root> [--from-github] [--dry-run] [--strict]
-                            [--roadmap <path>]
-                            [--apply] [--apply-removals] [--scope <slug>]
-                            [--no-status-inference] [--interpret]
-                            [--accept-spec <slugs>] [--no-forward-specs] [--json]
-```
-
-**Description:** Walk the repository at `<repo-root>`, parse planning artefacts from the filesystem and git history, infer task completion status, build an ImportPlan, and (optionally) commit it to the database.
-
-Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing anything. `--apply` is required to commit.
-
-`--dry-run` emits the ImportPlan as versioned JSON (schema version 1.0) instead of the human tree and never writes, regardless of `--apply`.
-
-Idempotency: items already present in the database (matched by title and source-path fingerprint) are reported as **Skipped** and never double-imported. Safe to re-run after new commits.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<repo-root>` | Path to the repository root to import. Required. Must be a directory. |
-
-**Options:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--from-github` | off | Also import open GitHub issues as tasks. Requires the `gh` CLI on PATH and a GitHub remote at the `origin`. If `gh` is not found, a warning is emitted and the flag is silently skipped. |
-| `--dry-run` | off | Emit JSON report instead of human preview. Never writes, regardless of `--apply`. |
-| `--strict` | off | Refuse to import ambiguous items (below the confidence threshold). Default (lenient) mode imports them as `status='todo'` with a warning annotation. |
-| `--roadmap <path>` | auto | Explicit path to the roadmap file. Overrides auto-discovery. Useful when the roadmap has a non-standard name or location. |
-| `--apply` | off | Commit the import to the database. Without this flag, preview only. |
-| `--apply-removals` | off | When applying, also remove entities that are gone from the source. |
-| `--scope <slug>` | cwd-derived | Scope for all created entities. Overrides cwd derivation for this invocation. |
-| `--no-status-inference` | off | Default every imported task to `status=todo`, `signal=no-inference`, `confidence=0`. Skips layers 2-3 (branch + git-log correlation) of status inference; the checkbox layer still runs because checkbox state is operator-explicit. Use for greenfield, docs-only, or fresh-fork repos where status correlation is unreliable by construction. |
-| `--interpret` | off | Run the optional LLM interpretation pass after the deterministic classifier (see the `planar-importer` agent). |
-| `--accept-spec <slugs>` | none | Non-interactive forward-spec selection — slug, comma-separated slugs, or `all`. |
-| `--no-forward-specs` | off | Skip forward-spec processing entirely. |
-
-**No >25% auto-done refusal.** This binary does not refuse an import in
-which a large share of inferred tasks would land as `status=done`, and
-neither `--trust-status-inference`, `--threshold` nor `--no-interpret`
-exists on it; passing any of them fails at parse time with exit 2. For an
-unreliable correlation, reach for
-`--no-status-inference` (which IS implemented) to default every task to
-`status=todo`, and `task reopen <id>` to recover any individually
-wrongly-marked tasks from an earlier import.
-
-**Output (human, preview mode):**
-
-```
-<repo-root>/
-  + plan       Phase 1 — Foundation         (4 tasks)
-  +   task     Add migrations               [done — git-log match]
-  +   task     Wire CLI parser              [todo]
-  + plan       Phase 2 — Adapters           (2 tasks)
-  +   task     Jira adapter                 [todo]
-  +   task     GitHub adapter               [todo]
-  + artifact   docs/tech-spec.md            [kind=tech_spec]
-  + decision   Vendor SQLite amalgamation   [from: docs/adrs.md#adr-0009]
-  ~ task       Add workbench archive        [skipped — already imported]
-
-7 additions, 1 skipped.
-Run with --apply to commit.
-```
-
-**Output (`--dry-run`, JSON schema version 1.0):**
-
-```json
-{
-  "schema_version": "1.0",
-  "anchor": {"title": "<repo-name>", "slug": "<slug>"},
-  "child_plans": [
-    {"title": "Phase 1 — Foundation", "slug": "phase-1-foundation"}
-  ],
-  "tasks": [
-    {"title": "Add migrations", "status": "done", "inferred_from": "git-log", "parent_plan": "phase-1-foundation"}
-  ],
-  "artifacts": [
-    {"title": "Tech Spec", "source_path": "docs/tech-spec.md", "kind": "tech_spec"}
-  ],
-  "decisions": [
-    {"title": "Vendor SQLite amalgamation", "source_path": "docs/adrs.md"}
-  ],
-  "ambiguous": [],
-  "warnings": []
-}
-```
-
-**Output (`--apply`):**
-
-```
-applied: 3 plans, 12 tasks, 4 artifacts, 2 decisions, 1 skipped
-anchor plan id: 87
-github links created: 5
-```
-
-The `github links created` line appears only when `--from-github` is set and issues were linked.
-
-**Schema effects:**
-
-Reads:
-- `associations`, `project_associations`, `projects` — cwd-derived scope resolution.
-- `plans`, `tasks`, `artifacts`, `decisions` — fingerprint queries to detect already-imported items.
-- Git log and branch list via shell (`git log`, `git branch --merged`).
-- GitHub Issues via `gh issue list` (only when `--from-github`).
-
-Writes (only with `--apply`):
-- `plans` — inserts the anchor plan and child plans (one per milestone).
-- `tasks` — inserts tasks with inferred status.
-- `artifacts` — inserts artifact rows for discovered planning documents.
-- `decisions` — inserts decision rows for ADRs and `## Decisions` headings.
-- `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
-- `external_links` — inserts `link_role='mirror'` rows for GitHub issues (only when `--from-github`).
-
-**Exit codes:**
-- `0` — success (preview, dry-run, or apply).
-- `1` — user error: `<repo-root>` not found or not a directory; `--strict` mode rejected ambiguous items.
-- `2` — system error: database failure, git shell failure, filesystem I/O failure.
-
-**Related:**
-- `planar spec ingest <plan>` — decompose workbench planning documents into a task graph for a feature already in Planar.
-- `planar-ext ext propagate <plan>` — propagate the imported tree to Jira or GitHub Issues.
-- `planar import <repo-root> --dry-run` — emit the ImportPlan as JSON without writing.
-- `planar synthesize <repo-root>` — sibling verb. Synthesizes fresh planning material from docs + code via an LLM pass instead of transcribing.
-
----
-
-## Domain: `synthesize`
-
-`planar synthesize <repo-root>` — synthesize fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Sibling of `import` (which transcribes existing docs verbatim).
-
-Use `synthesize` when:
-- Repo docs are scattered, mid-evolution, or contradicted by reality.
-- The repo is docs-only (no source code yet — greenfield).
-- You inherited a repo and want the LLM to assess what's actually there.
-- Multiple roadmaps of different eras exist.
-
-Use `import` instead when docs are clean and structured. See [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis).
-
----
-
-### `planar synthesize <repo-root>`
-
-**Synopsis:**
-```
-planar synthesize <repo-root> [--apply] [--apply-removals] [--scope <slug>]
-                                 [--code-layout <name>]
-                                 [--treat-as-greenfield] [--treat-as-nongreenfield]
-                                 [--accept-spec <slug>] [--no-forward-specs]
-                                 [--literal] [--dry-run] [--json]
-```
-
-**Description:** Walk the repo at `<repo-root>`, run the deterministic floor (artifact discovery + `codeprobe.Probe` over the source tree), hand a fingerprinted `synthesis.Request` to the vendor skill via the on-disk cache, then on a cache-hit re-invocation validate and merge the LLM `synthesis.Result` against the deterministic baseline.
-
-Default mode is **preview**: prints a tree-shaped diff and exits 0 without writing. `--apply` is required to commit additions and updates; `--apply --apply-removals` additionally soft-cancels removed entities.
-
-`--dry-run` narrows that further: there are no planning writes on the non-apply path to suppress, but a first run does stage `_pending.json` under `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/`. `--dry-run` suppresses that one filesystem side effect and names the paths it would have used (task 6273, decision 1125).
-
-The LLM never runs in the CLI. The `planar` binary writes a synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json` and exits 0 with an "Awaiting LLM synthesis" notice. The vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`. The operator re-runs `planar synthesize <repo-root>`; the CLI finds the cached Result, validates it, merges it with the deterministic baseline, and emits the preview.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<repo-root>` | Path to the repository root to synthesize. Required. Must be a directory. |
-
-**Options:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--apply` | off | Commit additions and updates. |
-| `--apply-removals` | off | Commit removals (soft-cancel). Requires `--apply`. |
-| `--scope <slug>` | cwd-derived | Override scope resolution. |
-| `--code-layout <name>` | auto | Override layout detection. One of `swift`, `go`, `node`, `python`, `mixed`. |
-| `--treat-as-greenfield` | off | Force greenfield mode even when code is detected. Forces every task to land `status=todo`. |
-| `--treat-as-nongreenfield` | off | Bypass greenfield auto-detection. Use for non-conventional layouts where codeprobe under-detects. |
-| `--accept-spec <slug>` | interactive | Non-interactive forward-spec selection; `all` accepts every proposed forward spec. |
-| `--no-forward-specs` | off | Skip the forward-spec phase entirely. |
-| `--literal` | off | Delegate to `import` (transcription). Useful when you started with `synthesize` but realize the repo is clean enough for transcription. |
-| `--dry-run` | off | Stage nothing: skip the `_pending.json` write (and the cache directory that holds it) and report the paths that would have been written. Exit 0. Before task 6273 this flag was declared and never read, so it silently did the normal thing. |
-| `--json` | off | Machine-readable output. |
-
-**Workflow:**
-
-1. Operator runs `planar synthesize <repo-root>`.
-2. The CLI runs deterministic artifact discovery, corpus parsing, and code-evidence probing.
-3. The CLI writes the synthesis Request to `$PLANAR_HOME/cache/bootstrap-synthesis/<repo-slug>/_pending.json`.
-4. The CLI exits 0 with the "Awaiting LLM synthesis" message.
-5. Vendor skill reads the Request, runs the LLM at temperature 0, and writes the Result to `<cache-dir>/<fingerprint>.json`.
-6. Operator re-runs `planar synthesize <repo-root>`.
-7. The CLI reads and validates the cached Result, then merges it with the deterministic baseline.
-8. Operator reviews the preview; `--apply` commits.
-
-**Schema effects:**
-
-Reads:
-- `associations`, `project_associations`, `projects` — cwd-derived scope resolution.
-- `plans`, `tasks`, `artifacts`, `decisions` — fingerprint queries to detect already-synthesized items.
-- Source tree + git log (via `codeprobe`); no shell to `gh` (`synthesize` does not pull GitHub issues).
-
-Writes (only with `--apply`):
-- `plans` — inserts the anchor plan and per-phase child plans synthesized by the LLM.
-- `tasks` — inserts tasks with status grounded in code-evidence citations.
-- `artifacts` — inserts the synthesized `product_spec` / `tech_spec` / `roadmap` as primary artifacts. The existing planning docs are preserved on the same anchor plan as `kind=research` reference artifacts.
-- `decisions` — inserts decisions extracted from tech specs and LLM-inferred decisions (citation required).
-- `entity_links` — inserts `derives-from` links (child plan→anchor, task→plan, decision→anchor).
-
-**Legacy source schemes.** Artifacts created by `synthesize` (and by `import` for forward-spec seeds) carry a stored `source` of `pl-synthesize://<kind>` or `pl-forward-spec://<kind>`. These are provenance identifiers kept for compatibility with existing databases; they name no skill and are not command references. The synthesize handler branches on the `pl-synthesize://` prefix when it decides which artifacts survive `--apply-removals`, so the literals must not be renamed. The generated artifact bodies and the operator messages name `planar synthesize` instead.
-
-**Apply layer.** The Apply path is **shared with `import`** (the apply + diff helpers in `src/engine/importer/importer.cpp`). Both verbs converge on the same downstream pipeline.
-
-**Exit codes:**
-- `0` — success (preview, dry-run, apply, or cache-miss "awaiting synthesis").
-- `1` — user error: `<repo-root>` not found, conflicting flags, cached Result fails `synthesis.Validate`, confidence-floor refusal.
-- `2` — system error: database failure, filesystem I/O failure, cache I/O failure.
-
-**Related:**
-- [`agents/planar-synthesizer.md`](../agents/planar-synthesizer.md) — vendor-neutral role spec.
-- [Domain: `import`](#domain-import) — sibling transcription verb.
-- [Transcription vs Synthesis](./concepts.md#transcription-vs-synthesis) — conceptual split.
-
----
-
 ## Domain: `config`
 
 Manages the Planar configuration file at `~/.planar/config.toml` (overrideable
@@ -7723,8 +7486,6 @@ For quick reference, all documented commands grouped by domain:
 | `explore` | `explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]` |
 | `spec` | `spec ingest` |
 | `test-spec` | `test-spec status` |
-| `import` | `import <repo-root>` |
-| `synthesize` | `synthesize <repo-root>` |
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `--help` | `--help` / `-h` on any node (no `help` verb) |
 | `run` | `run start`, `run event`, `run finish`, `run show` |

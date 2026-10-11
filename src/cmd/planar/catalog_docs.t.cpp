@@ -204,13 +204,12 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
       }
     }
   }
-  // 244 leaves measured 2026-10-10 across the four remaining binaries, after `planar models`,
-  // `planar-agent dispatch`, `planar-agent run`/`context` and `planar-watch run` left the tree
-  // (plan 1142, tasks 7455 and 7458), and `planar explore`, `planar skills` and the three
-  // `planar scope` stubs left it (plan 1142, task 7463: 249 -> 244), and `planar report` left it at task 7472 (244 -> 243), and
-  // task 7473 removed the three `feedback triage` leaves (243 -> 240); the floor keeps a margin of four.
+  // 221 leaves measured 2026-10-11 across the four remaining binaries (planar 175, planar-agent 20, planar-watch 13,
+  // planar-ext 13), after plan 1142 removed `models`, the dispatch verbs, `explore`, `skills`, the `scope` stubs, the
+  // four unused verbs, `report`, the closure, groups, bench and run leaves, and `import`, `synthesize`, and the three
+  // feedback triage leaves; the floor keeps a margin of four.
   CAPTURE(leaves);
-  CHECK(leaves >= 236);
+  CHECK(leaves >= 217);
 }
 
 TEST_CASE("every planar and planar-agent leaf has an example under its own command path", "[catalog][docs]") {
@@ -231,10 +230,10 @@ TEST_CASE("every planar and planar-agent leaf has an example under its own comma
     }
   }
   CAPTURE(checked);
-  CHECK(checked >= 204);
+  CHECK(checked >= 185); // 189 measured 2026-10-11 after plan 1142 tasks 7469, 7471 and 7473 (margin four)
 }
 
-TEST_CASE("--help repeats the catalog's docs for every leaf of the four CLI11 binaries", "[catalog][docs]") {
+TEST_CASE("the --help page repeats the catalog's docs for every leaf of the four CLI11 binaries", "[catalog][docs]") {
   std::size_t checked = 0;
   for (auto const& bin : binaries()) {
     if (!bin.has_footer) {
@@ -253,5 +252,5 @@ TEST_CASE("--help repeats the catalog's docs for every leaf of the four CLI11 bi
     }
   }
   CAPTURE(checked);
-  CHECK(checked >= 270);
+  CHECK(checked >= 217); // one footer per leaf of the four CLI11 binaries (221 measured 2026-10-11)
 }

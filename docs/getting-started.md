@@ -62,7 +62,7 @@ Everything in the rest of this tutorial is plain CLI. No skill is needed.
 
 ## 3. Using Planar from a coding agent
 
-The installer already placed the one `planar` skill and the thirteen
+The installer already placed the one `planar` skill and the eleven
 `planar-<role>` agents for whichever of the six supported vendors it
 found on your machine. The skill teaches only the rules that cross verbs;
 the CLI help stays the source for everything verb-shaped. Confirm the

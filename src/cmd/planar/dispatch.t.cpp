@@ -965,8 +965,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK(unported.empty());
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
-  INFO("moved by task 6362: bench harvest");
-  CHECK_FALSE(unported.contains("bench harvest"));
   INFO("moved by task 6365: spec ingest");
   CHECK_FALSE(unported.contains("spec ingest"));
   INFO("moved off this binary by task 6419: ext propagate");
@@ -1240,9 +1238,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
     INFO("config leaf: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
-  // ...and the fourth, from task 6189's own families. `closure show` is
-  // ported; `closure compute` must stay DECLARED, never silently absent.
-  CHECK_FALSE(unported.contains("closure compute"));
   // The three dual nodes (`resume`, `handoff`, `health`) ALL have real
   // handlers now that task 6357 closed the last of them — none may appear
   // in the inventory.
@@ -1281,8 +1276,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
                                   "local unlink",
                                   "local import",
                                   "local migrate",
-                                  "closure show",
-                                  "groups recommend",
                                   "question add",
                                   "question show",
                                   "question list",
@@ -1310,8 +1303,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Plan 1142 task 7463 removes `explore`, `skills` and the three `scope` stubs (203 -> 198).
   // Plan 1142 task 7468 removes `document validate-range`, `audit publish-decision`, `assoc detect` and `config init` (198 ->
   // 194). Task 7472 removes `planar report` (194 -> 193).
-  // Task 7473 removes `feedback triage list`, `show` and `set` (193 -> 190).
-  CHECK(leaves.size() == 190);
+  // Tasks 7469 and 7471 removed 15 leaves (193 -> 178); task 7473 removes `feedback triage list`, `show` and `set`
+  // (178 -> 175), re-measured from the built planar binary.
+  CHECK(leaves.size() == 175);
+
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

@@ -216,8 +216,8 @@ stateDiagram-v2
     [*] --> draft : artifact add --status draft
     draft --> active : artifact update --status active
     active --> draft : artifact update --status draft
-    active --> superseded : artifact update --status superseded · import / synthesize replace
-    active --> retired : artifact update --status retired · import: source doc disappeared
+    active --> superseded : artifact update --status superseded
+    active --> retired : artifact update --status retired
     superseded --> [*]
     retired --> [*]
 ```
@@ -754,27 +754,7 @@ Template kinds by role: Jira `epic` / `story` / `sub-task`; GitHub
 subtree's mirror links and writes `strategy-abandoned` events; remote
 counterparts are never deleted.
 
-### 5.6 Import and synthesize
-
-Both stage an LLM hand-off through a fingerprint-keyed cache under
-`~/.planar/cache/` and converge on the same downstream pipeline
-(workbench review → `spec ingest`).
-
-```mermaid
-flowchart LR
-    I[planar import repo] --> SC[deterministic scan:<br/>AGENTS.md / CLAUDE.md / *.md, tree summary, fingerprint]
-    SC -->|no --interpret| OUT[report only]
-    SC -->|--interpret| CH{cache/FP.json exists?}
-    CH -->|no| PEND[write _pending.json, vendor skill runs LLM, re-invoke]
-    CH -->|yes| AP[--apply: child plans per phase, tasks,<br/>artifacts reconciled by source path,<br/>decisions superseded by title,<br/>--apply-removals → cancelled / abandoned]
-    SY[planar synthesize repo] --> SC2[scan docs + source areas + tests + CI] --> CH
-```
-
-Synthesize additionally requires that a proposed task with `status ≠ todo`
-cite a `code_evidence` path that exists. Original docs are kept as
-`kind=research` artifacts.
-
-### 5.7 Handoff and resume
+### 5.6 Handoff and resume
 
 ```mermaid
 sequenceDiagram
@@ -793,7 +773,7 @@ sequenceDiagram
     A2->>P: planar-agent claim --entity task:ID --no-transition (task already doing)
 ```
 
-### 5.8 Health and doctor
+### 5.7 Health and doctor
 
 ```mermaid
 flowchart TD
@@ -860,7 +840,7 @@ bug, unless noted.
 | `planar health` `overall` is one of `ok`, `degraded`, `critical` | the retired health skill (since removed; fixed — now names `ok` and `degraded`) | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
 | Whole-tree `ext propagate <plan>` is not yet implemented | the retired propagate skill (since removed); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
 | Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench (**fixed at task 6926** — now cites `src/engine/workbench/terminal.cppm`) | `src/engine/workbench/terminal.cppm` |
-| `closure compute` is deferred with its dependencies | header comment in `src/engine/closure/store.cppm` | `compute.cpp` implements the tree-sitter extraction and is wired to `planar closure compute` |
+| `closure compute` was removed with its engine (plan 1142, task 7469) | moved to branch `dev/grouping-solvers` | none on master |
 | `derive_from_cwd` redirects a git-worktree cwd to its parent repo | Zig-era behaviour | Not ported; the module header names it as a residual gap |
 
 ---

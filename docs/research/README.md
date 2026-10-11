@@ -5,12 +5,9 @@ maintained outside this repository.
 
 This directory holds only documentation owned by the Planar instrument:
 
-- [`run-record-schema.md`](run-record-schema.md) — rationale and schema boundary
-  for durable run, event, and touch records;
-- [`closure-measurement-build-spec.md`](closure-measurement-build-spec.md) —
-  historical engineering specification for the measurement and closure subsystem;
-- [`hypergraph-tech-spec.md`](hypergraph-tech-spec.md) — historical engineering
-  specification for grouping and partitioning.
+- `run-record-schema.md` — moved to branch `dev/grouping-solvers`;
+- `closure-measurement-build-spec.md` — moved to branch `dev/grouping-solvers`;
+- `hypergraph-tech-spec.md` — moved to branch `dev/grouping-solvers`.
 
 Instrument implementation, migrations, tests, metric fixtures, and the historical
 matrix driver remain in this repository because they describe or verify Planar's

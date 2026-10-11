@@ -29,15 +29,10 @@ import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.init;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
-import planar.cmd.planar.handlers.runs;
 import planar.cmd.planar.handlers.local;
 import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.templates;
-import planar.cmd.planar.handlers.closure;
-import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.spec_ingest;
-import planar.cmd.planar.handlers.importer;
-import planar.cmd.planar.handlers.synthesize;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.decision;
@@ -234,8 +229,7 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // `assoc members` — the family's read half, wired at task 6188. Its
   // engine call has existed since the family landed; what was missing was a
   // renderer for `project_ref` (this module's other two are singular and
-  // over `association`). Five `groups_recommend_test` integration frames
-  // were crashing in their FIXTURE on this verb, not in the verb they test.
+  // over `association`).
   table.emplace("assoc members", handlers::assoc_members);
   // `assoc list` + `assoc remove` — the family's two CHEAP remainders,
   // landed at task 6279. `remove` was handler-only (`remove_member` shipped
@@ -584,21 +578,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("handoff show", handlers::handoff_show);
   table.emplace("resume", handlers::resume_packet);
   table.emplace("resume validate", handlers::resume_validate);
-  // `bench` and `run` — one engine bucket, two surfaces over the same
-  // table. `bench harvest` is deliberately absent and stays a declared
-  // exit-64 refusal; its engine half was deferred WITH its git-subprocess
-  // dependency in task 6095. See `handlers/runs.cppm`.
-  table.emplace("bench start", handlers::bench_start);
-  table.emplace("bench event", handlers::bench_event);
-  table.emplace("bench touch", handlers::bench_touch);
-  table.emplace("bench harvest", handlers::bench_harvest);
-  table.emplace("bench finish", handlers::bench_finish);
-  table.emplace("bench show", handlers::bench_show);
-  table.emplace("run start", handlers::run_start);
-  table.emplace("run event", handlers::run_event);
-  table.emplace("run finish", handlers::run_finish);
-  table.emplace("run show", handlers::run_show);
-
   // `local` — the whole five-leaf family (task 6189). None of them opens
   // SQLite; all five are filesystem state under `$PLANAR_LOCAL_HOME`/`$HOME`.
   table.emplace("local list", handlers::local_list);
@@ -635,15 +614,7 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("config edit", handlers::config_edit);
   table.emplace("config validate", handlers::config_validate);
   table.emplace("config path", handlers::config_path);
-  // Derived closure extraction is AST-backed through the pinned tree-sitter
-  // Zig grammar; its cross-bucket composition belongs at this cmd layer.
-  table.emplace("closure compute", handlers::closure_compute);
-  table.emplace("closure show", handlers::closure_show);
-  // `groups recommend` — the whole `groups` family, read-only.
-  table.emplace("groups recommend", handlers::groups_recommend);
   table.emplace("spec ingest", handlers::spec_ingest);
-  table.emplace("import", handlers::import_repo);
-  table.emplace("synthesize", handlers::synthesize);
   table.emplace("help", help_handler(root));
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and

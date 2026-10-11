@@ -608,7 +608,7 @@ BASE_DEPS=(
 BUILD_DEPS=("${TOOLCHAIN_DEPS[@]}" "${BASE_DEPS[@]}")  # bash32: nonempty
 RUN_DEPS=(
   "cmp||compares staged and installed bytes in the installer (also a build dep above)"
-  "git|git|repo discovery + 'planar import' (required at runtime)"
+  "git|git|repo discovery and the worktree and log walks (required at runtime)"
   "jq|jq|bundled agent skills parse 'planar … --json' output"
   "gh|gh|GitHub adapter auth + issue import (degrades gracefully)"
   "rg|ripgrep|agent-workflow code-search recipes (ripgrep)"
@@ -1308,7 +1308,7 @@ fi
 # Six vendors, nine targets (plan 1104, M2). A vendor is placed only when its
 # presence marker exists; the sources are the staged trees above:
 #   skill   $PLANAR_HOME/skills/planar/            (a directory)
-#   md      $PLANAR_HOME/agents/planar-<role>.md   (the fourteen role files only,
+#   md      $PLANAR_HOME/agents/planar-<role>.md   (the twelve role files only,
 #                                                    never the doctrine documents)
 #   toml    $PLANAR_HOME/codex-agents/planar-<role>.toml
 #

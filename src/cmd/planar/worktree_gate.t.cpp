@@ -134,8 +134,7 @@ TEST_CASE("classify: an unknown top-level verb defaults to planning", "[cmd][wor
 }
 
 TEST_CASE("classify: top-level read verbs are execution_or_read", "[cmd][worktree-gate]") {
-  for (auto const& v :
-       {"resume", "dashboard", "health", "tree", "search", "version", "update", "completion", "import", "synthesize"}) {
+  for (auto const& v : {"resume", "dashboard", "health", "tree", "search", "version", "update", "completion"}) {
     INFO(v);
     CHECK(cls({v}) == verb_class::execution_or_read);
   }
@@ -146,13 +145,6 @@ TEST_CASE("classify: schema is execution_or_read", "[cmd][worktree-gate]") {
   // catalog and opens no database, and the cli-usage and coverage gates
   // shell out to it — refusing it false-fails tooling.
   CHECK(cls({"schema"}) == verb_class::execution_or_read);
-}
-
-TEST_CASE("classify: bench is execution_or_read", "[cmd][worktree-gate]") {
-  // `bench` is the measurement rig the harness drives from inside
-  // worktrees by design.
-  CHECK(cls({"bench"}) == verb_class::execution_or_read);
-  CHECK(cls({"bench", "harvest"}) == verb_class::execution_or_read);
 }
 
 TEST_CASE("classify: entity-group reads pass and writes are planning", "[cmd][worktree-gate]") {

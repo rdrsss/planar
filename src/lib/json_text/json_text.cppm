@@ -22,6 +22,9 @@
 ///     engine/runs/render.cpp
 ///     engine/workflows/render.cpp (removed, task 7453)
 ///
+/// (`engine/closure`, `engine/grouping` and `engine/runs` were extracted to
+/// branch `dev/grouping-solvers` by plan 1142, task 7469.)
+///
 /// The seven `append_json_string` copies really were behaviorally identical
 /// (two spell the C0 test `c < 0x20` and five spell it `c <= 0x1F`, which is
 /// the same predicate). The three `json_quote` copies were NOT: they sent 0x08

@@ -45,8 +45,7 @@
 /// document, not a TOML front end, and dragging Glaze plus the whole
 /// flattening pass down a layer to serve a single lookup would be the
 /// layering inverted. So `read_config_workbench_root` below is a narrow,
-/// single-key scan, following the precedent `engine_grouping` set when it
-/// duplicated its `closures` read rather than depend on `engine_closure`.
+/// single-key scan rather than a sideways engine edge.
 /// It is deliberately NOT a TOML parser and does not pretend to be one.
 module;
 

@@ -68,7 +68,6 @@ table. Keep narrow single-verb cases next to their handler.
 | Agent claim, action | Claim → heartbeat → terminal verb; atomic task update and expiry | [`claims.t.cpp`](../planar-agent/claims.t.cpp), [`cross_process.t.cpp`](../planar/cross_process.t.cpp) |
 | External link and sync event | Link → pull/push proposal → resolve; enforce external write boundary | [`sync.t.cpp`](../../engine/external/sync.t.cpp), [`capability.t.cpp`](../planar-ext/capability.t.cpp) |
 | Workbench sync | DB ↔ files, conflict, malformed input, and no-op | [`sync.t.cpp`](../../engine/workbench/sync.t.cpp), handler tests |
-| Measurement run | Start → record → finish; caller-defined terminal result | [`lifecycle.t.cpp`](../../engine/runs/lifecycle.t.cpp), handler tests |
 | Derived health, closeout, resume | Inputs change → read model changes; closeout gate refusal and success | [`health` tests](../../engine/health/), [`closeout.t.cpp`](../../engine/planning/closeout.t.cpp), handler tests |
 
 The table is an inventory, not a claim that each row already has a complete

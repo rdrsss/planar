@@ -45,7 +45,7 @@ flowchart TD
 Two layers are touched by users and agents:
 
 1. **The Planar binaries** — four C++26 executables that share the SQLite engine/runtime graph: `planar` is the operator surface, `planar-agent` owns coordination writes, `planar-watch` is a driver-enforced read-only viewer, and `planar-ext` (decisions 995–1001) owns the operational-plane adapters (Jira, GitHub Issues) with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, enforced by a `sqlite3_set_authorizer` allowlist. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Four-binary architecture](#four-binary-architecture) below. The Zig implementation these binaries were ported from was retained under `zig/` as the port's parity oracle and DELETED at the M10 cutover (decisions 963/982) once its state-differential evidence came back clean; C++26 is now the only implementation.
-2. **The skill and agent layer** — one skill, `planar` (`skills/planar/`), and thirteen role agents (`agents/planar-<role>.md`), placed unchanged into six vendors' directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references; the agents are dispatched by name. Both invoke binary verbs; binary verbs operate on SQLite. See [skill-reference.md](skill-reference.md).
+2. **The skill and agent layer** — one skill, `planar` (`skills/planar/`), and eleven role agents (`agents/planar-<role>.md`), placed unchanged into six vendors' directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references; the agents are dispatched by name. Both invoke binary verbs; binary verbs operate on SQLite. See [skill-reference.md](skill-reference.md).
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
 
@@ -141,9 +141,9 @@ The `session_commits` table (migration 00021) is the durable commit-attribution 
 
 Migration 00022 landed the **workflow context plane** (plan 585): `workflow_runs` and `context_records`, a run-scoped durable context surface for an external workflow harness. No verb writes them any more: `planar-agent run` and `context`, `planar-watch run` and the engines behind them were removed in plan 1142, and both tables are dropped in a later milestone. `agent_work_claims.run_id` (migration 0023) stays until then and is always NULL.
 
-Migration 00025 lands the **measurement-rig substrate** (plan 635, experiment anchor 634): three tables that record one benchmark run of the vertical-slice decomposition experiment. The subsystem is reached only through the `planar run *` verb group in the engine — it holds no coupling to any execution mechanism, so the same recording surface measures a bare-loop run and a host-native run (`docs/research/run-record-schema.md §1`). `runs` is the experimental unit: one row per `(plan, arm, repetition)`, comparison paired per plan (two runs are comparable iff their `config_hash` matches except for `arm`). `run_uid` is the stable harness-minted external id (`unique`) that keys the archived transcript tree, decoupled from the autoincrement `id` so artifacts survive a DB rebuild; `config_hash` is the GROUP BY key and `config_json` the opaque audit blob it is taken over (same opaque-text philosophy as `agent_actions.metadata`). `arm`, `status`, and `corpus_repo` are deliberately plain `TEXT` with their enum sets enforced at the CLI parse layer rather than a schema CHECK, so pilot/probe runs introduce no migration (run-record-schema.md §2). `run_events` is an append-only, `seq`-ordered journal (`unique(run_id, seq)`) standalone from `agent_activity` (decision D3) so operational or excision-driven changes cannot corrupt a recorded measurement; token samples, reviewer decisions, conflict events, and budget marks land here. `run_touches` is the declared-vs-actual harvest for RQ1: each `(task, path)` touch is tagged `kind in ('declared','actual')` — a schema CHECK, since the two-value set is closed and central to the precision/recall self-join. `declared` rows are the predicted closure snapshotted into the run at start (not a live FK to `task_touch_paths`, so improving the extractor cannot rewrite a recorded prediction); `actual` rows are ground truth from `git diff --name-only` at fan-in. `run_touches.task_id` is a **plain integer, not an FK-cascade** (decision D2): a run is immutable historical evidence, so deleting a task later must not erase the record of what it once touched — the `run_id` cascade is the only intended deletion path. No `run_metrics` table exists by design (run-record-schema.md §3): primary metrics are computed by checked-in SQL over these raw tables, never materialized, to keep every reported number reproducible and the pre-registration honest.
+Migration 00025 lands the **measurement-rig substrate** (plan 635, experiment anchor 634): three tables that record one benchmark run of the vertical-slice decomposition experiment. The subsystem is reached only through the `planar run *` verb group in the engine — it holds no coupling to any execution mechanism, so the same recording surface measures a bare-loop run and a host-native run (the run-record schema moved to branch `dev/grouping-solvers`). `runs` is the experimental unit: one row per `(plan, arm, repetition)`, comparison paired per plan (two runs are comparable iff their `config_hash` matches except for `arm`). `run_uid` is the stable harness-minted external id (`unique`) that keys the archived transcript tree, decoupled from the autoincrement `id` so artifacts survive a DB rebuild; `config_hash` is the GROUP BY key and `config_json` the opaque audit blob it is taken over (same opaque-text philosophy as `agent_actions.metadata`). `arm`, `status`, and `corpus_repo` are deliberately plain `TEXT` with their enum sets enforced at the CLI parse layer rather than a schema CHECK, so pilot/probe runs introduce no migration (run-record-schema.md §2). `run_events` is an append-only, `seq`-ordered journal (`unique(run_id, seq)`) standalone from `agent_activity` (decision D3) so operational or excision-driven changes cannot corrupt a recorded measurement; token samples, reviewer decisions, conflict events, and budget marks land here. `run_touches` is the declared-vs-actual harvest for RQ1: each `(task, path)` touch is tagged `kind in ('declared','actual')` — a schema CHECK, since the two-value set is closed and central to the precision/recall self-join. `declared` rows are the predicted closure snapshotted into the run at start (not a live FK to `task_touch_paths`, so improving the extractor cannot rewrite a recorded prediction); `actual` rows are ground truth from `git diff --name-only` at fan-in. `run_touches.task_id` is a **plain integer, not an FK-cascade** (decision D2): a run is immutable historical evidence, so deleting a task later must not erase the record of what it once touched — the `run_id` cascade is the only intended deletion path. No `run_metrics` table exists by design (run-record-schema.md §3): primary metrics are computed by checked-in SQL over these raw tables, never materialized, to keep every reported number reproducible and the pre-registration honest.
 
-Migration 00026 lands the **derived-closure snapshot** (plan 636 M2; `docs/research/closure-measurement-build-spec.md §3`): the `closures` table records, per task, the symbol-level closure the task must hold resident — *computed* by static analysis from its declared seed paths rather than asserted via `task_touch_paths`. This is the experiment's contribution (the derived closure the declared-touch baseline must be beaten by). One row is one `(task, symbol unit)` in the closure. Both `path` (the repo-relative file the symbol is defined in) and `symbol` (the qualified name) are stored: the qualified-name scheme is **stem-only** (`<file-stem>.<decl>`), so without `path` two same-stem files in different directories would collide once their modify-sets coexist in one table (the M2.2 reviewer caveat). `role` partitions the closure with a schema CHECK (`modify` = the seed's own edited symbols, `reference` = the interfaces it depends on, `transitive` = deeper hops); `transitive` rows are stored — so the extractor's decisions stay auditable and promotion experiments need no re-extraction — but are **excluded from the effective closure by default** (`modify ∪ interfaces(reference)`). `token_weight` is the unit's raw Zig-token count (a bounded C++ port of Zig's `std.zig.Tokenizer` algorithm, `tokens()` in `src/engine/closure/compute.cpp`; deterministic); `extractor_version` records which extractor produced the row so a re-extraction is comparable rather than silently overwritten, and `unique(task_id, repo_id, path, symbol, role, extractor_version)` lets a recompute at the same version replace cleanly. `task_id` and `repo_id` both cascade-delete. The pipeline lives in `src/engine/closure/` (`compute` → `store`); `planar closure compute <task>` runs it and persists the rows (the only write verb in the group; standard write-scope guard), `planar closure show <task> [--json]` reads them back.
+Migration 00026 lands the **derived-closure snapshot** (plan 636 M2; its spec moved to branch `dev/grouping-solvers`): the `closures` table records, per task, the symbol-level closure the task must hold resident — *computed* by static analysis from its declared seed paths rather than asserted via `task_touch_paths`. This is the experiment's contribution (the derived closure the declared-touch baseline must be beaten by). One row is one `(task, symbol unit)` in the closure. Both `path` (the repo-relative file the symbol is defined in) and `symbol` (the qualified name) are stored: the qualified-name scheme is **stem-only** (`<file-stem>.<decl>`), so without `path` two same-stem files in different directories would collide once their modify-sets coexist in one table (the M2.2 reviewer caveat). `role` partitions the closure with a schema CHECK (`modify` = the seed's own edited symbols, `reference` = the interfaces it depends on, `transitive` = deeper hops); `transitive` rows are stored — so the extractor's decisions stay auditable and promotion experiments need no re-extraction — but are **excluded from the effective closure by default** (`modify ∪ interfaces(reference)`). `token_weight` is the unit's raw Zig-token count (a bounded C++ port of Zig's `std.zig.Tokenizer` algorithm, `tokens()`, now on branch `dev/grouping-solvers`; deterministic); `extractor_version` records which extractor produced the row so a re-extraction is comparable rather than silently overwritten, and `unique(task_id, repo_id, path, symbol, role, extractor_version)` lets a recompute at the same version replace cleanly. `task_id` and `repo_id` both cascade-delete. The closure pipeline and its `planar closure` verbs were removed in plan 1142 (task 7469); they moved to branch `dev/grouping-solvers`. 
 
 The `agent_actions.metadata` JSON column (migration 00016) is the durable home for caller-attached per-action context. It is a nullable `TEXT` column; the engine and CLI store it opaquely, only parsing happens at the consuming surface. The first consumer is the orchestrator strategy-persistence model (see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy) and `agents/methodology.md` § Strategy gate): when the orchestrator confirms a strategy for a cycle it writes `{"strategy":"<name>","axes":{...},"dispatch_shape":"<shape>","rationale":"<text>"}` to the dispatch action row via `planar-agent pull --metadata '...'` (for plan-pull dispatch) or `planar-agent action start --metadata '...' --claim <token>` (for hand-picked task dispatch). The next cycle's strategy gate reads the most recent dispatch entry's metadata via `planar-watch actions --plan <id> --json` and applies the recommendation algorithm's rule-6 stickiness. Both write verbs validate `--metadata` as well-formed JSON at the CLI parse layer; the read-side surfaces (`planar-watch actions | log | feed`) include the field in their `ActionRow` JSON shape as a nullable string.
 
@@ -436,14 +436,7 @@ The database-using binaries construct their database objects in `main.cpp` and i
 
 ### Subcommand domains
 
-The live `planar` command tree currently exposes `init`, `scope`, `assoc`, `plan`,
-`task`, `question`, `scenario`, `decision`, `artifact`, `annotate`, `promote`,
-`demote`, `workbench`, `workspace`, `link`, `unlink`, `links`,
-`resume`, `handoff`, `capture`, `audit`, `health`, `models`, `dashboard`,
-`spec`, `test-spec`, `config`, `templates`, `tree`, `search`, `local`, `skills`,
-`import`, `synthesize`, `version`, `completion`, `schema`, `bench`,
-`closure`, `run`, `groups`, `explore` (registered leaf, stub handler — see
-above), `workflow`, and `feedback`. `ext` and `sync` are exposed by
+The live `planar` command tree currently exposes 36 top-level names: `annotate`, `artifact`, `assoc`, `audit`, `capture`, `completion`, `config`, `dashboard`, `decision`, `demote`, `document`, `handoff`, `health`, `help`, `init`, `link`, `links`, `local`, `plan`, `promote`, `question`, `resume`, `scenario`, `schema`, `scope`, `search`, `spec`, `task`, `templates`, `test-spec`, `tree`, `unlink`, `update`, `version`, `workbench`, and `workspace`. `ext` and `sync` are exposed by
 `planar-ext`, not `planar` — see [`planar-ext`](cli-reference.md#domain-ext)
 in the CLI reference.
 
@@ -657,60 +650,7 @@ External conflict events persist a versioned evidence envelope in the existing `
 
 ---
 
-## Repo Onboarding Pipelines
-
-Planar onboards an existing repository into the data model via two sibling verbs that share the same downstream Apply machinery but enter from different contracts.
-
-### Transcription pipeline (`import`)
-
-The `import` verb is a translator: it reads the repo's existing planning docs and emits them as Planar artifacts as-is. The pipeline lives in `src/engine/importer/importer.cpp`:
-
-```
-discover  → walk repo, classify .md files (frontmatter → filename → path)
-parse     → extract roadmap milestones, ADR decisions, deferred items
-infer     → status correlation from git log + branch list + checkbox state
-diff      → match against DB by fingerprint; emit additions / updates / removals
-apply     → commit additions, updates, and (with --apply-removals) soft-cancels
-```
-
-The optional `--interpret` pass writes a fingerprinted Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json` and exits 0. The vendor skill produces a Result; the next invocation merges it with the deterministic Corpus before reaching the Diff/Apply stages.
-
-### Synthesis pipeline (`synthesize`)
-
-The `synthesize` verb is a generator: it reads docs *and* source, then produces fresh planning artifacts via an LLM pass. The pipeline lives in `src/engine/synthesize/synthesize.cpp`:
-
-```
-codeprobe       → per-FeatureArea source / test / CI / commit signals with
-                  SignalStrength scores; output is an EvidenceMap
-discover+parse  → existing docs become Request context (not source-of-truth)
-Request         → fingerprinted package: docs + EvidenceMap + greenfield flag,
-                  written to $PLANAR_HOME/cache/bootstrap-synthesis/<slug>/_pending.json
-[vendor skill]  → reads Request, writes Result to <cache-dir>/<fingerprint>.json
-Validate        → hard-rejects Results that violate the code-evidence invariant
-Merge           → adapts Result to interpretation.Result, merges with deterministic baseline
-Diff + Apply    → SHARED with import — same Diff/Apply stages
-```
-
-The LLM never runs in the Planar binary. The binary stays free of provider API keys, retries, and rate limits; the `planar-synthesizer` agent, installed for each selected vendor, is the LLM engine. The cache contract is the handoff: the binary writes a Request, the skill writes a Result, the binary validates and merges.
-
-### Merge rules (synthesis)
-
-`synthesis.Merge` honors four rules when combining the LLM Result with the deterministic baseline:
-
-1. **Deterministic kind wins.** Frontmatter / filename / path classification of existing docs is locked; the LLM cannot reclassify them.
-2. **LLM fills the qualitative output.** Phase decomposition, rich task bodies, status claims, decisions, deferred items, and forward specs all come from the LLM.
-3. **Code-evidence outranks LLM-claimed-done.** A task with `status != "todo"` must cite a `code_evidence` path that exists in the deterministic EvidenceMap. The validator rejects any Result that violates the invariant; the LLM cannot lie about completion.
-4. **Floor refusals propagate.** A deterministic confidence-floor refusal (50% threshold) and a greenfield invariant (no `status != "todo"` when codeprobe reports zero source evidence) cannot be rescued by good LLM data.
-
-### Shared Apply machinery
-
-The Diff/Apply stages are shared between both verbs via the apply helpers in `src/engine/importer/importer.cpp`. After the synthesis-specific merge or the import-specific interpretation merge, both pipelines converge on the same idempotent diff (match by fingerprint; additions / updates / proposed-removals) and the same apply path (soft-cancel removed entities; preserve the audit trail).
-
-The synthesis-vs-transcription split serves the same downstream pipeline: both verbs produce artifacts that flow through the `planar-ingestor` agent for task decomposition, then through the orchestrator's execution + propagation phases. The split is at the entry point only — what counts as the authoritative planning material.
-
-See [docs/concepts.md § Transcription vs Synthesis](concepts.md#transcription-vs-synthesis) for the conceptual framing and [docs/cli-reference.md § Domain: synthesize](cli-reference.md#domain-synthesize) for the full CLI surface.
-
----
+Repo onboarding was removed with `planar import` and `planar synthesize` (plan 1142, task 7471). The transcription and synthesis pipelines are preserved at tag `archive/import-synthesize`.
 
 ## The Agent Methodology
 
@@ -731,8 +671,6 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | `ingestor` | large | Reads planning documents from the workbench and decomposes them into plans, tasks, decisions, and scenarios in the database. |
 | `ext-sync` | large | Propagates the feature tree to the operational plane and syncs changes bidirectionally. |
 | `sync-reconciler` | large | Compares local and external sync-conflict evidence and coordinates the exact operator-approved whole-entity resolution. |
-| `importer` | large | Translates an existing repository's planning artefacts (specs, ADRs, roadmaps, backlog files, GitHub issues) into Planar's data model without a goal statement. |
-| `synthesizer` | large | Produces fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Sibling of `importer`; shares the Apply machinery but enters from a synthesis contract (code-evidence invariant) rather than transcription. |
 
 ### Phases (orchestrator)
 
@@ -773,7 +711,7 @@ resume and handoff, spec pipeline, knowledge, external sync, local, and the
 feedback contract); it states no verb detail, which comes from each binary's
 `--help` and `schema --command`.
 
-Thirteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, `importer`, `synthesizer`, and `research`) cover orchestration and review, planning and ingestion, external propagation, repo adoption, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `sync-reconciler` coordinates preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
+Eleven agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, and `research`) cover orchestration and review, planning and ingestion, external propagation, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `sync-reconciler` coordinates preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
 
 Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
 
