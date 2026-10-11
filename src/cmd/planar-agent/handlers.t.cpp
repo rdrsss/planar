@@ -320,7 +320,7 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // substring check would have shipped.
   auto const listed = [&](std::string_view verb) { return explicit_help.out.contains("\n  " + std::string{verb}); };
   for (auto const& verb : {"pull", "peek", "claim", "heartbeat", "complete", "fail", "release", "block", "action", "review",
-                           "reconcile", "abort", "version", "schema"}) {
+                           "brief", "reconcile", "abort", "version", "schema"}) {
     INFO("ported verb missing from the root page: " << verb);
     CHECK(listed(verb));
   }

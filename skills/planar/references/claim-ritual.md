@@ -7,6 +7,9 @@ through `planar-agent`. There is no `planar agent` namespace.
 
 ## Before claiming: pick claim-aware work
 
+`planar-agent brief <plan-id>` is the single entry point: one read-only call that returns the plan's
+state, live and stale claims, the parallel wave, readiness, the policy and the claim templates.
+
 1. Ask for next work with `planar plan next <plan-id>` or `planar-agent peek <plan-id>`.
    Both skip tasks under a live claim. Never choose from `planar task list` filtered to
    `todo`. `plan next --json` always carries every bucket (available, claimed, stale,

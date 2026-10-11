@@ -69,6 +69,8 @@
 #             reconcile / abort. See the section below.
 #   review    (plan 1142, task mo-review-record) -- records a reviewer's verdict
 #             on a claim; refused from the claim's own session.
+#   brief     (plan 1142, task mo-brief-verb) -- the read-only single entry point:
+#             one plan's state, claims, wave, readiness, policy and claim templates.
 #
 # Parse failures (exit 1 — NOT the operator binary's 2) are covered across
 # the set, so 0 and 1 are both produced by this binary and a mapping
@@ -142,6 +144,7 @@ planar_binary(planar_agent
     handlers/heartbeat/command.cppm
     handlers/action/command.cppm
     handlers/review/command.cppm
+    handlers/brief/command.cppm
     handlers/ingest/command.cppm
     handlers/reconcile/command.cppm
     handlers/abort/command.cppm
@@ -158,6 +161,7 @@ planar_binary(planar_agent
     handlers/shared/recovery.cppm
     handlers/action/action.cppm
     handlers/review/review.cppm
+    handlers/brief/brief.cppm
     handlers/ingest/ingest.cppm
     handlers/queue/queue.cppm
     handlers/queue/status.cppm
@@ -178,6 +182,7 @@ planar_binary(planar_agent
     handlers/shared/recovery.cpp
     handlers/action/action.cpp
     handlers/review/review.cpp
+    handlers/brief/brief.cpp
     handlers/ingest/ingest.cpp
     handlers/queue/queue.cpp
     handlers/queue/status.cpp

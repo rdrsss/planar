@@ -119,6 +119,8 @@ TEST_CASE("planar-agent's declared verb set includes the bounded queue observer"
                                                     "peek", "pull", "reconcile", "release", "schema", "start", "version",
                                                     // Plan 1142, task mo-review-record: the reviewer's verdict.
                                                     "review",
+                                                    // Plan 1142, task mo-brief-verb: the read-only single entry point.
+                                                    "brief",
                                                     // Plan 1080: the host-wide build and test queue's domain
                                                     // and its verbs. `run` is already a name above; `cancel`
                                                     // (task hq-queue-cancel), `status` and `rule` (task
@@ -144,15 +146,15 @@ TEST_CASE("every planar-agent verb is either implemented or refuses at 64", "[cm
   CHECK(unported.empty());
 
   auto const leaves = planar::cliapp::leaf_keys(*root);
-  CHECK(leaves.size() == 21);
+  CHECK(leaves.size() == 22);
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);
     CHECK(table.contains(leaf));
   }
   // Non-vacuous: the inventory must not have swallowed a verb that has a
   // real handler, which is the failure mode a bulk registration invites.
-  for (auto const& implemented : {"pull", "complete", "action start", "review", "queue run", "queue cancel", "queue rule",
-                                  "queue wait", "schema", "version"}) {
+  for (auto const& implemented : {"pull", "complete", "action start", "review", "brief", "queue run", "queue cancel",
+                                  "queue rule", "queue wait", "schema", "version"}) {
     INFO("implemented verb wrongly listed as unported: " << implemented);
     CHECK_FALSE(unported.contains(implemented));
   }

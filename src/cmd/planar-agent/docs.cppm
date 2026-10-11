@@ -30,6 +30,8 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar-agent pull", R"(planar-agent pull 7 --vendor claude --role coder --ttl 4h --worktree ../wt)"},
       {"planar-agent peek", R"(planar-agent peek 7)"},
       {"planar-agent peek", R"(planar-agent peek 7 --json)"},
+      {"planar-agent brief", R"(planar-agent brief 7)"},
+      {"planar-agent brief", R"(planar-agent brief 7 --json)"},
       {"planar-agent complete",
        R"(planar-agent complete --claim 68fba76b319bcba1772f6e40a9b76f75 --summary "Landed the migration")"},
       {"planar-agent fail",
@@ -66,6 +68,7 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar-agent version", "0 1"},
       {"planar-agent pull", "0 1 2 7"},
       {"planar-agent peek", "0 1 2 7"},
+      {"planar-agent brief", "0 1 2 7"},
       {"planar-agent complete", "0 1 2 7"},
       {"planar-agent fail", "0 1 2 7"},
       {"planar-agent release", "0 1 2 7"},
@@ -100,6 +103,10 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {143, R"(Observation was interrupted by SIGTERM.)"},
   };
   static constexpr cliapp::exit_meaning_override k_overrides[] = {
+      {"planar-agent brief", 0,
+       R"(The brief was written, including when the config file is invalid (policy.valid is then false). Nothing is written to the database.)"},
+      {"planar-agent brief", 1, R"(No plan has the id, or the database could not be opened; or a usage error.)"},
+      {"planar-agent brief", 2, R"(The plan id is not a positive integer.)"},
       {"planar-agent review", 1,
        R"(No such claim, or the review came from the reviewed claim's own session (nothing is written); or a usage error.)"},
       {"planar-agent review", 2,

@@ -22,6 +22,7 @@ import planar.cmd.planar_agent.handlers.queue.status;
 import planar.cmd.planar_agent.handlers.queue.wait;
 import planar.cmd.planar_agent.handlers.recovery;
 import planar.cmd.planar_agent.handlers.review;
+import planar.cmd.planar_agent.handlers.brief;
 import planar.cmd.planar_agent.handlers.schema;
 import planar.cmd.planar_agent.handlers.terminal;
 import planar.cmd.planar_agent.handlers.version;
@@ -129,6 +130,8 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("action start", handlers::action_start);
   table.emplace("action end", handlers::action_end);
   table.emplace("review", handlers::review);
+  // Read-only: the single entry point. Opens the database strictly read-only.
+  table.emplace("brief", handlers::brief);
   table.emplace("reconcile", handlers::reconcile);
   table.emplace("abort", handlers::abort);
   table.emplace("ingest", handlers::ingest);

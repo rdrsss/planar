@@ -6437,6 +6437,7 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 # task status transition) in a single BEGIN IMMEDIATE transaction.
 planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--model <s>] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--json]
 planar-agent peek       <plan-id> [--json]
+planar-agent brief      <plan-id> [--json]
 planar-agent complete   --claim <token> [--summary <text>] [--json]
 planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
 planar-agent release    --claim <token> [--reason <text>] [--json]
@@ -6785,11 +6786,78 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `claim` / `heartbeat` | `{ok, claim_token, claim}` |
 | `action start` / `action end` | `{ok, action_id, action}` |
 | `review`      | `{ok, action_id, verdict, reviewed_claim, parent_action_id}` (`parent_action_id` is `null` when the reviewed claim has no action to hang under) |
+| `brief`       | `{brief_version, plan, anchor, counts, milestones, claims, wave, readiness, policy, confirm_before, protocol}`; see [`planar-agent brief`](#planar-agent-brief) |
 | `ingest`      | `{ok, sessions_created, claims_created, actions_created, events_processed}` |
 | `reconcile`   | `{ok, claims_marked_stale, actions_closed, candidates?}` (`candidates` present only with `--dry-run`; each is `{kind, id, claim}`) |
 | `abort`       | `{ok, claim_token, claim, aborting_session}` |
 
 `ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and the `run_id` and `stage` columns, which are always null). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+
+### `planar-agent brief`
+
+`brief <plan-id>` is the single entry point an orchestrator reads before it dispatches work in a plan: the plan's state, who holds which claim, which tasks may run in parallel now, which are ready, which policy applies, and the exact command templates of the claim protocol. It is read-only: the database is opened strictly read-only (`mode=ro`, so the driver refuses any write whatever the code does) and the verb writes nothing, not even a session row. The policy comes from the `[policy]` tables of the user's config file, resolved like `planar config`: `PLANAR_CONFIG_PATH`, else `$HOME/.planar/config.toml`. There is no environment override of a policy value.
+
+| Argument | Description |
+|----------|-------------|
+| `<plan-id>` | The plan: a milestone or an anchor. Required; an id only, as for `pull` and `peek`. |
+| `--json` | Emit the pinned JSON document below instead of text. |
+
+Text is the default and stays under 4 KB for a 20-task milestone. Placeholders in the claim templates are single-quoted for a POSIX shell and an embedded `'` is written `'\''`; a claim's worktree path is quoted the same way. A `gate` template appears only when the policy has `use_queue = true`: it is `planar-agent queue run --claim '<token>' -- <each task_gate element, quoted>`, or `-- <command>` when no `task_gate` is set. `confirm before:` is printed only when the policy sets `confirm_before`.
+
+```text
+brief v1 plan 2 m1 [active]
+tasks 23: todo 20 doing 2 blocked 0 done 1
+anchor: 1 p-anchor [active]
+milestones: 2 m1 [active] 1/23; 3 m2 [draft] 0/1;
+claims:
+  live #1 task:21 role=coder model=claude-opus worktree='/tmp/it'\''s a worktree' expires 2026-10-11T22:00:00.000Z
+  stale #2 task:22 role=reviewer model=- worktree=- expires 2026-10-11T19:00:00.000Z
+wave (12 parallel): 1 task-1; 2 task-2; ...; 14 task-14;
+serialized (9):
+  12 task-12: packet not ready: unresolved_citation
+  13 task-13: rule 1: blocked_by not-done task 14
+  ...
+ready: 17 of 20 unclaimed todo; not ready:
+  12 task-12: unresolved_citation
+  ...
+policy digest 3b63f137...; scope top-level (global_scope)
+  review_required=false [default]
+  use_queue=false [default]
+  ...
+protocol (lease 7200s, heartbeat every 1h):
+  claim: planar-agent claim --entity task:<id> --role coder --model '<model>' --ttl 7200 --worktree '<path>'
+  heartbeat: planar-agent heartbeat --claim '<token>'
+  ...
+```
+
+**Plan scope.** For a milestone the counts, claims, wave and readiness cover that plan and its descendants; `anchor` names the root of its parent chain and `milestones` lists the anchor's children (siblings included) with their own counts. For an anchor the same fields aggregate every milestone beneath it: `anchor` is `null`, `counts` sums all milestones' tasks, `claims` lists every claim covering them, and the wave and readiness span all milestones (including a `draft` one). A plan with no tasks gives zero counts, `claims: none` and an empty wave.
+
+**A bad config file does not stop the brief.** If the policy tables have a refused key or a mistyped value, or the file is not valid TOML or cannot be read, the verb still exits 0: `policy.valid` is `false`, `policy.findings` lists each problem (`{key, message}`; a file-level problem has the key `config`), and each mistyped key falls through to the next layer's value. The text form prints an `INVALID config` line. Run `planar config validate` for the full report.
+
+`--json` writes one line, ending in a newline, with these top-level keys in this order. A key is never reordered, and `brief_version` (currently `1`) is bumped when a key is removed or changes meaning:
+
+| Key | Shape |
+|-----|-------|
+| `brief_version` | Integer. |
+| `plan` | `{id, slug, title, status}`. |
+| `anchor` | The same shape, or `null` when the plan is itself the anchor. |
+| `counts` | `{todo, doing, blocked, done, cancelled}` over the plan and its descendants. |
+| `milestones` | `[{plan, counts}]`, the anchor's children, ascending by id. |
+| `claims` | `[{claim_id, entity, state, role, model, worktree, vendor, expires_at, covered_tasks}]`; `state` is `live` or `stale`, live first. |
+| `wave` | `{fan_out_available, parallel, serialized}`; each task is `{id, slug, title, why}` with `why` as `[{rule, reason}]` (empty for a wave member). |
+| `readiness` | `[{id, slug, ready, reasons}]` for each unclaimed todo task. |
+| `policy` | `{association, scope_reason, valid, findings, digest, values, sources}`; `values` is `{confirm_before, require_model, require_scenario_coverage, review_required, task_gate, use_queue}` and `sources` maps each key to `{kind, section}`. |
+| `confirm_before` | The policy's verb paths, `[]` when unset. |
+| `protocol` | `{lease_ttl_secs, heartbeat_every_secs, templates}` with `templates` as `[{name, command}]`. |
+
+The `schema` catalog entry for `brief` pins the flag, the positional, the examples and the exit codes (`planar-agent schema`); a golden test pins the JSON bytes.
+
+| Exit | When |
+|------|------|
+| `0` | The brief was written, including when the config file is invalid. |
+| `1` | No plan has the id (`error: brief: plan <id> not found`), the database does not exist or cannot be opened, or a usage error (a missing or non-numeric id, an unknown flag). |
+| `2` | The plan id is not a positive integer (for example `0`). |
+| `7` | The schema is behind or ahead of this binary. |
 
 ### `planar-agent review`
 
