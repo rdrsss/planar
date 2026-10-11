@@ -27,7 +27,7 @@ Three mechanisms, in layers, decide whether a status write lands:
    which is why re-answering an answered question or re-retiring a retired
    scenario is a silent no-op rather than a refusal.
 2. **Verb-level guards** layered on top by the handler: the claim-atomic
-   guard on task verbs, the cross-scope guard on ten verbs, required
+   guard on task verbs, the cross-scope guard on nine verbs, required
    flags such as `--reason`.
 3. **Engine roll-ups** that run *after* a write inside the same transaction
    and can move a *different* entity: plan auto-promotion, dependency

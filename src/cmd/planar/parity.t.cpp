@@ -388,6 +388,42 @@ TEST_CASE("the removed explore, skills and scope use|pop|clear verbs exit 2 and 
   CHECK(catalog.out.contains(R"("command":"planar scope suggest)"));
 }
 
+TEST_CASE("the four verbs removed at task 7468 exit 2 as unknown subcommands and the schema omits them",
+          "[cmd][parity][cli-surface]") {
+  // A removal needs a negative test, driven against the shipped binary the
+  // way an operator would: each verb is an unknown subcommand under its
+  // group, and no catalog entry still names it. Each group keeps its other
+  // leaves, so the parent is still declared.
+  auto const space = make_arena("unusedgone");
+  auto const run   = [&](std::vector<std::string> args, std::string_view tag) {
+    return run_pinned(cpp_bin(), args, space.cpp_root, tag);
+  };
+
+  struct removed {
+    std::vector<std::string> argv;
+    std::string_view         tag;
+    std::string_view         group;
+    std::string_view         leaf;
+  };
+  auto const verbs = std::array<removed, 4>{
+      removed{{"document", "validate-range"}, "dvr", "document", "validate-range"},
+      removed{{"audit", "publish-decision", "1"}, "apd", "audit", "publish-decision"},
+      removed{{"assoc", "detect"}, "adt", "assoc", "detect"},
+      removed{{"config", "init"}, "cin", "config", "init"},
+  };
+  auto const catalog = run({"schema"}, "unusedschema");
+  REQUIRE(catalog.code == 0);
+  for (auto const& verb : verbs) {
+    INFO("verb: " << verb.group << ' ' << verb.leaf);
+    auto const refused = run(verb.argv, verb.tag);
+    CHECK(refused.code == 2);
+    CHECK(refused.out.empty());
+    CHECK(refused.err.contains(verb.leaf));
+    CHECK_FALSE(catalog.out.contains(std::format(R"("command":"planar {} {}")", verb.group, verb.leaf)));
+    CHECK_FALSE(catalog.out.contains(std::format(R"("path":["{}","{}"])", verb.group, verb.leaf)));
+  }
+}
+
 TEST_CASE("neither binary touches a database on a no-database leaf", "[cmd][parity][oracle]") {
   // The lazy-acquisition rule, observed from outside: after `version` and
   // a `--help`, the scratch $PLANAR_DB file must not
@@ -848,7 +884,6 @@ TEST_CASE("every ported command declares what it should, self-consistently", "[c
   CHECK(mine->contains("planar update"));
   CHECK(mine->contains("planar document"));
   CHECK(mine->contains("planar document project"));
-  CHECK(mine->contains("planar document validate-range"));
   CHECK(mine->contains("planar workbench gc"));
   CHECK(mine->contains("planar workbench archive"));
   CHECK(mine->contains("planar annotate add"));

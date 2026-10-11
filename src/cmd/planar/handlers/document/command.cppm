@@ -22,14 +22,6 @@ namespace planar::cmd::handlers {
 /// schema mismatch.
 export auto document_project(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-/// @brief Validate a caller's complete adjacent range against one revision.
-/// @param ctx The invocation context.
-/// @param args Parsed command arguments.
-/// @return Success; every `document_project` refusal; or `invalid_input`
-/// (exit 2) with `document range rejected: <reason>` when the evidence does
-/// not match the freshly projected snapshot.
-export auto document_validate_range(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-
 /// @brief Declare the read-only document command family.
 /// @param root The root command tree.
 export auto declare_document(CLI::App& root) -> void;

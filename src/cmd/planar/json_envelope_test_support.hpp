@@ -8,7 +8,7 @@
 // A plain header, not a module, and not tied to any single result type:
 // each leaf `.t.cpp` in this directory defines its OWN local
 // `invocation`/`capture` struct (deliberately duplicated per file rather
-// than shared -- see e.g. `assoc_detect.t.cpp`'s own `invocation`), so this
+// than shared -- see e.g. `assoc_leaves.t.cpp`'s own `invocation`), so this
 // takes the raw stdout string rather than a shared result type. Nothing
 // that ships includes this header; only `.t.cpp` translation units do.
 #pragma once

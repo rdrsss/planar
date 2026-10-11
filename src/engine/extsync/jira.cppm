@@ -6,7 +6,7 @@
 /// `zig/src/engine/extsync/jira.zig`: `init`, `validate`, `pull`, `push`,
 /// `render`, and the `parseIssue` / `extractADFText` / `mapStatus` /
 /// `isValidIssueKey` helpers behind them — PLUS `post_comment` (plan 996,
-/// task 6339), landed for `audit publish-decision`.
+/// task 6339), landed for a verb removed at task 7468.
 ///
 /// ## `post_comment` is NOT part of the four-operation `external_adapter`
 /// interface
@@ -16,7 +16,7 @@
 /// `extsync.LocalAdapter`'s vtable. `ext propagate`'s own caller
 /// (`parent_issue.zig`'s injected `postCommentFn`) stays deferred with that
 /// verb — this port only wires the ONE caller this cycle needs,
-/// `audit publish-decision`, which reaches the concrete adapter through
+/// that removed verb, which reached the concrete adapter through
 /// `adapter_handle::post_comment` (see `ext_adapter_factory.cppm`) rather
 /// than through `external_adapter`.
 ///

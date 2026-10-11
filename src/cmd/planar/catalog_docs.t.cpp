@@ -209,7 +209,7 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
   // (plan 1142, tasks 7455 and 7458), and `planar explore`, `planar skills` and the three
   // `planar scope` stubs left it (plan 1142, task 7463: 249 -> 244); the floor keeps a margin of four.
   CAPTURE(leaves);
-  CHECK(leaves >= 240);
+  CHECK(leaves >= 236);
 }
 
 TEST_CASE("every planar and planar-agent leaf has an example under its own command path", "[catalog][docs]") {

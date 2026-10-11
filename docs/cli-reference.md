@@ -210,7 +210,7 @@ Global flags must appear before the subcommand. They are not repeated in per-com
 
 ## Cross-scope guard
 
-The cross-scope guard is a refusal mechanism that runs at the top of ten specific verbs — those that walk from a parent entity to derived rows, or mutate one existing entity in a way the audit judged worth guarding (see [Guarded verbs](#guarded-verbs); it is NOT on every mutating verb). It is layered on top of the strict write-scope resolver described in [Scope Shorthand](#scope-shorthand): the resolver picks the operator's intended scope; the guard then compares that against the *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. See [docs/concepts.md § Cross-scope guard](./concepts.md#cross-scope-guard) for the conceptual model.
+The cross-scope guard is a refusal mechanism that runs at the top of nine specific verbs — those that walk from a parent entity to derived rows, or mutate one existing entity in a way the audit judged worth guarding (see [Guarded verbs](#guarded-verbs); it is NOT on every mutating verb). It is layered on top of the strict write-scope resolver described in [Scope Shorthand](#scope-shorthand): the resolver picks the operator's intended scope; the guard then compares that against the *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. See [docs/concepts.md § Cross-scope guard](./concepts.md#cross-scope-guard) for the conceptual model.
 
 ### Resolution → guard pipeline
 
@@ -270,18 +270,17 @@ does not exist for them, and could not be offered without a new flag.
 
 ### Guarded verbs
 
-**Measured against the source at task 6075 (2026-09-11) and re-measured at
-task 6825 (2026-09-21), not aspirational.** Ten verbs carry a cross-scope
-check; eight `guard_with_membership` call sites implement them (`sync push`
-and `sync pull` share one; `decision accept` and `decision withdraw` share
-their transition helper). Every other mutating verb — including several this
+**Measured against the source at task 6075 (2026-09-11), re-measured at
+task 6825 (2026-09-21), and again at task 7468 (2026-10-10), not aspirational.**
+Nine verbs carry a cross-scope check; seven `guard_with_membership` call
+sites implement them (`sync push` and `sync pull` share one; `decision accept`
+and `decision withdraw` share their transition helper). Every other mutating verb — including several this
 table claimed for years — performs **no** scope comparison.
 
 | Verb | Guards against | Comparison | Call site |
 |------|---------------|-----------|-----------|
 | `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec/command.cpp` |
 | `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback/command.cpp` |
-| `audit publish-decision <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/audit/command.cpp` |
 | `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task/command.cpp` |
@@ -355,7 +354,7 @@ Initializes the Planar database and registers the current directory as a project
 planar init [--name <text>] [--slug <slug>] [--skip-project] [--allow-no-repo] [--force]
 ```
 
-**Description:** Idempotently ensure the config file exists (via `config init`), apply the embedded migration corpus (compiled into the binary at configure time from `migrations/` via `cmake/generate_migrations.cmake`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Human output names the `assoc create` and `assoc add` commands that establish the project's planning scope; `--json` retains the stable initialization result shape without prose guidance. Order: ensure config → apply migrations → create project row.
+**Description:** Idempotently ensure the config file exists, apply the embedded migration corpus (compiled into the binary at configure time from `migrations/` via `cmake/generate_migrations.cmake`) against the configured database (creating it if absent), then register the current working directory as a project if it is not already registered. Human output names the `assoc create` and `assoc add` commands that establish the project's planning scope; `--json` retains the stable initialization result shape without prose guidance. Order: ensure config → apply migrations → create project row.
 
 **Workspace-shape guardrail:** when cwd has no `.git` of its own but contains one or more immediate child directories that do, `planar init` refuses with a hint pointing at `planar workspace init`. A bare init in a polyrepo workspace directory would otherwise register a semantically-wrong project row for the workspace itself. Pass `--allow-no-repo` to override and register the non-repo cwd as a standalone project anyway (`--force` is a different flag — see the options table). See [Domain: `workspace`](#domain-workspace) and [concepts.md § Workspace](concepts.md#workspace).
 
@@ -493,7 +492,7 @@ To switch scope: `cd` into the target project / workspace root, or pass `--scope
 planar scope suggest
 ```
 
-**Description:** Inspect the current working directory and list the associations the cwd project is a member of. Read-only — there is no ambient scope to apply suggestions to. To act on a suggestion, pass `--scope <slug>` to the target verb or `cd` into that scope. (Companion to `assoc detect`, which proposes new association *creation*; `scope suggest` proposes existing associations the cwd qualifies for.)
+**Description:** Inspect the current working directory and list the associations the cwd project is a member of. Read-only — there is no ambient scope to apply suggestions to. To act on a suggestion, pass `--scope <slug>` to the target verb or `cd` into that scope. `scope suggest` proposes existing associations the cwd qualifies for.
 
 **Output (human):**
 ```
@@ -677,43 +676,6 @@ members of org:acme (3):
 
 ---
 
-### `planar assoc detect [--apply]`
-
-**Synopsis:**
-```
-planar assoc detect [--apply] [--json]
-```
-
-**Description:** Inspect the current working directory's git remote host/org and parent path, then propose new association slugs using the conventional auto-tag rules (`host:`, `org:`, `path:`, `lang:`). Without `--apply`, prints proposals only. With `--apply`, creates proposed associations that do not already exist and adds the current project to them.
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--apply` | Create proposed associations and add current project. | off |
-
-**Output (human):**
-```
-proposed associations:
-  host:github.com   (from git remote host)  [will create]
-  org:rdrsss        (from git remote org)   [already exists, will add]
-  path:projects     (from parent dir)        [will create]
-```
-
-**Schema effects (without `--apply`):** Reads only. No writes.
-**Schema effects (with `--apply`):**
-- Inserts into `associations(slug, name, kind, auto_detected=1)` for each new association.
-- Inserts into `project_associations(project_id, association_id, source='auto:git-remote' | 'auto:path' | 'auto:lang')`.
-
-**Capture:** None.
-
----
-
-## Domain: `plan`
-
-Plans are the top-level structured intent for a body of work. They may be hierarchical (via `parent_plan_id`) and contain ordered steps (`plan_steps`) that optionally materialize as tasks.
-
----
 
 ### `planar plan create <title>`
 
@@ -2596,50 +2558,6 @@ the complete ordered projection to the source state.
 {"contract_version":"block-document-v1","source_uuid":"<db-uuid>","document_id":"<db-uuid>:artifact:1","content_revision":"<sha256>","passages":[{"key":"<db-uuid>:...","kind":"heading","text":"...","source":{"kind":"artifact","id":"1","path":"body","start_line":1,"end_line":1}}]}
 ```
 
-### `planar document validate-range`
-
-```bash
-planar document validate-range --kind plan|artifact --id <id> \
-  --content-revision <revision> --start-key <key> --start-offset <bytes> \
-  --end-key <key> --end-offset <bytes> \
-  --covered-key <key>... --segment-quote <text>... --json
-```
-
-Validates a complete adjacent range at one content revision. Offsets are UTF-8
-byte offsets and must lie on code-point boundaries. Covered keys and segment
-quotes are evidence, not authority: Planar recomputes and compares them before
-returning the canonical keys, segment quotes, and normalized full quote.
-
-**Output (`block-range-validation-v1`):**
-```json
-{"contract_version":"block-range-validation-v1","source_uuid":"<db-uuid>","document_id":"<db-uuid>:artifact:1","content_revision":"<sha256>","covered_keys":["<key>","..."],"segment_quotes":["<text>","..."],"normalized_quote":"<segments joined by \\n>"}
-```
-
-**Rejection reasons.** A rejected range exits `2` with
-`error: document range rejected: <reason>` on stderr. Checks run in this order
-and the first failure is reported:
-
-| Reason | Meaning |
-|--------|---------|
-| `stale_revision` | `--content-revision` is not the revision just projected: the source changed, or the evidence came from another database. |
-| `missing_boundary` | A boundary key or offset is absent. All four are required flags, so the parser normally refuses first (exit `2`). |
-| `foreign_key` | `--start-key` or `--end-key` is not a passage of this projection. |
-| `reversed_range` | The end passage precedes the start passage. |
-| `invalid_utf8_boundary` | An offset is negative, past the passage end, before the start offset in a single-passage range, or splits a UTF-8 code point. |
-| `noncontiguous_covered_keys` | The `--covered-key` list is not exactly the ordered passages from start to end. |
-| `forged_quote` | The `--segment-quote` list is not exactly the projected text of each covered segment. |
-
-The recovery for every reason is the same: re-run `document project`, rebuild
-the evidence from that output, and resend. Retrying unchanged evidence fails
-the same way.
-
-**Exit codes (both leaves):**
-- `0` — success.
-- `1` — the source row is absent; the database file cannot be opened read-only (including when it does not exist); a projection query failed; the schema is **behind** this binary or has a gap.
-- `2` — an unsupported `--kind` (anything but `plan` / `artifact`), a parse failure, or (on `validate-range`) a rejected range.
-- `7` — the schema is **newer** than this binary supports.
-
----
 
 ## Domain: `annotate`
 
@@ -4752,14 +4670,6 @@ SHA                                       session  claim  committed_at          
 
 ---
 
-### `planar audit publish-decision <decision-id> [--scope <slug>] [--json]`
-
-**Description:** Post a decision's body to every operational-plane target reachable from that decision's external links — the bridge that pushes a recorded local decision out to the linked Jira issue / GitHub issue as a comment. Subject to the cross-scope guard (the decision's scope must agree with the operator's, or pass `--scope`).
-
-**Schema effects:** Reads `decisions`, `entity_links`, `external_links`, and `external_systems`; updates each attempted link's last-sync state and inserts a `sync_events` row. Performs outbound HTTP to each linked system.
-
----
-
 ### `planar audit handoff-readiness [--threshold <n>] [--json]`
 
 **Description:** Check resume-readiness across all in-flight tasks at once — the fleet-wide companion to `resume validate`. Reports which tasks would resume cleanly and which are missing a next action or capture context. `--threshold` tunes the staleness cutoff.
@@ -5721,8 +5631,7 @@ planar config edit
 ```
 
 **Description:** Open the config file in `$EDITOR` (falling back to `$VISUAL`,
-then `vi`). If the file does not exist, a starter file is written first
-(equivalent to `planar config init`).
+then `vi`). If the file does not exist, a starter file is written first.
 
 **Schema effects:** None.
 
@@ -5768,38 +5677,6 @@ config validate: ok
 - `0` — no errors (warnings are printed but do not change the exit code).
 - `1` — one or more errors found, or the config file was not found (`error: config file not found: <path>`).
 - `2` — parse failure (unexpected argument or flag).
-
----
-
-### `planar config init`
-
-**Synopsis:**
-```
-planar config init
-```
-
-**Description:** Idempotently write a starter `config.toml` at the resolved
-config path if it does not already exist. Prints whether the file was created
-or already existed. Exit 0 either way.
-
-Called automatically by `planar init` before applying migrations.
-
-**Output (human):**
-```
-config init: created ~/.planar/config.toml
-```
-or:
-```
-config init: already exists ~/.planar/config.toml
-```
-
-**Schema effects:** None.
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success (created or already existed).
-- `2` — filesystem error (directory not writable).
 
 ---
 
@@ -6001,7 +5878,7 @@ planar templates init [--force] [--json]
 **Description:** Idempotently extract the embedded baseline templates to
 `<templates-root>/default/<system>/<kind>.json`. Without `--force` an existing
 file is never overwritten. Reports the list of files written. Also called
-automatically by `planar init` (after `config init`, before `migrate apply`).
+automatically by `planar init` (after the config file is ensured, before `migrate apply`).
 
 **Options:**
 
@@ -7909,19 +7786,19 @@ For quick reference, all documented commands grouped by domain:
 
 | Domain | Commands |
 |--------|----------|
-| `init` | `init` (calls `config init` and `templates init` before applying migrations) |
-| `config` | `config show`, `config show --effective`, `config show --raw`, `config show --defaults`, `config edit`, `config validate`, `config init`, `config path` |
+| `init` | `init` (ensures the config file, then calls `templates init`, before applying migrations) |
+| `config` | `config show`, `config show --effective`, `config show --raw`, `config show --defaults`, `config edit`, `config validate`, `config path` |
 | `templates` | `templates list`, `templates show`, `templates render`, `templates validate`, `templates init`, `templates path` |
 | `tree` | `tree` |
 | `scope` | `scope show`, `scope suggest` (`scope use`/`pop`/`clear` removed in plan 153 M5) |
-| `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members`, `assoc detect` |
+| `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members` |
 | `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan descendants`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |
 | `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task facts stage`, `task touches add`, `task touches remove` |
 | `question` | `question add`, `question answer`, `question wontfix`, `question list`, `question show`, `question edit`, `question view`, `question diff`, `question review`, `question link` |
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |
 | `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
-| `document` | `document project`, `document validate-range` |
+| `document` | `document project` |
 | `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate capabilities`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
 | `workbench` | `workbench lint`, `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |
@@ -7932,7 +7809,7 @@ For quick reference, all documented commands grouped by domain:
 | `resume` | `resume`, `resume validate` |
 | `handoff` | `handoff`, `handoff create`, `handoff validate`, `handoff list`, `handoff show`, `handoff consume`, `handoff abandon` |
 | `capture` | `capture session`, `capture end`, `capture commits`, `capture note`, `capture command`, `capture file`, `capture snapshot` |
-| `audit` | `audit trail`, `audit session`, `audit commits`, `audit publish-decision`, `audit handoff-readiness` |
+| `audit` | `audit trail`, `audit session`, `audit commits`, `audit handoff-readiness` |
 | `health` | `health` |
 | `links` | `links add`, `links list`, `links remove`, `links trail` (no `links update`) |
 | `report` | `report [--days <n>] [--tail <n>] [--json]` |
@@ -8067,7 +7944,7 @@ resolved write scope disagrees with the OWNING entity's, using the
 membership-aware comparison — an operator scope `assoc:<org>` covers a finding
 on a `repo:<member>` task. `list` and `show` are reads and are unguarded. See
 [Cross-scope guard](#cross-scope-guard); `feedback triage set` is one of the
-ten verbs in that table.
+nine verbs in that table.
 
 Disposition values are `untriaged`, `needs-reproduction`, `accepted`,
 `retained-question`, `dismissed`, `reported-external`, and `duplicate`.

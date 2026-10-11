@@ -4,8 +4,8 @@
 //
 // ## HOME SAFETY, AND WHY IT IS SHARPER HERE THAN ANYWHERE ELSE
 //
-// This family WRITES the operator's `~/.planar/config.toml` (`init` and
-// `edit` both create it) and READS it in the other three. Every fixture
+// This family WRITES the operator's `~/.planar/config.toml` (`edit`
+// creates it) and READS it in the other three. Every fixture
 // builds an explicit environment map with `HOME` and `PLANAR_CONFIG_PATH`
 // under its own uniquely-named scratch root and dispatches through
 // `map_env`, so nothing here reads the process environment.
@@ -17,11 +17,11 @@
 // reason. Oracle-confirmed in a pinned arena with the two pointing at
 // different directories: `config path` printed the one under `HOME`.
 //
-// ## NONE OF THE FIVE MAY OPEN SQLITE
+// ## NONE OF THE FOUR MAY OPEN SQLITE
 //
 // `ctx.db().opened()` is asserted FALSE after every case. That is a real
-// contract, not a property of the current implementation: `config init`
-// and `config path` are what an operator runs BEFORE `planar init`, and
+// contract, not a property of the current implementation: `config path`
+// is what an operator runs BEFORE `planar init`, and
 // the runtime applies pending migrations on first use — so a `config path`
 // that opened the database could migrate the operator's live one past what
 // every installed binary supports.
@@ -310,74 +310,6 @@ TEST_CASE("config path refuses at exit 1 when neither variable yields a path", "
   cleanup(fx);
 }
 
-// --- config init ------------------------------------------------------
-
-TEST_CASE("config init creates the starter file and reports the path", "[cmd][config][init]") {
-  auto const fx = make_fixture("init");
-  REQUIRE_FALSE(std::filesystem::exists(fx.cfg));
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: created " + fx.cfg.string() + "\n");
-  CHECK(r.err.empty());
-  CHECK_FALSE(r.db_open);
-  REQUIRE(std::filesystem::exists(fx.cfg));
-  cleanup(fx);
-}
-
-TEST_CASE("config init is idempotent and reports already-exists at exit 0", "[cmd][config][init]") {
-  // NOT an error, which is the whole `D-init-idempotent` shape: the Go
-  // original returns `(false, nil)` and Zig mirrors it. A port that made
-  // this exit 1 would break `planar init`, which calls the same path.
-  auto const fx = make_fixture("initagain");
-  write_config(fx, "vendor = \"kept\"\n");
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: already exists " + fx.cfg.string() + "\n");
-  CHECK(r.err.empty());
-  // The existing file is NOT overwritten — asserted, because "already
-  // exists" printed while the file was clobbered would still pass on
-  // stdout alone.
-  CHECK(read_file(fx.cfg) == "vendor = \"kept\"\n");
-  cleanup(fx);
-}
-
-TEST_CASE("config init creates missing parent directories", "[cmd][config][init]") {
-  auto fx = make_fixture("initdeep");
-  fx.cfg  = fx.root / "a" / "b" / "c.toml";
-  fx.vars.insert_or_assign("PLANAR_CONFIG_PATH", fx.cfg.string());
-  REQUIRE_FALSE(std::filesystem::exists(fx.root / "a"));
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: created " + fx.cfg.string() + "\n");
-  CHECK(std::filesystem::exists(fx.cfg));
-  cleanup(fx);
-}
-
-TEST_CASE("config init writes the LONGER of the two starter blobs", "[cmd][config][init][oracle-defect]") {
-  // MEASURED, not read off the constant: `config init` writes 1246
-  // bytes and `config edit` writes 1048, and the 198-byte difference is an
-  // eight-line `[models.codex]` / `[roles]` example block that plan 540
-  // added to `init.zig`'s copy and never back-ported to `edit.zig`'s —
-  // whose comment still claims it "mirrors init.zig's starter_config
-  // exactly". Reproduced rather than unified (D2): merging them would
-  // change what one of the two verbs writes to the operator's disk.
-  auto const fx = make_fixture("initblob");
-  REQUIRE(dispatch(fx, {"config", "init"}).code == 0);
-  auto const body = read_file(fx.cfg);
-  REQUIRE_FALSE(body.empty());
-  CHECK(body.size() == 1246);
-  CHECK(body.starts_with("# ~/.planar/config.toml"));
-  CHECK(body.ends_with("# done = \"Closed\"\n"));
-  CHECK(body.contains("# [models.codex]"));
-  CHECK(body.contains("# [roles]"));
-  // The file it writes must itself validate cleanly — a starter that the
-  // very next `config validate` rejects would be a poor welcome.
-  auto const validated = dispatch(fx, {"config", "validate"});
-  CHECK(validated.code == 0);
-  CHECK(validated.out == "config validate: ok\n");
-  cleanup(fx);
-}
-
 // --- config edit ------------------------------------------------------
 
 TEST_CASE("config edit execs the editor on the config file itself", "[cmd][config][edit]") {
@@ -407,8 +339,8 @@ TEST_CASE("config edit execs the editor on the config file itself", "[cmd][confi
 }
 
 TEST_CASE("config edit writes the SHORTER starter blob when the file is absent", "[cmd][config][edit][oracle-defect]") {
-  // 1048 bytes, oracle-measured, and WITHOUT the `[models.codex]` /
-  // `[roles]` block `config init`'s copy carries. Both halves are asserted:
+  // 1048 bytes, oracle-measured, and WITHOUT the eight-line `[models.codex]` /
+  // `[roles]` example. Both halves are asserted:
   // the size, and the absence of the block — a size check alone would pass
   // against any 1048-byte file.
   auto fx = make_fixture("editblob");
@@ -1178,16 +1110,15 @@ TEST_CASE("both table-header shapes the oracle accepts are accepted here too", "
 // --- the family-wide invariant ----------------------------------------
 
 TEST_CASE("no config leaf opens the database", "[cmd][config][db]") {
-  // Asserted once across all five as a family invariant, rather than only
-  // per case: `config init` and `config path` are what an operator runs
-  // BEFORE `planar init`, and the runtime applies pending migrations on
+  // Asserted once across all four as a family invariant, rather than only
+  // per case: `config path` is what an operator runs BEFORE `planar init`,
+  // and the runtime applies pending migrations on
   // first use — so a leaf that opened the database could migrate the
   // operator's live one past what every installed binary supports.
   auto fx = make_fixture("nodb");
   fx.vars.emplace("PLANAR_EDITOR", "/usr/bin/true");
   write_config(fx, k_rich_config);
   for (auto const& args : std::vector<std::vector<std::string>>{{"config", "path"},
-                                                                {"config", "init"},
                                                                 {"config", "edit"},
                                                                 {"config", "show"},
                                                                 {"config", "show", "--effective"},

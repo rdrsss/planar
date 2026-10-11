@@ -521,7 +521,6 @@ planar_binary(planar
     handlers/plan/step_list.cppm
     handlers/plan/step_add.cppm
     handlers/assoc/command.cppm
-    handlers/assoc/detect.cppm
     handlers/assoc/members.cppm
     handlers/assoc/remove.cppm
     handlers/assoc/add.cppm
@@ -541,7 +540,6 @@ planar_binary(planar
     handlers/health/hygiene.cppm
     handlers/audit/command.cppm
     handlers/audit/handoff_readiness.cppm
-    handlers/audit/publish_decision.cppm
     handlers/audit/session.cppm
     handlers/audit/commits.cppm
     handlers/audit/trail.cppm
@@ -665,7 +663,6 @@ planar_binary(planar
     handlers/templates/list.cppm
     handlers/config/command.cppm
     handlers/config/path.cppm
-    handlers/config/init.cppm
     handlers/config/validate.cppm
     handlers/config/edit.cppm
     handlers/config/show.cppm

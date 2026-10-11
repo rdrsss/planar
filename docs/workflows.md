@@ -944,7 +944,7 @@ planar task update 142 --next-action "rerun make test"
 # … coder works, then returns; the orchestrator owns the terminal verb …
 ```
 
-No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the ten verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
+No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the nine verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
 
 This is the dominant pattern. Every coder, ingestor, and planner skill that runs against a known repo cwd works without scope plumbing.
 
@@ -973,7 +973,7 @@ planar decision add "Adopt strict resolver for writes" \
   --scope assoc:project:repo-b
 ```
 
-`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision accept`, `decision withdraw`, and `audit publish-decision` calls; `decision edit` and `decision supersede` run no scope guard.
+`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision accept` and `decision withdraw` calls; `decision edit` and `decision supersede` run no scope guard.
 
 ### Inspecting the resolved scope
 
@@ -1098,7 +1098,7 @@ Use this when your daily working tree is a workspace directory (`~/work/`, `~/pr
 
 **What happens:** `planar workspace init` builds the org + project rows in one transaction, creates the state directory under `~/.planar/workspaces/<org_id>/`, scans the member repos to produce a structured routing table, regenerates `AGENTS.md` from that table, and installs symlinks at the workspace root (`AGENTS.md`, `CLAUDE.md`) that point at the canonical content. Subsequent shape changes (new repo, new plans, dependencies shifting) are absorbed by re-running the routing build and regenerate verbs; the symlinks stay valid.
 
-**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on ten verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw`, `closure compute`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
+**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on nine verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `feedback triage set`, `decision accept`, `decision withdraw`, `closure compute`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
 
 ### Step 1 — Initialize the workspace
 
@@ -1354,7 +1354,6 @@ planar-ext sync resolve 7 --keep local \
 
 # Audit trail from either direction.
 planar audit trail --link 1                   # everything for link 1
-planar audit publish-decision 5               # post decision 5 to all linked remotes
 planar audit handoff-readiness --threshold 90 # CI gate
 ```
 

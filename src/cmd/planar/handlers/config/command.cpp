@@ -21,7 +21,6 @@ import planar.cmd.planar.declare;
 import planar.cmd.planar.handlers.config.show;
 import planar.cmd.planar.handlers.config.edit;
 import planar.cmd.planar.handlers.config.validate;
-import planar.cmd.planar.handlers.config.init;
 import planar.cmd.planar.handlers.config.path;
 
 namespace planar::cmd::handlers {
@@ -30,65 +29,10 @@ namespace cfg = engine::config;
 
 namespace {
 
-/// @brief The starter written by `config init`.
-///
-/// The LONGER of the two blobs — it carries the eight-line
-/// `[models.codex]` / `[roles]` example the `config edit` copy never
-/// received. 1246 bytes, measured at plan 1142 task 7456 after the pointer to
-/// the removed `planar models` verb was dropped from the blob. See
-/// config.cppm for why the two are not merged.
-constexpr std::string_view k_starter_init = R"TOML(# ~/.planar/config.toml — Planar configuration
-#
-# This file was created by "planar config init" (or "planar init").
-# All keys are optional. Anything you don't set falls through to the
-# embedded defaults shipped in the binary.
-#
-# To see every available key with its current default value, run:
-#   planar config show --defaults
-#
-# To see the fully resolved configuration with provenance per key, run:
-#   planar config show --effective
-#
-# Environment variables override config values. They always take precedence.
-# See docs/architecture.md for the full configuration plane reference.
-#
-# To edit this file in your $EDITOR, run:
-#   planar config edit
-#
-# Example customizations (uncomment and fill in):
-#
-# [defaults]
-# vendor = "claude"
-#
-# [workbench]
-# root = "~/.planar/workbench"
-#
-# [external.jira]
-# base_url = "https://your-org.atlassian.net"
-# user_env  = "JIRA_USER"
-# token_env = "JIRA_TOKEN"
-#
-# # Per-vendor model tier maps + role→tier routing (plan 540). Override a
-# # tier to re-route every role at that tier.
-# [models.codex]
-# medium = "gpt-5.6-terra"
-#
-# [roles]
-# coder = "large"
-#
-# [associations."org:acme"]
-# github_lead_repo = "acme/platform"
-#
-# [associations."org:acme".external.jira.status]
-# done = "Closed"
-)TOML";
-
 /// @brief The starter written by `config edit`.
 ///
-/// The SHORTER blob: identical to `k_starter_init` except that it lacks the
-/// `[models.codex]` / `[roles]` block. 1048 bytes, byte-matched against the
-/// built oracle. `edit.zig`'s own comment claims this "mirrors init.zig's
-/// starter_config exactly" — it does not, and reproducing the drift is D2.
+/// The starter written by `config edit` when no file exists. 1048 bytes,
+/// byte-matched against the built oracle.
 constexpr std::string_view k_starter_edit = R"TOML(# ~/.planar/config.toml — Planar configuration
 #
 # This file was created by "planar config init" (or "planar init").
@@ -306,25 +250,6 @@ auto config_path(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(path.error());
   }
   ctx.out() << path->string() << '\n';
-  return {};
-}
-
-auto config_init(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  static_cast<void>(args);
-  auto const path = config_file_path(ctx);
-  if (!path.has_value()) {
-    return std::unexpected(path.error());
-  }
-
-  std::error_code ec;
-  if (std::filesystem::exists(*path, ec)) {
-    ctx.out() << "config init: already exists " << path->string() << '\n';
-    return {};
-  }
-  if (!write_file(*path, k_starter_init)) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "initializing config file: FileWriteFailed"));
-  }
-  ctx.out() << "config init: created " << path->string() << '\n';
   return {};
 }
 
@@ -710,8 +635,6 @@ auto declare_config(CLI::App& root) -> void {
   config_cli::attach_edit(config);
 
   config_cli::attach_validate(config);
-
-  config_cli::attach_init(config);
 
   config_cli::attach_path(config);
 }
