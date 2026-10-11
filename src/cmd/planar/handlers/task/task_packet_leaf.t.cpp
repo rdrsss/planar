@@ -200,7 +200,8 @@ TEST_CASE("task packet: the ready arm is genuinely reachable through the CLI", "
 
   // The envelope's shape, in the order a consumer reads it.
   CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{"task_id":100,)"));
-  CHECK(res.out.find(R"("canonical":)") != std::string::npos);
+  // No `canonical` copy: `input` is the only serialized body of the evidence.
+  CHECK(res.out.find(R"("canonical":)") == std::string::npos);
   // No routing digest: the envelope ends at `reasons`, with no `digest` key.
   CHECK(res.out.find(R"("digest":)") == std::string::npos);
   CHECK(res.out.ends_with("]}\n"));
@@ -238,11 +239,10 @@ TEST_CASE("task packet: the policy version rides in the envelope, not only the b
   REQUIRE(res.code == 0);
 
   // Packets compare only within one policy version. A consumer has to
-  // establish that BEFORE comparing digests, and digging the version out of
-  // the canonical body would mean parsing the very thing whose format the
-  // version describes. So it appears twice, and both are contract.
+  // establish that before comparing packets, so the version sits at the top
+  // of the envelope. The envelope has no escaped `canonical` copy of it.
   CHECK(res.out.find(R"("policy_version":"routing-packet-v2")") != std::string::npos);
-  CHECK(res.out.find(R"(\"policy\":\"routing-packet-v2\")") != std::string::npos);
+  CHECK(res.out.find(R"(\"policy\":\"routing-packet-v2\")") == std::string::npos);
 }
 
 TEST_CASE("task packet: an edit changes the packet, which carries no routing digest", "[task-packet]") {
@@ -263,6 +263,24 @@ TEST_CASE("task packet: an edit changes the packet, which carries no routing dig
   // A packet that ignored an edit would show state that no longer exists.
   CHECK(after.out != first.out);
   CHECK(after.out.find("\"digest\":") == std::string::npos);
+}
+
+TEST_CASE("task packet: the JSON drops canonical and is byte-identical across two runs", "[task-packet]") {
+  auto const fx = make_fixture("twice");
+  seed(fx);
+
+  // Each arm runs twice in the same fixture. A packet whose bytes drifted
+  // between runs would make a consumer's comparison of two packets meaningless.
+  for (auto const id : {"100", "200"}) {
+    INFO("task " << id);
+    auto const first = dispatch(fx, {"task", "packet", id, "--json"});
+    REQUIRE(first.code == 0);
+    auto const second = dispatch(fx, {"task", "packet", id, "--json"});
+    REQUIRE(second.code == 0);
+    CHECK(second.out == first.out);
+    CHECK(first.out.find("\"canonical\":") == std::string::npos);
+    CHECK(first.out.find("\"input\":{") != std::string::npos);
+  }
 }
 
 TEST_CASE("task packet: the text rendering names ready, reasons and body, with no digest line", "[task-packet]") {

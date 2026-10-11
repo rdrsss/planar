@@ -132,7 +132,7 @@ export struct evidence {
   std::int64_t id = 0;                       ///< Source row id.
   std::string  locator;                      ///< `artifact:12#Overview`, `next_action`, a path, …
   std::string  text;                         ///< The semantic payload the digest is taken over.
-  std::string  display_label;                ///< Human label; carried in `canonical` only.
+  std::string  display_label;                ///< Human label; carried in the canonical body and `input`.
   std::string  source_digest;                ///< Digest recorded when the evidence was materialized.
   std::string  current_digest;               ///< Digest recomputed live; empty when unresolvable.
   bool         required   = true;            ///< Whether readiness depends on this row.
@@ -256,9 +256,9 @@ export [[nodiscard]] auto render_text(const task_packet& packet) -> std::string;
 
 /// @brief Render the machine-readable envelope.
 ///
-/// The envelope carries `policy_version` alongside `ready`, `input`,
-/// `canonical` and `reasons` — see this file's header for why the
-/// version is duplicated out of the canonical body.
+/// The envelope carries `policy_version` alongside `ready`, `input` and
+/// `reasons`. It carries no `canonical` body: `input` is the only serialized
+/// copy of the evidence, so the packet is not emitted twice.
 /// @param packet A compiled packet.
 /// @return A COMPLETE stdout payload including its trailing newline.
 export [[nodiscard]] auto render_json(const task_packet& packet) -> std::string;

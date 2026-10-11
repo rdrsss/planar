@@ -1398,9 +1398,7 @@ auto render_json(const task_packet& packet) -> std::string {
   emit("claims", in.claims);
   emit("validation_gates", in.validation_gates);
   emit("facts", in.facts);
-  out.append("},\"canonical\":");
-  append_json_string(out, packet.canonical);
-  out.append(",\"reasons\":[");
+  out.append("},\"reasons\":[");
   bool first = true;
   for (const auto reason : packet.reasons) {
     if (!first) {

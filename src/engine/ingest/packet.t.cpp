@@ -634,7 +634,7 @@ TEST_CASE("a task packet carries no routing digest field", "[packet][routing-dig
   CHECK(packet.canonical.starts_with("{\"policy\":\"routing-packet-v2\",\"task_id\":"));
   const auto json = pk::render_json(packet);
   CHECK(json.find("\"digest\":") == std::string::npos);
-  CHECK(json.find("\"canonical\":") != std::string::npos);
+  CHECK(json.find("\"canonical\":") == std::string::npos);
   const auto text = pk::render_text(packet);
   CHECK(text.find("digest: ") == std::string::npos);
 }
@@ -844,14 +844,12 @@ TEST_CASE("render_json carries the policy version in the envelope", "[packet]") 
   const auto json = pk::render_json(*ready);
 
   // The version rides in the envelope so a consumer can establish that two
-  // packets are comparable BEFORE parsing the canonical body — which is the
-  // very thing whose format the version describes.
+  // packets are comparable before reading `input`.
   CHECK(json.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{)"));
   CHECK(json.find(R"("reasons":[]})") != std::string::npos);
   CHECK(json.ends_with("\n"));
-  // `policy` appears again INSIDE the escaped canonical body; the two are not
-  // the same field and both are contract.
-  CHECK(json.find(R"(\"policy\":\"routing-packet-v2\")") != std::string::npos);
+  // The envelope carries no escaped `canonical` copy of the policy.
+  CHECK(json.find(R"(\"policy\":\"routing-packet-v2\")") == std::string::npos);
 
   auto blocked = pk::assemble_task(conn, bare_task);
   REQUIRE(blocked.has_value());
