@@ -140,7 +140,7 @@ This composes naturally with `plan list`, `task list`, `question list`, `scenari
 
 Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against a target entity's stored `(scope_kind, scope_id)` and refuses if they disagree.
 
-**It runs on ten verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All ten are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
+**It runs on nine verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All nine are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
 
 ### Removed: the active scope stack
 
@@ -160,15 +160,15 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 
 ### Which verbs are guarded
 
-**Measured against the source at task 6075 (2026-09-11).** Ten verbs, eight
+**Measured against the source at task 7468 (2026-10-10).** Nine verbs, seven
 call sites (`sync push` and `sync pull` share one; `decision accept` and
-`decision withdraw` share their transition helper):
+`decision withdraw` share their transition helper). Task 6075 measured ten
+verbs and eight call sites, before `audit publish-decision` was removed:
 
 | Verb | Comparison |
 |------|-----------|
 | `spec ingest <plan> --apply` | membership-aware |
 | `feedback triage set` | membership-aware |
-| `audit publish-decision` | membership-aware |
 | `planar-ext sync push <link\|kind:id>` | membership-aware |
 | `planar-ext sync pull <link\|kind:id>` | membership-aware |
 | `planar-ext sync resolve <event-id>` | membership-aware |
@@ -191,7 +191,7 @@ The reasoning: strict equality could not distinguish "my own member repo" from "
 
 ### Membership-aware coverage
 
-For all ten guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
+For all nine guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
 
 ### `--scope` does not mean the same thing on every verb
 
@@ -199,7 +199,7 @@ The guard's documented remedy — "pass `--scope <entity-scope>`" — assumes `-
 
 | Meaning | Effect | Verbs |
 |---------|--------|-------|
-| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw` |
+| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `decision accept`, `decision withdraw` |
 | **Patch field** | **Reassigns the entity's stored scope — it moves the row.** | `plan update`, `artifact update`, `annotate update` |
 | Read filter | Restricts which rows are listed. | the `list` verbs, `search`, `tree`, `dashboard`, `health` |
 | Inert | Accepted, parsed, discarded. | `planar-ext ext propagate` |
@@ -244,9 +244,9 @@ Associations have a `kind` that describes how they were formed:
 
 The `slug` on an association is the stable identifier used in scope references, config overrides, and workbench directory names. It must match `[a-z0-9:._-]+`.
 
-`planar assoc detect` auto-detects associations from the current repo's git remote and parent path. `planar assoc create` creates one manually; `planar assoc add` adds a repo to it.
+`planar assoc create` creates an association manually; `planar assoc add` adds a repo to it.
 
-**SQLite table:** `associations`, `project_associations`. **Primary verbs:** `planar assoc create`, `planar assoc add`, `planar assoc list`, `planar assoc members`, `planar assoc detect`.
+**SQLite table:** `associations`, `project_associations`. **Primary verbs:** `planar assoc create`, `planar assoc add`, `planar assoc list`, `planar assoc members`.
 
 ---
 

@@ -217,8 +217,8 @@ public:
   ///
   /// `post_comment` is NOT part of `external_adapter`'s four-operation
   /// interface — see `jira.cppm` / `github.cppm` for why — so this cannot
-  /// go through `instance()`. Added at plan 996 task 6339 for
-  /// `audit publish-decision`, the leaf's only caller.
+  /// go through `instance()`. Added at plan 996 task 6339; its only caller
+  /// was a verb removed at task 7468.
   /// @param external_id The issue/ticket id, in the adapter's own format.
   /// @param body The comment body.
   /// @return Success, or the adapter's failure.

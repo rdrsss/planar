@@ -69,8 +69,8 @@
 ///     DECLARED-but-unimplemented, and `ext propagate` is not declared
 ///     anywhere.
 ///   * `ext register jira`/`github`'s auth-resolution FACTORY stayed on
-///     this binary — `audit publish-decision` and `workbench publish` are
-///     its other two callers and neither moved, and D18 forbids a
+///     this binary — `workbench publish` is its other caller and did not move,
+///     and D18 forbids a
 ///     `cmd_planar -> cmd_planar_ext` edge — so
 ///     `src/cmd/planar-ext/handlers/shared/ext_adapter_factory.cppm` is a
 ///     deliberate duplicate, not a shared import. Same shape for the
@@ -152,7 +152,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar assoc add", "Add a repo to an association."},
       {"planar assoc remove", "Remove a repo from an association."},
       {"planar assoc members", "List all project members of an association."},
-      {"planar assoc detect", "Propose (or apply) auto-detected associations for the current directory."},
       {"planar plan", "Manage plans and plan steps."},
       {"planar plan create", "Create a new plan."},
       {"planar plan show", "Show a plan's details, steps, and child plans."},
@@ -324,7 +323,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
        "Show audit history for an entity (audit_log + entity_links) or an external link (external_links + sync_events)."},
       {"planar audit commits", "List commits attributed to sessions and claims."},
       {"planar audit session", "Show the timeline for a session."},
-      {"planar audit publish-decision", "Post the decision body to linked operational-plane targets."},
       {"planar audit handoff-readiness", "Check resume-readiness for all in-flight tasks."},
       {"planar health", "Report database, handoff, and installed-projection health."},
       {"planar health hygiene", "Report stale plan, task, and question lifecycle state without mutating it."},
@@ -337,7 +335,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar config show", "Print the resolved configuration."},
       {"planar config edit", "Edit the configuration file in $EDITOR."},
       {"planar config validate", "Validate configuration file syntax."},
-      {"planar config init", "Initialize the configuration file."},
       {"planar config path", "Show the configuration file path."},
       {"planar templates", "Inspect, validate, and render Planar JSON templates."},
       {"planar templates list", "List available templates."},
@@ -425,24 +422,14 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // `question diff 999` says `question 999 is not linked to a plan`.
       // The `not_found` arm that `editflow.cpp`'s `prose_error` documents
       // as unreachable for the other four is the ONLY arm these two reach.
-      // `assoc list` and `assoc remove` left this inventory at task 6279,
-      // and `assoc detect` -- the family's last and largest remainder, the
-      // ~680-line proposal engine (`detectProposals` /
-      // `proposalsFromSignals` / `enrichProposals` / `applyProposals`) --
-      // left it at task 6325. The `assoc` family is now fully ported and
-      // contributes nothing to this array.
+      // `assoc list` and `assoc remove` left this inventory at task 6279.
+      // The `assoc` family contributes nothing to this array.
       //
       // `audit commits` left this inventory at task 6277. It had been
       // listed as blocked on the git-walk seam alongside `capture commits`
       // and `bench harvest`; that grouping was wrong (its handler spawns
       // nothing and reads rows the walk WRITES) and was corrected at task
       // 6272. The other two stay — they are genuinely blocked.
-      // `audit publish-decision` left this inventory at task 6339, closing
-      // the `audit` family. It had been carried as needing an adapter
-      // INSTANCE — the auth-resolving factory landed at task 6258 — and
-      // what actually remained was `postComment` on both adapters (~81
-      // lines, not part of the four-operation `external_adapter`
-      // interface) plus this 176-line handler. See handlers/audit.cppm.
       // `audit trail` left this inventory at task 6262.
       // `capture commits` left this inventory at task 6358. It had been
       // carried as blocked on 1205 lines of git-subprocess walking in

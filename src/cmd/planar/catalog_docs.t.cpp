@@ -212,11 +212,12 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
       }
     }
   }
-  // 249 leaves measured 2026-10-10 across the four remaining binaries, after `planar models`,
+  // 245 leaves measured 2026-10-10 across the four remaining binaries, after `planar models`,
   // `planar-agent dispatch`, `planar-agent run`/`context` and `planar-watch run` left the tree
-  // (plan 1142, tasks 7455 and 7458); the floor keeps a margin of four.
+  // (plan 1142, tasks 7455 and 7458), and after task 7468 removed four `planar` leaves (249 -> 245);
+  // the floor keeps a margin of four.
   CAPTURE(leaves);
-  CHECK(leaves >= 245);
+  CHECK(leaves >= 241);
 }
 
 TEST_CASE("every planar and planar-agent leaf has an example under its own command path", "[catalog][docs]") {
