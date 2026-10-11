@@ -599,22 +599,10 @@ auto supervised_heartbeat(db::connection& conn, std::string_view claim_token, st
       return std::unexpected(aa::agent_error::attempt_mismatch);
     }
     current = aa::heartbeat_claim(conn, claim_token, ttl_secs);
-  } else if (sup->engine) {
-    // The caller of an engine claim may report status, and nothing else:
-    // the lease is the engine's (D3). A TTL, or a heartbeat with no status
-    // to report, is an attempt to extend it.
-    if (!status.has_value() || ttl_secs.has_value()) {
-      return std::unexpected(aa::agent_error::supervisor_mismatch);
-    }
-    auto const live = aa::is_claim_active_unexpired(conn, claim_token);
-    if (!live) {
-      return std::unexpected(live.error());
-    }
-    if (!*live) {
-      return std::unexpected(aa::agent_error::claim_not_active);
-    }
-    current = aa::get_claim_by_token(conn, claim_token);
   } else {
+    // A legacy claim whose supervisor is `engine` is an ordinary claim to its
+    // caller: the caller heartbeats it, extends its lease and reports status
+    // like any other claim, matching the terminal verbs.
     current = aa::heartbeat_claim(conn, claim_token, ttl_secs);
   }
   if (!current) {

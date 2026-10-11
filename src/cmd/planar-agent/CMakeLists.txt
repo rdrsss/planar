@@ -27,7 +27,7 @@
 #                            `planar-watch`  opens STRICT READ-ONLY, creates
 #                                            NOTHING, sets no WAL pragma,
 #                                            never migrates.
-#                            `planar-execute` has no SQLite handle at all.
+#                            `planar-execute` (removed) held no SQLite handle.
 #
 #     exit codes             `parse_error` is 2 on `planar` and 1 here;
 #                            `schema_version_behind` is 1 on `planar` and 7

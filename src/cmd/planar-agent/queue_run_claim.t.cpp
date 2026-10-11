@@ -847,7 +847,7 @@ TEST_CASE("queue run --claim: a lease lengthened by heartbeat --ttl lengthens th
   CHECK(finish(claimed).code == 0);
 }
 
-TEST_CASE("queue run --claim: a legacy engine-supervised claim is refused once, with a warning, and the command runs",
+TEST_CASE("queue run --claim: a legacy engine-supervised claim is renewed like an ordinary claim, and the command runs",
           "[cmd][agent][queue][hq-claim]") {
   auto const arena = seeded_arena("qc_engine");
   write_config(arena, k_fast_poll);
@@ -861,14 +861,15 @@ TEST_CASE("queue run --claim: a legacy engine-supervised claim is refused once, 
         conn->execute("update agent_work_claims set supervisor = 'engine', attempt_id = 'a1' where claim_token = '" + token + "'")
             .has_value());
   }
+
   auto const before = expiry(arena, token);
 
   auto const got = run_queue(arena, "engine", sh_command("sleep 0.5; exit 2"), {"--claim", token});
   INFO("stderr:\n" << got.err);
   CHECK(got.code == 2);
-  CHECK(warning_count(got.err) == 1);
-  CHECK(got.err.find("SupervisorMismatch") != std::string::npos);
-  CHECK(expiry(arena, token) == before);
+  CHECK(warning_count(got.err) == 0);
+  CHECK(got.err.find("SupervisorMismatch") == std::string::npos);
+  CHECK(expiry(arena, token) > before);
 }
 
 TEST_CASE("queue run --claim: a nested run renews the claim", "[cmd][agent][queue][hq-claim]") {

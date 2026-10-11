@@ -32,9 +32,8 @@
 #            it). Break-probed by swapping `open_read_only` for `open`.
 #
 # This target links `planar_db` deliberately: the read-only invariant is
-# about HOW the handle is opened, not about having none. The binary that
-# has none is planar-execute, and that one is enforced by
-# cmake/architecture.cmake instead.
+# about HOW the handle is opened, not about having none. The one binary that
+# held no handle at all (planar-execute) was removed with its guard.
 #
 # --- verb subset -----------------------------------------------------------
 #

@@ -15,9 +15,8 @@
 // the layer numbers but wrong twice over: it would put test-only scaffolding
 // in the shipped base-library layer, and — for THIS file specifically — it
 // would drag `planar_db` (which the safety guard below needs) into the link
-// closure of `planar-execute`'s test target, whose whole invariant is that
-// it reaches no SQLite handle. cmake/architecture.cmake would FATAL on that
-// too, via the execute-carrier check.
+// closure of the removed `planar-execute`'s test target, which had to reach
+// no SQLite handle. The execute-carrier check that enforced this is gone.
 //
 // A plain header included by each `parity.t.cpp` creates NO target edge:
 // each test target compiles its own copy, exactly as if the code had been
@@ -442,8 +441,8 @@ struct arena {
 /// @param tag A short discriminator so a failure names its own case.
 /// @return The created arena.
 inline auto make_arena(std::string_view tag) -> arena {
-  auto const      base = std::filesystem::temp_directory_path() /
-                         std::format("planar_cmd_parity_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
+  auto const base = std::filesystem::temp_directory_path() /
+                    std::format("planar_cmd_parity_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
   std::error_code ec;
   // Field-assigned rather than designated-initialized: `arena` declares a
   // destructor and deleted copies (task 6311), which disqualifies it as an

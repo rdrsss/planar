@@ -7091,7 +7091,7 @@ Stable across versions; new keys may be added, existing keys do not change name 
 
 ### `planar-agent reconcile` flags
 
-`reconcile` sweeps expired claims and orphaned actions. All flags are optional; without filters the sweep is global.
+`reconcile` sweeps expired claims and orphaned actions. All flags are optional; without filters the sweep is global. The `runs_abandoned` and `run_candidates` keys were removed with engine supervision; before that, the sweep abandoned runs only for engine-supervised claims.
 
 | Flag | Description | Default |
 |------|-------------|---------|

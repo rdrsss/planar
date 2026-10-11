@@ -7,7 +7,7 @@
 /// behind them would hold a slot for as long as a conversation lasts, so
 /// `check_command` refuses a command whose program is on a short list of
 /// launchers (`model_launchers()`). The list is purpose-built; it is not
-/// derived from `planar-execute`'s host-function deny list.
+/// derived from the removed `planar-execute`'s host-function deny list.
 ///
 /// ## Which program is checked
 ///

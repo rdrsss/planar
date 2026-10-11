@@ -163,6 +163,15 @@ endfunction()
 _planar_add_architecture_guard_test(upward fail
   MESSAGES "D15 violation" "planar_core.*depends on.*planar_engine_widget")
 _planar_add_architecture_guard_test(layer1-same-layer succeed)
+# A manually registered add_executable() cmd target is walked at all: a
+# layer-3 binary reaching a layer-3 sibling is refused (the same-layer
+# prohibition, D18).
+_planar_add_architecture_guard_test(cmd-binary-db fail
+  MESSAGES "D15 violation" "planar_cmd_probe.*depends on planar_cmd_sibling")
+# planar_binary() and planar_module() exercised for real: a DEPENDS edge
+# sourced from a planar_binary() target is checked by the same walk.
+_planar_add_architecture_guard_test(planar-binary-real fail NEEDS_TOOLCHAIN
+  MESSAGES "D15 violation" "planar_cmd_probe.*depends on planar_cmd_sibling")
 # Blind spot 1 (plan 996 task 6069, M3 pre-work): INTERFACE edges are
 # invisible to a LINK_LIBRARIES-only walk. M2 reviewer probe.
 _planar_add_architecture_guard_test(interface-edge fail
