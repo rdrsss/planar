@@ -140,7 +140,7 @@ This composes naturally with `plan list`, `task list`, `question list`, `scenari
 
 Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against a target entity's stored `(scope_kind, scope_id)` and refuses if they disagree.
 
-**It runs on ten verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All ten are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
+**It runs on nine verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All nine are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
 
 ### Removed: the active scope stack
 
@@ -160,15 +160,15 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 
 ### Which verbs are guarded
 
-**Measured against the source at task 6075 (2026-09-11).** Ten verbs, eight
+**Measured against the source at task 7468 (2026-10-10).** Nine verbs, seven
 call sites (`sync push` and `sync pull` share one; `decision accept` and
-`decision withdraw` share their transition helper):
+`decision withdraw` share their transition helper). Task 6075 measured ten
+verbs and eight call sites, before `audit publish-decision` was removed:
 
 | Verb | Comparison |
 |------|-----------|
 | `spec ingest <plan> --apply` | membership-aware |
 | `feedback triage set` | membership-aware |
-| `audit publish-decision` | membership-aware |
 | `planar-ext sync push <link\|kind:id>` | membership-aware |
 | `planar-ext sync pull <link\|kind:id>` | membership-aware |
 | `planar-ext sync resolve <event-id>` | membership-aware |
@@ -191,7 +191,7 @@ The reasoning: strict equality could not distinguish "my own member repo" from "
 
 ### Membership-aware coverage
 
-For all ten guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
+For all nine guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
 
 ### `--scope` does not mean the same thing on every verb
 
@@ -199,7 +199,7 @@ The guard's documented remedy — "pass `--scope <entity-scope>`" — assumes `-
 
 | Meaning | Effect | Verbs |
 |---------|--------|-------|
-| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw` |
+| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `decision accept`, `decision withdraw` |
 | **Patch field** | **Reassigns the entity's stored scope — it moves the row.** | `plan update`, `artifact update`, `annotate update` |
 | Read filter | Restricts which rows are listed. | the `list` verbs, `search`, `tree`, `dashboard`, `health` |
 | Inert | Accepted, parsed, discarded. | `planar-ext ext propagate` |
@@ -244,9 +244,9 @@ Associations have a `kind` that describes how they were formed:
 
 The `slug` on an association is the stable identifier used in scope references, config overrides, and workbench directory names. It must match `[a-z0-9:._-]+`.
 
-`planar assoc detect` auto-detects associations from the current repo's git remote and parent path. `planar assoc create` creates one manually; `planar assoc add` adds a repo to it.
+`planar assoc create` creates an association manually; `planar assoc add` adds a repo to it.
 
-**SQLite table:** `associations`, `project_associations`. **Primary verbs:** `planar assoc create`, `planar assoc add`, `planar assoc list`, `planar assoc members`, `planar assoc detect`.
+**SQLite table:** `associations`, `project_associations`. **Primary verbs:** `planar assoc create`, `planar assoc add`, `planar assoc list`, `planar assoc members`.
 
 ---
 
@@ -1099,46 +1099,13 @@ pass — surfaces failures with a classification (`test-wrong-author-error` /
 
 **SQLite tables:** none. **Primary entry points:** `agents/planar-test-coder.md`, `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate).
 
-## Usage Introspection Privacy Model
+## Opt-in CLI capture
 
-Planar's usage-introspection loop (capture → report → introspect) applies a two-tier privacy model. The two tiers provide different guarantees and must not be conflated.
+`[introspection].cli_log = false` by default. No `cli_invocations` rows are written until the operator sets `cli_log = true` in `~/.planar/config.toml`. The always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) are not affected by the setting.
 
-### Tier 1: Diagnostic bundle (entity text excluded by query construction)
+**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`.
 
-`planar report [--json]` reads no entity text by query construction. The aggregate queries in `src/engine/introspect/introspect.cpp` select counts, error categories, verb paths, statuses, timestamps and coverage counters from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or the `args_shape` column, so flag lists are never shown. Verb paths are shown only when the live CLI tree names them; a structured operand in the second slot (digits or `word:digits`) is kept as typed at any length. Older stored rows the tree does not name render as `<unrecognized>` and are not purged.
-
-The `cli_invocations` writer records flag **names** (only those the resolved verb declares, else `--<unknown>`), positional **arity**, and verb-path tokens the live tree names (else `<unknown>`). It never writes an argument value.
-
-This is not a claim that the whole report is redacted: transcript-derived `introspection_preview` signals and any finding text are not structurally redacted. The operator's full preview before posting is the boundary.
-
-### Tier 2: Preview-gated finding text
-
-Findings filed by the introspector (`planar question add` / `planar task add` on the feedback plan) may legitimately reference verb paths and error categories in their body. Their only guarantee is the **mandatory preview gate** in the report-an-issue procedure (the planar skill's `external-sync.md` reference) — the operator personally reviews every byte of issue body text before it posts to GitHub. Skills and docs must present the bundle as free of entity text by query construction, name the preview as the only redaction boundary, and never describe the bundle as redacted by construction.
-
-### Transcript mining: cross-vendor and ephemeral by design
-
-Transcript adapters recognize supported Claude, Codex, and Copilot local
-session schemas; the opt-in CLI log remains the authoritative source for
-invocations it contains. Each adapter immediately normalizes records to
-vendor, verb path, category, count, and time range. **Transcript text
-(operator messages, assistant responses, tool output prose), argument values,
-entity titles, scope slugs, and raw transcript paths are never persisted to a
-Planar entity, SQLite table, snapshot, or failure output.** Unknown schema
-versions and malformed records are skipped with counted warnings. A missing or
-disabled source is reported in `signal_coverage`, not conflated with an
-observed zero.
-
-The default `planar-introspector` run is a read-only preview. Only a separately
-confirmed apply phase creates or reuses the feedback plan and files approved,
-deduplicated findings. Cancellation before the gate writes nothing; mixed
-apply results retain successful independent findings and return exact recovery
-for the failures.
-
-### Opt-in capture
-
-`[introspection].cli_log = false` by default. No `cli_invocations` rows are written until the operator sets `cli_log = true` in `~/.planar/config.toml`. The report verb distinguishes "logging disabled" from "no activity in the window" — the operator is never shown fabricated zeros. The always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) render normally regardless of the `cli_log` setting.
-
-**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs` (always-on, read by `report`). **Primary entry points:** `planar report [--json]` (diagnostic bundle), `agents/planar-introspector.md` (agent role spec).
+The usage report and the introspector role that read this log were removed in plan 1142 (task 7472); their source is preserved at tag `archive/introspection`.
 
 ## Feedback triage
 

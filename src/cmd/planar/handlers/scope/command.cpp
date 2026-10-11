@@ -16,31 +16,12 @@ import planar.cmd.planar.scope;
 import planar.cmd.planar.declare;
 import planar.cmd.planar.handlers.scope.show;
 import planar.cmd.planar.handlers.scope.suggest;
-import planar.cmd.planar.handlers.scope.use;
-import planar.cmd.planar.handlers.scope.pop;
-import planar.cmd.planar.handlers.scope.clear;
 
 namespace planar::cmd::handlers {
 
 namespace id = engine::identity;
 
 namespace {
-
-/// @brief The paragraph all three removed leaves print, with the verb
-/// spliced in.
-///
-/// One function rather than three literals: the three oracle captures are
-/// byte-identical apart from the verb, and three copies of a 240-character
-/// sentence is exactly the drift D19 exists to prevent.
-/// @param verb The verb as the operator typed it, e.g. `"scope use"`.
-/// @return The refusal (exit 2 — `error.InvalidInput` in the oracle).
-auto removed_in_m5(std::string_view verb) -> domain_error {
-  return error_from_body(domain_error_kind::invalid_input,
-                         std::format("`planar {}` was removed in plan 153 M5; the active scope stack is gone. Pass "
-                                     "--scope <slug> to individual verbs, or cd into a registered scope. Run `planar "
-                                     "scope show` to inspect the cwd-derived scope.",
-                                     verb));
-}
 
 /// @brief One resolved read-set member, decorated with the row fields the
 /// two renderers need.
@@ -364,24 +345,6 @@ auto scope_suggest(context& ctx, const cliapp::parsed_args& args) -> handler_res
   return {};
 }
 
-auto scope_use(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  static_cast<void>(ctx);
-  static_cast<void>(args);
-  return std::unexpected(removed_in_m5("scope use"));
-}
-
-auto scope_pop(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  static_cast<void>(ctx);
-  static_cast<void>(args);
-  return std::unexpected(removed_in_m5("scope pop"));
-}
-
-auto scope_clear(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  static_cast<void>(ctx);
-  static_cast<void>(args);
-  return std::unexpected(removed_in_m5("scope clear"));
-}
-
 auto declare_scope(CLI::App& root) -> void {
   CLI::App* scope = root.add_subcommand(
       "scope", "Inspect the scope Planar will resolve for the current working\n  directory.\n\n  Plan 153 removed the active "
@@ -391,12 +354,6 @@ auto declare_scope(CLI::App& root) -> void {
   scope_cli::attach_show(scope);
 
   scope_cli::attach_suggest(scope);
-
-  scope_cli::attach_use(scope);
-
-  scope_cli::attach_pop(scope);
-
-  scope_cli::attach_clear(scope);
 }
 
 } // namespace planar::cmd::handlers

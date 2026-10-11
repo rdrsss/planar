@@ -23,7 +23,7 @@ questions.
 
 ## When to use
 
-- After introspection has proposed or filed a redacted feedback finding.
+- After a redacted feedback finding has been filed.
 - When a finding needs a reproducibility assessment and stable disposition.
 - Before promoting an actionable question into a task.
 - Before a separately gated external-reporting workflow is considered.

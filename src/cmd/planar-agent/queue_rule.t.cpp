@@ -303,10 +303,10 @@ TEST_CASE("the rule text carries every element an agent needs", "[cmd][agent][qu
     CHECK(contains(text, "never assume completion or resubmit automatically"));
   }
 
-  SECTION("the submitter renews a caller-supervised claim while the observer does not") {
+  SECTION("the submitter renews a claim while the observer does not") {
     CHECK(contains(source, "`--claim <token>`"));
     CHECK(contains(text, "queue wait` is read-only and never renews a claim"));
-    CHECK(contains(text, "renews a caller-supervised claim"));
+    CHECK(contains(text, "renews a claim"));
     std::size_t mentions = 0;
     for (std::size_t at = source.find("`--claim <token>`"); at != std::string::npos;
          at             = source.find("`--claim <token>`", at + 1)) {

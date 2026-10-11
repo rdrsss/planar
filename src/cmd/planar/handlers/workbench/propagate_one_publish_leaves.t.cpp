@@ -6,8 +6,7 @@
 // moved to `src/cmd/planar-ext/ext_propagate_one_leaf.t.cpp` at plan 996,
 // task 6419 (the `ext`/`sync` family's move to `planar-ext`). Its systems
 // are now seeded directly through the engine rather than through
-// `planar::cmd::dispatch`, the same way `audit_publish_decision_leaf.t.cpp`
-// seeds `jira-demo`/`gh-demo` — `ext register` no longer lives on this
+// `planar::cmd::dispatch` — `ext register` no longer lives on this
 // binary's dispatch table.
 //
 // ## THE FIRST CASE ASSERTS THE FIXTURE
@@ -152,8 +151,7 @@ auto respond(const planar::http::fixture::captured_request& req) -> planar::http
 /// @brief Register both providers against `base` and seed a plan and a task.
 ///
 /// `ext register` moved to `planar-ext` at plan 996, task 6419 — seeded
-/// directly through the engine here, same as `audit_publish_decision_leaf
-/// .t.cpp`'s `seed_jira_demo`/`seed_github_demo`.
+/// directly through the engine here.
 void seed(const fixture& fx, std::string_view base) {
   REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
   {

@@ -3,7 +3,7 @@
 # The FIRST layer-3 target in the C++ tree, and the first point at which a
 # C++ binary runs a verb end to end. Milestones M0-M4 built engine buckets
 # only: libraries and unit tests, no main(), no dispatch. Three consecutive
-# cycles blocked leaves (`unlink`, `dashboard`, `report`, `skills`,
+# cycles blocked leaves (`unlink`, `dashboard`, `report`,
 # `workspace init`, and the ingest apply/import/synthesize trio) on this
 # layer's absence, because D20 (decision 947) puts a verb that composes
 # several layer-2 peers at layer 3.
@@ -87,12 +87,6 @@
 #                      6110) already carried the diagnose-and-repair pass
 #                      and BOTH renderers, so the handler is nine lines of
 #                      wiring. That thinness is evidence, not a shortcut.
-#   skills             Retired upstream (plan 918 M5) and reduced to a
-#                      placeholder node -- but a placeholder that this
-#                      tree, unlike the Zig one, must bind to a handler,
-#                      because `cliapp::leaf_keys` classifies a childless node
-#                      as a LEAF and dispatch would otherwise answer exit
-#                      64 against the oracle's help page and exit 0.
 #
 # NOT landed, each blocked at LAYER 2 rather than layer 3 -- which corrects
 # the premise this file was written under. The dependency inventory is in
@@ -103,25 +97,6 @@
 #                              next-work, claim-scope resolution, the
 #                              latest-action fold-in and its JSON writers).
 #                              Not ported.
-#   report                     LANDED at task 6352, once `engine_introspect`
-#                              (task 6121) and `engine_introspection_adapters`
-#                              (tasks 6102, 6352) were both complete AND the
-#                              layer-1 `introspection_preview` extraction
-#                              (decision 981) let the two meet through
-#                              `bundle::preview` without an `engine_* ->
-#                              engine_*` edge. Its OTHER reputed blocker --
-#                              that it scans the operator's home directory
-#                              for vendor transcripts and is therefore not
-#                              hermetically testable -- did not survive a
-#                              probe: run under this file's own pinned
-#                              arena, `report --json` reports every vendor
-#                              as {"state":"unavailable","scanned":0} and
-#                              cli_log as "disabled" (or "unavailable" when
-#                              logging is on but the DB adapter has nothing
-#                              to report). The scan follows $HOME, which
-#                              run_pinned() already redirects, so the leaf
-#                              was testable here exactly like every other
-#                              one all along. See handlers/report/command.cppm.
 #   spec ingest --apply        needs engine.ingestor.apply (1,616 lines)
 #                              and engine.workbench (unported entirely).
 #                              engine_ingest here is the READ side only.
@@ -206,14 +181,6 @@
 #                        success where the oracle produces a packet.
 #   capture commits      Task 6099. 1205 lines of git shelling, no
 #                        process-spawn seam. Deferred WITH its dependency.
-#   report               Task 6121. Needs the two introspect buckets. Its
-#                        full `--json` envelope was re-captured this cycle
-#                        and is unchanged from task 6106's finding: every
-#                        vendor reports `{"state":"unavailable","scanned":0}`
-#                        and `cli_log` reports `disabled` under a pinned
-#                        arena, so the leaf IS hermetically testable here;
-#                        the unported buckets are the whole of what blocks it.
-#
 # --- terminator contract ---------------------------------------------------
 #
 # Inherited from commit 5728133 (the M4 boundary review's F1) and NOT
@@ -414,7 +381,6 @@ planar_binary(planar
     handler.cppm
     scope.cppm
     main.cppm
-    handlers/explore/command.cppm
     handlers/help/command.cppm
     declare.cppm
     surface.cppm
@@ -450,7 +416,6 @@ planar_binary(planar
     # spellings mirror the CLI's own `planar link` vs `planar links add`.
     handlers/link/command.cppm
     handlers/unlink/command.cppm
-    handlers/skills/command.cppm
     handlers/workspace/command.cppm
     handlers/workspace/routing.cppm
     handlers/workspace/regenerate.cppm
@@ -504,16 +469,12 @@ planar_binary(planar
     handlers/plan/step_list.cppm
     handlers/plan/step_add.cppm
     handlers/assoc/command.cppm
-    handlers/assoc/detect.cppm
     handlers/assoc/members.cppm
     handlers/assoc/remove.cppm
     handlers/assoc/add.cppm
     handlers/assoc/create.cppm
     handlers/assoc/list.cppm
     handlers/scope/command.cppm
-    handlers/scope/clear.cppm
-    handlers/scope/pop.cppm
-    handlers/scope/use.cppm
     handlers/scope/suggest.cppm
     handlers/scope/show.cppm
     handlers/search/command.cppm
@@ -527,12 +488,10 @@ planar_binary(planar
     handlers/health/hygiene.cppm
     handlers/audit/command.cppm
     handlers/audit/handoff_readiness.cppm
-    handlers/audit/publish_decision.cppm
     handlers/audit/session.cppm
     handlers/audit/commits.cppm
     handlers/audit/trail.cppm
     handlers/dashboard/command.cppm
-    handlers/report/command.cppm
     handlers/task/command.cppm
     handlers/task/facts_stage.cppm
     handlers/task/facts.cppm
@@ -638,7 +597,6 @@ planar_binary(planar
     handlers/templates/list.cppm
     handlers/config/command.cppm
     handlers/config/path.cppm
-    handlers/config/init.cppm
     handlers/config/validate.cppm
     handlers/config/edit.cppm
     handlers/config/show.cppm
@@ -667,7 +625,6 @@ planar_binary(planar
     handlers/shared/ext_adapter_factory.cpp
     handlers/link/command.cpp
     handlers/unlink/command.cpp
-    handlers/skills/command.cpp
     handlers/workspace/command.cpp
     handlers/workbench/command.cpp
     handlers/capture/command.cpp
@@ -682,7 +639,6 @@ planar_binary(planar
     handlers/health/command.cpp
     handlers/audit/command.cpp
     handlers/dashboard/command.cpp
-    handlers/report/command.cpp
     handlers/task/command.cpp
     handlers/feedback/command.cpp
     handlers/question/command.cpp
@@ -715,9 +671,7 @@ planar_binary(planar
     json_text
     # New at task 6357, for `planar health` (handlers/health/command.cpp): the
     # `resolve_homes`/`is_::status` composition folds the layer-1 classifier
-    # in directly, the same shape `report` composes its two engine buckets
-    # with (see the `engine_introspect`/`engine_introspection_adapters`
-    # note below).
+    # in directly.
     installed_surface
     engine_config
     engine_diagnose
@@ -725,13 +679,6 @@ planar_binary(planar
     engine_external
     engine_extsync
     engine_identity
-    # New at task 6352, for `report` (handlers/report/command.cpp): the DB-aggregate
-    # half (`engine_introspect`) and the filesystem-discovery half
-    # (`engine_introspection_adapters`) it composes. Both were already
-    # ported (tasks 6121, 6102) and are D15-forbidden from depending on
-    # each other; this binary is where they are legally allowed to meet.
-    engine_introspect
-    engine_introspection_adapters
     # New at task 6324, for `task packet` (handlers/task/command.cpp). The leaf uses
     # exactly one entry point — `packet::assemble_task` plus its two
     # renderers. It does NOT reach the spec-ingest read pipeline; see

@@ -210,11 +210,11 @@ TEST_CASE("the catalog walk reaches every binary and fails on an empty descripti
   }
   // The live catalogs held about 1,160 flag and positional entries (measured 2026-10-04). Plan 1142
   // task 7455 removed the `models` family and the dispatch verbs; tasks 7458 and the engine-flag removals
-  // left 985 measured 2026-10-10, and plan 1142 task 7469 (the `closure`,
-  // `groups`, `bench` and `run` families) left 938 measured 2026-10-10. A floor close to that catches a
+  // left 985 measured 2026-10-10, and task 7468 removed the four verbs' fifteen flag and positional
+  // entries (985 -> 970), and tasks 7472 and 7469 left 915 measured 2026-10-10. A floor close to that catches a
   // walk that silently skipped a binary or a field; 630 would have let almost half the surface vanish unnoticed.
   CAPTURE(total);
-  REQUIRE(total >= 925);
+  REQUIRE(total >= 900);
 }
 
 TEST_CASE("the catalog walk allows no binary an empty description", "[catalog][descriptions]") {

@@ -134,19 +134,17 @@ TEST_CASE("classify: an unknown top-level verb defaults to planning", "[cmd][wor
 }
 
 TEST_CASE("classify: top-level read verbs are execution_or_read", "[cmd][worktree-gate]") {
-  for (auto const& v : {"resume", "dashboard", "health", "tree", "search", "version", "update", "completion", "import",
-                        "synthesize", "explore"}) {
+  for (auto const& v :
+       {"resume", "dashboard", "health", "tree", "search", "version", "update", "completion", "import", "synthesize"}) {
     INFO(v);
     CHECK(cls({v}) == verb_class::execution_or_read);
   }
 }
 
-TEST_CASE("classify: report and schema are execution_or_read", "[cmd][worktree-gate]") {
-  // Both are regression guards carried over from the oracle. `report` is
-  // run from worktrees by the introspector agent; `schema` emits a static
+TEST_CASE("classify: schema is execution_or_read", "[cmd][worktree-gate]") {
+  // A regression guard carried over from the oracle. `schema` emits a static
   // catalog and opens no database, and the cli-usage and coverage gates
-  // shell out to it — refusing either false-fails tooling.
-  CHECK(cls({"report"}) == verb_class::execution_or_read);
+  // shell out to it — refusing it false-fails tooling.
   CHECK(cls({"schema"}) == verb_class::execution_or_read);
 }
 
@@ -208,8 +206,8 @@ TEST_CASE("classify: annotate, init, promote, demote, link, unlink, links are pl
 }
 
 TEST_CASE("classify: read groups pass wholesale", "[cmd][worktree-gate]") {
-  for (auto const& v : {"handoff", "capture", "audit", "workspace", "config", "templates", "scope", "doc", "local", "skills",
-                        "test-spec", "sync"}) {
+  for (auto const& v :
+       {"handoff", "capture", "audit", "workspace", "config", "templates", "scope", "doc", "local", "test-spec", "sync"}) {
     INFO(v);
     CHECK(cls({v}) == verb_class::execution_or_read);
     CHECK(cls({v, "show"}) == verb_class::execution_or_read);

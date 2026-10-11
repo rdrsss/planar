@@ -41,21 +41,19 @@ auto classify(std::span<const std::string> path) -> verb_class {
   std::string_view const top = path[0];
 
   // Top-level verbs with no subverbs to inspect, or whose every subverb is
-  // read-only. `explore` is the read-only launcher alias. `update` sits with
-  // `version`: it opens no database and writes no planning state, only the
-  // install under `~/.planar/` through the installer it execs, so a planning
-  // refusal would be false.
-  static constexpr std::array<std::string_view, 13> k_top_reads{
-      "resume", "dashboard",  "health", "report", "tree",       "search",  "version",
-      "update", "completion", "schema", "import", "synthesize", "explore",
+  // read-only. `update` sits with `version`: it opens no database and writes
+  // no planning state, only the install under `~/.planar/` through the
+  // installer it execs, so a planning refusal would be false.
+  static constexpr std::array<std::string_view, 11> k_top_reads{
+      "resume", "dashboard", "health", "tree", "search", "version", "update", "completion", "schema", "import", "synthesize",
   };
   if (in(top, k_top_reads)) {
     return verb_class::execution_or_read;
   }
 
   // Subverb groups whose ENTIRE surface is execution_or_read.
-  static constexpr std::array<std::string_view, 12> k_read_groups{
-      "handoff", "capture", "audit", "workspace", "config", "templates", "scope", "doc", "local", "skills", "test-spec", "sync",
+  static constexpr std::array<std::string_view, 11> k_read_groups{
+      "handoff", "capture", "audit", "workspace", "config", "templates", "scope", "doc", "local", "test-spec", "sync",
   };
   if (in(top, k_read_groups)) {
     return verb_class::execution_or_read;

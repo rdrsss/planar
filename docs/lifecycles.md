@@ -27,7 +27,7 @@ Three mechanisms, in layers, decide whether a status write lands:
    which is why re-answering an answered question or re-retiring a retired
    scenario is a silent no-op rather than a refusal.
 2. **Verb-level guards** layered on top by the handler: the claim-atomic
-   guard on task verbs, the cross-scope guard on ten verbs, required
+   guard on task verbs, the cross-scope guard on nine verbs, required
    flags such as `--reason`.
 3. **Engine roll-ups** that run *after* a write inside the same transaction
    and can move a *different* entity: plan auto-promotion, dependency
@@ -815,14 +815,11 @@ flowchart TD
 `planar health` is read-only; the recovery reference (`skills/planar/references/recovery.md`) is the guided-write companion.
 Genuinely active or blocked work can keep `overall = degraded` by design.
 
-### 5.9 Introspect, triage, report
+### 5.9 Feedback triage
 
 ```mermaid
 flowchart LR
-    I1[planar report --json --days N] --> I2[redacted signal:<br/>failure-cluster, retry-pattern,<br/>abandoned-workflow, gap-feature]
-    I2 --> I3{{preview, --apply confirm}}
-    I3 --> I4[question add / task add on the<br/>association's planar-feedback plan, title-deduped]
-    I4 --> T1{{planar-feedback-triager preview, confirm}}
+    T1{{planar-feedback-triager preview, confirm}}
     T1 --> T2["feedback triage set task:N|question:N<br/>--severity --disposition --reproduction"]
     T2 --> R1{{issue-report preview, confirm}}
     R1 --> R2[gh issue create] --> R3[external_links linkback]

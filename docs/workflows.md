@@ -944,7 +944,7 @@ planar task update 142 --next-action "rerun make test"
 # … coder works, then returns; the orchestrator owns the terminal verb …
 ```
 
-No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the ten verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
+No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the nine verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
 
 This is the dominant pattern. Every coder, ingestor, and planner skill that runs against a known repo cwd works without scope plumbing.
 
@@ -973,7 +973,7 @@ planar decision add "Adopt strict resolver for writes" \
   --scope assoc:project:repo-b
 ```
 
-`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision accept`, `decision withdraw`, and `audit publish-decision` calls; `decision edit` and `decision supersede` run no scope guard.
+`decision add` is a create verb, so the guard does not fire — the new decision's scope is whatever `--scope` resolves to. The guard fires on subsequent `decision accept` and `decision withdraw` calls; `decision edit` and `decision supersede` run no scope guard.
 
 ### Inspecting the resolved scope
 
@@ -1098,7 +1098,7 @@ Use this when your daily working tree is a workspace directory (`~/work/`, `~/pr
 
 **What happens:** `planar workspace init` builds the org + project rows in one transaction, creates the state directory under `~/.planar/workspaces/<org_id>/`, scans the member repos to produce a structured routing table, regenerates `AGENTS.md` from that table, and installs symlinks at the workspace root (`AGENTS.md`, `CLAUDE.md`) that point at the canonical content. Subsequent shape changes (new repo, new plans, dependencies shifting) are absorbed by re-running the routing build and regenerate verbs; the symlinks stay valid.
 
-**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on ten verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw`, `closure compute`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
+**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on nine verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `feedback triage set`, `decision accept`, `decision withdraw`, `closure compute`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
 
 ### Step 1 — Initialize the workspace
 
@@ -1354,7 +1354,6 @@ planar-ext sync resolve 7 --keep local \
 
 # Audit trail from either direction.
 planar audit trail --link 1                   # everything for link 1
-planar audit publish-decision 5               # post decision 5 to all linked remotes
 planar audit handoff-readiness --threshold 90 # CI gate
 ```
 
@@ -2427,88 +2426,6 @@ For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concep
 
 ---
 
-## Recipe 26 — Self-report a usage finding to GitHub Issues
-
-Use the `planar-introspector` agent to identify friction patterns, select a
-finding, review the assembled issue body, and post it to `rdrsss/planar` via
-the operator's existing `gh` auth. The created issue is recorded as a
-record-only external link on the finding so `planar audit trail` can surface it
-later. The report-an-issue procedure is in the planar skill's `external-sync.md`
-reference.
-
-**Prerequisites:** `gh auth status` shows a valid session; `planar report --json`
-is available (requires `[introspection].cli_log = true` in
-`~/.planar/config.toml`, or the always-on bundle sections suffice).
-
-**1. Run the introspection pass to populate the feedback plan.**
-
-Dispatch `planar-introspector`. Its default run is a read-only preview; confirm
-the apply phase to file findings on the planar-feedback plan as questions/tasks.
-
-**2. Review the findings.**
-
-```bash
-planar question list --scope global --plan <feedback-plan-id> --status open --json
-planar task list --scope global --plan <feedback-plan-id> --status todo --json
-```
-
-Pick the finding id you want to surface upstream (e.g. `question:42`).
-
-**3. Ensure a GitHub system is registered (once per database).**
-
-```bash
-planar-ext ext list
-# If planar-upstream is absent:
-planar-ext ext register github planar-upstream --project rdrsss/planar
-```
-
-This writes a local row only — no network contact, no auth required at
-registration time.
-
-**4. Run the report-an-issue procedure with the selected finding.**
-
-An agent session follows `external-sync.md` for the finding `question:42`. It:
-
-- Runs `planar report --json` to obtain the diagnostic bundle.
-- Reads `question:42` summary and its `planar audit trail` history.
-- Assembles the full issue body (header, finding section, bundle block,
-  metadata footer).
-- **Renders the complete body to you for review.** This step is mandatory
-  and cannot be skipped.
-
-**5. Confirm or decline at the preview gate.**
-
-Review every line. The bundle holds counts, categories, statuses, timestamps
-and verb paths the live CLI tree names, with no entity titles or bodies. It is
-not redacted as a whole: transcript-derived signal text and the finding
-section may contain entity names or other free text. This preview is the
-redaction boundary; you personally approve what goes public at this step.
-
-- **Confirm** — the issue is posted via `gh issue create -R rdrsss/planar`.
-- **Decline** — no post, no link, no side effects. Re-run with a different
-  finding or refined problem statement at any time.
-
-**6. On success, record the issue as a record-only external link.**
-
-```bash
-planar link question:42 --to planar-upstream:<issue-number> \
-  --role reference --sync read-only --json
-```
-
-No propagation, no sync subscription. The link makes the upstream issue
-visible to `planar audit trail`:
-
-```bash
-planar audit trail --kind question 42
-# → shows the create event and the external link row
-```
-
-**If `gh` fails:** the procedure surfaces the error, records no link, and
-leaves local state unchanged. Fix the `gh` auth issue (`gh auth login`) and
-re-run.
-
----
-
 ## Recipe 27 — Finalize and close out a plan (Phase 3.7)
 
 Use this when coder/reviewer cycles are complete, commits are pushed, and you want to merge the work, reconcile Planar state, clean up branches, and formally close the plan.
@@ -2653,32 +2570,6 @@ writing. If resolution is ambiguous, show the candidates and stop with
 entity verb, then reads the entity and relationship back. A multi-target
 partial result keeps verified independent changes and supplies an exact retry
 or inspection command for each failure.
-
----
-
-## Recipe 31 — Preview introspection, then triage findings
-
-The intake and triage gates are separate:
-
-1. Dispatch `planar-introspector` for a 7-day window. The default run is a
-   read-only preview: review the normalized proposals and `signal_coverage`;
-   nothing is written.
-2. Ask it to apply. It still pauses for explicit confirmation before filing
-   findings on the feedback plan.
-3. Dispatch `planar-feedback-triager` for the feedback plan. Review severity,
-   disposition, reproduction, duplicate, and entity/link changes.
-4. Ask it to apply a finding such as `question:42`. The initial apply request
-   still does not bypass the row-level confirmation.
-
-Introspection recognizes supported Claude, Codex, Copilot, and opt-in CLI-log
-sources and persists only redacted normalized signal. Missing or malformed
-optional adapters degrade `signal_coverage`; they are not observed zeros.
-Triage writes only confirmed local rows through `planar feedback triage set`.
-If external reporting is recommended, run the report-an-issue procedure
-(`external-sync.md`) and review the complete issue body at a second gate.
-Declining publication posts nothing and does not undo completed local triage.
-Mixed independent results return `outcome=partial` with action counts and
-idempotent per-target recovery.
 
 ---
 

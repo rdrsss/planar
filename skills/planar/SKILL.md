@@ -44,7 +44,7 @@ arguments, output fields, exit codes) comes from the binaries; see the discovery
    agent actions through `planar-agent`, external links through `planar-ext`; `planar-watch`
    never writes. The table above is the boundary; it is enforced by
    each binary's verb set, not by a runtime ACL, so nothing stops a wrong-binary write.
-4. **Cross-scope guard: ten verbs.** Only ten verbs compare scopes (among them
+4. **Cross-scope guard: nine verbs.** Only nine verbs compare scopes (among them
    `spec ingest --apply`, `task update`, `decision accept` and `planar-ext sync push`).
    A mismatch exits 5 with no bypass flag. `assoc:<org>` covers an entity at
    `repo:<member>`; the reverse refuses. Never claim the guard covers every write.
@@ -115,6 +115,6 @@ Report every result with the seven-section envelope in `references/feedback-cont
 Role work goes to agents, dispatched by name and never invoked as skills:
 `planar-orchestrator`, `planar-coder`, `planar-reviewer`, `planar-test-coder`, `planar-janitor`,
 `planar-research`, `planar-planner`, `planar-spec-reviewer`, `planar-ingestor`, `planar-importer`,
-`planar-synthesizer`, `planar-ext-sync`, `planar-feedback-triager`, `planar-introspector`
+`planar-synthesizer`, `planar-ext-sync`, `planar-feedback-triager`
 and `planar-sync-reconciler`. This is the only Planar skill; no slash-command skill exists
 for any of these roles.

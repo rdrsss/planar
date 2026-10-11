@@ -69,3 +69,8 @@ agents/codex/
 agents/copilot/
 agents/gemini/
 agents/opencode/
+
+# Retired planar-introspector role (plan 1142, task 7472): the usage
+# introspection engines left the tree with it, so a re-install over a tree
+# from an older release removes the staged role spec.
+agents/planar-introspector.md
