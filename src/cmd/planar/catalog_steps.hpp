@@ -145,9 +145,10 @@ inline auto leaves(std::string_view text, std::string& error) -> std::optional<s
 
 inline auto exclusion_reason(std::span<const std::string> path) -> std::optional<std::string_view> {
   // These are execution-environment exceptions, not port-scope carveouts.
-  // Decision 980 is the sole port-scope exception (`explore`).  Each entry
-  // remains checked and reported by `excluded_steps`; adding an omission here
-  // therefore cannot make it disappear from the catalog evidence.
+  // Each entry remains checked and reported by `excluded_steps`; adding an
+  // omission here therefore cannot make it disappear from the catalog
+  // evidence. (Decision 980's `explore` exclusion went with the verb in plan
+  // 1142, task 7463.)
   //
   // A PORT-SCOPE CARVEOUT DOES NOT BELONG HERE, and the reason outlives the
   // oracle that made it concrete. Plan 996, task 6419 wanted an entry for
@@ -161,13 +162,10 @@ inline auto exclusion_reason(std::span<const std::string> path) -> std::optional
   const auto is = [&](std::initializer_list<std::string_view> wanted) {
     return path.size() == wanted.size() && std::ranges::equal(path, wanted);
   };
-  if (is({"explore"})) {
-    return "deferred-by-decision980";
-  }
   if (is({"config", "edit"})) {
     return "interactive-editor";
   }
-  if (is({"schema"}) || is({"skills"}) || is({"version"})) {
+  if (is({"schema"}) || is({"version"})) {
     return "output-only";
   }
   if (is({"assoc", "detect"}) || is({"scope", "suggest"})) {

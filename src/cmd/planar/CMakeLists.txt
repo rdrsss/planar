@@ -3,7 +3,7 @@
 # The FIRST layer-3 target in the C++ tree, and the first point at which a
 # C++ binary runs a verb end to end. Milestones M0-M4 built engine buckets
 # only: libraries and unit tests, no main(), no dispatch. Three consecutive
-# cycles blocked leaves (`unlink`, `dashboard`, `report`, `skills`,
+# cycles blocked leaves (`unlink`, `dashboard`, `report`,
 # `workspace init`, and the ingest apply/import/synthesize trio) on this
 # layer's absence, because D20 (decision 947) puts a verb that composes
 # several layer-2 peers at layer 3.
@@ -87,12 +87,6 @@
 #                      6110) already carried the diagnose-and-repair pass
 #                      and BOTH renderers, so the handler is nine lines of
 #                      wiring. That thinness is evidence, not a shortcut.
-#   skills             Retired upstream (plan 918 M5) and reduced to a
-#                      placeholder node -- but a placeholder that this
-#                      tree, unlike the Zig one, must bind to a handler,
-#                      because `cliapp::leaf_keys` classifies a childless node
-#                      as a LEAF and dispatch would otherwise answer exit
-#                      64 against the oracle's help page and exit 0.
 #
 # NOT landed, each blocked at LAYER 2 rather than layer 3 -- which corrects
 # the premise this file was written under. The dependency inventory is in
@@ -439,7 +433,6 @@ planar_binary(planar
     handler.cppm
     scope.cppm
     main.cppm
-    handlers/explore/command.cppm
     handlers/help/command.cppm
     declare.cppm
     surface.cppm
@@ -475,7 +468,6 @@ planar_binary(planar
     # spellings mirror the CLI's own `planar link` vs `planar links add`.
     handlers/link/command.cppm
     handlers/unlink/command.cppm
-    handlers/skills/command.cppm
     handlers/workspace/command.cppm
     handlers/workspace/routing.cppm
     handlers/workspace/regenerate.cppm
@@ -536,9 +528,6 @@ planar_binary(planar
     handlers/assoc/create.cppm
     handlers/assoc/list.cppm
     handlers/scope/command.cppm
-    handlers/scope/clear.cppm
-    handlers/scope/pop.cppm
-    handlers/scope/use.cppm
     handlers/scope/suggest.cppm
     handlers/scope/show.cppm
     handlers/search/command.cppm
@@ -710,7 +699,6 @@ planar_binary(planar
     handlers/shared/ext_adapter_factory.cpp
     handlers/link/command.cpp
     handlers/unlink/command.cpp
-    handlers/skills/command.cpp
     handlers/workspace/command.cpp
     handlers/workbench/command.cpp
     handlers/capture/command.cpp

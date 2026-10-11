@@ -223,8 +223,11 @@ check 1 "planar-agent: unknown flag"        planar-agent --no-such-flag
 check 1 "planar-watch: unknown flag"        planar-watch --no-such-flag
 check 1 "planar-ext: unknown flag"          planar-ext --no-such-flag
 
-# --- the removed-verb stubs -------------------------------------------------
+# --- the removed verbs (plan 1142, task 7463) -------------------------------
+# Deleted outright, so each is an unknown subcommand: exit 2, not 64.
 check 2 "planar: removed verb (scope use)"  planar scope use anything
+check 2 "planar: removed verb (explore)"    planar explore
+check 2 "planar: removed verb (skills)"     planar skills
 
 # --- `document` (task 6939, review F4): a rejected range is caller evidence
 # disagreeing with the snapshot, so it exits 2 -- NOT 3, which this table

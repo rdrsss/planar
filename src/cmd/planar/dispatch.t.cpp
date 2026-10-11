@@ -264,34 +264,6 @@ TEST_CASE("planar help is a leaf in the schema catalog", "[cmd][dispatch][help]"
   CHECK(got.out.contains(R"("path":["help"])"));
 }
 
-TEST_CASE("--help renders the leaf's page to stdout and exits 0", "[cmd][dispatch]") {
-  auto const got = dispatch({"skills", "--help"});
-  CHECK(got.code == 0);
-  CHECK(got.err.empty());
-  // Re-baselined onto CLI11's formatter (task 6123) and pinned exactly,
-  // trailing spaces included — a page trimmed to a `contains` check would
-  // stop discriminating a dropped flag, which is the whole reason a leaf's
-  // help page is pinned at all.
-  CHECK(got.out ==
-        "The skill tree is skills/planar/, installed by install.sh. `planar health`\n"
-        "reports install drift. This verb is retired and will be removed next release.\n"
-        "\n"
-        "\n"
-        "skills [OPTIONS]\n"
-        "\n"
-        "\n"
-        "OPTIONS:\n"
-        "  -h,     --help              Print this help message and exit\n"
-        "\n"
-        "Examples:\n"
-        "  planar skills\n"
-        "\n"
-        "Exit codes:\n"
-        "  0  Success.\n"
-        "  1  Generic failure: entity not found, an unmapped error, or a busy source.\n"
-        "  2  Bad input: an invalid value or entity ref, or a parse failure such as an unknown flag or a missing argument.\n");
-}
-
 TEST_CASE("an unwired leaf falls through to exit 64, not a crash", "[cmd][dispatch]") {
   // The routing fallthrough the registration gate exists to make
   // unreachable. Exercised here with a deliberately emptied table so the
@@ -314,110 +286,6 @@ TEST_CASE("an unwired leaf falls through to exit 64, not a crash", "[cmd][dispat
   CHECK(code == 64);
   CHECK(err.str() == "error: not implemented yet\n");
   CHECK(out.str().empty());
-}
-
-TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cmd][dispatch][not-implemented]") {
-  // THE HEADLINE PROPERTY of the full-surface declaration (plan 996, task
-  // 6065). `planar` declares all 223 of the oracle's leaves so that
-  // `zig/tools/cli_usage_lint` can resolve every authored command path;
-  // 92 of them land no behaviour (task 6196). A declared node that dispatches to
-  // nothing is WORSE than an absent one if it exits 0, so each refuses
-  // loudly and names itself.
-  //
-  // The exemplar was `plan list` until task 6141 ported it, then `question
-  // list` until task 6188 ported that one too. It has to be a leaf with no
-  // REQUIRED positional, or the parser refuses at exit 2 before dispatch is
-  // reached at all and the case would assert the parser's behaviour rather
-  // than the table's — which is what `plan diff` did on the first attempt
-  // at this replacement. It was `scenario list` until task 6195 ported
-  // that one too, and `artifact list` until 6196 ported the last planning
-  // family out from under it.
-  //
-  // With every planning family's CRUD half now ported, the exemplar has to
-  // leave the planning surface entirely. It was `assoc list` until task
-  // 6279 ported that too — and the note the previous cycle left here ("the
-  // next cycle that ports `assoc list` must reach for a different family
-  // again") is exactly what happened, one cycle later.
-  //
-  // It was `dashboard` until task 6329 ported it — and the note that stood
-  // here called it "blocked on the agent-claim roll-up its `--agents` arm
-  // needs", which was the same stale reading as `surface.cpp`'s: that
-  // roll-up (`agentactivity`'s claim and next-work readers, `agentrender`'s
-  // fragment writers) had been in the tree for milestones.
-  //
-  // It was `report` until task 6352 ported it, once `engine_introspect`
-  // and `engine_introspection_adapters` were both complete and decision
-  // 981's layer-1 extraction let them meet through `bundle::preview`
-  // without an `engine_* -> engine_*` edge — see handlers/report.cppm.
-  //
-  // It is now `explore`, the most blocked leaf in the inventory: the
-  // handler is 93 lines, which is why it reads cheap, but it launches the
-  // COCKPIT, 33,452 zig lines under `cmd/planar/cockpit/` with no C++
-  // counterpart at all (see the `unported_paths` inventory test below for
-  // the full account). TOP-LEVEL rather than a family member (no sibling
-  // port can drag it along by accident) and arg-free — no positionals at
-  // all in `surface.cpp`, so the parser cannot refuse at exit 2 before
-  // dispatch is reached.
-  // TASK 6444 / DECISION 1003 ENDED THE EXEMPLAR CHAIN. `explore` was the
-  // last name on the rotation above, and it has now left too — not by being
-  // ported, but because decision 1003 DROPPED the cockpit outright and task
-  // 6444 gave `explore` the oracle's own cockpit-gate fallback: it prints the
-  // verb's help and exits 0 on every gate refusal (non-TTY, TERM=dumb,
-  // PLANAR_NO_TUI, --plain).
-  //
-  // `explore` therefore remains the single entry in `unported_paths()` —
-  // decision 982's gate condition 2 requires that inventory to read EXACTLY
-  // that — while no longer being a refusal. There is consequently NO
-  // declared-but-unported leaf left in this binary to demonstrate the
-  // exit-64 property with, and the next reader should not go hunting for a
-  // replacement exemplar: the inventory is exhausted, which is the point.
-  //
-  // What is still worth pinning is that `explore` is handled rather than
-  // silently succeeding at nothing, and that the surrounding claim about the
-  // inventory still holds.
-  auto const leaf = dispatch({"explore"});
-  CHECK(leaf.code == 0);
-  CHECK(leaf.err.empty());
-  CHECK(leaf.out.contains("explore"));
-  CHECK(leaf.out.contains("--plain"));
-
-  // And the sibling that left the inventory at task 6352 answers its own
-  // verb instead of 64, which is what makes the row above a statement
-  // about `explore` rather than about top-level leaves in general.
-  CHECK(dispatch({"report", "--help"}).code == 0);
-
-  // Deeper, to prove the key is the full path and not the leaf name.
-  //
-  // This was `feedback triage list` until task 6303 ported that family, then
-  // `workspace routing build` until task 6275 ported that one. The exemplar
-  // has two constraints: it must be genuinely unported, and its positionals
-  // must all be OPTIONAL or the parser refuses at exit 2 before dispatch is
-  // reached.
-  //
-  // With `workspace routing build` gone there is NO three-level path left
-  // that satisfies both. The inventory's only other three-level entry was
-  // `task touches infer`, whose `task-id` is required — so it would have
-  // failed at the parser and asserted the parser's behaviour rather than the
-  // table's. The replacement is therefore two-level rather than three, and
-  // the property under test is unaffected: `init` is a leaf name that exists
-  // only under `workspace`, so answering to the full path `workspace init`
-  // still proves the key is the path.
-  //
-  // Worth stating plainly so the next cycle does not go hunting: three
-  // levels is not recoverable here. Task 6330 ported `task touches infer`,
-  // so the inventory now holds NO three-level path at all — it comes back
-  // only if some future cycle declares a new three-level family.
-  //
-  // `workspace init` is a handler now, so this optional-only leaf reaches
-  // its domain guard rather than the generated exit-64 placeholder.
-  auto const deep = dispatch({"workspace", "init"});
-  CHECK(deep.code != 64);
-
-  // Discrimination: a PORTED verb on the same binary does not answer 64,
-  // so exit 64 is not simply what this binary now does.
-  auto const ported = dispatch({"version"});
-  CHECK(ported.code == 0);
-  CHECK(ported.err.empty());
 }
 
 TEST_CASE("the health DUAL node's parent and child are BOTH wired, and both matter to the same hazard",
@@ -1140,10 +1008,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
 
   // 2 -> 1: task 6419 moved the whole `ext`/`sync` family off this binary.
   // `ext propagate` (the other member of this array) left WITH them
-  // conceptually, leaving only `explore`. It is not re-added here because
-  // it is not yet wired on `planar-ext` either — see surface.cpp's
-  // `unported_paths` header.
-  CHECK(unported.size() == 1);
+  // conceptually, leaving only `explore`. Plan 1142 (task 7463) deleted
+  // `explore` outright, so the inventory is empty. `ext propagate` is still
+  // not wired on `planar-ext` either — see surface.cpp's `unported_paths`
+  // header.
+  CHECK(unported.empty());
   // `workspace regenerate` had already moved at task 6364, with its
   // hand-rolled template engine. See
   // `planar.engine.workspace.regenerate`'s header for the full account.
@@ -1152,7 +1021,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `closure compute` without updating this count; corrected here
   // against the live `k_unported` array rather than re-derived.
 
-  CHECK(unported.size() == 1);
+  CHECK(unported.empty());
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
   INFO("moved by task 6362: bench harvest");
@@ -1175,12 +1044,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("report"));
   INFO("moved by task 6357: health");
   CHECK_FALSE(unported.contains("health"));
-  // Probed by task 6329 and deliberately NOT moved. Pinned per leaf so a
-  // later cycle cannot wire one off the back of this cycle's count.
-  for (auto const& leaf : {"explore"}) {
-    INFO("probed by task 6329 and blocked for a NAMED reason: " << leaf);
-    CHECK(unported.contains(leaf));
-  }
   INFO("moved by task 6324, completing the `task` family's big unblocked leaf: task packet");
   CHECK_FALSE(unported.contains("task packet"));
   INFO("moved by task 6275: workspace routing build");
@@ -1327,13 +1190,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
     INFO("templates leaf: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
-  // The five `scope` leaves task 6214 ported, named per leaf for the same
-  // reason as every batch above. `use` / `pop` / `clear` matter most here:
-  // they are REFUSALS either way, so nothing about their exit status alone
-  // distinguishes the ported form (exit 2, "removed in plan 153 M5", a
-  // remedy) from the unported one (exit 64, "not implemented in this
-  // build"). Only membership in this inventory does.
-  for (auto const& leaf : {"scope show", "scope suggest", "scope use", "scope pop", "scope clear"}) {
+  // The two live `scope` leaves task 6214 ported, named per leaf for the
+  // same reason as every batch above. The plan-153-M5 stubs `use`, `pop`
+  // and `clear` were deleted in plan 1142 and are no longer declared.
+  for (auto const& leaf : {"scope show", "scope suggest"}) {
     INFO("scope leaf: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
@@ -1513,7 +1373,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Task 7205 adds the `help` leaf (218 -> 219).
   // Task 7319 adds the `update` leaf (219 -> 220).
   // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
-  CHECK(leaves.size() == 203);
+  // Plan 1142 task 7463 removes `explore`, `skills` and the three `scope` stubs (203 -> 198).
+  CHECK(leaves.size() == 198);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

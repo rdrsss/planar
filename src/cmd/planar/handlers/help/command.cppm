@@ -3,8 +3,8 @@
 ///
 /// `planar help` is a leaf that prints the root help page, exactly what
 /// `planar --help` prints, and exits 0. It takes no arguments; per-node help
-/// stays on the `--help` flag. The handler lives in `dispatch.cpp`, beside
-/// `explore`'s, because it renders the root node it is registered against.
+/// stays on the `--help` flag. The handler lives in `dispatch.cpp`, because it
+/// renders the root node it is registered against.
 export module planar.cmd.planar.handlers.help.command;
 
 import std;
