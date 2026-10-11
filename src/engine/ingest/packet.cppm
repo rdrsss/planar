@@ -10,30 +10,21 @@
 ///
 /// ## WHY THIS LIVES IN `engine/ingest` AND NOT AN `engine/routing` BUCKET
 ///
-/// The Zig original sits in `engine/routing/`, so a mechanical port would
-/// create a matching `engine_routing` bucket. That bucket CANNOT BE BUILT.
-/// D15/D18 forbid a layer-2 `engine_*` from depending on another layer-2
-/// `engine_*`, and the packet's freshness computation is defined in terms of
-/// `materialize`'s digests: `citation_evidence` and `fact_semantic_source`
-/// both call `artifact_section`, `roadmap_section`, `section`, `field` and
-/// `source_digest`, and compare against `materializer_version`. A
-/// `DEPENDS engine_ingest` line on an `engine_routing` bucket would FATAL at
-/// configure time, not silently succeed.
+/// A layer-2 `engine_*` may not depend on another layer-2 `engine_*`, and the
+/// packet shares the `materialize` module's digest and Markdown-section
+/// helpers: `source_digest` and `sha256_hex` digest a reference, and
+/// `artifact_section` resolves a `#heading` fragment for `--expand`. A
+/// separate bucket would FATAL at configure time.
 ///
-/// D19's remedy — extract the shared primitive to layer 1 — was measured and
-/// rejected: `roadmap_section` calls `parse::parse_roadmap`, so extracting the
-/// helpers drags `planar.engine.ingest.parse` (the whole markdown-parsing half
-/// of ingest) down a layer to serve one caller. That is the layering inverted,
-/// which is the same argument `engine/ingest/CMakeLists.txt` already makes
-/// about `apply.zig`.
+/// ## REFERENCES, NOT FACTS
 ///
-/// Co-location is also the honest description of the coupling. `materialize`
-/// WRITES the `routing_task_facts` rows; this module READS them back and
-/// RECOMPUTES the same digest live to decide whether the fact is still
-/// current. The oracle says so itself at `zig/src/engine/ingestor/
-/// materialize.zig:489` — the two halves must agree byte for byte or every
-/// fact is permanently stale. Splitting them across buckets would put a
-/// configure-time wall between two functions that are one contract.
+/// The packet carries no `routing_task_facts` row and no section text. A
+/// citation is a REFERENCE derived live from the task's `cites` entity links:
+/// the cited artifact's id, a locator, a digest and a one-line label. The
+/// text of a cited section is fetched on demand with `expand_reference`
+/// (`planar task packet <id> --expand <ref>`). Nothing reads
+/// `routing_task_facts` on master any more; the table is dropped by a later
+/// migration.
 ///
 /// ## THE REASON LIST IS CONTRACT, AND ITS ORDER IS SOURCE ORDER
 ///
@@ -53,7 +44,6 @@
 ///     generic_next_action, missing_product_spec, missing_tech_spec,
 ///     missing_roadmap, missing_test_spec, missing_locked_decision,
 ///     missing_touch, absent_validation_gates,
-///     missing_acceptance_fact, missing_next_action_fact,
 ///     uncovered_required_scenario
 ///
 /// **NO PART OF THE ORDER COMES FROM HASH-MAP ITERATION.** This was checked
@@ -64,13 +54,8 @@
 /// pinned as such — there is no divergence to record here.
 ///
 /// **`validate_evidence_classes` RUNS LAST, BUT DEDUPLICATION CAN PULL ITS
-/// REASONS FORWARD.** `unresolved_citation` and `uncovered_required_scenario`
-/// are each reachable from both the main block and the class walk. Measured on
-/// a READY task whose product-spec artifact body was then edited:
-/// `[missing_product_spec, unresolved_citation, stale_fact,
-/// stale_mandatory_evidence]` — `unresolved_citation` lands at its EARLY
-/// position (the citations loop), while `stale_mandatory_evidence`, reachable
-/// only from the class walk, lands at the end.
+/// REASONS FORWARD.** A reason reachable from both the main block and the
+/// class walk lands at its EARLY position.
 ///
 /// ## ORACLE FACTS THAT COST A CYCLE IF ASSUMED
 ///
@@ -78,22 +63,6 @@
 /// list means the task is a root task, so it does not produce
 /// `missing_dependency`. A declared edge whose dependency is unfinished still
 /// produces `invalid_dependency`; this exemption affects only the empty list.
-///
-/// **`contradictory_mandatory_fact` IS UNREACHABLE FROM `assemble_task`.** The
-/// check looks for two required facts sharing `kind`, `id` AND `locator` with
-/// differing `text`, but `fact_evidence` sets `id` from
-/// `routing_task_facts.id`, which is a primary key. Two rows can never share
-/// it. The check is live for a hand-built `task_input` and dead for every
-/// packet the CLI can produce. Reproduced rather than removed — it is the
-/// oracle's code and a future assembler could reach it.
-///
-/// **THE `blocks` / `blocked_by` FACT KINDS RESOLVE AGAINST THE
-/// `depends-on` RELATIONSHIP.** Migration 00033 renamed the entity_links
-/// relationship; the routing FACT KIND vocabulary did not move. So
-/// `fact_semantic_source` matches `fact_kind == "blocks"` and queries
-/// `relationship = 'depends-on'`, and `materialize::counted_kind_dependency`
-/// stays the string `"blocks"` while the live count queries `depends-on`.
-/// Both halves are the oracle's and both are reproduced verbatim.
 ///
 /// **A CLAIM ROW IS ONLY EVIDENCE WHILE ITS LEASE IS LIVE.** `claim_evidence`
 /// selects `status = 'active'` rows and then re-derives the status as
@@ -146,35 +115,52 @@ export struct evidence {
   std::string  freshness = "current";        ///< `current` or `stale`.
 };
 
+/// @brief One citation of an artifact, derived from a `cites` entity link.
+///
+/// A reference names a cited artifact and carries no text from it; the text
+/// comes from `expand_reference`. Defaults mirror `evidence`.
+export struct reference {
+  std::string  ref;               ///< `artifact:<id>`, the argument `--expand` takes.
+  std::string  kind;              ///< The cited artifact's kind, e.g. `tech_spec`.
+  std::int64_t id      = 0;       ///< The cited artifact's id.
+  std::string  locator = "body";  ///< `body` for the whole artifact; the entity link carries no finer locator.
+  std::string  digest;            ///< `source_digest("artifact", id, locator, body)`, 64 lowercase hex chars.
+  std::string  label;             ///< One-line label: the artifact's title. In `canonical`, never in the digest.
+  std::string  status = "active"; ///< The artifact's lifecycle status.
+};
+
 /// @brief Everything the compiler reads about one task.
 ///
 /// Field order is load-bearing: it is the key order of both the JSON `input`
 /// object and the canonical body.
 export struct task_input {
-  std::int64_t          task_id = 0;         ///< `tasks.id`.
-  std::string           status;              ///< `tasks.status`; only `todo`/`doing` are dispatchable.
-  std::string           title;               ///< `tasks.title`.
-  std::string           body;                ///< `tasks.body`, coalesced to empty.
-  std::string           next_action;         ///< `tasks.next_action`, coalesced to empty.
-  std::string           acceptance_criteria; ///< The `## Acceptance Criteria` section, empty when absent.
-  std::vector<evidence> owning_plans;        ///< The plan the task belongs to; 0 or 1 row.
-  std::vector<evidence> anchor_plans;        ///< Its parent (or derives-from target, or itself); 0 or 1 row.
-  std::vector<evidence> citations;           ///< Cited artifact SECTIONS, joined through the routing facts.
-  std::vector<evidence> decisions;           ///< Decisions the task `cites`.
-  std::vector<evidence> questions;           ///< Questions the task `addresses`.
-  std::vector<evidence> scenarios;           ///< Scenarios that `verifies` the task, with `covered` set separately.
-  std::vector<evidence> dependencies;        ///< Tasks this one `depends-on`; `done` reads as `satisfied`.
-  std::vector<evidence> touches;             ///< Declared paths first, then whole-repo edges.
-  std::vector<evidence> claims;              ///< Active claims, with a lapsed lease reported as `expired`.
-  std::vector<evidence> validation_gates;    ///< The `## Required validation` section; 0 or 1 row.
-  std::vector<evidence> facts;               ///< Every `routing_task_facts` row, with freshness recomputed live.
+  std::int64_t           task_id = 0;         ///< `tasks.id`.
+  std::string            status;              ///< `tasks.status`; only `todo`/`doing` are dispatchable.
+  std::string            title;               ///< `tasks.title`.
+  std::string            body;                ///< `tasks.body`, coalesced to empty.
+  std::string            next_action;         ///< `tasks.next_action`, coalesced to empty.
+  std::string            acceptance_criteria; ///< The `## Acceptance Criteria` section, empty when absent.
+  std::vector<evidence>  owning_plans;        ///< The plan the task belongs to; 0 or 1 row.
+  std::vector<evidence>  anchor_plans;        ///< Its parent (or derives-from target, or itself); 0 or 1 row.
+  std::vector<reference> references;          ///< The artifacts the task `cites`, ordered by kind then id.
+  std::vector<evidence>  decisions;           ///< Decisions the task `cites`.
+  std::vector<evidence>  questions;           ///< Questions the task `addresses`.
+  std::vector<evidence>  scenarios;           ///< Scenarios that `verifies` the task, with `covered` set separately.
+  std::vector<evidence>  dependencies;        ///< Tasks this one `depends-on`; `done` reads as `satisfied`.
+  std::vector<evidence>  touches;             ///< Declared paths first, then whole-repo edges.
+  std::vector<evidence>  claims;              ///< Active claims, with a lapsed lease reported as `expired`.
+  std::vector<evidence>  validation_gates;    ///< The `## Required validation` section; 0 or 1 row.
 };
 
 /// @brief Why a packet is not ready.
 ///
 /// Enumerator order is the oracle's declaration order and is NOT the emission
 /// order — see this file's header for the emission order, which comes from the
-/// sequence of checks in `compile_task`.
+/// sequence of checks in `compile_task`. The fact and evidence reasons
+/// (`missing_acceptance_fact`, `missing_next_action_fact`,
+/// `invalid_mandatory_fact`, `stale_fact`, `contradictory_mandatory_fact`,
+/// `missing_provenance`, `stale_mandatory_evidence`) are no longer emitted:
+/// the packet carries no facts.
 export enum class readiness_reason : std::uint8_t {
   missing_title,
   missing_body,
@@ -252,6 +238,45 @@ export [[nodiscard]] auto compile_task(const task_input& input) -> task_packet;
 /// @return The packet, or `task_not_found` / `query_failed`.
 export [[nodiscard]] auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<task_packet, packet_error>;
 
+/// @brief Why `expand_reference` failed.
+export enum class expand_error : std::uint8_t {
+  task_not_found,    ///< No `tasks` row with that id.
+  unknown_reference, ///< The reference is malformed or is not among the task's `cites` links.
+  section_not_found, ///< The artifact is cited but has no section with the requested heading.
+  query_failed,      ///< SQL failure.
+};
+
+/// @brief The text a reference resolves to.
+export struct expansion {
+  std::string ref;    ///< The reference as the caller wrote it.
+  std::string digest; ///< `source_digest("artifact", id, locator, text)`; equals the reference's digest for a whole artifact.
+  std::string text;   ///< The whole artifact body, or the section under the requested heading.
+};
+
+/// @brief Resolve one of the task's references to its text.
+///
+/// `ref` is `artifact:<id>` for the whole body, or `artifact:<id>#<heading>`
+/// for the section under that heading (matched case-insensitively, nested
+/// subsections included). The artifact must be one of the task's `cites`
+/// links; anything else is `unknown_reference`, so a caller cannot read an
+/// arbitrary artifact through a task it does not cite.
+/// @param conn An open database connection.
+/// @param task_id The task whose references are searched.
+/// @param ref The reference to resolve.
+/// @return The expansion, or the failure.
+export [[nodiscard]] auto expand_reference(db::connection& conn, std::int64_t task_id, std::string_view ref)
+    -> std::expected<expansion, expand_error>;
+
+/// @brief Render an expansion as text.
+/// @param value A resolved expansion.
+/// @return The text, with a trailing newline added when it lacks one.
+export [[nodiscard]] auto render_expansion_text(const expansion& value) -> std::string;
+
+/// @brief Render an expansion as `{"ref":...,"digest":...,"text":...}`.
+/// @param value A resolved expansion.
+/// @return A COMPLETE stdout payload including its trailing newline.
+export [[nodiscard]] auto render_expansion_json(const expansion& value) -> std::string;
+
 /// @brief Render the operator-facing text form.
 /// @param packet A compiled packet.
 /// @return A COMPLETE stdout payload including its trailing newline.
@@ -262,6 +287,8 @@ export [[nodiscard]] auto render_text(const task_packet& packet) -> std::string;
 /// The envelope carries `policy_version` alongside `ready`, `input`, `digest`
 /// and `reasons`. It carries no `canonical` body: `input` is the only
 /// serialized copy of the evidence, so the packet is not emitted twice.
+/// `input.references` lists `{ref, kind, id, locator, digest, label, status}`
+/// per cited artifact and carries no text.
 /// @param packet A compiled packet.
 /// @return A COMPLETE stdout payload including its trailing newline.
 export [[nodiscard]] auto render_json(const task_packet& packet) -> std::string;

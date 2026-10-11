@@ -124,28 +124,9 @@ constexpr std::string_view whitespace = " \t\r\n";
   return std::ranges::find(accepted, status) != accepted.end();
 }
 
-/// @brief Whether the evidence's recorded digest still matches the live one.
-///
-/// All five clauses are the oracle's: both digests present, equal, freshness
-/// literally `current`, and a non-blank provenance.
-[[nodiscard]] auto evidence_current(const evidence& value) -> bool {
-  return !value.source_digest.empty() && !value.current_digest.empty() && value.source_digest == value.current_digest &&
-         value.freshness == "current" && !trim(value.provenance).empty();
-}
-
-/// @brief Whether a locator names a materialized citation source.
-[[nodiscard]] auto section_locator(std::string_view locator) -> bool {
-  if (locator == "body") {
-    return true;
-  }
-  const auto hash = locator.find('#');
-  return hash != std::string_view::npos && hash > 0 && !trim(locator.substr(hash + 1)).empty();
-}
-
-/// @brief Whether a current, section-shaped citation of `kind` is present.
-[[nodiscard]] auto has_kind(const std::vector<evidence>& values, std::string_view kind) -> bool {
-  return std::ranges::any_of(
-      values, [&](const evidence& v) { return v.kind == kind && section_locator(v.locator) && evidence_current(v); });
+/// @brief Whether the task cites an artifact of `kind`.
+[[nodiscard]] auto has_kind(const std::vector<reference>& values, std::string_view kind) -> bool {
+  return std::ranges::any_of(values, [&](const reference& v) { return v.kind == kind; });
 }
 
 [[nodiscard]] auto generic_acceptance(std::string_view value) -> bool {
@@ -158,38 +139,6 @@ constexpr std::string_view whitespace = " \t\r\n";
   const auto cleaned = trim(value);
   return cleaned.empty() || contains_fold(cleaned, "implement per acceptance criteria") ||
          contains_fold(cleaned, "implement the task") || equals_fold(cleaned, "todo");
-}
-
-/// @brief The truth value of a mandatory boolean fact.
-/// @return `nullopt` when no current, required fact of that kind exists;
-/// otherwise whether its text reads as true. Note the oracle returns on the
-/// FIRST matching fact — a later one cannot override it.
-[[nodiscard]] auto mandatory_boolean_fact(const std::vector<evidence>& values, std::string_view kind) -> std::optional<bool> {
-  for (const auto& value : values) {
-    if (value.kind != kind || !value.required || !evidence_current(value)) {
-      continue;
-    }
-    return value.text == "1" || equals_fold(value.text, "true");
-  }
-  return std::nullopt;
-}
-
-/// @brief Two required facts sharing kind, id and locator but disagreeing on
-/// text. Unreachable from `assemble_task` — see packet.cppm's header.
-[[nodiscard]] auto contradictory(const std::vector<evidence>& values) -> bool {
-  for (std::size_t i = 0; i < values.size(); ++i) {
-    const auto& a = values[i];
-    if (!a.required) {
-      continue;
-    }
-    for (std::size_t j = i + 1; j < values.size(); ++j) {
-      const auto& b = values[j];
-      if (b.required && a.kind == b.kind && a.id == b.id && a.locator == b.locator && a.text != b.text) {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 /// @brief Append a reason unless it is already present. First occurrence wins,
@@ -296,6 +245,45 @@ auto append_evidence_field(std::string& out, std::string_view name, const std::v
   out.push_back(']');
 }
 
+/// @brief Append one `{"ref":...}` reference object. The `label` key is
+/// written only when `include_label` is set, mirroring `display_label`.
+auto append_reference(std::string& out, const reference& item, bool include_label) -> void {
+  out.append("{\"ref\":");
+  append_json_string(out, item.ref);
+  out.append(",\"kind\":");
+  append_json_string(out, item.kind);
+  out.append(std::format(",\"id\":{},\"locator\":", item.id));
+  append_json_string(out, item.locator);
+  out.append(",\"digest\":");
+  append_json_string(out, item.digest);
+  if (include_label) {
+    out.append(",\"label\":");
+    append_json_string(out, item.label);
+  }
+  out.append(",\"status\":");
+  append_json_string(out, item.status);
+  out.push_back('}');
+}
+
+/// @brief Append the sorted `references` array to the canonical body.
+auto append_references_field(std::string& out, const std::vector<reference>& values, bool include_labels) -> void {
+  auto sorted = values;
+  std::ranges::sort(sorted, [](const reference& a, const reference& b) {
+    return std::tie(a.kind, a.id, a.locator, a.digest, a.status, a.label) <
+           std::tie(b.kind, b.id, b.locator, b.digest, b.status, b.label);
+  });
+  out.append(",\"references\":[");
+  bool first = true;
+  for (const auto& item : sorted) {
+    if (!first) {
+      out.push_back(',');
+    }
+    first = false;
+    append_reference(out, item, include_labels);
+  }
+  out.push_back(']');
+}
+
 /// @brief The canonical body.
 /// @param include_display_labels True for the `canonical` field, false for the
 /// bytes the digest is taken over. The two forms differ by exactly the
@@ -316,7 +304,7 @@ auto append_evidence_field(std::string& out, std::string_view name, const std::v
   append_json_string(out, input.acceptance_criteria);
   append_evidence_field(out, "owning_plans", input.owning_plans, include_display_labels);
   append_evidence_field(out, "anchor_plans", input.anchor_plans, include_display_labels);
-  append_evidence_field(out, "citations", input.citations, include_display_labels);
+  append_references_field(out, input.references, include_display_labels);
   append_evidence_field(out, "decisions", input.decisions, include_display_labels);
   append_evidence_field(out, "questions", input.questions, include_display_labels);
   append_evidence_field(out, "scenarios", input.scenarios, include_display_labels);
@@ -324,7 +312,6 @@ auto append_evidence_field(std::string& out, std::string_view name, const std::v
   append_evidence_field(out, "touches", input.touches, include_display_labels);
   append_evidence_field(out, "claims", input.claims, include_display_labels);
   append_evidence_field(out, "validation_gates", input.validation_gates, include_display_labels);
-  append_evidence_field(out, "facts", input.facts, include_display_labels);
   out.push_back('}');
   return out;
 }
@@ -341,7 +328,6 @@ struct evidence_class {
 
 auto validate_evidence_classes(std::vector<readiness_reason>& reasons, const task_input& input) -> void {
   static constexpr std::string_view plan_ok[]     = {"active", "paused", "ready"};
-  static constexpr std::string_view citation_ok[] = {"active", "draft", "ready"};
   static constexpr std::string_view decision_ok[] = {"accepted", "ready"};
   static constexpr std::string_view question_ok[] = {"answered", "non_blocking", "ready"};
   static constexpr std::string_view dep_ok[]      = {"satisfied", "ready", "done"};
@@ -352,7 +338,6 @@ auto validate_evidence_classes(std::vector<readiness_reason>& reasons, const tas
   const evidence_class classes[] = {
       {&input.owning_plans, readiness_reason::invalid_owning_plan, plan_ok},
       {&input.anchor_plans, readiness_reason::invalid_anchor_plan, plan_ok},
-      {&input.citations, readiness_reason::unresolved_citation, citation_ok},
       {&input.decisions, readiness_reason::invalid_locked_decision, decision_ok},
       {&input.questions, readiness_reason::unresolved_question, question_ok},
       {&input.dependencies, readiness_reason::invalid_dependency, dep_ok},
@@ -366,39 +351,9 @@ auto validate_evidence_classes(std::vector<readiness_reason>& reasons, const tas
       if (!item.required) {
         continue;
       }
-      if (trim(item.provenance).empty()) {
-        append_reason(reasons, readiness_reason::missing_provenance);
-      }
-      // NOTE: this class walk checks digest equality DIRECTLY rather than
-      // through `evidence_current` — it does not consult `freshness` or
-      // `provenance`. The scenario walk below DOES use `evidence_current`.
-      // The two are not interchangeable and the oracle uses each in exactly
-      // one place.
-      if (item.source_digest.empty() || item.current_digest.empty() || item.source_digest != item.current_digest) {
-        append_reason(reasons, readiness_reason::stale_mandatory_evidence);
-      }
       if (!status_in(item.status, cls.accepted)) {
         append_reason(reasons, cls.reason);
       }
-    }
-  }
-
-  // Scenario lifecycle is independent of coverage. A linked DRAFT scenario
-  // covers its task in the authoritative oracle; only the verifies/ownership
-  // relationship (carried by `covered`) determines coverage readiness. That is
-  // why scenarios are absent from the status-checked classes above.
-  for (const auto& item : input.scenarios) {
-    if (!item.required) {
-      continue;
-    }
-    if (trim(item.provenance).empty()) {
-      append_reason(reasons, readiness_reason::missing_provenance);
-    }
-    if (!evidence_current(item)) {
-      append_reason(reasons, readiness_reason::stale_mandatory_evidence);
-    }
-    if (!item.covered) {
-      append_reason(reasons, readiness_reason::uncovered_required_scenario);
     }
   }
 }
@@ -412,9 +367,8 @@ auto validate_evidence_classes(std::vector<readiness_reason>& reasons, const tas
 ///
 /// `source_digest` and `current_digest` are BOTH set to `digest(text)`, so a
 /// row loaded this way is current by construction. That is the oracle's
-/// behaviour and it is why plan/decision/scenario/touch/claim evidence can
-/// never be `stale_mandatory_evidence` — only citations and facts, which carry
-/// a stored digest to disagree with, can.
+/// behaviour and it is why plan/decision/scenario/touch/claim evidence is
+/// never stale.
 [[nodiscard]] auto row_evidence(db::statement& stmt) -> evidence {
   auto       text    = stmt.column_text(3);
   const auto current = digest(text);
@@ -462,6 +416,13 @@ auto validate_evidence_classes(std::vector<readiness_reason>& reasons, const tas
   return std::optional<evidence>{row_evidence(*stmt)};
 }
 
+/// @brief A label on one line: newlines and tabs become spaces, ends trimmed.
+[[nodiscard]] auto one_line(std::string_view text) -> std::string {
+  std::string out{trim(text)};
+  std::ranges::replace_if(out, [](char c) { return c == '\n' || c == '\r' || c == '\t'; }, ' ');
+  return out;
+}
+
 /// @brief Evidence for every entity linked FROM the task by `relationship`.
 [[nodiscard]] auto linked_evidence(db::connection& conn, std::int64_t task_id, std::string_view kind,
                                    std::string_view relationship, std::string_view entity_sql)
@@ -498,238 +459,23 @@ auto validate_evidence_classes(std::vector<readiness_reason>& reasons, const tas
   return out;
 }
 
-/// @brief The section a fact's locator resolves to in the LIVE database.
+/// @brief The artifacts the task cites, as references.
 ///
-/// The digest of this string is what the stored `source_digest` is compared
-/// against, so every arm here must match what `materialize` wrote, byte for
-/// byte, or the fact is permanently stale.
-[[nodiscard]] auto fact_semantic_source(db::connection& conn, std::int64_t task_id, std::string_view fact_kind,
-                                        std::string_view source_kind, std::int64_t source_id, std::string_view locator)
-    -> std::expected<std::optional<std::string>, packet_error>;
-
-[[nodiscard]] auto scalar_text(db::connection& conn, std::string_view sql, std::int64_t id)
-    -> std::expected<std::optional<std::string>, packet_error> {
-  auto stmt = conn.prepare(sql);
-  if (!stmt) {
+/// One reference per `cites` link from the task to an artifact, ordered by the
+/// artifact's kind and id. The digest is taken over the artifact's whole body
+/// at read time, so a reference is current by construction and the packet
+/// changes digest the moment a cited artifact does.
+[[nodiscard]] auto reference_evidence(db::connection& conn, std::int64_t task_id)
+    -> std::expected<std::vector<reference>, packet_error> {
+  auto stmt = conn.prepare(R"(select a.kind,a.id,coalesce(a.body,''),a.title,a.status
+from entity_links el
+join artifacts a on a.id=el.to_id
+where el.from_kind='task' and el.from_id=? and el.to_kind='artifact' and el.relationship='cites'
+order by a.kind,a.id)");
+  if (!stmt || !stmt->bind_int64(1, task_id)) {
     return std::unexpected(packet_error::query_failed);
   }
-  if (!stmt->bind_int64(1, id)) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  auto step = stmt->step();
-  if (!step) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  if (*step != db::step_result::row) {
-    return std::optional<std::string>{};
-  }
-  return std::optional<std::string>{stmt->column_text(0)};
-}
-
-[[nodiscard]] auto count_query(db::connection& conn, std::string_view sql, std::int64_t id)
-    -> std::expected<std::int64_t, packet_error> {
-  auto stmt = conn.prepare(sql);
-  if (!stmt) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  if (!stmt->bind_int64(1, id)) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  auto step = stmt->step();
-  if (!step) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  if (*step != db::step_result::row) {
-    return std::int64_t{0};
-  }
-  return stmt->column_int64(0);
-}
-
-enum class relationship_direction : std::uint8_t { outgoing, incoming };
-
-[[nodiscard]] auto live_relationship(db::connection& conn, std::int64_t task_id, std::string_view other_kind,
-                                     std::int64_t other_id, std::string_view relationship, relationship_direction direction)
-    -> std::expected<bool, packet_error> {
-  const std::string_view sql  = direction == relationship_direction::outgoing
-                                    ? "select count(*) from entity_links where relationship=? and from_kind='task' and from_id=? "
-                                      "and to_kind=? and to_id=?"
-                                    : "select count(*) from entity_links where relationship=? and to_kind='task' and to_id=? "
-                                      "and from_kind=? and from_id=?";
-  auto                   stmt = conn.prepare(sql);
-  if (!stmt) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  if (!stmt->bind_text(1, relationship) || !stmt->bind_int64(2, task_id) || !stmt->bind_text(3, other_kind) ||
-      !stmt->bind_int64(4, other_id)) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  auto step = stmt->step();
-  if (!step) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  return *step == db::step_result::row && stmt->column_int64(0) > 0;
-}
-
-auto fact_semantic_source(db::connection& conn, std::int64_t task_id, std::string_view fact_kind, std::string_view source_kind,
-                          std::int64_t source_id, std::string_view locator)
-    -> std::expected<std::optional<std::string>, packet_error> {
-  const auto none = std::optional<std::string>{};
-
-  if (source_kind == "task" && source_id == task_id) {
-    if (locator == "body#acceptance-criteria") {
-      auto body = scalar_text(conn, "select coalesce(body,'') from tasks where id=?", task_id);
-      if (!body) {
-        return std::unexpected(body.error());
-      }
-      if (!body->has_value()) {
-        return none;
-      }
-      return std::optional<std::string>{std::string{mz::section(**body, "## Acceptance Criteria")}};
-    }
-    if (locator == "next_action") {
-      return scalar_text(conn, "select coalesce(next_action,'') from tasks where id=?", task_id);
-    }
-    if (locator == "body") {
-      return scalar_text(conn, "select coalesce(body,'') from tasks where id=?", task_id);
-    }
-    // These labels MUST match what `materialize`'s stage-count pass stored,
-    // byte for byte, or the fact is permanently stale — hence the shared
-    // constants rather than literals. In particular the dependency label stays
-    // `blocks`: it is a FACT KIND, not the renamed entity_links relationship,
-    // even though the live count below correctly queries `depends-on`.
-    std::optional<std::string_view> count_kind;
-    if (locator == mz::locator_touches) {
-      count_kind = mz::counted_kind_touch;
-    } else if (locator == mz::locator_scenarios) {
-      count_kind = mz::counted_kind_scenario;
-    } else if (locator == mz::locator_dependency_fanout) {
-      count_kind = mz::counted_kind_dependency;
-    }
-    if (count_kind.has_value()) {
-      std::string_view count_sql;
-      if (*count_kind == mz::counted_kind_touch) {
-        count_sql = "select count(*) from entity_links where from_kind='task' and from_id=? "
-                    "and relationship='touches'";
-      } else if (*count_kind == mz::counted_kind_scenario) {
-        count_sql = "select count(*) from entity_links where to_kind='task' and to_id=? "
-                    "and from_kind='test_scenario' and relationship='verifies'";
-      } else {
-        count_sql = "select count(*) from entity_links where from_kind='task' and from_id=? "
-                    "and to_kind='task' and relationship='depends-on'";
-      }
-      auto count = count_query(conn, count_sql, task_id);
-      if (!count) {
-        return std::unexpected(count.error());
-      }
-      return std::optional<std::string>{std::format("{}:{}", *count_kind, *count)};
-    }
-  }
-
-  if (source_kind == "artifact") {
-    auto body = scalar_text(conn, "select coalesce(body,'') from artifacts where id=?", source_id);
-    if (!body) {
-      return std::unexpected(body.error());
-    }
-    if (!body->has_value()) {
-      return none;
-    }
-    if (locator == "body") {
-      return body;
-    }
-    // Same roadmap-locator rule as the citation path. Fixing only that one
-    // left the FACT for the same locator resolving to nothing, so a task's
-    // roadmap citation read `current` while its `cited_artifact_section` fact
-    // stayed permanently stale — one locator with two answers.
-    if (locator.starts_with("roadmap#")) {
-      return mz::roadmap_section(**body, locator);
-    }
-    const auto section = mz::artifact_section(**body, locator);
-    if (!section.has_value()) {
-      return none;
-    }
-    return std::optional<std::string>{std::string{*section}};
-  }
-
-  if (source_kind == "decision") {
-    return scalar_text(conn, "select body from decisions where id=?", source_id);
-  }
-  if (source_kind == "question") {
-    return scalar_text(conn, "select coalesce(body,'') from questions where id=?", source_id);
-  }
-  if (source_kind == "test_scenario") {
-    if (locator == "status") {
-      return scalar_text(conn, "select status from test_scenarios where id=?", source_id);
-    }
-    auto body = scalar_text(conn, "select coalesce(body,'') from test_scenarios where id=?", source_id);
-    if (!body) {
-      return std::unexpected(body.error());
-    }
-    if (!body->has_value()) {
-      return none;
-    }
-    if (locator == "body#acceptance") {
-      const auto value = mz::field(**body, "**Acceptance:**");
-      return std::optional<std::string>{value.has_value() ? std::string{*value} : std::string{}};
-    }
-    return body;
-  }
-
-  // `blocks` / `blocked_by` are routing FACT KINDS, a separate vocabulary from
-  // the entity_links relationship (renamed to `depends-on` in migration
-  // 00033). The fact kind is unchanged; only the relationship it resolves
-  // against moved.
-  if (fact_kind == "touch") {
-    auto live = live_relationship(conn, task_id, source_kind, source_id, "touches", relationship_direction::outgoing);
-    if (!live) {
-      return std::unexpected(live.error());
-    }
-    return *live ? std::optional<std::string>{"touches"} : none;
-  }
-  if (fact_kind == "blocks") {
-    auto live = live_relationship(conn, task_id, source_kind, source_id, "depends-on", relationship_direction::outgoing);
-    if (!live) {
-      return std::unexpected(live.error());
-    }
-    return *live ? std::optional<std::string>{"depends-on"} : none;
-  }
-  if (fact_kind == "blocked_by") {
-    auto live = live_relationship(conn, task_id, source_kind, source_id, "depends-on", relationship_direction::incoming);
-    if (!live) {
-      return std::unexpected(live.error());
-    }
-    return *live ? std::optional<std::string>{"depends-on"} : none;
-  }
-  return none;
-}
-
-/// @brief Mandatory task citations: the persisted section facts ingest
-/// produced, joined back to BOTH the direct task link and the current
-/// artifact. A whole-artifact link is necessary identity but never sufficient
-/// context, which is why the join demands the fact row too.
-[[nodiscard]] auto citation_evidence(db::connection& conn, std::int64_t task_id)
-    -> std::expected<std::vector<evidence>, packet_error> {
-  auto stmt = conn.prepare(R"(select a.kind,a.id,f.source_locator,coalesce(a.body,''),a.status,
-       'artifact:'||a.id,a.title,f.source_digest,f.materializer_version
-from routing_task_facts f
-join artifacts a on a.id=f.source_entity_id
-join entity_links el on el.from_kind='task' and el.from_id=f.task_id
- and el.to_kind='artifact' and el.to_id=a.id and el.relationship='cites'
-where f.task_id=? and f.fact_kind='cited_artifact_section'
- and f.source_entity_kind='artifact'
- and (f.source_locator='body' or not exists (
-   select 1 from routing_task_facts reviewed
-   where reviewed.task_id=f.task_id and reviewed.fact_kind='cited_artifact_section'
-     and reviewed.source_entity_kind='artifact' and reviewed.source_entity_id=f.source_entity_id
-     and reviewed.source_locator='body'
- ))
-order by a.kind,a.id,f.source_locator)");
-  if (!stmt) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  if (!stmt->bind_int64(1, task_id)) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  std::vector<evidence> out;
+  std::vector<reference> out;
   while (true) {
     auto step = stmt->step();
     if (!step) {
@@ -738,48 +484,13 @@ order by a.kind,a.id,f.source_locator)");
     if (*step != db::step_result::row) {
       break;
     }
-    const auto body    = stmt->column_text(3);
-    const auto locator = stmt->column_text(2);
-    // Roadmap locators are `roadmap#milestone:N/item:M`, which
-    // `artifact_section` cannot resolve — it expects `#Heading`. Routing them
-    // there yielded an empty digest, so every roadmap citation was stale the
-    // instant ingestion wrote it, and no amount of operator work could make
-    // the packet ready.
-    std::optional<std::string> section;
-    if (locator == "body") {
-      section = body;
-    } else if (locator.starts_with("roadmap#")) {
-      section = mz::roadmap_section(body, locator);
-    } else if (const auto found = mz::artifact_section(body, locator); found.has_value()) {
-      section = std::string{*found};
-    }
-    const auto  artifact_id    = stmt->column_int64(1);
-    std::string current        = section.has_value() ? mz::source_digest("artifact", artifact_id, locator, *section) : "";
-    const auto  source         = stmt->column_text(7);
-    const auto  stored_version = stmt->column_text(8);
-    // Same two-materializer rule as `fact_evidence` below: a citation fact
-    // staged by `task facts stage` carries `operator-v1` and must not be
-    // stale merely for saying so (decision 1102).
-    const bool known = stored_version == mz::materializer_version || stored_version == mz::operator_materializer_version;
-    const bool fresh = !current.empty() && source == current && known;
-
-    evidence item;
-    item.kind                 = stmt->column_text(0);
-    item.id                   = artifact_id;
-    item.locator              = locator;
-    item.text                 = section.value_or(std::string{});
-    item.display_label        = stmt->column_text(6);
-    item.source_digest        = source;
-    item.current_digest       = std::move(current);
-    item.status               = stmt->column_text(4);
-    item.provenance           = stmt->column_text(5);
-    item.materializer_version = stored_version;
-    // Report the stored version back as "current" when routing recognises it,
-    // so readiness's `materializer_version != current_materializer_version`
-    // comparison agrees with the freshness rule above rather than flagging
-    // every operator fact.
-    item.current_materializer_version = known ? item.materializer_version : std::string{mz::materializer_version};
-    item.freshness                    = fresh ? "current" : "stale";
+    reference item;
+    item.kind   = stmt->column_text(0);
+    item.id     = stmt->column_int64(1);
+    item.ref    = std::format("artifact:{}", item.id);
+    item.digest = mz::source_digest("artifact", item.id, item.locator, stmt->column_text(2));
+    item.label  = one_line(stmt->column_text(3));
+    item.status = stmt->column_text(4);
     out.push_back(std::move(item));
   }
   return out;
@@ -934,91 +645,6 @@ order by s.id)");
   return {std::move(item)};
 }
 
-/// @brief Every persisted routing fact for the task, with freshness recomputed
-/// live against its source.
-[[nodiscard]] auto fact_evidence(db::connection& conn, std::int64_t task_id)
-    -> std::expected<std::vector<evidence>, packet_error> {
-  auto stmt =
-      conn.prepare("select fact_kind,id,source_locator,"
-                   "coalesce(value_text,cast(value_bool as text),cast(value_integer as text),cast(value_real as text),''),"
-                   "source_digest,source_entity_kind,source_entity_id,materializer_version "
-                   "from routing_task_facts where task_id=? order by id");
-  if (!stmt) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  if (!stmt->bind_int64(1, task_id)) {
-    return std::unexpected(packet_error::query_failed);
-  }
-  struct raw_fact {
-    std::string  fact_kind;
-    std::int64_t id = 0;
-    std::string  locator;
-    std::string  text;
-    std::string  source;
-    std::string  source_kind;
-    std::int64_t source_id = 0;
-    std::string  stored_version;
-  };
-  std::vector<raw_fact> rows;
-  while (true) {
-    auto step = stmt->step();
-    if (!step) {
-      return std::unexpected(packet_error::query_failed);
-    }
-    if (*step != db::step_result::row) {
-      break;
-    }
-    rows.push_back({.fact_kind      = stmt->column_text(0),
-                    .id             = stmt->column_int64(1),
-                    .locator        = stmt->column_text(2),
-                    .text           = stmt->column_text(3),
-                    .source         = stmt->column_text(4),
-                    .source_kind    = stmt->column_text(5),
-                    .source_id      = stmt->column_int64(6),
-                    .stored_version = stmt->column_text(7)});
-  }
-
-  std::vector<evidence> out;
-  for (auto& row : rows) {
-    auto semantic = fact_semantic_source(conn, task_id, row.fact_kind, row.source_kind, row.source_id, row.locator);
-    if (!semantic) {
-      return std::unexpected(semantic.error());
-    }
-    std::string current = semantic->has_value() ? mz::source_digest(row.source_kind, row.source_id, row.locator, **semantic) : "";
-    // Two materializers now write facts: `spec ingest --apply` for a whole
-    // anchor subtree, and `task facts stage` for one operator-owned task
-    // (decision 1102). Both are versions routing still understands, so the
-    // check is set membership rather than equality with one constant --
-    // stamping an operator fact with an unrecognised version would make it
-    // unconditionally stale and `stale_fact` is a blanket reason over every
-    // fact, so the packet could never be ready. The DIGEST comparison is
-    // deliberately untouched: an operator-staged fact still goes stale the
-    // moment its source text changes.
-    const bool known = row.stored_version == mz::materializer_version || row.stored_version == mz::operator_materializer_version;
-    const bool fresh = !current.empty() && row.source == current && known;
-
-    evidence item;
-    item.kind                 = std::move(row.fact_kind);
-    item.id                   = row.id;
-    item.locator              = std::move(row.locator);
-    item.text                 = std::move(row.text);
-    item.source_digest        = std::move(row.source);
-    item.current_digest       = std::move(current);
-    item.status               = "materialized";
-    item.provenance           = std::format("{}:{}", row.source_kind, row.source_id);
-    item.materializer_version = std::move(row.stored_version);
-    // Report a RECOGNISED stored version back as the current one, so
-    // readiness's `materializer_version != current_materializer_version`
-    // clause agrees with the freshness rule above. Reporting the ingest
-    // constant unconditionally would fire `stale_fact` for every
-    // operator-staged fact even though its digest matches.
-    item.current_materializer_version = known ? item.materializer_version : std::string{mz::materializer_version};
-    item.freshness                    = fresh ? "current" : "stale";
-    out.push_back(std::move(item));
-  }
-  return out;
-}
-
 } // namespace
 
 // ===========================================================================
@@ -1132,22 +758,25 @@ auto compile_task(const task_input& input) -> task_packet {
   if (input.anchor_plans.empty()) {
     append_reason(reasons, r::missing_anchor_plan);
   }
-  if (!has_kind(input.citations, "product_spec")) {
+  if (!has_kind(input.references, "product_spec")) {
     append_reason(reasons, r::missing_product_spec);
   }
-  if (!has_kind(input.citations, "tech_spec")) {
+  if (!has_kind(input.references, "tech_spec")) {
     append_reason(reasons, r::missing_tech_spec);
   }
-  if (!has_kind(input.citations, "roadmap")) {
+  if (!has_kind(input.references, "roadmap")) {
     append_reason(reasons, r::missing_roadmap);
   }
-  if (!has_kind(input.citations, "test_spec")) {
+  if (!has_kind(input.references, "test_spec")) {
     append_reason(reasons, r::missing_test_spec);
   }
-  for (const auto& citation : input.citations) {
-    if (citation.required && (!section_locator(citation.locator) || !evidence_current(citation))) {
-      append_reason(reasons, r::unresolved_citation);
-      break;
+  {
+    static constexpr std::string_view citation_ok[] = {"active", "draft", "ready"};
+    for (const auto& cited : input.references) {
+      if (cited.digest.empty() || !status_in(cited.status, citation_ok)) {
+        append_reason(reasons, r::unresolved_citation);
+        break;
+      }
     }
   }
   if (input.decisions.empty()) {
@@ -1161,16 +790,6 @@ auto compile_task(const task_input& input) -> task_packet {
   if (input.validation_gates.empty()) {
     append_reason(reasons, r::absent_validation_gates);
   }
-  if (const auto fact = mandatory_boolean_fact(input.facts, "acceptance_complete"); !fact.has_value()) {
-    append_reason(reasons, r::missing_acceptance_fact);
-  } else if (!*fact) {
-    append_reason(reasons, r::invalid_mandatory_fact);
-  }
-  if (const auto fact = mandatory_boolean_fact(input.facts, "next_action_exact"); !fact.has_value()) {
-    append_reason(reasons, r::missing_next_action_fact);
-  } else if (!*fact) {
-    append_reason(reasons, r::invalid_mandatory_fact);
-  }
   if (input.scenarios.empty()) {
     append_reason(reasons, r::uncovered_required_scenario);
   }
@@ -1179,17 +798,6 @@ auto compile_task(const task_input& input) -> task_packet {
       append_reason(reasons, r::uncovered_required_scenario);
       break;
     }
-  }
-  for (const auto& fact : input.facts) {
-    if (fact.source_digest.empty() || fact.current_digest.empty() || fact.source_digest != fact.current_digest ||
-        (!fact.materializer_version.empty() && fact.materializer_version != fact.current_materializer_version) ||
-        fact.freshness != "current") {
-      append_reason(reasons, r::stale_fact);
-      break;
-    }
-  }
-  if (contradictory(input.facts)) {
-    append_reason(reasons, r::contradictory_mandatory_fact);
   }
   validate_evidence_classes(reasons, input);
 
@@ -1254,9 +862,9 @@ auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<
     }
   }
 
-  auto citations = citation_evidence(conn, task_id);
-  if (!citations) {
-    return std::unexpected(citations.error());
+  auto references = reference_evidence(conn, task_id);
+  if (!references) {
+    return std::unexpected(references.error());
   }
   auto decisions = linked_evidence(conn, task_id, "decision", "cites",
                                    "select 'decision',id,'decision:'||id,body,status,'decision:'||id,title "
@@ -1295,11 +903,6 @@ auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<
   if (!claims) {
     return std::unexpected(claims.error());
   }
-  auto facts = fact_evidence(conn, task_id);
-  if (!facts) {
-    return std::unexpected(facts.error());
-  }
-
   task_input input{.task_id             = task_id,
                    .status              = task_status,
                    .title               = title,
@@ -1308,15 +911,14 @@ auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<
                    .acceptance_criteria = std::string{acceptance.value_or(std::string_view{})},
                    .owning_plans        = std::move(owning),
                    .anchor_plans        = std::move(anchors),
-                   .citations           = std::move(*citations),
+                   .references          = std::move(*references),
                    .decisions           = std::move(*decisions),
                    .questions           = std::move(*questions),
                    .scenarios           = std::move(*scenarios),
                    .dependencies        = std::move(*dependencies),
                    .touches             = std::move(*touches),
                    .claims              = std::move(*claims),
-                   .validation_gates    = gate_evidence(task_id, body),
-                   .facts               = std::move(*facts)};
+                   .validation_gates    = gate_evidence(task_id, body)};
   return compile_task(input);
 }
 
@@ -1329,6 +931,12 @@ auto render_text(const task_packet& packet) -> std::string {
       out.append("- ");
       out.append(reason_name(reason));
       out.push_back('\n');
+    }
+  }
+  if (!packet.input.references.empty()) {
+    out.append(std::format("references (expand one with: planar task packet {} --expand <ref>):\n", packet.input.task_id));
+    for (const auto& item : packet.input.references) {
+      out.append(std::format("- {} {} {}\n", item.ref, item.digest.substr(0, 12), item.label));
     }
   }
   out.append(packet.canonical);
@@ -1393,7 +1001,14 @@ auto render_json(const task_packet& packet) -> std::string {
   };
   emit("owning_plans", in.owning_plans);
   emit("anchor_plans", in.anchor_plans);
-  emit("citations", in.citations);
+  out.append(",\"references\":[");
+  for (std::size_t i = 0; i < in.references.size(); ++i) {
+    if (i > 0) {
+      out.push_back(',');
+    }
+    append_reference(out, in.references[i], true);
+  }
+  out.push_back(']');
   emit("decisions", in.decisions);
   emit("questions", in.questions);
   emit("scenarios", in.scenarios);
@@ -1401,7 +1016,6 @@ auto render_json(const task_packet& packet) -> std::string {
   emit("touches", in.touches);
   emit("claims", in.claims);
   emit("validation_gates", in.validation_gates);
-  emit("facts", in.facts);
   out.append("},\"digest\":");
   append_json_string(out, packet.digest);
   out.append(",\"reasons\":[");
@@ -1414,6 +1028,113 @@ auto render_json(const task_packet& packet) -> std::string {
     append_json_string(out, reason_name(reason));
   }
   out.append("]}\n");
+  return out;
+}
+
+namespace {
+
+/// @brief The two parts of `artifact:<id>[#<heading>]`.
+struct parsed_reference {
+  std::int64_t id = 0;   ///< The artifact id.
+  std::string  fragment; ///< The heading fragment; empty for the whole body.
+};
+
+/// @brief Splits `artifact:<id>[#<heading>]` into its parts.
+/// @param ref The reference as written.
+/// @return The parts, or `nullopt` when `ref` is malformed.
+[[nodiscard]] auto parse_reference(std::string_view ref) -> std::optional<parsed_reference> {
+  constexpr std::string_view prefix = "artifact:";
+  if (!ref.starts_with(prefix)) {
+    return std::nullopt;
+  }
+  ref.remove_prefix(prefix.size());
+  const auto   hash    = ref.find('#');
+  const auto   digits  = ref.substr(0, hash);
+  std::int64_t id      = 0;
+  const auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), id);
+  if (digits.empty() || ec != std::errc{} || end != digits.data() + digits.size() || id <= 0) {
+    return std::nullopt;
+  }
+  parsed_reference out{.id = id, .fragment = {}};
+  if (hash != std::string_view::npos) {
+    out.fragment = std::string{trim(ref.substr(hash + 1))};
+    if (out.fragment.empty()) {
+      return std::nullopt;
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+auto expand_reference(db::connection& conn, std::int64_t task_id, std::string_view ref)
+    -> std::expected<expansion, expand_error> {
+  {
+    auto stmt = conn.prepare("select 1 from tasks where id=?");
+    if (!stmt || !stmt->bind_int64(1, task_id)) {
+      return std::unexpected(expand_error::query_failed);
+    }
+    auto step = stmt->step();
+    if (!step) {
+      return std::unexpected(expand_error::query_failed);
+    }
+    if (*step != db::step_result::row) {
+      return std::unexpected(expand_error::task_not_found);
+    }
+  }
+  const auto parsed = parse_reference(ref);
+  if (!parsed.has_value()) {
+    return std::unexpected(expand_error::unknown_reference);
+  }
+  // The artifact must be one the task cites; a task is not a window onto every artifact.
+  auto stmt = conn.prepare("select coalesce(a.body,'') from entity_links el join artifacts a on a.id=el.to_id "
+                           "where el.from_kind='task' and el.from_id=? and el.to_kind='artifact' and el.to_id=? "
+                           "and el.relationship='cites'");
+  if (!stmt || !stmt->bind_int64(1, task_id) || !stmt->bind_int64(2, parsed->id)) {
+    return std::unexpected(expand_error::query_failed);
+  }
+  auto step = stmt->step();
+  if (!step) {
+    return std::unexpected(expand_error::query_failed);
+  }
+  if (*step != db::step_result::row) {
+    return std::unexpected(expand_error::unknown_reference);
+  }
+  const auto body = stmt->column_text(0);
+
+  expansion out;
+  out.ref = std::string{ref};
+  if (parsed->fragment.empty()) {
+    out.text   = body;
+    out.digest = mz::source_digest("artifact", parsed->id, "body", out.text);
+    return out;
+  }
+  const auto locator = std::format("#{}", parsed->fragment);
+  const auto section = mz::artifact_section(body, locator);
+  if (!section.has_value()) {
+    return std::unexpected(expand_error::section_not_found);
+  }
+  out.text   = std::string{*section};
+  out.digest = mz::source_digest("artifact", parsed->id, locator, out.text);
+  return out;
+}
+
+auto render_expansion_text(const expansion& value) -> std::string {
+  std::string out = value.text;
+  if (out.empty() || out.back() != '\n') {
+    out.push_back('\n');
+  }
+  return out;
+}
+
+auto render_expansion_json(const expansion& value) -> std::string {
+  std::string out = "{\"ref\":";
+  append_json_string(out, value.ref);
+  out.append(",\"digest\":");
+  append_json_string(out, value.digest);
+  out.append(",\"text\":");
+  append_json_string(out, value.text);
+  out.append("}\n");
   return out;
 }
 

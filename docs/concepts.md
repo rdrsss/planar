@@ -434,6 +434,10 @@ performed by hand on every dependent, and in practice was not, leaving stale
 
 Tasks carry a `title`, an optional `body` (Markdown), a `next_action` field for handoff continuity, and a `scope_kind`/`scope_id` pair that records which scope they belong to.
 
+### Task packet and references
+
+`planar task packet <id>` compiles the routing packet an orchestrator reads to decide whether a task is dispatchable. The packet carries the task's own text and its plan, decision, scenario, dependency, touch and claim evidence, plus a **reference** for each artifact the task cites. A reference is derived from an `entity_links` row (`task` cites `artifact`): the artifact's `ref` (`artifact:<id>`), kind, a locator (`body`, the whole artifact), a digest of the artifact's body and its title as a one-line label. The packet carries none of the cited text; `planar task packet <id> --expand artifact:<id>#<heading>` prints one cited section, and a reference the task does not cite is refused. Spec ingest links every task to the reviewed artifacts through `cites` and stores no routing fact, so there is nothing to restage after an edit: the digest is read live. See [`task packet`](cli-reference.md#planar-task-packet-task-id).
+
 ### Claim-atomic operator transitions
 
 Operator-driven status transitions (`task done`, `task block`, `task reopen`, `task update --status`) are **claim-atomic**: when the task has an active work claim (`agent_work_claims.status = 'active'` and `lease_expires_at >= now()`), the operator verb refuses the status flip and exits non-zero with a message identifying the active claim.

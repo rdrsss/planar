@@ -212,9 +212,9 @@ void warn_open_descendants(context& ctx, db::connection& conn, std::int64_t plan
 /// @brief Whether the task's authoritative routing packet is dispatchable.
 ///
 /// `plan next` calls this for every available task and therefore blocks an
-/// absent packet. `recommend-strategy` first checks for materialized routing
-/// provenance, retaining planning-time recommendations for tasks not yet
-/// ingested; after provenance exists, it calls this same verdict.
+/// absent packet. `recommend-strategy` first checks that the task cites an
+/// artifact, retaining planning-time recommendations for tasks not yet
+/// ingested; once it does, it calls this same verdict.
 /// @param conn An open database connection.
 /// @param task_id The task to inspect.
 /// @param verb The caller's verb for its query-failure diagnostic.
@@ -228,10 +228,10 @@ auto routing_packet_ready(db::connection& conn, std::int64_t task_id, std::strin
   return packet->ready();
 }
 
-/// @brief Whether ingest has materialized routing provenance for a task.
-auto has_routing_provenance(db::connection& conn, std::int64_t task_id, std::string_view verb)
-    -> std::expected<bool, domain_error> {
-  auto fact = conn.prepare("select 1 from routing_task_facts where task_id = ? limit 1");
+/// @brief Whether the task cites an artifact, as every ingested task does.
+auto has_cited_artifact(db::connection& conn, std::int64_t task_id, std::string_view verb) -> std::expected<bool, domain_error> {
+  auto fact = conn.prepare("select 1 from entity_links where from_kind = 'task' and from_id = ? and to_kind = 'artifact' "
+                           "and relationship = 'cites' limit 1");
   if (!fact || !fact->bind_int64(1, task_id)) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{} packet: QueryFailed", verb)));
   }
@@ -941,8 +941,7 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   std::size_t n_stale   = 0;
   std::size_t n_blocked = 0;
   // A claim-aware task selector alone is insufficient for dispatch: a task
-  // whose provenance packet is incomplete must remain blocked until ingest
-  // reconciliation restores its reviewed evidence.
+  // whose packet is not ready must remain blocked.
   for (auto& row : *rows) {
     if (row.bucket == aa::next_work_bucket::available) {
       auto ready = routing_packet_ready(**conn, row.task_id, "plan next");
@@ -1135,7 +1134,7 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
   std::vector<st::task_ref> packet_ready;
   packet_ready.reserve(rec->parallel_eligible.size());
   for (auto& task : rec->parallel_eligible) {
-    auto provenance = has_routing_provenance(**conn, task.id, "recommend-strategy");
+    auto provenance = has_cited_artifact(**conn, task.id, "recommend-strategy");
     if (!provenance) {
       return std::unexpected(provenance.error());
     }

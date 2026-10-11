@@ -84,10 +84,13 @@ export auto task_add(context& ctx, const cliapp::parsed_args& args) -> handler_r
 /// `not_found` (exit 1) when no task has that id.
 export auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-/// @brief Handle `planar task packet <task-id> [--json]` (plan 996, task
-/// 6324).
+/// @brief Handle `planar task packet <task-id> [--json] [--expand <ref>]`
+/// (plan 996, task 6324).
 ///
-/// Compiles the authoritative current routing packet for a task. This is the
+/// Compiles the authoritative current routing packet for a task. With
+/// `--expand <ref>` it prints one referenced artifact, or one section of it,
+/// instead: a reference the task does not cite exits 1 and names the
+/// reference. This is the
 /// verb the ORCHESTRATOR reads to decide whether a task is dispatchable, so
 /// two things about its result shape are contract rather than presentation:
 ///
@@ -130,19 +133,6 @@ export auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handle
 /// an unresolvable scope / an empty read set, or `not_implemented`
 /// (exit 64) for `--touches`.
 export auto task_list(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-
-/// @brief Handle `planar task facts stage <task-id> [--json]`.
-///
-/// Stages the task's routing facts under `operator-v1` provenance and then
-/// reports the resulting packet, because "did the write succeed" is not the
-/// operator's question — "is this task dispatchable now" is.
-///
-/// An unresolvable citation exits non-zero and prints one diagnostic per
-/// offending artifact; nothing is staged in that case.
-/// @param ctx Handler context.
-/// @param args Parsed arguments.
-/// @return Success, or the domain error.
-export auto task_facts_stage(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar task update <task-id> [--title] [--status] …`.
 ///

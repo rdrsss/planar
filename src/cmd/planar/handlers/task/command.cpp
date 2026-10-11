@@ -14,7 +14,6 @@ import planar.db;
 import planar.json_text;
 import planar.engine.entitylink;
 import planar.engine.identity;
-import planar.engine.ingest.materialize;
 import planar.engine.ingest.packet;
 import planar.engine.planning;
 import planar.engine.runtime;
@@ -45,8 +44,6 @@ import planar.cmd.planar.handlers.task.block;
 import planar.cmd.planar.handlers.task.link;
 import planar.cmd.planar.handlers.task.reopen;
 import planar.cmd.planar.handlers.task.touches;
-import planar.cmd.planar.handlers.task.facts;
-import planar.cmd.planar.handlers.task.facts_stage;
 
 namespace planar::cmd::handlers {
 
@@ -457,6 +454,29 @@ auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     return std::unexpected(id.error());
   }
 
+  if (auto const ref = cliapp::flag_string(args, "--expand"); ref.has_value()) {
+    auto expanded = pk::expand_reference(**conn, *id, *ref);
+    if (!expanded) {
+      switch (expanded.error()) {
+      case pk::expand_error::task_not_found:
+        return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no task with id {}", *id)));
+      case pk::expand_error::unknown_reference:
+        return std::unexpected(error_from_body(domain_error_kind::not_found,
+                                               std::format("task packet: unknown reference {} for task {}", *ref, *id)));
+      case pk::expand_error::section_not_found:
+        return std::unexpected(
+            error_from_body(domain_error_kind::not_found,
+                            std::format("task packet: reference {} names a section its artifact does not have", *ref)));
+      case pk::expand_error::query_failed:
+        break;
+      }
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task packet: QueryFailed"));
+    }
+    ctx.out() << (cliapp::flag_bool(args, "--json") ? pk::render_expansion_json(*expanded)
+                                                    : pk::render_expansion_text(*expanded));
+    return {};
+  }
+
   auto packet = pk::assemble_task(**conn, *id);
   if (!packet) {
     if (packet.error() == pk::packet_error::task_not_found) {
@@ -468,62 +488,6 @@ auto task_packet(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   // An unready packet is a SUCCESSFUL answer — see task.cppm. Both renderers
   // return complete stdout payloads including their trailing newline.
   ctx.out() << (cliapp::flag_bool(args, "--json") ? pk::render_json(*packet) : pk::render_text(*packet));
-  return {};
-}
-
-auto task_facts_stage(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  namespace mz = engine::ingest::materialize;
-  namespace pk = engine::ingest::packet;
-
-  auto conn = ctx.db().ensure_db();
-  if (!conn) {
-    return std::unexpected(conn.error());
-  }
-  auto const id = entity_id_arg(args, "task-id", "task");
-  if (!id) {
-    return std::unexpected(id.error());
-  }
-
-  if (auto staged = mz::stage_one_task(**conn, *id); !staged.has_value()) {
-    if (staged.error().kind_ == mz::materialize_error_kind::task_not_found) {
-      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no task with id {}", *id)));
-    }
-    // An unresolvable citation is an operator-fixable authoring error, and the
-    // diagnostic naming the task, artifact, locator and available sections is
-    // the whole value — surface it rather than a bare failure name.
-    if (staged.error().kind_ == mz::materialize_error_kind::invalid_citation) {
-      for (auto const& diagnostic : staged.error().citations_) {
-        ctx.err() << "  " << diagnostic.describe() << "\n";
-      }
-      ctx.err() << "  no facts were staged for this task\n";
-      // Exit 1, matching `spec ingest --apply` for the identical condition.
-      // Exit 2 is reserved for a malformed INVOCATION; an unresolvable
-      // citation is well-formed input naming a section that is not there.
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: InvalidCitation"));
-    }
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: QueryFailed"));
-  }
-
-  // Report the POST-STATE, not the fact that a write returned success: the
-  // operator's question is "is this task dispatchable now", and the packet is
-  // the only authority on that.
-  auto packet = pk::assemble_task(**conn, *id);
-  if (!packet) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "task facts stage: QueryFailed"));
-  }
-  if (cliapp::flag_bool(args, "--json")) {
-    ctx.out() << pk::render_json(*packet);
-    return {};
-  }
-  ctx.out() << std::format("staged routing facts for task {} ({})\n", *id, mz::operator_materializer_version);
-  ctx.out() << std::format("  packet ready: {}\n", packet->ready() ? "yes" : "no");
-  if (!packet->ready()) {
-    ctx.out() << "  remaining:";
-    for (auto const& reason : packet->reasons) {
-      ctx.out() << " " << pk::reason_name(reason);
-    }
-    ctx.out() << "\n";
-  }
   return {};
 }
 
@@ -1607,10 +1571,6 @@ auto declare_task_children(CLI::App& task) -> void {
 
   CLI::App* touches = task_cli::attach_touches(task);
   declare_task_touches(*touches);
-
-  CLI::App* facts = task_cli::attach_facts(task);
-
-  task_cli::attach_facts_stage(facts);
 }
 
 } // namespace

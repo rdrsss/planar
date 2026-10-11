@@ -462,8 +462,6 @@ planar_binary(planar
     handlers/audit/trail.cppm
     handlers/dashboard/command.cppm
     handlers/task/command.cppm
-    handlers/task/facts_stage.cppm
-    handlers/task/facts.cppm
     handlers/task/touches.cppm
     handlers/task/reopen.cppm
     handlers/task/link.cppm

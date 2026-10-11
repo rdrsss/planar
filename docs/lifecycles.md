@@ -608,7 +608,7 @@ flowchart LR
     D[diff engine<br/>title-keyed, case-insensitive<br/>ops: add / update / remove] --> C{coverage.has_gaps?<br/>slug collisions?}
     C -->|--strict and gaps| REF[refuse]
     C -->|preview| OUT[report, no writes]
-    C -->|--apply| TX[one transaction per anchor:<br/>plans, tasks, decisions, questions,<br/>scenarios, touches edges,<br/>routing task facts,<br/>anchor draft → active once]
+    C -->|--apply| TX[one transaction per anchor:<br/>plans, tasks, decisions, questions,<br/>scenarios, touches edges,<br/>cites links to the reviewed artifacts,<br/>anchor draft → active once]
     TX -->|--apply-removals| RM[missing bullets → task cancelled]
 ```
 
@@ -860,6 +860,6 @@ bug, unless noted.
 | resume readiness | `src/engine/runtime/resumecheck.cppm` | |
 | health | `src/engine/health/health.cpp` | |
 | workbench sync | `src/engine/workbench/sync.cppm`, `terminal.cppm` | `00007_workbench.up.sql` |
-| spec ingest | `src/engine/ingest/{parse,diff,coverage,materialize}.cppm` | |
+| spec ingest | `src/engine/ingest/{parse,diff,coverage,materialize,packet}.cppm` | |
 | external link, sync event | `src/engine/external/sync.cpp`, `link.cpp` | `00006_external.up.sql`, `00027_external_sync_baseline.up.sql` |
 | scope | `src/engine/identity/scope.cppm` | |

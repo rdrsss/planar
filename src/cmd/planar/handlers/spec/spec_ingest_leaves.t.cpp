@@ -524,7 +524,6 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
   std::int64_t plans_after_first     = 0;
   std::int64_t decisions_after_first = 0;
   std::int64_t links_after_first     = 0;
-  std::int64_t facts_after_first     = 0;
   {
     auto conn_after_first = open_db(fx);
     inventory_after_first = dump_planning_inventory(conn_after_first);
@@ -532,7 +531,8 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
     plans_after_first     = count(conn_after_first, "plans");
     decisions_after_first = count(conn_after_first, "decisions");
     links_after_first     = count(conn_after_first, "entity_links");
-    facts_after_first     = count(conn_after_first, "routing_task_facts");
+    // Ingest stages no routing fact: the table stays empty through the first apply.
+    CHECK(count(conn_after_first, "routing_task_facts") == 0);
   }
 
   auto const second = dispatch(fx, {"spec", "ingest", anchor, "--apply"});
@@ -547,30 +547,17 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
   CHECK(count(conn_after_second, "plans") == plans_after_first);
   CHECK(count(conn_after_second, "decisions") == decisions_after_first);
   CHECK(count(conn_after_second, "entity_links") == links_after_first);
-  // `routing_task_facts` is REPLACED wholesale by `materialize::reconcile`
-  // on every apply, not appended to; a stable count is the idempotency
-  // signature there, same as everywhere else.
-  CHECK(count(conn_after_second, "routing_task_facts") == facts_after_first);
+  CHECK(count(conn_after_second, "routing_task_facts") == 0);
 }
 
 TEST_CASE("spec ingest --apply replays cleanly when a task hangs directly off the anchor plan",
           "[cmd][spec][ingest][apply][reconcile][regression]") {
-  // REGRESSION. `materialize::reconcile` staged facts for a wider set of tasks
-  // than it deleted facts for. Most stagers are scoped to
-  // `plans.parent_plan_id = <anchor>`, but `stage_reviewed_artifact_facts`
-  // walks the RECURSIVE plan tree, whose root is the anchor plan itself -- so a
-  // task attached directly to the anchor got rows staged that the delete never
-  // cleared. The first apply still worked (nothing stored yet to collide with),
-  // and every later apply hit `routing_task_facts`'s unique key
-  // (task_id, fact_kind, source kind/id, locator, digest, materializer_version)
-  // -- which excludes the value columns, so a byte-identical replay collides
-  // with itself. The whole apply then rolled back as `QueryFailed`, and because
-  // apply is the only trigger for the routing materializer, every task under
-  // the anchor stayed permanently `stale_fact` and undispatchable.
-  //
-  // The same mismatch also made `fact_sets_equal` compare a staged set against
-  // a narrower stored set, so the "nothing changed, write nothing" short-circuit
-  // could never fire for such an anchor.
+  // REGRESSION. A materializer used to stage facts for a wider set of tasks
+  // than it deleted facts for, so a task attached directly to the anchor plan
+  // collided with its own rows on every replay and the whole apply rolled back
+  // as `QueryFailed`. No fact is staged any more; the anchor-level task is
+  // linked to the reviewed artifacts through `cites` links, and a replay must
+  // still succeed and add nothing.
   auto const fx     = make_fixture("anchor_level_task_replay");
   auto const anchor = seed_reviewed_reconcile_anchor(fx);
 
@@ -585,9 +572,13 @@ TEST_CASE("spec ingest --apply replays cleanly when a task hangs directly off th
     REQUIRE(stmt.has_value());
     REQUIRE(stmt->step().has_value());
     anchor_task_id = stmt->column_int64(0);
-    // The first apply really did write for the anchor-level task; without
-    // these rows the replay below would pass for the wrong reason.
-    CHECK(count(conn, std::format("routing_task_facts where task_id = {}", anchor_task_id)) > 0);
+    // The first apply really did link the anchor-level task to the four
+    // reviewed artifacts, and wrote no fact; without these links the replay
+    // below would pass for the wrong reason.
+    CHECK(count(conn, std::format("entity_links where from_kind='task' and from_id={} and to_kind='artifact' and "
+                                  "relationship='cites'",
+                                  anchor_task_id)) == 4);
+    CHECK(count(conn, "routing_task_facts") == 0);
   }
 
   auto const replay = dispatch(fx, {"spec", "ingest", anchor, "--apply"});
@@ -596,12 +587,11 @@ TEST_CASE("spec ingest --apply replays cleanly when a task hangs directly off th
   CHECK_FALSE(replay.err.contains("QueryFailed"));
 
   auto after = open_db(fx);
-  // Replacement, not accumulation: the anchor-level task keeps exactly one row
-  // per fact identity.
-  CHECK(count(after, std::format("routing_task_facts where task_id = {}", anchor_task_id)) ==
-        count(after, std::format("(select distinct task_id, fact_kind, source_entity_kind, source_entity_id, source_locator, "
-                                 "source_digest, materializer_version from routing_task_facts where task_id = {})",
-                                 anchor_task_id)));
+  // Replacement, not accumulation: the anchor-level task keeps exactly its four links.
+  CHECK(count(after, std::format("entity_links where from_kind='task' and from_id={} and to_kind='artifact' and "
+                                 "relationship='cites'",
+                                 anchor_task_id)) == 4);
+  CHECK(count(after, "routing_task_facts") == 0);
 }
 
 TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authored coverage", "[cmd][spec][ingest][reconcile]") {
@@ -615,8 +605,12 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
               "test_scenarios where body like 'Acceptance scenario auto-drafted by the ingestor.%' and status != 'retired'") ==
         1);
   REQUIRE(before.execute("update plans set status='draft' where parent_plan_id=1"));
+  // The body carries a `## Required validation` section: task readiness still
+  // requires a validation gate, and ingest no longer appends one (a later task
+  // removes that readiness reason). The dispatch views asserted below are about
+  // the references, so the body is made ready on that axis.
   REQUIRE(before.execute("update tasks set body='## Acceptance Criteria\n\n- Deliver the reviewed task\n\n## Repository "
-                         "Scope\n\n- touches: planar\n' where id=1"));
+                         "Scope\n\n- touches: planar\n\n## Required validation\n\n- Run the reviewed scenario.\n' where id=1"));
   REQUIRE(dispatch(fx, {"artifact", "update", "4", "--body",
                         "## Scenarios\n\n### Scenario: reviewed root\n\n**Verifies:** task:reviewed-root\n\n**Acceptance:** The "
                         "reviewed root is dispatchable.\n",
@@ -624,17 +618,15 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
               .code == 0);
   REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
 
-  // Replay restores generated routing state, stages all four reviewed source
-  // documents through the direct task->artifact citation path, and retires
-  // only the ingestor-owned duplicate scenario.
+  // Replay restores generated routing state, links all four reviewed source
+  // documents through the direct task->artifact `cites` path (and stages no
+  // fact), and retires only the ingestor-owned duplicate scenario.
   REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
   auto after = open_db(fx);
   CHECK(count(after, "plans where parent_plan_id=1 and status='active'") == 1);
   CHECK(count(after, "entity_links where from_kind='task' and from_id=1 and to_kind='artifact' and relationship='cites'") == 4);
-  CHECK(count(after, "routing_task_facts where task_id=1 and fact_kind='cited_artifact_section' and "
-                     "source_entity_kind='artifact' and source_locator='body'") == 4);
-  CHECK(count(after,
-              "routing_task_facts where task_id=1 and fact_kind='validation_gate' and source_entity_kind='test_scenario'") == 1);
+  // The citations arrive as `cites` links, and ingest writes no routing fact.
+  CHECK(count(after, "routing_task_facts") == 0);
   CHECK(count(after,
               "entity_links where from_kind='task' and from_id=1 and to_kind='decision' and to_id=1 and relationship='cites'") ==
         1);
@@ -652,14 +644,21 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
   CHECK(packet_json->find("ready")->boolean);
   auto const* input = packet_json->find("input");
   REQUIRE(input != nullptr);
-  auto const* citations = input->find("citations");
-  REQUIRE(citations != nullptr);
-  REQUIRE(citations->kind == planar::json_dom::json_kind::array);
-  CHECK(citations->array.size() == 4);
-  for (auto const& citation : citations->array) {
-    CHECK(citation.find("freshness")->string == "current");
-    CHECK(citation.find("locator")->string == "body");
+  CHECK(input->find("citations") == nullptr);
+  CHECK(input->find("facts") == nullptr);
+  auto const* references = input->find("references");
+  REQUIRE(references != nullptr);
+  REQUIRE(references->kind == planar::json_dom::json_kind::array);
+  CHECK(references->array.size() == 4);
+  std::set<std::string> kinds;
+  for (auto const& reference : references->array) {
+    CHECK(reference.find("locator")->string == "body");
+    CHECK(reference.find("ref")->string == std::format("artifact:{}", reference.find("id")->integer));
+    CHECK(reference.find("digest")->string.size() == 64);
+    CHECK_FALSE(reference.find("label")->string.empty());
+    kinds.insert(reference.find("kind")->string);
   }
+  CHECK(kinds == std::set<std::string>{"product_spec", "tech_spec", "roadmap", "test_spec"});
 
   auto next = dispatch(fx, {"plan", "next", "1", "--json"});
   REQUIRE(next.code == 0);
@@ -680,11 +679,17 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
   CHECK(strategy_json->find("parallel_eligible")->array.size() == 1);
   CHECK(strategy_json->find("serialized")->array.empty());
 
-  // Reconciliation is deliberately not repeated here. Removing one cited
-  // evidence row leaves a materialized but incomplete routing packet; both
+  // Reconciliation is deliberately not repeated here. Dropping the roadmap
+  // citation leaves a task whose packet is incomplete (`missing_roadmap`); both
   // dispatch views must now remove the task from availability.
-  REQUIRE(after.execute("delete from routing_task_facts where id = (select id from routing_task_facts where task_id=1 "
-                        "and fact_kind='cited_artifact_section' limit 1)"));
+  REQUIRE(after.execute("delete from entity_links where from_kind='task' and from_id=1 and to_kind='artifact' and "
+                        "relationship='cites' and to_id in (select id from artifacts where kind='roadmap')"));
+  {
+    auto incomplete_packet = dispatch(fx, {"task", "packet", "1", "--json"});
+    REQUIRE(incomplete_packet.code == 0);
+    CHECK(incomplete_packet.out.contains(R"("ready":false)"));
+    CHECK(incomplete_packet.out.contains(R"("missing_roadmap")"));
+  }
   auto incomplete_next = dispatch(fx, {"plan", "next", "1", "--json"});
   REQUIRE(incomplete_next.code == 0);
   auto incomplete_next_json = planar::json_dom::parse_json(incomplete_next.out);

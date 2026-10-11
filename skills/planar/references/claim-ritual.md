@@ -13,10 +13,12 @@ through `planar-agent`. There is no `planar agent` namespace.
    blocked); its text form hides claimed and stale unless asked; see
    `planar plan next --help`.
 2. Check readiness with `planar task packet <task-id> --json`. A claim still succeeds on
-   an unready packet, so `ready: false` is your stop signal, not the claim's. A spec
-   artifact edited mid-run turns every packet under that anchor `ready: false`; the
-   refresh is an operator-confirmed `planar spec ingest <anchor> --apply` (see
-   [spec-pipeline.md](spec-pipeline.md)).
+   an unready packet, so `ready: false` is your stop signal, not the claim's. The packet
+   lists the artifacts the task cites as references (ref, digest, label) and carries no
+   spec text: read one cited section with
+   `planar task packet <task-id> --expand artifact:<id>#<heading>`. A spec artifact edited
+   mid-run moves that reference's digest and the packet digest; it does not make the
+   packet unready (see [spec-pipeline.md](spec-pipeline.md)).
 
 ## Taking the claim
 

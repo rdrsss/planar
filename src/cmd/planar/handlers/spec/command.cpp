@@ -28,7 +28,6 @@ namespace diff_ns    = engine::ingest::diff;
 namespace parse_ns   = engine::ingest::parse;
 namespace cov_ns     = engine::ingest::coverage;
 namespace render_ns  = engine::ingest::render;
-namespace mat_ns     = engine::ingest::materialize;
 namespace pl         = engine::planning;
 namespace el         = engine::entitylink;
 namespace sess       = engine::runtime::session;
@@ -441,9 +440,6 @@ struct apply_result {
 struct apply_error {
   /// @brief Oracle-compatible failure spelling or detailed resolution text.
   std::string message;
-  /// @brief Populated only when a `materialize::reconcile` citation failure
-  /// is the cause — the handler renders one line per entry.
-  std::vector<mat_ns::citation_diagnostic> citations;
 };
 
 /// @brief Looks up a repository's numeric id by its canonical slug.
@@ -655,14 +651,16 @@ auto resolve_task_from_roadmap_mapping(db::connection& conn, std::int64_t anchor
   return stmt->column_int64(0);
 }
 
-/// @brief Resolves every roadmap citation's task id, records the `cites`
-/// edges, and removes stale ones no longer produced. Mirrors zig's
-/// `reconcileRoadmapCitations`.
+/// @brief Resolves every roadmap citation's task id and records the `cites`
+/// edge from that task to the anchor's roadmap artifact.
+///
+/// Stages no routing fact: a task's citations are its `cites` links, and
+/// `reconcile_reviewed_artifact_links` re-adds the reviewed artifacts' links
+/// for every descendant task.
 /// @param conn Database connection.
 /// @param diff Parsed specification diff.
-/// @return Reconciled citations, or apply failure.
-auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff)
-    -> std::expected<std::vector<mat_ns::roadmap_citation>, apply_error> {
+/// @return Success, or apply failure.
+auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff) -> std::expected<void, apply_error> {
   auto artifact_stmt = conn.prepare("select a.id from artifacts a "
                                     "join entity_links el on el.from_kind = 'artifact' and el.from_id = a.id "
                                     " and el.to_kind = 'plan' and el.to_id = ? and el.relationship = 'derives-from' "
@@ -675,17 +673,10 @@ auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff
     return std::unexpected(apply_error{.message = "QueryFailed"});
   }
   if (*stepped != db::step_result::row) {
-    return std::vector<mat_ns::roadmap_citation>{};
+    return {};
   }
   auto const artifact_id = artifact_stmt->column_int64(0);
 
-  if (!conn.execute("create temp table if not exists spec_ingest_roadmap_citations (task_id integer primary key)") ||
-      !conn.execute("delete from temp.spec_ingest_roadmap_citations")) {
-    return std::unexpected(apply_error{.message = "QueryFailed"});
-  }
-
-  std::vector<mat_ns::roadmap_citation> citations;
-  citations.reserve(diff.roadmap_citations_.size());
   for (auto const& c : diff.roadmap_citations_) {
     std::int64_t task_id = 0;
     if (c.existing_task_id_ > 0) {
@@ -697,16 +688,6 @@ auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff
       }
       task_id = *resolved;
     }
-    citations.push_back({
-        .task_id_        = task_id,
-        .artifact_id_    = artifact_id,
-        .source_locator_ = c.source_locator_,
-        .source_text_    = c.source_text_,
-    });
-    auto ins = conn.prepare("insert into temp.spec_ingest_roadmap_citations (task_id) values (?)");
-    if (!ins || !ins->bind_int64(1, task_id) || !ins->step()) {
-      return std::unexpected(apply_error{.message = "QueryFailed"});
-    }
     auto linked =
         ensure_link(conn, el::entity_kind::task, task_id, el::entity_kind::artifact, artifact_id, el::relationship::cites);
     if (!linked) {
@@ -714,19 +695,7 @@ auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff
     }
   }
 
-  auto cleanup = conn.prepare("delete from entity_links "
-                              "where from_kind = 'task' and to_kind = 'artifact' and to_id = ? "
-                              "  and relationship = 'cites' "
-                              "  and from_id in (select task_id from routing_task_facts "
-                              "    where fact_kind = 'cited_artifact_section' "
-                              "      and source_entity_kind = 'artifact' and source_entity_id = ? "
-                              "      and (source_locator like 'roadmap#milestone:%' or source_locator like 'roadmap#task:%')) "
-                              "  and from_id not in (select task_id from temp.spec_ingest_roadmap_citations)");
-  if (!cleanup || !cleanup->bind_int64(1, artifact_id) || !cleanup->bind_int64(2, artifact_id) || !cleanup->step()) {
-    return std::unexpected(apply_error{.message = "QueryFailed"});
-  }
-
-  return citations;
+  return {};
 }
 
 /// @brief Reads a task slug, if the task still has one.
@@ -1137,8 +1106,7 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     }
   }
 
-  auto citations = reconcile_roadmap_citations(conn, diff);
-  if (!citations) {
+  if (auto citations = reconcile_roadmap_citations(conn, diff); !citations) {
     return std::unexpected(citations.error());
   }
 
@@ -1295,18 +1263,6 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
   }
   if (auto linked = reconcile_accepted_decision_links(conn, diff.anchor_plan_id_); !linked) {
     return std::unexpected(apply_error{.message = linked.error()});
-  }
-
-  auto reconciled = mat_ns::reconcile(conn, diff.anchor_plan_id_, *citations);
-  if (!reconciled) {
-    if (reconciled.error().kind_ == mat_ns::materialize_error_kind::invalid_citation) {
-      return std::unexpected(apply_error{.message = "InvalidCitation", .citations = reconciled.error().citations_});
-    }
-    // Keep the `QueryFailed` prefix (callers and tests match on it) but carry
-    // the materializer's own detail -- the SQLite result code, the driver
-    // message, and the statement's origin. A bare `QueryFailed` names nothing
-    // an operator can act on.
-    return std::unexpected(apply_error{.message = std::format("QueryFailed: {}", reconciled.error().detail_)});
   }
 
   // ---- flip anchor draft -> active -------------------------------------------
@@ -1541,28 +1497,6 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
   auto result = apply_diff(conn, *diff, opts);
   if (!result) {
     ctx.err() << std::format("plan {} ({}): apply failed: {}\n", anc.id, anc.slug, result.error().message);
-    if (!result.error().citations.empty()) {
-      for (auto const& cd : result.error().citations) {
-        ctx.err() << std::format("  task {} cites artifact {} section \"{}\", which that artifact does not contain\n",
-                                 cd.task_id_, cd.artifact_id_, cd.wanted_);
-        if (!cd.available_.empty()) {
-          std::string joined;
-          for (std::size_t i = 0; i < cd.available_.size(); ++i) {
-            if (i > 0) {
-              joined += ", ";
-            }
-            joined += cd.available_[i];
-          }
-          ctx.err() << std::format("    artifact {} has: {}\n", cd.artifact_id_, joined);
-        } else {
-          ctx.err() << std::format("    artifact {} has no `## ` sections to cite\n", cd.artifact_id_);
-        }
-      }
-      ctx.err() << "  a BARE citation runs to end-of-line unless stopped by `,`, `)` or `]`; wrapping the whole "
-                   "locator in brackets — [artifact:<id>#Section] — suppresses the `,` and `)` stops, so a heading "
-                   "containing one can be cited in full (task 6760)\n";
-      ctx.err() << "  no facts were materialized for any task under this anchor\n";
-    }
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "apply failed"));
   }
 

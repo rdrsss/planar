@@ -124,9 +124,12 @@ so before ingest it legitimately shows zeros; use it only after apply.
 5. Verify with `planar plan show <plan-id> --json` and
    `planar test-spec status <plan-id> --json`, then `planar workbench push <plan-id>`.
 
-Editing a spec artifact after ingest turns every task packet under the anchor
-`ready: false`. Batch spec edits, rerun the preview (expect zero additions, updates and
-removals), and ask the operator to confirm `--apply` again before dispatching more work.
+Ingest links every task to the reviewed artifacts with `cites` and stores no routing
+fact. Editing a spec artifact after ingest moves the digest of that artifact's reference
+in each task packet under the anchor, and the packet digest with it, but leaves readiness
+alone. Batch spec edits and rerun the preview (expect zero additions, updates and
+removals); a changed packet digest is the signal that a dispatch authorized earlier read
+older spec text.
 
 ## Stage 5: workbench round trips
 

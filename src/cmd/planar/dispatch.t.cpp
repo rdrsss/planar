@@ -1326,8 +1326,9 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Plan 1142 task 7468 removes `audit publish-decision`, `assoc detect` and `config init` (198 -> 195; the operator
   // restored `document validate-range` after review). Task 7472 removes `planar report` (195 -> 194).
   // Tasks 7469 and 7471 removed 15 leaves (194 -> 179); task 7473 removes `feedback triage list`, `show` and `set`
-  // (179 -> 176); task 7467 removes seven review and diff leaves (176 -> 169), re-measured from the built planar binary.
-  CHECK(leaves.size() == 169);
+  // (179 -> 176); task 7467 removes seven review and diff leaves (176 -> 169); task 7476 removes `task facts stage`
+  // (169 -> 168), re-measured from the built planar binary.
+  CHECK(leaves.size() == 168);
 
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {

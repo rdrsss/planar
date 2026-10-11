@@ -1592,45 +1592,41 @@ planar task link <task-id> <to-kind:to-id> --relationship <kind> [--json] [--sco
 
 ---
 
-### `planar task facts stage <task-id>`
+### `planar task packet <task-id>`
 
 **Synopsis:**
 ```
-planar task facts stage <task-id> [--json]
+planar task packet <task-id> [--json]
+planar task packet <task-id> --expand <ref> [--json]
 ```
 
-**Description:** Rebuild one task's routing facts (`routing_task_facts`) under **operator** provenance, then report the resulting packet.
+**Description:** Compile the authoritative current routing packet for a task: its text, plan context, decisions, scenarios, dependencies, touches, claims and the references it cites, with a `ready` verdict and the named `reasons` when it is not ready. The orchestrator reads `--json` to decide whether a task is dispatchable; `ready: false` is a stop.
 
-`planar spec ingest --apply` is the only other writer of routing facts, and it rebuilds every task below an anchor plan. That left two gaps this verb closes (task 6048, decision 1102):
-
-- a hand-filed task — one created with `planar task add` rather than materialized from a roadmap bullet — could never obtain routing facts at all, so `planar task packet` reported `missing_acceptance_fact` / `missing_next_action_fact` and the four `missing_*_spec` reasons permanently;
-- editing a task body moves the acceptance section's digest, which strands the facts ingest staged from it. The task becomes `stale_fact` with no operator-reachable way to restage short of re-ingesting the whole anchor plan.
-
-Facts are derived through the **same predicates** the plan-wide pass uses, so an operator-staged fact and an ingest-staged one agree on what they mean. They are stamped `operator-v1` rather than `spec-ingest-v1`, so provenance stays legible in the row and in `task packet --json`.
-
-**Staleness is not traded away.** `packet` accepts both materializer versions, but the digest comparison is unchanged: an operator-staged fact goes stale the moment its source text changes, exactly as an ingest-staged one does. A fact that could never go stale would be a weaker contract, and is deliberately not what this verb produces.
-
-**Citations are resolved, never invented.** A `cited_artifact_section` fact is staged only for an artifact the task *already* cites through an `entity_links` edge **and** references explicitly in its body as `artifact:<id>#Section`. A BARE locator of that form runs to end-of-line but stops at the first `,`, `)` or `]` — each of which ends a real writing pattern (`(see artifact:5#Overview)`, `see artifact:5#Overview, which ...`). To cite a heading that CONTAINS one of those characters, wrap the whole locator in brackets: `[artifact:<id>#File-level tree (operator-approved)]` suppresses the `,` and `)` stops and ends at the matching `]` (nesting counted). An unmatched `[` falls back to the bare scan (task 6760, decision 1124). An artifact cited without a resolvable locator is reported as a diagnostic naming the task, the artifact, the section asked for, and the sections that artifact actually has — and **nothing is staged** in that case.
-
-**Scope:** strictly one task. The delete that precedes the rewrite is keyed on `task_id`, so staging one task never discards a sibling's ingest-materialized facts.
+The packet holds no cited text and no routing fact. Each artifact the task `cites` (an `entity_links` row, task to artifact) is a **reference**: `ref` (`artifact:<id>`), `kind` (the artifact's kind), `id`, `locator` (`body`, the whole artifact), `digest` (SHA-256 over the artifact's body), `label` (its title) and `status`. The digest is read live, so editing a cited artifact moves the reference digest and the packet digest. Decisions the task cites are listed in their own `decisions` array. A packet for a task shaped like the largest one measured (sixteen facts, four cited artifacts) is under 16 KB as text.
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `<task-id>` | Task whose facts are rebuilt (required). |
+| `<task-id>` | The task to compile (required). |
 
 **Options:**
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--json` | Emit the resulting routing packet as JSON, identical in shape to `task packet --json`. | off |
+| `--json` | Emit the packet envelope, or with `--expand` the expansion object, as JSON. | off |
+| `--expand <ref>` | Print one cited artifact (`artifact:<id>`) or one section of it (`artifact:<id>#<heading>`) and nothing else. The heading match is case-insensitive and a section runs to the next heading of the same or shallower level. | none |
 
-**Output:** text mode prints the provenance stamp, whether the packet is now ready, and — when it is not — the readiness reasons that remain. Reporting the post-state rather than a bare success is deliberate: the operator's question is whether the task is dispatchable now, and the packet is the only authority on that.
+**Output:** text mode prints `task packet <id>: ready|not_ready`, the `digest:`, a `reasons:` block when not ready, a `references (expand one with: ...)` block listing `- <ref> <12-character digest> <label>` per citation, and the canonical body. `--json` prints `{"policy_version","ready","input","digest","reasons"}`; `input.references` is an array of `{"ref","kind","id","locator","digest","label","status"}` in kind-then-id order. `input` has no `citations` or `facts` array and the envelope has no `canonical` copy.
 
-**Exit codes:** `0` on success (including a successful stage that leaves the packet unready — that is a real answer). `1` when the task id does not exist, and `1` for an unresolvable citation, matching `spec ingest --apply` for the identical condition. `2` for a non-integer id.
+With `--expand`, text mode prints the section, or the whole body without a fragment, followed by a newline. `--json` prints `{"ref":"<ref as given>","digest":"<64 hex>","text":"<section>"}`. The `digest` of a whole-artifact expansion equals the reference's `digest`.
 
-**Schema effects:** Deletes and reinserts `routing_task_facts` rows for `<task-id>` only, inside one immediate transaction.
+**Exit codes:**
+- `0` — a packet was compiled (including an unready one), or the reference was expanded.
+- `1` — the task does not exist; with `--expand`, the reference is not among the task's `cites` links (`error: task packet: unknown reference artifact:99 for task 12`), is malformed, or names a heading the artifact does not have.
+- `2` — a non-integer id.
+
+**Schema effects:** none. Read-only.
 
 ---
 
@@ -7215,7 +7211,7 @@ For quick reference, all documented commands grouped by domain:
 | `scope` | `scope show`, `scope suggest` |
 | `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members` |
 | `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan descendants`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |
-| `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task facts stage`, `task touches add`, `task touches remove` |
+| `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task packet`, `task touches add`, `task touches remove` |
 | `question` | `question add`, `question answer`, `question wontfix`, `question list`, `question show`, `question edit`, `question view`, `question link` |
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario review`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision review` |

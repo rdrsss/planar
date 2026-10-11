@@ -8,7 +8,7 @@
 # Behavior-preserving port (D2) of a SUBSET of zig/src/engine/ingestor/:
 # parse.zig, diff.zig, coverage.zig, render.zig, materialize.zig. That subset
 # is the whole read side of the pipeline — workbench markdown in, proposed
-# diff + strict-gate coverage object + provenance-bearing routing facts out.
+# diff + strict-gate coverage object out.
 #
 # DELIBERATELY NOT PORTED THIS CYCLE, and the reason is architectural rather
 # than a matter of remaining time:
@@ -41,42 +41,21 @@
 #
 # The cross-scope guard is NOT wired into this module — task 6075 is an
 # unresolved OPERATOR decision on the guard's true breadth, and this module
-# performs no entity-targeted mutation in any case (`materialize` replaces
-# routing facts inside a transaction the CALLER owns). It stays exactly as
+# performs no entity-targeted mutation in any case. It stays exactly as
 # opt-in as `engine_identity` exposes it.
 #
 # `ingest.cppm` is the umbrella re-export, matching `engine/planning/
 # planning.cppm`'s pattern.
 #
-# `packet.cppm` (plan 996, task 6324) is the routing packet behind
-# `planar task packet <id>`. Its Zig original lives in `engine/routing/`, so
-# the obvious placement is a new `engine_routing` bucket — that bucket CANNOT
-# BE BUILT. The packet's whole freshness computation is defined in terms of
-# `materialize`'s digests (`artifact_section`, `roadmap_section`, `section`,
-# `field`, `source_digest`, `materializer_version`), and D15/D18 FATAL on a
-# layer-2 `engine_*` depending on another layer-2 `engine_*`.
-#
-# D19's remedy — extract the shared primitive to layer 1 — was measured and
-# rejected rather than skipped: `roadmap_section` calls `parse::parse_roadmap`,
-# so extracting the helpers drags `parse.cppm` (the whole markdown-parsing half
-# of this bucket) down a layer to serve one caller. That is the same "layering
-# inverted, not respected" argument this file already makes about `apply.zig`
-# above, and it applies with the same force here.
-#
-# Co-location is also the honest description of the coupling rather than a
-# workaround for it. `materialize` WRITES the `routing_task_facts` rows;
-# `packet` READS them back and RECOMPUTES the identical digest live to decide
-# whether each fact is still current. The oracle says so itself at
-# `zig/src/engine/ingestor/materialize.zig:489` — the two halves must agree
-# byte for byte or every fact is permanently stale the instant it is written.
-# A configure-time wall between two functions that are one contract would be
-# the worse outcome.
-#
-# This module added ONE export to `materialize.cppm`: `sha256_hex`, which
-# `packet` digests whole evidence texts with. It is now a thin wrapper over
-# layer-1 `planar.sha256` (task 6759): the copies that note described --
-# five of them in the end, not three -- were consolidated, so `DEPENDS
-# sha256` below is what carries the algorithm.
+# `packet.cppm` (plan 996, task 6324) is the routing packet behind `planar task
+# packet <id>`. It shares this bucket with `materialize`, whose digest and
+# Markdown-section helpers (`source_digest`, `sha256_hex`, `artifact_section`)
+# it uses to digest a cited artifact and to resolve `--expand <ref>#heading`;
+# a separate `engine_routing` bucket could not depend on them (D15/D18).
+# `materialize` no longer writes anything: the packet cites through the task's
+# `cites` entity links and no `routing_task_facts` row has a reader or a
+# writer. `sha256_hex` is a thin wrapper over layer-1 `planar.sha256`, so
+# `DEPENDS sha256` below carries the algorithm.
 
 planar_module(engine_ingest
   INTERFACE
