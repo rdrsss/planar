@@ -399,7 +399,7 @@ TEST_CASE("the seven removed review and diff verbs exit 2 and the schema catalog
   // empty arena: the list verbs print an empty listing, not a refusal.
   for (auto const& family : {"plan", "question", "scenario", "decision"}) {
     INFO("kept verb: " << family << " list");
-    CHECK(run({family, "list"}, "rvkept").code == 0);
+    CHECK(run({family, "list", "--scope", "global"}, "rvkept").code == 0);
     CHECK(catalog.out.contains(std::format(R"("command":"planar {} list")", family)));
   }
 }
