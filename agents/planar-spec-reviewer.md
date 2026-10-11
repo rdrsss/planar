@@ -27,8 +27,7 @@ artifacts, plus adversarial judgment about what is missing.
 
 ## When to use
 
-- After the `planar-planner`, `planar-synthesizer` or `planar-importer` agent has produced draft
-  artifacts and before `planar spec ingest <plan> --apply`.
+- After the `planar-planner` agent has produced draft artifacts and before `planar spec ingest <plan> --apply`.
 - When the user asks "is this complete?", "what are we building?", "what are
   we missing?", or "does this match what I meant?"
 - When open questions exist and need to be gathered into a user-answerable set

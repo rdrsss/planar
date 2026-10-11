@@ -45,7 +45,7 @@ flowchart TD
 Two layers are touched by users and agents:
 
 1. **The Planar binaries** — four C++26 executables that share the SQLite engine/runtime graph: `planar` is the operator surface, `planar-agent` owns coordination writes, `planar-watch` is a driver-enforced read-only viewer, and `planar-ext` (decisions 995–1001) owns the operational-plane adapters (Jira, GitHub Issues) with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, enforced by a `sqlite3_set_authorizer` allowlist. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Four-binary architecture](#four-binary-architecture) below. The Zig implementation these binaries were ported from was retained under `zig/` as the port's parity oracle and DELETED at the M10 cutover (decisions 963/982) once its state-differential evidence came back clean; C++26 is now the only implementation.
-2. **The skill and agent layer** — one skill, `planar` (`skills/planar/`), and fifteen role agents (`agents/planar-<role>.md`), placed unchanged into six vendors' directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references; the agents are dispatched by name. Both invoke binary verbs; binary verbs operate on SQLite. See [skill-reference.md](skill-reference.md).
+2. **The skill and agent layer** — one skill, `planar` (`skills/planar/`), and thirteen role agents (`agents/planar-<role>.md`), placed unchanged into six vendors' directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references; the agents are dispatched by name. Both invoke binary verbs; binary verbs operate on SQLite. See [skill-reference.md](skill-reference.md).
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
 
@@ -450,7 +450,7 @@ The live `planar` command tree currently exposes `init`, `scope`, `assoc`, `plan
 `demote`, `workbench`, `workspace`, `link`, `unlink`, `links`,
 `resume`, `handoff`, `capture`, `audit`, `health`, `models`, `dashboard`,
 `spec`, `test-spec`, `config`, `templates`, `tree`, `search`, `local`, `skills`,
-`import`, `synthesize`, `version`, `completion`, `schema`, `report`, `bench`,
+`version`, `completion`, `schema`, `report`, `bench`,
 `closure`, `run`, `groups`, `explore` (registered leaf, stub handler — see
 above), `workflow`, and `feedback`. `ext` and `sync` are exposed by
 `planar-ext`, not `planar` — see [`planar-ext`](cli-reference.md#domain-ext)
@@ -667,60 +667,7 @@ External conflict events persist a versioned evidence envelope in the existing `
 
 ---
 
-## Repo Onboarding Pipelines
-
-Planar onboards an existing repository into the data model via two sibling verbs that share the same downstream Apply machinery but enter from different contracts.
-
-### Transcription pipeline (`import`)
-
-The `import` verb is a translator: it reads the repo's existing planning docs and emits them as Planar artifacts as-is. The pipeline lives in `src/engine/importer/importer.cpp`:
-
-```
-discover  → walk repo, classify .md files (frontmatter → filename → path)
-parse     → extract roadmap milestones, ADR decisions, deferred items
-infer     → status correlation from git log + branch list + checkbox state
-diff      → match against DB by fingerprint; emit additions / updates / removals
-apply     → commit additions, updates, and (with --apply-removals) soft-cancels
-```
-
-The optional `--interpret` pass writes a fingerprinted Request to `$PLANAR_HOME/cache/import-interpretation/<repo-slug>/_pending.json` and exits 0. The vendor skill produces a Result; the next invocation merges it with the deterministic Corpus before reaching the Diff/Apply stages.
-
-### Synthesis pipeline (`synthesize`)
-
-The `synthesize` verb is a generator: it reads docs *and* source, then produces fresh planning artifacts via an LLM pass. The pipeline lives in `src/engine/synthesize/synthesize.cpp`:
-
-```
-codeprobe       → per-FeatureArea source / test / CI / commit signals with
-                  SignalStrength scores; output is an EvidenceMap
-discover+parse  → existing docs become Request context (not source-of-truth)
-Request         → fingerprinted package: docs + EvidenceMap + greenfield flag,
-                  written to $PLANAR_HOME/cache/bootstrap-synthesis/<slug>/_pending.json
-[vendor skill]  → reads Request, writes Result to <cache-dir>/<fingerprint>.json
-Validate        → hard-rejects Results that violate the code-evidence invariant
-Merge           → adapts Result to interpretation.Result, merges with deterministic baseline
-Diff + Apply    → SHARED with import — same Diff/Apply stages
-```
-
-The LLM never runs in the Planar binary. The binary stays free of provider API keys, retries, and rate limits; the `planar-synthesizer` agent, installed for each selected vendor, is the LLM engine. The cache contract is the handoff: the binary writes a Request, the skill writes a Result, the binary validates and merges.
-
-### Merge rules (synthesis)
-
-`synthesis.Merge` honors four rules when combining the LLM Result with the deterministic baseline:
-
-1. **Deterministic kind wins.** Frontmatter / filename / path classification of existing docs is locked; the LLM cannot reclassify them.
-2. **LLM fills the qualitative output.** Phase decomposition, rich task bodies, status claims, decisions, deferred items, and forward specs all come from the LLM.
-3. **Code-evidence outranks LLM-claimed-done.** A task with `status != "todo"` must cite a `code_evidence` path that exists in the deterministic EvidenceMap. The validator rejects any Result that violates the invariant; the LLM cannot lie about completion.
-4. **Floor refusals propagate.** A deterministic confidence-floor refusal (50% threshold) and a greenfield invariant (no `status != "todo"` when codeprobe reports zero source evidence) cannot be rescued by good LLM data.
-
-### Shared Apply machinery
-
-The Diff/Apply stages are shared between both verbs via the apply helpers in `src/engine/importer/importer.cpp`. After the synthesis-specific merge or the import-specific interpretation merge, both pipelines converge on the same idempotent diff (match by fingerprint; additions / updates / proposed-removals) and the same apply path (soft-cancel removed entities; preserve the audit trail).
-
-The synthesis-vs-transcription split serves the same downstream pipeline: both verbs produce artifacts that flow through the `planar-ingestor` agent for task decomposition, then through the orchestrator's execution + propagation phases. The split is at the entry point only — what counts as the authoritative planning material.
-
-See [docs/concepts.md § Transcription vs Synthesis](concepts.md#transcription-vs-synthesis) for the conceptual framing and [docs/cli-reference.md § Domain: synthesize](cli-reference.md#domain-synthesize) for the full CLI surface.
-
----
+Repo onboarding was removed with `planar import` and `planar synthesize` (plan 1142, task 7471). The transcription and synthesis pipelines are preserved at tag `archive/import-synthesize`.
 
 ## The Agent Methodology
 
@@ -741,8 +688,6 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | `ingestor` | large | Reads planning documents from the workbench and decomposes them into plans, tasks, decisions, and scenarios in the database. |
 | `ext-sync` | large | Propagates the feature tree to the operational plane and syncs changes bidirectionally. |
 | `sync-reconciler` | large | Compares local and external sync-conflict evidence and coordinates the exact operator-approved whole-entity resolution. |
-| `importer` | large | Translates an existing repository's planning artefacts (specs, ADRs, roadmaps, backlog files, GitHub issues) into Planar's data model without a goal statement. |
-| `synthesizer` | large | Produces fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Sibling of `importer`; shares the Apply machinery but enters from a synthesis contract (code-evidence invariant) rather than transcription. |
 | `introspector` | medium | Mines redacted local usage signal into preview-gated feedback findings. |
 | `feedback-triager` | large | Applies deterministic severity, disposition, reproduction, and duplicate triage to feedback findings. |
 
@@ -785,9 +730,9 @@ resume and handoff, spec pipeline, knowledge, external sync, local, and the
 feedback contract); it states no verb detail, which comes from each binary's
 `--help` and `schema --command`.
 
-Fifteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, `importer`, `synthesizer`, `introspector`, `feedback-triager`, and `research`) cover orchestration and review, planning and ingestion, external propagation, repo adoption, introspection and feedback triage, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `feedback-triager` and `sync-reconciler` coordinate preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
+Thirteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, `introspector`, `feedback-triager`, and `research`) cover orchestration and review, planning and ingestion, external propagation, introspection and feedback triage, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `feedback-triager` and `sync-reconciler` coordinate preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
 
-Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`, `agents/planar-feedback-triager.md`, and `agents/planar-introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
+Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-sync-reconciler.md`, `agents/planar-feedback-triager.md`, and `agents/planar-introspector.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
 
 `install.sh`, the update verb and the uninstaller change an installation only
 while they hold its **mutation lock**, a coordination directory beside the

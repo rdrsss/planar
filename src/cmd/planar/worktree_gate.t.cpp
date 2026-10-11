@@ -134,8 +134,7 @@ TEST_CASE("classify: an unknown top-level verb defaults to planning", "[cmd][wor
 }
 
 TEST_CASE("classify: top-level read verbs are execution_or_read", "[cmd][worktree-gate]") {
-  for (auto const& v :
-       {"resume", "dashboard", "health", "tree", "search", "version", "update", "completion", "import", "synthesize"}) {
+  for (auto const& v : {"resume", "dashboard", "health", "tree", "search", "version", "update", "completion"}) {
     INFO(v);
     CHECK(cls({v}) == verb_class::execution_or_read);
   }

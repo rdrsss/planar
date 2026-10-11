@@ -55,7 +55,6 @@ side effects and the executable source index.
 | [`grouping/`](grouping/) | Grouped views of planning entities. |
 | [`health/`](health/) | Derived health and diagnosis. |
 | [`identity/`](identity/) | Repository and association identity. |
-| [`importer/`](importer/) | Translate existing repository planning material. |
 | [`ingest/`](ingest/) | Decompose workbench specifications into entities. |
 | [`introspect/`](introspect/) | Usage introspection and findings. |
 | [`introspection_adapters/`](introspection_adapters/) | Inputs to introspection. |
@@ -65,7 +64,6 @@ side effects and the executable source index.
 | [`runs/`](runs/) | Measurement runs and bench data. |
 | [`runtime/`](runtime/) | Claims, actions, sessions and handoffs. |
 | [`search/`](search/) | Planning search. |
-| [`synthesize/`](synthesize/) | Generate planning artifacts from repo evidence. |
 | [`templates/`](templates/) | External template selection and rendering. |
 | [`tree/`](tree/) | Entity hierarchy views. |
 | [`workbench/`](workbench/) | Filesystem sync, conflicts, archive and restore. |

@@ -114,7 +114,6 @@ Report every result with the seven-section envelope in `references/feedback-cont
 
 Role work goes to agents, dispatched by name and never invoked as skills:
 `planar-orchestrator`, `planar-coder`, `planar-reviewer`, `planar-test-coder`, `planar-janitor`,
-`planar-research`, `planar-planner`, `planar-spec-reviewer`, `planar-ingestor`, `planar-importer`,
-`planar-synthesizer`, `planar-ext-sync`, `planar-feedback-triager`, `planar-introspector`
-and `planar-sync-reconciler`. This is the only Planar skill; no slash-command skill exists
+`planar-research`, `planar-planner`, `planar-spec-reviewer`, `planar-ingestor`, `planar-ext-sync`,
+`planar-feedback-triager`, `planar-introspector` and `planar-sync-reconciler`. This is the only Planar skill; no slash-command skill exists
 for any of these roles.

@@ -24,7 +24,6 @@ import planar.cmd.planar.handlers.feedback;
 import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.health;
-import planar.cmd.planar.handlers.importer;
 import planar.cmd.planar.handlers.init;
 import planar.cmd.planar.handlers.link;
 import planar.cmd.planar.handlers.links;
@@ -41,7 +40,6 @@ import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.scope;
 import planar.cmd.planar.handlers.search;
 import planar.cmd.planar.handlers.spec_ingest;
-import planar.cmd.planar.handlers.synthesize;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.test_spec;
@@ -107,8 +105,6 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_tree(*app);       // 30
   handlers::declare_search(*app);     // 31
   handlers::declare_local(*app);      // 32
-  handlers::declare_import(*app);     // 34
-  handlers::declare_synthesize(*app); // 35
   handlers::declare_version(*app);    // 36
   handlers::declare_update(*app);     // 36a: plan 1122 M3 (task 7319)
   handlers::declare_completion(*app); // 37

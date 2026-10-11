@@ -47,9 +47,8 @@ auto classify(std::span<const std::string> path) -> verb_class {
   // refusal. `update` sits with `version`: it opens no database and writes
   // no planning state, only the install under `~/.planar/` through the
   // installer it execs, so a planning refusal would be false.
-  static constexpr std::array<std::string_view, 12> k_top_reads{
-      "resume",  "dashboard", "health",     "report", "tree",   "search",
-      "version", "update",    "completion", "schema", "import", "synthesize",
+  static constexpr std::array<std::string_view, 10> k_top_reads{
+      "resume", "dashboard", "health", "report", "tree", "search", "version", "update", "completion", "schema",
   };
   if (in(top, k_top_reads) || top == "bench") {
     return verb_class::execution_or_read;

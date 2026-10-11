@@ -260,8 +260,7 @@ struct projection_link_t {
   std::string_view file;
   std::string_view target;
 };
-constexpr std::array<projection_link_t, 2> k_projection_links{
-    projection_link_t{"docs/cli-reference.md", "../commands/claude/pl-synthesize.md"},
+constexpr std::array<projection_link_t, 1> k_projection_links{
     projection_link_t{"docs/workflows.md", "../commands/claude/pl-workspace-scan.md"},
 };
 auto is_projection_only_link(std::string const& file, std::string_view target) -> bool {
@@ -952,8 +951,6 @@ constexpr std::array<command_class_t, 227> k_command_classes{
     m_("planar local unlink"),
     m_("planar local import"),
     m_("planar local migrate"),
-    m_("planar import"),
-    m_("planar synthesize"),
     r_("planar version"),
     r_("planar completion"),
     r_("planar schema"),

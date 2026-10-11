@@ -4,7 +4,7 @@
 # C++ binary runs a verb end to end. Milestones M0-M4 built engine buckets
 # only: libraries and unit tests, no main(), no dispatch. Three consecutive
 # cycles blocked leaves (`unlink`, `dashboard`, `report`,
-# `workspace init`, and the ingest apply/import/synthesize trio) on this
+# `workspace init`, and the ingest apply trio) on this
 # layer's absence, because D20 (decision 947) puts a verb that composes
 # several layer-2 peers at layer 3.
 #
@@ -119,8 +119,6 @@
 #   spec ingest --apply        needs engine.ingestor.apply (1,616 lines)
 #                              and engine.workbench (unported entirely).
 #                              engine_ingest here is the READ side only.
-#   import / synthesize        LANDED at task 6106 after the layer-2 importer
-#                              and synthesize staging engines were ported.
 #
 # Omitting an unported child from a group node stays the rule (the removed
 # `workflow run` was one such leaf), so `planar workspace --help` lists one command where the oracle
@@ -676,8 +674,6 @@ planar_binary(planar
     handlers/groups/recommend.cppm
     handlers/spec/command.cppm
     handlers/spec/ingest.cppm
-    handlers/import/command.cppm
-    handlers/synthesize/command.cppm
     verb_classification.cppm
     worktree_gate.cppm
     cli_log.cppm
@@ -735,8 +731,6 @@ planar_binary(planar
     handlers/closure/command.cpp
     handlers/groups/command.cpp
     handlers/spec/command.cpp
-    handlers/import/command.cpp
-    handlers/synthesize/command.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal
@@ -774,8 +768,6 @@ planar_binary(planar
     # src/engine/ingest/CMakeLists.txt for why the routing packet shares
     # that bucket instead of getting an `engine_routing` one of its own.
     engine_ingest
-    engine_importer
-    engine_synthesize
     engine_local
     engine_health
     engine_planning

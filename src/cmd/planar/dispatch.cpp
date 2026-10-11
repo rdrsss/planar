@@ -37,8 +37,6 @@ import planar.cmd.planar.handlers.templates;
 import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.spec_ingest;
-import planar.cmd.planar.handlers.importer;
-import planar.cmd.planar.handlers.synthesize;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.feedback;
 import planar.cmd.planar.handlers.question;
@@ -646,8 +644,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // `groups recommend` — the whole `groups` family, read-only.
   table.emplace("groups recommend", handlers::groups_recommend);
   table.emplace("spec ingest", handlers::spec_ingest);
-  table.emplace("import", handlers::import_repo);
-  table.emplace("synthesize", handlers::synthesize);
   table.emplace("help", help_handler(root));
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and

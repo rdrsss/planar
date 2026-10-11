@@ -1374,7 +1374,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Task 7319 adds the `update` leaf (219 -> 220).
   // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
   // Plan 1142 task 7463 removes `explore`, `skills` and the three `scope` stubs (203 -> 198).
-  CHECK(leaves.size() == 198);
+  // Plan 1142 task 7471 removes `import` and `synthesize` (198 -> 196).
+  CHECK(leaves.size() == 196);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

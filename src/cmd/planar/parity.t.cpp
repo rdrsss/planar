@@ -345,6 +345,34 @@ TEST_CASE("the removed planar workflow verb exits 2 and the schema catalog omits
   CHECK_FALSE(catalog.out.contains(R"("path":["workflow")"));
 }
 
+TEST_CASE("the removed import and synthesize verbs exit 2 and the schema catalog omits them", "[cmd][parity][cli-surface]") {
+  // Plan 1142, task 7471. `planar import` and `planar synthesize` were deleted
+  // with their engines and role agents; the pre-removal code is preserved at the
+  // tag archive/import-synthesize. Driven against the shipped binary: each verb is
+  // an unknown subcommand, and no catalog entry still names either.
+  auto const space = make_arena("importgone");
+  auto const run   = [&](std::vector<std::string> args, std::string_view tag) {
+    return run_pinned(cpp_bin(), args, space.cpp_root, tag);
+  };
+
+  auto const import_out = run({"import", ".", "--dry-run"}, "igone");
+  CHECK(import_out.code == 2);
+  CHECK(import_out.out.empty());
+  CHECK(import_out.err == "error: planar: The following arguments were not expected: import . --dry-run\n");
+
+  auto const synth_out = run({"synthesize", ".", "--dry-run"}, "sgone");
+  CHECK(synth_out.code == 2);
+  CHECK(synth_out.out.empty());
+  CHECK(synth_out.err == "error: planar: The following arguments were not expected: synthesize . --dry-run\n");
+
+  auto const catalog = run({"schema"}, "igoneschema");
+  REQUIRE(catalog.code == 0);
+  CHECK_FALSE(catalog.out.contains(R"("command":"planar import)"));
+  CHECK_FALSE(catalog.out.contains(R"("command":"planar synthesize)"));
+  CHECK_FALSE(catalog.out.contains(R"("path":["import")"));
+  CHECK_FALSE(catalog.out.contains(R"("path":["synthesize")"));
+}
+
 TEST_CASE("the removed explore, skills and scope use|pop|clear verbs exit 2 and the schema catalog omits them",
           "[cmd][parity][cli-surface]") {
   // Plan 1142, task 7463. These five were deleted outright: `explore` was a
@@ -843,7 +871,8 @@ TEST_CASE("every ported command declares what it should, self-consistently", "[c
   // Task 7463 removes `explore`, `skills` and the three `scope` stubs. The
   // pinned catalog below held 237 entries before that task, not 253, so this
   // count was already stale at HEAD; re-measured from the built binary, it is 232.
-  CHECK(mine->size() == 232);
+  // Task 7471 removes `import` and `synthesize` (232 -> 230).
+  CHECK(mine->size() == 230);
   CHECK(mine->contains("planar help"));
   CHECK(mine->contains("planar update"));
   CHECK(mine->contains("planar document"));

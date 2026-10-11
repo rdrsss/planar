@@ -1,7 +1,7 @@
 # Planar Skill and Agent Reference
 
 Planar ships one skill, `planar`, in the [Agent Skills](https://agentskills.io) layout, and
-fifteen role agents named `planar-<role>`. The CLI is the contract: the skill teaches only
+thirteen role agents named `planar-<role>`. The CLI is the contract: the skill teaches only
 the rules that cross verbs, and everything verb-shaped comes from the binaries. The first
 step, with or without the skill, is `planar --help`.
 
@@ -72,7 +72,6 @@ maps to a request, an agent or a command:
 | `pl-orchestrator` | "Orchestrate plan N": the `planar-orchestrator` agent |
 | `pl-coder`, `pl-test-coder`, `pl-reviewer` | the `planar-coder`, `planar-test-coder` and `planar-reviewer` agents, usually dispatched by the orchestrator |
 | `pl-research` | the `planar-research` agent |
-| `pl-import`, `pl-synthesize` | the `planar-importer` and `planar-synthesizer` agents, over `planar import` and `planar synthesize` |
 | `pl-status`, `pl-observe` | "What needs attention?": `references/status.md`, over `planar dashboard`, `planar-watch ps` and `planar-watch plans` |
 | `pl-health`, `pl-doctor` | "Planar health is degraded": `references/recovery.md`, over `planar health` and `planar-agent reconcile`; there is no `doctor` verb |
 | `pl-handoff`, `pl-resume` | "Hand off task N" or "Resume task N": `references/resume-handoff.md`, over `planar handoff create` and `planar resume` |
@@ -172,7 +171,7 @@ references. The installed copy lives in the skill roots above and in
 3. **Discovery rule.** Read a verb's `--help` before using it; use `schema --command` or
    `schema --compact` for machine-readable detail; never load the full catalog.
 4. **Routing.** An intent table that points at one reference, and the names of the
-   fifteen agents for role work.
+   thirteen agents for role work.
 
 The thirteen invariants, by their lead phrase:
 
@@ -234,7 +233,6 @@ This mirrors the routing table in `SKILL.md`.
 | Deliver a feature end to end | the `planar-orchestrator` agent |
 | Implement, test or review one task | `planar-coder`, `planar-test-coder`, `planar-reviewer` |
 | Draft or review specs as a dispatched role | `planar-planner`, `planar-spec-reviewer` |
-| Bring an existing repository into Planar | `planar-importer` or `planar-synthesizer` |
 | Capture exploration without the agent workflow | [light-touch.md](light-touch.md) |
 
 ## The role agents
@@ -253,8 +251,6 @@ surface, never invoked as a skill: no slash-command skill exists for any role.
 | `planar-planner` | Drafts product spec, tech spec, roadmap and initial test scenarios for a goal. |
 | `planar-spec-reviewer` | Adversarially reviews draft specs before ingestion. |
 | `planar-ingestor` | Decomposes workbench specs into child plans, tasks, decisions and scenarios. |
-| `planar-importer` | Translates an existing repository's planning content into Planar. |
-| `planar-synthesizer` | Synthesizes fresh planning artifacts from docs, git history and source. |
 | `planar-ext-sync` | Propagates a feature to Jira or GitHub Issues, on explicit request. |
 | `planar-feedback-triager` | Triages redacted feedback findings, applying only approved changes. |
 | `planar-introspector` | Proposes friction findings from redacted usage signal. |
@@ -327,16 +323,15 @@ Full verb detail: [cli-reference.md § Domain: `local`](cli-reference.md#domain-
 
 ## Legacy source identifiers
 
-Two artifact source schemes survive from an earlier layout:
+Two artifact source schemes survive from the removed `planar import` and `planar synthesize`
+verbs (preserved at tag `archive/import-synthesize`):
 
 - `pl-forward-spec://<kind>` marks the product spec, tech spec and roadmap seeded from a
-  forward proposal by `planar import` and `planar synthesize`.
-- `pl-synthesize://<kind>` marks the three artifacts `planar synthesize` seeds.
+  forward proposal.
+- `pl-synthesize://<kind>` marks the three artifacts a synthesis seeded.
 
 They are stored values in the artifact's source path, kept so that existing databases stay
-readable. They name no skill. The `planar synthesize` handler branches on them: when it
-retires an anchor's artifacts it keeps those whose source starts with the
-`pl-synthesize://` scheme.
+readable. They name no skill and no live verb.
 
 ## Where the rest lives
 

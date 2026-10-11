@@ -210,8 +210,8 @@ export auto feature_dir_for(std::string_view root, const anchor& value) -> std::
 
 /// @brief Render one entity to its path and bytes.
 ///
-/// This is the function `spec ingest --apply`, `import` and `synthesize`
-/// (task 6119) need alongside `feature_dir_for` and the parser.
+/// This is the function `spec ingest --apply` (task 6119) needs alongside
+/// `feature_dir_for` and the parser.
 /// @param conn The database connection.
 /// @param anchor_plan_id The owning anchor plan, written into front matter.
 /// @param kind The entity kind.
