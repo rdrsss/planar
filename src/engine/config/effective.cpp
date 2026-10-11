@@ -12,6 +12,7 @@ module;
 module planar.engine.config.effective;
 
 import std;
+import planar.engine.config.policy;
 import planar.engine.config.toml;
 
 namespace planar::engine::config {
@@ -285,6 +286,29 @@ void resolve_models_routing_roles(const env_view& env, const toml_map& file_map,
   }
 }
 
+/// @brief Record the six `policy.<key>` rows. Reads no environment variable:
+/// policy must not be switchable from the environment of the agent it governs.
+void resolve_policy_rows(const toml_map& file_map, std::optional<std::string_view> assoc_slug, effective_map& eff) {
+  const auto policy = resolve_policy_lenient(file_map, assoc_slug);
+  for (const auto key : policy_keys) {
+    const auto& source = policy.sources.at(std::string(key));
+    auto entry = value_with_source{.value = render_policy_value(policy.values, key), .source_ = provenance::embedded_default};
+    switch (source.kind) {
+    case policy_source_kind::embedded_default:
+      break;
+    case policy_source_kind::top_level:
+      entry.source_ = provenance::config_file;
+      entry.section = source.section;
+      break;
+    case policy_source_kind::association:
+      entry.source_ = provenance::assoc_override;
+      entry.section = source.section;
+      break;
+    }
+    eff[std::format("policy.{}", key)] = std::move(entry);
+  }
+}
+
 /// @brief Look up `associations.<slug>.<subkey>` in `file_map`. Only the
 /// bare (unquoted) dotted form is checked — the zig oracle's second lookup
 /// attempt (a quoted `associations."<slug>".<subkey>"` form) is dead code
@@ -401,6 +425,8 @@ auto resolve(std::optional<std::string_view> file_content, const env_view& env, 
   static_cast<void>(pick_str("queue.stale_after", "", env, std::nullopt, file_map, *def_map, eff));
   static_cast<void>(pick_str("queue.grace", "", env, std::nullopt, file_map, *def_map, eff));
   static_cast<void>(pick_int("queue.history_days", file_map, *def_map, eff, 30));
+
+  resolve_policy_rows(file_map, assoc_slug, eff);
 
   return resolved{
       .cfg =

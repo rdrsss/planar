@@ -569,7 +569,7 @@ Configuration lives in `~/.planar/config.toml`. The `planar config` domain manag
 
 ### Resolution order (highest wins)
 
-1. Environment variables (`PLANAR_*` prefix).
+1. Environment variables (`PLANAR_*` prefix). Policy keys are never read from the environment.
 2. Per-association overrides in `config.toml` under `[associations."<slug>"]`.
 3. Top-level keys in `config.toml`.
 4. Embedded defaults compiled into the binary.
@@ -584,6 +584,8 @@ Configuration lives in `~/.planar/config.toml`. The `planar config` domain manag
 | `planar config path` | Print the path to the active config file. |
 
 The `[queue]` table configures the host-wide build and test queue: `slots`, `poll_interval`, `stale_after`, `grace` and `history_days` (ranges and units in [`docs/cli-reference.md`](cli-reference.md#the-queue-table)). Its typed, range-checked view is `planar.engine.config.queue` (`src/engine/config/queue.cppm`): `load_queue_settings(path)` reads only `config.toml`, never a database, so a `planar-agent` handler calls it at each poll and hands the engine `slots`, `stale_after_ms`, `grace_ms` and `history_days` even when `planar.db` is schema-locked. `planar config validate` reports every refused `[queue]` value with its key.
+
+The `[policy]` table and the per-association `[associations."<slug>".policy]` tables hold the six policy keys (`review_required`, `task_gate`, `require_model`, `confirm_before`, `require_scenario_coverage`, `use_queue`). Their module is `planar.engine.config.policy` (`src/engine/config/policy.cppm`): `effective_policy(file, assoc_slug)` returns the typed `policy_values` and the source of each key, and `policy_digest(values)` is the SHA-256 of its canonical JSON that a claim records. Environment variables do not override policy, and `validate_policy` refuses any key that is not a fact Planar can check at one verb (workflow-shaped keys included). Keys and rules are in [`docs/cli-reference.md`](cli-reference.md#the-policy-tables).
 
 The `[introspection]` table configures the opt-in CLI usage log: `cli_log` (default off) and `retention_days` (default 90). The `cli_invocations` table it feeds is described above. The transcript keys and the engines that read them were removed in plan 1142 (task 7472); `planar config validate` refuses a stale `[introspection.transcripts]` table as an unknown key, and the removed code is preserved at tag `archive/introspection`.
 

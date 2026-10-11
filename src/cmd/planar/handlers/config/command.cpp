@@ -9,6 +9,7 @@ import std;
 import cli11;
 import planar.cliapp.args;
 import planar.engine.config.effective;
+import planar.engine.config.policy;
 import planar.engine.config.queue;
 import planar.engine.config.toml;
 import planar.json_text;
@@ -161,8 +162,16 @@ auto masked_value(std::string_view key, const cfg::value_with_source& entry) -> 
 
 /// @brief The provenance label for one entry.
 /// @param entry The resolved value.
-/// @return The label, e.g. `config file` or `env: PLANAR_VENDOR`.
-auto provenance_label(const cfg::value_with_source& entry) -> std::string {
+/// @param config_path The configuration file, named in the label of a policy value.
+/// @return The label, e.g. `config file` or `env: PLANAR_VENDOR`. A policy value
+/// read from a file names the file and the table: `config file: <path>, policy` or
+/// `per-association override: <path>, associations."<slug>".policy`.
+auto provenance_label(const cfg::value_with_source& entry, const std::filesystem::path& config_path) -> std::string {
+  if (!entry.section.empty()) {
+    return std::format("{}: {}, {}",
+                       entry.source_ == cfg::provenance::assoc_override ? "per-association override" : "config file",
+                       config_path.string(), entry.section);
+  }
   switch (entry.source_) {
   case cfg::provenance::env:
     return std::format("env: {}", entry.env_var_name);
@@ -341,7 +350,7 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
       continue;
     }
 
-    auto const label = provenance_label(entry);
+    auto const label = provenance_label(entry, *path);
     // A single-candidate tier renders exactly like every scalar key; only a
     // genuine multi-candidate list gets the extra clause.
     bool const show_candidates = entry.candidates.size() > 1;
@@ -609,6 +618,15 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
   }
   if (removed("introspection.transcript_scan_bytes")) {
     report("introspection.transcript_scan_bytes: unknown key (the transcript read budget was removed)");
+  }
+
+  // ---- step 6: the `[policy]` tables (plan 1142, task mo-policy-config) -----
+  //
+  // Policy keys are facts Planar can check at one verb. A workflow-shaped key
+  // (`after_review`, `then`, `retry`, ...) is refused as an unknown key, by
+  // name, and so is a value of the wrong type.
+  for (auto const& finding : cfg::validate_policy(*parsed)) {
+    report(std::format("{}: {}", finding.key, finding.message));
   }
 
   if (!findings.empty()) {

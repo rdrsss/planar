@@ -197,6 +197,10 @@ need them:
 ```bash
 sqlite3 -readonly <planar.db> \
   "select * from agent_actions where action_kind = 'review'"
+sqlite3 -readonly <planar.db> \
+  "select id, claim_token, policy_digest from agent_work_claims where policy_digest is not null"
+sqlite3 -readonly <planar.db> \
+  "select seq, claim_token from queue_history where claim_token is not null"
 ```
 
 ### Relaxing a constraint on a foreign-key parent table

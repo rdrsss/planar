@@ -5326,7 +5326,7 @@ invocation.
 
 Resolution order (highest to lowest priority):
 
-1. Environment variable (e.g. `$PLANAR_WORKBENCH_ROOT`, `$PLANAR_VENDOR`).
+1. Environment variable (e.g. `$PLANAR_WORKBENCH_ROOT`, `$PLANAR_VENDOR`). Policy keys are the exception: no environment variable overrides them (see [The `[policy]` tables](#the-policy-tables)).
 2. Per-association section (`[associations."<slug>"]` in the config file).
 3. Top-level config file values.
 4. Embedded defaults (compiled into the binary from the engine config module).
@@ -5376,6 +5376,61 @@ of a wrong type, and an unknown `[queue]` key, and names the key on each
 finding (`error: queue.stale_after: stale_after must not be negative, got
 "-5s"`).
 
+#### The `[policy]` tables
+
+Per-scope policy is a set of flat keys in an optional top-level `[policy]`
+table and in per-association `[associations."<slug>".policy]` tables. For
+each key the association table wins, then the top-level table, then the
+embedded default. **No environment variable overrides a policy key**, so the
+agent a policy governs cannot switch it off from its own environment
+(`PLANAR_REVIEW_REQUIRED=false` changes nothing).
+
+```toml
+[policy]
+review_required = true
+task_gate = ["make", "test"]
+confirm_before = ["task done", "plan closeout"]
+
+[associations."org:acme".policy]
+require_model = true
+review_required = false     # beats the top-level value for this association
+```
+
+| Key | Type | Checked or shown at | Default |
+|-----|------|---------------------|---------|
+| `review_required` | bool | `complete` | `false` |
+| `task_gate` | argv array of strings, non-empty | `complete` | unset |
+| `require_model` | bool | coder `claim` / `pull` | `false` |
+| `confirm_before` | array of verb paths | the orchestrator brief only | `[]` |
+| `require_scenario_coverage` | bool | `spec ingest --strict` | `false` |
+| `use_queue` | bool | brief, `queue rule`, conformance | `false` |
+
+A gate value is an argv array such as `["make", "test"]`, not a shell string.
+This table is the key set only: each verb reads the effective values in its
+own change.
+
+**Boundary rule.** A key is admitted only if it is a fact Planar can check at
+one verb, or only displays. A key that says what happens next (a step, retry,
+branch or condition) is workflow and is refused. `planar config validate`
+refuses every key outside the table above, in `[policy]` and in any
+`[associations."<slug>".policy]`, and names it:
+
+```
+error: policy.after_review: unknown policy key (policy keys are facts Planar can check at one verb; a key that says what happens next is workflow and is not accepted; known keys: review_required, task_gate, require_model, confirm_before, require_scenario_coverage, use_queue)
+```
+
+A value of the wrong type is refused the same way, naming the key and the
+type it expects (`error: policy.use_queue: must be a boolean (true or false)`).
+Both findings are printed together on stderr and the verb exits 1.
+
+`planar config show --effective` prints a `policy.<key>` row for each key with
+its source: `[embedded default]`, `[config file: <path>, policy]` for the
+top-level table, or `[per-association override: <path>,
+associations."<slug>".policy]` for an association table (select it with
+`--scope <slug>`). An unset `task_gate` prints `(unset)`. Each claim records
+a digest of the effective policy (SHA-256 of a canonical JSON form with fixed
+key order) so conformance grades a claim against the policy it ran under.
+
 ---
 
 ### `planar config show`
@@ -5393,7 +5448,7 @@ is sorted for snapshot-friendliness.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--effective` | Show each key with its provenance (`[env: VAR]`, `[config file]`, `[embedded default]`, `[per-association override]`). | off |
+| `--effective` | Show each key with its provenance (`[env: VAR]`, `[config file]`, `[embedded default]`, `[per-association override]`; a `policy.*` row from a file also names the file and table). | off |
 | `--raw` | Print the user's config file contents verbatim. Empty output if the file is absent. | off |
 | `--defaults` | Print the embedded defaults file verbatim. Doubles as the "what keys exist" reference. | off |
 | `--scope <slug>` | Resolve as if the named association slug were active. | (none) |
@@ -5464,7 +5519,8 @@ planar config validate
 - Sensitive-data invariant: keys matching the secret-name denylist must not carry literal values.
 - Cross-reference consistency (e.g. `auth = "token-env"` requires `token_env` to name an env var).
 - The `[queue]` table: every key within its range, no unknown key, and `stale_after` not shorter than `poll_interval` (see [The `[queue]` table](#the-queue-table)).
-- Unknown keys outside `[queue]` produce a **warning**, not an error, preserving forward-compatibility; an unknown key inside `[queue]` is refused (see above).
+- The `[policy]` and `[associations."<slug>".policy]` tables: every key one of the six admitted policy keys with the right type; a workflow-shaped or unknown key is refused by name (see [The `[policy]` tables](#the-policy-tables)).
+- Unknown keys outside `[queue]` and the policy tables produce a **warning**, not an error, preserving forward-compatibility; an unknown key inside `[queue]` is refused (see above).
 
 Each issue is printed with its line number and key path.
 

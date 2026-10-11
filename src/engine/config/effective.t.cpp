@@ -12,6 +12,7 @@
 
 import std;
 import planar.engine.config.effective;
+import planar.engine.config.policy;
 import planar.engine.config.toml;
 
 using planar::engine::config::effective_error;
@@ -388,4 +389,268 @@ TEST_CASE(
   CHECK(introspection_cli_log(write("off.toml", "[introspection]\ncli_log = false\n")) == std::optional<bool>{false});
   CHECK_FALSE(introspection_cli_log(write("bad.toml", "[introspection\ncli_log = ")).has_value());
   std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Policy (plan 1142, task mo-policy-config)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+using planar::engine::config::effective_policy;
+using planar::engine::config::policy_canonical_json;
+using planar::engine::config::policy_digest;
+using planar::engine::config::policy_keys;
+using planar::engine::config::policy_source_kind;
+using planar::engine::config::policy_values;
+using planar::engine::config::validate_policy;
+
+auto parse_ok(std::string_view text) -> planar::engine::config::toml_map {
+  auto parsed = parse_toml(text);
+  REQUIRE(parsed.has_value());
+  return *parsed;
+}
+
+auto policy_keys_named(const std::vector<planar::engine::config::policy_finding>& findings) -> std::vector<std::string> {
+  std::vector<std::string> keys;
+  for (const auto& finding : findings) {
+    keys.push_back(finding.key);
+  }
+  return keys;
+}
+
+} // namespace
+
+TEST_CASE("policy: no file means every key is its embedded default", "[effective][policy]") {
+  auto policy = effective_policy({}, std::nullopt);
+  REQUIRE(policy.has_value());
+  CHECK(policy->values == policy_values{});
+  CHECK_FALSE(policy->values.review_required);
+  CHECK_FALSE(policy->values.task_gate.has_value());
+  CHECK(policy->values.confirm_before.empty());
+  for (const auto key : policy_keys) {
+    INFO(key);
+    REQUIRE(policy->sources.contains(std::string(key)));
+    CHECK(policy->sources.at(std::string(key)).kind == policy_source_kind::embedded_default);
+  }
+}
+
+TEST_CASE("policy: the struct defaults equal the [policy] table in defaults.toml", "[effective][policy]") {
+  const auto from_defaults = parse_ok(planar::engine::config::defaults_toml());
+  auto       policy        = effective_policy(from_defaults, std::nullopt);
+  REQUIRE(policy.has_value());
+  CHECK(policy->values == policy_values{});
+  // Every key but the unset task_gate is spelled out in the shipped defaults.
+  for (const auto key : policy_keys) {
+    INFO(key);
+    if (key == "task_gate") {
+      CHECK_FALSE(from_defaults.contains("policy.task_gate"));
+    } else {
+      CHECK(from_defaults.contains(std::format("policy.{}", key)));
+    }
+  }
+}
+
+TEST_CASE("policy: the top-level table supplies values and names its section", "[effective][policy]") {
+  const auto file   = parse_ok(R"([policy]
+review_required = true
+task_gate = ["make", "test"]
+confirm_before = ["task done", "plan closeout"]
+)");
+  auto       policy = effective_policy(file, std::nullopt);
+  REQUIRE(policy.has_value());
+  CHECK(policy->values.review_required);
+  REQUIRE(policy->values.task_gate.has_value());
+  CHECK(*policy->values.task_gate == std::vector<std::string>{"make", "test"});
+  CHECK(policy->values.confirm_before == std::vector<std::string>{"task done", "plan closeout"});
+  CHECK_FALSE(policy->values.use_queue);
+  CHECK(policy->sources.at("review_required").kind == policy_source_kind::top_level);
+  CHECK(policy->sources.at("review_required").section == "policy");
+  CHECK(policy->sources.at("use_queue").kind == policy_source_kind::embedded_default);
+}
+
+TEST_CASE("policy: association beats top level beats default, key by key", "[effective][policy]") {
+  const auto file = parse_ok(R"([policy]
+review_required = true
+use_queue = true
+[associations."org:acme".policy]
+review_required = false
+require_model = true
+)");
+  auto       acme = effective_policy(file, "org:acme");
+  REQUIRE(acme.has_value());
+  CHECK_FALSE(acme->values.review_required);
+  CHECK(acme->sources.at("review_required").kind == policy_source_kind::association);
+  CHECK(acme->sources.at("review_required").section == "associations.\"org:acme\".policy");
+  CHECK(acme->values.require_model);
+  CHECK(acme->values.use_queue);
+  CHECK(acme->sources.at("use_queue").kind == policy_source_kind::top_level);
+  CHECK(acme->sources.at("require_scenario_coverage").kind == policy_source_kind::embedded_default);
+
+  // Another association, and no association, see only the top level.
+  for (const std::optional<std::string_view> scope :
+       {std::optional<std::string_view>{"org:other"}, std::optional<std::string_view>{}}) {
+    auto other = effective_policy(file, scope);
+    REQUIRE(other.has_value());
+    CHECK(other->values.review_required);
+    CHECK_FALSE(other->values.require_model);
+    CHECK(other->sources.at("review_required").kind == policy_source_kind::top_level);
+  }
+}
+
+TEST_CASE("policy: wrong types are refused naming the key and the expected type", "[effective][policy]") {
+  const auto file     = parse_ok(R"([policy]
+review_required = "yes"
+task_gate = "make test"
+use_queue = 1
+confirm_before = ["Task Done"]
+[associations."org:acme".policy]
+require_model = ["x"]
+)");
+  const auto findings = validate_policy(file);
+  CHECK(policy_keys_named(findings) == std::vector<std::string>{"associations.org:acme.policy.require_model",
+                                                                "policy.confirm_before", "policy.review_required",
+                                                                "policy.task_gate", "policy.use_queue"});
+  for (const auto& finding : findings) {
+    INFO(finding.key << ": " << finding.message);
+    CHECK(finding.message.starts_with("must be "));
+  }
+  auto policy = effective_policy(file, "org:acme");
+  REQUIRE_FALSE(policy.has_value());
+  CHECK(policy.error().size() == 5);
+}
+
+TEST_CASE("policy: an empty task_gate argv and an empty argv element are refused", "[effective][policy]") {
+  CHECK(validate_policy(parse_ok("[policy]\ntask_gate = []\n")).size() == 1);
+  CHECK(validate_policy(parse_ok("[policy]\ntask_gate = [\"make\", \"\"]\n")).size() == 1);
+  CHECK(validate_policy(parse_ok("[policy]\ntask_gate = [\"make\"]\n")).empty());
+}
+
+TEST_CASE("policy: workflow-shaped and unknown keys are refused by name", "[effective][policy]") {
+  const auto file     = parse_ok(R"([policy]
+after_review = "dispatch"
+then = "merge"
+on_failure = "retry"
+retry = 3
+steps = ["a"]
+review_required = true
+[associations."org:acme".policy]
+bogus = true
+)");
+  const auto findings = validate_policy(file);
+  CHECK(policy_keys_named(findings) == std::vector<std::string>{"associations.org:acme.policy.bogus", "policy.after_review",
+                                                                "policy.on_failure", "policy.retry", "policy.steps",
+                                                                "policy.then"});
+  for (const auto& finding : findings) {
+    INFO(finding.key);
+    CHECK(finding.message.contains("unknown policy key"));
+    CHECK(finding.message.contains("facts Planar can check at one verb"));
+  }
+  CHECK_FALSE(effective_policy(file, std::nullopt).has_value());
+}
+
+TEST_CASE("policy: a nested table under policy is named, and policy itself must be a table", "[effective][policy]") {
+  CHECK(policy_keys_named(validate_policy(parse_ok("[policy.retry]\ncount = 2\n"))) ==
+        std::vector<std::string>{"policy.retry.count"});
+  CHECK(policy_keys_named(validate_policy(parse_ok("policy = true\n"))) == std::vector<std::string>{"policy"});
+}
+
+TEST_CASE("policy: no environment variable changes a value or its source", "[effective][policy][env]") {
+  const std::string_view content = "[policy]\nreview_required = true\n";
+  const auto             hostile = make_env({{"PLANAR_REVIEW_REQUIRED", "false"},
+                                             {"PLANAR_POLICY_REVIEW_REQUIRED", "false"},
+                                             {"PLANAR_POLICY_USE_QUEUE", "true"},
+                                             {"PLANAR_USE_QUEUE", "true"},
+                                             {"PLANAR_TASK_GATE", "true"},
+                                             {"REVIEW_REQUIRED", "false"},
+                                             {"policy.review_required", "false"}});
+  auto                   quiet   = resolve(content, env_view::empty(), std::nullopt);
+  auto                   noisy   = resolve(content, hostile, std::nullopt);
+  REQUIRE(quiet.has_value());
+  REQUIRE(noisy.has_value());
+  for (const auto key : policy_keys) {
+    const auto name = std::format("policy.{}", key);
+    INFO(name);
+    REQUIRE(noisy->effective.contains(name));
+    CHECK(noisy->effective.at(name).value == quiet->effective.at(name).value);
+    CHECK(noisy->effective.at(name).source_ == quiet->effective.at(name).source_);
+    CHECK(noisy->effective.at(name).env_var_name.empty());
+  }
+  CHECK(noisy->effective.at("policy.review_required").value == "true");
+  CHECK(noisy->effective.at("policy.review_required").source_ == provenance::config_file);
+  CHECK(noisy->effective.at("policy.use_queue").value == "false");
+}
+
+TEST_CASE("resolve: records a policy row per key with its provenance and section", "[effective][policy]") {
+  const std::string_view content = R"([policy]
+review_required = true
+task_gate = ["make", "test"]
+[associations."org:acme".policy]
+review_required = false
+)";
+  auto                   top     = resolve(content, env_view::empty(), std::nullopt);
+  REQUIRE(top.has_value());
+  CHECK(top->effective.at("policy.review_required").value == "true");
+  CHECK(top->effective.at("policy.review_required").source_ == provenance::config_file);
+  CHECK(top->effective.at("policy.review_required").section == "policy");
+  CHECK(top->effective.at("policy.task_gate").value == "[\"make\",\"test\"]");
+  CHECK(top->effective.at("policy.confirm_before").value == "[]");
+  CHECK(top->effective.at("policy.confirm_before").source_ == provenance::embedded_default);
+  CHECK(top->effective.at("policy.confirm_before").section.empty());
+
+  auto acme = resolve(content, env_view::empty(), "org:acme");
+  REQUIRE(acme.has_value());
+  CHECK(acme->effective.at("policy.review_required").value == "false");
+  CHECK(acme->effective.at("policy.review_required").source_ == provenance::assoc_override);
+  CHECK(acme->effective.at("policy.review_required").section == "associations.\"org:acme\".policy");
+
+  auto none = resolve(std::nullopt, env_view::empty(), std::nullopt);
+  REQUIRE(none.has_value());
+  CHECK(none->effective.at("policy.task_gate").value == "(unset)");
+  CHECK(none->effective.at("policy.task_gate").source_ == provenance::embedded_default);
+}
+
+TEST_CASE("resolve: a mistyped policy value falls through to the default instead of failing", "[effective][policy]") {
+  auto res = resolve("[policy]\nreview_required = \"yes\"\n", env_view::empty(), std::nullopt);
+  REQUIRE(res.has_value());
+  CHECK(res->effective.at("policy.review_required").value == "false");
+  CHECK(res->effective.at("policy.review_required").source_ == provenance::embedded_default);
+}
+
+TEST_CASE("policy_digest: stable, lowercase hex, and sensitive to every key and to argv order", "[effective][policy][digest]") {
+  const policy_values base{};
+  const auto          digest = policy_digest(base);
+  CHECK(digest.size() == 64);
+  CHECK(std::ranges::all_of(digest, [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }));
+  CHECK(policy_digest(policy_values{}) == digest);
+  // Pinned: the canonical form is part of the contract a claim records.
+  CHECK(
+      policy_canonical_json(base) ==
+      R"({"confirm_before":[],"require_model":false,"require_scenario_coverage":false,"review_required":false,"task_gate":null,"use_queue":false})");
+
+  std::vector<policy_values> variants(8);
+  variants[0].review_required           = true;
+  variants[1].task_gate                 = std::vector<std::string>{"make", "test"};
+  variants[2].require_model             = true;
+  variants[3].confirm_before            = {"task done"};
+  variants[4].require_scenario_coverage = true;
+  variants[5].use_queue                 = true;
+  variants[6].task_gate                 = std::vector<std::string>{"test", "make"};
+  variants[7].task_gate                 = std::vector<std::string>{"make test"};
+  std::set<std::string> seen{digest};
+  for (const auto& variant : variants) {
+    CHECK(seen.insert(policy_digest(variant)).second);
+  }
+  // Two different argv splits of one command line differ: the array is preserved.
+  CHECK(policy_digest(variants[1]) != policy_digest(variants[7]));
+  // An unset gate differs from any gate.
+  CHECK(policy_digest(base) != policy_digest(variants[1]));
+}
+
+TEST_CASE("policy_digest: the same policy resolved from two files digests equal", "[effective][policy][digest]") {
+  auto a = effective_policy(parse_ok("[policy]\nreview_required = true\n"), std::nullopt);
+  auto b = effective_policy(parse_ok("# comment\n[policy]\nuse_queue = false\nreview_required = true\n"), std::nullopt);
+  REQUIRE(a.has_value());
+  REQUIRE(b.has_value());
+  CHECK(policy_digest(a->values) == policy_digest(b->values));
 }

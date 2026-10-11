@@ -66,6 +66,10 @@ export struct value_with_source {
   /// `value` is the tier default and stays scalar-compatible for every
   /// existing reader. Empty for every other key.
   std::vector<std::string> candidates;
+  /// @brief The TOML table that supplied a `policy.*` value, for example
+  /// `policy` or `associations."org:acme".policy`. Empty for every other key
+  /// and for a policy value that came from the embedded default.
+  std::string section;
 };
 
 /// @brief Canonical vendors participating in per-vendor

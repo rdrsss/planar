@@ -398,14 +398,15 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   CHECK(r.code == 0);
   CHECK(r.err.empty());
   CHECK_FALSE(r.db_open);
-  // A file-free HOME still lists the embedded defaults — 28 keys, and the
+  // A file-free HOME still lists the embedded defaults — 30 keys, and the
   // count is asserted so a resolver that silently stopped emitting a family
   // cannot pass on the two keys the case happens to name. (22 until plan 1033
   // task 6485 added `execute.engine`; 28 since plan 1080 task hq-config added
   // the five `queue.*` keys and `introspection.transcript_scan_bytes`; 28
   // again after task 7459 removed `execute.engine`; 24 after task 7472 removed
-  // the transcript budget and the three `*_enabled` keys.)
-  CHECK(lines_of(r.out).size() == 24);
+  // the transcript budget and the three `*_enabled` keys; 30 after plan 1142
+  // task mo-policy-config added the six `policy.*` keys.)
+  CHECK(lines_of(r.out).size() == 30);
   CHECK(line_for(r.out, "queue.slots") == "queue.slots = 1");
   CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s");
   CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s");
@@ -612,8 +613,9 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   // The content markers prove it is the DEFAULTS file rather than the
   // operator's (which is what `--raw` would have printed). The byte count is
   // the embedded defaults.toml, which lost its 309-byte `[execute]` block to
-  // plan 1142 task 7459 (4476 bytes before, 4167 after).
-  CHECK(r.out.size() == 3550);
+  // plan 1142 task 7459, then gained the 988-byte `[policy]` table in task
+  // mo-policy-config (3550 bytes before, 4538 after).
+  CHECK(r.out.size() == 4538);
   CHECK(r.out.contains("[queue]\n"));
   CHECK_FALSE(r.out.contains("[execute]"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
@@ -631,7 +633,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 3550);
+  CHECK(r.out.size() == 4538);
   cleanup(fx);
 }
 
@@ -1169,5 +1171,156 @@ TEST_CASE("config show --json escapes values, so every line is valid JSON", "[cm
   }
   REQUIRE(hits.size() == 1);
   CHECK(hits.front() == R"({"key":"defaults.vendor","value":"a\"b\\c","provenance":"config file"})");
+  cleanup(fx);
+}
+
+// ---------------------------------------------------------------------------
+// Policy tables (plan 1142, task mo-policy-config)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief The `--effective` row for `key`, or empty.
+/// @param out The verb's stdout.
+/// @param key The effective key, for example `policy.use_queue`.
+/// @return The whole line.
+auto effective_row(std::string_view out, std::string_view key) -> std::string {
+  for (auto const& line : lines_of(out)) {
+    if (line.starts_with(std::format("{} = ", key))) {
+      return line;
+    }
+  }
+  return {};
+}
+
+} // namespace
+
+TEST_CASE("config validate refuses a workflow-shaped policy key and names it", "[cmd][config][validate][policy]") {
+  auto const fx = make_fixture("policyflow");
+  write_config(fx, "[policy]\nafter_review = \"dispatch\"\nreview_required = true\n");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 1);
+  CHECK(r.err.contains("error: policy.after_review: unknown policy key"));
+  CHECK(r.err.contains("facts Planar can check at one verb"));
+  CHECK_FALSE(r.err.contains("policy.review_required"));
+  CHECK_FALSE(r.out.contains("config validate: ok"));
+  cleanup(fx);
+}
+
+TEST_CASE("config validate refuses every workflow word and any unknown policy key, in both table shapes",
+          "[cmd][config][validate][policy]") {
+  for (std::string_view key : {"then", "on_failure", "retry", "steps", "totally_unknown"}) {
+    for (std::string_view header : {"[policy]", "[associations.\"org:acme\".policy]"}) {
+      INFO(key << " in " << header);
+      auto const fx = make_fixture("policyunknown");
+      write_config(fx, std::format("{}\n{} = \"x\"\n", header, key));
+      auto const r = dispatch(fx, {"config", "validate"});
+      CHECK(r.code == 1);
+      CHECK(r.err.contains(std::format("policy.{}: unknown policy key", key)));
+      CHECK_FALSE(r.out.contains("config validate: ok"));
+      cleanup(fx);
+    }
+  }
+}
+
+TEST_CASE("config validate names the expected type for a mistyped policy value", "[cmd][config][validate][policy]") {
+  auto const fx = make_fixture("policytype");
+  write_config(fx, "[policy]\nuse_queue = \"yes\"\ntask_gate = \"make test\"\n");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 1);
+  CHECK(r.err.contains("error: policy.use_queue: must be a boolean"));
+  CHECK(r.err.contains("error: policy.task_gate: must be a non-empty array of strings"));
+  cleanup(fx);
+}
+
+TEST_CASE("config validate accepts a file with valid policy tables", "[cmd][config][validate][policy]") {
+  auto const fx = make_fixture("policyok");
+  write_config(fx, R"([policy]
+review_required = true
+task_gate = ["make", "test"]
+confirm_before = ["task done", "plan closeout"]
+use_queue = true
+
+[associations."org:acme".policy]
+require_model = true
+review_required = false
+)");
+  auto const r = dispatch(fx, {"config", "validate"});
+  CHECK(r.code == 0);
+  CHECK(r.out == "config validate: ok\n");
+  CHECK(r.err.empty());
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective prints every policy key with its source", "[cmd][config][show][effective][policy]") {
+  auto const fx = make_fixture("policyshow");
+  write_config(fx, "[policy]\nreview_required = true\ntask_gate = [\"make\", \"test\"]\n");
+  auto const r = dispatch(fx, {"config", "show", "--effective"});
+  REQUIRE(r.code == 0);
+  CHECK(effective_row(r.out, "policy.review_required") ==
+        std::format("policy.review_required = true  [config file: {}, policy]", fx.cfg.string()));
+  CHECK(effective_row(r.out, "policy.task_gate") ==
+        std::format("policy.task_gate = [\"make\",\"test\"]  [config file: {}, policy]", fx.cfg.string()));
+  CHECK(effective_row(r.out, "policy.require_model") == "policy.require_model = false  [embedded default]");
+  CHECK(effective_row(r.out, "policy.confirm_before") == "policy.confirm_before = []  [embedded default]");
+  CHECK(effective_row(r.out, "policy.require_scenario_coverage") ==
+        "policy.require_scenario_coverage = false  [embedded default]");
+  CHECK(effective_row(r.out, "policy.use_queue") == "policy.use_queue = false  [embedded default]");
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective: an unset task_gate prints (unset)", "[cmd][config][show][effective][policy]") {
+  auto const fx = make_fixture("policyunset");
+  auto const r  = dispatch(fx, {"config", "show", "--effective"});
+  REQUIRE(r.code == 0);
+  CHECK(effective_row(r.out, "policy.task_gate") == "policy.task_gate = (unset)  [embedded default]");
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective --scope: an association policy beats the top level and names its table",
+          "[cmd][config][show][effective][policy]") {
+  auto const fx = make_fixture("policyassoc");
+  write_config(fx, "[policy]\nreview_required = true\nuse_queue = true\n"
+                   "[associations.\"org:acme\".policy]\nreview_required = false\n");
+  auto const scoped = dispatch(fx, {"config", "show", "--effective", "--scope", "org:acme"});
+  REQUIRE(scoped.code == 0);
+  CHECK(effective_row(scoped.out, "policy.review_required") ==
+        std::format("policy.review_required = false  [per-association override: {}, associations.\"org:acme\".policy]",
+                    fx.cfg.string()));
+  CHECK(effective_row(scoped.out, "policy.use_queue") ==
+        std::format("policy.use_queue = true  [config file: {}, policy]", fx.cfg.string()));
+  auto const unscoped = dispatch(fx, {"config", "show", "--effective", "--scope", "org:other"});
+  CHECK(effective_row(unscoped.out, "policy.review_required") ==
+        std::format("policy.review_required = true  [config file: {}, policy]", fx.cfg.string()));
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective: an environment variable cannot switch a policy off",
+          "[cmd][config][show][effective][policy][env]") {
+  auto fx = make_fixture("policyenv");
+  write_config(fx, "[policy]\nreview_required = true\n");
+  fx.vars["PLANAR_REVIEW_REQUIRED"]        = "false";
+  fx.vars["PLANAR_POLICY_REVIEW_REQUIRED"] = "false";
+  auto const r                             = dispatch(fx, {"config", "show", "--effective"});
+  REQUIRE(r.code == 0);
+  CHECK(effective_row(r.out, "policy.review_required") ==
+        std::format("policy.review_required = true  [config file: {}, policy]", fx.cfg.string()));
+  CHECK_FALSE(r.out.contains("env: PLANAR_REVIEW_REQUIRED"));
+  cleanup(fx);
+}
+
+TEST_CASE("config show --json carries the policy provenance and still escapes", "[cmd][config][show][json][policy]") {
+  auto const fx = make_fixture("policyjson");
+  write_config(fx, "[policy]\ntask_gate = [\"make\", \"test\"]\n");
+  auto const r = dispatch(fx, {"config", "show", "--json"});
+  REQUIRE(r.code == 0);
+  std::string row;
+  for (auto const& line : lines_of(r.out)) {
+    if (line.starts_with(R"({"key":"policy.task_gate",)")) {
+      row = line;
+    }
+  }
+  CHECK(row.starts_with(R"({"key":"policy.task_gate","value":"[\"make\",\"test\"]","provenance":"config file: )"));
+  CHECK(row.ends_with(", policy\"}"));
   cleanup(fx);
 }

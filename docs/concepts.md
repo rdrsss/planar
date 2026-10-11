@@ -247,6 +247,12 @@ The `slug` on an association is the stable identifier used in scope references, 
 
 ---
 
+## Policy
+
+Policy is the small set of per-scope facts Planar checks at one verb, kept in `config.toml`: a top-level `[policy]` table and per-association `[associations."<slug>".policy]` tables. For each key the association value beats the top-level value, which beats the embedded default. Environment variables never override a policy key, so the agent being policed cannot switch a check off. The keys are `review_required`, `task_gate`, `require_model`, `confirm_before`, `require_scenario_coverage` and `use_queue`.
+
+The boundary rule keeps policy from becoming a workflow engine: a key is admitted only when it is a fact one verb can check, or when it only displays. A key that says what happens next (a step, a retry, a branch, a condition) is refused by `planar config validate`, as is any unknown key. `planar config show --effective` prints each key with the table it came from. Keys, types and defaults: [docs/cli-reference.md](cli-reference.md#the-policy-tables).
+
 ## Project
 
 A project is a registered local working directory — what you'd call a "repo." It is identified by its `root_path` on disk and has a `slug` that is used in scope references (`--scope repo:<slug>`).

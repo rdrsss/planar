@@ -45,6 +45,7 @@ planar_module(engine_config
     templates.cppm
     init.cppm
     queue.cppm
+    policy.cppm
     config.cppm
   SOURCES
     toml.cpp
@@ -52,10 +53,12 @@ planar_module(engine_config
     templates.cpp
     init.cpp
     queue.cpp
+    policy.cpp
     "${_planar_engine_config_templates_generated}"
   DEPENDS
     db
     json_text
+    sha256
     # `templates.cpp`'s validity probe. It used `glz::validate_json`, which
     # ACCEPTS duplicate object keys where `std.json` rejects them — a
     # captured divergence on `templates show`/`validate`/`render` (task

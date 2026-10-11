@@ -376,8 +376,10 @@ Test layers, harness, conventions and rationale:
 3. Put each table's indexes directly after its `create table`.
 4. Put a `-- <table>: ...` comment above every `create table`.
 5. Add CHECK constraints for enum-shaped columns.
-6. Do not write `BEGIN`, `COMMIT` or any `PRAGMA` in the file. The runtime
-   wraps each migration in a transaction.
+6. Do not write `BEGIN`, `COMMIT` or any `PRAGMA` in the file, except the
+   `pragma writable_schema` pair that migrations 00038, 00039 and 00042 use to
+   edit a stored constraint. The runtime wraps each migration in a
+   transaction.
 7. End the up migration with `insert into schema_migrations (version,
    description) values (<N>, '<summary>');` and delete that row in the down
    migration.
