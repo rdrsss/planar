@@ -46,6 +46,7 @@ planar_module(engine_config
     init.cppm
     queue.cppm
     policy.cppm
+    policy_scope.cppm
     config.cppm
   SOURCES
     toml.cpp
@@ -54,6 +55,7 @@ planar_module(engine_config
     init.cpp
     queue.cpp
     policy.cpp
+    policy_scope.cpp
     "${_planar_engine_config_templates_generated}"
   DEPENDS
     db

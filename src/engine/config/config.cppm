@@ -11,6 +11,7 @@ export module planar.engine.config;
 
 export import planar.engine.config.toml;
 export import planar.engine.config.policy;
+export import planar.engine.config.policy_scope;
 export import planar.engine.config.effective;
 export import planar.engine.config.templates_embed;
 export import planar.engine.config.templates;
