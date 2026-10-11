@@ -9,7 +9,7 @@
 ///
 /// D20 (decision 947) puts a verb that composes several layer-2 peers at
 /// layer 3, and that is the whole reason this milestone exists — `unlink`,
-/// `dashboard`, `report`, `skills`, `workspace init` and the ingest
+/// `dashboard`, `report`, `workspace init` and the ingest
 /// apply/import/synthesize trio all blocked on a layer that did not exist.
 /// `annotate add` is the smallest verb in the tree that is genuinely that
 /// shape:
@@ -23,8 +23,7 @@
 /// CMakeLists tries. Composing them is not a convenience here; it is
 /// structurally impossible anywhere below this file. That makes this pair
 /// the honest end-to-end proof that layer 3 does the job it was created
-/// for, in a way `version` and the `skills` leaf (single-bucket,
-/// no database at all) cannot.
+/// for, in a way `version` (single-bucket, no database at all) cannot.
 ///
 /// It also exercises what the other leaves skip: the lazy database
 /// actually opening and migrating, and the `--json` / text split on a

@@ -39,7 +39,6 @@ import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.spec_ingest;
 import planar.cmd.planar.handlers.importer;
 import planar.cmd.planar.handlers.synthesize;
-import planar.cmd.planar.handlers.skills;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.feedback;
 import planar.cmd.planar.handlers.question;
@@ -179,27 +178,6 @@ auto not_implemented_for(std::string_view verb) -> handler_fn {
   };
 }
 
-/// @brief `explore`'s handler (decision 1003; task 6444).
-///
-/// `explore` stays in `unported_paths()` — it is reserved for launching Planar
-/// Explorer, which is a separate project and is not wired up yet — but unlike
-/// every other entry there, its own path is NOT a refusal: it prints the
-/// verb's own help page, exit 0. `--plan` / `--task` / `--scope` are declared
-/// flags on this leaf (see `k_flags_44` in `surface.cpp`) so CLI11 already
-/// parses and discards them before this handler runs; nothing here needs to
-/// read them.
-///
-/// `node` is looked up once, at table-build time, via `root.get_subcommand`
-/// rather than re-walked per invocation.
-/// @param node The `explore` leaf's CLI11 node.
-/// @return A handler that always succeeds, printing the leaf's help text.
-auto explore_fallback(const CLI::App* node) -> handler_fn {
-  return [node](context& ctx, const cliapp::parsed_args&) -> handler_result {
-    ctx.out() << node->help();
-    return {};
-  };
-}
-
 /// @brief `help`'s handler: print the root help page, as `planar --help` does.
 ///
 /// `root` is captured by reference and rendered through its own formatter,
@@ -254,16 +232,12 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("assoc list", handlers::assoc_list);
   table.emplace("assoc remove", handlers::assoc_remove);
   table.emplace("assoc detect", handlers::assoc_detect);
-  // `scope` — the WHOLE five-leaf family, landed at task 6214. Two do work
-  // (`show` reads the cwd-derived read set, `suggest` the project's existing
-  // memberships) and three are plan-153-M5 removal refusals that must NOT be
-  // left at the exit-64 default: the oracle answers exit 2 with a remedy
-  // paragraph, and exit 64 would read as "coming in a later build".
+  // `scope` — the two live leaves, landed at task 6214. `show` reads the
+  // cwd-derived read set and `suggest` the project's existing memberships.
+  // The plan-153-M5 removal stubs `use`, `pop` and `clear` were deleted in
+  // plan 1142 (task 7463) and are not declared at all.
   table.emplace("scope show", handlers::scope_show);
   table.emplace("scope suggest", handlers::scope_suggest);
-  table.emplace("scope use", handlers::scope_use);
-  table.emplace("scope pop", handlers::scope_pop);
-  table.emplace("scope clear", handlers::scope_clear);
   // `search` — the whole verb, landed at task 6090 with
   // `planar.engine.search`. One leaf, and the only one of that task's nine
   // that needed a new layer-2 bucket built from scratch.
@@ -574,10 +548,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("promote", handlers::promote);
   table.emplace("demote", handlers::demote);
   table.emplace("test-spec status", handlers::test_spec_status);
-  // `skills` has no subcommands, so it is a LEAF and needs an entry here
-  // even though the verb is retired and does nothing but render its own
-  // help page. See that handler's header.
-  table.emplace("skills", handlers::skills);
   table.emplace("workspace doctor", handlers::workspace_doctor);
   table.emplace("workspace init", handlers::workspace_init);
   table.emplace("workspace routing show", handlers::workspace_routing_show);
@@ -678,11 +648,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("spec ingest", handlers::spec_ingest);
   table.emplace("import", handlers::import_repo);
   table.emplace("synthesize", handlers::synthesize);
-  // `explore` stays in `unported_paths()` (decision 1003 — the cockpit is
-  // dropped, not deferred) but its own fallback IS implemented: every gate
-  // refusal in the oracle prints the verb's help text, not an error. See
-  // `explore_fallback`'s header just above.
-  table.emplace("explore", explore_fallback(root.get_subcommand("explore")));
   table.emplace("help", help_handler(root));
 
   // Everything above is IMPLEMENTED. Everything below is DECLARED and

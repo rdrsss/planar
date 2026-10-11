@@ -126,16 +126,8 @@ auto help_of(binary_under_test const& bin, std::string const& command) -> ::plan
 
 constexpr std::array<std::string_view, 4> k_no_example_required = {"schema", "completion", "version", "help"};
 
-// Removed-verb stubs: declared so the old spelling gets a refusal (exit 2,
-// "was removed") instead of a parse error. An example would advertise an
-// invocation that cannot work, so none is required or written for them.
-constexpr std::array<std::string_view, 3> k_removed_verb_stubs = {"planar scope use", "planar scope pop", "planar scope clear"};
-
 auto example_required(binary_under_test const& bin, command_docs_row const& row) -> bool {
   if (bin.name != "planar" && bin.name != "planar-agent") {
-    return false;
-  }
-  if (std::ranges::find(k_removed_verb_stubs, row.command) != k_removed_verb_stubs.end()) {
     return false;
   }
   auto const leaf_name = row.command.substr(row.command.rfind(' ') + 1);
@@ -205,18 +197,19 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
         CHECK_FALSE(meaning.empty());
         CHECK(seen.insert(code).second);
       }
-      // Every leaf can succeed, except the removed-verb stubs that always refuse.
+      // Every leaf can succeed.
       if (!row.command.starts_with("planar scope ") || row.command == "planar scope show" ||
           row.command == "planar scope suggest") {
         CHECK(seen.contains(0));
       }
     }
   }
-  // 249 leaves measured 2026-10-10 across the four remaining binaries, after `planar models`,
+  // 244 leaves measured 2026-10-10 across the four remaining binaries, after `planar models`,
   // `planar-agent dispatch`, `planar-agent run`/`context` and `planar-watch run` left the tree
-  // (plan 1142, tasks 7455 and 7458); the floor keeps a margin of four.
+  // (plan 1142, tasks 7455 and 7458), and `planar explore`, `planar skills` and the three
+  // `planar scope` stubs left it (plan 1142, task 7463: 249 -> 244); the floor keeps a margin of four.
   CAPTURE(leaves);
-  CHECK(leaves >= 245);
+  CHECK(leaves >= 240);
 }
 
 TEST_CASE("every planar and planar-agent leaf has an example under its own command path", "[catalog][docs]") {

@@ -772,13 +772,10 @@ constexpr command_class_t m_(std::string_view s) {
   return {s, access_t::mutate};
 }
 
-constexpr std::array<command_class_t, 232> k_command_classes{
+constexpr std::array<command_class_t, 227> k_command_classes{
     m_("planar init"),
     r_("planar scope show"),
     r_("planar scope suggest"),
-    r_("planar scope use"),
-    r_("planar scope pop"),
-    r_("planar scope clear"),
     r_("planar assoc list"),
     m_("planar assoc create"),
     m_("planar assoc add"),
@@ -955,7 +952,6 @@ constexpr std::array<command_class_t, 232> k_command_classes{
     m_("planar local unlink"),
     m_("planar local import"),
     m_("planar local migrate"),
-    r_("planar skills"),
     m_("planar import"),
     m_("planar synthesize"),
     r_("planar version"),
@@ -975,7 +971,6 @@ constexpr std::array<command_class_t, 232> k_command_classes{
     m_("planar run finish"),
     r_("planar run show"),
     r_("planar groups recommend"),
-    m_("planar explore"),
     r_("planar feedback triage list"),
     r_("planar feedback triage show"),
     m_("planar feedback triage set"),
@@ -1016,14 +1011,13 @@ struct capability_exemption_t {
   std::string_view role;
   std::string_view shape;
 };
-constexpr std::array<capability_exemption_t, 7> k_capability_exemptions{
+constexpr std::array<capability_exemption_t, 6> k_capability_exemptions{
     capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar plan create"},
     capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar task add"},
     capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar question add"},
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar skills render"},
 };
 auto is_capability_exemption(std::string const& file, std::string_view role, std::string_view shape) -> bool {
   for (auto const& e : k_capability_exemptions)
