@@ -1308,7 +1308,7 @@ fi
 # Six vendors, nine targets (plan 1104, M2). A vendor is placed only when its
 # presence marker exists; the sources are the staged trees above:
 #   skill   $PLANAR_HOME/skills/planar/            (a directory)
-#   md      $PLANAR_HOME/agents/planar-<role>.md   (the twelve role files only,
+#   md      $PLANAR_HOME/agents/planar-<role>.md   (the eleven role files only,
 #                                                    never the doctrine documents)
 #   toml    $PLANAR_HOME/codex-agents/planar-<role>.toml
 #

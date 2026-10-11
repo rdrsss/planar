@@ -76,23 +76,29 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
   }
 }
 
-/// @brief Whether some level of the parsed chain holds more than one parsed child.
+/// @brief The second parsed child at some level of the parsed chain, if any.
 ///
 /// CLI11 falls a word that names no child of the group it is under through to
 /// the parent, so `config init` (after `init` left the `config` group) parses
 /// `config` AND the root's own `init`. Two parsed children at one level is an
-/// unknown argument, not a choice between them.
+/// unknown argument, not a choice between them. The one exemption is `help`
+/// as the first root child: it takes no positional, so a trailing word such
+/// as `planar help task` parses as a second root child by design and the
+/// documented behaviour is the root page.
 /// @param root The parsed root app.
-/// @return True when a level has a second parsed child.
-auto has_second_parsed_child(CLI::App& root) -> bool {
+/// @return The second parsed child, or null when no level has one.
+auto second_parsed_child(CLI::App& root) -> CLI::App* {
   CLI::App* node = &root;
   while (true) {
     auto const parsed = node->get_subcommands();
-    if (parsed.size() > 1) {
-      return true;
-    }
     if (parsed.empty()) {
-      return false;
+      return nullptr;
+    }
+    if (node == &root && parsed.front()->get_name() == "help") {
+      return nullptr;
+    }
+    if (parsed.size() > 1) {
+      return parsed[1];
     }
     node = parsed.front();
   }
@@ -385,6 +391,7 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("artifact update", handlers::artifact_update);
   table.emplace("artifact link", handlers::artifact_link);
   table.emplace("document project", handlers::document_project);
+  table.emplace("document validate-range", handlers::document_validate_range);
   // The DRAFTING QUARTET, all sixteen arms, landed together at task 6205
   // with the `editflow` port every one of them was blocked on. Four cycles
   // deferred them four times; `engine_workbench` landing left
@@ -690,15 +697,29 @@ auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> r
     return run_outcome{.code = exit_code_for(domain_error_kind::parse_error), .kind = domain_error_kind::parse_error};
   }
 
-  if (has_second_parsed_child(root)) {
+  if (auto const* const extra = second_parsed_child(root); extra != nullptr) {
     // An unknown word under a group is refused as a parse failure, the same line a
     // flag or positional CLI11 cannot place produces (see the ParseError branch).
+    // Only the tokens from the misplaced word onward are unexpected; the words
+    // before it named valid nodes.
+    std::size_t first = argv.size();
+    for (std::size_t i = argv.size(); i-- > 1;) {
+      if (argv[i] == extra->get_name()) {
+        first = i;
+        break;
+      }
+    }
+    if (first == argv.size()) {
+      first = argv.size() - 1;
+    }
     std::string tokens;
-    for (std::size_t i = 1; i < argv.size(); ++i) {
-      tokens += i == 1 ? "" : " ";
+    for (std::size_t i = first; i < argv.size(); ++i) {
+      tokens += i == first ? "" : " ";
       tokens += argv[i];
     }
-    ctx.err() << std::format("error: {}: The following argument was not expected: {}\n", root.get_name(), tokens);
+    auto const plural = first + 1 < argv.size();
+    ctx.err() << std::format("error: {}: The following {} not expected: {}\n", root.get_name(),
+                             plural ? "arguments were" : "argument was", tokens);
     return run_outcome{.code = exit_code_for(domain_error_kind::parse_error), .kind = domain_error_kind::parse_error};
   }
   auto const [node, path] = matched_node(root);
