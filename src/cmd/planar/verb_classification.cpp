@@ -78,13 +78,6 @@ auto classify(std::span<const std::string> path) -> verb_class {
     return verb_class::execution_or_read;
   }
 
-  if (top == "feedback" && path.size() >= 3 && path[1] == "triage") {
-    if (path[2] == "list" || path[2] == "show") {
-      return verb_class::execution_or_read;
-    }
-    return verb_class::planning;
-  }
-
   // Per-domain groups: reads allowed, everything else refused.
   static constexpr std::array<std::string_view, 8> k_entity_groups{
       "plan", "task", "question", "scenario", "decision", "artifact", "association", "assoc",

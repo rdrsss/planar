@@ -45,7 +45,7 @@ flowchart TD
 Two layers are touched by users and agents:
 
 1. **The Planar binaries** — four C++26 executables that share the SQLite engine/runtime graph: `planar` is the operator surface, `planar-agent` owns coordination writes, `planar-watch` is a driver-enforced read-only viewer, and `planar-ext` (decisions 995–1001) owns the operational-plane adapters (Jira, GitHub Issues) with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, enforced by a `sqlite3_set_authorizer` allowlist. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Four-binary architecture](#four-binary-architecture) below. The Zig implementation these binaries were ported from was retained under `zig/` as the port's parity oracle and DELETED at the M10 cutover (decisions 963/982) once its state-differential evidence came back clean; C++26 is now the only implementation.
-2. **The skill and agent layer** — one skill, `planar` (`skills/planar/`), and fourteen role agents (`agents/planar-<role>.md`), placed unchanged into six vendors' directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references; the agents are dispatched by name. Both invoke binary verbs; binary verbs operate on SQLite. See [skill-reference.md](skill-reference.md).
+2. **The skill and agent layer** — one skill, `planar` (`skills/planar/`), and thirteen role agents (`agents/planar-<role>.md`), placed unchanged into six vendors' directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references; the agents are dispatched by name. Both invoke binary verbs; binary verbs operate on SQLite. See [skill-reference.md](skill-reference.md).
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
 
@@ -419,17 +419,10 @@ Both superseded the Zig tree's build-time `tools/gen_migrations.zig` / `tools/ge
 
 ## CLI Binary
 
-Structured feedback triage is operator-plane planning state stored in
-`feedback_triage` (migration 00028). Each row belongs to exactly one task or
-question finding and records severity, disposition, reproduction status,
-optional duplicate target, and a redacted evidence summary. Partial unique
-indexes enforce one row per finding; duplicate targets must remain in the same
-`planar-feedback` plan. Unplanned findings, questions linked to multiple plans,
-and findings on other plans are rejected. Deleting a duplicate target preserves
-dependent triage rows and atomically clears their duplicate reference while
-resetting their disposition to `untriaged`. The `planar feedback triage` read
-leaves are deterministic and `set` uses the normal entity scope guard. It never
-writes agent tables or external systems.
+The structured feedback triage table `feedback_triage` (migration 00028) is kept
+in the schema. The `planar feedback triage` verbs, their engine and the
+`planar-feedback-triager` role were removed in plan 1142 (task 7473); their
+source is preserved at tag `archive/feedback-triage`.
 
 `planar` is a C++26 executable whose entry point builds a command tree against the CLI11-backed wrapper in `src/lib/cliapp/` (see [Source Layout § CLI wrapper](#cli-wrapper-srclibcliapp-over-vendored-cli11) above). Each subcommand domain maps to one entity kind or system surface. Tokenization and value coercion come from vendored CLI11; help rendering, the `schema` catalog, exit-code mapping, and shell completion are Planar's own, preserved across the parser swap because they carry the oracle-pinned parity surface.
 
@@ -740,7 +733,6 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | `sync-reconciler` | large | Compares local and external sync-conflict evidence and coordinates the exact operator-approved whole-entity resolution. |
 | `importer` | large | Translates an existing repository's planning artefacts (specs, ADRs, roadmaps, backlog files, GitHub issues) into Planar's data model without a goal statement. |
 | `synthesizer` | large | Produces fresh planning artifacts for a repo from existing docs + git log + source code via an LLM pass. Sibling of `importer`; shares the Apply machinery but enters from a synthesis contract (code-evidence invariant) rather than transcription. |
-| `feedback-triager` | large | Applies deterministic severity, disposition, reproduction, and duplicate triage to feedback findings. |
 
 ### Phases (orchestrator)
 
@@ -781,9 +773,9 @@ resume and handoff, spec pipeline, knowledge, external sync, local, and the
 feedback contract); it states no verb detail, which comes from each binary's
 `--help` and `schema --command`.
 
-Fourteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, `importer`, `synthesizer`, `feedback-triager`, and `research`) cover orchestration and review, planning and ingestion, external propagation, repo adoption, feedback triage, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `feedback-triager` and `sync-reconciler` coordinate preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
+Thirteen agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, `importer`, `synthesizer`, and `research`) cover orchestration and review, planning and ingestion, external propagation, repo adoption, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `sync-reconciler` coordinates preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
 
-Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`, `agents/planar-feedback-triager.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
+Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-importer.md`, `agents/planar-synthesizer.md`, `agents/planar-sync-reconciler.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
 
 `install.sh`, the update verb and the uninstaller change an installation only
 while they hold its **mutation lock**, a coordination directory beside the

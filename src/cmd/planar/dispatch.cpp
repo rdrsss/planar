@@ -39,7 +39,6 @@ import planar.cmd.planar.handlers.spec_ingest;
 import planar.cmd.planar.handlers.importer;
 import planar.cmd.planar.handlers.synthesize;
 import planar.cmd.planar.handlers.task;
-import planar.cmd.planar.handlers.feedback;
 import planar.cmd.planar.handlers.question;
 import planar.cmd.planar.handlers.decision;
 import planar.cmd.planar.handlers.scenario;
@@ -310,13 +309,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("task touches infer", handlers::task_touches_infer);
   table.emplace("task touches list", handlers::task_touches_list);
   table.emplace("task touches remove", handlers::task_touches_remove);
-  // `feedback triage` — all three leaves, landed at task 6303 with the
-  // `engine.planning.feedback_triage` engine they call. `feedback` and
-  // `feedback triage` are pure GROUPS and stay unregistered so they fall to
-  // the help path at exit 0.
-  table.emplace("feedback triage list", handlers::feedback_triage_list);
-  table.emplace("feedback triage show", handlers::feedback_triage_show);
-  table.emplace("feedback triage set", handlers::feedback_triage_set);
   // `question` — six of ten. Five landed at task 6188 with the `question`
   // engine they call; `question link` joined them at task 6193 with the
   // rest of the entity-link surface. The four still omitted are named

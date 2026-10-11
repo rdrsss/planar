@@ -24,11 +24,11 @@ namespace {
 
 namespace parity = planar::cmd::parity;
 
-/// @brief The fourteen role files, by stem.
+/// @brief The thirteen role files, by stem.
 constexpr std::array k_agent_stems{
-    "planar-coder",       "planar-reviewer", "planar-orchestrator",     "planar-test-coder",      "planar-janitor",
-    "planar-research",    "planar-planner",  "planar-spec-reviewer",    "planar-ingestor",        "planar-importer",
-    "planar-synthesizer", "planar-ext-sync", "planar-feedback-triager", "planar-sync-reconciler",
+    "planar-coder",       "planar-reviewer", "planar-orchestrator",    "planar-test-coder", "planar-janitor",
+    "planar-research",    "planar-planner",  "planar-spec-reviewer",   "planar-ingestor",   "planar-importer",
+    "planar-synthesizer", "planar-ext-sync", "planar-sync-reconciler",
 };
 
 /// @brief The doctrine documents: shared text, not agents, and not renamed.
@@ -163,7 +163,7 @@ auto has_problem(std::vector<std::string> const& problems, std::string_view need
 
 } // namespace
 
-TEST_CASE("agents/ holds exactly fourteen planar-prefixed role files that follow the frontmatter contract",
+TEST_CASE("agents/ holds exactly thirteen planar-prefixed role files that follow the frontmatter contract",
           "[cmd][agent][agents-contract]") {
   std::vector<std::string> agents;
   for (auto const& entry : std::filesystem::directory_iterator(repo("agents"))) {
@@ -185,7 +185,7 @@ TEST_CASE("agents/ holds exactly fourteen planar-prefixed role files that follow
     expected.push_back(std::string{stem} + ".md");
   }
   std::ranges::sort(expected);
-  CHECK(agents.size() == 14);
+  CHECK(agents.size() == 13);
   CHECK(agents == expected);
 }
 
@@ -244,7 +244,7 @@ TEST_CASE("no authored text dispatches an agent by its bare role name", "[cmd][a
   // not matched here.
   std::string const roles =
       "coder|reviewer|orchestrator|test-coder|janitor|research|planner|spec-reviewer|ingestor|importer|synthesizer|ext-sync|"
-      "feedback-triager|sync-reconciler";
+      "sync-reconciler";
   std::regex const dispatch{"(subagent_type|agent_type|agent)[ \\t]*[:=][ \\t]*[`\"']?(" + roles + ")\\b|--agent[ =](" + roles +
                             ")\\b|subagent type `(" + roles + ")`"};
 
@@ -281,4 +281,11 @@ TEST_CASE("queue run still accepts the bare role value", "[cmd][agent][agents-co
   auto const got = parity::run_pinned(std::filesystem::path{PLANAR_CPP_BIN}, args, arena.cpp_root, "bare-role");
   INFO("stdout:\n" << got.out << "stderr:\n" << got.err);
   CHECK(got.code == 0);
+}
+
+TEST_CASE("the removed feedback-triager role has no file under agents/", "[cmd][agent][agents-contract]") {
+  // Plan 1142, task 7473. The triage verbs and the role spec left the tree
+  // together; the role's source is preserved at tag archive/feedback-triage.
+  CHECK_FALSE(std::filesystem::exists(repo("agents/planar-feedback-triager.md")));
+  CHECK_FALSE(std::filesystem::exists(repo("codex-agents/planar-feedback-triager.toml")));
 }

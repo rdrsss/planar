@@ -147,7 +147,7 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
   bool past_verbs = false;
 
   // Set by the first flag. Until then a token past the recorded verb depth
-  // can still name a third-level subcommand (`feedback triage set`), which
+  // can still name a third-level subcommand (`task touches add`), which
   // only widens the chain flags are checked against; it is still counted as
   // a positional and never recorded.
   bool flag_seen = false;

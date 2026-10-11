@@ -52,9 +52,9 @@
 /// a repo write scope never covers the association.
 ///
 /// It used to live in THIS module, with a note saying it would move when a
-/// second family needed it. Task 6303 is that move: `feedback triage set`
-/// calls the same wrapper (`zig/.../handlers/feedback/triage/set.zig` calls
-/// `scope.guardWithMembership` exactly as the sync leaves do), so the helper
+/// second family needed it. Task 6303 is that move: a second family of
+/// guarded verbs calls the same wrapper (the Zig oracle's `scope.guardWithMembership`,
+/// which the sync leaves call exactly as they do), so the helper
 /// now lives in `planar.cmd.planar_ext.scope` next to `resolve_write_scope`,
 /// which every one of its callers already invokes immediately before it.
 /// The alternative — importing one handler family from another — is the

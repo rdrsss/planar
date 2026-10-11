@@ -74,7 +74,7 @@
 ///     `cmd_planar -> cmd_planar_ext` edge — so
 ///     `src/cmd/planar-ext/handlers/shared/ext_adapter_factory.cppm` is a
 ///     deliberate duplicate, not a shared import. Same shape for the
-///     cross-scope guard, which `feedback triage set` still needs:
+///     cross-scope guard, which the `planar-ext sync` verbs still need:
 ///     `src/cmd/planar-ext/scope.cppm` duplicates it.
 ///
 /// ## What a declared-but-unported verb DOES
@@ -371,11 +371,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar run show", "Show a run's full state (header + events)."},
       {"planar groups", "Recommend task slices that minimize closure replication."},
       {"planar groups recommend", "Recommend closure-minimizing task slices for a plan."},
-      {"planar feedback", "Manage structured feedback."},
-      {"planar feedback triage", "Review structured feedback triage."},
-      {"planar feedback triage list", "List triaged findings."},
-      {"planar feedback triage show", "Show a triaged finding."},
-      {"planar feedback triage set", "Set operator-confirmed triage fields."},
       {"planar help", "Print the root help page (same as `planar --help`)."},
   };
   return k_summaries;

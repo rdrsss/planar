@@ -20,7 +20,6 @@ import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.dashboard;
 import planar.cmd.planar.handlers.decision;
-import planar.cmd.planar.handlers.feedback;
 import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.health;
@@ -116,7 +115,6 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_closure(*app);    // 41
   handlers::declare_run(*app);        // 42
   handlers::declare_groups(*app);     // 43
-  handlers::declare_feedback(*app);   // 46
   handlers::declare_help(*app);       // 47
 
   // Help renders the same page it rendered before every bool flag gained

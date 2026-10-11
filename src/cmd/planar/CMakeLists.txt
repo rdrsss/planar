@@ -142,32 +142,6 @@
 #                               layer-2 edge. Same seam
 #                               `agentatomic::task_policy` uses.
 #
-#   feedback triage      LANDED at task 6303, with
-#                        `engine.planning.feedback_triage` (302 Zig lines)
-#                        underneath it. What this family cost was the
-#                        FIXTURE, not the code: `findingPlan` compares the
-#                        finding's plan slug against the literal
-#                        `planar-feedback`, so a plain plan makes every
-#                        interesting arm refuse with `DifferentFeedbackPlan`
-#                        for the same uninteresting reason. A usable arena
-#                        needs an association (a bare registered project
-#                        refuses `plan create` at exit 5), a plan created
-#                        with that exact slug, and — for the QUESTION arm —
-#                        a `derives-from` entity link, which `question add
-#                        --plan` writes for you. `AmbiguousFeedbackPlan` is
-#                        reachable ONLY through a question carrying two such
-#                        links, and is unreachable for a task at all.
-#                        Oracle-captured empty states, unchanged by the port:
-#                          feedback triage list --json  -> exit 0, `[]\n`
-#                          feedback triage list         -> exit 0,
-#                                                          `(no feedback triage)\n`
-#                          feedback triage show 1 --json -> exit 2,
-#                            `error: finding must be task:<id> or question:<id>`
-#                        The `<finding>` positional is an ENTITY REF, not an
-#                        integer, and the id inside it takes Zig's `parseInt`
-#                        spelling: `task:+2` and `task:1_0` both parse,
-#                        `task:2_` does not.
-#
 # NOT landed, with the oracle behavior captured so the port that lands them
 # has bytes to hit:
 #
@@ -539,11 +513,6 @@ planar_binary(planar
     handlers/task/touches_list.cppm
     handlers/task/touches_infer.cppm
     handlers/task/touches_add.cppm
-    handlers/feedback/command.cppm
-    handlers/feedback/triage_set.cppm
-    handlers/feedback/triage_show.cppm
-    handlers/feedback/triage_list.cppm
-    handlers/feedback/triage.cppm
     handlers/question/command.cppm
     handlers/question/link.cppm
     handlers/question/show.cppm
@@ -683,7 +652,6 @@ planar_binary(planar
     handlers/audit/command.cpp
     handlers/dashboard/command.cpp
     handlers/task/command.cpp
-    handlers/feedback/command.cpp
     handlers/question/command.cpp
     handlers/decision/command.cpp
     handlers/scenario/command.cpp

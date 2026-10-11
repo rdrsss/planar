@@ -721,38 +721,12 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                              engine/extsync/CMakeLists.txt. Contradicts
   //                              the plausible reading that "the workbench
   //                              engine is fully ported" settles all three.
-  //   feedback triage list|show|set  The one family with NO engine here at
-  //                              all: `planar.engine.planning.feedback_triage`
-  //                              did not exist in this tree (302 Zig lines,
-  //                              four enums, `parse_ref`/`entity_scope`/
-  //                              `set`/`show`/`list` plus two renderers).
-  //                              The `feedback_triage` TABLE is present
-  //                              (migration 00028), so this was an engine
-  //                              port, not a schema one. Their handlers are
-  //                              9/20/21/27 lines — the smallest in the
-  //                              inventory — which is exactly why sizing
-  //                              this family by its handlers would have been
-  //                              wrong. MOVED at task 6303; see below.
   // `link` also left this list, at task 6301 — see the note further below.
   // `workbench publish` MOVED at task 6335 — its 6299-era probe had sized it
   // against `parent_issue.zig` as a whole, where the real reach was one
   // 36-line SQL function.
   INFO("moved by task 6335: workbench publish");
   CHECK_FALSE(unported.contains("workbench publish"));
-  // TASK 6303 MOVED THE THREE `feedback triage` LEAVES, and the block above
-  // sized them correctly: the engine was the whole job and the handlers were
-  // trivia. What that sizing did NOT capture, and what actually cost the
-  // cycle, is the FIXTURE. `findingPlan` compares the finding's plan slug
-  // against the literal `planar-feedback`, so every arm of this family
-  // refuses with `DifferentFeedbackPlan` against an ordinary plan — and a
-  // bare registered project cannot even create a plan (exit 5 until the
-  // project joins an association). `AmbiguousFeedbackPlan` is reachable only
-  // through a QUESTION carrying two `derives-from` plan links, and is not
-  // reachable for a task at all.
-  for (auto const& leaf : {"feedback triage list", "feedback triage show", "feedback triage set"}) {
-    INFO("moved by task 6303: " << leaf);
-    CHECK_FALSE(unported.contains(leaf));
-  }
   // TASK 6302 MOVED THE TWO WORKBENCH LEAVES the block above had held back,
   // and the reasons it recorded for holding them turned out to be the
   // reasons they were cheap:
@@ -816,10 +790,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // 33 before task 6309, which moved THREE: `plan next` and `ext create`
   // (both named as blocked by task 6298's probe and both sized correctly),
   // plus `link` (task 6301, minus its `--propagate` flag). 33 - 3 = 30.
-  // 28 before task 6303, which moved the three `feedback triage` leaves
-  // (`list`, `show`, `set`) together with the
-  // `engine.planning.feedback_triage` engine that was the whole of what
-  // blocked them. 28 - 3 = 25.
   // 28 before task 6310, which moved TWO — `plan divergence` and `plan
   // recommend-strategy` — in ONE cycle, because they share ~300 lines of
   // loader substrate in the oracle's `strategy.zig` and could not honestly
@@ -1340,7 +1310,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Plan 1142 task 7463 removes `explore`, `skills` and the three `scope` stubs (203 -> 198).
   // Plan 1142 task 7468 removes `document validate-range`, `audit publish-decision`, `assoc detect` and `config init` (198 ->
   // 194). Task 7472 removes `planar report` (194 -> 193).
-  CHECK(leaves.size() == 193);
+  // Task 7473 removes `feedback triage list`, `show` and `set` (193 -> 190).
+  CHECK(leaves.size() == 190);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

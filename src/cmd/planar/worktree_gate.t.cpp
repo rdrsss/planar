@@ -183,12 +183,6 @@ TEST_CASE("classify: task touches splits by leaf", "[cmd][worktree-gate]") {
   CHECK(cls({"task", "touches", "remove"}) == verb_class::planning);
 }
 
-TEST_CASE("classify: feedback triage splits by leaf", "[cmd][worktree-gate]") {
-  CHECK(cls({"feedback", "triage", "list"}) == verb_class::execution_or_read);
-  CHECK(cls({"feedback", "triage", "show"}) == verb_class::execution_or_read);
-  CHECK(cls({"feedback", "triage", "set"}) == verb_class::planning);
-}
-
 TEST_CASE("classify: workbench reads and sync pass, other subverbs are planning", "[cmd][worktree-gate]") {
   for (auto const& v : {"pull", "push", "status", "sync", "resolve"}) {
     INFO(v);

@@ -41,7 +41,7 @@ The lifecycle families, grouped by which binary owns the write:
 
 | Owner | State machines |
 |---|---|
-| `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync, feedback triage, runs (bench) |
+| `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync, runs (bench) |
 | `planar-agent` | agent work claim, agent action, host queue entry |
 | `planar-ext` | external link sync status, sync event |
 | derived (read-only) | health, resume readiness, closeout gate |
@@ -817,22 +817,8 @@ Genuinely active or blocked work can keep `overall = degraded` by design.
 
 ### 5.9 Feedback triage
 
-```mermaid
-flowchart LR
-    T1{{planar-feedback-triager preview, confirm}}
-    T1 --> T2["feedback triage set task:N|question:N<br/>--severity --disposition --reproduction"]
-    T2 --> R1{{issue-report preview, confirm}}
-    R1 --> R2[gh issue create] --> R3[external_links linkback]
-    R3 --> T3[triage set --disposition reported-external]
-```
-
-Triage value sets (`feedback_triage` table): severity `info`, `low`,
-`medium`, `high`, `critical`; disposition `untriaged`,
-`needs-reproduction`, `accepted`, `retained-question`, `dismissed`,
-`reported-external`, `duplicate`; reproduction `not-run`, `reproduced`,
-`not-reproduced`, `inconclusive`. `duplicate` requires `duplicate_of` and
-the chain is cycle-checked. A finding outside the `planar-feedback` plan is
-refused as `different_feedback_plan`.
+Removed in plan 1142 (task 7473). The verbs and the `planar-feedback-triager` role are
+preserved at tag `archive/feedback-triage`; the `feedback_triage` table (migration 00028) stays in the schema.
 
 ---
 
@@ -850,7 +836,7 @@ flowchart TD
     N -->|0| UNSET[unset: project_unassociated]
     N -->|1| ONE[that association]
     N -->|2+| UNSET2[unset: project_multiple_associations]
-    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply, feedback triage set,<br/>audit publish-decision, decision accept/withdraw,<br/>task update, closure compute, sync push/pull/resolve}
+    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply,<br/>audit publish-decision, decision accept/withdraw,<br/>task update, closure compute, sync push/pull/resolve}
     G -->|no| WRITE[write]
     G -->|yes| CMP{operator scope covers entity scope?<br/>assoc:org covers repo:member since decision 1121}
     CMP -->|yes| WRITE
@@ -895,5 +881,4 @@ bug, unless noted.
 | workbench sync | `src/engine/workbench/sync.cppm`, `terminal.cppm` | `00007_workbench.up.sql` |
 | spec ingest | `src/engine/ingest/{parse,diff,coverage,materialize}.cppm` | |
 | external link, sync event | `src/engine/external/sync.cpp`, `link.cpp` | `00006_external.up.sql`, `00027_external_sync_baseline.up.sql` |
-| feedback triage | `src/engine/planning/feedback_triage.cppm` | `00028_feedback_triage.up.sql` |
 | scope | `src/engine/identity/scope.cppm` | |

@@ -280,7 +280,6 @@ table claimed for years — performs **no** scope comparison.
 | Verb | Guards against | Comparison | Call site |
 |------|---------------|-----------|-----------|
 | `spec ingest <plan> --apply` | `plan` | membership-aware | `src/cmd/planar/handlers/spec/command.cpp` |
-| `feedback triage set <id>` | owning entity | membership-aware | `src/cmd/planar/handlers/feedback/command.cpp` |
 | `decision accept <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `decision withdraw <id>` | `decision` | membership-aware | `src/cmd/planar/handlers/decision/command.cpp` |
 | `task update <task-id>` | `task` | membership-aware | `src/cmd/planar/handlers/task/command.cpp` |
@@ -7020,8 +7019,7 @@ A process invoked as `planar-agent` writes only to `agent_work_claims`
 and `agent_actions`, plus `tasks.status`
 inside atomic coordinated operations with status guards, and, in `planar.db`
 itself, `queue_entries` and `queue_history` (through `queue run` and `queue cancel`). It
-never writes plan, decision, question, scenario, artifact, annotation, or
-feedback-triage rows. A vendor hook configured with only `planar-agent` on its
+never writes plan, decision, question, scenario, artifact, or annotation rows. A vendor hook configured with only `planar-agent` on its
 PATH therefore has a bounded planning-state blast radius. `queue run` also
 executes the command its caller names; the queue is a coordination aid, not a
 security boundary.
@@ -7730,7 +7728,6 @@ For quick reference, all documented commands grouped by domain:
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `--help` | `--help` / `-h` on any node (no `help` verb) |
 | `run` | `run start`, `run event`, `run finish`, `run show` |
-| `feedback` | `feedback triage list`, `feedback triage show`, `feedback triage set` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch` and `planar-ext`) |
 | `update` | `update`, `update --check`, `update --version <tag>` |
 ## Domain: `closure`
@@ -7823,77 +7820,3 @@ than triggering a walk.
 **Exit codes:**
 - `0` — rows rendered (including none).
 - `1` — query failure.
-
----
-
-## Domain: `feedback`
-
-Migration `00028_feedback_triage` stores deterministic operator triage for
-findings associated with the plan whose slug is `planar-feedback`. One row
-targets exactly one task or question. Partial unique indexes enforce one row per
-finding; a delete trigger resets dependents of a deleted duplicate target to
-`disposition=untriaged` and clears their duplicate reference without deleting
-their evidence or reproduction state. This is local planning state:
-`feedback triage` never writes agent tables and never posts to an external
-system.
-
-```text
-planar feedback triage list [--plan <id>] [--severity <info|low|medium|high|critical>]
-  [--disposition <value>] [--json]
-planar feedback triage show <task:id|question:id> [--json]
-planar feedback triage set <task:id|question:id> --severity <value>
-  --disposition <value> --reproduction <value>
-  [--duplicate-of <task:id|question:id>] [--evidence <redacted-text>]
-  [--scope <slug>] [--json]
-```
-
-**Scope guard on `feedback triage set`:** it refuses when the operator's
-resolved write scope disagrees with the OWNING entity's, using the
-membership-aware comparison — an operator scope `assoc:<org>` covers a finding
-on a `repo:<member>` task. `list` and `show` are reads and are unguarded. See
-[Cross-scope guard](#cross-scope-guard); `feedback triage set` is one of the
-nine verbs in that table.
-
-Disposition values are `untriaged`, `needs-reproduction`, `accepted`,
-`retained-question`, `dismissed`, `reported-external`, and `duplicate`.
-Severity values are `info`, `low`, `medium`, `high`, and `critical`.
-Reproduction values are `not-run`, `reproduced`, `not-reproduced`, and
-`inconclusive`. `duplicate` requires `--duplicate-of`; all other dispositions
-forbid it. Duplicate targets must already have triage state, belong to the same
-feedback plan, and may not form self-links or cycles. `set` is scope guarded,
-performs only the operator-confirmed local update, and never posts externally.
-
-`list` may filter by numeric plan id, severity, and disposition; it emits an
-ordered JSON array. `show` and `set` emit one object. The stable row fields are:
-
-```json
-{
-  "id": 7,
-  "finding": "task:42",
-  "plan_id": 12,
-  "severity": "high",
-  "disposition": "accepted",
-  "reproduction_status": "reproduced",
-  "duplicate_of": null,
-  "evidence_summary": "redacted retry trace",
-  "created_at": "2026-07-13T12:00:00.000Z",
-  "updated_at": "2026-07-13T12:00:00.000Z"
-}
-```
-
-Only `set` writes, using an upsert keyed by the task/question finding. Tasks
-must have `plan_id` pointing to the feedback plan. Questions must have exactly
-one `derives-from` plan link, and that plan must be the feedback plan. Evidence
-is stored as supplied in `evidence_summary`; callers are responsible for
-passing redacted text.
-
-**Exit codes:**
-
-- `0` — read or operator-confirmed set succeeded; an empty list is `[]`.
-- `1` — finding/triage row not found, missing or ambiguous feedback-plan
-  membership, cross-plan duplicate, duplicate cycle, database, or other
-  operational failure.
-- `2` — malformed finding reference, invalid enum, missing required flag,
-  invalid duplicate flag combination, or other CLI input failure.
-- `5` — `set` refused a cross-scope write; change cwd or pass the matching
-  explicit `--scope`.

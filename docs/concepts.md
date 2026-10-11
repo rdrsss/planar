@@ -168,7 +168,6 @@ verbs and eight call sites, before `audit publish-decision` was removed:
 | Verb | Comparison |
 |------|-----------|
 | `spec ingest <plan> --apply` | membership-aware |
-| `feedback triage set` | membership-aware |
 | `planar-ext sync push <link\|kind:id>` | membership-aware |
 | `planar-ext sync pull <link\|kind:id>` | membership-aware |
 | `planar-ext sync resolve <event-id>` | membership-aware |
@@ -199,7 +198,7 @@ The guard's documented remedy — "pass `--scope <entity-scope>`" — assumes `-
 
 | Meaning | Effect | Verbs |
 |---------|--------|-------|
-| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `decision accept`, `decision withdraw` |
+| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `decision accept`, `decision withdraw` |
 | **Patch field** | **Reassigns the entity's stored scope — it moves the row.** | `plan update`, `artifact update`, `annotate update` |
 | Read filter | Restricts which rows are listed. | the `list` verbs, `search`, `tree`, `dashboard`, `health` |
 | Inert | Accepted, parsed, discarded. | `planar-ext ext propagate` |
@@ -1107,35 +1106,9 @@ pass — surfaces failures with a classification (`test-wrong-author-error` /
 
 The usage report and the introspector role that read this log were removed in plan 1142 (task 7472); their source is preserved at tag `archive/introspection`.
 
-## Feedback triage
-
-Feedback findings remain ordinary task or question rows on a feedback plan;
-their review state is kept separately in `feedback_triage`. One row targets
-exactly one task or question and records severity
-(`info|low|medium|high|critical`), disposition, reproduction status, optional
-same-plan duplicate target, and redacted evidence. External issue identity
-continues to live in `external_links`, so local triage never predicts or
-duplicates publication state.
-
-The `planar-feedback-triager` agent is preview-first. It may
-recommend `duplicate`, `accepted`, `needs-reproduction`,
-`retained-question`, `dismissed`, or—only after verified publication—
-`reported-external`. The caller shows the proposed entity, relationship, and
-`planar feedback triage set` changes and waits for explicit row-level approval.
-An initial `--apply` request is not confirmation. Optional external reporting
-then enters the report-an-issue procedure, which shows the complete issue body and requires
-a second approval. Declining that gate posts nothing and leaves completed
-local triage intact.
-
-Multi-finding application is not atomic across independent findings. Verified
-completed rows remain applied if another target fails; the operator receives
-`outcome=partial`, action counts, and an idempotent inspection or retry command
-for each failure.
-
-**SQLite tables:** `feedback_triage`, plus existing finding entities and
-`external_links`. **Primary entry points:** `planar feedback triage
-list|show|set`, and
-[`agents/planar-feedback-triager.md`](../agents/planar-feedback-triager.md).
+Structured feedback triage was removed in plan 1142 (task 7473). Its verbs and the
+`planar-feedback-triager` role are preserved at tag `archive/feedback-triage`; the `feedback_triage`
+table (migration 00028) stays in the schema.
 
 ---
 

@@ -366,6 +366,32 @@ TEST_CASE("the removed planar report verb exits 2 and the schema catalog omits i
   CHECK_FALSE(catalog.out.contains(R"("path":["report")"));
 }
 
+TEST_CASE("the removed feedback triage verbs exit 2 and the schema catalog omits them", "[cmd][parity][cli-surface]") {
+  // Plan 1142, task 7473. `planar feedback` had one child, `triage`, with
+  // three leaves (list, show, set). Triage moved to the archive/feedback-triage
+  // tag with its engine and its role agent; the feedback_triage table stays.
+  // Driven against the shipped binary the way an operator would: the group is
+  // an unknown subcommand, and no catalog entry still names it.
+  auto const space = make_arena("feedbackgone");
+  auto const run   = [&](std::vector<std::string> args, std::string_view tag) {
+    return run_pinned(cpp_bin(), args, space.cpp_root, tag);
+  };
+
+  for (auto const& leaf : {"list", "show", "set"}) {
+    auto const gone = run({"feedback", "triage", leaf}, std::string{"fgone"} + leaf);
+    CAPTURE(leaf);
+    CHECK(gone.code == 2);
+    CHECK(gone.out.empty());
+    CHECK(gone.err == std::string{"error: planar: The following arguments were not expected: feedback triage "} + leaf + "\n");
+  }
+
+  auto const catalog = run({"schema"}, "fgoneschema");
+  REQUIRE(catalog.code == 0);
+  CHECK_FALSE(catalog.out.contains(R"("command":"planar feedback)"));
+  CHECK_FALSE(catalog.out.contains(R"("path":["feedback")"));
+  CHECK_FALSE(catalog.out.contains(R"("feedback triage)"));
+}
+
 TEST_CASE("the removed explore, skills and scope use|pop|clear verbs exit 2 and the schema catalog omits them",
           "[cmd][parity][cli-surface]") {
   // Plan 1142, task 7463. These five were deleted outright: `explore` was a
@@ -897,10 +923,13 @@ TEST_CASE("every ported command declares what it should, self-consistently", "[c
   // Task 7205 adds the `help` leaf.
   // Task 7319 adds the `update` leaf.
   // Task 7453 removes the four `workflow` entries (257 -> 253).
+  // Task 7473 removes `feedback`, `feedback triage` and its three leaves. Tasks 7468 and 7472 had
+  // already removed five entries (232 -> 227) without re-pinning this count; re-measured from the
+  // built binary after this task, it is 222.
   // Task 7463 removes `explore`, `skills` and the three `scope` stubs. The
   // pinned catalog below held 237 entries before that task, not 253, so this
   // count was already stale at HEAD; re-measured from the built binary, it is 232.
-  CHECK(mine->size() == 232);
+  CHECK(mine->size() == 222);
   CHECK(mine->contains("planar help"));
   CHECK(mine->contains("planar update"));
   CHECK(mine->contains("planar document"));

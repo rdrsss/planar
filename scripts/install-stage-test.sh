@@ -74,7 +74,7 @@ run_install() {
     "$repo/install.sh" --build-dir "$home/build" "$@" >"$home/out" 2>"$home/err"
 }
 
-ROLES=(coder ext-sync feedback-triager importer ingestor janitor orchestrator planner research reviewer spec-reviewer sync-reconciler synthesizer test-coder)
+ROLES=(coder ext-sync importer ingestor janitor orchestrator planner research reviewer spec-reviewer sync-reconciler synthesizer test-coder)
 DOCS=(cross-scope-writes doctrine methodology)
 
 check_staged() {
@@ -86,7 +86,7 @@ check_staged() {
   done
   [[ "$(find "$prefix/skills/planar/" -type f | grep -c .)" == "$(find "$repo/skills/planar/" -type f | grep -c .)" ]] \
     || fail "the staged skill has a different file count than the checkout"
-  [[ "${#ROLES[@]}" == 14 && "${#DOCS[@]}" == 3 ]] || fail "role/doc fixtures are not 14 + 3"
+  [[ "${#ROLES[@]}" == 13 && "${#DOCS[@]}" == 3 ]] || fail "role/doc fixtures are not 13 + 3"
   for r in "${ROLES[@]}"; do
     cmp -s "$repo/agents/planar-$r.md" "$prefix/agents/planar-$r.md" || fail "agents/planar-$r.md was not staged"
     [[ -f "$prefix/codex-agents/planar-$r.toml" ]] || fail "codex-agents/planar-$r.toml was not rendered"
@@ -109,7 +109,7 @@ PY
   for d in "${DOCS[@]}"; do
     cmp -s "$repo/agents/$d.md" "$prefix/agents/$d.md" || fail "agents/$d.md was not staged"
   done
-  [[ "$(find "$prefix/codex-agents" -type f | grep -c .)" == 14 ]] || fail "codex-agents/ does not hold exactly the fourteen TOML files"
+  [[ "$(find "$prefix/codex-agents" -type f | grep -c .)" == 13 ]] || fail "codex-agents/ does not hold exactly the thirteen TOML files"
   [[ ! -e "$prefix/codex-agents.new" ]] || fail "the staging temp directory was left behind"
   # Nothing renders into agents/<vendor>/ any more, and the TOML never lands
   # under agents/codex/.
@@ -262,7 +262,7 @@ install_manifest_record_staged "$TMP/h1/.planar" "$REPO"
 install_manifest_write "$TMP/staged-manifest.json"
 grep -Fq '"projections": [' "$TMP/staged-manifest.json" || fail "the manifest lost its projections array"
 [[ "${#INSTALL_MANIFEST_ROW_VENDOR[@]}" == 0 ]] || fail "staged paths were recorded as projection rows"
-[[ "${#INSTALL_MANIFEST_EXTRAS[@]}" == $(( $(find "$REPO/skills/planar" -type f | grep -c .) + 14 + 3 + 14 )) ]] \
+[[ "${#INSTALL_MANIFEST_EXTRAS[@]}" == $(( $(find "$REPO/skills/planar" -type f | grep -c .) + 13 + 3 + 13 )) ]] \
   || fail "unexpected extras count: ${#INSTALL_MANIFEST_EXTRAS[@]}"
 
 
@@ -421,7 +421,7 @@ agent_roots = {  # vendor -> (directory, suffix)
     'opencode': ('/.config/opencode/agents', '.md')}
 want = {}  # installed path -> (vendor label, kind, staged)
 roles = sorted(f[:-3] for f in os.listdir(home + '/.planar/agents') if f.startswith('planar-'))
-assert len(roles) == 14, roles
+assert len(roles) == 13, roles
 skill_root = {'claude': '/.claude/skills', 'antigravity': '/.gemini/antigravity-cli/skills'}
 for v in found:
     if v in skill_root:
@@ -545,7 +545,7 @@ mark 23
 # rows read fresh by construction.
 [[ -L "$TMP/h12/.claude/skills/planar" && "$(readlink "$TMP/h12/.claude/skills/planar")" == "$TMP/h12/.planar/skills/planar" ]] \
   || fail "the link-mode skill is not a symlink into the staged tree"
-[[ "$(freshness "$TMP/h12")" == "current fresh 87 87 0 0" ]] || fail "link install is not fresh in health: $(freshness "$TMP/h12")"
+[[ "$(freshness "$TMP/h12")" == "current fresh 81 81 0 0" ]] || fail "link install is not fresh in health: $(freshness "$TMP/h12")"
 
 else
   skip_health 23
@@ -554,10 +554,10 @@ fi
 if [[ "$HEALTH" == 1 ]]; then
 mark 24
 # 24. An absent vendor produces no row: only ~/.claude/ left on a host whose
-# manifest names all six leaves the two Claude roots (1 skill + 14 agents).
+# manifest names all six leaves the two Claude roots (1 skill + 13 agents).
 for d in .codex .copilot .gemini .config; do rm -rf "${TMP:?}/h8/$d"; done
-[[ "$(freshness "$TMP/h8")" == "current fresh 16 16 0 0" ]] || fail "absent vendors still produced rows: $(freshness "$TMP/h8")"
-[[ "$(freshness "$TMP/h9")" == "current fresh 16 16 0 0" ]] || fail "the claude-only install is not 16 fresh rows: $(freshness "$TMP/h9")"
+[[ "$(freshness "$TMP/h8")" == "current fresh 14 14 0 0" ]] || fail "absent vendors still produced rows: $(freshness "$TMP/h8")"
+[[ "$(freshness "$TMP/h9")" == "current fresh 14 14 0 0" ]] || fail "the claude-only install is not 14 fresh rows: $(freshness "$TMP/h9")"
 
 else
   skip_health 24
@@ -641,7 +641,7 @@ fi
 # switch that replaces the prior form.
 # ---------------------------------------------------------------------------
 
-NTARGETS=87   # 3 skill directories + 14 agents x 6 agent targets, all six vendors
+NTARGETS=81   # 3 skill directories + 13 agents x 6 agent targets, all six vendors
 
 # summary_has HOME TEXT -- the one summary line the placement step prints.
 summary_has() { grep -Fq "  $2" "$1/out" || fail "the placement summary lacks '$2': $(grep -E 'vendor target|no changes' "$1/out")"; }
@@ -774,7 +774,7 @@ run_install "$REPO" "$TMP/h21" || fail "copy install failed: $(cat "$TMP/h21/err
 placed_set "$TMP/h21" > "$TMP/set21-copy"
 grep -Fq '"install_mode": "copy"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest does not record copy mode"
 run_install "$REPO" "$TMP/h21" --link || fail "copy -> link switch failed: $(cat "$TMP/h21/err")"
-summary_has "$TMP/h21" "placed 0, replaced $((NTARGETS - 14)), unchanged 14 of $NTARGETS vendor target(s) (link)"
+summary_has "$TMP/h21" "placed 0, replaced $((NTARGETS - 13)), unchanged 13 of $NTARGETS vendor target(s) (link)"
 placed_set "$TMP/h21" > "$TMP/set21-link"
 cmp -s "$TMP/set21-copy" "$TMP/set21-link" || fail "the path set changed on the switch to link mode"
 grep -Fq '"install_mode": "link"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest still records copy mode after the switch"
@@ -782,7 +782,7 @@ grep -Fq '"install_mode": "link"' "$TMP/h21/.planar/install-manifest.json" || fa
   || fail "link mode left a regular file where a link belongs"
 [[ -L "$TMP/h21/.agents/skills/planar" && -L "$TMP/h21/.claude/agents/planar-coder.md" ]] || fail "the switch to link did not link"
 run_install "$REPO" "$TMP/h21" || fail "link -> copy switch failed: $(cat "$TMP/h21/err")"
-summary_has "$TMP/h21" "placed 0, replaced $((NTARGETS - 14)), unchanged 14 of $NTARGETS vendor target(s) (copy)"
+summary_has "$TMP/h21" "placed 0, replaced $((NTARGETS - 13)), unchanged 13 of $NTARGETS vendor target(s) (copy)"
 placed_set "$TMP/h21" | cmp -s - "$TMP/set21-copy" || fail "the path set changed on the switch back to copy"
 grep -Fq '"install_mode": "copy"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest still records link mode after the switch back"
 [[ -z "$(find "$TMP/h21/.claude" "$TMP/h21/.codex" "$TMP/h21/.copilot" "$TMP/h21/.gemini" "$TMP/h21/.agents" -type l)" ]] \
@@ -799,15 +799,15 @@ mark 22
 # 84 agent files, every one fresh. One byte changed in the installed Claude
 # skill flips exactly that row to stale and degrades health; restoring it
 # clears it.
-[[ "$(freshness "$TMP/h21")" == "current fresh 87 87 0 0" ]] || fail "all-vendor copy install is not fresh in health: $(freshness "$TMP/h21")"
+[[ "$(freshness "$TMP/h21")" == "current fresh 81 81 0 0" ]] || fail "all-vendor copy install is not fresh in health: $(freshness "$TMP/h21")"
 SKILLMD="$TMP/h21/.claude/skills/planar/SKILL.md"
 cp "$SKILLMD" "$TMP/skill.bak"
 printf 'x' >> "$SKILLMD"
-[[ "$(freshness "$TMP/h21")" == "current degraded 87 86 1 0" ]] || fail "one drifted byte did not flip exactly one row: $(freshness "$TMP/h21")"
+[[ "$(freshness "$TMP/h21")" == "current degraded 81 80 1 0" ]] || fail "one drifted byte did not flip exactly one row: $(freshness "$TMP/h21")"
 cp "$TMP/skill.bak" "$SKILLMD"
-[[ "$(freshness "$TMP/h21")" == "current fresh 87 87 0 0" ]] || fail "restoring the byte did not clear the drift: $(freshness "$TMP/h21")"
+[[ "$(freshness "$TMP/h21")" == "current fresh 81 81 0 0" ]] || fail "restoring the byte did not clear the drift: $(freshness "$TMP/h21")"
 rm -rf "$TMP/h21/.agents/skills/planar"
-[[ "$(freshness "$TMP/h21")" == "current degraded 87 86 0 1" ]] || fail "a removed skill directory is not one missing row: $(freshness "$TMP/h21")"
+[[ "$(freshness "$TMP/h21")" == "current degraded 81 80 0 1" ]] || fail "a removed skill directory is not one missing row: $(freshness "$TMP/h21")"
 
 else
   skip_health 22

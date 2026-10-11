@@ -584,7 +584,7 @@ auto entity_scope_slug(db::connection& conn, const engine::external::link::ext_l
 }
 
 // `guard_with_membership` moved to `planar.cmd.planar_ext.scope` at task 6303,
-// when `feedback triage set` became its second caller family. The two call
+// when a second caller family needed it. The two call
 // sites below are unchanged; this TU already imports that module for
 // `resolve_write_scope`.
 

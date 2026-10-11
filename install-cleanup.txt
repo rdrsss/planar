@@ -74,3 +74,8 @@ agents/opencode/
 # introspection engines left the tree with it, so a re-install over a tree
 # from an older release removes the staged role spec.
 agents/planar-introspector.md
+
+# Retired planar-feedback-triager role (plan 1142, task 7473): the `planar
+# feedback triage` verbs and their engine left the tree with it, so a re-install
+# over a tree from an older release removes the staged role spec.
+agents/planar-feedback-triager.md
