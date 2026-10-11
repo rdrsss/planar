@@ -34,7 +34,7 @@ Given a feature anchor plan id, reads `tech-spec.md` and `roadmap.md` from the w
 - **Child plans**: one per H2 milestone in `roadmap.md`, each with `parent_plan_id = <anchor>` and linked via `entity_links(relationship='derives-from')`.
 - **Tasks**: one per bulleted work item, with body containing acceptance criteria, any `touches` annotation encoded as repository scope lines, and `next_action` pre-populated.
 - **Decisions**: one per H3 heading in the `## Decisions` section of `tech-spec.md`, each linked via `entity_links(relationship='derives-from')` to the anchor plan.
-- **Test scenarios** (draft): auto-drafted for non-trivial tasks (tasks whose body contains ≥2 bullet lines), linked via `entity_links(relationship='verifies')`.
+- **Test scenarios** (draft): one auto-drafted per newly added task that has no authored coverage, linked via `entity_links(relationship='verifies')`.
 - **Questions**: one per H3 heading in `## Open Questions` of `tech-spec.md`. When an H3's body starts with a `Resolution: <answer>` marker (case-sensitive `Resolution:` as the first non-blank token; single-line or multi-line), the ingestor additionally creates a `decisions` row carrying that resolution and flips the question to `answered` with the resolution text as the answer.
 - **Touches links**: `entity_links(relationship='touches', from=task, to=repo)` rows derived from `[touches: slug1, slug2]` annotations in roadmap bullets.
 - **Anchor plan status flip**: from `draft` → `active` on the first successful `--apply` run. Idempotent on subsequent runs (status already `active`).
@@ -137,9 +137,9 @@ Re-running the ingestor on an unchanged workbench tree is a no-op: preview repor
 
 ## Non-trivial task heuristic (I-5)
 
-A task is considered **non-trivial** when its rendered body contains two or more lines starting with `- ` or `* `. In practice, tasks built from work items that have one or more `[touches: ...]` repos produce a body with both an acceptance-criteria bullet and per-repo `touches:` lines, giving ≥2 bullets. These tasks receive an auto-drafted test scenario.
+Every newly added task without authored coverage receives an auto-drafted test scenario, whatever its body holds. Generated task bodies carry only the `## Acceptance Criteria` section and, when the work item names repos, the `## Repository Scope` section; ingest no longer appends a `## Required validation` section. A stored body in the earlier generated shape, which still has that section, counts as unchanged on re-ingest and is never rewritten.
 
-This heuristic is intentionally simple and deterministic. The user can always add or remove scenarios manually via `planar scenario add`.
+The user can always add or remove scenarios manually via `planar scenario add`.
 
 ## Status reporting
 

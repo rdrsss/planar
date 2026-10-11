@@ -613,7 +613,9 @@ flowchart LR
 ```
 
 Preservation rules: a task body is overwritten only when it still
-byte-matches a Planar-generated body; a slug is back-filled only when
+byte-matches a Planar-generated body. A body in the earlier generated shape,
+which ended with a `## Required validation` section, counts as unchanged and is
+never rewritten; a human-edited one is operator work. A slug is back-filled only when
 empty; provenance citations are always restaged; a colliding slug is
 warned in preview and fails apply with `SlugConflict` because `tasks.slug`
 is globally unique. Ingest does not touch the workbench filesystem; run

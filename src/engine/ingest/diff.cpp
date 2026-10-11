@@ -16,6 +16,34 @@ import planar.engine.ingest.parse;
 namespace planar::engine::ingest::diff {
 namespace {
 
+/// @brief The `## Required validation` section older builds appended to every generated body.
+///
+/// Retained ONLY so a body written by those builds still compares equal to the
+/// current generated body. Matched as exact text, never as a prefix, so an
+/// operator's edit to the section makes the body operator work again.
+constexpr std::string_view previous_validation_section =
+    "\n## Required validation\n\n- Run the authored test-spec scenarios covering this task.\n";
+
+/// @brief Reproduces the body the previous build generated for `item`: the current body plus the validation section.
+/// @param item The roadmap work item.
+/// @return The previous-shaped generated body.
+auto build_previous_task_body(const parse::work_item& item) -> std::string {
+  auto out = build_task_body(item);
+  out.append(previous_validation_section);
+  return out;
+}
+
+/// @brief Whether `stored` is the current or the previous generated body for `item`.
+///
+/// A body that matches either is unchanged by this build: its content is
+/// generated and the re-ingest proposes nothing for it.
+/// @param stored The body currently in the database.
+/// @param item The roadmap work item the task derives from.
+/// @return `true` when `stored` equals either generated shape exactly.
+auto is_current_task_body(std::string_view stored, const parse::work_item& item) -> bool {
+  return stored == build_task_body(item) || stored == build_previous_task_body(item);
+}
+
 /// @brief One stored child plan considered for reconciliation.
 struct db_child_plan {
   std::int64_t id_ = 0;
@@ -410,11 +438,6 @@ auto build_task_body(const parse::work_item& item) -> std::string {
       out.push_back('\n');
     }
   }
-  // Routing reads this section directly from the task body. Keeping it in
-  // the generated projection gives new tasks an explicit validation contract
-  // and lets a reviewed re-ingest repair unchanged legacy generated tasks,
-  // while `is_generated_task_body` protects operator-authored replacements.
-  out.append("\n## Required validation\n\n- Run the authored test-spec scenarios covering this task.\n");
   return out;
 }
 
@@ -439,14 +462,7 @@ auto build_task_next_action(const parse::work_item& item, std::size_t milestone_
 }
 
 auto is_generated_task_body(std::string_view stored, const parse::work_item& item) -> bool {
-  if (stored == build_task_body(item) || stored == build_legacy_task_body(item))
-    return true;
-  auto                       prior = build_task_body(item);
-  constexpr std::string_view validation =
-      "\n## Required validation\n\n- Run the authored test-spec scenarios covering this task.\n";
-  if (prior.ends_with(validation))
-    prior.resize(prior.size() - validation.size());
-  return stored == prior;
+  return is_current_task_body(stored, item) || stored == build_legacy_task_body(item);
 }
 
 auto build_scenario_body(const parse::scenario& s) -> std::string {
@@ -559,8 +575,10 @@ auto compute(db::connection& conn, std::int64_t anchor_plan_id, std::span<const 
         // "Generated" is decided by byte-comparison against every shipped
         // projection, so an operator's enriched body is never overwritten and
         // a body written before the legacy suffix was dropped still upgrades.
+        // A body in the previous shape (validation section included) counts as
+        // unchanged, so re-ingest never rewrites it.
         const bool generated           = is_generated_task_body(existing_task->body_, item);
-        const bool body_changed        = generated && existing_task->body_ != task_body;
+        const bool body_changed        = generated && !is_current_task_body(existing_task->body_, item);
         const bool slug_needs_backfill = !item.slug_.empty() && existing_task->slug_.empty();
         if (!body_changed && !slug_needs_backfill) {
           continue;
@@ -568,8 +586,8 @@ auto compute(db::connection& conn, std::int64_t anchor_plan_id, std::span<const 
         entry.tasks_.push_back(
             {.op_    = op::update,
              .title_ = wi_title,
-             // Empty body means "the operator enriched this; leave it alone".
-             .body_    = generated ? task_body : std::string{},
+             // Empty body means "leave it alone": an enriched or unchanged body is never rewritten.
+             .body_    = body_changed ? task_body : std::string{},
              .touches_ = item.touches_,
              .depends_ = item.depends_,
              .slug_    = item.slug_,
