@@ -25,7 +25,7 @@
 // use `system_process_probe()` against children this file forks and reaps
 // itself, which proves the wiring to `planar.process.identity`.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 #include <cerrno>

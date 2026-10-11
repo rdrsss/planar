@@ -6,7 +6,7 @@
 // pruned successor, the configuration being asked for only when needed, and
 // the read-only guarantee at the connection.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 #include <signal.h>
 

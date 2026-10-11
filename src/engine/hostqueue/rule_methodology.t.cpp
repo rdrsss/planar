@@ -9,7 +9,7 @@
 // extraction helper is tested against synthetic documents so that a missing
 // section or a wrong boundary fails the case instead of passing vacuously.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 import std;

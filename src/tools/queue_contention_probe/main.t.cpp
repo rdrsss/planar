@@ -17,7 +17,7 @@
 // Short runs use the probe's own duration and hold flags; the full-length
 // defaults are the spec's.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 #include <sys/wait.h> // WIFEXITED/WEXITSTATUS
 #include <unistd.h>

@@ -29,7 +29,7 @@
 // trigger that makes a write fail, which is fault injection rather than
 // seeding.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 #include <cerrno>

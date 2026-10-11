@@ -54,8 +54,7 @@ auto extract_impl(db::connection& conn, std::int64_t task_id) -> std::expected<r
 /// inline definition here: passes), independent of and in addition to the
 /// name-collision issue this function's `extract_impl` -> `extract` split
 /// also worked around (`run` collided with three unrelated
-/// `planar::cmd::*::run` functions elsewhere in the tree; matching precedent
-/// in `core/version.cppm`, which is also a single-file inline export).
+/// `planar::cmd::*::run` functions elsewhere in the tree).
 /// `extract_impl` carries no doc comment of its own: it is not exported, and
 /// Doxyfile.lint's `EXTRACT_ALL = NO` does not require one.
 export auto extract(db::connection& conn, std::int64_t task_id) -> std::expected<result, error> {

@@ -15,7 +15,7 @@
 // cancellation through `begin_terminate` records the canceller on the entry
 // (task 7047 replaced the raw UPDATEs that stood in for both).
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 import std;

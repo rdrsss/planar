@@ -2,8 +2,7 @@
 /// @brief Layer-1 SHA-256 digest primitive (FIPS 180-4).
 ///
 /// Declaration and implementation are both in this interface unit rather
-/// than split into a companion `sha256.cpp`, matching `core/version.cppm`'s
-/// precedent for a small, dependency-free module: doxygen 1.18.0's C++20
+/// than split into a companion `sha256.cpp`: doxygen 1.18.0's C++20
 /// modules parser fails to associate a declaration's doc comment with the
 /// merged declaration+definition entity when the two live in separate
 /// files for a module this small (confirmed by isolated repro — a

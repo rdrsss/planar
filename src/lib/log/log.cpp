@@ -46,8 +46,7 @@ auto to_spdlog_level(level lvl) -> spdlog::level::level_enum {
 
 /// @brief One structured JSON log record. Deliberately NOT in an
 /// anonymous namespace: Glaze's compile-time reflection needs external
-/// linkage on a reflected type (see src/lib/core/vendor_probe.cpp's file
-/// comment for the same constraint on its probe payload type) —
+/// linkage on a reflected type —
 /// an anonymous-namespace type fails to compile under glz::write_json.
 ///
 /// `ts_ms` is milliseconds-since-epoch rather than a formatted ISO8601
