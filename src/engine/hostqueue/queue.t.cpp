@@ -485,7 +485,7 @@ TEST_CASE("a planar.db ahead of the binary with the queue marker unchanged accep
                 ->execute(std::format("insert into schema_migrations (version, description) "
                                       "values ({}, 'seeded ahead by the test');"
                                       "insert into queue_schema (version, compat, description) "
-                                      "values (2, 1, 'seeded ahead by the test')",
+                                      "select max(version) + 1, 1, 'seeded ahead by the test' from queue_schema",
                                       binary_head + 1))
                 .has_value());
   }

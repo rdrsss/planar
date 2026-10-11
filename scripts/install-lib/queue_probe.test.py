@@ -261,7 +261,8 @@ class RealBinaries(NoPython):
         self.assertIn("queue_schema_foreign", got.stdout)
 
         def incompatible(con):
-            con.execute("insert into queue_schema (version, compat, description) values (2, 2, 'needs a newer binary')")
+            con.execute("insert into queue_schema (version, compat, description) "
+                        "select max(version) + 1, max(version) + 1, 'needs a newer binary' from queue_schema")
         prefix, _ = self.prefix_with_db(incompatible)
         got = self.call(prefix, "planar_db_probe")
         self.assertIn("db state: fault", got.stdout)

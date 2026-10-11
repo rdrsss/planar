@@ -48,7 +48,7 @@ namespace planar::engine::hostqueue {
 /// the migration chain it embeds. A test pins the two together, so a marker
 /// migration that forgets to bump this fails the build's own suite rather
 /// than making the binary refuse its own head database.
-export constexpr std::uint32_t k_queue_schema_version = 1;
+export constexpr std::uint32_t k_queue_schema_version = 2;
 
 /// @brief Every `queue_entries` column this binary names, in table order.
 /// Hand-maintained: a test asserts it equals `pragma table_info` at head.
@@ -82,10 +82,10 @@ export constexpr std::array<std::string_view, 25> k_queue_entries_columns{
 
 /// @brief Every `queue_history` column this binary names, in table order.
 /// Hand-maintained: a test asserts it equals `pragma table_info` at head.
-export constexpr std::array<std::string_view, 21> k_queue_history_columns{
-    "seq",         "outcome",    "exit_code", "signal",    "successor_seq", "cancelled_by", "nested",
-    "parent_seq",  "cwd",        "argv",      "label",     "vendor",        "role",         "log_path",
-    "enqueued_at", "started_at", "ended_at",  "waited_ms", "ran_ms",        "run_limit_ms", "wait_limit_ms",
+export constexpr std::array<std::string_view, 22> k_queue_history_columns{
+    "seq",      "outcome",   "exit_code", "signal",       "successor_seq", "cancelled_by", "nested",      "parent_seq",
+    "cwd",      "argv",      "label",     "vendor",       "role",          "log_path",     "enqueued_at", "started_at",
+    "ended_at", "waited_ms", "ran_ms",    "run_limit_ms", "wait_limit_ms", "claim_token",
 };
 
 /// @brief The queue's protocol constants, as `name=value` strings, fed into

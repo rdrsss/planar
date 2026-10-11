@@ -86,22 +86,25 @@ inline auto head_version() -> std::uint32_t {
 }
 
 /// @brief Ahead and compatible: head plus one extra `schema_migrations` row
-/// above it, and a queue marker that keeps `compat` at 1 (a newer build's
-/// nullable column).
+/// above it, and a queue marker one version above head that keeps `compat`
+/// at 1 (a newer build's nullable column).
 /// @param path The database file.
 inline void ahead_store(const std::filesystem::path& path) {
   head_store(path);
   exec(path, "alter table queue_history add column note text");
-  exec(path, "insert into queue_schema (version, compat, description) values (2, 1, 'adds queue_history.note')");
+  exec(path, "insert into queue_schema (version, compat, description) "
+             "select max(version) + 1, 1, 'adds queue_history.note' from queue_schema");
   exec(path, std::format("insert into schema_migrations (version, description) values ({}, 'newer')", head_version() + 1));
 }
 
-/// @brief Ahead with a queue marker whose `compat` is above this binary's
-/// queue version: the queue tables need a newer build.
+/// @brief Ahead with a queue marker one version above head whose `compat` is
+/// that version, above this binary's queue version: the queue tables need a
+/// newer build.
 /// @param path The database file.
 inline void incompatible_ahead_store(const std::filesystem::path& path) {
   head_store(path);
-  exec(path, "insert into queue_schema (version, compat, description) values (2, 2, 'needs a newer binary')");
+  exec(path, "insert into queue_schema (version, compat, description) "
+             "select max(version) + 1, max(version) + 1, 'needs a newer binary' from queue_schema");
   exec(path, std::format("insert into schema_migrations (version, description) values ({}, 'newer')", head_version() + 1));
 }
 
@@ -134,7 +137,7 @@ inline void behind_store(const std::filesystem::path& path) {
 /// @param path The file.
 /// @return Its contents, empty when absent.
 inline auto file_bytes(const std::filesystem::path& path) -> std::string {
-  std::ifstream     in(path, std::ios::binary);
+  std::ifstream      in(path, std::ios::binary);
   std::ostringstream buffer;
   buffer << in.rdbuf();
   return buffer.str();
@@ -172,7 +175,6 @@ inline auto queue_row_count(const std::filesystem::path& path) -> std::int64_t {
   must("step count", stepped.has_value() && *stepped == planar::db::step_result::row);
   return stmt->column_int64(0);
 }
-
 
 /// @brief Whether the database at `path` was never opened by a connection in
 /// this case. A connection to a WAL-mode database leaves a `-wal` and `-shm`

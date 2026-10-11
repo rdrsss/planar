@@ -839,7 +839,7 @@ at `~/.planar.lock/`):
 │   ├── 00001_foundation.down.sql
 │   ├── 00002_planning.up.sql
 │   ├── 00002_planning.down.sql
-│   └── … (through 00041_contextual_annotation_threads)
+│   └── … (through 00042_review_gate_policy)
 ├── agents/                             # vendor-neutral agent role specs
 │   ├── methodology.md
 │   ├── planar-orchestrator.md

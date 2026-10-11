@@ -119,7 +119,7 @@ TEST_CASE("apply_all migrates a fresh database to head", "[db][migrate]") {
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1)); // count == max version: no gaps
-  REQUIRE(stmt->column_int64(1) == 41);
+  REQUIRE(stmt->column_int64(1) == 42);
 }
 
 TEST_CASE("the embedded migration chain's versions are strictly monotonic", "[db][migrations]") {
@@ -310,7 +310,7 @@ TEST_CASE("apply_all takes the write lock synchronously at BEGIN (lock_mode::imm
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 41);
+  REQUIRE(stmt->column_int64(1) == 42);
 }
 
 TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-for-row", "[db][migrate][parity]") {
@@ -378,8 +378,9 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
       {39, "workflow_runs: nullable pid, lease expires_at, CHECK one of pid/expires_at is set (decision D11)"},
       {40, "host queue: queue_entries, queue_history, queue_schema marker, sequence floor 1000000"},
       {41, "contextual annotation threads, revisioned messages, and adjacent range anchors"},
+      {42, "review gate: review action kind and verdict, claim policy digest, queue history claim token"},
   };
-  REQUIRE(k_expected.size() == 41);
+  REQUIRE(k_expected.size() == 42);
 
   scratch_db_path cpp_scratch;
   auto            cpp_conn = planar::db::connection::open(cpp_scratch.path_.string());
@@ -402,7 +403,7 @@ TEST_CASE("parity: a C++-migrated database matches a Zig-migrated database row-f
     REQUIRE(cpp_stmt->column_text(1) == k_expected[rows].second);
     ++rows;
   }
-  REQUIRE(rows == 41);
+  REQUIRE(rows == 42);
 }
 
 TEST_CASE("migration 34 preserves legacy file annotations and guards entity annotation rollback",
@@ -412,7 +413,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 33)));
   REQUIRE(conn->execute(
       "insert into annotations (scope_kind, anchor_path, anchor_text, title, body, status, vendor, created_at, updated_at) "
@@ -442,6 +443,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   REQUIRE(legacy_tag->step().value() == planar::db::step_result::done);
 
   // Peel from head so the chain stays contiguous for the re-apply below.
+  REQUIRE(conn->execute(chain[41].down_sql_));
   REQUIRE(conn->execute(chain[40].down_sql_));
   REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
@@ -481,6 +483,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   // Exercise migration 34's entity rollback guard in its own schema. A note
   // created at schema 41 has an independent message identity and correctly
   // cannot pass migration 41's lossless downgrade guard.
+  REQUIRE(conn->execute(chain[41].down_sql_));
   REQUIRE(conn->execute(chain[40].down_sql_));
   REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
@@ -501,7 +504,7 @@ TEST_CASE("migration 34 preserves legacy file annotations and guards entity anno
   auto version = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(version.has_value());
   REQUIRE(version->step().value() == planar::db::step_result::row);
-  // Migrations 40, 39, 38, 37, 36 and 35 have rolled back, while migration 34 correctly refuses to
+  // Migrations 42, 41, 40, 39, 38, 37, 36 and 35 have rolled back, while migration 34 correctly refuses to
   // discard entity-anchored annotations. Its migration marker must remain.
   CHECK(version->column_int64(0) == 34);
   REQUIRE(version->step().value() == planar::db::step_result::done);
@@ -518,7 +521,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 35)));
   REQUIRE(
       conn->execute("insert into cli_invocations "
@@ -545,7 +548,7 @@ TEST_CASE("migration 36 preserves prior invocation rows and refuses to discard b
   auto marker = conn->prepare("select max(version) from schema_migrations");
   REQUIRE(marker.has_value());
   REQUIRE(marker->step().value() == planar::db::step_result::row);
-  CHECK(marker->column_int64(0) == 41);
+  CHECK(marker->column_int64(0) == 42);
 }
 
 namespace {
@@ -574,7 +577,7 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
   REQUIRE(chain[37].version_ == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
 
@@ -666,10 +669,10 @@ TEST_CASE("migration 38 adds engine supervision without disturbing any row that 
   CHECK(scalar(*conn, "select group_concat(run_id) from (select run_id from agent_work_claims order by id)") == "1,2");
   CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
 
-  // And forward again — through migrations 39, 40 and 41 too, confirming the
+  // And forward again — through migrations 39 to 42 too, confirming the
   // tail of the chain still applies cleanly on top of 38's re-applied shape.
   REQUIRE(planar::db::apply_all(*conn));
-  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "41");
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "42");
 }
 
 TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, without a table rebuild", "[db][migrate][6846]") {
@@ -678,7 +681,7 @@ TEST_CASE("migration 39 makes workflow_runs.pid nullable behind a lease CHECK, w
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
   REQUIRE(chain[38].version_ == 39);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
 
@@ -744,7 +747,7 @@ TEST_CASE("migration 38's up guard FIRES when the stored workflow_runs CREATE TA
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
   REQUIRE(chain[37].version_ == 38);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 37)));
 
@@ -782,7 +785,7 @@ TEST_CASE("migration 39's up guard FIRES when the stored workflow_runs CREATE TA
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
   REQUIRE(chain[38].version_ == 39);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 38)));
 
@@ -811,7 +814,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(conn.has_value());
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
 
   // Walk the chain forward one migration at a time. At each version,
   // capture the schema, roll that single migration back, re-apply it, and
@@ -844,7 +847,7 @@ TEST_CASE("up-down-up roundtrip is lossless at every version in the chain", "[db
   REQUIRE(stmt.has_value());
   REQUIRE(stmt->step().value() == planar::db::step_result::row);
   REQUIRE(stmt->column_int64(0) == stmt->column_int64(1));
-  REQUIRE(stmt->column_int64(1) == 41);
+  REQUIRE(stmt->column_int64(1) == 42);
 }
 
 TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their indexes", "[db][migrate][6808]") {
@@ -884,8 +887,9 @@ TEST_CASE("migration 00037 drops exactly the four dormant slug columns and their
   CHECK(has_index("ux_annotations_slug"));
 
   const auto chain = planar::db::migrations();
-  // Peel 00041, 00040, 00039 and 00038 first so 00037's down runs against the schema it was written for.
+  // Peel 00042, 00041, 00040, 00039 and 00038 first so 00037's down runs against the schema it was written for.
   REQUIRE(chain[36].version_ == 37);
+  REQUIRE(conn->execute(chain[41].down_sql_));
   REQUIRE(conn->execute(chain[40].down_sql_));
   REQUIRE(conn->execute(chain[39].down_sql_));
   REQUIRE(conn->execute(chain[38].down_sql_));
@@ -904,7 +908,7 @@ TEST_CASE("migration 00041 losslessly promotes entity notes to page threads and 
   auto            conn = planar::db::connection::open(scratch.path_.string());
   REQUIRE(conn.has_value());
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
   REQUIRE(chain[40].version_ == 41);
   REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 40)));
 
@@ -919,7 +923,7 @@ TEST_CASE("migration 00041 losslessly promotes entity notes to page threads and 
                         "values (990, 'global', 'file', 'src/a.cpp', 'legacy file', 3)"));
   REQUIRE(conn->execute("insert into annotation_tags (annotation_id, tag) values (701, 'review')"));
 
-  REQUIRE(planar::db::apply_all(*conn));
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 41)));
   CHECK(scalar(*conn, "select count(*) from annotation_messages") == "1");
   CHECK(scalar(*conn, "select id || ':' || annotation_id || ':' || revision || ':' || body from annotation_messages") ==
         "701:701:7:legacy entity");
@@ -933,7 +937,7 @@ TEST_CASE("migration 00041 losslessly promotes entity notes to page threads and 
   // The untouched migrated shape is exactly reversible.
   REQUIRE(conn->execute(chain[40].down_sql_));
   CHECK(scalar(*conn, "select max(version) from schema_migrations") == "40");
-  REQUIRE(planar::db::apply_all(*conn));
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 41)));
 
   auto anchor_insert =
       conn->execute("insert into annotation_contextual_anchors (annotation_id, schema_version, document_kind, document_id, "
@@ -966,6 +970,185 @@ TEST_CASE("migration 00041 losslessly promotes entity notes to page threads and 
   CHECK(scalar(*conn, "select max(version) from schema_migrations") == "41");
 }
 
+// Plan 1142, task mo-schema-review-gate: migration 00042 widens
+// agent_actions.action_kind with 'review' (a stored-text edit, as 00038 did),
+// adds agent_actions.verdict, agent_work_claims.policy_digest and the indexed
+// queue_history.claim_token, and inserts the queue_schema row (2, 1).
+TEST_CASE("migration 42 adds the review kind, verdict, policy_digest and queue_history.claim_token, and seeded rows survive "
+          "up, down and up",
+          "[db][migrate][mo-schema-review-gate]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 42);
+  REQUIRE(chain[41].version_ == 42);
+  REQUIRE(chain[41].name_ == "review_gate_policy");
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 41)));
+
+  // Rows in the three altered tables and in every table that references
+  // agent_actions or agent_work_claims, seeded BEFORE migration 42 runs.
+  for (auto const* sql : {
+           "insert into plans (scope_kind, title, slug, status) values ('global', 'p', 'p', 'active')",
+           "insert into sessions (vendor, started_at) values ('claude', '2000-01-01T00:00:00.000Z')",
+           "insert into workflow_runs (plan_id, workflow_name, run_identifier, pid, repo_root) values (1, 'w', 'r1', 1, '/r')",
+           "insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, vendor, lease_expires_at, run_id) "
+           "values ('t1', 1, 'task', 1, 'claude', 'x', 1), ('t2', 1, 'task', 2, 'claude', 'x', 1)",
+           "insert into context_records (run_id, stage, session_id, claim_id, kind, body) values (1, 's', 1, 1, 'finding', 'b')",
+           "insert into agent_actions (session_id, claim_id, action_kind, vendor) values (1, 1, 'coder', 'claude')",
+           "insert into agent_actions (session_id, parent_action_id, claim_id, action_kind, vendor) "
+           "values (1, 1, 2, 'reviewer', 'claude')",
+           "insert into agent_actions (session_id, parent_action_id, action_kind, vendor) values (1, 2, 'run_reconciled', 'c')",
+           "insert into queue_history (seq, outcome, cwd, argv, enqueued_at, ended_at, waited_ms) "
+           "values (1000001, 'exited', '/', '[]', 0, 1, 0)",
+       }) {
+    INFO(sql);
+    REQUIRE(conn->execute(sql));
+  }
+  auto const schema_at_41  = canonical_schema_dump(*conn);
+  auto const actions_at_41 = scalar(*conn, "select sql from sqlite_schema where type = 'table' and name = 'agent_actions'");
+  auto const seeded_rows   = [&] {
+    return scalar(*conn, "select (select group_concat(id || ':' || action_kind || ':' || ifnull(parent_action_id, '-'), ',') "
+                         "from (select * from agent_actions where id <= 3 order by id)) || '|' || "
+                         "(select group_concat(claim_token, ',') from (select * from agent_work_claims order by id)) || '|' || "
+                         "(select count(*) from context_records) || '|' || (select group_concat(seq) from queue_history)");
+  };
+  auto const seeded = seeded_rows();
+  CHECK(seeded == "1:coder:-,2:reviewer:1,3:run_reconciled:2|t1,t2|1|1000001");
+
+  REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "42");
+  auto const schema_at_42 = canonical_schema_dump(*conn);
+
+  // Every seeded row survived, and reads null in each new column.
+  CHECK(seeded_rows() == seeded);
+  CHECK(scalar(*conn, "select count(*) from agent_actions where verdict is not null") == "0");
+  CHECK(scalar(*conn, "select count(*) from agent_work_claims where policy_digest is not null") == "0");
+  CHECK(scalar(*conn, "select count(*) from queue_history where claim_token is not null") == "0");
+
+  // The three columns exist, nullable text with no default.
+  CHECK(scalar(*conn, "select type || ':' || \"notnull\" || ':' || ifnull(dflt_value, 'none') "
+                      "from pragma_table_info('agent_actions') where name = 'verdict'") == "TEXT:0:none");
+  CHECK(scalar(*conn, "select type || ':' || \"notnull\" || ':' || ifnull(dflt_value, 'none') "
+                      "from pragma_table_info('agent_work_claims') where name = 'policy_digest'") == "TEXT:0:none");
+  CHECK(scalar(*conn, "select type || ':' || \"notnull\" || ':' || ifnull(dflt_value, 'none') "
+                      "from pragma_table_info('queue_history') where name = 'claim_token'") == "TEXT:0:none");
+
+  // The new index exists, on claim_token alone.
+  CHECK(scalar(*conn, "select group_concat(name) from pragma_index_info('idx_queue_history_claim_token')") == "claim_token");
+  CHECK(scalar(*conn, "select tbl_name from sqlite_schema where type = 'index' and name = 'idx_queue_history_claim_token'") ==
+        "queue_history");
+
+  // The queue marker gains (2, 1); compat stays 1.
+  CHECK(scalar(*conn, "select group_concat(version || ',' || compat, ';') from (select * from queue_schema order by version)") ==
+        "1,1;2,1");
+
+  // The edited constraint holds on THIS connection, straight after the
+  // migration ran on it: a review with either verdict, or none, inserts...
+  REQUIRE(conn->execute("insert into agent_actions (session_id, parent_action_id, action_kind, vendor, verdict) "
+                        "values (1, 1, 'review', 'c', 'approve')"));
+  REQUIRE(conn->execute("insert into agent_actions (session_id, action_kind, vendor, verdict) "
+                        "values (1, 'review', 'c', 'request-changes')"));
+  REQUIRE(conn->execute("insert into agent_actions (session_id, action_kind, vendor) values (1, 'review', 'c')"));
+  CHECK(scalar(*conn, "select group_concat(ifnull(verdict, 'null'), ',') from (select * from agent_actions "
+                      "where action_kind = 'review' order by id)") == "approve,request-changes,null");
+  // ...a verdict outside the two values, and an unknown kind, fail...
+  for (auto const* verdict : {"approved", "reject", "", "APPROVE"}) {
+    INFO(verdict);
+    CHECK_FALSE(conn->execute(std::format("insert into agent_actions (session_id, action_kind, vendor, verdict) "
+                                          "values (1, 'review', 'c', '{}')",
+                                          verdict))
+                    .has_value());
+  }
+  CHECK_FALSE(conn->execute("insert into agent_actions (session_id, action_kind, vendor) values (1, 'bogus', 'c')").has_value());
+  // ...and every kind the older schema admitted still inserts.
+  for (auto const* kind : {"planner",           "ingestor",      "coder",           "test_coder",     "reviewer",
+                           "ext_sync",          "ext_propagate", "orchestrator",    "resume",         "workbench_sync",
+                           "spec_draft",        "claim_check",   "heartbeat",       "tool_call",      "user_message",
+                           "assistant_message", "other",         "claim_associate", "claim_terminal", "supervisor_override",
+                           "run_submitted",     "run_reconciled"}) {
+    INFO(kind);
+    CHECK(conn->execute(std::format("insert into agent_actions (session_id, action_kind, vendor) values (1, '{}', 'c')", kind))
+              .has_value());
+  }
+  REQUIRE(conn->execute("update agent_work_claims set policy_digest = 'sha256:abc' where id = 1"));
+  REQUIRE(conn->execute("update queue_history set claim_token = 't1'"));
+  // A child of a review action, which the down must detach.
+  auto const review_id = scalar(*conn, "select min(id) from agent_actions where action_kind = 'review'");
+  REQUIRE(conn->execute(std::format(
+      "insert into agent_actions (session_id, parent_action_id, action_kind, vendor) values (1, {}, 'tool_call', 'c')",
+      review_id)));
+  auto const child_id = scalar(*conn, "select max(id) from agent_actions");
+  CHECK(scalar(*conn, std::format("select parent_action_id from agent_actions where id = {}", child_id)) == review_id);
+
+  // The foreign keys pointing at agent_actions and agent_work_claims are
+  // intact and still name the live tables; the stored-text edit leaves the
+  // database consistent.
+  CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
+  CHECK(scalar(*conn, "pragma integrity_check") == "ok");
+  CHECK(scalar(*conn, "select \"table\" from pragma_foreign_key_list('agent_actions') where \"from\" = 'parent_action_id'") ==
+        "agent_actions");
+  CHECK(scalar(*conn, "select \"table\" from pragma_foreign_key_list('agent_actions') where \"from\" = 'claim_id'") ==
+        "agent_work_claims");
+  CHECK(scalar(*conn, "select \"table\" from pragma_foreign_key_list('context_records') where \"from\" = 'claim_id'") ==
+        "agent_work_claims");
+  CHECK(scalar(*conn, "select \"table\" from pragma_foreign_key_list('session_commits') where \"from\" = 'claim_id'") ==
+        "agent_work_claims");
+
+  // Down: review rows are deleted (not refused), their child is detached,
+  // every other row stays, and the schema is byte-for-byte 41's again.
+  REQUIRE(conn->execute(chain[41].down_sql_));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "41");
+  CHECK(scalar(*conn, "select count(*) from agent_actions where action_kind = 'review'") == "0");
+  CHECK(scalar(*conn, std::format("select ifnull(parent_action_id, 'null') from agent_actions where id = {}", child_id)) ==
+        "null");
+  CHECK(seeded_rows() == seeded);
+  CHECK(scalar(*conn, "select count(*) from agent_actions") == "26"); // 3 seeded + 22 old kinds + the detached child
+  CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
+  CHECK(scalar(*conn, "pragma integrity_check") == "ok");
+  CHECK(canonical_schema_dump(*conn) == schema_at_41);
+  CHECK(scalar(*conn, "select sql from sqlite_schema where type = 'table' and name = 'agent_actions'") == actions_at_41);
+  CHECK(scalar(*conn, "select group_concat(version || ',' || compat, ';') from queue_schema") == "1,1");
+  // The restored constraint holds on this connection.
+  CHECK_FALSE(conn->execute("insert into agent_actions (session_id, action_kind, vendor) values (1, 'review', 'c')").has_value());
+
+  // And up again: the same schema as the first up, the rows still there.
+  REQUIRE(planar::db::apply_all(*conn));
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "42");
+  CHECK(canonical_schema_dump(*conn) == schema_at_42);
+  CHECK(seeded_rows() == seeded);
+  CHECK(scalar(*conn, "select count(*) from pragma_foreign_key_check") == "0");
+  CHECK(scalar(*conn, "pragma integrity_check") == "ok");
+  REQUIRE(
+      conn->execute("insert into agent_actions (session_id, action_kind, vendor, verdict) values (1, 'review', 'c', 'approve')"));
+}
+
+TEST_CASE("migration 42's up guard FIRES when the stored agent_actions text does not match, refusing by name and leaving "
+          "schema_migrations at 41",
+          "[db][migrate][mo-schema-review-gate]") {
+  scratch_db_path scratch;
+  auto            conn = planar::db::connection::open(scratch.path_.string());
+  REQUIRE(conn.has_value());
+  const auto chain = planar::db::migrations();
+  REQUIRE(chain.size() == 42);
+  REQUIRE(planar::db::apply_all(*conn, chain.subspan(0, 41)));
+
+  // Reflow the action_kind list 00042's replace() targets, as an unrelated
+  // edit might; replace() on a non-match is a silent no-op.
+  REQUIRE(conn->execute("pragma writable_schema = on;"));
+  REQUIRE(conn->execute("update sqlite_schema set sql = replace(sql, '''run_submitted'',''run_reconciled''', "
+                        "'''run_submitted'', ''run_reconciled''') where type = 'table' and name = 'agent_actions';"));
+  REQUIRE(conn->execute("pragma writable_schema = reset;"));
+
+  auto const applied = planar::db::apply_all(*conn);
+  REQUIRE_FALSE(applied.has_value());
+  CHECK(applied.error().message_.contains("m00042_up_refused_unexpected_stored_schema_text_action_kind_not_widened"));
+  // The migration's own transaction rolled back: no version row, no column.
+  CHECK(scalar(*conn, "select max(version) from schema_migrations") == "41");
+  CHECK(scalar(*conn, "select count(*) from pragma_table_info('agent_actions') where name = 'verdict'") == "0");
+  CHECK(scalar(*conn, "select count(*) from queue_schema") == "1");
+}
+
 TEST_CASE("the down chain from head deletes schema_migrations rows in strict descending mirror order, "
           "leaving no orphan rows, and a full rollback reaches an empty database",
           "[db][migrate][rollback]") {
@@ -975,7 +1158,7 @@ TEST_CASE("the down chain from head deletes schema_migrations rows in strict des
   REQUIRE(planar::db::apply_all(*conn));
 
   const auto chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
 
   // Roll back one migration at a time, from the tip down to the
   // foundation, asserting the mirror-order contract at every step: before
@@ -1093,7 +1276,7 @@ TEST_CASE("apply_contiguous ACCEPTS the embedded chain, so the refusal above is 
 
 TEST_CASE("assert_schema_compatible reports current / behind / ahead / gap", "[db][migrate][guard]") {
   auto const head = planar::db::embedded_max();
-  REQUIRE(head == 41);
+  REQUIRE(head == 42);
 
   SECTION("a fresh, never-initialized database is BEHIND at version 0") {
     scratch_db_path scratch;
@@ -1362,7 +1545,9 @@ TEST_CASE("migration 40 creates queue_entries and queue_history in the agent v3 
   scratch_db_path scratch;
   auto            conn = planar::db::connection::open(scratch.path_.string());
   REQUIRE(conn.has_value());
-  REQUIRE(planar::db::apply_all(*conn));
+  // Applied through 40 only: this pins the shape migration 40 created, before
+  // 00042 added queue_history.claim_token.
+  REQUIRE(planar::db::apply_all(*conn, planar::db::migrations().subspan(0, 40)));
 
   // Every column of the retired agent store's v3 shape (its migrations 00002
   // and 00003), column for column and in order. The reference stream is gone
@@ -1438,10 +1623,11 @@ TEST_CASE("migration 40's down refuses by name while queue_entries has a row, an
   REQUIRE(planar::db::apply_all(*conn));
 
   auto const chain = planar::db::migrations();
-  REQUIRE(chain.size() == 41);
+  REQUIRE(chain.size() == 42);
   REQUIRE(chain[39].version_ == 40);
   REQUIRE(chain[39].name_ == "host_queue");
-  // Peel the annotation migration (00041) so migration 40 is the head under test.
+  // Peel the review-gate (00042) and annotation (00041) migrations so migration 40 is the head under test.
+  REQUIRE(conn->execute(chain[41].down_sql_));
   REQUIRE(conn->execute(chain[40].down_sql_));
 
   REQUIRE(conn->execute("insert into plans (scope_kind, title, slug, status) values ('global', 'p', 'p', 'active')"));

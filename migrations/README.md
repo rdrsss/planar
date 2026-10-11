@@ -182,6 +182,23 @@ is not a counter reset: rename one of the databases instead of running the
 helper, which could archive logs the other database's runs are still
 writing.
 
+### Review-gate rollback
+
+Migration 00042 (plan 1142) widens `agent_actions.action_kind` with
+`review`, adds `agent_actions.verdict`, `agent_work_claims.policy_digest` and
+`queue_history.claim_token`, and inserts the `queue_schema` row (2, 1). Its
+down does not refuse. It **deletes every `review` action**, because the older
+schema cannot hold one and restoring a CHECK by text edit does not re-check
+stored rows; a child action that named a deleted review as its parent keeps
+its row with `parent_action_id` set to null. The verdicts, policy digests and
+queue claim tokens are dropped with their columns. Export them first if you
+need them:
+
+```bash
+sqlite3 -readonly <planar.db> \
+  "select * from agent_actions where action_kind = 'review'"
+```
+
 ### Relaxing a constraint on a foreign-key parent table
 
 The usual table rebuild is unsafe for a table other tables REFERENCE. The

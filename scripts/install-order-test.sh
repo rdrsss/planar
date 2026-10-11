@@ -309,7 +309,7 @@ fault_case() {
 }
 fault_case corrupt corrupt "not a database"
 fault_case foreign "drop table queue_schema" "queue_schema_foreign"
-fault_case incompatible "insert into queue_schema (version, compat, description) values (2, 2, 'needs a newer binary')" "queue store is not usable"
+fault_case incompatible "insert into queue_schema (version, compat, description) select max(version) + 1, max(version) + 1, 'needs a newer binary' from queue_schema" "queue store is not usable"
 pass "unreadable, foreign and incompatible databases are refused before cleanup or swap"
 fi
 

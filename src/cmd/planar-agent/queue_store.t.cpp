@@ -203,7 +203,9 @@ TEST_CASE("queue_store refuses an ahead database whose queue marker or columns d
     REQUIRE_FALSE(store.has_value());
     CHECK(store.error().tag == hq::k_tag_queue_schema_incompatible);
   }
-  CHECK(open_queue_store(env_of(marker), store_access::read_only).error().message.contains("queue version 2"));
+  CHECK(open_queue_store(env_of(marker), store_access::read_only)
+            .error()
+            .message.contains(std::format("queue version {}", hq::k_queue_schema_version + 1)));
   CHECK(open_queue_store(env_of(drift), store_access::read_only).error().message.contains("queue_entries.child_pgid"));
 }
 

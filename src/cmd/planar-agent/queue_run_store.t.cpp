@@ -580,7 +580,7 @@ TEST_CASE("queue run: an incompatible ahead planar.db and a shape-drifted one re
     auto const db = arena.cpp_root / "marker.db";
     qfix::incompatible_ahead_store(db);
     auto const got = run_probe(arena, "marker", env_for(arena, db));
-    require_refused(arena, got, "queue version 2");
+    require_refused(arena, got, std::format("queue version {}", hq::k_queue_schema_version + 1));
     CHECK(got.err.find(std::format("queue version {}", hq::k_queue_schema_version)) != std::string::npos);
     CHECK(qfix::queue_row_count(db) == 0);
     auto const json = status_json(arena, "marker_json", env_for(arena, db));
