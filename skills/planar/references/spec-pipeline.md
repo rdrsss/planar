@@ -6,9 +6,11 @@ Each stage has a gate; do not skip one because the previous stage looked clean. 
 writes refuse inside a git worktree (exit 8), so run this pipeline from the parent
 checkout.
 
-## The four documents
+## What ingest requires
 
-One draft anchor plan owns four artifacts:
+`planar spec ingest` requires a work list: a `roadmap` artifact, or one artifact whose body has `##` milestones with task bullets. Decisions (`## Decisions`), open questions (`## Open Questions`) and scenarios (`## Scenarios`) are optional and are read from any artifact on the anchor. A `tech_spec` is not required.
+
+The planner's authoring convention is four documents, one draft anchor plan owning four artifacts:
 
 | File | Kind | Holds | Never holds |
 |------|------|-------|-------------|

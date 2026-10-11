@@ -340,46 +340,60 @@ auto extract_content_section(std::string_view body) -> std::string {
   return std::string{section};
 }
 
-/// @brief Reads the lowest-id artifact of `kind` linked to `anchor_id`,
-/// strips its front matter, and extracts the `## Content` section. Mirrors
-/// zig's `readArtifactBody`.
+/// @brief The anchor's artifacts as ingest reads them, plus the ones it skipped.
+struct anchor_artifacts {
+  std::vector<parse_ns::source_artifact> artifacts_;  ///< Readable artifacts, ascending id.
+  std::vector<std::string>               unreadable_; ///< One message per artifact with no workbench file.
+};
+
+/// @brief Reads every artifact derived from `anchor_id`, whatever its kind,
+/// in ascending id order, and extracts each `## Content` section. Strips
+/// front matter the way zig's `readArtifactBody` did, per artifact.
+///
+/// An artifact with no file in the workbench is skipped and reported in
+/// `unreadable_`, so a document that was never pushed does not block the
+/// ingest of the others.
 /// @param conn Database connection.
 /// @param feature_dir Workbench feature directory.
 /// @param anchor_id Anchor plan id.
-/// @param kind Artifact kind to read.
-/// @return Extracted artifact body, or lookup/read failure text.
-auto read_artifact_body(db::connection& conn, std::string_view feature_dir, std::int64_t anchor_id, std::string_view kind)
-    -> std::expected<std::string, std::string> {
-  auto stmt = conn.prepare("select a.id, a.title from artifacts a "
+/// @return The readable artifacts, or `QueryFailed` when the lookup fails.
+auto load_anchor_artifacts(db::connection& conn, std::string_view feature_dir, std::int64_t anchor_id)
+    -> std::expected<anchor_artifacts, std::string> {
+  auto stmt = conn.prepare("select a.id, a.kind, a.title from artifacts a "
                            "join entity_links el on el.from_kind = 'artifact' and el.from_id = a.id "
                            " and el.to_kind = 'plan' and el.to_id = ? and el.relationship = 'derives-from' "
-                           "where a.kind = ? order by a.id limit 1");
-  if (!stmt || !stmt->bind_int64(1, anchor_id) || !stmt->bind_text(2, kind)) {
+                           "order by a.id");
+  if (!stmt || !stmt->bind_int64(1, anchor_id)) {
     return std::unexpected(std::string{"QueryFailed"});
   }
-  auto stepped = stmt->step();
-  if (!stepped || *stepped != db::step_result::row) {
-    return std::unexpected(std::string{"ArtifactNotFound"});
-  }
-  auto const id    = stmt->column_int64(0);
-  auto const title = stmt->column_text(1);
 
-  auto const filename = wb_feature::artifact_filename(id, title, kind);
-  auto const path     = std::filesystem::path(feature_dir) / filename;
+  anchor_artifacts out;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(std::string{"QueryFailed"});
+    }
+    if (*stepped == db::step_result::done) {
+      break;
+    }
+    parse_ns::source_artifact art{
+        .id_ = stmt->column_int64(0), .kind_ = stmt->column_text(1), .title_ = stmt->column_text(2), .body_ = {}};
 
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    return std::unexpected(std::string{"ArtifactReadFailed"});
+    auto const    path = std::filesystem::path(feature_dir) / wb_feature::artifact_filename(art.id_, art.title_, art.kind_);
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+      out.unreadable_.push_back(std::format("artifact {} '{}' ({}) has no workbench file at {}; run workbench push to include it",
+                                            art.id_, art.title_, art.kind_, path.string()));
+      continue;
+    }
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    auto const raw    = buf.str();
+    auto       parsed = wb_parse::parse(raw);
+    art.body_         = parsed ? extract_content_section(parsed->body) : raw; // Raw on parse failure, mirroring zig.
+    out.artifacts_.push_back(std::move(art));
   }
-  std::ostringstream buf;
-  buf << in.rdbuf();
-  auto const raw = buf.str();
-
-  auto parsed = wb_parse::parse(raw);
-  if (!parsed) {
-    return raw; // Fall back to raw on parse failure, mirroring zig.
-  }
-  return extract_content_section(parsed->body);
+  return out;
 }
 
 // ===========================================================================
@@ -1367,42 +1381,53 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
   auto const key         = plan_key(conn, anc.id);
   auto const feature_dir = wb_feature::feature_dir(*root, anc.assoc_slug, key, anc.slug);
 
-  auto tech_body = read_artifact_body(conn, feature_dir, anc.id, "tech_spec");
-  if (!tech_body) {
-    ctx.err() << std::format("plan {} ({}): reading tech_spec artifact: {}\n", anc.id, anc.slug, tech_body.error());
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading tech_spec artifact"));
+  auto loaded = load_anchor_artifacts(conn, feature_dir, anc.id);
+  if (!loaded) {
+    ctx.err() << std::format("plan {} ({}): reading artifacts: {}\n", anc.id, anc.slug, loaded.error());
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading artifacts"));
   }
-  auto roadmap_body = read_artifact_body(conn, feature_dir, anc.id, "roadmap");
-  if (!roadmap_body) {
-    ctx.err() << std::format("plan {} ({}): reading roadmap artifact: {}\n", anc.id, anc.slug, roadmap_body.error());
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading roadmap artifact"));
+  for (auto const& skipped : loaded->unreadable_) {
+    ctx.err() << std::format("warning: {}\n", skipped);
   }
-  auto test_body = read_artifact_body(conn, feature_dir, anc.id, "test_spec");
+  auto const& artifacts = loaded->artifacts_;
 
-  auto const                      decisions  = parse_ns::parse_tech_spec_decisions(*tech_body);
-  auto const                      questions  = parse_ns::parse_tech_spec_open_questions(*tech_body);
-  auto const                      milestones = parse_ns::parse_roadmap(*roadmap_body);
-  std::vector<parse_ns::scenario> scenarios;
-  if (test_body) {
-    scenarios = parse_ns::parse_test_spec(*test_body);
+  auto const work_index = parse_ns::select_work_list(artifacts);
+  if (!work_index) {
+    ctx.err() << std::format("plan {} ({}): {}\n", anc.id, anc.slug, work_index.error());
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading work list"));
   }
+  auto const milestones = parse_ns::parse_roadmap(artifacts[*work_index].body_);
 
-  if (decisions.empty() && parse_ns::section_has_content(*tech_body, "## Decisions")) {
-    ctx.err() << "warning: '## Decisions' has content but 0 decisions extracted — "
-                 "decisions need '### <title>' H3 headings or '- **Title.** body' bullets. "
-                 "Nothing was written.\n";
-  }
-  if (questions.empty() && parse_ns::section_has_content(*tech_body, "## Open Questions")) {
-    ctx.err() << "warning: '## Open Questions' has content but 0 questions extracted — "
-                 "questions need '### <title>' H3 headings. Nothing was written.\n";
-  }
-  if (test_body.has_value() && scenarios.empty() && parse_ns::section_has_content(*test_body, "## Scenarios")) {
-    ctx.err() << "warning: '## Scenarios' has content but 0 scenarios extracted — "
-                 "scenarios need '### Scenario: <title>' H3 headings, '### <title>' H3 with '**Verifies:**', "
-                 "or '#### Scenario: <title>' H4 items under a bucket H3. Nothing was written.\n";
+  auto sections = parse_ns::collect_spec_sections(artifacts);
+  if (!sections) {
+    ctx.err() << std::format("plan {} ({}): {}\n", anc.id, anc.slug, sections.error());
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "collecting spec sections"));
   }
 
-  auto diff = diff_ns::compute(conn, anc.id, milestones, decisions, questions, scenarios);
+  for (auto const& art : artifacts) {
+    auto const decisions = parse_ns::parse_tech_spec_decisions(art.body_);
+    if (decisions.empty() && parse_ns::section_has_content(art.body_, "## Decisions")) {
+      ctx.err() << std::format("warning: artifact {} '## Decisions' has content but 0 decisions extracted — "
+                               "decisions need '### <title>' H3 headings or '- **Title.** body' bullets. "
+                               "Nothing was written.\n",
+                               art.id_);
+    }
+    auto const questions = parse_ns::parse_tech_spec_open_questions(art.body_);
+    if (questions.empty() && parse_ns::section_has_content(art.body_, "## Open Questions")) {
+      ctx.err() << std::format("warning: artifact {} '## Open Questions' has content but 0 questions extracted — "
+                               "questions need '### <title>' H3 headings. Nothing was written.\n",
+                               art.id_);
+    }
+    auto const scenarios = parse_ns::parse_test_spec(art.body_);
+    if (scenarios.empty() && parse_ns::section_has_content(art.body_, "## Scenarios")) {
+      ctx.err() << std::format("warning: artifact {} '## Scenarios' has content but 0 scenarios extracted — "
+                               "scenarios need '### Scenario: <title>' H3 headings, '### <title>' H3 with '**Verifies:**', "
+                               "or '#### Scenario: <title>' H4 items under a bucket H3. Nothing was written.\n",
+                               art.id_);
+    }
+  }
+
+  auto diff = diff_ns::compute(conn, anc.id, milestones, sections->decisions_, sections->questions_, sections->scenarios_);
   if (!diff) {
     ctx.err() << std::format("plan {} ({}): computing diff: {}\n", anc.id, anc.slug,
                              diff.error() == diff_ns::diff_error::not_found ? "NotFound" : "QueryFailed");

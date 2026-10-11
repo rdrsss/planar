@@ -996,6 +996,8 @@ A file's parent directory tree is authoritative for its kind: a `<name>/SKILL.md
 
 The fourth planning document, alongside product-spec, tech-spec, and roadmap. The planner emits a `test-spec.md` for every new feature; the ingestor decomposes its `## Scenarios` section into `test_scenarios` rows with `verifies` edges to the tasks each scenario covers.
 
+**What ingest requires.** `planar spec ingest` needs a work list and nothing else. The work list is a `roadmap` artifact, or one artifact whose body has `##` milestones and task bullets when the anchor has no roadmap. Decisions, open questions and scenarios are optional and are read, when present, from any artifact on the anchor, whatever its kind. A plan that holds its work as tasks created with `planar plan create` and `planar task add` has no artifact work list and so is not an ingest input.
+
 **Authoring shape.** Each scenario is a **flat `### Scenario: <title>` H3** — one H3 per scenario. The four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens**, not document structure: name the bucket in the scenario title, e.g. `### Scenario: Happy path — export returns CSV rows` or `### Scenario: Error return — export fails on missing header`. Do NOT use `### <bucket>` H3 group headers containing `#### Scenario:` H4 children — that layout is silently ambiguous and was the root cause of #87.
 
 The four lenses, each asking a different question:

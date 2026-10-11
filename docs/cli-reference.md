@@ -5150,7 +5150,7 @@ Planning pipeline spec commands for decomposing workbench planning documents int
 planar spec ingest <plan> [--apply] [--apply-removals] [--format text|json] [--json] [--scope <scope>] [--strict]
 ```
 
-**Description:** Read `tech-spec.md`, `roadmap.md`, and (when present) `test-spec.md` from the anchor plan's workbench directory, compute the proposed diff against the current database state, and (optionally) commit additions and updates.
+**Description:** Read the anchor plan's workbench artifacts, compute the proposed diff against the current database state, and (optionally) commit additions and updates. The work list is required: it is the `roadmap` artifact, or, when the anchor has no roadmap, the single artifact whose body holds `##` milestones with task bullets. With no such artifact the command refuses with `no work list`; with two or more and no roadmap it refuses as ambiguous. Decisions (`### <title>` under `## Decisions`) and open questions (`### <title>` under `## Open Questions`) are read from every artifact on the anchor, whatever its kind, and so are scenarios (`### Scenario:` under `## Scenarios`, with `**Verifies:**`). A title that appears in two artifacts is refused, because each row is keyed by its title. A `tech_spec` is not required.
 
 Default mode is **preview**: prints a tree-shaped diff and exits 0 without applying graph changes. `--apply` is required to commit changes.
 

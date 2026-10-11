@@ -1000,3 +1000,107 @@ TEST_CASE("spec ingest --apply does not force a non-draft anchor back to active"
   REQUIRE(stmt->step().has_value());
   CHECK(stmt->column_text(0) == "paused");
 }
+
+// ===========================================================================
+// the work list is the only required input (task 7480)
+// ===========================================================================
+
+TEST_CASE("spec ingest with only a roadmap artifact previews and applies cleanly", "[cmd][spec][ingest][work-list]") {
+  auto const fx = make_fixture("roadmap_only");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Roadmap only", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- Ship the only work [slug: ship-only-work]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  auto const preview = dispatch(fx, {"spec", "ingest", "1"});
+  CHECK(preview.code == 0);
+  CHECK_FALSE(preview.err.contains("no work list"));
+
+  auto const applied = dispatch(fx, {"spec", "ingest", "1", "--apply"});
+  REQUIRE(applied.code == 0);
+  CHECK(applied.err.contains("applied"));
+
+  auto conn = open_db(fx);
+  CHECK(count(conn, "tasks") == 1);
+  auto slug = conn.prepare("select count(*) from tasks where slug = 'ship-only-work'");
+  REQUIRE(slug.has_value());
+  REQUIRE(slug->step().has_value());
+  CHECK(slug->column_int64(0) == 1);
+}
+
+TEST_CASE("spec ingest reads decisions from an artifact of any kind, not only the tech spec",
+          "[cmd][spec][ingest][work-list][kinds]") {
+  auto const fx = make_fixture("any_kind");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Any kind", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- Ship it [slug: ship-it]\n", "--json"})
+              .code == 0);
+  // A design note carries the decision; no tech_spec exists on this anchor.
+  REQUIRE(dispatch(fx, {"artifact", "add", "Notes", "--kind", "design_note", "--plan", "1", "--body",
+                        "## Decisions\n\n### Keep the roadmap flat\n\nWe keep it flat.\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  REQUIRE(dispatch(fx, {"spec", "ingest", "1", "--apply"}).code == 0);
+
+  auto conn = open_db(fx);
+  CHECK(count(conn, "decisions") == 1);
+  auto title = conn.prepare("select count(*) from decisions where title = 'Keep the roadmap flat'");
+  REQUIRE(title.has_value());
+  REQUIRE(title->step().has_value());
+  CHECK(title->column_int64(0) == 1);
+}
+
+TEST_CASE("spec ingest with no work list fails, names the missing input and writes nothing", "[cmd][spec][ingest][work-list]") {
+  auto const fx = make_fixture("no_work_list");
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "No work list", "--json"}).code == 0);
+  // Decisions alone are not a work list.
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech", "--kind", "tech_spec", "--plan", "1", "--body",
+                        "## Decisions\n\n### Use SQLite\n\nWe chose SQLite.\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  auto const res = dispatch(fx, {"spec", "ingest", "1", "--apply"});
+  CHECK(res.code != 0);
+  CHECK(res.err.contains("no work list"));
+  CHECK(res.err.contains("roadmap artifact"));
+
+  auto conn = open_db(fx);
+  CHECK(count(conn, "tasks") == 0);
+  CHECK(count(conn, "decisions") == 0);
+  auto status = conn.prepare("select status from plans where id = 1");
+  REQUIRE(status.has_value());
+  REQUIRE(status->step().has_value());
+  CHECK(status->column_text(0) == "draft");
+}
+
+TEST_CASE("spec ingest re-ingest of a four-document plan is zero-diff", "[cmd][spec][ingest][work-list][regression]") {
+  auto const fx     = make_fixture("zero_diff");
+  auto const anchor = seed_anchor(fx);
+
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+  std::string before;
+  {
+    auto conn = open_db(fx);
+    before    = dump_planning_inventory(conn);
+  }
+  REQUIRE_FALSE(before.empty());
+
+  // A second pass over the already-ingested plan must write no planning row.
+  auto const again = dispatch(fx, {"spec", "ingest", anchor, "--apply"});
+  CHECK(again.code == 0);
+  CHECK(again.err.contains("0 plans created, 0 tasks created, 0 tasks updated"));
+
+  auto conn = open_db(fx);
+  CHECK(dump_planning_inventory(conn) == before);
+}
