@@ -1413,7 +1413,7 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
   auto const work_index = parse_ns::select_work_list(artifacts);
   if (!work_index) {
     ctx.err() << std::format("plan {} ({}): {}\n", anc.id, anc.slug, work_index.error());
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading work list"));
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "reading work list"));
   }
   auto const milestones            = parse_ns::parse_roadmap(artifacts[*work_index].body_);
   auto const work_list_artifact_id = artifacts[*work_index].id_;
@@ -1421,7 +1421,7 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
   auto sections = parse_ns::collect_spec_sections(artifacts);
   if (!sections) {
     ctx.err() << std::format("plan {} ({}): {}\n", anc.id, anc.slug, sections.error());
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "collecting spec sections"));
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "collecting spec sections"));
   }
 
   for (auto const& art : artifacts) {
@@ -1637,8 +1637,9 @@ auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_resul
 
   bool const multi = !extra.empty();
 
-  std::vector<std::string> json_bodies;
-  bool                     any_err = false;
+  std::vector<std::string>    json_bodies;
+  bool                        any_err = false;
+  std::optional<domain_error> first_error;
 
   std::vector<std::string> plans;
   plans.push_back(plan_arg);
@@ -1650,6 +1651,9 @@ auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_resul
     auto result = run_one_plan(ctx, **conn, p, apply_flag, apply_removals, scope_view, strict, json_out, multi, json_bodies);
     if (!result) {
       any_err = true;
+      if (!first_error.has_value()) {
+        first_error = std::move(result.error());
+      }
     }
   }
 
@@ -1665,6 +1669,13 @@ auto spec_ingest(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   }
 
   if (any_err) {
+    // A single-plan run keeps its own error kind, so the exit code says why
+    // it failed (scope mismatch 5, plan or file not found 1, strict refusal 2).
+    // A batch can fail for different reasons per plan; it reports the
+    // aggregate as invalid input.
+    if (!multi && first_error.has_value()) {
+      return std::unexpected(std::move(*first_error));
+    }
     return std::unexpected(error_from_body(domain_error_kind::invalid_input, "one or more plans failed to ingest"));
   }
   return {};

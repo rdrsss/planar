@@ -849,7 +849,7 @@ TEST_CASE("spec ingest --apply rolls back every planning write after a mid-apply
   }
 
   auto const result = dispatch(fx, {"spec", "ingest", anchor, "--apply"});
-  CHECK(result.code != 0);
+  CHECK(result.code == 1);
   CHECK(result.err.contains("apply failed: QueryFailed"));
 
   auto       conn_after = open_db(fx);
@@ -892,7 +892,8 @@ TEST_CASE("spec ingest accepts the trailing hidden `extra-plans` positional and 
   REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
 
   auto const res = dispatch(fx, {"spec", "ingest", "no-such-plan-1", "no-such-plan-2", "no-such-plan-3"});
-  CHECK(res.code != 0);
+  // A batch reports the aggregate as invalid input, whatever each plan's reason.
+  CHECK(res.code == 2);
   CHECK(res.err == "plan 'no-such-plan-1' not found: NotFound\n"
                    "plan 'no-such-plan-2' not found: NotFound\n"
                    "plan 'no-such-plan-3' not found: NotFound\n"
@@ -1034,7 +1035,7 @@ TEST_CASE("spec ingest --apply-removals without --apply is refused before touchi
   auto const dump_before = dump_planning_inventory(conn_before);
 
   auto const res = dispatch(fx, {"spec", "ingest", anchor, "--apply-removals"});
-  CHECK(res.code != 0);
+  CHECK(res.code == 2);
   CHECK(res.err.contains("--apply-removals requires --apply"));
 
   auto       conn_after = open_db(fx);
@@ -1100,7 +1101,7 @@ TEST_CASE("spec ingest --strict refuses on a global task-slug collision", "[cmd]
 
   // --strict REFUSES on the same collision.
   auto const strict = dispatch(fx, {"spec", "ingest", anchor2, "--strict"});
-  CHECK(strict.code != 0);
+  CHECK(strict.code == 2);
   CHECK(strict.err.contains("--strict refused"));
   CHECK(strict.err.contains("global slug collision"));
 
@@ -1209,7 +1210,7 @@ TEST_CASE("spec ingest with no work list fails, names the missing input and writ
   REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
 
   auto const res = dispatch(fx, {"spec", "ingest", "1", "--apply"});
-  CHECK(res.code != 0);
+  CHECK(res.code == 2);
   CHECK(res.err.contains("no work list"));
   CHECK(res.err.contains("roadmap artifact"));
 
@@ -1261,7 +1262,7 @@ TEST_CASE("spec ingest fails when the linked roadmap has no file, even if anothe
   for (auto const& args :
        {std::vector<std::string>{"spec", "ingest", "1"}, std::vector<std::string>{"spec", "ingest", "1", "--apply"}}) {
     auto const res = dispatch(fx, args);
-    CHECK(res.code != 0);
+    CHECK(res.code == 1);
     CHECK(res.err.contains("reading roadmap artifact"));
     CHECK(res.err.contains(removed));
   }
@@ -1291,7 +1292,7 @@ TEST_CASE("spec ingest --apply fails on an unreadable non-roadmap artifact and p
   CHECK(preview.err.contains(removed));
 
   auto const applied = dispatch(fx, {"spec", "ingest", "1", "--apply"});
-  CHECK(applied.code != 0);
+  CHECK(applied.code == 1);
   CHECK(applied.err.contains(removed));
 
   auto conn = open_db(fx);
@@ -1379,4 +1380,50 @@ TEST_CASE("spec ingest --strict refuses an unresolved depends slug and accepts r
   auto const accepted = dispatch(fx, {"spec", "ingest", "1", "--strict"});
   CHECK(accepted.code == 0);
   CHECK(accepted.err.contains("orphan"));
+}
+
+TEST_CASE("spec ingest exits 5 when the write scope does not cover the anchor, 1 for an unknown plan",
+          "[cmd][spec][ingest][exit-codes]") {
+  auto const fx = make_fixture("exit_codes");
+  seed_plan(fx, "Scoped anchor");
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:other", "--kind", "project", "--json"}).code == 0);
+  std::filesystem::create_directories(fx.root / "other");
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:other", (fx.root / "other").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Repo anchor", "--scope", "repo:proj", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "2", "--body",
+                        "## M1\n\n- Scoped work [slug: scoped-work]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "2", "--json"}).code == 0);
+
+  auto const refused = dispatch(fx, {"spec", "ingest", "2", "--apply", "--scope", "project:other"});
+  CHECK(refused.code == 5);
+  CHECK(refused.err.contains("Refusing cross-scope write"));
+  auto conn = open_db(fx);
+  CHECK(count(conn, "tasks") == 0);
+
+  CHECK(dispatch(fx, {"spec", "ingest", "no-such-plan"}).code == 1);
+}
+
+TEST_CASE("spec ingest --strict resolves a reference that only the database knows", "[cmd][spec][ingest][strict][refs]") {
+  auto const fx = make_fixture("strict_db_only");
+  seed_plan(fx, "Strict db refs");
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- Earlier work [slug: earlier-task]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"spec", "ingest", "1", "--apply"}).code == 0);
+
+  // The roadmap no longer declares `earlier-task`, but the task still exists
+  // in the anchor's tree, so a dependency and a scenario may name it.
+  REQUIRE(dispatch(fx, {"artifact", "update", "1", "--body", "## M1\n\n- Later work [slug: later-task] [depends: earlier-task]\n",
+                        "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tests", "--kind", "test_spec", "--plan", "1", "--body",
+                        "## Scenarios\n\n### Scenario: earlier still holds\n\n**Verifies:** task:earlier-task\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  auto const strict = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(strict.code == 0);
+  CHECK_FALSE(strict.err.contains("--strict refused"));
 }

@@ -496,8 +496,10 @@ auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<
     return std::unexpected(dependencies.error());
   }
   // The dependency, question and decision links are decided by
-  // `planar.coordination`, the functions `recommend-strategy` rules 5 and 6
-  // call, so the packet and the rule cannot disagree about which link blocks.
+  // `planar.coordination`. `recommend-strategy` rules 5 and 6 share the
+  // question and decision predicates, so the packet and those rules cannot
+  // disagree about which link is open; rule 1 walks dependencies
+  // transitively on its own.
   auto blocking = co::unfinished_dependencies(conn, task_id);
   if (!blocking) {
     return std::unexpected(packet_error::query_failed);

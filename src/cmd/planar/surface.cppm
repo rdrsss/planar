@@ -173,7 +173,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar task", "Manage tasks."},
       {"planar task add", "Create a new task."},
       {"planar task show", "Show full task details."},
-      {"planar task packet", "Compile the authoritative current routing packet for a task."},
+      {"planar task packet", "Compile the authoritative current task packet for a task."},
       {"planar task list", "List tasks."},
       {"planar task update", "Update mutable fields on a task."},
       {"planar task edit", "Edit a task in $EDITOR (editor-first flow)."},

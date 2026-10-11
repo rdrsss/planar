@@ -5260,9 +5260,11 @@ Writes (only with `--apply`, atomically per anchor plan):
 
 **Exit codes:**
 - `0` — success (preview or apply).
-- `1` — plan not found, no work list, a linked roadmap or (on `--apply`) another linked artifact with no workbench file, malformed workbench files, database or filesystem failure, a failed apply.
-- `2` — `--apply-removals` without `--apply`; `--strict` refused due to a slug collision or an unresolved reference.
+- `1` — plan not found, a linked roadmap or (on `--apply`) another linked artifact with no workbench file, a failed apply.
+- `2` — no work list or an ambiguous one, a title that appears in two artifacts, `--apply-removals` without `--apply`, `--strict` refused due to a slug collision or an unresolved reference.
 - `5` — `--apply` refused by the cross-scope guard.
+
+A single-plan run exits with the code of its own failure. A run over several plans exits `2` when any of them fails, whatever the reasons; each plan's reason is on standard error.
 
 ---
 

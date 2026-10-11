@@ -87,7 +87,7 @@ export auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// @brief Handle `planar task packet <task-id> [--json] [--expand <ref>]`
 /// (plan 996, task 6324).
 ///
-/// Compiles the authoritative current routing packet for a task. With
+/// Compiles the authoritative current task packet for a task. With
 /// `--expand <ref>` it prints one referenced artifact, or one section of it,
 /// instead: a reference the task does not cite exits 1 and names the
 /// reference. This is the verb an agent reads to learn whether a task can be
