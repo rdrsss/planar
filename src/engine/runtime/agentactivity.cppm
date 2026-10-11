@@ -455,6 +455,12 @@ export auto error_name(agent_error err) -> std::string_view;
 // Acquire
 // =========================================================================
 
+/// @brief The lease length, in seconds, of a claim taken without an explicit `--ttl`: two hours.
+///
+/// `claim` and `pull` default to it. `heartbeat` without `--ttl` does not use it: that renews the
+/// length the claim already holds. The reconcile stale threshold is a separate value.
+export inline constexpr std::int64_t default_lease_secs = 7200;
+
 /// @brief Arguments to `acquire_claim`. Mirrors zig's `AcquireArgs`.
 export struct acquire_args {
   std::int64_t                    session_id{};                   ///< Owning session.
@@ -472,7 +478,7 @@ export struct acquire_args {
   /// Lease TTL in seconds. Rendered into the SQL text, not bound — see
   /// this file's header. Negative values are legal at this API (they mint
   /// an already-expired claim for tests) and unreachable from the CLI.
-  std::int64_t ttl_secs = 600;
+  std::int64_t ttl_secs = default_lease_secs;
   locality     loc; ///< Git snapshot to record.
   /// Take over a live claim: mark every active claim on the same
   /// `(kind, entity_id)` stale first. Operator recovery only; the normal
@@ -528,8 +534,8 @@ export auto acquire_claim(db::connection& conn, const acquire_args& args) -> std
 /// reading the delta while overwriting both columns is safe.
 ///
 /// HISTORY: this used to reset the lease to `now + ttl_secs` with the CLI
-/// defaulting an omitted `--ttl` to 600, so a claim taken with `--ttl 8h`
-/// and then heartbeated bare had its lease CUT from eight hours to ten
+/// defaulting an omitted `--ttl` to a fixed 600 (the lease default was then ten minutes), so a
+/// claim taken with `--ttl 8h` and then heartbeated bare had its lease CUT from eight hours to ten
 /// minutes — a faithfully-heartbeating long dispatch was MORE likely to
 /// lose its claim than one that never heartbeated. That was Planar task
 /// 6093, and this port pinned it as observed oracle behavior. The ORACLE

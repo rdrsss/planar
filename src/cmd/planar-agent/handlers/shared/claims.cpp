@@ -201,7 +201,7 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return std::unexpected(session_error_message(session.error()));
   }
 
-  auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::string{"600"});
+  auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::to_string(aa::default_lease_secs));
   auto const ttl     = parse_ttl_seconds(ttl_raw);
   if (!ttl.has_value()) {
     return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
@@ -320,7 +320,7 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return std::unexpected(session_error_message(session.error()));
   }
 
-  auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::string{"600"});
+  auto const ttl_raw = cliapp::flag_string(args, "--ttl").value_or(std::to_string(aa::default_lease_secs));
   auto const ttl     = parse_ttl_seconds(ttl_raw);
   // A zero-second result mints an already-lapsed lease (task 6906); unlike
   // `--stale-after` (whose own zero is a legitimate "no grace" default),
@@ -375,9 +375,9 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     return std::unexpected(conn.error());
   }
 
-  // An omitted `--ttl` is NOT defaulted to 600 here: it means "renew the
+  // An omitted `--ttl` is NOT defaulted to the claim default here: it means "renew the
   // lease length this claim already holds". Defaulting would make omission
-  // indistinguishable from an explicit `--ttl 600` and silently truncate
+  // indistinguishable from an explicit `--ttl 7200` and silently truncate
   // every long lease (Planar task 6093).
   auto const                  ttl_flag = cliapp::flag_string(args, "--ttl");
   std::optional<std::int64_t> ttl;

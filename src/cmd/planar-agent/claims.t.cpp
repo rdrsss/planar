@@ -1083,3 +1083,41 @@ TEST_CASE("claim --parent-action nests the claim's action under the parent and r
   CHECK(scalar_text(other, "select count(*) from agent_actions") == "0");
   CHECK(scalar_text(other, "select status from tasks where id = 1") == "todo");
 }
+
+// ===========================================================================
+// The default lease (plan 1142)
+// ===========================================================================
+
+TEST_CASE("claim and pull without --ttl take a two-hour lease and --help states it", "[cmd][agent][ttl][7486]") {
+  scratch_dir scratch;
+  seed(scratch, 3);
+
+  auto const lease_secs = [&](std::string_view where) {
+    return std::stoll(scalar_text(
+        scratch, std::format("select cast(round((julianday(lease_expires_at) - julianday(claimed_at)) * 86400) as integer) "
+                             "from agent_work_claims where {}",
+                             where)));
+  };
+
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  CHECK(std::abs(lease_secs("entity_id = 1") - 7200) <= 2);
+
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
+  CHECK(std::abs(lease_secs("entity_id = 2") - 7200) <= 2);
+
+  // An explicit --ttl is untouched, and a bare heartbeat renews the length the claim holds.
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:3", "--no-locality-probe", "--ttl", "10m"}).code == 0);
+  CHECK(std::abs(lease_secs("entity_id = 3") - 600) <= 2);
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where entity_id = 3");
+  REQUIRE(run_verb(scratch, {"heartbeat", "--claim", token}).code == 0);
+  CHECK(std::abs(lease_secs("entity_id = 3") - 600) <= 2);
+
+  for (auto const* verb : {"claim", "pull"}) {
+    INFO(verb);
+    auto const help = run_verb(scratch, {verb, "--help"});
+    CHECK(help.code == 0);
+    CHECK(help.out.contains("default 2h"));
+    CHECK(help.out.contains("[7200]"));
+    CHECK_FALSE(help.out.contains("600"));
+  }
+}

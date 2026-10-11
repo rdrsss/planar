@@ -196,21 +196,21 @@ export auto claim_entity(db::connection& conn, const agentactivity::acquire_args
 
 /// @brief Arguments to `pull_next`. Mirrors zig's `PullArgs`.
 export struct pull_args {
-  std::int64_t                    plan_id{};                 ///< Plan to pull from.
-  std::int64_t                    session_id{};              ///< Owning session.
-  std::string_view                vendor;                    ///< Vendor tag.
-  std::optional<std::string_view> vendor_session_id;         ///< The vendor's own session id.
-  std::optional<std::string_view> role;                      ///< Role name.
-  std::optional<std::string_view> model;                     ///< Model identifier, recorded verbatim on the claim.
-  std::optional<std::int64_t>     worktree_id;               ///< Worktree row id.
-  std::optional<std::string_view> worktree_path;             ///< Worktree path.
-  std::optional<std::string_view> purpose;                   ///< Free-text purpose.
-  std::optional<std::string_view> base_ref;                  ///< Git ref.
-  std::int64_t                    ttl_secs = 600;            ///< Lease TTL in seconds.
-  locality                        loc;                       ///< Git snapshot.
-  action_kind                     kind = action_kind::coder; ///< Action kind for the dispatch row.
-  std::optional<std::string_view> metadata;                  ///< Opaque text for the action row.
-  std::optional<std::int64_t>     parent_action_id;          ///< Parent action, for the cross-session tree.
+  std::int64_t                    plan_id{};         ///< Plan to pull from.
+  std::int64_t                    session_id{};      ///< Owning session.
+  std::string_view                vendor;            ///< Vendor tag.
+  std::optional<std::string_view> vendor_session_id; ///< The vendor's own session id.
+  std::optional<std::string_view> role;              ///< Role name.
+  std::optional<std::string_view> model;             ///< Model identifier, recorded verbatim on the claim.
+  std::optional<std::int64_t>     worktree_id;       ///< Worktree row id.
+  std::optional<std::string_view> worktree_path;     ///< Worktree path.
+  std::optional<std::string_view> purpose;           ///< Free-text purpose.
+  std::optional<std::string_view> base_ref;          ///< Git ref.
+  std::int64_t                    ttl_secs = agentactivity::default_lease_secs; ///< Lease TTL in seconds.
+  locality                        loc;                                          ///< Git snapshot.
+  action_kind                     kind = action_kind::coder;                    ///< Action kind for the dispatch row.
+  std::optional<std::string_view> metadata;                                     ///< Opaque text for the action row.
+  std::optional<std::int64_t>     parent_action_id;                             ///< Parent action, for the cross-session tree.
 };
 
 /// @brief What `pull_next` did.

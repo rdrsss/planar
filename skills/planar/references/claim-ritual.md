@@ -44,8 +44,8 @@ through `planar-agent`. There is no `planar agent` namespace.
   nothing.
 - Record the model actually used with `--model <name>` on `pull` or `claim`. It is stored
   verbatim and never validated.
-- Size the lease to the work with `--ttl` on `pull` or `claim`; the default is 600
-  seconds, too short for a long dispatch. Flags: see `planar-agent claim --help` and
+- Size the lease to the work with `--ttl` on `pull` or `claim`; the default is 7200
+  seconds (two hours), so a short task needs no flag and a longer one sets `--ttl`. Flags: see `planar-agent claim --help` and
   `planar-agent pull --help`.
 
 ## Heartbeating

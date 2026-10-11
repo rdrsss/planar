@@ -328,7 +328,7 @@ unknown token); `IllegalTransition` when the task is not in a state the
 verb can move (for example `complete` on a `--no-transition` claim whose task
 is still `todo`). Both exit 1 with the transaction rolled back.
 
-TTL: default 600 s on `pull`, `claim` and `heartbeat --ttl`. A heartbeat
+TTL: default 7200 s (two hours) on `pull` and `claim` when `--ttl` is omitted. A heartbeat
 without `--ttl` renews the lease by its *current* length (task 6093); it does
 not resurrect an already-expired lease.
 

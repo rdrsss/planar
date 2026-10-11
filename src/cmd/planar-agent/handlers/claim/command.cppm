@@ -19,7 +19,7 @@ export auto add(CLI::App& root) -> void {
   claim->add_option("--role")->description("Role name (planner|coder|reviewer|test_coder|...)");
   claim->add_option("--model")->description(
       "Model actually used, recorded verbatim as an opaque string. Never validated against a supported list.");
-  shared::add_ttl(*claim, "Lease TTL (default 600s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)");
+  shared::add_ttl(*claim, "Lease TTL (default 2h; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)");
   claim->add_option("--purpose")->description("Free-text purpose recorded on the claim");
   claim->add_option("--worktree")->description("Worktree id or path for isolation context");
   claim->add_option("--repo-root")->description("Absolute path of checkout to probe locality against");

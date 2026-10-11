@@ -3742,7 +3742,7 @@ def replay_driver_session_death(
     terminal verb -- emulating a dead agent session (a coder process that
     dies before calling complete/fail/release/block). The lease is given a
     short TTL so `reconcile` can mark it stale immediately rather than the
-    driver having to wait out a real 600s default lease.
+    driver having to wait out a real two-hour default lease.
     `planar-agent reconcile --plan <plan-id>` is the recovery path this
     case exists to grade (agents/methodology.md "Operator recovery";
     docs/lifecycles.md's session-death reset rule).
