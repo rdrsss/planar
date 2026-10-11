@@ -67,7 +67,7 @@ auto reconcile(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     policy.category = aa::failure_category_from_text(*category);
   }
 
-  // ONE transaction around BOTH sweeps when applying; none when
+  // ONE transaction around the claim sweep when applying; none when
   // dry-running, because a dry run performs no writes to protect.
   std::optional<db::transaction> tx;
   if (!dry_run) {

@@ -206,14 +206,12 @@ TEST_CASE("planar-watch's declared verb set is exactly the oracle's", "[cmd][wat
   // `planar plan` mutates them. The test above would fail on `plan` and
   // passes on `plans`, which is the distinction actually intended.
   //
-  // `run` is now in the tree and is NOT in `forbidden_verbs` — the
-  // forbidden list names `planar-agent`'s write verbs and `planar`'s
-  // planning-entity verbs, and neither has a `run`. `planar-watch run`
-  // OBSERVES workflow runs; the case above would still fail if `ingest`,
-  // `pull` or `capture` appeared here.
-  CHECK(names == std::set<std::string, std::less<>>{"actions", "claims", "completion", "feed", "list", "log", "plans", "ps",
-                                                    "queue", "run", "schema", "show", "sync-events", "tree", "version", "history",
-                                                    "diagnose"});
+  // Task 7458 removed `run` (with its `list` and `show` leaves): it read the
+  // workflow-run recording that is leaving this binary's surface. The set
+  // below is the tree as it now stands; the case above would still fail if
+  // `ingest`, `pull` or `capture` appeared here.
+  CHECK(names == std::set<std::string, std::less<>>{"actions", "claims", "completion", "feed", "log", "plans", "ps", "queue",
+                                                    "schema", "sync-events", "tree", "version", "history", "diagnose"});
 }
 
 TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cmd][watch][capability]") {
@@ -238,7 +236,7 @@ TEST_CASE("every planar-watch verb is either implemented or refuses at 64", "[cm
   auto const leaves = planar::cliapp::leaf_keys(*root);
   // `queue` stopped being a leaf when `queue history` was added beneath it
   // (task hq-watch-history): the leaf count is unchanged, its membership is not.
-  CHECK(leaves.size() == 15);
+  CHECK(leaves.size() == 13);
   CHECK(std::ranges::find(leaves, "queue") == leaves.end());
   CHECK(std::ranges::find(leaves, "queue history") != leaves.end());
   // It is still a verb of its own: a group with a handler, deliberately.
@@ -307,8 +305,15 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
   // Every node counts as reachable, not only the childless ones: a handler
   // registered on ANY group is dual, the way `planar` treats `handoff`, so no
   // list of allowed groups exists to be edited when the next one appears.
+  // `queue` is the only group left with a handler in the shipped table
+  // (task 7458 removed `run`), so the handlerless copy is taken from it.
+  auto const handlerless = [&table] {
+    auto copy = table;
+    copy.erase("queue");
+    return copy;
+  }();
   auto with_group = table;
-  with_group.emplace("run", noop);
+  with_group.insert_or_assign("queue", noop);
   CHECK(planar::cmd::watch::unreachable_handlers(*root, with_group).empty());
 
   // A key that names no node at all is still dead, groups and leaves alike.
@@ -317,12 +322,12 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
   with_typo.emplace("verison", noop);
   CHECK(planar::cmd::watch::unreachable_handlers(*root, with_typo) == std::vector<std::string>{"queue histroy", "verison"});
 
-  // The group `run` has no handler in the shipped table, so naming it prints
+  // The group `queue` has no handler in `handlerless`, so naming it prints
   // help; giving it one makes it run that handler instead of help.
   auto const run_group = [&](const planar::cmd::watch::handler_table& t) {
     std::ostringstream          out;
     std::ostringstream          err;
-    planar::cmd::watch::context ctx{{"planar-watch", "run"},
+    planar::cmd::watch::context ctx{{"planar-watch", "queue"},
                                     planar::cmd::watch::map_env({}),
                                     std::filesystem::path{},
                                     std::make_shared<planar::cmd::watch::database>(std::filesystem::path{}, err),
@@ -332,13 +337,12 @@ TEST_CASE("planar-watch applies the general dual-node rule: every node is reacha
     auto const                  code  = planar::cmd::watch::run(ctx, *fresh, t);
     return std::pair{code, out.str()};
   };
-  auto const helped = run_group(table);
+  auto const helped = run_group(handlerless);
   CHECK(helped.first == 0);
-  CHECK(helped.second.contains("list"));
-  CHECK(helped.second.contains("show"));
-  bool ran          = false;
-  with_group["run"] = [&ran](planar::cmd::watch::context&,
-                             const planar::cliapp::parsed_args&) -> planar::cmd::watch::handler_result {
+  CHECK(helped.second.contains("history"));
+  bool ran            = false;
+  with_group["queue"] = [&ran](planar::cmd::watch::context&,
+                               const planar::cliapp::parsed_args&) -> planar::cmd::watch::handler_result {
     ran = true;
     return {};
   };

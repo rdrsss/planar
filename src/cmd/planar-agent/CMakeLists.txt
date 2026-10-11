@@ -139,8 +139,6 @@ planar_binary(planar_agent
     handlers/reconcile/command.cppm
     handlers/abort/command.cppm
     handlers/schema/command.cppm
-    handlers/run/command.cppm
-    handlers/context/command.cppm
     handlers/queue/command.cppm
 
     surface.cppm
@@ -152,8 +150,7 @@ planar_binary(planar_agent
     handlers/shared/terminal.cppm
     handlers/shared/recovery.cppm
     handlers/action/action.cppm
-    handlers/context/context.cppm
-    handlers/run/runs.cppm
+    handlers/ingest/ingest.cppm
     handlers/queue/queue.cppm
     handlers/queue/status.cppm
     handlers/queue/wait.cppm
@@ -171,9 +168,7 @@ planar_binary(planar_agent
     handlers/shared/terminal.cpp
     handlers/shared/recovery.cpp
     handlers/action/action.cpp
-    handlers/context/context.cpp
     handlers/ingest/ingest.cpp
-    handlers/run/runs.cpp
     handlers/queue/queue.cpp
     handlers/queue/status.cpp
     handlers/queue/wait.cpp

@@ -37,21 +37,16 @@ export auto surface_docs() -> const cliapp::command_docs& {
       {"planar-watch log", R"(planar-watch log --task 42)"},
       {"planar-watch log", R"(planar-watch log --plan 7 --limit 50)"},
       {"planar-watch tree", R"(planar-watch tree --root-session 3)"},
-      {"planar-watch run list", R"(planar-watch run list --plan 7 --status running)"},
-      {"planar-watch run show", R"(planar-watch run show 3)"},
       {"planar-watch sync-events", R"(planar-watch sync-events --plan 7 --outcome conflict)"},
       {"planar-watch queue history", R"(planar-watch queue history --since 24h)"},
       {"planar-watch diagnose", R"(planar-watch diagnose --plan 7)"},
       {"planar-watch diagnose", R"(planar-watch diagnose --days 3 --check claim-lease-lapsed --json)"},
   };
   static constexpr std::pair<std::string_view, std::string_view> k_exit_codes[] = {
-      {"planar-watch feed", "0 1 2 7"},          {"planar-watch ps", "0 1 2 7"},
-      {"planar-watch claims", "0 1 2 7"},        {"planar-watch actions", "0 1 2 7"},
-      {"planar-watch plans", "0 1 2 7"},         {"planar-watch log", "0 1 2 7"},
-      {"planar-watch tree", "0 1 2 7"},          {"planar-watch run list", "0 1 2 7"},
-      {"planar-watch run show", "0 1 2 7"},      {"planar-watch sync-events", "0 1 2 7"},
-      {"planar-watch queue history", "0 1 2 7"}, {"planar-watch diagnose", "0 1 2 7"},
-      {"planar-watch version", "0 1"},           {"planar-watch completion", "0 1 2"},
+      {"planar-watch feed", "0 1 2 7"},     {"planar-watch ps", "0 1 2 7"},          {"planar-watch claims", "0 1 2 7"},
+      {"planar-watch actions", "0 1 2 7"},  {"planar-watch plans", "0 1 2 7"},       {"planar-watch log", "0 1 2 7"},
+      {"planar-watch tree", "0 1 2 7"},     {"planar-watch sync-events", "0 1 2 7"}, {"planar-watch queue history", "0 1 2 7"},
+      {"planar-watch diagnose", "0 1 2 7"}, {"planar-watch version", "0 1"},         {"planar-watch completion", "0 1 2"},
       {"planar-watch schema", "0 1 2"},
   };
   static constexpr cliapp::exit_code_doc k_meanings[] = {

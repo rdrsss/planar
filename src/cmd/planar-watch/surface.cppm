@@ -62,7 +62,7 @@ namespace planar::cmd::watch {
 /// @return `(full command path, summary)` pairs.
 export auto surface_summaries() -> std::span<std::pair<std::string_view, std::string_view> const> {
   static constexpr std::pair<std::string_view, std::string_view> k_summaries[] = {
-      {"planar-watch", "Read-only viewer for live agent activity (feed / ps / claims / actions / plans / log / tree / run)."},
+      {"planar-watch", "Read-only viewer for live agent activity (feed / ps / claims / actions / plans / log / tree)."},
       {"planar-watch feed", "Cross-cutting activity feed across all vendors (default verb)."},
       {"planar-watch ps", "Snapshot of active (and stale) agent claims."},
       {"planar-watch claims", "List claims in the agent_work_claims ledger (filterable by status)."},
@@ -70,9 +70,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar-watch plans", "List plans with in-flight agent work."},
       {"planar-watch log", "Per-entity / per-claim history (union of agent actions and claim transitions)."},
       {"planar-watch tree", "Render the orchestrator → sub-agent action forest."},
-      {"planar-watch run", "Observe workflow runs and their context records."},
-      {"planar-watch run list", "List workflow runs (filterable by plan, status, and source arm)."},
-      {"planar-watch run show", "Show one workflow run plus its context_records grouped by stage."},
       {"planar-watch sync-events", "List sync_events rows with optional filters (read-only)."},
       {"planar-watch queue", "List the host build and test queue: running and waiting entries, marking any that are not live."},
       {"planar-watch diagnose", "Evaluate recorded orchestration state against the documented orchestration rules (read-only)."},

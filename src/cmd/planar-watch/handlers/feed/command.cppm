@@ -14,7 +14,7 @@ export auto add(CLI::App& root) -> void {
   // --- feed -----------------------------------------------------------------
   // Folded in from `surface.cpp`'s generated `k_path_0` at task 6613 (M11.1).
   // Was previously declared via `cliapp::apply_surface` below, alongside
-  // `run`/`sync-events`/`run list`/`run show`; `dispatch.cpp` already
+  // `sync-events`; `dispatch.cpp` already
   // registers a real handler for it (`handlers::feed`), so this is a pure
   // declaration-site move, not a behavior change. Verified byte-identical
   // against the prior generated description before this edit landed.

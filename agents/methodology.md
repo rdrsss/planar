@@ -148,8 +148,9 @@ issues the one terminal verb (tech-spec D3):
    It is one-way (a claim is never handed back to the caller) and idempotent
    by attempt: the same attempt again is a no-op, a new attempt (Centurion
    retried) moves the claim to it.
-3. **Lease.** Only `planar-agent heartbeat --claim <token> --as engine --attempt <attempt-id>`
-   extends the lease. The coder, and the orchestrator, report activity with
+3. **Lease.** Only the engine's supervised heartbeat extends the lease. This
+   binary no longer exposes it (task 7458 removed `heartbeat`'s engine flags),
+   so the variant is not runnable from here. The coder, and the orchestrator, report activity with
    `planar-agent heartbeat --claim <token> --status "<text>"` — no `--ttl`;
    that records the status and leaves the lease exactly where the engine set
    it. A bare caller heartbeat on an engine claim is refused

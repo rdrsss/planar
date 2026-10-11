@@ -252,8 +252,6 @@ planar_module(engine_runtime
     resumecheck.cppm
     audit_trail.cppm
     sessioncommits.cppm
-    contextrecords.cppm
-    workflowruns.cppm
     runtime.cppm
   SOURCES
     session.cpp
@@ -266,8 +264,6 @@ planar_module(engine_runtime
     resumecheck.cpp
     audit_trail.cpp
     sessioncommits.cpp
-    contextrecords.cpp
-    workflowruns.cpp
   DEPENDS
     db
     git

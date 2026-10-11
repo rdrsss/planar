@@ -20,7 +20,6 @@ import planar.cmd.planar_watch.handlers.ledger;
 import planar.cmd.planar_watch.handlers.live;
 import planar.cmd.planar_watch.handlers.queue;
 import planar.cmd.planar_watch.handlers.queue.history;
-import planar.cmd.planar_watch.handlers.run;
 import planar.cmd.planar_watch.handlers.schema;
 import planar.cmd.planar_watch.handlers.syncevents;
 import planar.cmd.planar_watch.handlers.version;
@@ -36,7 +35,7 @@ namespace {
 /// level, so following `.front()` down walks exactly the chain argv
 /// selected. A node reached this way that still has children of its own
 /// means the operator named a group without naming a leaf under it —
-/// `run` renders that node's help page, matching what the deleted parser
+/// `queue` renders that node's help page, matching what the deleted parser
 /// did for a bare parent verb.
 /// @param root The parsed root app.
 /// @return The matched node and its root-relative path.
@@ -59,7 +58,7 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
 /// naming the verb.
 ///
 /// The loud refusal the full-surface declaration rests on (plan 996, task
-/// 6065). Registered explicitly, per verb, rather than left to `run`'s
+/// 6065). Registered explicitly, per verb, rather than left to the
 /// table-miss arm, so that a declared-but-unported leaf still satisfies the
 /// `unregistered_leaves` gate — which is what keeps the generated inventory
 /// honest as verbs get ported.
@@ -83,8 +82,6 @@ auto handlers(const CLI::App& root) -> handler_table {
   table.emplace("plans", handlers::plans);
   table.emplace("log", handlers::log);
   table.emplace("tree", handlers::tree);
-  table.emplace("run list", handlers::run_list);
-  table.emplace("run show", handlers::run_show);
   table.emplace("sync-events", handlers::sync_events);
   table.emplace("queue", handlers::queue);
   table.emplace("queue history", handlers::queue_history);

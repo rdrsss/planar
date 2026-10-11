@@ -181,11 +181,9 @@ TEST_CASE("planar-agent schema appends the terminator its renderer omits", "[cmd
   // `<verb>: not implemented in this build`. That is asserted directly
   // below, so this pair is a contract and not a relaxation.
   CHECK(got.out.contains("\"planar-agent ingest\""));
-  CHECK(got.out.contains("\"planar-agent run start\""));
   // `dispatch preview` and `dispatch confirm` were removed with the routing
   // dispatch boundary: the catalog no longer declares them.
   CHECK_FALSE(got.out.contains("\"planar-agent dispatch"));
-  CHECK(got.out.contains("\"planar-agent context add\""));
 
   // `ingest` is now a real leaf, not an exit-64 catalog placeholder.
   auto const unsupported = dispatch(fx, {"ingest", "--vendor", "nobody", "--event", "@missing"});
@@ -332,7 +330,7 @@ TEST_CASE("planar-agent help paths exit 0 and open no database", "[cmd][agent][h
   // `dispatch.cpp`'s `not_implemented_for`), which is a better operator
   // experience than an unknown-verb error and is what makes
   // `make cli-usage-check` able to resolve their flags at all.
-  for (auto const& declared : {"ingest", "context", "run"}) {
+  for (auto const& declared : {"ingest"}) {
     INFO("declared verb missing from the root page: " << declared);
     CHECK(listed(declared));
   }

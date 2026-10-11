@@ -193,8 +193,8 @@ TEST_CASE("parse_ttl_seconds reads a bare integer as SECONDS", "[cmd][agent][arg
   // The parser itself stays neutral on a literal zero (task 6906): it is
   // shared with `--stale-after`, whose own "0" default is legitimate
   // ("no additional grace"). The refusal lives at the `--ttl`
-  // lease-minting call sites instead -- see the `claim`/`run start`
-  // end-to-end cases below.
+  // lease-minting call site instead -- see the `claim` end-to-end cases
+  // below.
   CHECK(agent::parse_ttl_seconds("0") == 0);
   CHECK(agent::parse_ttl_seconds("1") == 1);
 }
@@ -455,109 +455,29 @@ TEST_CASE("peek opens the database but writes nothing", "[cmd][agent][handlers]"
   CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
 }
 
-TEST_CASE("run start reports duplicate workflow identifiers with the oracle tag", "[cmd][agent][runs]") {
+TEST_CASE("the removed run and context verbs are unknown subcommands and write nothing", "[cmd][agent][removed][7458]") {
+  // Task 7458 removed `run start|end|heartbeat` and `context add|capsule|
+  // list|resolve`. An operator or a script still calling them must get the
+  // parser's unknown-subcommand refusal (exit 1), not a silent success.
+  // The tables they wrote stay in the schema, so the zero counts show the
+  // refused calls reached no handler.
   scratch_dir scratch;
   seed(scratch, 1);
-  auto const first = run_verb(
-      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "same", "--pid", "1", "--repo-root", "/tmp"});
-  REQUIRE(first.code == 0);
-  auto const duplicate = run_verb(
-      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "same", "--pid", "2", "--repo-root", "/tmp"});
-  CHECK(duplicate.code == 1);
-  CHECK(duplicate.err == "error: insert workflow_runs: StepFailed\n");
-  CHECK(scalar_text(scratch, "select count(*) from workflow_runs where run_identifier = 'same'") == "1");
-}
-
-TEST_CASE("run start accepts a pid-less run with --ttl and sets expires_at", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  auto const started = run_verb(
-      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-a", "--ttl", "8h", "--repo-root", "/tmp"});
-  REQUIRE(started.code == 0);
-  CHECK(scalar_text(scratch, "select pid is null from workflow_runs where run_identifier = 'lease-a'") == "1");
-  CHECK(scalar_text(scratch, "select expires_at is not null from workflow_runs where run_identifier = 'lease-a'") == "1");
-  CHECK(scalar_text(scratch, "select status from workflow_runs where run_identifier = 'lease-a'") == "running");
-
-  // Roughly 8h out from `started_at` — a bounds check, not exact-string.
-  CHECK(scalar_text(scratch, "select (julianday(expires_at) - julianday(started_at)) * 24 > 7.9 "
-                             "from workflow_runs where run_identifier = 'lease-a'") == "1");
-  CHECK(scalar_text(scratch, "select (julianday(expires_at) - julianday(started_at)) * 24 < 8.1 "
-                             "from workflow_runs where run_identifier = 'lease-a'") == "1");
-}
-
-TEST_CASE("run start refuses when neither --pid nor --ttl is given, writing no row", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  auto const refused =
-      run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "neither", "--repo-root", "/tmp"});
-  CHECK(refused.code != 0);
-  CHECK(refused.err.contains("--pid"));
-  CHECK(refused.err.contains("--ttl"));
+  for (auto const& argv : std::vector<std::vector<std::string>>{
+           {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "gone", "--pid", "1", "--repo-root", "/tmp"},
+           {"run", "end", "--run-id", "gone", "--status", "completed"},
+           {"run", "heartbeat", "--run-id", "gone", "--ttl", "600"},
+           {"context", "list", "--run", "1", "--json"},
+           {"context", "add", "--claim", "token", "--kind", "note", "--body", "x"},
+       }) {
+    INFO("argv " << argv.front() << " " << argv[1]);
+    auto const refused = run_verb(scratch, argv);
+    CHECK(refused.code == 1);
+    CHECK(refused.out.empty());
+    CHECK_FALSE(refused.err.empty());
+  }
   CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
-}
-
-TEST_CASE("run start refuses --pid and --ttl together, writing no row", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  // Both given is a contradiction. Before task 6847's reviewer caught it,
-  // --pid silently won and --ttl was discarded, so a caller asking for a
-  // lease got a pid-supervised run whose every later `run heartbeat`
-  // refused with `pid-supervised`.
-  auto const refused = run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "both", "--pid", "4242",
-                                          "--ttl", "600", "--repo-root", "/tmp"});
-  CHECK(refused.code != 0);
-  CHECK(refused.err.contains("--pid"));
-  CHECK(refused.err.contains("--ttl"));
-  CHECK(refused.err.contains("not both"));
-  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
-}
-
-TEST_CASE("run start refuses --ttl 0, writing no row (task 6906)", "[cmd][agent][runs][6906]") {
-  // A zero-second lease would set `expires_at` in the past the instant the
-  // run is minted -- the same bug the `claim --ttl 0` case above closes,
-  // applied to the second verb the decision names.
-  scratch_dir scratch;
-  seed(scratch, 1);
-  auto const refused = run_verb(
-      scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "ttl-zero", "--ttl", "0", "--repo-root", "/tmp"});
-  CHECK(refused.code != 0);
-  CHECK(refused.err == "error: invalid --ttl '0': expected bare seconds (e.g. 600) or suffixed duration (e.g. 10m, 1h, 500ms)\n");
-  CHECK(scalar_text(scratch, "select count(*) from workflow_runs") == "0");
-}
-
-TEST_CASE("run heartbeat extends a pid-less run's lease forward", "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-b", "--ttl", "600",
-                             "--repo-root", "/tmp"})
-              .code == 0);
-  auto const before = scalar_text(scratch, "select expires_at from workflow_runs where run_identifier = 'lease-b'");
-
-  auto const beat = run_verb(scratch, {"run", "heartbeat", "--run-id", "lease-b", "--ttl", "3600"});
-  CHECK(beat.code == 0);
-  auto const after = scalar_text(scratch, "select expires_at from workflow_runs where run_identifier = 'lease-b'");
-  CHECK(after > before);
-}
-
-TEST_CASE("run heartbeat refuses a pid-bound run and a non-running run, each with its own named error",
-          "[cmd][agent][runs][6847]") {
-  scratch_dir scratch;
-  seed(scratch, 1);
-  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "pid-run", "--pid", "4242",
-                             "--repo-root", "/tmp"})
-              .code == 0);
-  auto const on_pid_bound = run_verb(scratch, {"run", "heartbeat", "--run-id", "pid-run", "--ttl", "600"});
-  CHECK(on_pid_bound.code != 0);
-  CHECK(on_pid_bound.err.contains("pid-supervised"));
-  CHECK(scalar_text(scratch, "select expires_at is null from workflow_runs where run_identifier = 'pid-run'") == "1");
-
-  REQUIRE(run_verb(scratch, {"run", "start", "--plan", "1", "--workflow", "wf", "--run-id", "lease-c", "--ttl", "600",
-                             "--repo-root", "/tmp"})
-              .code == 0);
-  REQUIRE(run_verb(scratch, {"run", "end", "--run-id", "lease-c", "--status", "completed"}).code == 0);
-  auto const on_terminal = run_verb(scratch, {"run", "heartbeat", "--run-id", "lease-c", "--ttl", "600"});
-  CHECK(on_terminal.code != 0);
-  CHECK(on_terminal.err.contains("terminal status"));
+  CHECK(scalar_text(scratch, "select count(*) from context_records") == "0");
 }
 
 TEST_CASE("reconcile --dry-run opens the database and writes nothing", "[cmd][agent][handlers]") {
@@ -698,33 +618,45 @@ TEST_CASE("the removed engine, run and override spellings are refused as unknown
                              "'supervisor_override')") == "0");
 }
 
-TEST_CASE("the heartbeat's --as and --attempt are cross-checked before anything is written", "[cmd][agent][supervision][6488]") {
+TEST_CASE("heartbeat refuses --as and --attempt as unknown flags, writing nothing", "[cmd][agent][supervision][7458]") {
+  // Task 7458 removed the engine-supervision flags from heartbeat. Both
+  // spellings are unknown flags to the parser (exit 1), not the old
+  // cross-check refusals (exit 2), and no heartbeat row or lease change
+  // follows from either.
   scratch_dir scratch;
-  auto const  token = pulled(scratch, 1);
-  struct refusal {
-    std::vector<std::string> argv;
-    std::string              err;
-  };
-  for (auto const& r : std::vector<refusal>{
-           {{"heartbeat", "--claim", token, "--as", "engine"}, "error: --as engine requires --attempt <id>\n"},
-           {{"heartbeat", "--claim", token, "--attempt", "A1"}, "error: --attempt applies only with --as engine\n"},
-       }) {
-    INFO(r.argv.front());
-    auto const got = run_verb(scratch, r.argv);
-    CHECK(got.code == 2);
-    CHECK(got.err == r.err);
-  }
+  auto const  token        = pulled(scratch, 1);
+  auto const  lease_before = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
+  auto const  beats_before = scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'heartbeat'");
+
+  auto const as_engine = run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A1"});
+  CHECK(as_engine.code == 1);
+  CHECK(as_engine.err.find("--as") != std::string::npos);
+  CHECK(as_engine.out.empty());
+
+  auto const attempt_only = run_verb(scratch, {"heartbeat", "--claim", token, "--attempt", "A1"});
+  CHECK(attempt_only.code == 1);
+  CHECK(attempt_only.err.find("--attempt") != std::string::npos);
+  CHECK(attempt_only.out.empty());
+
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
+  CHECK(scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1") == lease_before);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'heartbeat'") == beats_before);
 }
 
-TEST_CASE("a legacy engine-supervised claim is an ordinary claim to complete and to the heartbeat's engine path",
-          "[cmd][agent][supervision][7454]") {
+TEST_CASE("a legacy engine-supervised claim reads as before: its caller reports status, and it completes",
+          "[cmd][agent][supervision][7454][7458]") {
   scratch_dir scratch;
   auto const  token = pulled(scratch, 1);
   // A row written before the removal: handed to the engine under attempt A1.
   write_sql(scratch, "update agent_work_claims set supervisor = 'engine', attempt_id = 'A1' where id = 1");
 
-  // The heartbeat keeps its `--as engine` path, so the engine can still renew it.
-  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--as", "engine", "--attempt", "A1"}).code == 0);
+  // The caller of a legacy engine claim may still report status, and the
+  // lease stays where the engine left it. Renewal is no longer reachable
+  // from the binary, so a TTL-less renewal attempt is refused.
+  auto const lease_before = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--status", "still here"}).code == 0);
+  CHECK(scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1") == lease_before);
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "3600"}).code != 0);
   // The terminal verbs no longer consult the supervisor column at all.
   auto const done = run_verb(scratch, {"complete", "--claim", token, "--no-locality-probe"});
   CHECK(done.code == 0);
