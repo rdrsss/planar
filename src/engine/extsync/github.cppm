@@ -54,7 +54,7 @@
 ///
 /// A fifth, adapter-specific method (not part of `external_adapter`),
 /// exactly like `jira_adapter::post_comment` — see that class's header for
-/// why. Its only ported caller is `audit publish-decision`, reached through
+/// why. Its only ported caller was a verb removed at task 7468, reached through
 /// `adapter_handle::post_comment`. Unlike `validate`, this does NOT call
 /// `validate()` as a named step — it inlines the same `parse_external_id`
 /// check the Zig original does, with the same effect.

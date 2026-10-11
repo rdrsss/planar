@@ -69,8 +69,8 @@
 ///     DECLARED-but-unimplemented, and `ext propagate` is not declared
 ///     anywhere.
 ///   * `ext register jira`/`github`'s auth-resolution FACTORY stayed on
-///     this binary — `audit publish-decision` and `workbench publish` are
-///     its other two callers and neither moved, and D18 forbids a
+///     this binary — `workbench publish` is its other caller and did not move,
+///     and D18 forbids a
 ///     `cmd_planar -> cmd_planar_ext` edge — so
 ///     `src/cmd/planar-ext/handlers/shared/ext_adapter_factory.cppm` is a
 ///     deliberate duplicate, not a shared import. Same shape for the
@@ -149,7 +149,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar assoc add", "Add a repo to an association."},
       {"planar assoc remove", "Remove a repo from an association."},
       {"planar assoc members", "List all project members of an association."},
-      {"planar assoc detect", "Propose (or apply) auto-detected associations for the current directory."},
       {"planar plan", "Manage plans and plan steps."},
       {"planar plan create", "Create a new plan."},
       {"planar plan show", "Show a plan's details, steps, and child plans."},
@@ -321,7 +320,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
        "Show audit history for an entity (audit_log + entity_links) or an external link (external_links + sync_events)."},
       {"planar audit commits", "List commits attributed to sessions and claims."},
       {"planar audit session", "Show the timeline for a session."},
-      {"planar audit publish-decision", "Post the decision body to linked operational-plane targets."},
       {"planar audit handoff-readiness", "Check resume-readiness for all in-flight tasks."},
       {"planar health", "Report database, handoff, and installed-projection health."},
       {"planar health hygiene", "Report stale plan, task, and question lifecycle state without mutating it."},
@@ -334,7 +332,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar config show", "Print the resolved configuration."},
       {"planar config edit", "Edit the configuration file in $EDITOR."},
       {"planar config validate", "Validate configuration file syntax."},
-      {"planar config init", "Initialize the configuration file."},
       {"planar config path", "Show the configuration file path."},
       {"planar templates", "Inspect, validate, and render Planar JSON templates."},
       {"planar templates list", "List available templates."},
@@ -355,24 +352,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar update", "Update the Planar installation to a published release."},
       {"planar completion", "Generate the autocompletion script for the specified shell."},
       {"planar schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals)."},
-      {"planar report", "Emit the diagnostic bundle: invocation and closed claim-failure aggregates plus health metrics."},
-      {"planar bench", "Record and query benchmark run data (measurement rig)."},
-      {"planar bench start", "Mint a new run record and print its run_uid."},
-      {"planar bench event", "Append a journal event to a run."},
-      {"planar bench touch", "Record a declared or actual file touch for a run."},
-      {"planar bench harvest", "Harvest git diff as actual touches for a run/task."},
-      {"planar bench finish", "Set the terminal status on a run."},
-      {"planar bench show", "Show a run's full state (header + events + touches)."},
-      {"planar closure", "Compute and inspect a task's derived symbol-level closure."},
-      {"planar closure compute", "Run the extractor over a task's seeds and persist the closure."},
-      {"planar closure show", "Read back a task's persisted closure rows."},
-      {"planar run", "Record and query operational run traces."},
-      {"planar run start", "Mint a new operational run record and print its run_uid as JSON."},
-      {"planar run event", "Append a journal event to a run (seq auto-incremented)."},
-      {"planar run finish", "Set the terminal status on a run."},
-      {"planar run show", "Show a run's full state (header + events)."},
-      {"planar groups", "Recommend task slices that minimize closure replication."},
-      {"planar groups recommend", "Recommend closure-minimizing task slices for a plan."},
       {"planar feedback", "Manage structured feedback."},
       {"planar feedback triage", "Review structured feedback triage."},
       {"planar feedback triage list", "List triaged findings."},

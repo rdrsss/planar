@@ -77,3 +77,8 @@ agents/planar-importer.md
 agents/planar-synthesizer.md
 codex-agents/planar-importer.toml
 codex-agents/planar-synthesizer.toml
+
+# Retired planar-introspector role (plan 1142, task 7472): the usage
+# introspection engines left the tree with it, so a re-install over a tree
+# from an older release removes the staged role spec.
+agents/planar-introspector.md

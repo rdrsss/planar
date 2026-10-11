@@ -528,9 +528,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //   - `audit commits` needs `engine.runtime.sessioncommits` (1205 lines
   //     of git subprocess walks) — the same blocker `capture commits` and
   //     `bench harvest` already carry.
-  //   - `audit publish-decision` needs an adapter INSTANCE, i.e. the
-  //     auth-resolving adapter factory `ext create`/`propagate`/`test` and
-  //     the three `sync` leaves are also waiting on.
   //   - `tree` and `audit trail` are merely large (1284 and 563 non-test
   //     Zig lines). `audit trail`'s ENTITY arm is ALREADY SERVED by the
   //     `planar.engine.runtime.audit_trail` module this task landed; what
@@ -644,8 +641,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // 45 before task 6279 moved `assoc list` and `assoc remove`. Named
   // rather than trusted to the delta: `remove` was handler-only, `list`
   // needed a ten-line kind filter beside the already-present `list_all`
-  // plus the two list renderers. `assoc detect` deliberately did NOT move
-  // — it is the ~680-line proposal engine and shares no code with them.
+  // plus the two list renderers.
   //
   // 43 after task 6279 and 42 after task 6277 moved `audit commits`. That
   // leaf had been counted among the git-walk-blocked group here since the
@@ -852,7 +848,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                  exists.
   //   synthesize     MOVED later by task 6106 after its staging engine and
   //                  literal import dependency landed.
-  // 21 before task 6325 moved `assoc detect`, the last `assoc` leaf.
   // 21 before task 6324, which moved exactly ONE: `task packet`, the last
   // big unblocked leaf of the `task` family. Task 6298 had verified it
   // BLOCKED on `engine/routing/packet.zig`'s 1674 lines, and that sizing was
@@ -888,12 +883,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                            "merely LARGE"; it is 101 zig lines, the
   //                            SMALLEST leaf in its family, over
   //                            `resumecheck` alone.
-  //   report                   NOT moved, and genuinely blocked: it needs
-  //                            `engine/introspect.zig` (1330 lines) plus
-  //                            `engine/introspection_adapters.zig` (1319).
-  //                            Neither has any C++ equivalent. Its stated
-  //                            layer-3 blocker was ALSO stale — the real
-  //                            one is 2649 unported engine lines.
   //   explore                  NOT moved, and the most blocked leaf in the
   //                            inventory. The handler is 93 lines, which
   //                            is why it reads cheap; it launches the
@@ -938,31 +927,13 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // functions (~40 lines) and `workbench publish` reaches one (36 lines), and
   // NOTHING reaches `parent_issue.zig`'s or `projects_v2.zig`'s 2394 lines.
   // The four leaves that task 6335 was briefed to unblock split three ways:
-  // two moved, `ext propagate` genuinely needs the bulk and stays, and
-  // `audit publish-decision` needed ZERO of those 3665 lines but was blocked
-  // on something else entirely — `postComment` on both adapters, which no
-  // ported verb had ever needed. See surface.cpp's entries for all three.
+  // two moved, `ext propagate` genuinely needs the bulk and stays, and the
+  // fourth needed none of those 3665 lines; it has since been removed.
   //
-  // 14 -> 13 at task 6339: `audit publish-decision` moved, closing the
-  // `audit` family. `postComment` landed on both adapters (~81 lines, a
-  // fifth adapter-specific method outside the four-operation
-  // `external_adapter` interface) plus the 176-line handler. `ext propagate`
-  // — the ONE thing left carrying the bulk of `engine_extsync`'s unported
-  // lines — is untouched by this move: its own caller of `postComment`
-  // (`parent_issue.zig`'s injected `postCommentFn`) is a separate wiring
-  // this task did not need.
   // 13 -> 12 at task 6343: `models resolve` moved, the `models` family's
   // fourteenth and last leaf. See surface.cpp's entry for the sizing note
   // (the inherited ~300-line estimate UNDER-stated it) and the two oracle
   // behaviors this port must not normalize away.
-  // 12 -> 11 at task 6352: `report` moved, once `engine_introspect` (task
-  // 6121) and `engine_introspection_adapters` (tasks 6102 and 6352) were
-  // both complete and decision 981's layer-1 `introspection_preview`
-  // extraction let `bundle::preview` reach across the D15-forbidden
-  // `engine_* -> engine_*` gap between them. `explore` — the OTHER leaf
-  // task 6329 probed and parked under the same stale layer-3 note `report`
-  // was — stays; it needs the COCKPIT (33,452 unported zig lines), a
-  // wholly different blocker `report`'s port did nothing to remove.
   // 11 -> 10 at task 6357: `health` moved, closing the family (task 6090
   // had already landed `health hygiene`). The blocker here was genuine,
   // unlike most of this milestone's over-stated ones: the handler folds
@@ -1024,8 +995,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK(unported.empty());
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
-  INFO("moved by task 6362: bench harvest");
-  CHECK_FALSE(unported.contains("bench harvest"));
   INFO("moved by task 6365: spec ingest");
   CHECK_FALSE(unported.contains("spec ingest"));
   INFO("moved off this binary by task 6419: ext propagate");
@@ -1034,14 +1003,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("health"));
   INFO("moved by task 6358: capture commits");
   CHECK_FALSE(unported.contains("capture commits"));
-  INFO("moved by task 6339: audit publish-decision");
-  CHECK_FALSE(unported.contains("audit publish-decision"));
   INFO("moved by task 6329: dashboard");
   CHECK_FALSE(unported.contains("dashboard"));
   INFO("moved by task 6329: audit handoff-readiness");
   CHECK_FALSE(unported.contains("audit handoff-readiness"));
-  INFO("moved by task 6352: report");
-  CHECK_FALSE(unported.contains("report"));
   INFO("moved by task 6357: health");
   CHECK_FALSE(unported.contains("health"));
   INFO("moved by task 6324, completing the `task` family's big unblocked leaf: task packet");
@@ -1143,11 +1108,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   }
   INFO("moved by task 6277 after the git-walk grouping was corrected: audit commits");
   CHECK_FALSE(unported.contains("audit commits"));
-  // Task 6279 deliberately LEFT this leaf; task 6325 moved it, completing
-  // the `assoc` family. Named individually per this file's own rule rather
-  // than trusted to the count dropping by one.
-  INFO("moved by task 6325, completing the `assoc` family: assoc detect");
-  CHECK_FALSE(unported.contains("assoc detect"));
   // `audit commits` WAS in this list and should never have been: it was
   // grouped with the genuinely spawn-blocked leaves on the strength of its
   // MODULE's dependencies rather than its own handler's, which calls
@@ -1304,13 +1264,10 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // reason every loop above it exists: five leaving one inventory in one
   // commit is where one silently stays behind while the total still moves
   // by five because something unrelated was dropped with them.
-  for (auto const& leaf : {"config show", "config edit", "config validate", "config init", "config path"}) {
+  for (auto const& leaf : {"config show", "config edit", "config validate", "config path"}) {
     INFO("config leaf: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
-  // ...and the fourth, from task 6189's own families. `closure show` is
-  // ported; `closure compute` must stay DECLARED, never silently absent.
-  CHECK_FALSE(unported.contains("closure compute"));
   // The three dual nodes (`resume`, `handoff`, `health`) ALL have real
   // handlers now that task 6357 closed the last of them — none may appear
   // in the inventory.
@@ -1349,8 +1306,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
                                   "local unlink",
                                   "local import",
                                   "local migrate",
-                                  "closure show",
-                                  "groups recommend",
                                   "question add",
                                   "question show",
                                   "question list",
@@ -1368,14 +1323,19 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `ext`/`sync` GROUP nodes left with them. Verified by running this test
   // against the live tree, not by arithmetic on this comment.
   // Task 6939 adds the two `document` leaves. The parent is a group node,
-  // so only `project` and `validate-range` change this leaf census.
+  // so only the leaves change this census. Task 7468 removes four leaves
+  // (`document validate-range`, `audit publish-decision`, `assoc detect` and
+  // `config init`): 203 -> 199.
   auto const leaves = planar::cliapp::leaf_keys(*tree);
   // Task 7205 adds the `help` leaf (218 -> 219).
   // Task 7319 adds the `update` leaf (219 -> 220).
   // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
   // Plan 1142 task 7463 removes `explore`, `skills` and the three `scope` stubs (203 -> 198).
-  // Plan 1142 task 7471 removes `import` and `synthesize` (198 -> 196).
-  CHECK(leaves.size() == 196);
+  // Plan 1142 task 7468 removes `document validate-range`, `audit publish-decision`, `assoc detect` and `config init` (198 ->
+  // 194). Task 7472 removes `planar report` (194 -> 193).
+  // Task 7469 removes `bench` (6), `closure` (2), `run` (4) and `groups` (1) (193 -> 180).
+  // Plan 1142 task 7471 removes `import` and `synthesize` (180 -> 178).
+  CHECK(leaves.size() == 178);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

@@ -168,7 +168,7 @@ inline auto exclusion_reason(std::span<const std::string> path) -> std::optional
   if (is({"schema"}) || is({"version"})) {
     return "output-only";
   }
-  if (is({"assoc", "detect"}) || is({"scope", "suggest"})) {
+  if (is({"scope", "suggest"})) {
     return "arena-path-output-only";
   }
   return std::nullopt;

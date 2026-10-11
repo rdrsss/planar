@@ -4,8 +4,8 @@
 //
 // ## HOME SAFETY, AND WHY IT IS SHARPER HERE THAN ANYWHERE ELSE
 //
-// This family WRITES the operator's `~/.planar/config.toml` (`init` and
-// `edit` both create it) and READS it in the other three. Every fixture
+// This family WRITES the operator's `~/.planar/config.toml` (`edit`
+// creates it) and READS it in the other three. Every fixture
 // builds an explicit environment map with `HOME` and `PLANAR_CONFIG_PATH`
 // under its own uniquely-named scratch root and dispatches through
 // `map_env`, so nothing here reads the process environment.
@@ -17,11 +17,11 @@
 // reason. Oracle-confirmed in a pinned arena with the two pointing at
 // different directories: `config path` printed the one under `HOME`.
 //
-// ## NONE OF THE FIVE MAY OPEN SQLITE
+// ## NONE OF THE FOUR MAY OPEN SQLITE
 //
 // `ctx.db().opened()` is asserted FALSE after every case. That is a real
-// contract, not a property of the current implementation: `config init`
-// and `config path` are what an operator runs BEFORE `planar init`, and
+// contract, not a property of the current implementation: `config path`
+// is what an operator runs BEFORE `planar init`, and
 // the runtime applies pending migrations on first use — so a `config path`
 // that opened the database could migrate the operator's live one past what
 // every installed binary supports.
@@ -310,74 +310,6 @@ TEST_CASE("config path refuses at exit 1 when neither variable yields a path", "
   cleanup(fx);
 }
 
-// --- config init ------------------------------------------------------
-
-TEST_CASE("config init creates the starter file and reports the path", "[cmd][config][init]") {
-  auto const fx = make_fixture("init");
-  REQUIRE_FALSE(std::filesystem::exists(fx.cfg));
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: created " + fx.cfg.string() + "\n");
-  CHECK(r.err.empty());
-  CHECK_FALSE(r.db_open);
-  REQUIRE(std::filesystem::exists(fx.cfg));
-  cleanup(fx);
-}
-
-TEST_CASE("config init is idempotent and reports already-exists at exit 0", "[cmd][config][init]") {
-  // NOT an error, which is the whole `D-init-idempotent` shape: the Go
-  // original returns `(false, nil)` and Zig mirrors it. A port that made
-  // this exit 1 would break `planar init`, which calls the same path.
-  auto const fx = make_fixture("initagain");
-  write_config(fx, "vendor = \"kept\"\n");
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: already exists " + fx.cfg.string() + "\n");
-  CHECK(r.err.empty());
-  // The existing file is NOT overwritten — asserted, because "already
-  // exists" printed while the file was clobbered would still pass on
-  // stdout alone.
-  CHECK(read_file(fx.cfg) == "vendor = \"kept\"\n");
-  cleanup(fx);
-}
-
-TEST_CASE("config init creates missing parent directories", "[cmd][config][init]") {
-  auto fx = make_fixture("initdeep");
-  fx.cfg  = fx.root / "a" / "b" / "c.toml";
-  fx.vars.insert_or_assign("PLANAR_CONFIG_PATH", fx.cfg.string());
-  REQUIRE_FALSE(std::filesystem::exists(fx.root / "a"));
-  auto const r = dispatch(fx, {"config", "init"});
-  CHECK(r.code == 0);
-  CHECK(r.out == "config init: created " + fx.cfg.string() + "\n");
-  CHECK(std::filesystem::exists(fx.cfg));
-  cleanup(fx);
-}
-
-TEST_CASE("config init writes the LONGER of the two starter blobs", "[cmd][config][init][oracle-defect]") {
-  // MEASURED, not read off the constant: `config init` writes 1246
-  // bytes and `config edit` writes 1048, and the 198-byte difference is an
-  // eight-line `[models.codex]` / `[roles]` example block that plan 540
-  // added to `init.zig`'s copy and never back-ported to `edit.zig`'s —
-  // whose comment still claims it "mirrors init.zig's starter_config
-  // exactly". Reproduced rather than unified (D2): merging them would
-  // change what one of the two verbs writes to the operator's disk.
-  auto const fx = make_fixture("initblob");
-  REQUIRE(dispatch(fx, {"config", "init"}).code == 0);
-  auto const body = read_file(fx.cfg);
-  REQUIRE_FALSE(body.empty());
-  CHECK(body.size() == 1246);
-  CHECK(body.starts_with("# ~/.planar/config.toml"));
-  CHECK(body.ends_with("# done = \"Closed\"\n"));
-  CHECK(body.contains("# [models.codex]"));
-  CHECK(body.contains("# [roles]"));
-  // The file it writes must itself validate cleanly — a starter that the
-  // very next `config validate` rejects would be a poor welcome.
-  auto const validated = dispatch(fx, {"config", "validate"});
-  CHECK(validated.code == 0);
-  CHECK(validated.out == "config validate: ok\n");
-  cleanup(fx);
-}
-
 // --- config edit ------------------------------------------------------
 
 TEST_CASE("config edit execs the editor on the config file itself", "[cmd][config][edit]") {
@@ -407,8 +339,8 @@ TEST_CASE("config edit execs the editor on the config file itself", "[cmd][confi
 }
 
 TEST_CASE("config edit writes the SHORTER starter blob when the file is absent", "[cmd][config][edit][oracle-defect]") {
-  // 1048 bytes, oracle-measured, and WITHOUT the `[models.codex]` /
-  // `[roles]` block `config init`'s copy carries. Both halves are asserted:
+  // 1048 bytes, oracle-measured, and WITHOUT the eight-line `[models.codex]` /
+  // `[roles]` example. Both halves are asserted:
   // the size, and the absence of the block — a size check alone would pass
   // against any 1048-byte file.
   auto fx = make_fixture("editblob");
@@ -471,9 +403,9 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   // cannot pass on the two keys the case happens to name. (22 until plan 1033
   // task 6485 added `execute.engine`; 28 since plan 1080 task hq-config added
   // the five `queue.*` keys and `introspection.transcript_scan_bytes`; 28
-  // again after task 7459 removed `execute.engine`.)
-  CHECK(lines_of(r.out).size() == 28);
-  CHECK(line_for(r.out, "introspection.transcript_scan_bytes") == "introspection.transcript_scan_bytes = 67108864");
+  // again after task 7459 removed `execute.engine`; 24 after task 7472 removed
+  // the transcript budget and the three `*_enabled` keys.)
+  CHECK(lines_of(r.out).size() == 24);
   CHECK(line_for(r.out, "queue.slots") == "queue.slots = 1");
   CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s");
   CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s");
@@ -681,7 +613,7 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   // operator's (which is what `--raw` would have printed). The byte count is
   // the embedded defaults.toml, which lost its 309-byte `[execute]` block to
   // plan 1142 task 7459 (4476 bytes before, 4167 after).
-  CHECK(r.out.size() == 4167);
+  CHECK(r.out.size() == 3550);
   CHECK(r.out.contains("[queue]\n"));
   CHECK_FALSE(r.out.contains("[execute]"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
@@ -699,7 +631,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 4167);
+  CHECK(r.out.size() == 3550);
   cleanup(fx);
 }
 
@@ -910,18 +842,34 @@ TEST_CASE("config show --effective prints no execute. key, even when the file or
   cleanup(fx);
 }
 
-TEST_CASE("config validate refuses an invalid [introspection].transcript_scan_bytes, naming the key",
-          "[cmd][config][validate][wide-keep-narrow]") {
-  auto const fx = make_fixture("valscan");
-  for (std::string_view const value : {"0", "-3", "\"big\""}) {
-    INFO(value);
-    write_config(fx, std::format("[introspection]\ntranscript_scan_bytes = {}\n", value));
-    auto const r = dispatch(fx, {"config", "validate"});
-    CHECK(r.code == 1);
-    CHECK(r.err.find("error: introspection.transcript_scan_bytes: ") == 0);
-  }
+TEST_CASE("config validate refuses the removed transcript keys by name", "[cmd][config][validate]") {
+  // Plan 1142 (task 7472) removed the transcript capture settings with the
+  // introspection engines. A stale file that still carries them is refused by name, the
+  // way a stale `[execute]` table is, rather than having the keys ignored.
+  auto const fx = make_fixture("valremoved");
+  write_config(fx, "[introspection.transcripts]\nclaude_enabled = false\n");
+  auto const table = dispatch(fx, {"config", "validate"});
+  CHECK(table.code == 1);
+  CHECK(table.err.find("error: introspection.transcripts: unknown key") == 0);
+
   write_config(fx, "[introspection]\ntranscript_scan_bytes = 1048576\n");
+  auto const key = dispatch(fx, {"config", "validate"});
+  CHECK(key.code == 1);
+  CHECK(key.err.find("error: introspection.transcript_scan_bytes: unknown key") == 0);
+
+  write_config(fx, "[introspection]\ncli_log = true\nretention_days = 30\n");
   CHECK(dispatch(fx, {"config", "validate"}).code == 0);
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective has no transcript keys and keeps the CLI telemetry keys", "[cmd][config][show][effective]") {
+  auto const fx = make_fixture("showtelemetry");
+  auto const r  = dispatch(fx, {"config", "show", "--effective"});
+  CHECK(r.code == 0);
+  CHECK_FALSE(r.out.contains("introspection.transcripts."));
+  CHECK_FALSE(r.out.contains("introspection.transcript_scan_bytes"));
+  CHECK(r.out.contains("introspection.cli_log"));
+  CHECK(r.out.contains("introspection.retention_days"));
   cleanup(fx);
 }
 
@@ -1178,16 +1126,15 @@ TEST_CASE("both table-header shapes the oracle accepts are accepted here too", "
 // --- the family-wide invariant ----------------------------------------
 
 TEST_CASE("no config leaf opens the database", "[cmd][config][db]") {
-  // Asserted once across all five as a family invariant, rather than only
-  // per case: `config init` and `config path` are what an operator runs
-  // BEFORE `planar init`, and the runtime applies pending migrations on
+  // Asserted once across all four as a family invariant, rather than only
+  // per case: `config path` is what an operator runs BEFORE `planar init`,
+  // and the runtime applies pending migrations on
   // first use — so a leaf that opened the database could migrate the
   // operator's live one past what every installed binary supports.
   auto fx = make_fixture("nodb");
   fx.vars.emplace("PLANAR_EDITOR", "/usr/bin/true");
   write_config(fx, k_rich_config);
   for (auto const& args : std::vector<std::vector<std::string>>{{"config", "path"},
-                                                                {"config", "init"},
                                                                 {"config", "edit"},
                                                                 {"config", "show"},
                                                                 {"config", "show", "--effective"},

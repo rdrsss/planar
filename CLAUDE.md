@@ -153,10 +153,9 @@ direct-claim dispatch the caller runs it. Full sequence:
 
 ### Cross-scope guard
 
-The guard runs on ten verbs, not on every mutation: `spec ingest --apply`,
-`feedback triage set`, `audit publish-decision`, `decision accept`, `decision
-withdraw`, `task update`, `closure compute`, and `planar-ext sync push`,
-`sync pull` and `sync resolve`. Every other mutation writes without comparing
+The guard runs on nine verbs, not on every mutation: `spec ingest --apply`,
+`feedback triage set`, `decision accept`, `decision withdraw`, `task update`,
+`closure compute`, and `planar-ext sync push`, `sync pull` and `sync resolve`. Every other mutation writes without comparing
 scopes. `grep -rn guard_with_membership src/cmd` is the measurement.
 
 - The comparison is membership-aware. Operator scope `assoc:<org>` covers an

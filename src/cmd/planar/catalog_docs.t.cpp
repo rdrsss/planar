@@ -204,12 +204,13 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
       }
     }
   }
-  // 244 leaves measured 2026-10-10 across the four remaining binaries, after `planar models`,
-  // `planar-agent dispatch`, `planar-agent run`/`context` and `planar-watch run` left the tree
-  // (plan 1142, tasks 7455 and 7458), and `planar explore`, `planar skills` and the three
-  // `planar scope` stubs left it (plan 1142, task 7463: 249 -> 244); the floor keeps a margin of four.
+  // 224 leaves measured 2026-10-10 across (task 7471 removes import and synthesize) the four remaining binaries, after `planar
+  // models`, `planar-agent dispatch`, `planar-agent run`/`context` and `planar-watch run` left the tree (plan 1142, tasks 7455
+  // and 7458), `planar explore`, `planar skills` and the three `planar scope` stubs (task 7463), the four unused verbs (task
+  // 7468), `planar report` (task 7472) and the thirteen `closure`, `groups`, `bench` and `run` leaves (task 7469); the floor
+  // keeps a margin of four.
   CAPTURE(leaves);
-  CHECK(leaves >= 240);
+  CHECK(leaves >= 220);
 }
 
 TEST_CASE("every planar and planar-agent leaf has an example under its own command path", "[catalog][docs]") {
@@ -230,10 +231,10 @@ TEST_CASE("every planar and planar-agent leaf has an example under its own comma
     }
   }
   CAPTURE(checked);
-  CHECK(checked >= 210);
+  CHECK(checked >= 188); // 192 measured 2026-10-10 after plan 1142 task 7471 (194 after task 7469)
 }
 
-TEST_CASE("--help repeats the catalog's docs for every leaf of the four CLI11 binaries", "[catalog][docs]") {
+TEST_CASE("the --help page repeats the catalog's docs for every leaf of the four CLI11 binaries", "[catalog][docs]") {
   std::size_t checked = 0;
   for (auto const& bin : binaries()) {
     if (!bin.has_footer) {
@@ -252,5 +253,5 @@ TEST_CASE("--help repeats the catalog's docs for every leaf of the four CLI11 bi
     }
   }
   CAPTURE(checked);
-  CHECK(checked >= 270);
+  CHECK(checked >= 220); // one footer per leaf of the four CLI11 binaries (224 measured 2026-10-10)
 }

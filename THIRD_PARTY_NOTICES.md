@@ -14,8 +14,6 @@ notice is given here or in the source header noted.
 | Glaze | MIT | `vendor/glaze/*/LICENSE` |
 | spdlog | MIT | `vendor/spdlog/*/LICENSE` |
 | SQLite | Public domain | none required (see below) |
-| Tree-sitter | MIT | `vendor/tree_sitter/*/LICENSE` |
-| tree-sitter-zig | MIT | `vendor/tree_sitter_zig/*/LICENSE` |
 
 ## SQLite
 

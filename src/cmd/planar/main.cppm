@@ -16,12 +16,10 @@ import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.completion.command;
 import planar.cmd.planar.handlers.schema.command;
-import planar.cmd.planar.handlers.closure;
 import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.dashboard;
 import planar.cmd.planar.handlers.decision;
 import planar.cmd.planar.handlers.feedback;
-import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.health;
 import planar.cmd.planar.handlers.init;
@@ -32,10 +30,7 @@ import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.promote.command;
 import planar.cmd.planar.handlers.demote.command;
 import planar.cmd.planar.handlers.question;
-import planar.cmd.planar.handlers.report;
 import planar.cmd.planar.handlers.resume;
-import planar.cmd.planar.handlers.bench.command;
-import planar.cmd.planar.handlers.run.command;
 import planar.cmd.planar.handlers.scenario;
 import planar.cmd.planar.handlers.scope;
 import planar.cmd.planar.handlers.search;
@@ -109,11 +104,6 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_update(*app);     // 36a: plan 1122 M3 (task 7319)
   handlers::declare_completion(*app); // 37
   handlers::declare_schema(*app);     // 38
-  handlers::declare_report(*app);     // 39
-  handlers::declare_bench(*app);      // 40
-  handlers::declare_closure(*app);    // 41
-  handlers::declare_run(*app);        // 42
-  handlers::declare_groups(*app);     // 43
   handlers::declare_feedback(*app);   // 46
   handlers::declare_help(*app);       // 47
 

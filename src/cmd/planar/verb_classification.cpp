@@ -41,16 +41,13 @@ auto classify(std::span<const std::string> path) -> verb_class {
   std::string_view const top = path[0];
 
   // Top-level verbs with no subverbs to inspect, or whose every subverb is
-  // read-only. `bench` is the
-  // measurement rig, which the harness drives from inside worktrees by
-  // design (the protected-instrument invariant) and would be defeated by a
-  // refusal. `update` sits with `version`: it opens no database and writes
+  // read-only. `update` sits with `version`: it opens no database and writes
   // no planning state, only the install under `~/.planar/` through the
   // installer it execs, so a planning refusal would be false.
-  static constexpr std::array<std::string_view, 10> k_top_reads{
-      "resume", "dashboard", "health", "report", "tree", "search", "version", "update", "completion", "schema",
+  static constexpr std::array<std::string_view, 9> k_top_reads{
+      "resume", "dashboard", "health", "tree", "search", "version", "update", "completion", "schema",
   };
-  if (in(top, k_top_reads) || top == "bench") {
+  if (in(top, k_top_reads)) {
     return verb_class::execution_or_read;
   }
 

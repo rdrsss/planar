@@ -69,8 +69,8 @@ auto split_worktree(const std::optional<std::string>& raw) -> worktree_split {
 ///
 /// The engine stores the column opaquely and never parses it, so this is
 /// the ONLY thing standing between a malformed blob and the database.
-/// Validated with the same purpose-built probe `engine/config` and
-/// `engine/runs` use.
+/// Validated with the same purpose-built probe `engine/config`
+/// uses.
 /// @param raw The `--metadata` value, or unset.
 /// @return The refusal, or unset when absent or valid.
 auto check_metadata(const std::optional<std::string>& raw) -> std::optional<domain_error> {

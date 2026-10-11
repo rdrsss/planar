@@ -31,7 +31,6 @@ and the transition code are authoritative.
 | Feedback triage disposition | `untriaged`, `needs-reproduction`, `accepted`, `retained-question`, `dismissed`, `reported-external`, `duplicate` | Triage disposition; reproduction status is `not-run`, `reproduced`, `not-reproduced`, or `inconclusive`. [`planning/`](planning/) |
 | External link `last_sync_status` | `never`, `ok`, `conflict`, `error` | Sync sets success, conflict or error; resolution returns a conflict to `ok`. [`external/`](external/), [`extsync/`](extsync/) |
 | Sync event `outcome` | `ok`, `conflict`, `error`, `noop`, `strategy-abandoned`, `counterpart-missing`, `resolved-fs`, `resolved-db`, `partial`, `success`, `failure` | External and workbench operations record outcomes; these are event values, not a single entity lifecycle. [`extsync/`](extsync/), [`workbench/`](workbench/) |
-| Measurement run (`runs`) | Free text, default `running` | `run finish` accepts a caller supplied terminal string; this is intentionally not a closed enum. [`runs/`](runs/) |
 | Session | Active or ended (`ended_at` is null or set) | Capture starts a session; `capture end` sets the timestamp. [`runtime/`](runtime/) |
 
 Other state-like values are *computed observations*, not stored lifecycles:
@@ -47,21 +46,16 @@ side effects and the executable source index.
 
 | Directory | Responsibility |
 | --- | --- |
-| [`closure/`](closure/) | Feature closeout evidence and gates. |
 | [`config/`](config/) | Configuration operations and defaults. |
 | [`entitylink/`](entitylink/) | Relationships between planning entities. |
 | [`external/`](external/) | External systems, links and adapters. |
 | [`extsync/`](extsync/) | External pull, push, conflict and propagation logic. |
-| [`grouping/`](grouping/) | Grouped views of planning entities. |
 | [`health/`](health/) | Derived health and diagnosis. |
 | [`identity/`](identity/) | Repository and association identity. |
 | [`ingest/`](ingest/) | Decompose workbench specifications into entities. |
-| [`introspect/`](introspect/) | Usage introspection and findings. |
-| [`introspection_adapters/`](introspection_adapters/) | Inputs to introspection. |
 | [`local/`](local/) | Operator local skill and agent lifecycle. |
 | [`planning/`](planning/) | Plans, tasks, decisions, scenarios and other planning entities. |
 | [`promotion/`](promotion/) | Scope promotion and demotion. |
-| [`runs/`](runs/) | Measurement runs and bench data. |
 | [`runtime/`](runtime/) | Claims, actions, sessions and handoffs. |
 | [`search/`](search/) | Planning search. |
 | [`templates/`](templates/) | External template selection and rendering. |

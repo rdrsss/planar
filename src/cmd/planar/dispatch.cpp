@@ -23,19 +23,15 @@ import planar.cmd.planar.handlers.test_spec;
 import planar.cmd.planar.handlers.health;
 import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.dashboard;
-import planar.cmd.planar.handlers.report;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
 import planar.cmd.planar.handlers.init;
 import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.resume;
-import planar.cmd.planar.handlers.runs;
 import planar.cmd.planar.handlers.local;
 import planar.cmd.planar.handlers.config;
 import planar.cmd.planar.handlers.templates;
-import planar.cmd.planar.handlers.closure;
-import planar.cmd.planar.handlers.groups;
 import planar.cmd.planar.handlers.spec_ingest;
 import planar.cmd.planar.handlers.task;
 import planar.cmd.planar.handlers.feedback;
@@ -78,6 +74,28 @@ auto matched_node(CLI::App& root) -> std::pair<CLI::App*, std::vector<std::strin
     }
     node = matched.front();
     path.push_back(node->get_name());
+  }
+}
+
+/// @brief Whether some level of the parsed chain holds more than one parsed child.
+///
+/// CLI11 falls a word that names no child of the group it is under through to
+/// the parent, so `config init` (after `init` left the `config` group) parses
+/// `config` AND the root's own `init`. Two parsed children at one level is an
+/// unknown argument, not a choice between them.
+/// @param root The parsed root app.
+/// @return True when a level has a second parsed child.
+auto has_second_parsed_child(CLI::App& root) -> bool {
+  CLI::App* node = &root;
+  while (true) {
+    auto const parsed = node->get_subcommands();
+    if (parsed.size() > 1) {
+      return true;
+    }
+    if (parsed.empty()) {
+      return false;
+    }
+    node = parsed.front();
   }
 }
 
@@ -212,8 +230,7 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // `assoc members` — the family's read half, wired at task 6188. Its
   // engine call has existed since the family landed; what was missing was a
   // renderer for `project_ref` (this module's other two are singular and
-  // over `association`). Five `groups_recommend_test` integration frames
-  // were crashing in their FIXTURE on this verb, not in the verb they test.
+  // over `association`).
   table.emplace("assoc members", handlers::assoc_members);
   // `assoc list` + `assoc remove` — the family's two CHEAP remainders,
   // landed at task 6279. `remove` was handler-only (`remove_member` shipped
@@ -222,14 +239,8 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   //
   // `assoc list` is also `statediff.t.cpp`'s LAST `expected_unported`
   // entry, so wiring it here is what emptied that set.
-  //
-  // `assoc detect` stays unported: it is the ~680-line proposal engine
-  // (`detectProposals`/`proposalsFromSignals`/`enrichProposals`/
-  // `applyProposals`), which is the whole of the remaining work in this
-  // family and shares nothing with these two.
   table.emplace("assoc list", handlers::assoc_list);
   table.emplace("assoc remove", handlers::assoc_remove);
-  table.emplace("assoc detect", handlers::assoc_detect);
   // `scope` — the two live leaves, landed at task 6214. `show` reads the
   // cwd-derived read set and `suggest` the project's existing memberships.
   // The plan-153-M5 removal stubs `use`, `pop` and `clear` were deleted in
@@ -259,21 +270,12 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // over rows an earlier `capture commits` wrote, and spawns nothing.
   // `capture commits` and `bench harvest` really are blocked on the walk;
   // this leaf was mis-grouped with them. Corrected at task 6272, ported at
-  // 6277. `publish-decision` closed the family at task 6339, once
-  // `postComment` landed on both adapters — see handlers/audit.cppm.
+  // 6277.
   table.emplace("audit session", handlers::audit_session);
   table.emplace("audit trail", handlers::audit_trail);
   table.emplace("audit commits", handlers::audit_commits);
   table.emplace("audit handoff-readiness", handlers::audit_handoff_readiness);
-  table.emplace("audit publish-decision", handlers::audit_publish_decision);
   table.emplace("dashboard", handlers::dashboard);
-  // `report` — landed at task 6352 with the layer-1 `introspection_preview`
-  // extraction (decision 981) that lets `engine_introspect`'s `bundle`
-  // carry a `preview` field without an `engine_* -> engine_*` edge. Both
-  // engine buckets it composes (`engine_introspect`, DB aggregates;
-  // `engine_introspection_adapters`, filesystem discovery) were already
-  // ported; this handler is the D20 composition layer3 exists for.
-  table.emplace("report", handlers::report);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task packet", handlers::task_packet);
@@ -391,7 +393,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("artifact update", handlers::artifact_update);
   table.emplace("artifact link", handlers::artifact_link);
   table.emplace("document project", handlers::document_project);
-  table.emplace("document validate-range", handlers::document_validate_range);
   // The DRAFTING QUARTET, all sixteen arms, landed together at task 6205
   // with the `editflow` port every one of them was blocked on. Four cycles
   // deferred them four times; `engine_workbench` landing left
@@ -585,21 +586,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("handoff show", handlers::handoff_show);
   table.emplace("resume", handlers::resume_packet);
   table.emplace("resume validate", handlers::resume_validate);
-  // `bench` and `run` — one engine bucket, two surfaces over the same
-  // table. `bench harvest` is deliberately absent and stays a declared
-  // exit-64 refusal; its engine half was deferred WITH its git-subprocess
-  // dependency in task 6095. See `handlers/runs.cppm`.
-  table.emplace("bench start", handlers::bench_start);
-  table.emplace("bench event", handlers::bench_event);
-  table.emplace("bench touch", handlers::bench_touch);
-  table.emplace("bench harvest", handlers::bench_harvest);
-  table.emplace("bench finish", handlers::bench_finish);
-  table.emplace("bench show", handlers::bench_show);
-  table.emplace("run start", handlers::run_start);
-  table.emplace("run event", handlers::run_event);
-  table.emplace("run finish", handlers::run_finish);
-  table.emplace("run show", handlers::run_show);
-
   // `local` — the whole five-leaf family (task 6189). None of them opens
   // SQLite; all five are filesystem state under `$PLANAR_LOCAL_HOME`/`$HOME`.
   table.emplace("local list", handlers::local_list);
@@ -629,20 +615,13 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // the engine deliberately does not own.
   //
   // NONE of the five opens SQLite, and `ctx.db().opened()` is pinned false
-  // after each. `config init` and `config path` are what an operator runs
+  // after each. `config path` is what an operator runs
   // BEFORE `planar init`; a version that opened the database would also
   // MIGRATE it.
   table.emplace("config show", handlers::config_show);
   table.emplace("config edit", handlers::config_edit);
   table.emplace("config validate", handlers::config_validate);
-  table.emplace("config init", handlers::config_init);
   table.emplace("config path", handlers::config_path);
-  // Derived closure extraction is AST-backed through the pinned tree-sitter
-  // Zig grammar; its cross-bucket composition belongs at this cmd layer.
-  table.emplace("closure compute", handlers::closure_compute);
-  table.emplace("closure show", handlers::closure_show);
-  // `groups recommend` — the whole `groups` family, read-only.
-  table.emplace("groups recommend", handlers::groups_recommend);
   table.emplace("spec ingest", handlers::spec_ingest);
   table.emplace("help", help_handler(root));
 
@@ -726,6 +705,17 @@ auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> r
     return run_outcome{.code = exit_code_for(domain_error_kind::parse_error), .kind = domain_error_kind::parse_error};
   }
 
+  if (has_second_parsed_child(root)) {
+    // An unknown word under a group is refused as a parse failure, the same line a
+    // flag or positional CLI11 cannot place produces (see the ParseError branch).
+    std::string tokens;
+    for (std::size_t i = 1; i < argv.size(); ++i) {
+      tokens += i == 1 ? "" : " ";
+      tokens += argv[i];
+    }
+    ctx.err() << std::format("error: {}: The following argument was not expected: {}\n", root.get_name(), tokens);
+    return run_outcome{.code = exit_code_for(domain_error_kind::parse_error), .kind = domain_error_kind::parse_error};
+  }
   auto const [node, path] = matched_node(root);
   if (!cliapp::children(*node).empty() && !table.contains(cliapp::path_key(path))) {
     // A group named without a leaf beneath it AND with no handler of its

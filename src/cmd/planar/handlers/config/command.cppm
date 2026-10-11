@@ -3,7 +3,7 @@
 /// leaves (plan 996, task 6259).
 ///
 /// Port target:
-/// `zig/src/cmd/planar/handlers/config/{show,edit,validate,init,path}.zig`.
+/// `zig/src/cmd/planar/handlers/config/{show,edit,validate,path}.zig`.
 ///
 /// The engine underneath landed complete in commit 82820b7 (tasks
 /// 6076/6080/6081/6082): models/routing/roles resolution, `candidates` on
@@ -11,13 +11,13 @@
 /// table-header normalisation that lets a super-table follow its own
 /// sub-table. This file is WIRING over that, plus the two things the engine
 /// deliberately does not own: the config-file PATH (which is a process
-/// concern, not a resolution concern) and the two starter blobs.
+/// concern, not a resolution concern) and the starter blob.
 ///
-/// ## None of the five opens SQLite
+/// ## None of the four opens SQLite
 ///
 /// `ctx.db().opened()` is pinned false after every one of them. That is a
-/// real contract rather than an accident: `config init` and `config path`
-/// are what an operator runs BEFORE `planar init`, on a machine with no
+/// real contract rather than an accident: `config path` is what an
+/// operator runs BEFORE `planar init`, on a machine with no
 /// database at all, and `config validate` is the thing you reach for when
 /// something is already wrong. A version of these that opened SQLite would
 /// also MIGRATE it — the runtime applies pending migrations on first use —
@@ -36,21 +36,11 @@
 /// pointing at different directories, `config path` printed the one under
 /// `HOME`.
 ///
-/// ## THE TWO STARTER BLOBS ARE DIFFERENT, AND THAT IS THE ORACLE'S DEFECT
+/// ## THE STARTER BLOB IS THE ONE `config edit` WRITES
 ///
-/// `config init` and `config edit` both write a starter file when none
-/// exists, and the Zig tree carries the blob TWICE — once in `init.zig`,
-/// once in `edit.zig` — with a comment in the second claiming it "mirrors
-/// init.zig's starter_config exactly". It does not. `init.zig`'s copy grew
-/// an eight-line `[models.codex]` / `[roles]` example block (plan 540) that
-/// was never copied back into `edit.zig`'s.
-///
-/// Measured against the built oracle: `config init` writes 1267 bytes,
-/// `config edit` writes 1048, and the diff is exactly those eight lines.
-/// Both are reproduced verbatim as two separate constants. Collapsing them
-/// to one — the obvious tidy — would change what one of the two verbs
-/// writes to the operator's disk, which is a behaviour change wearing a
-/// refactor's clothes (D2). The duplication is deliberate and labelled.
+/// `config edit` writes a starter file when none exists. The blob is
+/// reproduced verbatim from the built oracle (1048 bytes), so the bytes an
+/// operator's first edit creates do not drift.
 ///
 /// ## `config show --format` IS DECLARED AND NEVER READ
 ///
@@ -139,8 +129,8 @@ export auto config_edit(context& ctx, const cliapp::parsed_args& args) -> handle
 /// returns IMMEDIATELY, so a file that is both unparseable and carries a
 /// literal secret reports only the parse error), then the line-oriented
 /// sensitive-literal scan, then the `external.github-issues.auth`
-/// cross-checks, then the `[queue]` and `[introspection]` checks and the
-/// removed-`[execute]` refusal. Steps 2-6 ACCUMULATE: every finding is
+/// cross-checks, then the `[queue]` checks and the refusal of removed tables
+/// and keys. Steps 2-5 ACCUMULATE: every finding is
 /// reported and the exit is 1 once, at the end. There is no work-type
 /// routing cross-check (removed with the models engine, plan 1142 task 7456).
 ///
@@ -152,17 +142,6 @@ export auto config_edit(context& ctx, const cliapp::parsed_args& args) -> handle
 /// @return Success, or a `generic_failure` (exit 1) carrying the complete
 /// multi-line stderr payload. Never opens the database.
 export auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-
-/// @brief Handle `planar config init`.
-///
-/// Idempotent and NOT an error when the file exists: `config init:
-/// already exists <path>` at exit 0. Writes the LONGER starter blob (see
-/// this module's header) and creates missing parent directories.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Success, or a `generic_failure` (exit 1) when the path cannot be
-/// resolved or the file cannot be written. Never opens the database.
-export auto config_init(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
 /// @brief Handle `planar config path`.
 ///
@@ -182,7 +161,7 @@ export auto config_path(context& ctx, const cliapp::parsed_args& args) -> handle
 /// `config_*` handlers above (plan 1051, M11.3e — decision 1068). None was
 /// hand-declared in `tree.cpp`.
 ///
-/// Four of the five leaves — `edit`, `validate`, `init`, `path` — declare
+/// Three of the four leaves — `edit`, `validate`, `path` — declare
 /// NOTHING: no flag, not even `--json`. They are written without a local
 /// `CLI::App*` for that reason, since naming a pointer nothing then uses
 /// is a warning rather than documentation.

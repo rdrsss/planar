@@ -25,7 +25,7 @@
 ///
 /// ## Why the renderers live at layer 2 rather than in the handlers
 ///
-/// Same reason `engine_local` and `engine_runs` put theirs here: a Catch2
+/// Same reason `engine_local` puts its here: a Catch2
 /// case can assert the exact bytes without spawning a process. The handlers
 /// become a wiring layer with nothing left to re-derive.
 module;
