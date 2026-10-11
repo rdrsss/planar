@@ -36,7 +36,7 @@
 /// drafting quartet) needed no new primitive at all; M11.3d (`capture`,
 /// `assoc`, `workspace`, `handoff`, `templates`, `bench`) added
 /// `add_string_list` for `bench start --task`, the surface's first
-/// repeatable flag; M11.3e (`scope`, `audit`, `config`, `local`, `links`,
+/// repeatable flag (extracted with plan 1142, task 7469); M11.3e (`scope`, `audit`, `config`, `local`, `links`,
 /// `run`, `feedback`) added `set_allow_extras` for `scope use|pop|clear`,
 /// the only three leaves in the tree that take one; M11.3f (the
 /// thirty-three remaining singletons) added `add_positional_described`.
@@ -130,7 +130,7 @@ export auto add_string_required(CLI::App& app, std::string_view name, std::strin
 ///
 /// `expected(1, -1)` is CLI11's unbounded form, and it is what makes the
 /// catalog report `"list":true` as well as what lets the flag be supplied
-/// more than once. `bench start --task` is the only site today; the shape
+/// more than once. The shape
 /// carries no default and is never required, so those two parameters are
 /// deliberately absent rather than defaulted.
 /// @param app The node to declare it on.

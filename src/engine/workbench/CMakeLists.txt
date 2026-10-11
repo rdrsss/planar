@@ -39,9 +39,8 @@
 #      time. D19's remedy (extract the primitive down to layer 1) is not
 #      proportionate for ONE string key out of one document: it would drag
 #      Glaze and the whole flattening pass down a layer to serve a single
-#      lookup. So root.cpp carries a narrow, single-key scan instead,
-#      following the precedent `engine_grouping` set when it duplicated its
-#      `closures` read rather than depend on `engine_closure`. It is
+#      lookup. So root.cpp carries a narrow, single-key scan instead, rather
+#      than a sideways engine edge. It is
 #      documented as not-a-TOML-parser at the definition, and its accepted
 #      shapes were oracle-probed (`[workbench]` section, top-level dotted
 #      key, `~/` expansion, empty-value fallthrough).

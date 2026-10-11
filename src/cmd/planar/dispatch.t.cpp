@@ -1155,8 +1155,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK(unported.size() == 1);
   INFO("moved by task 6364: workspace regenerate");
   CHECK_FALSE(unported.contains("workspace regenerate"));
-  INFO("moved by task 6362: bench harvest");
-  CHECK_FALSE(unported.contains("bench harvest"));
   INFO("moved by task 6365: spec ingest");
   CHECK_FALSE(unported.contains("spec ingest"));
   INFO("moved off this binary by task 6419: ext propagate");
@@ -1448,9 +1446,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
     INFO("config leaf: " << leaf);
     CHECK_FALSE(unported.contains(leaf));
   }
-  // ...and the fourth, from task 6189's own families. `closure show` is
-  // ported; `closure compute` must stay DECLARED, never silently absent.
-  CHECK_FALSE(unported.contains("closure compute"));
   // The three dual nodes (`resume`, `handoff`, `health`) ALL have real
   // handlers now that task 6357 closed the last of them — none may appear
   // in the inventory.
@@ -1489,8 +1484,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
                                   "local unlink",
                                   "local import",
                                   "local migrate",
-                                  "closure show",
-                                  "groups recommend",
                                   "question add",
                                   "question show",
                                   "question list",
@@ -1513,7 +1506,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Task 7205 adds the `help` leaf (218 -> 219).
   // Task 7319 adds the `update` leaf (219 -> 220).
   // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
-  CHECK(leaves.size() == 203);
+  // Task 7469 removes `bench` (6), `closure` (2), `run` (4) and `groups` (1) (203 -> 190).
+  CHECK(leaves.size() == 190);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

@@ -388,8 +388,8 @@ export auto flag_string(const parsed_args& args, std::string_view name) -> std::
 /// @brief Read EVERY value supplied for a repeatable flag, in argv order.
 ///
 /// The whole-vector accessor `parsed_args::flags`' own comment defers until
-/// "a repeatable flag is actually declared". `bench start --task` is that
-/// flag (plan 996, task 6149): the generated surface marks it
+/// "a repeatable flag is actually declared". `bench start --task` was that
+/// flag (plan 996, task 6149; extracted by plan 1142, task 7469): the generated surface marks it
 /// `.list = true`, `cliapp::surface`'s `declare_flag` turns that into
 /// CLI11's unbounded `expected(1, -1)`, and the oracle really does accept
 /// `--task 1 --task 2` and intersect the declared-touch snapshot with BOTH

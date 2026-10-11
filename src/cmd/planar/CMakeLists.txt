@@ -266,13 +266,7 @@
 #   - policy.audit rows -- following the precedent every engine bucket
 #     already documents; task 6100 is the open operator decision.
 #
-# --- task 6189: three engine-complete families, wired ---------------------
-#
-# Seven leaves, and the reason they landed together is that all three of
-# their buckets were finished at LAYER 2 and had never been called. Task
-# 6109 (engine_local) and task 6095 (engine_closure, engine_grouping) each
-# shipped the whole read/write path AND byte-exact renderers for every
-# render mode and every refusal line. What was missing was a caller.
+# --- task 6189: the local family, wired ----------------------------------
 #
 #   local list/link/unlink/import/migrate
 #                      The whole family. It opens NO database -- the durable
@@ -285,29 +279,10 @@
 #                      per run) and two different zero-byte empty cases, all
 #                      of which the renderers own and this layer writes
 #                      verbatim.
-#   closure show       The read half. `closure compute` STAYS a declared
-#                      exit-64 refusal: its extractor is 1637 lines of
-#                      tree-sitter AST work over a filesystem corpus walk,
-#                      tree-sitter is not vendored here, and its handler
-#                      would additionally compose engine_planning +
-#                      engine_identity. Same shape as `bench harvest` and
-#                      `models resolve` -- a family with one ported leaf and
-#                      one refusal, named rather than silently absent.
-#   groups recommend   The whole `groups` family, read-only. `--solver
-#                      mtkahypar` is ACCEPTED rather than refused, because
-#                      the degradation is REPORTED (`solver:"greedy"`,
-#                      `optimal_available:false`); master ships no solver arm
-#                      (decision 1293). An unknown `--solver` value is still exit 2,
-#                      so the flag is validated rather than ignored.
 #
-# The three DEPENDS added here -- engine_local, engine_closure,
-# engine_grouping -- are all layer-2 and none of the three handlers composes
-# two buckets, so no leaf in this batch needed the D20 shape.
-#
-# `groups recommend --solver mtkahypar` is absent from parity.t.cpp. The
-# accept-and-degrade behavior is pinned against this binary alone in
-# closure_groups_leaves.t.cpp; the solver arm lives on branch
-# `dev/grouping-solvers` (decision 1293).
+# The `closure`, `groups`, `bench` and `run` families were extracted to
+# branch `dev/grouping-solvers` (plan 1142); the `closures`, `runs`,
+# `run_events` and `run_touches` tables stay as read-only history.
 
 # --- task 6258: the adapter factory, and ONE leaf ------------------------
 #
@@ -648,19 +623,6 @@ planar_binary(planar
     handlers/handoff/create.cppm
     handlers/resume/command.cppm
     handlers/resume/validate.cppm
-    handlers/shared/runs.cppm
-    handlers/run/command.cppm
-    handlers/run/show.cppm
-    handlers/run/finish.cppm
-    handlers/run/event.cppm
-    handlers/run/start.cppm
-    handlers/bench/command.cppm
-    handlers/bench/show.cppm
-    handlers/bench/finish.cppm
-    handlers/bench/harvest.cppm
-    handlers/bench/touch.cppm
-    handlers/bench/event.cppm
-    handlers/bench/start.cppm
     handlers/local/command.cppm
     handlers/local/migrate.cppm
     handlers/local/import.cppm
@@ -680,11 +642,6 @@ planar_binary(planar
     handlers/config/validate.cppm
     handlers/config/edit.cppm
     handlers/config/show.cppm
-    handlers/closure/command.cppm
-    handlers/closure/show.cppm
-    handlers/closure/compute.cppm
-    handlers/groups/command.cppm
-    handlers/groups/recommend.cppm
     handlers/spec/command.cppm
     handlers/spec/ingest.cppm
     handlers/import/command.cppm
@@ -740,12 +697,9 @@ planar_binary(planar
     handlers/links/command.cpp
     handlers/handoff/command.cpp
     handlers/resume/command.cpp
-    handlers/shared/runs.cpp
     handlers/local/command.cpp
     handlers/templates/command.cpp
     handlers/config/command.cpp
-    handlers/closure/command.cpp
-    handlers/groups/command.cpp
     handlers/spec/command.cpp
     handlers/import/command.cpp
     handlers/synthesize/command.cpp
@@ -765,13 +719,11 @@ planar_binary(planar
     # with (see the `engine_introspect`/`engine_introspection_adapters`
     # note below).
     installed_surface
-    engine_closure
     engine_config
     engine_diagnose
     engine_entitylink
     engine_external
     engine_extsync
-    engine_grouping
     engine_identity
     # New at task 6352, for `report` (handlers/report/command.cpp): the DB-aggregate
     # half (`engine_introspect`) and the filesystem-discovery half
@@ -797,7 +749,6 @@ planar_binary(planar
     # output renderers as well as the two mutations — see its own header for
     # why those renderers live in the engine rather than here.
     engine_promotion
-    engine_runs
     engine_runtime
     engine_search
     engine_tree

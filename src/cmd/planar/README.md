@@ -25,8 +25,6 @@ helpers used by multiple families.
 | `local/`, `skills/` | Operator-local assets and installed skill views. |
 | `import/`, `synthesize/` | Import existing planning content and synthesize new artifacts. |
 | `report/`, `feedback/` | Issue reporting and feedback triage. |
-| `bench/`, `run/` | Measurement bench and run records. |
-| `closure/` | Feature closeout computation and evidence. |
 | `explore/` | Exploration command. |
 | `version/`, `completion/`, `schema/` | Version, shell completion and the flat command catalog. |
 | `shared/` | Shared handler helpers; no root CLI app. |

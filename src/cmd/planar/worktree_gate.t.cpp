@@ -150,13 +150,6 @@ TEST_CASE("classify: report and schema are execution_or_read", "[cmd][worktree-g
   CHECK(cls({"schema"}) == verb_class::execution_or_read);
 }
 
-TEST_CASE("classify: bench is execution_or_read", "[cmd][worktree-gate]") {
-  // `bench` is the measurement rig the harness drives from inside
-  // worktrees by design.
-  CHECK(cls({"bench"}) == verb_class::execution_or_read);
-  CHECK(cls({"bench", "harvest"}) == verb_class::execution_or_read);
-}
-
 TEST_CASE("classify: entity-group reads pass and writes are planning", "[cmd][worktree-gate]") {
   CHECK(cls({"plan", "show"}) == verb_class::execution_or_read);
   CHECK(cls({"plan", "list"}) == verb_class::execution_or_read);
