@@ -597,16 +597,19 @@ closeout path is `planar plan closeout --dry-run`, then apply.
 ### 5.2 Spec ingest
 
 Only `spec ingest` exists as a binary verb; drafting and review are skills.
-Inputs are the anchor's `tech_spec`, `roadmap` and `test_spec` artifacts,
-read back from the workbench feature directory.
+Inputs are the anchor's artifacts, read back from the workbench feature
+directory. A work list is required: the `roadmap` artifact, or, when the
+anchor has none, the single artifact that parses as one. Decisions, questions
+and scenarios are read from any artifact on the anchor, so a `tech_spec` and a
+`test_spec` are optional.
 
 ```mermaid
 flowchart LR
     T[tech-spec.md<br/>## Decisions H3 → decision<br/>## Open Questions H3 → question] --> D
     R[roadmap.md<br/>## H2 → child milestone plan<br/>bullet → task with touches/depends/slug] --> D
     S[test-spec.md<br/>### Scenario: → test_scenario<br/>Verifies: task:slug] --> D
-    D[diff engine<br/>title-keyed, case-insensitive<br/>ops: add / update / remove] --> C{coverage.has_gaps?<br/>slug collisions?}
-    C -->|--strict and gaps| REF[refuse]
+    D[diff engine<br/>title-keyed, case-insensitive<br/>ops: add / update / remove] --> C{slug collision or<br/>unresolved reference?}
+    C -->|--strict and yes| REF[refuse]
     C -->|preview| OUT[report, no writes]
     C -->|--apply| TX[one transaction per anchor:<br/>plans, tasks, decisions, questions,<br/>scenarios, touches edges,<br/>cites links to the reviewed artifacts,<br/>anchor draft → active once]
     TX -->|--apply-removals| RM[missing bullets → task cancelled]
@@ -616,7 +619,7 @@ Preservation rules: a task body is overwritten only when it still
 byte-matches a Planar-generated body. A body in the earlier generated shape,
 which ended with a `## Required validation` section, counts as unchanged and is
 never rewritten; a human-edited one is operator work. A slug is back-filled only when
-empty; provenance citations are always restaged; a colliding slug is
+empty; `cites` links to the reviewed artifacts are reconciled on every apply; a colliding slug is
 warned in preview and fails apply with `SlugConflict` because `tasks.slug`
 is globally unique. Ingest does not touch the workbench filesystem; run
 `workbench push` afterwards.

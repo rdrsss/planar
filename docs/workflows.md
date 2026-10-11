@@ -101,11 +101,14 @@ For the authoritative pre-ingest check, request the machine-readable preview:
 planar spec ingest 42 --strict --json
 ```
 
-The draft is not ready when the command exits non-zero or when
-`coverage.uncovered_task_slugs`, `coverage.orphan_scenarios`, or the top-level
-`slug_collisions` array is non-empty. The first two usually mean adding a
-missing `[slug:]` to a roadmap bullet or filling in a scenario's
-`**Verifies:**` line; collisions require choosing a globally unique task slug.
+The draft is not ready when the command exits non-zero, which `--strict` does
+for a slug collision or a reference that resolves to no task, or when the
+top-level `slug_collisions` array is non-empty. Collisions require choosing a
+globally unique task slug; an unresolved `**Verifies:**` or `[depends:]` slug
+needs fixing in the artifact that names it. `coverage.uncovered_task_slugs` and
+`coverage.orphan_scenarios` are reported and do not block: they usually mean
+adding a missing `[slug:]` to a roadmap bullet or filling in a scenario's
+`**Verifies:**` line, and are worth reading before `--apply`.
 
 After `--apply` has created task, scenario, and verifies rows, use the read-only
 live-row inspector for a per-milestone view with a four-bucket breakdown by

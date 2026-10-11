@@ -1033,7 +1033,7 @@ Two open tasks are parallel-eligible iff **all six** hold:
 
 A task may be excluded by multiple rules; every rule it trips is listed in `excluded_by`.
 
-Rules 5 and 6 use the same predicates as the `open_question_linked` and `proposed_decision_linked` reasons of [`task packet`](#planar-task-packet-task-id), so the two cannot disagree about a link. A task that passes the rules is then checked against its packet; one whose packet is not ready (for example a dependency in another plan, which rule 1 does not walk) is excluded with `"excluded by rule 7: routing packet is not ready"`. The packet needs no artifact, scenario or body, so a hand-made task is not excluded by rule 7.
+Rules 5 and 6 use the same predicates as the `open_question_linked` and `proposed_decision_linked` reasons of [`task packet`](#planar-task-packet-task-id), so the two cannot disagree about a link. A task that passes the rules is then checked against its packet; one whose packet is not ready (for example a dependency in another plan, which rule 1 does not walk) is excluded with `"excluded by rule 7: task packet is not ready"`. The packet needs no artifact, scenario or body, so a hand-made task is not excluded by rule 7.
 
 **Options:**
 
@@ -1618,7 +1618,7 @@ planar task packet <task-id> --expand <ref> [--json]
 
 Each clears when its cause is resolved: the dependency is done or cancelled, the question answered or won't-fix, the decision accepted, withdrawn or superseded. `plan next` and `recommend-strategy` (rule 7) read this same verdict.
 
-The packet holds no cited text and no routing fact. Each artifact the task `cites` (an `entity_links` row, task to artifact) is a **reference**: `ref` (`artifact:<id>`), `kind` (the artifact's kind), `id`, `locator` (`body`, the whole artifact), `digest` (SHA-256 over the artifact's body), `label` (its title) and `status`. The digest is read live, so editing a cited artifact moves the reference digest and the packet digest, and never the verdict. A packet for a task that cites four large artifacts is under 16 KB as text.
+The packet holds no cited text and no routing fact. Each artifact the task `cites` (an `entity_links` row, task to artifact) is a **reference**: `ref` (`artifact:<id>`), `kind` (the artifact's kind), `id`, `locator` (`body`, the whole artifact), `digest` (SHA-256 over the artifact's identity and body, `source_digest("artifact", id, "body", body)`), `label` (its title) and `status`. The digest is read live, so editing a cited artifact moves the reference digest and the packet digest, and never the verdict. A packet for a task that cites four large artifacts is under 16 KB as text.
 
 **Arguments:**
 
@@ -1633,7 +1633,7 @@ The packet holds no cited text and no routing fact. Each artifact the task `cite
 | `--json` | Emit the packet envelope, or with `--expand` the expansion object, as JSON. | off |
 | `--expand <ref>` | Print one cited artifact (`artifact:<id>`) or one section of it (`artifact:<id>#<heading>`) and nothing else. The heading match is case-insensitive and a section runs to the next heading of the same or shallower level. | none |
 
-**Output:** text mode prints `task packet <id>: ready|not_ready`, the `digest:`, a `reasons:` block when not ready, a `references (expand one with: ...)` block listing `- <ref> <12-character digest> <label>` per citation, and the canonical body. `--json` prints `{"policy_version","ready","input","digest","reasons"}`; `policy_version` is `routing-packet-v3`, and two packets are comparable only under the same one. `input` holds `task_id`, `status`, `title`, `body`, `next_action`, `owning_plans`, `references`, `dependencies`, `open_questions`, `proposed_decisions` and `claims`. `input.references` is an array of `{"ref","kind","id","locator","digest","label","status"}` in kind-then-id order. `input` has no `citations` or `facts` array and the envelope has no `canonical` copy.
+**Output:** text mode prints `task packet <id>: ready|not_ready`, the `digest:`, a `reasons:` block when not ready, a `references (expand one with: ...)` block listing `- <ref> <12-character digest> <label>` per citation, and the canonical body. `--json` prints `{"policy_version","ready","input","digest","reasons"}`; `policy_version` is `routing-packet-v3`, and two packets are comparable only under the same one. `input` holds `task_id`, `status`, `title`, `body`, `next_action`, `owning_plans`, `references`, `dependencies`, `open_questions`, `proposed_decisions` and `claims`. `input.references` is an array of `{"ref","kind","id","locator","digest","label","status"}` in kind-then-id order. Every other `input` array holds evidence rows `{"kind","id","locator","text","display_label","source_digest","current_digest","status","provenance"}`; a row has no `required`, `covered`, materializer-version or `freshness` field. The `digest` is SHA-256 over the canonical body, which is the packet without any `display_label` or reference `label`, so renaming an entity changes the printed packet and not its digest. `input` has no `citations` or `facts` array and the envelope has no `canonical` copy.
 
 With `--expand`, text mode prints the section, or the whole body without a fragment, followed by a newline. `--json` prints `{"ref":"<ref as given>","digest":"<64 hex>","text":"<section>"}`. The `digest` of a whole-artifact expansion equals the reference's `digest`.
 
@@ -5168,7 +5168,9 @@ Default mode is **preview**: prints a tree-shaped diff and exits 0 without apply
 
 Apply mode is atomic per anchor plan. All derived rows for one anchor plan run inside one SQLite savepoint: child plans, tasks, decisions, test scenarios, links, optional removals, the anchor `draft` -> `active` flip, and the successful action audit either all commit or all roll back. A failed apply leaves no partial derived graph for that anchor and should not require workbench cleanup. When multiple `<plan>` arguments are supplied, each anchor has its own atomic boundary; one plan may apply successfully while another rolls back, and the command exits non-zero if any plan fails.
 
-A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. Slug collisions are reported separately. `--strict` refuses (exit 1) on a slug collision. Uncovered tasks and orphan scenarios are reported as `warning:` lines on stderr and do not change the exit code; no setting makes them refuse yet.
+A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. Slug collisions are reported separately. `--strict` refuses (exit 2) on a slug collision, and on a reference that resolves to no task: a scenario `**Verifies:** task:<slug>` or a roadmap `[depends: <slug>]` naming a slug that no roadmap bullet declares and no task in the anchor's tree holds. Uncovered tasks and orphan scenarios are reported as `warning:` lines on stderr and do not change the exit code; no setting makes them refuse yet.
+
+A linked `roadmap` artifact whose workbench file is missing fails the run, preview or apply, naming the file; no other artifact stands in for it. Any other linked artifact with no workbench file is a `warning:` on a preview and a failure on `--apply`, because applying without it would drop its decisions, questions and scenarios.
 
 `<plan>` may be a numeric plan id or a plan slug.
 
@@ -5189,7 +5191,7 @@ A `coverage:` line follows the totals on every run. It reports how many tasks ca
 | `--format text\|json` | Output format. `text` prints a tree-shaped diff; `json` emits a machine-readable JSON object. The JSON object carries a `coverage` field with the same data the text mode prints. | `text` |
 | `--json` | Shorthand for `--format json`. | off |
 | `--scope <scope>` | Select operator write scope for `--apply`. Required when cwd does not resolve to a scope that covers the anchor plan. | cwd-derived |
-| `--strict` | Reject the ingest (exit 1) when any proposed task slug collides with a live task. Slug-bearing tasks with no verifying scenario and orphan scenarios (no parseable `**Verifies:**` line) are reported as warnings and exit 0. | off |
+| `--strict` | Reject the ingest (exit 2) when any proposed task slug collides with a live task, or a scenario `**Verifies:**` or a roadmap `[depends:]` names a slug that resolves to no task. Slug-bearing tasks with no verifying scenario and orphan scenarios (no parseable `**Verifies:**` line) are reported as warnings and exit 0. | off |
 
 **Output (human, `--format text`):**
 
@@ -5231,7 +5233,7 @@ Run with --apply to commit; add --apply-removals to cancel proposed removals.
 
 For pre-ingest review, this JSON is authoritative even when no live task or
 scenario rows exist. A non-empty `slug_collisions` array makes `--strict`
-refuse. Non-empty `uncovered_task_slugs` and `orphan_scenarios` arrays exit 0
+refuse, as does an unresolved reference. Non-empty `uncovered_task_slugs` and `orphan_scenarios` arrays exit 0
 under `--strict` and are reported as warnings; review them before `--apply`.
 
 **Schema effects:**
@@ -5248,9 +5250,9 @@ Writes (only with `--apply`, atomically per anchor plan):
 - `plans` — inserts child plans; updates anchor plan status (`draft` → `active` on first apply).
 - `tasks` — inserts or updates tasks; cancels orphan tasks (only with `--apply-removals`).
 - `decisions` — inserts or updates decisions.
-- `questions` — inserts H3 items under tech-spec `## Open Questions`; when the first non-blank body line begins with the case-sensitive `Resolution:` token, answers the new or existing question during the same apply.
-- `test_scenarios` — inserts or updates scenarios parsed from `test-spec.md`; also auto-drafts a `Verify: <task title>` scenario for each newly added task that has no authored coverage.
-- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: ...]` annotations (task→repo), plus `task_touch_paths` rows for entries in `<repo-slug>:<path>` or bare-`<path>` form, and `verifies` links (scenario→task).
+- `questions` — inserts H3 items under `## Open Questions` of any artifact on the anchor; when the first non-blank body line begins with the case-sensitive `Resolution:` token, answers the new or existing question during the same apply.
+- `test_scenarios` — inserts or updates scenarios parsed from any artifact on the anchor; also auto-drafts a `Verify: <task title>` scenario for each newly added task that has no authored coverage.
+- `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: ...]` annotations (task→repo), plus `task_touch_paths` rows for entries in `<repo-slug>:<path>` or bare-`<path>` form, and `verifies` links (scenario→task). It also writes the `cites` links (task→artifact) from each task to every anchor artifact of kind `product_spec`, `tech_spec`, `roadmap` or `test_spec` and to the selected work-list artifact, whatever its kind; they are reconciled on every apply, so a task gains a link when an artifact is added and keeps it on a re-apply.
 
 **Capture:**
 - Preview mode: one `session_entries` row with `prefix='read'` appended.
@@ -5258,8 +5260,9 @@ Writes (only with `--apply`, atomically per anchor plan):
 
 **Exit codes:**
 - `0` — success (preview or apply).
-- `1` — user error: plan not found, `--apply-removals` without `--apply`, malformed workbench files, `--strict` refused due to a slug collision.
-- `2` — system error: database failure, workbench filesystem I/O failure.
+- `1` — plan not found, no work list, a linked roadmap or (on `--apply`) another linked artifact with no workbench file, malformed workbench files, database or filesystem failure, a failed apply.
+- `2` — `--apply-removals` without `--apply`; `--strict` refused due to a slug collision or an unresolved reference.
+- `5` — `--apply` refused by the cross-scope guard.
 
 ---
 

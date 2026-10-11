@@ -8,7 +8,7 @@ planar:
 
 # Ingestor
 
-Given a feature anchor plan id, reads `tech-spec.md` and `roadmap.md` from the workbench and decomposes them into child plans, tasks, decisions, test scenarios, and entity links in the database.
+Given a feature anchor plan id, reads the anchor's artifacts from the workbench (a work list, normally `roadmap.md`, is required) and decomposes them into child plans, tasks, decisions, test scenarios, and entity links in the database.
 
 ## Tier
 
@@ -16,16 +16,16 @@ Given a feature anchor plan id, reads `tech-spec.md` and `roadmap.md` from the w
 
 ## When to use
 
-- The planner has drafted `tech-spec.md`, `roadmap.md` (and optionally `product-spec.md`) and the user has reviewed and edited them.
+- The planner has drafted `roadmap.md` (the work list, required) and usually `tech-spec.md`, `test-spec.md` and `product-spec.md`, and the user has reviewed and edited them.
 - The anchor plan is in `status='draft'` and no tasks have been decomposed yet (first pass).
 - Never before the user has reviewed the planning documents: a successful `--apply` persists the decomposition; later source edits reconcile through another ingest run, and removals require `--apply --apply-removals`.
 - The user has edited the spec and wants the task graph to reflect the edits (subsequent pass).
-- The orchestrator detects that an anchor plan is in `status='draft'` and artifacts of `kind=tech_spec` and `kind=roadmap` are linked to it.
+- The orchestrator detects that an anchor plan is in `status='draft'` and a work-list artifact (`kind=roadmap`, or the single artifact that parses as one) is linked to it.
 
 ## Inputs
 
 - A feature anchor plan id (or slug). Required.
-- The workbench filesystem: reads `tech-spec.md` and `roadmap.md` from
+- The workbench filesystem: reads every artifact linked to the anchor (`roadmap.md` as the work list; decisions, questions and scenarios from whichever artifact holds them) from
   `$PLANAR_WORKBENCH_ROOT/<assoc-slug>/<plan-key>-<plan-slug>/`.
 - The current DB state for the anchor plan (to compute the diff).
 
@@ -33,9 +33,9 @@ Given a feature anchor plan id, reads `tech-spec.md` and `roadmap.md` from the w
 
 - **Child plans**: one per H2 milestone in `roadmap.md`, each with `parent_plan_id = <anchor>` and linked via `entity_links(relationship='derives-from')`.
 - **Tasks**: one per bulleted work item, with body containing acceptance criteria, any `touches` annotation encoded as repository scope lines, and `next_action` pre-populated.
-- **Decisions**: one per H3 heading in the `## Decisions` section of `tech-spec.md`, each linked via `entity_links(relationship='derives-from')` to the anchor plan.
+- **Decisions**: one per H3 heading in the `## Decisions` section of any artifact on the anchor, each linked via `entity_links(relationship='derives-from')` to the anchor plan.
 - **Test scenarios** (draft): one auto-drafted per newly added task that has no authored coverage, linked via `entity_links(relationship='verifies')`.
-- **Questions**: one per H3 heading in `## Open Questions` of `tech-spec.md`. When an H3's body starts with a `Resolution: <answer>` marker (case-sensitive `Resolution:` as the first non-blank token; single-line or multi-line), the ingestor additionally creates a `decisions` row carrying that resolution and flips the question to `answered` with the resolution text as the answer.
+- **Questions**: one per H3 heading in `## Open Questions` of any artifact on the anchor. When an H3's body starts with a `Resolution: <answer>` marker (case-sensitive `Resolution:` as the first non-blank token; single-line or multi-line), the ingestor additionally creates a `decisions` row carrying that resolution and flips the question to `answered` with the resolution text as the answer.
 - **Touches links**: `entity_links(relationship='touches', from=task, to=repo)` rows derived from `[touches: slug1, slug2]` annotations in roadmap bullets.
 - **Anchor plan status flip**: from `draft` → `active` on the first successful `--apply` run. Idempotent on subsequent runs (status already `active`).
 
@@ -71,7 +71,7 @@ planar spec ingest <plan> --apply --apply-removals
 
 `--apply-removals` without `--apply` is a user error (exit 2).
 
-`--strict` refuses on a task-slug collision. Uncovered task slugs and orphan scenarios are reported as warnings and exit 0. `--json` is shorthand for `--format json`, and `--scope <slug>` overrides the cwd-derived scope.
+`--strict` refuses (exit 2) on a task-slug collision or a `**Verifies:**` or `[depends:]` slug that resolves to no task. Uncovered task slugs and orphan scenarios are reported as warnings and exit 0. `--json` is shorthand for `--format json`, and `--scope <slug>` overrides the cwd-derived scope.
 
 For orchestrator / machine consumption:
 
@@ -81,7 +81,7 @@ planar spec ingest <plan> --format json
 
 ## Coverage oracle by lifecycle phase
 
-Before `--apply`, run `planar spec ingest <plan> --strict --json`. Preview is the default, so this reads the workbench drafts without creating task or scenario rows. Its `coverage` object is the pre-ingest oracle: `coverage.uncovered_task_slugs` and `coverage.orphan_scenarios` are reported findings to resolve before apply, and the top-level `slug_collisions` array must be empty. A non-zero exit or a slug collision blocks apply; coverage findings alone exit 0.
+Before `--apply`, run `planar spec ingest <plan> --strict --json`. Preview is the default, so this reads the workbench drafts without creating task or scenario rows. Its `coverage` object is the pre-ingest oracle: `coverage.uncovered_task_slugs` and `coverage.orphan_scenarios` are reported findings to resolve before apply, and the top-level `slug_collisions` array must be empty. A non-zero exit, a slug collision or an unresolved reference blocks apply; coverage findings alone exit 0.
 
 After ingestion has been applied, `planar test-spec status <plan> --json` is the authoritative oracle over live task, scenario, and verifies rows. Zero totals from that live-row command before apply are not evidence of complete draft coverage.
 
@@ -100,7 +100,7 @@ Before task decomposition, the ingestor reconciles the `## Open questions` secti
 
 3. **Summarize.** After each spec file, emit one line such as `reconciled product-spec.md: 4 questions (2 new, 2 unchanged, 0 stale)`.
 
-Question-registration failures are non-fatal: log a warning and continue; do not abort the ingest run. `--strict` governs coverage readiness, not question registration.
+Question-registration failures are non-fatal: log a warning and continue; do not abort the ingest run. `--strict` governs slug collisions and reference resolution, not question registration; coverage is reported either way.
 
 ## Idempotency contract
 
@@ -126,9 +126,9 @@ Re-running the ingestor on an unchanged workbench tree is a no-op: preview repor
 ## Behavior
 
 1. Resolve the anchor plan via `planar spec ingest <plan>`.
-2. Read `tech-spec.md` and `roadmap.md` from the feature's workbench directory.
+2. Read the anchor's artifacts from the feature's workbench directory; `roadmap.md` is the required work list, and a linked roadmap or (on `--apply`) any linked artifact with no file fails the run.
 3. Strip YAML front matter from each file.
-4. Parse `tech-spec.md` for decisions (H3 headings in `## Decisions` section only).
+4. Parse every artifact for decisions (H3 headings in the `## Decisions` section only).
 5. Parse `roadmap.md` for milestones (H2 headings) and work items (bullets), extracting `[touches: ...]` annotations.
 6. Compute the diff: additions, updates, proposed removals.
 7. Render the diff (tree text or JSON).
@@ -147,7 +147,7 @@ The ingestor emits a status string at each meaningful phase boundary using `plan
 
 | Phase | Status string |
 |-------|---------------|
-| Reading `tech-spec.md` and `roadmap.md` from the workbench | `"reading workbench specs"` |
+| Reading the anchor's artifacts from the workbench | `"reading workbench specs"` |
 | Computing the diff (additions, updates, proposed removals) | `"decomposing tasks"` |
 | Rendering and presenting the preview diff | `"writing preview"` |
 | Waiting for operator to confirm before `--apply` | `"awaiting:operator-confirmation"` |
