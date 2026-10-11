@@ -6948,8 +6948,7 @@ All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent 
 Failure categories are terminal observations, not retry policy. No
 `planar` verb handles provider-capacity failures. Use
 `planar-watch claims --plan <id> --status all --json` to inspect claims,
-`planar-agent reconcile --plan <id> --dry-run --json` to preview stale recovery,
-and `planar report --json` for aggregate `{provider,category,count}` rows.
+`planar-agent reconcile --plan <id> --dry-run --json` to preview stale recovery.
 
 ### JSON shapes
 
@@ -7337,11 +7336,11 @@ Evaluates the recorded state against Planar's documented orchestration rules and
 
 **Applies without a preview.** `apply-without-preview` (`warning`, an event) reads the capture log, `cli_invocations`: it reports a `spec ingest` invocation whose `args_shape` has the whole flag `--apply` (not `--apply-removals`) when no earlier `spec ingest` invocation without `--apply` exists from the window start to that apply. A plan-scoped run (`--plan`) also looks one hour before the window start for that preview (decision 1384): `spec ingest --apply` is what creates the plan, and the plan-lifetime window starts at the plan's creation, so the preview that preceded the apply by moments would otherwise fall outside it and every ingested plan would report one finding. An unscoped run has no such anchor and keeps the plain window. The exit status of neither side matters: a preview that exited non-zero still ran, and a failed apply was still attempted. One preview precedes every later apply. The evidence is the invocation's row reference and its `recorded_at`; the arguments are never part of a finding. **Positional-shape limit:** the capture log keeps flag names and only the arity of a positional (`<pos:1>`), never its value, so the check cannot tell which plan a preview or an apply named; a preview of any plan satisfies an apply of any other. The log has no plan column either, so `--plan` changes the window (and the one-hour look-back above) and nothing else. The input is named `cli_log`: it is `disabled` (reason `cli_log-off`) when `[introspection].cli_log` is off, which is the default, and then the check does not run and reports nothing rather than reading rows an earlier logging period left behind, without degrading the outcome. It is `unavailable` (reason `cli_log-config-unknown`) when the config file path cannot be resolved or the file cannot be parsed, which makes the outcome `partial` whenever the check is selected.
 
-**Failure clusters.** `cli-failure-cluster` (`warning`, an event) reports one `verb_path` with at least three failures of the same `error_category` whose `recorded_at` is inside the window and inside one 24-hour span of it (inclusive: failures exactly 24 hours apart count; decision 1384). The `usage` category is never counted: a usage error is the caller's mistake, and on the calibration database 33 of 63 clusters were usage and 56 of 63 spanned a day or more, because a count over a whole 30-day window fires for any busy verb. The members of a finding are the failures that lie in some qualifying 24-hour span; overlapping spans are one cluster, and failures outside every span are not members. The fingerprint does not depend on the window or the spans, so a narrower or wider run over the same failures keeps it. Its fingerprint is `cli-failure-cluster|<verb_path>|<error_category>|global`, and every failure in a qualifying span is a member of the cluster (the finding's evidence lists them, and the text line names the fingerprint and the member count). The scope part is always `global`: `cli_invocations` has a `scope_slug` column, but the capture writer never fills it, so no invocation has a scope to share. It reads the same `cli_log` input as `apply-without-preview`, so it is not run with the log off. A `verb_path` is part of the fingerprint, so a row written before write-time catalog checking cannot carry prose into it: rows are dropped before counting unless the path has the shape the writer produces (at most two tokens, each a lower-case word, a number, `word:number` with letters, hyphens or underscores in the word, or the `<unknown>` placeholder; the empty path of a bare `planar` call names no verb and forms no cluster). The recovery hint depends on the category (for the CLI cluster `validation` points at `planar <verb> --help`, `scope` at `planar scope show`, `db` at `planar health`, `internal` at `planar report`, and so on; for the claim cluster each failure category names its own next step after `planar-watch claims --status all`). **Limit:** `planar-watch` cannot read the `planar` command tree, so it has no catalog predicate, and a legacy row whose path is word-shaped but not a real verb is still counted there; `planar report`'s `<unrecognized>` mask has the predicate and does not share this gap. `claim-failure-cluster` (`warning`, an event) reports at least three claims that ended inside the window (by `released_at`) with the same `failure_category` other than `unknown` (set by `planar-agent fail --category`; a claim that ended without a category is not a failure here). Its fingerprint is `claim-failure-cluster|failure_category=<value>|<scope>`, where the scope is the members' common entity scope (`repo:<slug>` or `assoc:<slug>`, from the task, or the plan for a plan or plan-step claim) and `global` when they differ or any has none. It needs no input. For both, a narrower and a wider window over the same members keep one fingerprint and the same member identities (each member's id and row timestamp); `--plan` restricts claims to the plan and its descendants and changes only the window for the capture log.
+**Failure clusters.** `cli-failure-cluster` (`warning`, an event) reports one `verb_path` with at least three failures of the same `error_category` whose `recorded_at` is inside the window and inside one 24-hour span of it (inclusive: failures exactly 24 hours apart count; decision 1384). The `usage` category is never counted: a usage error is the caller's mistake, and on the calibration database 33 of 63 clusters were usage and 56 of 63 spanned a day or more, because a count over a whole 30-day window fires for any busy verb. The members of a finding are the failures that lie in some qualifying 24-hour span; overlapping spans are one cluster, and failures outside every span are not members. The fingerprint does not depend on the window or the spans, so a narrower or wider run over the same failures keeps it. Its fingerprint is `cli-failure-cluster|<verb_path>|<error_category>|global`, and every failure in a qualifying span is a member of the cluster (the finding's evidence lists them, and the text line names the fingerprint and the member count). The scope part is always `global`: `cli_invocations` has a `scope_slug` column, but the capture writer never fills it, so no invocation has a scope to share. It reads the same `cli_log` input as `apply-without-preview`, so it is not run with the log off. A `verb_path` is part of the fingerprint, so a row written before write-time catalog checking cannot carry prose into it: rows are dropped before counting unless the path has the shape the writer produces (at most two tokens, each a lower-case word, a number, `word:number` with letters, hyphens or underscores in the word, or the `<unknown>` placeholder; the empty path of a bare `planar` call names no verb and forms no cluster). The recovery hint depends on the category (for the CLI cluster `validation` points at `planar <verb> --help`, `scope` at `planar scope show`, `db` at `planar health`, `internal` at `planar health`, and so on; for the claim cluster each failure category names its own next step after `planar-watch claims --status all`). **Limit:** `planar-watch` cannot read the `planar` command tree, so it has no catalog predicate, and a legacy row whose path is word-shaped but not a real verb is still counted there. `claim-failure-cluster` (`warning`, an event) reports at least three claims that ended inside the window (by `released_at`) with the same `failure_category` other than `unknown` (set by `planar-agent fail --category`; a claim that ended without a category is not a failure here). Its fingerprint is `claim-failure-cluster|failure_category=<value>|<scope>`, where the scope is the members' common entity scope (`repo:<slug>` or `assoc:<slug>`, from the task, or the plan for a plan or plan-step claim) and `global` when they differ or any has none. It needs no input. For both, a narrower and a wider window over the same members keep one fingerprint and the same member identities (each member's id and row timestamp); `--plan` restricts claims to the plan and its descendants and changes only the window for the capture log.
 
 **Unresolved sync conflicts.** `sync-conflict-unresolved` (`warning`, a state) reports an external-scope `sync_events` row with outcome `conflict` and a link that no later event for the same link has ended. An event ends it when its outcome is `ok`, `noop` or `success` (a clean sync, including the `ok` event `planar-ext sync resolve` writes) or `resolved-fs`/`resolved-db`; an `error`, `partial` or `failure` ends nothing, and when the last attempt after the conflict errored the hint says to run `planar-ext sync pull <link>` again before resolving. Of several conflicts on one link only the latest is reported, because `sync resolve` accepts only a link's latest event. **Workbench conflicts are not reported**, nor is any event without a link: a workbench sync writes a new conflict row on every run, `sync resolve` refuses a link-less event, and a deleted link nulls `link_id`, so such a row would stay a finding permanently; covering them is a separate follow-up. The incident is the link's, not the event's: the fingerprint is `sync-conflict-unresolved|external_link:<id>|global`, because every `sync pull` on a still-conflicting link writes a new conflict event. The finding's entity is the latest `sync_event:<id>` (the `sync resolve` target), with the `external_link:<id>` in its evidence, timed by that event's `at`, so each new conflict is a new occurrence of the same incident. The check describes the state at the evaluation instant and ignores the window start. `--plan` reaches a link through its task or plan; a link to any other entity appears only without `--plan`. It needs no input.
 
-**Stale handoffs.** `handoff-stale` reports a `pending` or `validated` handoff more than 24 hours old at the evaluation instant (a handoff exactly 24 hours old is not stale). The cutoff is the one `planar health` and `planar report` apply, shared through `planar.core.thresholds`. A handoff is skipped when its task is `done` or `cancelled`, or when the task has a claim, in any status, taken after the handoff was created (decision 1384): the work moved on without consuming the handoff, which made 15 of 16 findings on the calibration database artifacts. A handoff whose snapshot has no task is still reported. It describes the state at the evaluation instant and ignores the window start; `--plan` reaches a handoff through its snapshot's task, so a handoff whose snapshot has no task appears only without `--plan`.
+**Stale handoffs.** `handoff-stale` reports a `pending` or `validated` handoff more than 24 hours old at the evaluation instant (a handoff exactly 24 hours old is not stale). The cutoff is the one `planar health` applies, shared through `planar.core.thresholds`. A handoff is skipped when its task is `done` or `cancelled`, or when the task has a claim, in any status, taken after the handoff was created (decision 1384): the work moved on without consuming the handoff, which made 15 of 16 findings on the calibration database artifacts. A handoff whose snapshot has no task is still reported. It describes the state at the evaluation instant and ignores the window start; `--plan` reaches a handoff through its snapshot's task, so a handoff whose snapshot has no task appears only without `--plan`.
 
 **Synopsis:**
 ```
@@ -7661,96 +7660,6 @@ events:
 
 ---
 
-## Domain: `report`
-
-### `planar report [--days <n>] [--tail <n>] [--json]`
-
-**Description:** Emit the diagnostic bundle: invocation aggregates, failure tail, closed claim-failure category aggregates, and always-on health metrics. Reads `cli_invocations` (when CLI logging is enabled) plus the always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) and renders a structured diagnostic bundle.
-
-When `[introspection].cli_log` is off (the default), the invocation and failure sections render "logging disabled" instead of counts — the operator is never shown fabricated zeros. The always-on sections (`actions`, `sync`, `claims`, `claim_failure_categories`, `handoffs`, `health`, schema version) render normally in either case. JSON output also includes `introspection_preview` with bounded `signals`, per-adapter `coverage`, and `warnings`, collected read-only from the effective `[introspection.transcripts]` paths. A failed adapter degrades only its own coverage; other adapters still contribute. Successful commands are coverage observations, not gap findings; only explicit invalid-flag/help-bounce evidence is normalized as `gap`.
-
-**Privacy:** The bundle's queries (`src/engine/introspect/introspect.cpp`) select counts, closed categories, provider identities, verb paths, statuses, timestamps and coverage counters. They read no entity `title`, `body` or `summary` column, no release reason or action summary, no scope slug, no path-bearing column, and never the `args_shape` column, so flag lists are never shown. A verb path is recorded, and shown, only when the live CLI tree names it at that depth; a structured operand in the second slot (digits or `word:digits`, such as `resume 6073` or `tree plan:42`) is kept as typed, at any length. The writer records `<unknown>` and `--<unknown>` for anything else, and `planar report` renders a stored verb path the live tree does not name (an older row) as `<unrecognized>`; stored rows are never purged. This is not a guarantee about the whole report: the `introspection_preview` signals are derived from transcripts and the capture log, and a finding filed from the bundle can carry free text, and neither is structurally redacted. The operator reviewing the full text before anything is posted is the redaction boundary. The claim-failure aggregate includes only `aborted`/`stale` terminals; a null category on those legacy or uncategorized recovery rows is reported as `unknown`. Completed and released claims are non-failure terminals and are excluded.
-
-**Flags:**
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--days <n>` | int | 30 | Window in days. Must be a positive integer. |
-| `--tail <n>` | int | 20 | Number of failure-tail rows to include, in the text output and in the JSON `failure_tail`. Must be a positive integer. |
-| `--json` | bool | false | Emit stable machine-readable JSON. |
-
-**JSON wire format (`--json`):** Top-level fields are the contract consumed by downstream agents and skills:
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `version` | string | The build's version token: the second token of the `planar version` line, which is the 12-character git sha (with `+dirty` appended for a dirty tree), or `dev` for a build without version metadata. Never the program name. |
-| `schema_version` | integer | Max schema_migrations version applied. |
-| `health` | string | `"ok"` or `"degraded"`. |
-| `window` | integer | The `--days` value queried. |
-| `logging_enabled` | boolean | Whether `[introspection].cli_log` is on. `false` means `invocations`, `failures` and `failure_tail` are empty because nothing was captured, not because nothing failed. |
-| `invocations` | array | Per-verb-path aggregate rows; empty array when logging disabled or no data. |
-| `failures` | array | Per-error-category failure counts; empty array when logging disabled or no data. |
-| `failure_tail` | array | The `--tail` most recent failed invocations, newest first, as `{verb_path, error_category, exit_code, recorded_at}` rows: the same rows the text output prints under `[failure tail]`. Empty array (never absent) when logging is disabled or no invocation failed. |
-| `actions` | array | Agent-action outcome aggregates (always-on). |
-| `sync` | array | Sync-event outcome aggregates (always-on). |
-| `claims` | object | `{stale_claims, never_consumed}` (always-on). |
-| `claim_failure_categories` | array | Stable `{provider, category, count}` rows for aborted/stale claims in the window, ordered by provider then the closed category order. Null categories aggregate as `unknown`; empty windows emit `[]`. |
-| `handoffs` | object | `{stale_handoffs, never_consumed}` (always-on). `never_consumed` counts handoffs created in the window that were never transitioned to `consumed` status (distinct from `stale_handoffs`, which counts only `pending`/`validated` handoffs older than 24 h). |
-| `reopens` | integer | Count of `task_reopens` rows created in the window (always-on). |
-
-Empty windows emit empty arrays, never nulls or missing fields.
-
-**Capture-log byte cap:** The 4 MiB retained budget (what the preview keeps and normalizes; the transcript read budget is separate, below) is split four ways: Claude, Codex and Copilot transcripts each get a quarter, and the `cli_log` adapter gets what the transcript adapters leave, never less than a quarter. When the window's `cli_invocations` rows would exceed its budget, the reader takes the newest rows first, stops before the budget would be exceeded, and hands them to the preview oldest first. `introspection_preview` then lists `cli_log` as `observed` and adds `{"vendor":"cli_log","kind":"byte_cap","count":<n>}` to `warnings`, where `count` is the number of rows left unread (always the oldest ones). A window that fits the budget exactly is not truncated and carries no warning. The `cli_adapter_failed` warning and an `unavailable` `cli_log` row are reserved for a read that genuinely failed.
-
-**Transcript scan (read wide, keep narrow):** Two budgets apply. The **read budget**, `[introspection].transcript_scan_bytes` (an integer above 0; default `67108864`, 64 MiB), bounds the bytes streamed from disk across the enabled transcript vendors. It is split evenly among them; a vendor with less to read than its share leaves the rest to the others. The **retained budget** is the fixed 4 MiB above and bounds what is kept and normalized. A value that is not an integer above 0 is a configuration error naming the key: `planar report`, `planar config show` and `planar config validate` refuse it (exit 2 for the first two).
-
-Each vendor scans only files modified inside the `--days` window, newest modification time first, ties broken by path, each file forward one line at a time. A file that does not fit the vendor's remaining read budget is skipped and counted rather than stopping the scan, so one large file does not hide the files after it. The one exception is the newest file: when it alone exceeds the read budget, its tail is read, starting at the first complete line, because the live session is usually the newest and largest file. The file-count cap is unchanged.
-
-A line is **kept** only if it contains `planar` and is that vendor's call shape (a Claude assistant `tool_use` or a Codex `function_call` whose command is a planar invocation, a failed Codex `CommandExecution` of one, a Copilot `tool.execution_start` of one), or if it carries the call id of a call kept earlier in the same file (a Claude `tool_result`, a Codex `function_call_output`, a Copilot `tool.execution_complete`). Every other line is discarded without being stored, copied or logged. A line longer than 1 MiB is skipped unread. Up to 4096 call ids are pending per file; a call past that is still kept, but its result cannot be paired. Reaching the retained budget stops that vendor's scan with a `byte_cap` warning carrying `"reason":"retained"`; reaching the read budget (a file skipped or the newest read from its tail) adds a `byte_cap` warning with `"reason":"scanned"`. Warnings without a reason carry no `reason` key.
-
-Each `introspection_preview.coverage` row (and the text report's coverage line) carries these counters, in this order, after `bytes_read`:
-
-| Counter | Meaning |
-|---------|---------|
-| `bytes_read` | Alias of `bytes_retained`, which is what it measured when every byte read was kept. |
-| `files_partial` | Files read from their tail only. |
-| `files_skipped_cap` | Files not read because the file, read-budget or record cap left no room, or the vendor's scan had stopped. The warning matching the cap that stopped it (`byte_cap`, `file_cap` or `record_cap`) accompanies a skipped or partial file. |
-| `files_skipped_window` | Files not read because their modification time is before the window. |
-| `bytes_scanned` | Bytes streamed from disk for the vendor, kept or not. A tail read counts the tail. |
-| `bytes_retained` | Bytes of the lines kept, newlines excluded. At most the vendor's share of the retained budget. |
-| `lines_oversize` | Lines longer than 1 MiB, skipped unread. |
-| `results_unpaired` | Results whose call was not kept: the call fell before the start of a tail read, or its id was past the pending cap. Only a tail read can miss a call, so a whole-file read never counts one. A result for a call that was seen and is not a planar call is not counted. |
-
-The `scanned`, `normalized`, `ignored`, `malformed` and `capped` counters describe the kept lines, plus one more class: a line that mentions `planar` but is not valid JSON or is a broken envelope of the vendor's format is dropped, not stored, and counted in `scanned` and `malformed` (with the `malformed` warning), so a changed vendor format does not read as a clean scan. Any other discarded line is in none of them. The counters are `0` for `cli_log` and for a disabled vendor. An unavailable vendor reports the files it skipped before every read failed.
-
-**Transcript recognition:** A transcript signal is a failed `planar` command, and its verb path comes from the same live-CLI catalog rule the capture log uses (a token the tree names, a structured operand in the second slot, otherwise `<unknown>`), so typed words, flag values and prose never reach a signal.
-
-- **Claude:** a `Bash` `tool_use` paired with an `is_error: true` `tool_result`.
-- **Codex:** an `event_msg` `item_completed` of type `CommandExecution` with a non-zero `exit_code` or `status: "failed"`. The `command` array is either an argv or a shell wrapper (`bash -lc "<script>"`). The older `schema_version`/`command_execution` records are still read. `custom_tool_call` and `custom_tool_call_output` records are validated and otherwise ignored. A `function_call` of a planar command and its `function_call_output` are kept by the scan (so they count in `scanned` and `ignored`) but yield no signal; a successful `CommandExecution` is discarded by the scan.
-- **Recognized command shapes:** `planar ...`, `./bin/planar ...`, `build/*/bin/planar ...` and any path ending in `/planar`, with `env`/`NAME=value` prefixes. The command may be a chain, but planar must be its last step, so the recorded exit status is planar's: a step joined by `;` may be anything, and every step joined to planar by `&&` must be `cd`, `pushd`, `export` or `NAME=value` only. A pipeline (`|`), command substitution, a here-document, a background job, a second planar step, or planar followed by another step (`planar ... && make test`) is not attributed to a verb.
-- **Copilot:** only `*.jsonl` files under the session-state path are read. When the directory holds none (the installed Copilot CLI writes YAML, Markdown and JSON metadata there), the Copilot row is `unavailable` and `warnings` carries `{"vendor":"copilot","kind":"unsupported_layout","count":1}`. Copilot's `session-store.db` and logs are not read.
-
-**Exit codes:**
-
-| Code | Meaning |
-|------|---------|
-| 0 | Bundle rendered successfully (including "logging disabled" path). |
-| 2 | Invalid flag value (`--days` or `--tail` must be a positive integer) or an invalid `[introspection].transcript_scan_bytes`; no partial bundle is emitted. |
-| 1 | Database error. |
-
-**Example:**
-
-```
-planar report
-planar report --days 7 --tail 5
-planar report --json
-planar report --days 14 --json
-```
-
-**Schema effects:** Read-only. Touches `cli_invocations`, `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`, `schema_migrations`, `tasks`, `context_snapshots`. No writes.
-
----
-
 ## Domain: `search`
 
 ### `planar search <query> [--kind <kind>] [--status <status>] [--scope <scope>] [--plan <id>] [--limit <n>] [--json]`
@@ -7812,7 +7721,6 @@ For quick reference, all documented commands grouped by domain:
 | `audit` | `audit trail`, `audit session`, `audit commits`, `audit handoff-readiness` |
 | `health` | `health` |
 | `links` | `links add`, `links list`, `links remove`, `links trail` (no `links update`) |
-| `report` | `report [--days <n>] [--tail <n>] [--json]` |
 | `search` | `search <query>` |
 | `explore` | `explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]` |
 | `spec` | `spec ingest` |

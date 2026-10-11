@@ -33,7 +33,6 @@ import planar.cmd.planar.handlers.plan;
 import planar.cmd.planar.handlers.promote.command;
 import planar.cmd.planar.handlers.demote.command;
 import planar.cmd.planar.handlers.question;
-import planar.cmd.planar.handlers.report;
 import planar.cmd.planar.handlers.resume;
 import planar.cmd.planar.handlers.bench.command;
 import planar.cmd.planar.handlers.run.command;
@@ -113,7 +112,6 @@ auto root_app() -> std::unique_ptr<CLI::App> {
   handlers::declare_update(*app);     // 36a: plan 1122 M3 (task 7319)
   handlers::declare_completion(*app); // 37
   handlers::declare_schema(*app);     // 38
-  handlers::declare_report(*app);     // 39
   handlers::declare_bench(*app);      // 40
   handlers::declare_closure(*app);    // 41
   handlers::declare_run(*app);        // 42

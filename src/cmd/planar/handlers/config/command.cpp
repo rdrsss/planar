@@ -323,17 +323,6 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   if (!resolved.has_value()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving configuration: ParseFailed"));
   }
-  // `resolve` falls back to the default for a wrong-typed value; a range-checked key is refused here, by name.
-  if (content_view.has_value()) {
-    if (auto const file_map = cfg::parse_toml(*content_view); file_map.has_value()) {
-      if (auto const findings = cfg::validate_introspection(*file_map); !findings.empty()) {
-        return std::unexpected(
-            error_from_body(domain_error_kind::invalid_input,
-                            std::format("invalid configuration: {}: {}", findings.front().key, findings.front().message)));
-      }
-    }
-  }
-
   bool const as_json = cliapp::flag_bool(args, "--json");
   // `--json` implies provenance; `--format` is declared and never read (see
   // config.cppm).
@@ -439,13 +428,14 @@ auto queue_key_at_line(std::string_view content, std::uint32_t line) -> std::str
   }
 }
 
-/// @brief Whether the file opens an `[execute]` table, or a table under it.
+/// @brief Whether the file opens the named table, or a table under it.
 ///
 /// Lexical, like the other line scans here, because a flattened map has no
-/// entry for an empty table and `[execute]` with no keys must still refuse.
+/// entry for an empty table and a removed table with no keys must still refuse.
 /// @param content The whole configuration file.
-/// @return True when some table header names `execute` or `execute.<...>`.
-auto has_execute_table(std::string_view content) -> bool {
+/// @param table The dotted table name, for example `execute`.
+/// @return True when some table header names `table` or `table.<...>`.
+auto has_table(std::string_view content, std::string_view table) -> bool {
   std::string_view rest{content};
   while (!rest.empty()) {
     auto const newline = rest.find('\n');
@@ -455,7 +445,7 @@ auto has_execute_table(std::string_view content) -> bool {
       // table name (task 7057).
       auto const header = text.substr(0, std::min(text.size(), text.find('#')));
       auto const name   = trim_any(trim_any(header, " \t[]"), " \t");
-      if (name == "execute" || name.starts_with("execute.")) {
+      if (name == table || (name.starts_with(table) && name.size() > table.size() && name[table.size()] == '.')) {
         return true;
       }
     }
@@ -599,19 +589,26 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     report(std::format("{}: {}", finding.key, finding.message));
   }
 
-  // ---- step 5: the `[introspection]` keys that carry a range ------------
-  for (auto const& finding : cfg::validate_introspection(*parsed)) {
-    report(std::format("{}: {}", finding.key, finding.message));
-  }
-
-  // ---- step 6: the removed `[execute]` table (plan 1142, task 7459) ------
+  // ---- step 5: removed tables and keys ----------------------------------
   //
-  // planar-execute's engine selector and profiles left planar's configuration
-  // with it, so `[execute]` is no longer a known key. A file that still
+  // planar-execute's selector and profiles left planar's configuration with
+  // `[execute]` (plan 1142, task 7459), and the transcript capture settings
+  // left with the introspection engines (plan 1142, task 7472). A file that still
   // carries one is refused by name rather than having its keys ignored.
-  if (std::ranges::any_of(*parsed, [](auto const& kv) { return kv.first == "execute" || kv.first.starts_with("execute."); }) ||
-      has_execute_table(*content)) {
+  auto const removed = [&](std::string_view name) {
+    return has_table(*content, name) || std::ranges::any_of(*parsed, [&](auto const& kv) {
+             return kv.first == name ||
+                    (kv.first.starts_with(name) && kv.first.size() > name.size() && kv.first[name.size()] == '.');
+           });
+  };
+  if (removed("execute")) {
     report("execute: unknown key (the [execute] table was removed from planar's configuration)");
+  }
+  if (removed("introspection.transcripts")) {
+    report("introspection.transcripts: unknown key (the transcript capture settings were removed)");
+  }
+  if (removed("introspection.transcript_scan_bytes")) {
+    report("introspection.transcript_scan_bytes: unknown key (the transcript read budget was removed)");
   }
 
   if (!findings.empty()) {

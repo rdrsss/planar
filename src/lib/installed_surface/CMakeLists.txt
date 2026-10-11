@@ -2,15 +2,13 @@
 # projection classifier (plan 996, task 6357).
 #
 # Layer 1 by name (cmake/architecture.cmake classifies anything not `cmd_*` /
-# `engine_*` as layer 1), same as `scope_ref` / `json_dom` / `process` /
-# `introspection_preview`.
+# `engine_*` as layer 1), same as `scope_ref` / `json_dom` / `process`.
 #
 # FORCED to layer 1, not chosen: its one consumer is `engine_health` (layer
 # 2), and this classifier has no `db` edge of its own — it is manifest JSON
 # plus a filesystem walk — so a direct `engine_health -> engine_<this>` edge
 # would be the `engine_* -> engine_*` shape D15/D18 FATAL on at configure
-# time. Same correction shape as `scope_ref` (D19) and decision 981's
-# `introspection_preview`: the leaf composing both halves (`planar health`'s
+# time. Same correction shape as `scope_ref` (D19): the leaf composing both halves (`planar health`'s
 # handler, layer 3) is where the two buckets legally meet.
 #
 # DEPENDS json_dom for manifest parsing: the oracle's `std.json.

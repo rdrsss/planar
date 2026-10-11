@@ -954,7 +954,6 @@ constexpr std::array<command_class_t, 227> k_command_classes{
     r_("planar version"),
     r_("planar completion"),
     r_("planar schema"),
-    r_("planar report"),
     m_("planar bench start"),
     m_("planar bench event"),
     m_("planar bench touch"),
@@ -1008,10 +1007,7 @@ struct capability_exemption_t {
   std::string_view role;
   std::string_view shape;
 };
-constexpr std::array<capability_exemption_t, 6> k_capability_exemptions{
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar plan create"},
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar task add"},
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar question add"},
+constexpr std::array<capability_exemption_t, 3> k_capability_exemptions{
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},

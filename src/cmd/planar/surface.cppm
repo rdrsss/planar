@@ -354,7 +354,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar update", "Update the Planar installation to a published release."},
       {"planar completion", "Generate the autocompletion script for the specified shell."},
       {"planar schema", "Print the full command tree as a JSON catalog (flags, aliases, positionals)."},
-      {"planar report", "Emit the diagnostic bundle: invocation and closed claim-failure aggregates plus health metrics."},
       {"planar bench", "Record and query benchmark run data (measurement rig)."},
       {"planar bench start", "Mint a new run record and print its run_uid."},
       {"planar bench event", "Append a journal event to a run."},

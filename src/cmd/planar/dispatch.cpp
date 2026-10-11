@@ -23,7 +23,6 @@ import planar.cmd.planar.handlers.test_spec;
 import planar.cmd.planar.handlers.health;
 import planar.cmd.planar.handlers.audit;
 import planar.cmd.planar.handlers.dashboard;
-import planar.cmd.planar.handlers.report;
 import planar.cmd.planar.handlers.capture;
 import planar.cmd.planar.handlers.catalog;
 import planar.cmd.planar.handlers.handoff;
@@ -283,13 +282,6 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   table.emplace("audit commits", handlers::audit_commits);
   table.emplace("audit handoff-readiness", handlers::audit_handoff_readiness);
   table.emplace("dashboard", handlers::dashboard);
-  // `report` — landed at task 6352 with the layer-1 `introspection_preview`
-  // extraction (decision 981) that lets `engine_introspect`'s `bundle`
-  // carry a `preview` field without an `engine_* -> engine_*` edge. Both
-  // engine buckets it composes (`engine_introspect`, DB aggregates;
-  // `engine_introspection_adapters`, filesystem discovery) were already
-  // ported; this handler is the D20 composition layer3 exists for.
-  table.emplace("report", handlers::report);
   table.emplace("task add", handlers::task_add);
   table.emplace("task show", handlers::task_show);
   table.emplace("task packet", handlers::task_packet);

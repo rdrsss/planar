@@ -403,9 +403,9 @@ TEST_CASE("config show lists every resolved key with no provenance", "[cmd][conf
   // cannot pass on the two keys the case happens to name. (22 until plan 1033
   // task 6485 added `execute.engine`; 28 since plan 1080 task hq-config added
   // the five `queue.*` keys and `introspection.transcript_scan_bytes`; 28
-  // again after task 7459 removed `execute.engine`.)
-  CHECK(lines_of(r.out).size() == 28);
-  CHECK(line_for(r.out, "introspection.transcript_scan_bytes") == "introspection.transcript_scan_bytes = 67108864");
+  // again after task 7459 removed `execute.engine`; 24 after task 7472 removed
+  // the transcript budget and the three `*_enabled` keys.)
+  CHECK(lines_of(r.out).size() == 24);
   CHECK(line_for(r.out, "queue.slots") == "queue.slots = 1");
   CHECK(line_for(r.out, "queue.poll_interval") == "queue.poll_interval = 1s");
   CHECK(line_for(r.out, "queue.stale_after") == "queue.stale_after = 30s");
@@ -613,7 +613,7 @@ TEST_CASE("config show --defaults prints the embedded file and beats every other
   // operator's (which is what `--raw` would have printed). The byte count is
   // the embedded defaults.toml, which lost its 309-byte `[execute]` block to
   // plan 1142 task 7459 (4476 bytes before, 4167 after).
-  CHECK(r.out.size() == 4167);
+  CHECK(r.out.size() == 3550);
   CHECK(r.out.contains("[queue]\n"));
   CHECK_FALSE(r.out.contains("[execute]"));
   CHECK(r.out.starts_with("# ~/.planar/config.toml"));
@@ -631,7 +631,7 @@ TEST_CASE("config show --defaults works with no HOME at all", "[cmd][config][sho
   fx.vars.erase("PLANAR_CONFIG_PATH");
   auto const r = dispatch(fx, {"config", "show", "--defaults"});
   CHECK(r.code == 0);
-  CHECK(r.out.size() == 4167);
+  CHECK(r.out.size() == 3550);
   cleanup(fx);
 }
 
@@ -842,18 +842,34 @@ TEST_CASE("config show --effective prints no execute. key, even when the file or
   cleanup(fx);
 }
 
-TEST_CASE("config validate refuses an invalid [introspection].transcript_scan_bytes, naming the key",
-          "[cmd][config][validate][wide-keep-narrow]") {
-  auto const fx = make_fixture("valscan");
-  for (std::string_view const value : {"0", "-3", "\"big\""}) {
-    INFO(value);
-    write_config(fx, std::format("[introspection]\ntranscript_scan_bytes = {}\n", value));
-    auto const r = dispatch(fx, {"config", "validate"});
-    CHECK(r.code == 1);
-    CHECK(r.err.find("error: introspection.transcript_scan_bytes: ") == 0);
-  }
+TEST_CASE("config validate refuses the removed transcript keys by name", "[cmd][config][validate]") {
+  // Plan 1142 (task 7472) removed the transcript capture settings with the
+  // introspection engines. A stale file that still carries them is refused by name, the
+  // way a stale `[execute]` table is, rather than having the keys ignored.
+  auto const fx = make_fixture("valremoved");
+  write_config(fx, "[introspection.transcripts]\nclaude_enabled = false\n");
+  auto const table = dispatch(fx, {"config", "validate"});
+  CHECK(table.code == 1);
+  CHECK(table.err.find("error: introspection.transcripts: unknown key") == 0);
+
   write_config(fx, "[introspection]\ntranscript_scan_bytes = 1048576\n");
+  auto const key = dispatch(fx, {"config", "validate"});
+  CHECK(key.code == 1);
+  CHECK(key.err.find("error: introspection.transcript_scan_bytes: unknown key") == 0);
+
+  write_config(fx, "[introspection]\ncli_log = true\nretention_days = 30\n");
   CHECK(dispatch(fx, {"config", "validate"}).code == 0);
+  cleanup(fx);
+}
+
+TEST_CASE("config show --effective has no transcript keys and keeps the CLI telemetry keys", "[cmd][config][show][effective]") {
+  auto const fx = make_fixture("showtelemetry");
+  auto const r  = dispatch(fx, {"config", "show", "--effective"});
+  CHECK(r.code == 0);
+  CHECK_FALSE(r.out.contains("introspection.transcripts."));
+  CHECK_FALSE(r.out.contains("introspection.transcript_scan_bytes"));
+  CHECK(r.out.contains("introspection.cli_log"));
+  CHECK(r.out.contains("introspection.retention_days"));
   cleanup(fx);
 }
 

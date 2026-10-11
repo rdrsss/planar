@@ -217,8 +217,7 @@ auto parse_args(std::span<const std::string> argv_tail) -> parsed_args_shape {
     //     import /Users/private/clients/acme-secret
     //     synthesize /Users/private/clients/acme-secret
     //
-    // `introspect` selects this column verbatim into `[invocations]`,
-    // `[failure tail]` and the JSONL boundary of `planar report`, so a
+    // The readers of `cli_invocations` select this column verbatim, so a
     // search term or a client directory name could leave the machine inside
     // a diagnostic bundle.
     //

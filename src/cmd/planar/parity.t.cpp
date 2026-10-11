@@ -345,6 +345,27 @@ TEST_CASE("the removed planar workflow verb exits 2 and the schema catalog omits
   CHECK_FALSE(catalog.out.contains(R"("path":["workflow")"));
 }
 
+TEST_CASE("the removed planar report verb exits 2 and the schema catalog omits it", "[cmd][parity][cli-surface]") {
+  // Plan 1142 (task 7472) removed `planar report` with its introspection
+  // engines. A removal needs a negative test, driven against the shipped
+  // binary the way an operator would: the verb is an unknown subcommand, and
+  // no catalog entry still names it.
+  auto const space = make_arena("reportgone");
+  auto const run   = [&](std::vector<std::string> args, std::string_view tag) {
+    return run_pinned(cpp_bin(), args, space.cpp_root, tag);
+  };
+
+  auto const gone = run({"report", "--json"}, "rgone");
+  CHECK(gone.code == 2);
+  CHECK(gone.out.empty());
+  CHECK(gone.err == "error: planar: The following arguments were not expected: report --json\n");
+
+  auto const catalog = run({"schema"}, "rgoneschema");
+  REQUIRE(catalog.code == 0);
+  CHECK_FALSE(catalog.out.contains(R"("command":"planar report)"));
+  CHECK_FALSE(catalog.out.contains(R"("path":["report")"));
+}
+
 TEST_CASE("the removed explore, skills and scope use|pop|clear verbs exit 2 and the schema catalog omits them",
           "[cmd][parity][cli-surface]") {
   // Plan 1142, task 7463. These five were deleted outright: `explore` was a

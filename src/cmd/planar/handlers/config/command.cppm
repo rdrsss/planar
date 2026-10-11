@@ -129,8 +129,8 @@ export auto config_edit(context& ctx, const cliapp::parsed_args& args) -> handle
 /// returns IMMEDIATELY, so a file that is both unparseable and carries a
 /// literal secret reports only the parse error), then the line-oriented
 /// sensitive-literal scan, then the `external.github-issues.auth`
-/// cross-checks, then the `[queue]` and `[introspection]` checks and the
-/// removed-`[execute]` refusal. Steps 2-6 ACCUMULATE: every finding is
+/// cross-checks, then the `[queue]` checks and the refusal of removed tables
+/// and keys. Steps 2-5 ACCUMULATE: every finding is
 /// reported and the exit is 1 once, at the end. There is no work-type
 /// routing cross-check (removed with the models engine, plan 1142 task 7456).
 ///

@@ -883,12 +883,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                            "merely LARGE"; it is 101 zig lines, the
   //                            SMALLEST leaf in its family, over
   //                            `resumecheck` alone.
-  //   report                   NOT moved, and genuinely blocked: it needs
-  //                            `engine/introspect.zig` (1330 lines) plus
-  //                            `engine/introspection_adapters.zig` (1319).
-  //                            Neither has any C++ equivalent. Its stated
-  //                            layer-3 blocker was ALSO stale — the real
-  //                            one is 2649 unported engine lines.
   //   explore                  NOT moved, and the most blocked leaf in the
   //                            inventory. The handler is 93 lines, which
   //                            is why it reads cheap; it launches the
@@ -940,14 +934,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // fourteenth and last leaf. See surface.cpp's entry for the sizing note
   // (the inherited ~300-line estimate UNDER-stated it) and the two oracle
   // behaviors this port must not normalize away.
-  // 12 -> 11 at task 6352: `report` moved, once `engine_introspect` (task
-  // 6121) and `engine_introspection_adapters` (tasks 6102 and 6352) were
-  // both complete and decision 981's layer-1 `introspection_preview`
-  // extraction let `bundle::preview` reach across the D15-forbidden
-  // `engine_* -> engine_*` gap between them. `explore` — the OTHER leaf
-  // task 6329 probed and parked under the same stale layer-3 note `report`
-  // was — stays; it needs the COCKPIT (33,452 unported zig lines), a
-  // wholly different blocker `report`'s port did nothing to remove.
   // 11 -> 10 at task 6357: `health` moved, closing the family (task 6090
   // had already landed `health hygiene`). The blocker here was genuine,
   // unlike most of this milestone's over-stated ones: the handler folds
@@ -1023,8 +1009,6 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   CHECK_FALSE(unported.contains("dashboard"));
   INFO("moved by task 6329: audit handoff-readiness");
   CHECK_FALSE(unported.contains("audit handoff-readiness"));
-  INFO("moved by task 6352: report");
-  CHECK_FALSE(unported.contains("report"));
   INFO("moved by task 6357: health");
   CHECK_FALSE(unported.contains("health"));
   INFO("moved by task 6324, completing the `task` family's big unblocked leaf: task packet");
@@ -1354,8 +1338,9 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Task 7319 adds the `update` leaf (219 -> 220).
   // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
   // Plan 1142 task 7463 removes `explore`, `skills` and the three `scope` stubs (203 -> 198).
-  // Plan 1142 task 7468 removes `document validate-range`, `audit publish-decision`, `assoc detect` and `config init` (198 -> 194).
-  CHECK(leaves.size() == 194);
+  // Plan 1142 task 7468 removes `document validate-range`, `audit publish-decision`, `assoc detect` and `config init` (198 ->
+  // 194). Task 7472 removes `planar report` (194 -> 193).
+  CHECK(leaves.size() == 193);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

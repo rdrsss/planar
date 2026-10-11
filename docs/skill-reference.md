@@ -1,7 +1,7 @@
 # Planar Skill and Agent Reference
 
 Planar ships one skill, `planar`, in the [Agent Skills](https://agentskills.io) layout, and
-fifteen role agents named `planar-<role>`. The CLI is the contract: the skill teaches only
+fourteen role agents named `planar-<role>`. The CLI is the contract: the skill teaches only
 the rules that cross verbs, and everything verb-shaped comes from the binaries. The first
 step, with or without the skill, is `planar --help`.
 
@@ -80,7 +80,7 @@ maps to a request, an agent or a command:
 | `pl-knowledge`, `pl-promote` | `references/knowledge.md`, over `planar decision`, `planar artifact`, `planar annotate`, `planar links`, `planar promote` and `planar demote` |
 | `pl-workbench`, `pl-workbench-sync`, `pl-workbench-archive` | `references/spec-pipeline.md`, over `planar workbench` |
 | `pl-ext-create`, `pl-ext-propagate`, `pl-sync`, `pl-audit-trail`, `pl-templates` | `references/external-sync.md` and the `planar-ext-sync` agent, over `planar-ext`, `planar audit trail` and `planar templates` |
-| `pl-feedback-triage`, `pl-introspect`, `pl-report-issue` | the `planar-feedback-triager` and `planar-introspector` agents, over `planar feedback` and `planar report` |
+| `pl-feedback-triage` | the `planar-feedback-triager` agent, over `planar feedback` |
 | `pl-local`, `pl-local-import`, `pl-workspace-scan` | `references/local.md`, over `planar local` and `planar workspace` |
 | `pl-init`, `pl-scope` | `planar init` and `planar scope show` |
 | `pl-help` | `planar --help`, `planar help` and `planar schema --command "<verb>"` |
@@ -172,7 +172,7 @@ references. The installed copy lives in the skill roots above and in
 3. **Discovery rule.** Read a verb's `--help` before using it; use `schema --command` or
    `schema --compact` for machine-readable detail; never load the full catalog.
 4. **Routing.** An intent table that points at one reference, and the names of the
-   fifteen agents for role work.
+   fourteen agents for role work.
 
 The thirteen invariants, by their lead phrase:
 
@@ -257,7 +257,6 @@ surface, never invoked as a skill: no slash-command skill exists for any role.
 | `planar-synthesizer` | Synthesizes fresh planning artifacts from docs, git history and source. |
 | `planar-ext-sync` | Propagates a feature to Jira or GitHub Issues, on explicit request. |
 | `planar-feedback-triager` | Triages redacted feedback findings, applying only approved changes. |
-| `planar-introspector` | Proposes friction findings from redacted usage signal. |
 | `planar-sync-reconciler` | Recommends one disposition for a sync conflict and applies it on confirmation. |
 
 ### Frontmatter contract

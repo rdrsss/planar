@@ -3,13 +3,13 @@
 //
 // The cases drive the shipped catalog over a scratch database with rows written directly, so the
 // evaluation instant and the 24 hour boundary are exact. The same check is exercised against
-// `planar report`'s own count through the real binaries in
+// `planar health`'s own count through the real binaries in
 // `src/cmd/planar-watch/diagnose_checks.t.cpp`.
 //
 // What is pinned:
 //
 //   * `handoff-stale`: a `pending` or `validated` handoff older than the stale-handoff threshold
-//     (24 hours, the one `planar report` and `planar health` apply), measured to the evaluation
+//     (24 hours, the one `planar health` applies), measured to the evaluation
 //     instant. Exactly at the threshold is not stale.
 //   * A `consumed` or `abandoned` handoff is never stale, however old.
 //   * The plan scope reaches a handoff through its snapshot's task.

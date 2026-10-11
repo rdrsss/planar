@@ -57,8 +57,6 @@ side effects and the executable source index.
 | [`identity/`](identity/) | Repository and association identity. |
 | [`importer/`](importer/) | Translate existing repository planning material. |
 | [`ingest/`](ingest/) | Decompose workbench specifications into entities. |
-| [`introspect/`](introspect/) | Usage introspection and findings. |
-| [`introspection_adapters/`](introspection_adapters/) | Inputs to introspection. |
 | [`local/`](local/) | Operator local skill and agent lifecycle. |
 | [`planning/`](planning/) | Plans, tasks, decisions, scenarios and other planning entities. |
 | [`promotion/`](promotion/) | Scope promotion and demotion. |
