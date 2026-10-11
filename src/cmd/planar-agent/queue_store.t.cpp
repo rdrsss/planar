@@ -34,6 +34,7 @@ namespace {
 
 namespace qfix = planar::cmd::qfix;
 namespace hq   = planar::engine::hostqueue;
+using planar::cmd::agent::claim_standing_lookup;
 using planar::cmd::agent::open_queue_store;
 using planar::cmd::agent::store_access;
 
@@ -312,4 +313,96 @@ TEST_CASE("queue_log_directory agrees with scripts/queue-logs-after-reset.py's l
     CHECK(from_python[i] == planar::cmd::agent::queue_log_directory(dir / table[i].name).string());
     CHECK(from_python[i] == (dir / table[i].logs).string());
   }
+}
+
+// ---------------------------------------------------------------------------
+// The claim-standing lookup the history retention prune uses (plan 1142, task
+// mo-queue-claim-evidence).
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief Runs `sql` on `conn`, failing the case when it does not.
+void run_sql(planar::db::connection& conn, std::string_view sql) {
+  auto ran = conn.execute(sql);
+  qfix::must(std::string{sql}, ran.has_value(), ran ? "" : ran.error().message_);
+}
+
+/// @brief Seeds an active plan (1), a task on it (1), a plan-less task (2), a
+/// session, and one claim per entity kind. Tokens are `task-claim`,
+/// `plan-claim`, `step-claim` and `no-plan-claim`.
+void seed_claims(planar::db::connection& conn) {
+  run_sql(conn, "insert into plans (scope_kind, title, slug, status) values ('global', 'p', 'standing-plan', 'active')");
+  run_sql(conn, "insert into tasks (scope_kind, plan_id, title, status, priority) values ('global', 1, 't', 'todo', 100)");
+  run_sql(conn, "insert into tasks (scope_kind, title, status, priority) values ('global', 'orphan', 'todo', 100)");
+  run_sql(conn, "insert into plan_steps (plan_id, ordinal, body) values (1, 1, 'step')");
+  run_sql(conn, "insert into sessions (vendor) values ('claude')");
+  for (auto const& [token, kind, id] : std::vector<std::tuple<std::string, std::string, int>>{
+           {"task-claim", "task", 1}, {"plan-claim", "plan", 1}, {"step-claim", "plan_step", 1}, {"no-plan-claim", "task", 2}}) {
+    run_sql(conn, std::format("insert into agent_work_claims (claim_token, session_id, entity_kind, entity_id, vendor, "
+                              "lease_expires_at) values ('{}', 1, '{}', {}, 'claude', '2026-10-01T10:00:00.000Z')",
+                              token, kind, id));
+  }
+}
+
+} // namespace
+
+TEST_CASE("claim_standing_lookup reports the plan state and when the claim ended",
+          "[cmd][agent][queue][queue-store][mo-queue-claim-evidence]") {
+  remover const guard{scratch("standing")};
+  auto const    db   = guard.root / "planar.db";
+  auto          conn = qfix::open_store(db);
+  REQUIRE(conn.has_value());
+  seed_claims(*conn);
+  auto const lookup = claim_standing_lookup(*conn);
+  using state       = hq::claim_standing::plan_state;
+
+  // An active claim's end is its lease expiry.
+  constexpr std::int64_t k_lease_ms = 1'790'848'800'000; // 2026-10-01T10:00:00Z
+  for (std::string const token : {"task-claim", "plan-claim", "step-claim"}) {
+    INFO(token);
+    auto const standing = lookup(token);
+    CHECK(standing.plan == state::open);
+    CHECK(standing.claim_ended_ms == std::optional<std::int64_t>{k_lease_ms});
+  }
+
+  // A released claim's end is its release time, which wins over the lease.
+  run_sql(*conn, "update agent_work_claims set status = 'completed', released_at = '2026-10-02T11:00:00.500Z' "
+                 "where claim_token = 'task-claim'");
+  CHECK(lookup("task-claim").claim_ended_ms == std::optional<std::int64_t>{1'790'938'800'000});
+
+  // Every closed status closes the plan; draft and paused are open.
+  for (auto const& [status, expected] : std::vector<std::pair<std::string, state>>{
+           {"draft", state::open}, {"paused", state::open}, {"done", state::closed}, {"abandoned", state::closed}}) {
+    INFO(status);
+    run_sql(*conn, std::format("update plans set status = '{}' where id = 1", status));
+    CHECK(lookup("task-claim").plan == expected);
+    CHECK(lookup("plan-claim").plan == expected);
+    CHECK(lookup("step-claim").plan == expected);
+  }
+
+  // A claim with no plan, and a token no claim has, are unknown (the end time
+  // of the first is still known).
+  CHECK(lookup("no-plan-claim").plan == state::unknown);
+  CHECK(lookup("no-plan-claim").claim_ended_ms.has_value());
+  auto const missing = lookup("no-such-claim");
+  CHECK(missing.plan == state::unknown);
+  CHECK_FALSE(missing.claim_ended_ms.has_value());
+}
+
+TEST_CASE("claim_standing_lookup fails safe when the claim tables cannot be read",
+          "[cmd][agent][queue][queue-store][mo-queue-claim-evidence]") {
+  remover const guard{scratch("standing_failsafe")};
+  auto          conn = qfix::open_store(guard.root / "planar.db");
+  REQUIRE(conn.has_value());
+  seed_claims(*conn);
+  auto const lookup = claim_standing_lookup(*conn);
+  REQUIRE(lookup("task-claim").plan == hq::claim_standing::plan_state::open);
+
+  // The lookup answers unknown (not open, not closed, no end time) when a
+  // table or column it reads is gone: the retention prune then applies only
+  // its 90-day cap.
+  run_sql(*conn, "drop table plan_steps");
+  CHECK(lookup("task-claim").plan == hq::claim_standing::plan_state::unknown);
+  CHECK_FALSE(lookup("task-claim").claim_ended_ms.has_value());
 }

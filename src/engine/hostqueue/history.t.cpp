@@ -60,7 +60,9 @@ auto open_scratch_store(const scratch_dir& scratch) -> planar::db::connection {
 
 constexpr std::int64_t k_enqueued_at = 1'759'000'000'000;
 
-/// @brief A waiting-entry request with every optional column set.
+/// @brief A waiting-entry request with every optional column set but the claim
+/// token: a tokened row has its own retention rule (see the claim-evidence
+/// cases), so a case that wants one sets `claim_token` itself.
 auto request_for(std::string label) -> hq::enqueue_request {
   return hq::enqueue_request{
       .host_id        = "boot-7f3a",
@@ -71,7 +73,6 @@ auto request_for(std::string label) -> hq::enqueue_request {
       .label          = std::move(label),
       .vendor         = "claude",
       .role           = "coder",
-      .claim_token    = "53f83462ecb9f6c6c90738a108db92fb",
       .log_path       = "/home/u/.planar/queue-logs/x.log",
       .enqueued_at    = k_enqueued_at,
       .refreshed_mono = 90'000,
@@ -852,4 +853,171 @@ TEST_CASE("rejoin keeps the wait limit of the request it re-enqueues",
   CHECK((*found)->wait_limit_ms == 600'000);
   CHECK((*found)->wait_deadline_mono == request.refreshed_mono + 600'000);
   CHECK_FALSE((*found)->run_limit_ms.has_value());
+}
+
+// --- claim evidence (plan 1142, task mo-queue-claim-evidence) ---------------
+
+TEST_CASE("the history row carries the entry's claim token verbatim, whatever the outcome, and none when there was none",
+          "[engine][hostqueue][hq-history][mo-queue-claim-evidence]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  // The token is opaque: nothing checks it against a claim.
+  auto const token = std::string{"not a claim token \xE2\x9C\x93 ' \""};
+
+  std::vector<hq::end_request> const endings{
+      {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_enqueued_at + 10},
+      {.outcome = hq::history_outcome::signaled, .signal = 9, .ended_at = k_enqueued_at + 10},
+      {.outcome = hq::history_outcome::timeout, .ended_at = k_enqueued_at + 10},
+      {.outcome      = hq::history_outcome::cancelled,
+       .cancelled_by = hq::canceller{.vendor = "claude", .role = "coder", .pid = 7},
+       .ended_at     = k_enqueued_at + 10},
+      {.outcome = hq::history_outcome::wait_timeout, .ended_at = k_enqueued_at + 10},
+      {.outcome = hq::history_outcome::not_started, .exit_code = 127, .ended_at = k_enqueued_at + 10},
+      {.outcome = hq::history_outcome::abandoned, .ended_at = k_enqueued_at + 10},
+  };
+  for (auto const& ending : endings) {
+    INFO("outcome " << hq::to_string(ending.outcome));
+    auto tokened        = request_for("tokened");
+    tokened.claim_token = token;
+    auto const with     = enqueue_one(conn, tokened);
+    end_one(conn, with, ending);
+    CHECK(history_of(conn, with).claim_token == std::optional<std::string>{token});
+
+    auto const without = enqueue_one(conn, request_for("untokened"));
+    end_one(conn, without, ending);
+    CHECK_FALSE(history_of(conn, without).claim_token.has_value());
+  }
+  // The listing reads the column too.
+  auto const rows = hq::list_history(conn);
+  REQUIRE(rows.has_value());
+  CHECK(std::ranges::count_if(*rows, [](const hq::history_row& row) { return row.claim_token.has_value(); }) ==
+        static_cast<std::ptrdiff_t>(endings.size()));
+}
+
+namespace {
+
+constexpr std::int64_t k_prune_now = k_enqueued_at + 400 * hq::k_ms_per_day;
+
+/// @brief Ends a new entry that names `token` (or none), `age_days` days before `k_prune_now`.
+auto ended_row(planar::db::connection& conn, std::optional<std::string> token, std::int64_t age_days) -> std::int64_t {
+  auto request        = request_for("row");
+  request.claim_token = std::move(token);
+  auto const seq      = enqueue_one(conn, request);
+  end_one(conn, seq,
+          {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_prune_now - age_days * hq::k_ms_per_day});
+  return seq;
+}
+
+auto present(planar::db::connection& conn, std::int64_t seq) -> bool {
+  auto found = hq::find_history(conn, seq);
+  REQUIRE(found.has_value());
+  return found->has_value();
+}
+
+} // namespace
+
+TEST_CASE("the retention prune keeps claim evidence while the plan is open, for at most 90 days after the claim ends",
+          "[engine][hostqueue][hq-history][mo-queue-claim-evidence]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const day  = hq::k_ms_per_day;
+  auto const open = [&](std::int64_t ended_days_ago) {
+    return hq::claim_standing{.plan = hq::claim_standing::plan_state::open, .claim_ended_ms = k_prune_now - ended_days_ago * day};
+  };
+  std::map<std::string, hq::claim_standing, std::less<>> standings{
+      {"open-recent", open(10)},
+      {"open-at-cap", open(90)},
+      {"open-past-cap",
+       hq::claim_standing{.plan = hq::claim_standing::plan_state::open, .claim_ended_ms = k_prune_now - 90 * day - 1}},
+      {"closed-recent",
+       hq::claim_standing{.plan = hq::claim_standing::plan_state::closed, .claim_ended_ms = k_prune_now - 10 * day}},
+      {"unknown-plan",
+       hq::claim_standing{.plan = hq::claim_standing::plan_state::unknown, .claim_ended_ms = k_prune_now - 10 * day}},
+      {"unknown-plan-past-cap",
+       hq::claim_standing{.plan = hq::claim_standing::plan_state::unknown, .claim_ended_ms = k_prune_now - 200 * day}},
+  };
+  std::vector<std::string> asked;
+  hq::claim_lookup const   lookup = [&](std::string_view token) {
+    asked.emplace_back(token);
+    auto const it = standings.find(token);
+    return it == standings.end() ? hq::claim_standing{} : it->second;
+  };
+
+  // Every row ended 40 days ago against a 30-day retention.
+  auto const plain         = ended_row(conn, std::nullopt, 40);
+  auto const open_recent   = ended_row(conn, "open-recent", 40);
+  auto const open_cap      = ended_row(conn, "open-at-cap", 40);
+  auto const open_past     = ended_row(conn, "open-past-cap", 40);
+  auto const closed        = ended_row(conn, "closed-recent", 40);
+  auto const unknown_plan  = ended_row(conn, "unknown-plan", 40);
+  auto const unknown_past  = ended_row(conn, "unknown-plan-past-cap", 40);
+  auto const not_found     = ended_row(conn, "no-such-claim", 40);
+  auto const not_found_old = ended_row(conn, "no-such-claim", 91); // its own end is past the cap
+  auto const young         = ended_row(conn, "closed-recent", 10); // inside the retention: never touched
+
+  auto const pruned = hq::delete_expired_history(conn, 30, k_prune_now, lookup);
+  REQUIRE(pruned.has_value());
+
+  CHECK_FALSE(present(conn, plain));         // untokened rows prune as before
+  CHECK(present(conn, open_recent));         // plan open, claim ended 10 days ago
+  CHECK(present(conn, open_cap));            // exactly at the cap: kept
+  CHECK_FALSE(present(conn, open_past));     // one ms past the cap: pruned
+  CHECK_FALSE(present(conn, closed));        // plan closed: ordinary retention
+  CHECK(present(conn, unknown_plan));        // plan unresolved: kept until the cap
+  CHECK_FALSE(present(conn, unknown_past));  // ... and not past it
+  CHECK(present(conn, not_found));           // claim unknown: kept 90 days from the row's own end
+  CHECK_FALSE(present(conn, not_found_old)); // ... and not past it
+  CHECK(present(conn, young));               // inside the retention
+  CHECK(pruned->rows_deleted == 5);
+
+  // The lookup is asked once per distinct token that has an expired row.
+  std::ranges::sort(asked);
+  CHECK(std::ranges::adjacent_find(asked) == asked.end());
+  CHECK(std::ranges::find(asked, "open-recent") != asked.end());
+}
+
+TEST_CASE("with no claim lookup, or one that cannot answer, evidence is kept to the cap and never longer",
+          "[engine][hostqueue][hq-history][mo-queue-claim-evidence]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const young_tokened = ended_row(conn, "t", 40);
+  auto const old_tokened   = ended_row(conn, "t", 91);
+  auto const plain         = ended_row(conn, std::nullopt, 40);
+
+  // The default (empty) lookup is the fail-safe answer for every token.
+  auto const pruned = hq::delete_expired_history(conn, 30, k_prune_now);
+  REQUIRE(pruned.has_value());
+  CHECK(present(conn, young_tokened));
+  CHECK_FALSE(present(conn, old_tokened));
+  CHECK_FALSE(present(conn, plain));
+  CHECK(pruned->rows_deleted == 2);
+
+  // A lookup that answers "unknown" for everything does the same.
+  auto const again = hq::delete_expired_history(conn, 30, k_prune_now, [](std::string_view) { return hq::claim_standing{}; });
+  REQUIRE(again.has_value());
+  CHECK(again->rows_deleted == 0);
+  CHECK(present(conn, young_tokened));
+}
+
+TEST_CASE("the enqueue that prunes consults the claim lookup and keeps evidence its lookup protects",
+          "[engine][hostqueue][hq-history][mo-queue-claim-evidence]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const kept    = ended_row(conn, "open", 40);
+  auto const dropped = ended_row(conn, "closed", 40);
+  auto       next    = request_for("next");
+  next.enqueued_at   = k_prune_now;
+  auto const result  = hq::enqueue(conn, next, 30, [](std::string_view token) {
+    return hq::claim_standing{.plan =
+                                  token == "open" ? hq::claim_standing::plan_state::open : hq::claim_standing::plan_state::closed,
+                              .claim_ended_ms = k_prune_now};
+  });
+  REQUIRE(result.has_value());
+  CHECK(result->pruned.rows_deleted == 1);
+  CHECK(present(conn, kept));
+  CHECK_FALSE(present(conn, dropped));
 }

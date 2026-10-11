@@ -157,6 +157,7 @@ auto render_json(const hq::queue_status& s) -> std::string {
   put_int(out, "wait_limit_ms", s.wait_limit_ms);
   put_int(out, "slots", s.slots);
   put_int(out, "grace_ms", s.grace_ms);
+  put_text(out, "claim_token", s.claim_token);
   out += "}\n";
   return out;
 }
@@ -236,6 +237,7 @@ auto render_text(const hq::queue_status& s) -> std::string {
   line_int(out, "wait_limit_ms", s.wait_limit_ms);
   line_int(out, "slots", s.slots);
   line_int(out, "grace_ms", s.grace_ms);
+  line_text(out, "claim_token", s.claim_token);
   return out;
 }
 

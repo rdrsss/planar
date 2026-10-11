@@ -111,9 +111,10 @@ auto check_request(const end_request& request) -> std::expected<void, queue_erro
 /// @brief The column list every history read shares, in the order
 /// `read_history` consumes it. The two limit columns come last; the column
 /// guard (decision 1228) has already established that they exist.
-constexpr std::string_view k_history_columns = "seq, outcome, exit_code, signal, successor_seq, cancelled_by, nested, "
-                                               "parent_seq, cwd, argv, label, vendor, role, log_path, enqueued_at, "
-                                               "started_at, ended_at, waited_ms, ran_ms, run_limit_ms, wait_limit_ms";
+constexpr std::string_view k_history_columns =
+    "seq, outcome, exit_code, signal, successor_seq, cancelled_by, nested, "
+    "parent_seq, cwd, argv, label, vendor, role, log_path, enqueued_at, "
+    "started_at, ended_at, waited_ms, ran_ms, run_limit_ms, wait_limit_ms, claim_token";
 
 /// @brief `select <every history column> from queue_history`.
 auto select_history() -> std::string {
@@ -160,6 +161,7 @@ auto read_history(const db::statement& stmt) -> std::expected<history_row, queue
   out.ran_ms        = optional_int(stmt, 18);
   out.run_limit_ms  = optional_int(stmt, 19);
   out.wait_limit_ms = optional_int(stmt, 20);
+  out.claim_token   = optional_text(stmt, 21);
   return out;
 }
 
@@ -179,13 +181,14 @@ struct removed_entry {
   std::optional<std::int64_t> started_at;
   std::optional<std::int64_t> run_limit_ms;
   std::optional<std::int64_t> wait_limit_ms;
+  std::optional<std::string>  claim_token;
 };
 
 /// @brief Deletes entry `seq` and returns the columns the history row needs,
 /// or `std::nullopt` when the delete removed nothing.
 auto delete_entry(db::connection& conn, std::int64_t seq) -> std::expected<std::optional<removed_entry>, queue_error> {
   auto stmt = conn.prepare("delete from queue_entries where seq = ? returning parent_seq, cancelled_by, cwd, argv, label, "
-                           "vendor, role, log_path, enqueued_at, started_at, run_limit_ms, wait_limit_ms");
+                           "vendor, role, log_path, enqueued_at, started_at, run_limit_ms, wait_limit_ms, claim_token");
   if (!stmt) {
     return sql_failure("prepare entry delete", stmt.error());
   }
@@ -212,6 +215,7 @@ auto delete_entry(db::connection& conn, std::int64_t seq) -> std::expected<std::
       .started_at    = optional_int(*stmt, 9),
       .run_limit_ms  = optional_int(*stmt, 10),
       .wait_limit_ms = optional_int(*stmt, 11),
+      .claim_token   = optional_text(*stmt, 12),
   };
   // A `returning` delete is not finished until it reports done.
   if (auto done = stmt->step(); !done) {
@@ -231,8 +235,8 @@ auto insert_history(db::connection& conn, std::int64_t seq, const end_request& r
                     const std::optional<std::string>& cancelled_by) -> std::expected<void, queue_error> {
   auto stmt = conn.prepare("insert into queue_history (seq, outcome, exit_code, signal, successor_seq, cancelled_by, nested, "
                            "parent_seq, cwd, argv, label, vendor, role, log_path, enqueued_at, started_at, ended_at, "
-                           "waited_ms, ran_ms, run_limit_ms, wait_limit_ms) "
-                           "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                           "waited_ms, ran_ms, run_limit_ms, wait_limit_ms, claim_token) "
+                           "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   if (!stmt) {
     return sql_failure("prepare history insert", stmt.error());
   }
@@ -240,7 +244,7 @@ auto insert_history(db::connection& conn, std::int64_t seq, const end_request& r
   auto const ran    = removed.started_at ? std::optional<std::int64_t>{elapsed(*removed.started_at, request.ended_at)}
                                          : std::optional<std::int64_t>{};
 
-  std::array<std::expected<void, db::db_error>, 21> const bound{{
+  std::array<std::expected<void, db::db_error>, 22> const bound{{
       stmt->bind_int64(1, seq),
       stmt->bind_text(2, to_string(request.outcome)),
       bind_optional_int(*stmt, 3, request.exit_code),
@@ -262,6 +266,7 @@ auto insert_history(db::connection& conn, std::int64_t seq, const end_request& r
       bind_optional_int(*stmt, 19, ran),
       bind_optional_int(*stmt, 20, removed.run_limit_ms),
       bind_optional_int(*stmt, 21, removed.wait_limit_ms),
+      bind_optional_text(*stmt, 22, removed.claim_token),
   }};
   for (auto const& result : bound) {
     if (!result) {
@@ -492,25 +497,31 @@ auto list_history(db::connection& conn, std::optional<std::int64_t> ended_since)
   return out;
 }
 
-auto delete_expired_history(db::connection& conn, std::int64_t retention_days, std::int64_t now)
-    -> std::expected<expired_history, queue_error> {
-  if (retention_days < 0) {
-    return invalid(std::format("history retention must not be negative, got {} days", retention_days));
-  }
-  // Saturate rather than overflow for an absurd retention: nothing is older.
-  auto const limit = std::numeric_limits<std::int64_t>::max() / k_ms_per_day;
-  auto const span  = retention_days > limit ? std::numeric_limits<std::int64_t>::max() : retention_days * k_ms_per_day;
-  auto const cutoff =
-      now >= std::numeric_limits<std::int64_t>::min() + span ? now - span : std::numeric_limits<std::int64_t>::min();
+namespace {
 
-  auto stmt = conn.prepare("delete from queue_history where ended_at < ? returning log_path");
+/// @brief `value - span`, saturating at the type's minimum.
+auto saturating_sub(std::int64_t value, std::int64_t span) -> std::int64_t {
+  return value >= std::numeric_limits<std::int64_t>::min() + span ? value - span : std::numeric_limits<std::int64_t>::min();
+}
+
+/// @brief Runs one `delete ... returning log_path` prune statement and adds
+/// what it removed to `out`. `token` is bound first when present, then
+/// `bound`, the exclusive `ended_at` limit.
+auto run_prune(db::connection& conn, const char* sql, const std::optional<std::string>& token, std::int64_t bound,
+               expired_history& out) -> std::expected<void, queue_error> {
+  auto stmt = conn.prepare(sql);
   if (!stmt) {
     return sql_failure("prepare history prune", stmt.error());
   }
-  if (auto bound = stmt->bind_int64(1, cutoff); !bound) {
-    return sql_failure("bind history prune", bound.error());
+  int index = 1;
+  if (token) {
+    if (auto bound_token = stmt->bind_text(index++, *token); !bound_token) {
+      return sql_failure("bind history prune", bound_token.error());
+    }
   }
-  expired_history out;
+  if (auto bound_limit = stmt->bind_int64(index, bound); !bound_limit) {
+    return sql_failure("bind history prune", bound_limit.error());
+  }
   for (;;) {
     auto stepped = stmt->step();
     if (!stepped) {
@@ -522,6 +533,81 @@ auto delete_expired_history(db::connection& conn, std::int64_t retention_days, s
     ++out.rows_deleted;
     if (auto path = optional_text(*stmt, 0)) {
       out.log_paths.push_back(std::move(*path));
+    }
+  }
+  return {};
+}
+
+/// @brief The distinct claim tokens among the history rows older than `cutoff`.
+auto expired_tokens(db::connection& conn, std::int64_t cutoff) -> std::expected<std::vector<std::string>, queue_error> {
+  auto stmt = conn.prepare("select distinct claim_token from queue_history where claim_token is not null and ended_at < ?");
+  if (!stmt) {
+    return sql_failure("prepare history token scan", stmt.error());
+  }
+  if (auto bound = stmt->bind_int64(1, cutoff); !bound) {
+    return sql_failure("bind history token scan", bound.error());
+  }
+  std::vector<std::string> tokens;
+  for (;;) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return sql_failure("scan history tokens", stepped.error());
+    }
+    if (*stepped == db::step_result::done) {
+      break;
+    }
+    tokens.push_back(stmt->column_text(0));
+  }
+  return tokens;
+}
+
+} // namespace
+
+auto delete_expired_history(db::connection& conn, std::int64_t retention_days, std::int64_t now, const claim_lookup& lookup)
+    -> std::expected<expired_history, queue_error> {
+  if (retention_days < 0) {
+    return invalid(std::format("history retention must not be negative, got {} days", retention_days));
+  }
+  // Saturate rather than overflow for an absurd retention: nothing is older.
+  auto const limit = std::numeric_limits<std::int64_t>::max() / k_ms_per_day;
+  auto const span  = retention_days > limit ? std::numeric_limits<std::int64_t>::max() : retention_days * k_ms_per_day;
+  auto const cutoff =
+      now >= std::numeric_limits<std::int64_t>::min() + span ? now - span : std::numeric_limits<std::int64_t>::min();
+  // A tokened row's evidence cap: past this point in time a claim has been
+  // over for longer than `k_claim_evidence_cap_days`.
+  auto const cap_edge = saturating_sub(now, k_claim_evidence_cap_days * k_ms_per_day);
+
+  expired_history out;
+  // Rows without a claim token follow the retention alone.
+  if (auto pruned = run_prune(conn, "delete from queue_history where claim_token is null and ended_at < ? returning log_path",
+                              std::nullopt, cutoff, out);
+      !pruned) {
+    return std::unexpected(std::move(pruned.error()));
+  }
+  // Rows with a token are judged per claim. Claim evidence is never pruned on
+  // uncertainty, and never kept past the cap.
+  auto tokens = expired_tokens(conn, cutoff);
+  if (!tokens) {
+    return std::unexpected(std::move(tokens.error()));
+  }
+  for (auto const& token : *tokens) {
+    claim_standing const standing = lookup ? lookup(token) : claim_standing{};
+    std::int64_t         bound    = cutoff;
+    if (standing.plan == claim_standing::plan_state::closed) {
+      // The plan is closed: the evidence is spent; the ordinary retention applies.
+    } else if (standing.claim_ended_ms) {
+      // Open or unknown: kept until the cap after the claim ended.
+      if (*standing.claim_ended_ms >= cap_edge) {
+        continue;
+      }
+    } else {
+      // The claim's end is not known: count the cap from each row's own end.
+      bound = std::min(cutoff, cap_edge);
+    }
+    if (auto pruned = run_prune(conn, "delete from queue_history where claim_token = ? and ended_at < ? returning log_path",
+                                token, bound, out);
+        !pruned) {
+      return std::unexpected(std::move(pruned.error()));
     }
   }
   return out;

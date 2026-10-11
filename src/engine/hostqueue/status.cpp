@@ -43,6 +43,7 @@ auto describe_entry(db::connection& conn, std::int64_t asked, const entry& e, co
   status.label         = e.label;
   status.vendor        = e.vendor;
   status.role          = e.role;
+  status.claim_token   = e.claim_token;
   status.log_path      = e.log_path;
   status.enqueued_at   = e.enqueued_at;
   status.started_at    = e.started_at;
@@ -107,6 +108,7 @@ auto describe_history(std::int64_t asked, const history_row& row) -> queue_statu
   status.label         = row.label;
   status.vendor        = row.vendor;
   status.role          = row.role;
+  status.claim_token   = row.claim_token;
   status.log_path      = row.log_path;
   status.enqueued_at   = row.enqueued_at;
   status.started_at    = row.started_at;

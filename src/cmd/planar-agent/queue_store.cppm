@@ -36,6 +36,7 @@ export module planar.cmd.planar_agent.queue_store;
 
 import std;
 import planar.db;
+import planar.engine.hostqueue;
 import planar.cmd.planar_agent.context;
 
 namespace planar::cmd::agent {
@@ -99,5 +100,19 @@ export auto open_queue_store_for_wait(const env_lookup& env, const queue_store_b
 /// @param db_path The database file.
 /// @return The log directory.
 export auto queue_log_directory(const std::filesystem::path& db_path) -> std::filesystem::path;
+
+/// @brief The claim-standing lookup `queue run` hands the history retention
+/// prune. The queue module reads no planning table, so this is where a claim
+/// token is turned into "when did the claim end" and "is its plan open": one
+/// query over `agent_work_claims`, resolving the claim's plan through its task
+/// or plan step. The claim's end is `released_at`, or the lease expiry while
+/// it is still active. A claim whose entity has no plan, a token no claim has,
+/// a plan status outside the known set, an end time that does not parse, and
+/// any failure of the query (a table or column the store does not have, an
+/// unreadable store) all answer an unknown standing: the prune then keeps the
+/// evidence until its cap and never longer (see `delete_expired_history`).
+/// @param conn The open `planar.db` connection; it must outlive the returned function.
+/// @return The lookup. It never throws and never writes.
+export auto claim_standing_lookup(db::connection& conn) -> engine::hostqueue::claim_lookup;
 
 } // namespace planar::cmd::agent
