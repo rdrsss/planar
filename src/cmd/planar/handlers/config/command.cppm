@@ -139,15 +139,10 @@ export auto config_edit(context& ctx, const cliapp::parsed_args& args) -> handle
 /// returns IMMEDIATELY, so a file that is both unparseable and carries a
 /// literal secret reports only the parse error), then the line-oriented
 /// sensitive-literal scan, then the `external.github-issues.auth`
-/// cross-checks, then the work-type routing cross-check. Steps 2-4
-/// ACCUMULATE: every finding is reported and the exit is 1 once, at the
-/// end.
-///
-/// The routing cross-check skips any `routing.<vendor>.<tier>.<work-type>`
-/// whose tier has NO `models.<vendor>.<tier>` entry — the oracle's `orelse
-/// continue`, confirmed against the built binary with a
-/// `routing.codex.medium.cli` naming a model that exists nowhere: exit 0.
-/// Validating it would refuse configs the oracle accepts.
+/// cross-checks, then the `[queue]` and `[introspection]` checks and the
+/// removed-`[execute]` refusal. Steps 2-6 ACCUMULATE: every finding is
+/// reported and the exit is 1 once, at the end. There is no work-type
+/// routing cross-check (removed with the models engine, plan 1142 task 7456).
 ///
 /// Every message goes to STDERR; the only stdout this verb ever writes is
 /// `config validate: ok`. See this module's header for the three named

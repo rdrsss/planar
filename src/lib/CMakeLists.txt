@@ -70,11 +70,6 @@
 # edge would FATAL), mirroring what the Zig originals do. Master ships
 # greedy only; the solver arm lives on branch `dev/grouping-solvers`
 # (decision 1293).
-# `src/engine/models` (plan 996, task 6096) is the opaque candidate registry, the
-# 95%-Wilson-lower-bound cohort ranking behind `models evals`, and the
-# read-only routing-evidence views — thirteen of the fourteen `models` schema
-# leaves. It depends only on `db`; `models resolve` is deferred with its
-# roles/profile/packet subsystem (see src/engine/models/CMakeLists.txt).
 # The Lua-workflow discovery bucket (`src/engine/workflows`, plan 996, task
 # 6096) was removed with `planar workflow` (task 7453).
 # `json_text` (plan 996, task 6109, decision D19) is a layer-1 base library

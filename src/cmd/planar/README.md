@@ -19,7 +19,6 @@ helpers used by multiple families.
 | `link/`, `unlink/`, `links/` | Entity and repository relationships. |
 | `resume/`, `handoff/`, `capture/` | Resume readiness, durable handoff and session capture. |
 | `audit/`, `health/`, `dashboard/` | Audit operations, health checks and summary views. |
-| `models/` | Model and routing configuration views. |
 | `spec/`, `test_spec/` | Specification ingestion and test-spec operations. |
 | `config/`, `templates/` | Configuration plane and propagation templates. |
 | `tree/`, `search/`, `groups/` | Hierarchical, search and grouped read views. |

@@ -212,7 +212,7 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
       }
     }
   }
-  // 262 leaves across the four remaining binaries after `planar models` (14 leaves) and
+  // 262 leaves across the four remaining binaries after the `models` family (14 leaves) and
   // `planar-agent dispatch` (2 leaves) left the tree (plan 1142, task 7455); the floor keeps the margin.
   CAPTURE(leaves);
   CHECK(leaves >= 257);

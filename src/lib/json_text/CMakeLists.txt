@@ -21,7 +21,7 @@
 #
 #   - TEN, not seven. Seven spelled `append_json_string`
 #     (closure/store.cpp, grouping/load.cpp, ingest/render.cpp,
-#     models/render.cpp, planning/test_spec_status.cpp, runs/render.cpp,
+#     planning/test_spec_status.cpp, runs/render.cpp,
 #     workflows/render.cpp) and THREE more spelled `json_quote`
 #     (planning/annotation.cpp, runtime/capture.cpp, promotion/promotion.cpp).
 #     The original comment never mentioned the `json_quote` family at all.

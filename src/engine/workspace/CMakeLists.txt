@@ -166,6 +166,6 @@ target_link_libraries(planar_engine_workspace PRIVATE glaze::glaze)
 
 if(TARGET planar_engine_workspace_tests)
   # The test binary opens real on-disk scratch databases through
-  # planar.db.migrate, exactly as engine/models' and engine/runs' suites do.
+  # planar.db.migrate, exactly as engine/runs' suites do.
   target_link_libraries(planar_engine_workspace_tests PRIVATE SQLite::SQLite3 glaze::glaze)
 endif()

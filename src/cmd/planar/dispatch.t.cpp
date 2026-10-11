@@ -1058,28 +1058,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                            fixtures, so only the 709 implementation
   //                            lines transfer.
   //
-  //                            Both LANDED as `engine/models/{profile,
-  //                            roles}` — NOT `engine/ingest`, because their
-  //                            vocabulary is `tier`/`work_type`/
-  //                            `complexity`, which already live in
-  //                            engine_models. Each names its own input view
-  //                            instead of consuming `engine_ingest`'s
-  //                            `evidence`, so no layer-2-to-layer-2 edge
-  //                            exists and no D19 taxonomy extraction was
-  //                            needed. See engine/models/profile.cppm.
-  //
-  //                            What is genuinely left is the SMALLEST of the
-  //                            three: `assemble_planning` +
-  //                            `compile_planning` (~300 implementation
-  //                            lines), which must live in engine/ingest
-  //                            beside the task half it shares digest and
-  //                            canonicalization helpers with, plus the cmd
-  //                            wiring. That module cannot call
-  //                            engine_planning's already-ported
-  //                            `test_spec_status::compute`; it must
-  //                            duplicate the three counting queries the way
-  //                            engine_grouping duplicates its `closures`
-  //                            read.
+  //                            Both were removed with the models engine (plan 1142, task 7456).
   //
   // The two that moved are the two whose blockers were stale. The three
   // that stayed each have a real one, and `report` and `explore` were
@@ -1251,17 +1230,7 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   //                           `loadTouches`, `loadClosureTouches`), so the
   //                           two belong to ONE cycle, not two halves.
   //   task packet             `engine/routing/packet.zig`, 1674 lines —
-  //                           the subsystem `engine/models/CMakeLists.txt`
-  //                           already defers `models resolve` against.
-  //                           LEFT this list at task 6324. 6298's sizing was
-  //                           right about the line count and wrong about the
-  //                           block: the LEAF needs only the file's TASK half
-  //                           (assemble/compile/canonical/render), and the
-  //                           PLANNING half — which is what `models resolve`
-  //                           actually rests on, together with `roles.zig` and
-  //                           `profile.zig` — was left untouched. `models
-  //                           resolve` is therefore still deferred and still
-  //                           for its own reasons.
+  //                           the models engine, removed at plan 1142, task 7456.
   //
   // `plan next` and `ext create` were BOTH on this list and both left it at
   // task 6309, each for the reason task 6298 measured:

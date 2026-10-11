@@ -34,7 +34,8 @@ namespace {
 ///
 /// The LONGER of the two blobs — it carries the eight-line
 /// `[models.codex]` / `[roles]` example the `config edit` copy never
-/// received. 1267 bytes, byte-matched against the built oracle. See
+/// received. 1246 bytes, measured at plan 1142 task 7456 after the pointer to
+/// the removed `planar models` verb was dropped from the blob. See
 /// config.cppm for why the two are not merged.
 constexpr std::string_view k_starter_init = R"TOML(# ~/.planar/config.toml — Planar configuration
 #
@@ -68,7 +69,7 @@ constexpr std::string_view k_starter_init = R"TOML(# ~/.planar/config.toml — P
 # token_env = "JIRA_TOKEN"
 #
 # # Per-vendor model tier maps + role→tier routing (plan 540). Override a
-# # tier to re-route every role at that tier; see `planar models`.
+# # tier to re-route every role at that tier.
 # [models.codex]
 # medium = "gpt-5.6-terra"
 #
@@ -575,7 +576,7 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
                                     queue_key.empty() ? std::string{} : std::format(" ({})", queue_key))));
   }
 
-  // Steps 2-4 ACCUMULATE. Every finding is a stderr line; the exit is 1
+  // Steps 2-6 ACCUMULATE. Every finding is a stderr line; the exit is 1
   // once, at the end. `error_from_rendered` carries the whole payload so
   // this handler never writes to `ctx.err()` itself and the reporting site
   // stays the single place that turns a failure into bytes.
@@ -664,55 +665,7 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     }
   }
 
-  // ---- step 4: the work-type routing cross-check -------------------------
-  //
-  // Resolution order is vendor x tier x work-type — NOT sorted key order —
-  // and it is observable, because it is the order the findings print in.
-  // Oracle-confirmed: with `schema` and `feature` both mis-routed, `schema`
-  // reports first even though `feature` sorts earlier.
-  {
-    auto const env      = env_for(ctx);
-    auto const resolved = cfg::resolve(std::string_view{*content}, env, std::nullopt);
-    if (!resolved.has_value()) {
-      // Step 1 already parsed the same bytes, so this is a resolver bug
-      // rather than an operator error. The oracle marks the arm
-      // `unreachable`; refusing loudly is the same statement without the
-      // undefined behaviour.
-      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving configuration: ParseFailed"));
-    }
-
-    for (auto const& vendor : cfg::vendors) {
-      for (auto const& tier : cfg::tiers) {
-        auto const model_key = std::format("models.{}.{}", vendor, tier);
-        auto const model_it  = resolved->effective.find(model_key);
-        // A tier with NO `models.*` entry is NOT validated — the oracle's
-        // `orelse continue`. Confirmed against the built binary: a
-        // `routing.codex.medium.cli` naming a model that exists nowhere
-        // exits 0 when `models.codex.medium` is absent.
-        if (model_it == resolved->effective.end()) {
-          continue;
-        }
-        std::vector<std::string> candidates = model_it->second.candidates;
-        if (candidates.empty()) {
-          candidates.push_back(model_it->second.value);
-        }
-
-        for (auto const& work_type : cfg::work_types) {
-          auto const routing_key = std::format("routing.{}.{}.{}", vendor, tier, work_type);
-          auto const routing_it  = resolved->effective.find(routing_key);
-          if (routing_it == resolved->effective.end() || routing_it->second.value.empty()) {
-            continue;
-          }
-          if (!std::ranges::contains(candidates, routing_it->second.value)) {
-            report(std::format("{}: routed model id \"{}\" is not in the {} candidate list", routing_key,
-                               routing_it->second.value, model_key));
-          }
-        }
-      }
-    }
-  }
-
-  // ---- step 5: the `[queue]` table (plan 1080, task hq-config) -----------
+  // ---- step 4: the `[queue]` table (plan 1080, task hq-config) -----------
   //
   // Read from the parsed FILE map, like step 3: a value inherited from the
   // embedded defaults is not something the operator wrote. Every refused
@@ -721,12 +674,12 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     report(std::format("{}: {}", finding.key, finding.message));
   }
 
-  // ---- step 6: the `[introspection]` keys that carry a range ------------
+  // ---- step 5: the `[introspection]` keys that carry a range ------------
   for (auto const& finding : cfg::validate_introspection(*parsed)) {
     report(std::format("{}: {}", finding.key, finding.message));
   }
 
-  // ---- step 7: the removed `[execute]` table (plan 1142, task 7459) ------
+  // ---- step 6: the removed `[execute]` table (plan 1142, task 7459) ------
   //
   // planar-execute's configuration left planar with its engine selector and
   // profiles, so `[execute]` is no longer a known key. A file that still
