@@ -6,7 +6,6 @@
 add_subdirectory(cli_usage_lint)
 add_subdirectory(cli_docs_coverage)
 add_subdirectory(surface_lint)
-add_subdirectory(queue_contention_probe)
 
 # scripts/render-codex-agents.py (Codex custom-agent TOML renderer) unit tests.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
