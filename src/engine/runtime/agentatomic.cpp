@@ -441,18 +441,41 @@ auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args,
     // returning the task to `todo`. Left OPEN deliberately — the terminal
     // transaction closes it.
     auto const marker = aa::start_action(conn, aa::start_action_args{
-                                                   .session_id  = args.session_id,
-                                                   .claim_id    = acquired->id,
-                                                   .kind        = aa::action_kind::claim_check,
-                                                   .entity      = aa::action_entity_kind::task,
-                                                   .entity_id   = args.entity_id,
-                                                   .vendor      = args.vendor,
-                                                   .vendor_role = args.role,
-                                                   .model       = args.model,
-                                                   .loc         = args.loc,
+                                                   .session_id       = args.session_id,
+                                                   .parent_action_id = args.parent_action_id,
+                                                   .claim_id         = acquired->id,
+                                                   .kind             = aa::action_kind::claim_check,
+                                                   .entity           = aa::action_entity_kind::task,
+                                                   .entity_id        = args.entity_id,
+                                                   .vendor           = args.vendor,
+                                                   .vendor_role      = args.role,
+                                                   .model            = args.model,
+                                                   .loc              = args.loc,
                                                });
     if (!marker) {
       return std::unexpected(marker.error());
+    }
+  } else if (args.parent_action_id.has_value()) {
+    // No `claim_check` marker exists for a bare (`--no-transition`) or non-task claim, and it must not:
+    // `abort` and `reconcile` read that kind as proof the claim moved the task. A parent was asked for,
+    // so the claim gets its own open `other` action to hang under it; the terminal verb closes it.
+    auto const entity = args.kind == aa::entity_kind::task        ? aa::action_entity_kind::task
+                        : args.kind == aa::entity_kind::plan_step ? aa::action_entity_kind::plan_step
+                                                                  : aa::action_entity_kind::plan;
+    auto const nested = aa::start_action(conn, aa::start_action_args{
+                                                   .session_id       = args.session_id,
+                                                   .parent_action_id = args.parent_action_id,
+                                                   .claim_id         = acquired->id,
+                                                   .kind             = aa::action_kind::other,
+                                                   .entity           = entity,
+                                                   .entity_id        = args.entity_id,
+                                                   .vendor           = args.vendor,
+                                                   .vendor_role      = args.role,
+                                                   .model            = args.model,
+                                                   .loc              = args.loc,
+                                               });
+    if (!nested) {
+      return std::unexpected(nested.error());
     }
   }
 
@@ -527,6 +550,7 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
                                               .vendor            = args.vendor,
                                               .vendor_session_id = args.vendor_session_id,
                                               .role              = args.role,
+                                              .model             = args.model,
                                               .worktree_id       = args.worktree_id,
                                               .worktree_path     = args.worktree_path,
                                               .purpose           = args.purpose,
@@ -552,6 +576,7 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
                                                     .entity_id        = task_id,
                                                     .vendor           = args.vendor,
                                                     .vendor_role      = args.role,
+                                                    .model            = args.model,
                                                     .loc              = args.loc,
                                                     .metadata         = args.metadata,
                                                 });

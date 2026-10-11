@@ -137,6 +137,36 @@ auto not_ready_error(std::int64_t task_id, const std::vector<std::string>& reaso
   return err;
 }
 
+/// @brief Validate `--parent-action`: a positive id naming an existing action.
+///
+/// Checked for EXISTENCE, not just range: a wrong action id in an orchestrator script would otherwise
+/// produce a claim whose tree edge points nowhere, and the mistake would only surface later in
+/// `planar-watch tree`. A refusal writes nothing.
+/// @param conn An open, migrated connection.
+/// @param parent The flag's value, when passed.
+/// @return The id (or unset), `invalid_input` (exit 2) for a non-positive id, or `not_found` (exit 1).
+auto check_parent_action(db::connection& conn, std::optional<std::int64_t> parent)
+    -> std::expected<std::optional<std::int64_t>, domain_error> {
+  if (!parent.has_value()) {
+    return parent;
+  }
+  if (*parent <= 0) {
+    return std::unexpected(invalid_input_error(std::format("--parent-action must be a positive integer (got {})", *parent)));
+  }
+  auto stmt   = conn.prepare("select 1 from agent_actions where id = ? limit 1");
+  bool exists = false;
+  if (stmt && stmt->bind_int64(1, *parent)) {
+    auto stepped = stmt->step();
+    exists       = stepped.has_value() && *stepped == db::step_result::row;
+  }
+  if (!exists) {
+    // NotFound, which `planar-agent`'s codeFor does not map: exit 1, not the 2 the range check gives.
+    return std::unexpected(
+        error_from_body(domain_error_kind::not_found, std::format("--parent-action {}: action not found", *parent)));
+  }
+  return parent;
+}
+
 } // namespace
 
 auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
@@ -182,29 +212,12 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return std::unexpected(*refusal);
   }
 
-  // --parent-action is checked for EXISTENCE, not just range: a wrong
-  // action id in an orchestrator script would otherwise produce a claim
-  // whose tree edge points nowhere, and the mistake would only surface
-  // later in `planar-watch tree`.
-  auto const parent = cliapp::flag_int(args, "--parent-action");
-  if (parent.has_value()) {
-    if (*parent <= 0) {
-      return std::unexpected(invalid_input_error(std::format("--parent-action must be a positive integer (got {})", *parent)));
-    }
-    auto stmt   = (*conn)->prepare("select 1 from agent_actions where id = ? limit 1");
-    bool exists = false;
-    if (stmt && stmt->bind_int64(1, *parent)) {
-      auto stepped = stmt->step();
-      exists       = stepped.has_value() && *stepped == db::step_result::row;
-    }
-    if (!exists) {
-      // NotFound, which `planar-agent`'s codeFor does not map — exit 1,
-      // not the 2 the neighbouring range check produces.
-      return std::unexpected(
-          error_from_body(domain_error_kind::not_found, std::format("--parent-action {}: action not found", *parent)));
-    }
+  auto const parent = check_parent_action(**conn, cliapp::flag_int(args, "--parent-action"));
+  if (!parent) {
+    return std::unexpected(parent.error());
   }
 
+  auto const model    = cliapp::flag_string(args, "--model");
   auto const purpose  = cliapp::flag_string(args, "--purpose");
   auto const base_ref = cliapp::flag_string(args, "--base-ref");
 
@@ -215,6 +228,7 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                                             .vendor            = vendor,
                                             .vendor_session_id = view(vsid),
                                             .role              = view(role),
+                                            .model             = view(model),
                                             .worktree_id       = worktree.id,
                                             .worktree_path     = view(worktree.path),
                                             .purpose           = view(purpose),
@@ -223,7 +237,7 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                                             .loc               = loc,
                                             .kind              = kind,
                                             .metadata          = view(metadata),
-                                            .parent_action_id  = parent,
+                                            .parent_action_id  = *parent,
                                         },
                                         task_policy());
   if (!result) {
@@ -316,6 +330,11 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     return std::unexpected(duration_error("--ttl", ttl_raw, "600"));
   }
 
+  auto const parent = check_parent_action(**conn, cliapp::flag_int(args, "--parent-action"));
+  if (!parent) {
+    return std::unexpected(parent.error());
+  }
+
   auto const role    = cliapp::flag_string(args, "--role");
   auto const model   = cliapp::flag_string(args, "--model");
   auto const purpose = cliapp::flag_string(args, "--purpose");
@@ -336,6 +355,7 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                                                               .ttl_secs          = *ttl,
                                                               .loc               = loc,
                                                               .force             = cliapp::flag_bool(args, "--force"),
+                                                              .parent_action_id  = *parent,
                                                           },
                                                           !cliapp::flag_bool(args, "--no-transition"), task_policy(), &readiness);
   if (!acquired) {

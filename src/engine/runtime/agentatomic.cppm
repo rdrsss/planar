@@ -201,6 +201,7 @@ export struct pull_args {
   std::string_view                vendor;                    ///< Vendor tag.
   std::optional<std::string_view> vendor_session_id;         ///< The vendor's own session id.
   std::optional<std::string_view> role;                      ///< Role name.
+  std::optional<std::string_view> model;                     ///< Model identifier, recorded verbatim on the claim.
   std::optional<std::int64_t>     worktree_id;               ///< Worktree row id.
   std::optional<std::string_view> worktree_path;             ///< Worktree path.
   std::optional<std::string_view> purpose;                   ///< Free-text purpose.

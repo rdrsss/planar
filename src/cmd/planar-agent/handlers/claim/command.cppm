@@ -29,6 +29,10 @@ export auto add(CLI::App& root) -> void {
   cliapp::add_bool_flag(*claim, "--allow-unready",
                         "Claim a task that is not ready anyway; one audit action names the overridden readiness reasons");
   cliapp::add_bool_flag(*claim, "--force", "Take over an existing live claim (operator recovery)");
+  claim->add_option("--parent-action")
+      ->description("Parent action id; wires the claim's action as a child of this action in `planar-watch tree` "
+                    "(cross-session hierarchy)")
+      ->check(cliapp::zig_int_validator());
   shared::add_json(*claim, "Emit machine-readable JSON instead of text");
 }
 } // namespace planar::cmd::agent::handlers::claim_cli

@@ -478,6 +478,9 @@ export struct acquire_args {
   /// `(kind, entity_id)` stale first. Operator recovery only; the normal
   /// path returns `claim_contention` instead.
   bool force = false;
+  /// Parent action for the action row `agentatomic::claim_entity` opens for this claim, so
+  /// `planar-watch tree` nests it under that action. `acquire_claim` itself ignores it.
+  std::optional<std::int64_t> parent_action_id;
   /// Runs after the exclusivity check (and the `force` takeover) and before the INSERT, inside the
   /// caller's immediate transaction, so a refusal it returns leaves no claim row and a competing
   /// writer cannot change what it read between the check and the insert. Unset runs nothing. Its

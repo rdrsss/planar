@@ -54,6 +54,7 @@ import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
 import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.agentatomic;
 import planar.cmd.planar_watch.context;
 import planar.cmd.planar_watch.dispatch;
 import planar.cmd.planar_watch.main;
@@ -990,4 +991,51 @@ TEST_CASE("planar-watch feed names a supervision action kind on its text line", 
   auto const json = dispatch(fx, {"feed", "--json"});
   REQUIRE(json.code == 0);
   CHECK(json.out.contains(R"("action_kind":"run_submitted")"));
+}
+
+TEST_CASE("planar-watch tree nests a claim taken with a parent action under that action", "[cmd][watch][handlers][7485]") {
+  // The write half is `planar-agent claim --parent-action <id>`, which passes `parent_action_id` to
+  // `claim_entity`; this drives the same engine entry point and reads the result through `tree`, since
+  // a `cmd` target cannot import its sibling binary.
+  namespace aa     = planar::engine::runtime::agentactivity;
+  namespace atomic = planar::engine::runtime::agentatomic;
+
+  auto const fx = make_fixture("treeparent");
+  seed_database(fx);
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+                "values ('association', 1, 1, 'Third', 'todo', 102)");
+    // The orchestrator's own row: the parent the sub-agent's claim hangs from.
+    auto const parent = aa::start_action(*conn, aa::start_action_args{.session_id  = 1,
+                                                                      .kind        = aa::action_kind::orchestrator,
+                                                                      .vendor      = "seedvendor",
+                                                                      .vendor_role = "orchestrator"});
+    REQUIRE(parent.has_value());
+
+    atomic::task_policy const permissive{
+        .check_transition = [](std::string_view, std::string_view) -> std::expected<void, aa::agent_error> { return {}; },
+        .unready_reasons = [](planar::db::connection&, std::int64_t) -> std::expected<std::vector<std::string>, aa::agent_error> {
+          return std::vector<std::string>{};
+        },
+    };
+    auto const claimed = atomic::claim_entity(*conn,
+                                              aa::acquire_args{.session_id       = 1,
+                                                               .kind             = aa::entity_kind::task,
+                                                               .entity_id        = 3,
+                                                               .vendor           = "seedvendor",
+                                                               .role             = "coder",
+                                                               .parent_action_id = *parent},
+                                              true, permissive);
+    REQUIRE(claimed.has_value());
+  }
+
+  auto const tree = dispatch(fx, {"tree"});
+  REQUIRE(tree.code == 0);
+  INFO(tree.out);
+  // One root (the parent action, which holds no claim) with the sub-agent's claim row as its only child.
+  CHECK(tree.out.starts_with("action:1  session:1  (no claim)\n"));
+  CHECK(tree.out.contains("\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 scope:project:seed"));
+  CHECK(tree.out.find("action:", 1) == std::string::npos);
 }

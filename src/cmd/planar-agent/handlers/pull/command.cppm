@@ -16,6 +16,8 @@ export auto add(CLI::App& root) -> void {
       "pull", "Atomically pick the next eligible ready task, claim it, and flip status to doing; unready tasks are skipped.");
   shared::add_vendor(*pull, "Vendor tag (default: planar-agent)", "Vendor session id (e.g. claude:s1)");
   pull->add_option("--role")->description("Role name (planner|coder|reviewer|test_coder|...)");
+  pull->add_option("--model")->description(
+      "Model actually used, recorded verbatim as an opaque string. Never validated against a supported list.");
   shared::add_ttl(*pull, "Lease TTL (default 600s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)");
   pull->add_option("--purpose")->description("Free-text purpose recorded on the claim");
   pull->add_option("--base-ref")->description("Git ref the work is based on");

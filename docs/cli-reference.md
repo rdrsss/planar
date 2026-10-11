@@ -6379,7 +6379,7 @@ Schema-version handshake: `planar-agent` is a **consumer** of the schema, not it
 ```text
 # Atomic operations — each wraps (claim lifecycle + action lifecycle +
 # task status transition) in a single BEGIN IMMEDIATE transaction.
-planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--json]
+planar-agent pull       <plan-id> [--vendor <v>] [--vendor-session <vendor:id>] [--role coder] [--model <s>] [--ttl <duration>] [--purpose <text>] [--base-ref <git-ref>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--parent-action <action-id>] [--json]
 planar-agent peek       <plan-id> [--json]
 planar-agent complete   --claim <token> [--summary <text>] [--json]
 planar-agent fail       --claim <token> --reason <text> [--category usage_limit|context_limit|output_limit|tool_failure|validation|unknown] [--json]
@@ -6395,7 +6395,7 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 # the command that would succeed; nothing is written. --allow-unready claims it
 # anyway and writes one audit action naming the overridden reasons. `pull` skips
 # unready tasks instead (see "Readiness at claim time" below).
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--allow-unready] [--force] [--json]
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--allow-unready] [--force] [--parent-action <action-id>] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # `--model` records the model actually used, verbatim, as an OPAQUE STRING.
@@ -6403,7 +6403,15 @@ planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--
 # unrecognized value is stored, not rejected, and a vendor/model pair that
 # disagrees is recorded as given rather than corrected. The catalog and spawn
 # verification belong to the orchestration/host boundary. Omitting it is valid and
-# stores NULL — reporting is optional.
+# stores NULL — reporting is optional. `pull` and `claim` take it alike: it is
+# recorded on the claim and on the action the verb opens.
+#
+# `--parent-action <id>` (on `pull` and `claim`) wires the action the verb opens as a
+# child of that action in `planar-watch tree`. The id must be positive (exit 2) and
+# name an existing action (exit 1); a refusal writes nothing. A transitioning task
+# claim parents its `claim_check` marker; a `--no-transition` claim, or a plan or
+# plan_step claim, opens an `other` action under the parent instead (a marker would
+# tell `abort` the claim moved a task it did not), and the terminal verb closes it.
 
 # Nested action lifecycle — for sub-tool-calls or sub-phases inside a
 # claim. Optional; lightweight claims skip these.

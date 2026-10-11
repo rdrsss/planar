@@ -1021,3 +1021,65 @@ TEST_CASE("a plain claim of a doing task under a lapsed claim keeps its IllegalT
   CHECK(plain.err.contains("IllegalTransition"));
   CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where status = 'active'") == "1");
 }
+
+// ===========================================================================
+// pull --model and claim --parent-action (plan 1142)
+// ===========================================================================
+
+TEST_CASE("pull --model records the model verbatim on the claim and the dispatch action", "[cmd][agent][flags][7485]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+
+  auto const pulled = run_verb(scratch, {"pull", "1", "--no-locality-probe", "--model", "Some Model 4.7 [1m]"});
+  REQUIRE(pulled.code == 0);
+  CHECK(scalar_text(scratch, "select model from agent_work_claims where entity_id = 1") == "Some Model 4.7 [1m]");
+  CHECK(scalar_text(scratch, "select model from agent_actions where claim_id = 1") == "Some Model 4.7 [1m]");
+
+  // Omitted, the column stays NULL: the flag adds nothing a caller did not state.
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where entity_id = 2 and model is null") == "1");
+}
+
+TEST_CASE("claim --parent-action nests the claim's action under the parent and refuses a bad parent writing nothing",
+          "[cmd][agent][flags][7485]") {
+  scratch_dir scratch;
+  seed(scratch, 3);
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0); // action 1: the orchestrator's row
+
+  // A transitioning claim parents its claim_check marker.
+  auto const nested = run_verb(scratch, {"claim", "--entity", "task:2", "--no-locality-probe", "--parent-action", "1"});
+  REQUIRE(nested.code == 0);
+  CHECK(scalar_text(scratch, "select action_kind from agent_actions where id = 2") == "claim_check");
+  CHECK(scalar_text(scratch, "select parent_action_id from agent_actions where id = 2") == "1");
+  CHECK(scalar_text(scratch, "select claim_id from agent_actions where id = 2") == "2");
+
+  // A bare claim has no marker (abort would read one as proof it moved the task), so it gets an open
+  // `other` action under the parent instead; the terminal verb closes it.
+  auto const bare =
+      run_verb(scratch, {"claim", "--entity", "task:3", "--no-transition", "--no-locality-probe", "--parent-action", "1"});
+  REQUIRE(bare.code == 0);
+  CHECK(scalar_text(scratch, "select action_kind from agent_actions where id = 3") == "other");
+  CHECK(scalar_text(scratch, "select parent_action_id from agent_actions where id = 3") == "1");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 3 and action_kind = 'claim_check'") == "0");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 3") == "todo");
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where id = 3");
+  REQUIRE(run_verb(scratch, {"release", "--claim", token}).code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 3 and ended_at is null") == "0");
+
+  // Without the flag nothing is parented.
+  auto const plain = scalar_text(scratch, "select count(*) from agent_actions where parent_action_id is not null");
+  CHECK(plain == "2");
+
+  // A bad parent is refused before any write, with pull's codes.
+  scratch_dir other;
+  seed(other, 2);
+  auto const zero = run_verb(other, {"claim", "--entity", "task:1", "--no-locality-probe", "--parent-action", "0"});
+  CHECK(zero.code == 2);
+  CHECK(zero.err.contains("--parent-action must be a positive integer"));
+  auto const missing = run_verb(other, {"claim", "--entity", "task:1", "--no-locality-probe", "--parent-action", "999"});
+  CHECK(missing.code == 1);
+  CHECK(missing.err.contains("--parent-action 999: action not found"));
+  CHECK(scalar_text(other, "select count(*) from agent_work_claims") == "0");
+  CHECK(scalar_text(other, "select count(*) from agent_actions") == "0");
+  CHECK(scalar_text(other, "select status from tasks where id = 1") == "todo");
+}
