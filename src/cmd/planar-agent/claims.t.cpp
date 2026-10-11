@@ -42,6 +42,7 @@ import cli11;
 import planar.cliapp.args;
 import planar.db;
 import planar.db.migrate;
+import planar.engine.ingest.packet;
 import planar.engine.runtime.agentactivity;
 import planar.cmd.planar_agent.args;
 import planar.cmd.planar_agent.context;
@@ -51,8 +52,9 @@ import planar.cmd.planar_agent.main;
 
 namespace {
 
-namespace agent = planar::cmd::agent;
-namespace aa    = planar::engine::runtime::agentactivity;
+namespace agent  = planar::cmd::agent;
+namespace aa     = planar::engine::runtime::agentactivity;
+namespace packet = planar::engine::ingest::packet;
 
 struct scratch_dir {
   std::filesystem::path path_;
@@ -916,4 +918,106 @@ TEST_CASE("a live claim stays ClaimContention ahead of readiness", "[cmd][agent]
   CHECK(again.code == 1);
   CHECK(again.err.contains("ClaimContention"));
   CHECK_FALSE(again.err.contains("not ready"));
+}
+
+// ===========================================================================
+// Recovery readiness: a doing task under a lapsed claim (plan 1142)
+// ===========================================================================
+
+namespace {
+
+/// Run one SQL statement against the scratch database.
+auto exec_sql(const scratch_dir& scratch, std::string_view sql) -> void {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(sql).has_value());
+}
+
+/// The packet's verdict for `task_id`, read through the engine.
+auto packet_ready(const scratch_dir& scratch, std::int64_t task_id) -> bool {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  auto const assembled = packet::assemble_task(*conn, task_id);
+  REQUIRE(assembled.has_value());
+  return assembled->ready();
+}
+
+/// The `plan next` bucket for `task_id` on plan 1, or nullopt when it is not listed.
+auto next_bucket(const scratch_dir& scratch, std::int64_t task_id) -> std::optional<aa::next_work_bucket> {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  auto const rows = aa::next_work(*conn, 1);
+  REQUIRE(rows.has_value());
+  for (auto const& row : *rows) {
+    if (row.task_id == task_id) {
+      return row.bucket;
+    }
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+TEST_CASE("a doing task under an expired claim is ready and recoverable without --allow-unready",
+          "[cmd][agent][readiness][recovery][7483]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
+
+  // A live claim: the task is not ready, it is listed as claimed, and a second claim is contention.
+  CHECK_FALSE(packet_ready(scratch, 1));
+  CHECK(next_bucket(scratch, 1) == aa::next_work_bucket::claimed);
+  auto const contended = run_verb(scratch, {"claim", "--entity", "task:1", "--no-transition", "--no-locality-probe"});
+  CHECK(contended.code == 1);
+  CHECK(contended.err.contains("ClaimContention"));
+  CHECK_FALSE(contended.err.contains("not ready"));
+
+  // The lease lapses: the task becomes ready for recovery and plan next still lists it.
+  exec_sql(scratch, "update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z' where id = 1");
+  CHECK(packet_ready(scratch, 1));
+  CHECK(next_bucket(scratch, 1) == aa::next_work_bucket::stale);
+
+  // The documented lapsed-claim recovery: re-claim without a transition, no override, then complete.
+  auto const recovered = run_verb(scratch, {"claim", "--entity", "task:1", "--no-transition", "--no-locality-probe"});
+  REQUIRE(recovered.code == 0);
+  CHECK(recovered.err.empty());
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where metadata like '%unready_override%'") == "0");
+  // The lapsed row stays `active` until reconcile sweeps it, so the NEW token is the newest row's.
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims order by id desc limit 1");
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims") == "2");
+  auto const done = run_verb(scratch, {"complete", "--claim", token, "--summary", "recovered"});
+  INFO(done.err);
+  CHECK(done.code == 0);
+  CHECK(done.out == "ok task:1 status:done claim_status:completed\n");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "done");
+}
+
+TEST_CASE("a stale-marked claim counts as stale for recovery readiness", "[cmd][agent][readiness][recovery][7483]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  CHECK_FALSE(packet_ready(scratch, 1));
+
+  // `reconcile` marks a lapsed claim stale; the lease value is irrelevant once the status is stale.
+  exec_sql(scratch, "update agent_work_claims set status = 'stale' where id = 1");
+  CHECK(packet_ready(scratch, 1));
+  CHECK(next_bucket(scratch, 1) == aa::next_work_bucket::stale);
+
+  auto const recovered = run_verb(scratch, {"claim", "--entity", "task:1", "--no-transition", "--no-locality-probe"});
+  CHECK(recovered.code == 0);
+  CHECK(recovered.err.empty());
+}
+
+TEST_CASE("a plain claim of a doing task under a lapsed claim keeps its IllegalTransition refusal",
+          "[cmd][agent][readiness][recovery][7483]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  exec_sql(scratch, "update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z' where id = 1");
+
+  auto const plain = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"});
+  CHECK(plain.code != 0);
+  CHECK(plain.err.contains("IllegalTransition"));
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where status = 'active'") == "1");
 }
