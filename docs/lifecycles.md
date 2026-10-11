@@ -41,7 +41,7 @@ The lifecycle families, grouped by which binary owns the write:
 
 | Owner | State machines |
 |---|---|
-| `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync, runs (bench) |
+| `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync |
 | `planar-agent` | agent work claim, agent action, host queue entry |
 | `planar-ext` | external link sync status, sync event |
 | derived (read-only) | health, resume readiness, closeout gate |
@@ -795,7 +795,7 @@ flowchart TD
 `planar health` is read-only; the recovery reference (`skills/planar/references/recovery.md`) is the guided-write companion.
 Genuinely active or blocked work can keep `overall = degraded` by design.
 
-### 5.9 Feedback triage
+### 5.8 Feedback triage
 
 Removed in plan 1142 (task 7473). The verbs and the `planar-feedback-triager` role are
 preserved at tag `archive/feedback-triage`; the `feedback_triage` table (migration 00028) stays in the schema.

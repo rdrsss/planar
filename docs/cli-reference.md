@@ -5787,7 +5787,7 @@ Test hook: when set, `planar local` uses this directory as the operator's `$HOME
 
 Six entity families — `plan`, `task`, `question`, `decision`, `scenario`
 and `artifact` — expose editor-first verbs over their workbench file.
-Seventeen leaves share one implementation (`handlers/drafting.cppm`): the
+Seventeen leaves share one implementation (`src/cmd/planar/handlers/shared/drafting.cppm`): the
 bodies are identical modulo the family noun and its positional name, so they
 are documented once here.
 

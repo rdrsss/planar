@@ -236,7 +236,7 @@ use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architectu
 | `src/cmd/parity_harness.hpp` | The black-box test harness: `make_arena()` and `run_pinned()`. |
 | `src/engine/` | Domain logic and state transitions, one `engine_*` target per directory. |
 | `src/lib/` | Shared base modules: `db`, `core`, `cliapp`, `http`, `git`, `process`, `json_dom`, `json_text`, `log` and others. |
-| `src/tools/` | Project tooling: `cli_usage_lint`, `surface_lint`, `cli_docs_coverage`, `queue_contention_probe`. |
+| `src/tools/` | Project tooling: `cli_usage_lint`, `surface_lint`, `cli_docs_coverage`. |
 | `vendor/` | Committed CPM cache of third-party release archives. |
 | `migrations/` | Schema migrations in sqlx-cli format. See `migrations/README.md`. |
 | `templates/` | Propagation templates and operator-editable defaults. |
