@@ -1080,7 +1080,11 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
         if (!touched) {
           return std::unexpected(apply_error{.message = touched.error()});
         }
-        if (diff_ns::is_non_trivial(te.body_) && !authored_coverage.contains(te.slug_)) {
+        // Every new task without authored coverage gets a drafted scenario. The
+        // generated body no longer carries the validation bullet that used to
+        // make it "non-trivial", so the body heuristic would silently drop this
+        // draft for single-criterion tasks that have no touches.
+        if (!authored_coverage.contains(te.slug_)) {
           auto drafted = draft_scenario(conn, created->id, te.title_, scope_slug);
           if (!drafted) {
             return std::unexpected(apply_error{.message = drafted.error()});

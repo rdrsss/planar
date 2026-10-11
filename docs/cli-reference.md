@@ -5237,7 +5237,7 @@ Writes (only with `--apply`, atomically per anchor plan):
 - `tasks` — inserts or updates tasks; cancels orphan tasks (only with `--apply-removals`).
 - `decisions` — inserts or updates decisions.
 - `questions` — inserts H3 items under tech-spec `## Open Questions`; when the first non-blank body line begins with the case-sensitive `Resolution:` token, answers the new or existing question during the same apply.
-- `test_scenarios` — inserts or updates scenarios parsed from `test-spec.md`; also auto-drafts `Verify: <task title>` scenarios for non-trivial newly added tasks (task body contains at least two bullet lines).
+- `test_scenarios` — inserts or updates scenarios parsed from `test-spec.md`; also auto-drafts a `Verify: <task title>` scenario for each newly added task that has no authored coverage.
 - `entity_links` — inserts `derives-from` links (plan→anchor, task→plan, decision→anchor, scenario→anchor), `touches` links from roadmap `[touches: ...]` annotations (task→repo), plus `task_touch_paths` rows for entries in `<repo-slug>:<path>` or bare-`<path>` form, and `verifies` links (scenario→task).
 
 **Capture:**

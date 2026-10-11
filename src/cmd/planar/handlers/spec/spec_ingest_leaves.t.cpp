@@ -461,6 +461,58 @@ TEST_CASE("spec ingest --apply creates the child plan and task, and flips the an
   CHECK(count(conn, "decisions") == 1);
 }
 
+TEST_CASE("spec ingest --apply creates task bodies with no Required validation section",
+          "[cmd][spec][ingest][apply][validation]") {
+  auto const fx     = make_fixture("apply_no_validation");
+  auto const anchor = seed_anchor(fx);
+
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+
+  auto conn = open_db(fx);
+  auto stmt = conn.prepare("select body from tasks where slug = 'do-the-thing'");
+  REQUIRE(stmt.has_value());
+  auto step = stmt->step();
+  REQUIRE(step.has_value());
+  REQUIRE(*step == planar::db::step_result::row);
+  // The body is the acceptance criterion alone: no validation heading.
+  CHECK(stmt->column_text(0) == "## Acceptance Criteria\n\n- Implement the thing\n");
+  CHECK(stmt->column_text(0).find("## Required validation") == std::string::npos);
+  // Dropping the section must not drop the drafted scenario: a single-criterion
+  // task with no touches still gets its auto-drafted Verify scenario.
+  CHECK(count(conn,
+              "test_scenarios where body like 'Acceptance scenario auto-drafted by the ingestor.%' and status != 'retired'") ==
+        1);
+}
+
+TEST_CASE("spec ingest re-ingest of a plan written before the validation section was dropped proposes nothing",
+          "[cmd][spec][ingest][reingest]") {
+  auto const fx     = make_fixture("reingest_old_shape");
+  auto const anchor = seed_anchor(fx);
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+
+  // Seed the stored body in the exact shape the previous build generated:
+  // the acceptance criterion plus the appended validation section.
+  {
+    auto conn = open_db(fx);
+    REQUIRE(conn.execute("update tasks set body = '## Acceptance Criteria\n\n- Implement the thing\n\n"
+                         "## Required validation\n\n- Run the authored test-spec scenarios covering this task.\n' "
+                         "where slug = 'do-the-thing'"));
+  }
+
+  auto const preview = dispatch(fx, {"spec", "ingest", anchor});
+  CHECK(preview.code == 0);
+  CHECK(preview.out.contains("0 additions, 0 updates, 0 proposed removals.\n"));
+
+  // An apply of the same roadmap must not rewrite the stored body either.
+  REQUIRE(dispatch(fx, {"spec", "ingest", anchor, "--apply"}).code == 0);
+  auto conn = open_db(fx);
+  auto stmt = conn.prepare("select body from tasks where slug = 'do-the-thing'");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  CHECK(stmt->column_text(0) == "## Acceptance Criteria\n\n- Implement the thing\n\n"
+                                "## Required validation\n\n- Run the authored test-spec scenarios covering this task.\n");
+}
+
 TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[cmd][spec][ingest][apply][idempotent]") {
   auto const fx     = make_fixture("apply_idem");
   auto const anchor = seed_anchor(fx);

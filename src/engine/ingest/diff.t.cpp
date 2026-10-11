@@ -103,18 +103,13 @@ TEST_CASE("build_task_body treats the roadmap item as the acceptance criterion",
 
 - touches: repo-a
 - touches: repo-b
-
-## Required validation
-
-- Run the authored test-spec scenarios covering this task.
 )";
   CHECK(diff::build_task_body(item) == expected);
 }
 
 TEST_CASE("build_task_body omits the Repository Scope section without touches", "[ingest][diff]") {
   const parse::work_item item{.title_ = "Add bar", .touches_ = {}, .depends_ = {}, .slug_ = "", .source_text_ = "- Add bar"};
-  CHECK(diff::build_task_body(item) == "## Acceptance Criteria\n\n- Add bar\n\n## Required validation\n\n"
-                                       "- Run the authored test-spec scenarios covering this task.\n");
+  CHECK(diff::build_task_body(item) == "## Acceptance Criteria\n\n- Add bar\n");
 }
 
 TEST_CASE("both shipped generated body shapes are recognised as generated", "[ingest][diff]") {
@@ -130,6 +125,67 @@ TEST_CASE("both shipped generated body shapes are recognised as generated", "[in
   CHECK(diff::is_generated_task_body(legacy, item));
   // Real operator content must survive re-ingest.
   CHECK_FALSE(diff::is_generated_task_body("## Acceptance Criteria\n\n- Streams reconnect within 2s of a drop\n", item));
+}
+
+TEST_CASE("build_task_body carries no Required validation section", "[ingest][diff]") {
+  const parse::work_item item{
+      .title_ = "Add qux", .touches_ = {"repo-a"}, .depends_ = {}, .slug_ = "", .source_text_ = "- Add qux"};
+  // Readiness no longer reads this section, so a new task must not be born
+  // with one: the generated body is the acceptance criterion and its scope.
+  CHECK(diff::build_task_body(item).find("## Required validation") == std::string::npos);
+  CHECK(diff::is_generated_task_body(diff::build_task_body(item), item));
+}
+
+TEST_CASE("a body in the previous generated shape is recognised as generated", "[ingest][diff]") {
+  const parse::work_item item{.title_ = "Add qux", .touches_ = {}, .depends_ = {}, .slug_ = "", .source_text_ = "- Add qux"};
+  // The exact shape the previous build wrote: the current body plus the
+  // validation section. Matched as text, not as a prefix.
+  constexpr std::string_view previous = "## Acceptance Criteria\n\n- Add qux\n\n## Required validation\n\n"
+                                        "- Run the authored test-spec scenarios covering this task.\n";
+  CHECK(diff::is_generated_task_body(previous, item));
+  // An operator who edits that section has written a body of their own.
+  CHECK_FALSE(diff::is_generated_task_body(std::string{previous} + "- Also check the logs.\n", item));
+}
+
+// Seeds one stored task under milestone M1 with a slug, then returns how many
+// task entries re-ingest proposes for it. Zero means the stored body is left
+// untouched: no update, so no rewrite of the body and no next-action change.
+auto proposed_task_count_for_stored_body(std::string_view stored_body) -> std::size_t {
+  const scratch_db_path scratch;
+  auto                  conn      = open_migrated(scratch);
+  const auto            anchor_id = seed_anchor(conn, "anchor", "active");
+  must_execute(conn, std::format("insert into plans (scope_kind, title, slug, status, parent_plan_id) "
+                                 "values ('global', 'M1', 'm1', 'active', {})",
+                                 anchor_id));
+  must_execute(conn, std::format("insert into tasks (scope_kind, plan_id, title, body, next_action, slug) "
+                                 "values ('global', 2, 'Add foo', '{}', 'Read src/foo.cpp first.', 'add-foo')",
+                                 stored_body));
+  must_execute(conn, "insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                     "values ('task', 1, 'plan', 2, 'derives-from')");
+
+  const std::vector<parse::milestone> milestones{
+      {.name_ = "M1", .intent_ = "", .work_items_ = {item_of("Add foo", "add-foo", "- Add foo [slug: add-foo]")}}};
+
+  const auto result = diff::compute(conn, anchor_id, milestones, {}, {}, {});
+  REQUIRE(result.has_value());
+  REQUIRE(result->child_plans_.size() == 1);
+  return result->child_plans_[0].tasks_.size();
+}
+
+TEST_CASE("re-ingest proposes nothing for a task stored in the previous generated shape", "[ingest][diff]") {
+  // A plan ingested before the validation section was dropped must re-ingest
+  // as unchanged, not gain a rewrite that removes the section.
+  constexpr std::string_view previous = "## Acceptance Criteria\n\n- Add foo\n\n## Required validation\n\n"
+                                        "- Run the authored test-spec scenarios covering this task.\n";
+  CHECK(proposed_task_count_for_stored_body(previous) == 0);
+}
+
+TEST_CASE("re-ingest leaves a hand-edited previous-shape body alone", "[ingest][diff]") {
+  // Only the exact previous text is generated. An edit inside the section
+  // makes the body operator work, so it is preserved, not rewritten.
+  constexpr std::string_view edited = "## Acceptance Criteria\n\n- Add foo\n\n## Required validation\n\n"
+                                      "- Run the scenarios by hand before merging.\n";
+  CHECK(proposed_task_count_for_stored_body(edited) == 0);
 }
 
 TEST_CASE("build_task_next_action names the roadmap position, not a platitude", "[ingest][diff]") {
@@ -327,8 +383,7 @@ TEST_CASE("compute replaces a still-legacy next action but not a refined one", "
   REQUIRE(result->child_plans_[0].tasks_.size() == 1);
   const auto& task = result->child_plans_[0].tasks_[0];
   // The legacy-suffixed body IS generated, so it upgrades to the current shape.
-  CHECK(task.body_ == "## Acceptance Criteria\n\n- Add foo\n\n## Required validation\n\n"
-                      "- Run the authored test-spec scenarios covering this task.\n");
+  CHECK(task.body_ == "## Acceptance Criteria\n\n- Add foo\n");
   CHECK(task.next_action_ == "Deliver roadmap milestone 1 item 1: Add foo");
 }
 

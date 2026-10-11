@@ -679,9 +679,9 @@ A question entity can be created through two equivalent paths: (1) interactively
 
 ## Scenario
 
-A scenario is a verification test case attached to a spec, plan, or task. Scenarios are hand-written by the operator, imported from `test-spec.md` by the ingestor, or auto-drafted by the ingestor for non-trivial roadmap tasks.
+A scenario is a verification test case attached to a spec, plan, or task. Scenarios are hand-written by the operator, imported from `test-spec.md` by the ingestor, or auto-drafted by the ingestor for roadmap tasks that have no authored coverage.
 
-The ingestor imports scenario sections from `test-spec.md` into `test_scenarios` rows and links them to covered tasks with `entity_links(relationship='verifies')`. During apply, a newly added roadmap task with at least two bullet lines in its body is treated as non-trivial and receives an auto-drafted `Verify: <task title>` scenario.
+The ingestor imports scenario sections from `test-spec.md` into `test_scenarios` rows and links them to covered tasks with `entity_links(relationship='verifies')`. During apply, each newly added roadmap task that has no authored coverage receives an auto-drafted `Verify: <task title>` scenario. Generated task bodies carry no `## Required validation` section; a body stored in the earlier generated shape, with that section, is unchanged on re-ingest.
 
 ### Status lifecycle
 
