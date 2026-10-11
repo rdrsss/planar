@@ -1455,13 +1455,36 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
   }
 
   if (strict) {
-    auto const cov                 = cov_ns::compute(*diff);
-    bool const has_coverage_gaps   = cov.has_gaps();
-    bool const has_slug_collisions = !diff->slug_collisions_.empty();
-    if (has_coverage_gaps || has_slug_collisions) {
+    bool const require_scenario_coverage = false;
+    auto const cov                       = cov_ns::compute(*diff);
+    bool const refuses_on_coverage       = cov.refuses_strict(require_scenario_coverage);
+    bool const has_slug_collisions       = !diff->slug_collisions_.empty();
+    if (!refuses_on_coverage && cov.has_gaps()) {
+      if (!cov.uncovered_task_slugs_.empty()) {
+        ctx.err() << std::format("warning: plan {}: {} task(s) without a scenario: ", anc.id, cov.uncovered_task_slugs_.size());
+        for (std::size_t i = 0; i < cov.uncovered_task_slugs_.size(); ++i) {
+          if (i > 0) {
+            ctx.err() << ", ";
+          }
+          ctx.err() << cov.uncovered_task_slugs_[i];
+        }
+        ctx.err() << "\n";
+      }
+      if (!cov.orphan_scenarios_.empty()) {
+        ctx.err() << std::format("warning: plan {}: {} orphan scenario(s) cite no task: ", anc.id, cov.orphan_scenarios_.size());
+        for (std::size_t i = 0; i < cov.orphan_scenarios_.size(); ++i) {
+          if (i > 0) {
+            ctx.err() << "; ";
+          }
+          ctx.err() << cov.orphan_scenarios_[i];
+        }
+        ctx.err() << "\n";
+      }
+    }
+    if (refuses_on_coverage || has_slug_collisions) {
       ctx.err() << std::format("plan {}: --strict refused: ", anc.id);
       bool printed = false;
-      if (!cov.uncovered_task_slugs_.empty()) {
+      if (refuses_on_coverage && !cov.uncovered_task_slugs_.empty()) {
         ctx.err() << std::format("{} uncovered task slug(s): ", cov.uncovered_task_slugs_.size());
         for (std::size_t i = 0; i < cov.uncovered_task_slugs_.size(); ++i) {
           if (i > 0) {
@@ -1471,7 +1494,7 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
         }
         printed = true;
       }
-      if (!cov.orphan_scenarios_.empty()) {
+      if (refuses_on_coverage && !cov.orphan_scenarios_.empty()) {
         if (printed) {
           ctx.err() << "; ";
         }

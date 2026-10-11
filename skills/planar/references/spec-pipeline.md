@@ -106,9 +106,10 @@ operator's behalf.
 ## Stage 3: strict preview
 
 `planar spec ingest <plan-id> --strict --json` is read-only because `--apply` is absent.
-Before ingest it is the only coverage oracle: it must exit 0, and
-`coverage.uncovered_task_slugs`, `coverage.orphan_scenarios` and the top-level
-`slug_collisions` must all be empty. `planar test-spec status <plan-id>` reads live rows,
+Before ingest it is the only coverage oracle: it must exit 0, the top-level
+`slug_collisions` must be empty, and any entries in `coverage.uncovered_task_slugs`
+or `coverage.orphan_scenarios` are reported findings to resolve before ingest. A
+strict preview exits 0 on coverage gaps alone. `planar test-spec status <plan-id>` reads live rows,
 so before ingest it legitimately shows zeros; use it only after apply.
 
 ## Stage 4: ingest, operator-gated

@@ -1026,8 +1026,8 @@ is the authoritative workbench-draft oracle. Preview is the default because
 `--apply` is absent. Its `coverage` object reports task/slug totals,
 `uncovered_task_slugs`, and `orphan_scenarios` (no parseable `**Verifies:**`
 line); the top-level `slug_collisions` array reports slugs already held by live
-tasks. A non-zero exit or any uncovered, orphan, or collision finding blocks
-ingestion. `planar test-spec status <plan> --json` instead queries live
+tasks. A non-zero exit or any slug collision blocks ingestion. Uncovered and orphan
+findings exit 0 and are reported; no setting makes them block yet. `planar test-spec status <plan> --json` instead queries live
 `tasks`, `test_scenarios`, and `entity_links`; it becomes authoritative only
 after apply. Before apply, its legitimate zero totals do not prove draft
 coverage. After apply it provides the per-milestone four-bucket breakdown

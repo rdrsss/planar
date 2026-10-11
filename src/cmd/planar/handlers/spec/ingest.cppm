@@ -19,7 +19,7 @@ export auto attach_ingest(CLI::App* spec) -> CLI::App* {
            "Also commit proposed removals (cancel orphan tasks, abandon orphan plans); requires --apply");
   add_string_default(*ingest, "--format", "text", "Output format: text, json (default: text)");
   add_string(*ingest, "--scope", "Scope slug to resolve against instead of the cwd-derived scope");
-  add_bool(*ingest, "--strict", "Reject the ingest when scenario coverage is incomplete or a task slug collides");
+  add_bool(*ingest, "--strict", "Reject the ingest on a task-slug collision; scenario coverage gaps are reported as warnings");
   add_json(*ingest, "Emit machine-readable JSON instead of text");
   add_positional(*ingest, "plan", "Plan id or slug to ingest the workbench specs into");
   // Hidden variadic "rest" positional -- see this function's header.
