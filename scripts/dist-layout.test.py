@@ -71,17 +71,14 @@ def check_layout(stage, source, fake_bin, expected):
     # Verify authored content, including nested files, rather than directory presence alone.
     require(not (stage / 'agents' / 'models.md').exists(), 'agents/models.md is shipped')
     for name in ('skills/planar', 'agents', 'templates', 'migrations', 'scripts/install-lib'):
-        def snapshot(directory, skip=()):
+        def snapshot(directory):
             return {p.relative_to(directory).as_posix():
                     ('link', os.readlink(p)) if p.is_symlink() else
                     ('file', p.read_bytes()) if p.is_file() else ('directory', None)
                     for p in directory.rglob('*')
-                    if p.relative_to(directory).as_posix() not in skip
                     if not any(part == '__pycache__' or part == '.DS_Store' or part.endswith('.pyc')
                                for part in p.relative_to(directory).parts)}
-        # The bundle drops agents/models.md from the authored agents tree (plan 1142).
-        skip = {'models.md'} if name == 'agents' else ()
-        require(snapshot(stage / name) == snapshot(source / name, skip), f'{name}: authored content differs')
+        require(snapshot(stage / name) == snapshot(source / name), f'{name}: authored content differs')
     authored = {p.stem for p in (source / 'agents').glob('planar-*.md')}
     require(authored, 'no authored agents')
     require({p.name for p in (stage / 'codex-agents').iterdir()} ==

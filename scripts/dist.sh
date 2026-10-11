@@ -77,8 +77,6 @@ ignore = shutil.ignore_patterns('__pycache__', '*.pyc', '.DS_Store')
 for source, destination in [('skills/planar', 'skills/planar'), ('scripts/install-lib', 'scripts/install-lib'),
                             *[(name, name) for name in ('agents', 'templates', 'migrations')]]:
     shutil.copytree(source, stage / destination, symlinks=True, ignore=ignore)
-# The bundle does not ship agents/models.md (plan 1142): the Lua tier table is gone.
-(stage / 'agents' / 'models.md').unlink(missing_ok=True)
 PYTHON
 cp install.sh install-cleanup.txt "$stage/"
 # The standalone uninstaller ships at the bundle root, byte-identical to

@@ -75,8 +75,6 @@ fake_bundle_make() {
   rm -rf "$dest/scripts/install-lib/__pycache__"
   cp -R "$root/skills/planar" "$dest/skills/planar"
   cp -R "$root/agents" "$dest/agents"
-  # The release bundle does not ship agents/models.md (plan 1142).
-  rm -f "$dest/agents/models.md"
   cp -R "$root/migrations" "$dest/migrations"
   printf 'shipped a\n' > "$dest/templates/a.toml"
   printf 'shipped b\n' > "$dest/templates/b.toml"

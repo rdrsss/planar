@@ -26,9 +26,6 @@ make_repo() {
   cp "$ROOT/install.sh" "$repo/install.sh"
   cp -R "$ROOT/scripts" "$repo/scripts"
   cp -R "$ROOT/agents" "$repo/agents"
-  # agents/models.md leaves the release tree (plan 1142); install-cleanup.txt removes
-  # an installed copy on every run, so the checkout fixture does not carry it.
-  rm -f "$repo/agents/models.md"
   cp -R "$ROOT/skills/planar" "$repo/skills/planar"
   cp "$ROOT/install-cleanup.txt" "$repo/install-cleanup.txt"
   : > "$repo/CMakeLists.txt"
