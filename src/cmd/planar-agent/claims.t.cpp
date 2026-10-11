@@ -657,7 +657,8 @@ TEST_CASE("a legacy engine-supervised claim heartbeats and completes like an ord
   auto const lease_before = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
   CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--status", "still here"}).code == 0);
   CHECK(actions_of(scratch, "heartbeat") == "1");
-  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "3600"}).code == 0);
+  // Four hours: longer than the two-hour default lease the pull above took.
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "4h"}).code == 0);
   auto const lease_after = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
   CHECK(lease_after > lease_before);
   CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
