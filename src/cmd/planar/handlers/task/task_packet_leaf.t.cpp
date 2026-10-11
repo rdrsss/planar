@@ -127,6 +127,17 @@ constexpr std::string_view d_test_spec   = "6fbf86941cd9618fbbd981162cad4e957b3e
 /// it is SQL, because reaching a READY packet through the CLI would need the
 /// whole `spec ingest --apply` pipeline (which stages the routing facts) and
 /// that is a different subsystem from the one under test.
+/// @brief The `digest` value of a `--json` envelope, read from its key.
+auto digest_of(std::string_view payload) -> std::string {
+  constexpr std::string_view key   = R"("digest":")";
+  auto const                 start = payload.find(key);
+  REQUIRE(start != std::string_view::npos);
+  auto const from = start + key.size();
+  auto const end  = payload.find('"', from);
+  REQUIRE(end != std::string_view::npos);
+  return std::string{payload.substr(from, end - from)};
+}
+
 auto seed(const fixture& fx) -> void {
   REQUIRE(dispatch(fx, {"init", "--allow-no-repo", "--name", "t6324"}).code == 0);
   // `init` already registers a project, so this one takes an id and a
@@ -202,8 +213,11 @@ TEST_CASE("task packet: the ready arm is genuinely reachable through the CLI", "
   CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{"task_id":100,)"));
   // No `canonical` copy: `input` is the only serialized body of the evidence.
   CHECK(res.out.find(R"("canonical":)") == std::string::npos);
-  // No routing digest: the envelope ends at `reasons`, with no `digest` key.
-  CHECK(res.out.find(R"("digest":)") == std::string::npos);
+  // The digest sits where `canonical` used to: after `input`, before `reasons`.
+  CHECK(res.out.find(R"(},"digest":")") != std::string::npos);
+  CHECK(res.out.find(R"(},"digest":")") < res.out.find(R"("reasons":)"));
+  CHECK(digest_of(res.out).size() == 64);
+  CHECK(digest_of(res.out).find_first_not_of("0123456789abcdef") == std::string::npos);
   CHECK(res.out.ends_with("]}\n"));
   CHECK(res.err.empty());
 }
@@ -245,24 +259,40 @@ TEST_CASE("task packet: the policy version rides in the envelope, not only the b
   CHECK(res.out.find(R"(\"policy\":\"routing-packet-v2\")") == std::string::npos);
 }
 
-TEST_CASE("task packet: an edit changes the packet, which carries no routing digest", "[task-packet]") {
-  auto const fx = make_fixture("nodigest");
+TEST_CASE("task packet: the digest is a change detector", "[task-packet]") {
+  auto const fx = make_fixture("digest");
   seed(fx);
 
   auto const first = dispatch(fx, {"task", "packet", "100", "--json"});
   REQUIRE(first.code == 0);
   auto const again = dispatch(fx, {"task", "packet", "100", "--json"});
   REQUIRE(again.code == 0);
-  CHECK(again.out == first.out);
-  CHECK(first.out.find("\"digest\":") == std::string::npos);
+  // Recompiling unchanged state reproduces it, or it could never certify
+  // "this is the packet the dispatch was authorized against".
+  CHECK(digest_of(first.out) == digest_of(again.out));
 
   auto const edited = dispatch(fx, {"task", "update", "100", "--next-action", "Something materially different."});
   REQUIRE(edited.code == 0);
   auto const after = dispatch(fx, {"task", "packet", "100", "--json"});
   REQUIRE(after.code == 0);
-  // A packet that ignored an edit would show state that no longer exists.
-  CHECK(after.out != first.out);
-  CHECK(after.out.find("\"digest\":") == std::string::npos);
+  // A packet that ignored an edit would authorize a dispatch against state
+  // that no longer exists.
+  CHECK(digest_of(after.out) != digest_of(first.out));
+}
+
+TEST_CASE("task packet: a display-only plan rename leaves the digest unchanged", "[task-packet]") {
+  auto const fx = make_fixture("rename");
+  seed(fx);
+
+  auto const before = dispatch(fx, {"task", "packet", "100", "--json"});
+  REQUIRE(before.code == 0);
+  // A plan's title reaches the packet only as `display_label`, which the
+  // canonical body carries and the digest's preimage omits.
+  exec_sql(fx, "update plans set title='Packet plan RENAMED' where id=1");
+  auto const after = dispatch(fx, {"task", "packet", "100", "--json"});
+  REQUIRE(after.code == 0);
+  CHECK(after.out != before.out);
+  CHECK(digest_of(after.out) == digest_of(before.out));
 }
 
 TEST_CASE("task packet: the JSON drops canonical and is byte-identical across two runs", "[task-packet]") {
@@ -280,25 +310,24 @@ TEST_CASE("task packet: the JSON drops canonical and is byte-identical across tw
     CHECK(second.out == first.out);
     CHECK(first.out.find("\"canonical\":") == std::string::npos);
     CHECK(first.out.find("\"input\":{") != std::string::npos);
+    CHECK(digest_of(first.out) == digest_of(second.out));
   }
 }
 
-TEST_CASE("task packet: the text rendering names ready, reasons and body, with no digest line", "[task-packet]") {
+TEST_CASE("task packet: the text rendering names ready, digest, reasons and body", "[task-packet]") {
   auto const fx = make_fixture("text");
   seed(fx);
 
   auto const ready = dispatch(fx, {"task", "packet", "100"});
   REQUIRE(ready.code == 0);
-  CHECK(ready.out.starts_with("task packet 100: ready\n"));
-  CHECK(ready.out.find("digest: ") == std::string::npos);
+  CHECK(ready.out.starts_with("task packet 100: ready\ndigest: "));
   // A ready packet prints NO reasons block — not an empty one.
   CHECK(ready.out.find("reasons:") == std::string::npos);
   CHECK(ready.out.find(R"({"policy":"routing-packet-v2","task_id":100)") != std::string::npos);
 
   auto const blocked = dispatch(fx, {"task", "packet", "200"});
   REQUIRE(blocked.code == 0);
-  CHECK(blocked.out.starts_with("task packet 200: not_ready\n"));
-  CHECK(blocked.out.find("digest: ") == std::string::npos);
+  CHECK(blocked.out.starts_with("task packet 200: not_ready\ndigest: "));
   CHECK(blocked.out.find("\nreasons:\n- missing_body\n- missing_acceptance_section\n") != std::string::npos);
   CHECK(blocked.out.ends_with("\n"));
 }

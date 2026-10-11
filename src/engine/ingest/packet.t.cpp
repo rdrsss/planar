@@ -231,7 +231,7 @@ TEST_CASE("ready fixture is actually ready", "[packet]") {
   CHECK(packet->input.touches.size() == 1);
   CHECK(packet->input.validation_gates.size() == 1);
   CHECK(packet->input.facts.size() == 6);
-  CHECK(packet->canonical.starts_with("{\"policy\":\"routing-packet-v2\",\"task_id\":"));
+  CHECK(packet->digest.size() == 64);
 }
 
 TEST_CASE("the ready packet's evidence is current rather than merely present", "[packet]") {
@@ -586,7 +586,7 @@ TEST_CASE("an unknown task refuses rather than compiling an empty packet", "[pac
   CHECK(packet.error() == pk::packet_error::task_not_found);
 }
 
-TEST_CASE("the canonical body is stable across recompiles and moves with semantic edits", "[packet]") {
+TEST_CASE("the digest is stable across recompiles and moves with semantic edits", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
@@ -595,16 +595,17 @@ TEST_CASE("the canonical body is stable across recompiles and moves with semanti
   REQUIRE(first.has_value());
   auto again = pk::assemble_task(conn, ready_task);
   REQUIRE(again.has_value());
-  // Recompiling unchanged state must reproduce the canonical body exactly.
-  CHECK(first->canonical == again->canonical);
+  // Recompiling unchanged state must reproduce the digest, or it could never
+  // certify "this is the packet the dispatch was authorized against".
+  CHECK(first->digest == again->digest);
 
   exec(conn, "update tasks set title='Renamed' where id=100");
   auto edited = pk::assemble_task(conn, ready_task);
   REQUIRE(edited.has_value());
-  CHECK(edited->canonical != first->canonical);
+  CHECK(edited->digest != first->digest);
 }
 
-TEST_CASE("a display-only rename moves the canonical body", "[packet]") {
+TEST_CASE("a display-only rename moves the canonical body but not the digest", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
@@ -613,30 +614,22 @@ TEST_CASE("a display-only rename moves the canonical body", "[packet]") {
   REQUIRE(before.has_value());
 
   // A plan's TITLE reaches the packet only as `display_label`, which the
-  // canonical body carries.
+  // canonical body carries and the digest's preimage omits. This is the whole
+  // point of compiling the body twice.
   exec(conn, "update plans set title='Packet plan RENAMED' where id=1");
   auto after = pk::assemble_task(conn, ready_task);
   REQUIRE(after.has_value());
+  CHECK(after->digest == before->digest);
   CHECK(after->canonical != before->canonical);
   CHECK(after->canonical.find("Packet plan RENAMED") != std::string::npos);
 }
 
-// A task packet has no `digest` member (plan 1142, task 7455): the routing digest left with the dispatch boundary.
-template <typename T>
-concept has_digest_member = requires(T value) { value.digest; };
-static_assert(!has_digest_member<pk::task_packet>, "a task packet carries no routing digest field");
-
-TEST_CASE("a task packet carries no routing digest field", "[packet][routing-digest]") {
-  // Both renderers omit the field, so no consumer can read a digest the packet
-  // no longer computes.
-
+TEST_CASE("the envelope carries the digest and no canonical body", "[packet][digest]") {
   const auto packet = pk::compile_task(pk::task_input{});
   CHECK(packet.canonical.starts_with("{\"policy\":\"routing-packet-v2\",\"task_id\":"));
   const auto json = pk::render_json(packet);
-  CHECK(json.find("\"digest\":") == std::string::npos);
+  CHECK(json.find("\"digest\":\"") != std::string::npos);
   CHECK(json.find("\"canonical\":") == std::string::npos);
-  const auto text = pk::render_text(packet);
-  CHECK(text.find("digest: ") == std::string::npos);
 }
 
 TEST_CASE("the canonical body ignores evidence input order", "[packet]") {
@@ -671,6 +664,7 @@ TEST_CASE("the canonical body ignores evidence input order", "[packet]") {
 
   const auto one = pk::compile_task(forward);
   const auto two = pk::compile_task(reversed);
+  CHECK(one.digest == two.digest);
   CHECK(one.canonical == two.canonical);
 
   // Adversarial text stays DATA: the quote and the command substitution are
@@ -822,7 +816,7 @@ TEST_CASE("render_text names every reason and ends with the canonical body", "[p
   REQUIRE(blocked.has_value());
   const auto text = pk::render_text(*blocked);
   CHECK(text.starts_with(std::format("task packet {}: not_ready\n", bare_task)));
-  CHECK(text.find("digest: ") == std::string::npos);
+  CHECK(text.find(std::format("digest: {}\n", blocked->digest)) != std::string::npos);
   CHECK(text.find("reasons:\n- missing_body\n") != std::string::npos);
   CHECK(text.ends_with(blocked->canonical + "\n"));
 
