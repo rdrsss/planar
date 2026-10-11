@@ -1263,7 +1263,7 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
       }
       now_mono = *fresh;
     }
-    auto enqueued = hq::enqueue(conn, make_request(now_mono), settings.current().history_days);
+    auto enqueued = hq::enqueue(conn, make_request(now_mono), settings.current().history_days, claim_standing_lookup(conn));
     if (!enqueued) {
       return refuse(ctx, enqueued.error().message);
     }

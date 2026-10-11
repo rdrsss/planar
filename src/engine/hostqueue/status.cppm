@@ -103,6 +103,7 @@ export struct queue_status {
   std::optional<std::int64_t>    wait_limit_ms;   ///< The wait limit it was submitted with, when limited.
   std::optional<std::int64_t>    slots;           ///< The slot count in force, for an entry in the queue, when known.
   std::optional<std::int64_t>    grace_ms;        ///< The grace period in force, for an entry in the queue, when known.
+  std::optional<std::string>     claim_token;     ///< The claim token `queue run --claim` named, verbatim, when any.
 };
 
 /// @brief Which step of `query_status` failed.

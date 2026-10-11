@@ -72,6 +72,13 @@ constexpr std::array k_fingerprint_ledger{
                     "queue version 2 (plan 1142, migration 00042): queue_history gains the nullable claim_token, compat stays "
                     "1. The schema change bumps the version; no hostqueue SQL literal or protocol value changed, so the "
                     "fingerprint carries over from queue version 1's last entry"},
+    fingerprint_pin{2, "b0d56e94911952f9fdf9cc51fd4e929d81b2ef3dceda559fa77544e0b5584d64",
+                    "task mo-queue-claim-evidence (plan 1142), still queue version 2: end_entry copies the entry's "
+                    "claim_token onto the history row (the entry delete returns it, the history insert and reads name "
+                    "it), and the retention prune keeps tokened rows per claim lookup for at most 90 days after the "
+                    "claim ends. Compatible: the column is the one migration 00042 added and NULL keeps the older "
+                    "meaning, a binary at queue version 1 never names it and prunes by age alone, and no stored value "
+                    "or liveness or slot rule changes, so compat stays 1"},
 };
 
 // ---------------------------------------------------------------------------

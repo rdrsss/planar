@@ -905,3 +905,121 @@ TEST_CASE("queue run --claim: a nested run renews the claim", "[cmd][agent][queu
   CHECK(await_history(arena, 2).exit_code == 0);
   CHECK(claim_field(arena, token, "status") == "active");
 }
+
+// --- claim evidence: the token on the history row, and its retention -------
+// (plan 1142, task mo-queue-claim-evidence; tech spec 693 component 7)
+
+/// @brief The wall clock now, ms since the epoch.
+auto wall_now_ms() -> std::int64_t {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+/// @brief Writes one ended `queue_history` row straight into the arena's
+/// database, ended `age_days` days ago, naming `token` when given. Rows are
+/// seeded by hand because the case needs rows older than any run could make.
+void seed_history(const parity::arena& arena, std::int64_t seq, std::optional<std::string_view> token, std::int64_t age_days) {
+  auto conn = planar::db::connection::open(main_db(arena).string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("insert into queue_history (seq, outcome, exit_code, cwd, argv, enqueued_at, ended_at, waited_ms, "
+                            "claim_token) values (?, 'exited', 0, '/work', '[\"true\"]', ?, ?, 0, ?)");
+  REQUIRE(stmt.has_value());
+  auto const ended = wall_now_ms() - age_days * hq::k_ms_per_day;
+  REQUIRE(stmt->bind_int64(1, seq).has_value());
+  REQUIRE(stmt->bind_int64(2, ended).has_value());
+  REQUIRE(stmt->bind_int64(3, ended).has_value());
+  REQUIRE((token ? stmt->bind_text(4, *token) : stmt->bind_null(4)).has_value());
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+}
+
+/// @brief Whether the history row `seq` is still in the arena's database.
+auto history_present(const parity::arena& arena, std::int64_t seq) -> bool {
+  auto conn = planar::db::connection::open(main_db(arena).string());
+  REQUIRE(conn.has_value());
+  auto stmt = conn->prepare("select count(*) from queue_history where seq = ?");
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->bind_int64(1, seq).has_value());
+  auto stepped = stmt->step();
+  REQUIRE(stepped.has_value());
+  return stmt->column_int64(0) == 1;
+}
+
+TEST_CASE("queue run --claim: the history row carries the token verbatim, a run without --claim carries none",
+          "[cmd][agent][queue][hq-claim][mo-queue-claim-evidence]") {
+  auto const arena = seeded_arena("qc_evidence");
+  write_config(arena, k_fast_poll);
+  seed_main(arena);
+  auto const token = mint_claim(arena);
+
+  // A real claim's token, then a token no claim has: recorded as given.
+  CHECK(run_queue(arena, "real", sh_command("exit 0"), {"--claim", token}).code == 0);
+  CHECK(run_queue(arena, "bogus", sh_command("exit 0"), {"--claim", "no such claim", "--notices"}).code == 0);
+  CHECK(run_queue(arena, "none", sh_command("exit 0")).code == 0);
+  CHECK(await_history(arena, 1).claim_token == std::optional<std::string>{token});
+  CHECK(await_history(arena, 2).claim_token == std::optional<std::string>{"no such claim"});
+  CHECK(await_history(arena, 3).claim_token == std::nullopt);
+
+  // An operator reads it back through `queue status`, as JSON and as text.
+  auto const seq = std::to_string(planar::cmd::qfix::seq_of(1));
+  auto const status =
+      parity::run_pinned(agent_bin(), std::vector<std::string>{"queue", "status", seq, "--json"}, arena.cpp_root, "status-json");
+  REQUIRE(status.code == 0);
+  CHECK(status.out.contains(std::format("\"claim_token\":\"{}\"", token)));
+  auto const text =
+      parity::run_pinned(agent_bin(), std::vector<std::string>{"queue", "status", seq}, arena.cpp_root, "status-text");
+  REQUIRE(text.code == 0);
+  CHECK(text.out.contains(std::format("claim_token: {}\n", token)));
+  auto const none_seq = std::to_string(planar::cmd::qfix::seq_of(3));
+  auto const none     = parity::run_pinned(agent_bin(), std::vector<std::string>{"queue", "status", none_seq, "--json"},
+                                           arena.cpp_root, "none-json");
+  REQUIRE(none.code == 0);
+  CHECK(none.out.contains("\"claim_token\":null"));
+}
+
+TEST_CASE("queue run --claim --detach: the saved-ticket run records the token on its history row",
+          "[cmd][agent][queue][hq-claim][mo-queue-claim-evidence]") {
+  auto const arena = seeded_arena("qc_evid_det");
+  write_config(arena, k_fast_poll);
+  seed_main(arena);
+  auto const token = mint_claim(arena);
+
+  auto const got = run_queue(arena, "detached", sh_command("exit 0"), {"--detach", "--claim", token});
+  REQUIRE(got.code == 0);
+  auto const seq = ticket_seq(got.out);
+  CHECK(await_history(arena, seq).claim_token == std::optional<std::string>{token});
+}
+
+TEST_CASE("queue run: history rows that name a claim outlive the retention while the plan is open, and go when it closes",
+          "[cmd][agent][queue][hq-claim][mo-queue-claim-evidence]") {
+  // The retention is 30 days. Every seeded row ended 40 days ago except the
+  // last, which ended 100 days ago.
+  auto const arena = seeded_arena("qc_evid_prune");
+  write_config(arena, k_fast_poll);
+  seed_main(arena);
+  auto const token = mint_claim(arena);
+
+  constexpr std::int64_t k_tokened = 11, k_plain = 12, k_unknown = 13, k_unknown_old = 14;
+  seed_history(arena, k_tokened, token, 40);
+  seed_history(arena, k_plain, std::nullopt, 40);
+  seed_history(arena, k_unknown, "no such claim", 40);
+  seed_history(arena, k_unknown_old, "no such claim", 100);
+
+  // Plan open: the row naming the live claim stays; so does a row whose claim
+  // nobody can find (kept at most 90 days); the untokened row and the
+  // unknown one past the 90-day cap are pruned as before.
+  CHECK(run_queue(arena, "first", sh_command("exit 0")).code == 0);
+  CHECK(history_present(arena, k_tokened));
+  CHECK_FALSE(history_present(arena, k_plain));
+  CHECK(history_present(arena, k_unknown));
+  CHECK_FALSE(history_present(arena, k_unknown_old));
+
+  // The plan closes: the evidence is spent and the ordinary retention applies.
+  {
+    auto conn = planar::db::connection::open(main_db(arena).string());
+    REQUIRE(conn.has_value());
+    REQUIRE(conn->execute("update plans set status = 'done' where id = 1").has_value());
+  }
+  CHECK(run_queue(arena, "second", sh_command("exit 0")).code == 0);
+  CHECK_FALSE(history_present(arena, k_tokened));
+  CHECK(history_present(arena, k_unknown));
+}
