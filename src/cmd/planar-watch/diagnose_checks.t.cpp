@@ -20,7 +20,7 @@
 //     and `abort` clears it.
 //   * A healthy claim, before and after `complete`, gives no claim finding.
 //   * `heartbeat-gap` reads the heartbeat action rows the verb writes.
-//   * `handoff-stale` agrees with the stale-handoff count `planar report` prints.
+//   * `handoff-stale` agrees with the stale-handoff count `planar health` prints.
 //   * Dispatch checks (plan 1132, tasks 7376 and 7377): the dispatch records are the preview and
 //     snapshot rows, written here with consistent synthetic digests. No verb writes them any more
 //     (plan 1142, task 7455), so the project and routing candidate they name are seeded by hand too.
@@ -380,7 +380,7 @@ TEST_CASE("heartbeat gaps: info between recorded heartbeats, a warning for the t
         std::vector<std::string>{"heartbeat-gap claim:1 warning", "heartbeat-gap claim:1 info", "heartbeat-gap claim:1 info"});
 }
 
-TEST_CASE("handoff-stale agrees with the stale-handoff count planar report prints", "[cmd][watch][diagnose][workflow][handoff]") {
+TEST_CASE("handoff-stale agrees with the stale-handoff count planar health prints", "[cmd][watch][diagnose][workflow][handoff]") {
   world w;
   // Handoffs need an open session; the pinned environment is extended with its identity.
   auto env = parity::pinned_env(w.root);
@@ -405,10 +405,14 @@ TEST_CASE("handoff-stale agrees with the stale-handoff count planar report print
   w.move_time("update handoffs set created_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-23 hours') where id = 2");
   CHECK(w.findings({"handoff-stale"}) == std::vector<std::string>{"handoff-stale handoff:1 warning"});
 
-  auto report = op({"report", "--json"});
-  auto parsed = planar::json_dom::parse_json(report.out);
+  // A stale handoff makes the report `degraded`, and `planar health` exits 1 on degraded after it has
+  // printed the report, so this is the one call that does not go through `op`.
+  auto health = parity::run_pinned(w.op, std::vector<std::string>{"health", "--json"}, w.root, w.tag(), env);
+  INFO("planar health: " << health.err);
+  CHECK(health.code == 1);
+  auto parsed = planar::json_dom::parse_json(health.out);
   REQUIRE(parsed.has_value());
-  CHECK(parsed->find("handoffs")->find("stale_handoffs")->integer == 1);
+  CHECK(parsed->find("stale_handoffs")->integer == 1);
 }
 
 const std::vector<std::string> k_dispatch_checks{"dispatch-no-role-action", "dispatch-confirmed-late", "action-unended"};

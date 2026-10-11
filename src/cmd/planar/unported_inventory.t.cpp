@@ -27,8 +27,8 @@
 //
 // `unported_paths()` is what makes a declared-but-unported leaf exit 64 with
 // "not implemented in this build" rather than crash or silently succeed.
-// `planar:explore` is the only entry the tree still carries, deferred by
-// decision 980 rather than pending — see `src/cmd/planar/surface.cppm`.
+// `planar` carries no entry: `explore`, the last one, was deleted outright in
+// plan 1142 (task 7463). See `src/cmd/planar/surface.cppm`.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -98,12 +98,13 @@ auto parsed_unported(const std::filesystem::path& source) -> std::optional<std::
 
 } // namespace
 
-TEST_CASE("the checked-in unported inventories carry only decision-980's deferred leaf", "[cmd][surface]") {
+TEST_CASE("the checked-in unported inventories are empty", "[cmd][surface]") {
   // The live half of the same subject. `statediff.t.cpp` used to assert
   // these counts as one of the oracle-retirement gate's three conditions
   // (decision 963/982, condition 2: "the unported inventory contains only
-  // `explore`"). The gate is retired with its subject, but the FACT it
-  // gated is a standing property of this tree and is pinned here directly.
+  // `explore`"). The gate is retired with its subject, and plan 1142
+  // (task 7463) deleted `explore`, so the standing fact is now that no
+  // binary declares a leaf without a handler. It is pinned here directly.
   // NO binary ships a generated `surface.cpp` any more — task 6613 (M11.1)
   // folded `planar-watch`'s `node_spec` table into `tree.cpp`, task 6614
   // (M11.2) did the same for `planar-agent`, and task 6636 (M11.3f)
@@ -123,14 +124,14 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   // cheap to compile a second time into this test target (see
   // `CMakeLists.txt`'s `target_sources` block for that binary-local edge).
   // Repointed rather than dropped: the property being pinned (nothing
-  // beyond decision 980's deferred leaf remains declared-but-unported on
-  // any binary) still holds and is still worth catching a regression on.
+  // remains declared-but-unported on any binary) still holds and is still
+  // worth catching a regression on.
   auto const planar_unported = parsed_unported(target_source_root() / "src/cmd/planar/surface.cppm");
   auto const agent_unported  = parsed_unported(target_source_root() / "src/cmd/planar-agent/surface.cppm");
   REQUIRE(planar_unported.has_value());
   REQUIRE(agent_unported.has_value());
 
-  CHECK(*planar_unported == std::vector<std::string>{"explore"});
+  CHECK(planar_unported->empty());
   CHECK(agent_unported->empty());
   CHECK(planar::cmd::watch::unported_paths().empty());
 
@@ -141,6 +142,10 @@ TEST_CASE("the checked-in unported inventories carry only decision-980's deferre
   REQUIRE(agent_surface.has_value());
   CHECK(agent_surface->contains("k_unported[] = {std::string_view{}}"));
   CHECK(agent_surface->contains("std::span<std::string_view const>{k_unported}.first(0)"));
+  auto const planar_surface = source_text(target_source_root() / "src/cmd/planar/surface.cppm");
+  REQUIRE(planar_surface.has_value());
+  CHECK(planar_surface->contains("k_unported[] = {std::string_view{}}"));
+  CHECK(planar_surface->contains("std::span<std::string_view const>{k_unported}.first(0)"));
 
   for (auto const& landed : {"ingest"}) {
     INFO("landed agent path remained in unported inventory: " << landed);

@@ -21,7 +21,6 @@ import planar.cmd.planar.declare;
 import planar.cmd.planar.handlers.config.show;
 import planar.cmd.planar.handlers.config.edit;
 import planar.cmd.planar.handlers.config.validate;
-import planar.cmd.planar.handlers.config.init;
 import planar.cmd.planar.handlers.config.path;
 
 namespace planar::cmd::handlers {
@@ -30,65 +29,10 @@ namespace cfg = engine::config;
 
 namespace {
 
-/// @brief The starter written by `config init`.
-///
-/// The LONGER of the two blobs — it carries the eight-line
-/// `[models.codex]` / `[roles]` example the `config edit` copy never
-/// received. 1246 bytes, measured at plan 1142 task 7456 after the pointer to
-/// the removed `planar models` verb was dropped from the blob. See
-/// config.cppm for why the two are not merged.
-constexpr std::string_view k_starter_init = R"TOML(# ~/.planar/config.toml — Planar configuration
-#
-# This file was created by "planar config init" (or "planar init").
-# All keys are optional. Anything you don't set falls through to the
-# embedded defaults shipped in the binary.
-#
-# To see every available key with its current default value, run:
-#   planar config show --defaults
-#
-# To see the fully resolved configuration with provenance per key, run:
-#   planar config show --effective
-#
-# Environment variables override config values. They always take precedence.
-# See docs/architecture.md for the full configuration plane reference.
-#
-# To edit this file in your $EDITOR, run:
-#   planar config edit
-#
-# Example customizations (uncomment and fill in):
-#
-# [defaults]
-# vendor = "claude"
-#
-# [workbench]
-# root = "~/.planar/workbench"
-#
-# [external.jira]
-# base_url = "https://your-org.atlassian.net"
-# user_env  = "JIRA_USER"
-# token_env = "JIRA_TOKEN"
-#
-# # Per-vendor model tier maps + role→tier routing (plan 540). Override a
-# # tier to re-route every role at that tier.
-# [models.codex]
-# medium = "gpt-5.6-terra"
-#
-# [roles]
-# coder = "large"
-#
-# [associations."org:acme"]
-# github_lead_repo = "acme/platform"
-#
-# [associations."org:acme".external.jira.status]
-# done = "Closed"
-)TOML";
-
 /// @brief The starter written by `config edit`.
 ///
-/// The SHORTER blob: identical to `k_starter_init` except that it lacks the
-/// `[models.codex]` / `[roles]` block. 1048 bytes, byte-matched against the
-/// built oracle. `edit.zig`'s own comment claims this "mirrors init.zig's
-/// starter_config exactly" — it does not, and reproducing the drift is D2.
+/// The starter written by `config edit` when no file exists. 1048 bytes,
+/// byte-matched against the built oracle.
 constexpr std::string_view k_starter_edit = R"TOML(# ~/.planar/config.toml — Planar configuration
 #
 # This file was created by "planar config init" (or "planar init").
@@ -309,25 +253,6 @@ auto config_path(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   return {};
 }
 
-auto config_init(context& ctx, const cliapp::parsed_args& args) -> handler_result {
-  static_cast<void>(args);
-  auto const path = config_file_path(ctx);
-  if (!path.has_value()) {
-    return std::unexpected(path.error());
-  }
-
-  std::error_code ec;
-  if (std::filesystem::exists(*path, ec)) {
-    ctx.out() << "config init: already exists " << path->string() << '\n';
-    return {};
-  }
-  if (!write_file(*path, k_starter_init)) {
-    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "initializing config file: FileWriteFailed"));
-  }
-  ctx.out() << "config init: created " << path->string() << '\n';
-  return {};
-}
-
 auto config_edit(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   static_cast<void>(args);
   auto const path = config_file_path(ctx);
@@ -398,17 +323,6 @@ auto config_show(context& ctx, const cliapp::parsed_args& args) -> handler_resul
   if (!resolved.has_value()) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "resolving configuration: ParseFailed"));
   }
-  // `resolve` falls back to the default for a wrong-typed value; a range-checked key is refused here, by name.
-  if (content_view.has_value()) {
-    if (auto const file_map = cfg::parse_toml(*content_view); file_map.has_value()) {
-      if (auto const findings = cfg::validate_introspection(*file_map); !findings.empty()) {
-        return std::unexpected(
-            error_from_body(domain_error_kind::invalid_input,
-                            std::format("invalid configuration: {}: {}", findings.front().key, findings.front().message)));
-      }
-    }
-  }
-
   bool const as_json = cliapp::flag_bool(args, "--json");
   // `--json` implies provenance; `--format` is declared and never read (see
   // config.cppm).
@@ -514,13 +428,14 @@ auto queue_key_at_line(std::string_view content, std::uint32_t line) -> std::str
   }
 }
 
-/// @brief Whether the file opens an `[execute]` table, or a table under it.
+/// @brief Whether the file opens the named table, or a table under it.
 ///
 /// Lexical, like the other line scans here, because a flattened map has no
-/// entry for an empty table and `[execute]` with no keys must still refuse.
+/// entry for an empty table and a removed table with no keys must still refuse.
 /// @param content The whole configuration file.
-/// @return True when some table header names `execute` or `execute.<...>`.
-auto has_execute_table(std::string_view content) -> bool {
+/// @param table The dotted table name, for example `execute`.
+/// @return True when some table header names `table` or `table.<...>`.
+auto has_table(std::string_view content, std::string_view table) -> bool {
   std::string_view rest{content};
   while (!rest.empty()) {
     auto const newline = rest.find('\n');
@@ -530,7 +445,7 @@ auto has_execute_table(std::string_view content) -> bool {
       // table name (task 7057).
       auto const header = text.substr(0, std::min(text.size(), text.find('#')));
       auto const name   = trim_any(trim_any(header, " \t[]"), " \t");
-      if (name == "execute" || name.starts_with("execute.")) {
+      if (name == table || (name.starts_with(table) && name.size() > table.size() && name[table.size()] == '.')) {
         return true;
       }
     }
@@ -674,19 +589,26 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
     report(std::format("{}: {}", finding.key, finding.message));
   }
 
-  // ---- step 5: the `[introspection]` keys that carry a range ------------
-  for (auto const& finding : cfg::validate_introspection(*parsed)) {
-    report(std::format("{}: {}", finding.key, finding.message));
-  }
-
-  // ---- step 6: the removed `[execute]` table (plan 1142, task 7459) ------
+  // ---- step 5: removed tables and keys ----------------------------------
   //
-  // planar-execute's engine selector and profiles left planar's configuration
-  // with it, so `[execute]` is no longer a known key. A file that still
+  // planar-execute's selector and profiles left planar's configuration with
+  // `[execute]` (plan 1142, task 7459), and the transcript capture settings
+  // left with the introspection engines (plan 1142, task 7472). A file that still
   // carries one is refused by name rather than having its keys ignored.
-  if (std::ranges::any_of(*parsed, [](auto const& kv) { return kv.first == "execute" || kv.first.starts_with("execute."); }) ||
-      has_execute_table(*content)) {
+  auto const removed = [&](std::string_view name) {
+    return has_table(*content, name) || std::ranges::any_of(*parsed, [&](auto const& kv) {
+             return kv.first == name ||
+                    (kv.first.starts_with(name) && kv.first.size() > name.size() && kv.first[name.size()] == '.');
+           });
+  };
+  if (removed("execute")) {
     report("execute: unknown key (the [execute] table was removed from planar's configuration)");
+  }
+  if (removed("introspection.transcripts")) {
+    report("introspection.transcripts: unknown key (the transcript capture settings were removed)");
+  }
+  if (removed("introspection.transcript_scan_bytes")) {
+    report("introspection.transcript_scan_bytes: unknown key (the transcript read budget was removed)");
   }
 
   if (!findings.empty()) {
@@ -710,8 +632,6 @@ auto declare_config(CLI::App& root) -> void {
   config_cli::attach_edit(config);
 
   config_cli::attach_validate(config);
-
-  config_cli::attach_init(config);
 
   config_cli::attach_path(config);
 }

@@ -1114,23 +1114,9 @@ auto strategy_query_failed(std::string_view verb) -> domain_error {
 auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   namespace st = engine::planning::strategy;
 
-  // Both refusals are argument-shaped and come BEFORE the database is
-  // touched, matching the oracle: a bad `--closure-source` on a nonexistent
-  // plan reports the flag, not the plan.
   auto const id = entity_id_arg(args, "plan-id", "plan");
   if (!id) {
     return std::unexpected(id.error());
-  }
-  auto const raw_source = cliapp::flag_string(args, "--closure-source");
-  // The flag is declared with a `declared` default, so an absent value here
-  // means the parser handed us nothing -- treat it as the default rather than
-  // refusing on an empty string the operator never typed.
-  auto const source_text = raw_source.has_value() ? *raw_source : std::string{"declared"};
-  auto const source      = st::parse_closure_source(source_text);
-  if (!source.has_value()) {
-    return std::unexpected(
-        error_from_body(domain_error_kind::invalid_input,
-                        std::format("--closure-source must be 'declared' or 'derived', got '{}'", source_text)));
   }
 
   auto conn = ctx.db().ensure_db();
@@ -1138,7 +1124,7 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
     return std::unexpected(conn.error());
   }
 
-  auto rec = st::recommend_with(**conn, *id, *source);
+  auto rec = st::recommend(**conn, *id);
   if (!rec) {
     if (rec.error() == st::strategy_error::not_found) {
       return std::unexpected(strategy_plan_not_found(*id));
@@ -1171,8 +1157,7 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
   rec->parallel_eligible = std::move(packet_ready);
   rec->fan_out_available = rec->parallel_eligible.size() >= 2;
 
-  ctx.out() << (cliapp::flag_bool(args, "--json") ? st::render_recommendation_json(*rec, *source)
-                                                  : st::render_recommendation_text(*rec, *source));
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? st::render_recommendation_json(*rec) : st::render_recommendation_text(*rec));
   return {};
 }
 

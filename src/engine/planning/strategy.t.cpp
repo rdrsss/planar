@@ -141,16 +141,6 @@ TEST_CASE("strategy: the two path classifiers match the oracle's prefix/suffix r
   CHECK(st::singleton_files().size() == 4);
 }
 
-TEST_CASE("strategy: closure_source parses exactly two tokens", "[planning]") {
-  CHECK(st::parse_closure_source("declared") == st::closure_source::declared);
-  CHECK(st::parse_closure_source("derived") == st::closure_source::derived);
-  CHECK_FALSE(st::parse_closure_source("bogus").has_value());
-  CHECK_FALSE(st::parse_closure_source("").has_value());
-  CHECK_FALSE(st::parse_closure_source("Declared").has_value()); // case-sensitive
-  CHECK(st::closure_source_name(st::closure_source::declared) == "declared");
-  CHECK(st::closure_source_name(st::closure_source::derived) == "derived");
-}
-
 TEST_CASE("strategy: both entry points report not_found for a plan that does not exist", "[planning]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
@@ -431,7 +421,10 @@ TEST_CASE("strategy: an empty touch set drops a task in recommend but is inert i
   CHECK(div->flips == 0);
 }
 
-TEST_CASE("strategy: a shared derived symbol flips rule 2, and transitive rows do not", "[planning]") {
+TEST_CASE("strategy: a shared closure symbol never changes recommend, and divergence still measures it", "[planning]") {
+  // `recommend` reads declared touches only. The closure rows below would flip
+  // rule 2 if the recommendation read them, so the eligible counts pin that it
+  // does not. `compute_divergence` still reads them, and must still see them.
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   auto const      plan = seed_plan(conn);
@@ -441,18 +434,14 @@ TEST_CASE("strategy: a shared derived symbol flips rule 2, and transitive rows d
   touch_path(conn, t1, repo, "src/foo.zig");
   touch_path(conn, t2, repo, "src/bar.zig");
 
-  SECTION("a shared reference symbol overlaps under derived and flips") {
+  SECTION("a shared reference symbol leaves both tasks eligible") {
     seed_closure(conn, t1, repo, "shared.helper", "reference");
     seed_closure(conn, t2, repo, "shared.helper", "reference");
 
-    auto const declared = st::recommend_with(conn, plan, st::closure_source::declared);
-    REQUIRE(declared.has_value());
-    CHECK(declared->parallel_eligible.size() == 2);
-
-    auto const derived = st::recommend_with(conn, plan, st::closure_source::derived);
-    REQUIRE(derived.has_value());
-    CHECK(derived->parallel_eligible.empty());
-    CHECK(has_rule(derived->serialized, t1, 2));
+    auto const rec = st::recommend(conn, plan);
+    REQUIRE(rec.has_value());
+    CHECK(rec->parallel_eligible.size() == 2);
+    CHECK(rec->serialized.empty());
 
     auto const div = st::compute_divergence(conn, plan);
     REQUIRE(div.has_value());
@@ -467,9 +456,9 @@ TEST_CASE("strategy: a shared derived symbol flips rule 2, and transitive rows d
     seed_closure(conn, t1, repo, "deep.thing", "transitive");
     seed_closure(conn, t2, repo, "deep.thing", "transitive");
 
-    auto const derived = st::recommend_with(conn, plan, st::closure_source::derived);
-    REQUIRE(derived.has_value());
-    CHECK(derived->parallel_eligible.size() == 2);
+    auto const rec = st::recommend(conn, plan);
+    REQUIRE(rec.has_value());
+    CHECK(rec->parallel_eligible.size() == 2);
 
     auto const div = st::compute_divergence(conn, plan);
     REQUIRE(div.has_value());
@@ -479,11 +468,9 @@ TEST_CASE("strategy: a shared derived symbol flips rule 2, and transitive rows d
   }
 }
 
-TEST_CASE("strategy: recommend is the declared wrapper and rule 2 is the only branch that switches", "[planning]") {
-  // Under `derived`, rules 3 and 4 still read the DECLARED paths -- a
-  // migration touch is a declared-path property, not a closure property. A
-  // port that swapped the whole touch set would lose these two rules entirely
-  // whenever a task had closures.
+TEST_CASE("strategy: rules 3 and 4 read declared paths even when the task has closure rows", "[planning]") {
+  // A migration touch is a declared-path property, so the rule must fire from
+  // `task_touch_paths` regardless of closure rows on the same task.
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   auto const      plan = seed_plan(conn);
@@ -492,16 +479,10 @@ TEST_CASE("strategy: recommend is the declared wrapper and rule 2 is the only br
   touch_path(conn, t1, repo, "migrations/00001_a.sql");
   seed_closure(conn, t1, repo, "some.symbol", "modify");
 
-  auto const derived = st::recommend_with(conn, plan, st::closure_source::derived);
-  REQUIRE(derived.has_value());
-  CHECK(has_rule(derived->serialized, t1, 3));
-
-  auto const declared = st::recommend_with(conn, plan, st::closure_source::declared);
-  auto const plain    = st::recommend(conn, plan);
-  REQUIRE(declared.has_value());
-  REQUIRE(plain.has_value());
-  CHECK(plain->parallel_eligible.size() == declared->parallel_eligible.size());
-  CHECK(plain->serialized.size() == declared->serialized.size());
+  auto const rec = st::recommend(conn, plan);
+  REQUIRE(rec.has_value());
+  CHECK(has_rule(rec->serialized, t1, 3));
+  CHECK(rec->parallel_eligible.empty());
 }
 
 TEST_CASE("strategy: the renderers carry the trailing newline and the two jaccard formats", "[planning]") {
@@ -530,8 +511,11 @@ TEST_CASE("strategy: the recommendation JSON escapes titles and renders a null s
       .open_tasks        = 1,
       .fan_out_available = false,
   };
-  auto const json = st::render_recommendation_json(rec, st::closure_source::declared);
+  auto const json = st::render_recommendation_json(rec);
   CHECK(json.contains(R"({"id":1,"slug":null,"title":"He said \"hi\"\tand \\ that"})"));
   CHECK(json.ends_with("\n"));
   CHECK(json.contains(R"("recommended_note":"no fan-out: only 1 eligible task; run sequentially")"));
+  // The key survives for consumers, and its value is fixed.
+  CHECK(json.starts_with(R"({"plan_id":7,"closure_source":"declared",)"));
+  CHECK(st::render_recommendation_text(rec).starts_with("plan:7  source:declared  open:1  eligible:1"));
 }

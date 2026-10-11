@@ -66,10 +66,8 @@ table. Keep narrow single-verb cases next to their handler.
 | Artifact and annotation | Draft/active and active/resolved paths; terminal outcomes | [`artifact_leaves.t.cpp`](../planar/handlers/artifact/artifact_leaves.t.cpp), [`annotation.t.cpp`](../../engine/planning/annotation.t.cpp) |
 | Handoff, session | Capture → validate → consume; abandon and supersede paths | [`handoff.t.cpp`](../../engine/runtime/handoff.t.cpp), [`capture.t.cpp`](../../engine/runtime/capture.t.cpp), handler tests |
 | Agent claim, action | Claim → heartbeat → terminal verb; atomic task update and expiry | [`claims.t.cpp`](../planar-agent/claims.t.cpp), [`cross_process.t.cpp`](../planar/cross_process.t.cpp) |
-| Feedback triage | Preview → apply disposition; reproduce/report outcome | [`feedback_triage.t.cpp`](../../engine/planning/feedback_triage.t.cpp), handler tests |
 | External link and sync event | Link → pull/push proposal → resolve; enforce external write boundary | [`sync.t.cpp`](../../engine/external/sync.t.cpp), [`capability.t.cpp`](../planar-ext/capability.t.cpp) |
 | Workbench sync | DB ↔ files, conflict, malformed input, and no-op | [`sync.t.cpp`](../../engine/workbench/sync.t.cpp), handler tests |
-| Measurement run | Start → record → finish; caller-defined terminal result | [`lifecycle.t.cpp`](../../engine/runs/lifecycle.t.cpp), handler tests |
 | Derived health, closeout, resume | Inputs change → read model changes; closeout gate refusal and success | [`health` tests](../../engine/health/), [`closeout.t.cpp`](../../engine/planning/closeout.t.cpp), handler tests |
 
 The table is an inventory, not a claim that each row already has a complete

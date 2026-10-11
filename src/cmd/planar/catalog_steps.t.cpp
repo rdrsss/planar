@@ -221,7 +221,7 @@ TEST_CASE("state catalog: exceptions form a disjoint exact coverage partition", 
   auto const  catalog = R"({"commands":[
     {"path":["plan","show"],"subcommands":[],"positionals":[{"required":true}],"flags":[]},
     {"path":["config","edit"],"subcommands":[],"positionals":[],"flags":[]},
-    {"path":["explore"],"subcommands":[],"positionals":[],"flags":[]},
+    {"path":["version"],"subcommands":[],"positionals":[],"flags":[]},
     {"path":["list"],"subcommands":[],"positionals":[],"flags":[{"required":false,"long":"--json"}]},
     {"path":["workspace","init"],"subcommands":[],"positionals":[],"flags":[{"required":false,"long":"--json"}]}
   ]})";
@@ -257,7 +257,7 @@ TEST_CASE("state catalog: exceptions form a disjoint exact coverage partition", 
 
 TEST_CASE("state catalog: exclusions are explicit and workspace init remains eligible", "[cmd][state][catalog]") {
   auto const  catalog = R"({"commands":[
-    {"path":["explore"],"subcommands":[],"positionals":[],"flags":[]},
+    {"path":["version"],"subcommands":[],"positionals":[],"flags":[]},
     {"path":["config","edit"],"subcommands":[],"positionals":[],"flags":[]},
     {"path":["schema"],"subcommands":[],"positionals":[],"flags":[]},
     {"path":["workspace","init"],"subcommands":[],"positionals":[],"flags":[{"required":false,"long":"--json"}]}
@@ -273,8 +273,8 @@ TEST_CASE("state catalog: exclusions are explicit and workspace init remains eli
   REQUIRE(excluded->size() == 3);
   CHECK(excluded->at(0).path == std::vector<std::string>{"config", "edit"});
   CHECK(excluded->at(0).reason == "interactive-editor");
-  CHECK(excluded->at(1).path == std::vector<std::string>{"explore"});
-  CHECK(excluded->at(1).reason == "deferred-by-decision980");
-  CHECK(excluded->at(2).path == std::vector<std::string>{"schema"});
+  CHECK(excluded->at(1).path == std::vector<std::string>{"schema"});
+  CHECK(excluded->at(1).reason == "output-only");
+  CHECK(excluded->at(2).path == std::vector<std::string>{"version"});
   CHECK(excluded->at(2).reason == "output-only");
 }

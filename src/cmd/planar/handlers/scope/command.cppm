@@ -1,19 +1,17 @@
 /// @file src/cmd/planar/handlers/scope/command.cppm
-/// @brief `planar.cmd.planar.handlers.scope` — the whole five-leaf `planar
-/// scope` family: `show`, `suggest`, and the three plan-153-M5 removal
-/// stubs `use` / `pop` / `clear` (plan 996, task 6214).
+/// @brief `planar.cmd.planar.handlers.scope` — the `planar scope` family's
+/// two live leaves, `show` and `suggest` (plan 996, task 6214). The
+/// plan-153-M5 removal stubs `use`, `pop` and `clear` were deleted in plan
+/// 1142 (task 7463); they now exit 2 as unknown subcommands.
 ///
 /// Port targets: zig/src/cmd/planar/handlers/scope/{show,suggest,removed}.zig.
 ///
-/// ## The family is complete, and that is the point
+/// ## The removed stubs are gone
 ///
-/// Two of these leaves do real work and three are refusals. Porting only
-/// the two would have left `scope use` answering exit 64 ("not implemented
-/// in this build") where the oracle answers exit 2 with a paragraph
-/// explaining that the scope STACK was removed and what to do instead.
-/// Those are different answers to different questions, and the exit-64 one
-/// is wrong in the direction that invites an operator to wait for a build
-/// that will never implement it.
+/// `scope use`, `scope pop` and `scope clear` were plan-153-M5 refusals
+/// (exit 2, a paragraph pointing at `scope show`). Plan 1142 deleted them
+/// outright: the tree no longer declares them, so CLI11 rejects them as
+/// unknown subcommands with exit 2 and the `schema` catalog omits them.
 ///
 /// ## `scope show` renders from the READ SET, not from the write resolution
 ///
@@ -100,39 +98,12 @@ export auto scope_show(context& ctx, const cliapp::parsed_args& args) -> handler
 /// @return Nothing on success, the failure otherwise.
 export auto scope_suggest(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
-/// @brief Handle `planar scope use [<slug>]` — refuses; the scope stack was
-/// removed in plan 153 M5.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Always the refusal (exit 2).
-export auto scope_use(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-
-/// @brief Handle `planar scope pop` — refuses; see `scope_use`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Always the refusal (exit 2).
-export auto scope_pop(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-
-/// @brief Handle `planar scope clear` — refuses; see `scope_use`.
-/// @param ctx The invocation context.
-/// @param args The parsed arguments.
-/// @return Always the refusal (exit 2).
-export auto scope_clear(context& ctx, const cliapp::parsed_args& args) -> handler_result;
-
 /// @brief Declare the `scope` command tree on `root`.
 ///
 /// The CLI declaration for every `scope` node, colocated with the
 /// `scope_*` handlers above (plan 1051, M11.3e — decision 1068). Nothing
-/// under `scope` was ever hand-declared in `tree.cpp`, so all six came
-/// from `surface.cpp`'s generated table and no shadowed pair had to be
-/// reconciled.
+/// under `scope` was ever hand-declared in `tree.cpp`.
 ///
-/// `use`, `pop` and `clear` are the tree's ONLY three `allow_extras`
-/// leaves, which is why `planar.cmd.planar.declare` grew
-/// `set_allow_extras` for this wave. See that function's header for what
-/// the property buys: all three were removed in plan 153 M5 and answer
-/// with a fixed refusal whatever a pre-M5 caller still passes them, so
-/// CLI11 must not refuse the stale arguments at parse time first.
 /// @param root The root app to attach the `scope` group to.
 export auto declare_scope(CLI::App& root) -> void;
 

@@ -191,7 +191,7 @@ planar_binary(planar_agent
     process)
 
 # `--metadata` is validated with glz::validate_json -- the same purpose-built
-# probe engine/config and engine/runs use, and the only one that enables
+# probe engine/config uses, and the only one that enables
 # Glaze's validate_trailing_whitespace (task 6086). PRIVATE: Glaze is an
 # implementation detail of two flag validators, not part of any interface.
 target_link_libraries(planar_cmd_planar_agent PRIVATE glaze::glaze)

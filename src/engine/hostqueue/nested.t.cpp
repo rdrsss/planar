@@ -22,7 +22,7 @@
 // records it, task hq-queue-run-verb), so it is written with raw SQL where a
 // case needs one.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 #include <unistd.h>

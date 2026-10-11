@@ -12,7 +12,7 @@
 // version in the chain, plus a strict-descending-mirror-order rollback
 // sweep from head down to an empty database.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp):
+// Include-before-import is deliberate (see db.t.cpp):
 // MSVC's supported direction for mixing textual std headers with IFC
 // imports is include-then-import, not the reverse.
 #include <catch2/catch_test_macros.hpp>

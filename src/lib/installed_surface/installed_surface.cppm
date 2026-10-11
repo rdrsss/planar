@@ -12,8 +12,8 @@
 /// — it is manifest JSON plus a filesystem walk — so there is no `db` edge
 /// pulling it toward `engine_health` directly; it was written standalone and
 /// promoted straight to layer 1, the same "next consumer is a different
-/// layer-2 bucket" shape `scope_ref` (D19), `json_dom`, `process` and
-/// `introspection_preview` (decision 981) each record for themselves. A
+/// layer-2 bucket" shape `scope_ref` (D19), `json_dom` and `process`
+/// each record for themselves. A
 /// direct `engine_health -> engine_installedsurface` edge is exactly the
 /// `engine_* -> engine_*` shape D15/D18 FATAL on at configure time.
 ///

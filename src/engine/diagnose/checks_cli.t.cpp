@@ -670,7 +670,7 @@ TEST_CASE("each error category gets its own recovery hint, built only from comma
           "[engine][diagnose][cli][cluster]") {
   const std::vector<std::pair<std::string, std::string>> expected{
       {"scope", "planar scope show"}, {"not_found", "list"},   {"conflict", "re-read"}, {"validation", "planar task add --help"},
-      {"io", "permissions"},          {"db", "planar health"}, {"busy", "retry"},       {"internal", "planar report"}};
+      {"io", "permissions"},          {"db", "planar health"}, {"busy", "retry"},       {"internal", "planar health"}};
   std::set<std::string> distinct;
   for (const auto& [category, needle] : expected) {
     fixture fx;

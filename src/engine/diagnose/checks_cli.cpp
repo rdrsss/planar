@@ -160,7 +160,7 @@ auto cli_recovery(std::string_view category, std::string_view verb_path) -> std:
   if (category == "busy") {
     return "another writer held the database; retry once it finishes";
   }
-  return "planar report --days 7 shows the failure details to include in a bug report";
+  return "planar health shows the install and database state to include in a bug report";
 }
 
 /// The recovery hint for a claim failure category; the ledger command takes `active`, `stale` or `all`.
@@ -354,7 +354,7 @@ auto cli_family() -> family {
                                .kind     = im::check_kind::event,
                                .severity = im::diagnostic_severity::warning,
                                .category = "cli_failure_cluster",
-                               .recovery = "planar report --days 7 lists the repeated failures",
+                               .recovery = "fix the shared cause of the repeated failures, then run the verb again",
                                .inputs   = {"cli_log"},
                                .built    = true,
                                .evaluate = cli_failure_cluster});

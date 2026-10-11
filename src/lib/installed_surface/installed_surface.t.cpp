@@ -1374,7 +1374,7 @@ TEST_CASE("derive_opencode reduces the frontmatter and keeps the body", "[instal
   CHECK_FALSE(is_::derive_opencode("---\ndescription: d\nbody\n").has_value());
 }
 
-TEST_CASE("derive_opencode is byte-equal to ownership.sh's awk for all fifteen agents", "[installed_surface][nine_roots]") {
+TEST_CASE("derive_opencode is byte-equal to ownership.sh's awk for all fourteen agents", "[installed_surface][nine_roots]") {
   const std::filesystem::path root{PLANAR_TARGET_SOURCE_ROOT};
   scratch_root                scratch;
   // The awk program is lifted out of scripts/install-lib/ownership.sh, the single home of
@@ -1426,7 +1426,7 @@ TEST_CASE("derive_opencode is byte-equal to ownership.sh's awk for all fifteen a
     CHECK(*cpp == awk_bytes);
     ++compared;
   }
-  CHECK(compared == 15);
+  CHECK(compared == 14);
 }
 
 TEST_CASE("the manifest vocabulary: the six vendors and `shared` are valid, anything else is invalid",

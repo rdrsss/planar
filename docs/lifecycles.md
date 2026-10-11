@@ -27,7 +27,7 @@ Three mechanisms, in layers, decide whether a status write lands:
    which is why re-answering an answered question or re-retiring a retired
    scenario is a silent no-op rather than a refusal.
 2. **Verb-level guards** layered on top by the handler: the claim-atomic
-   guard on task verbs, the cross-scope guard on ten verbs, required
+   guard on task verbs, the cross-scope guard on nine verbs, required
    flags such as `--reason`.
 3. **Engine roll-ups** that run *after* a write inside the same transaction
    and can move a *different* entity: plan auto-promotion, dependency
@@ -41,7 +41,7 @@ The lifecycle families, grouped by which binary owns the write:
 
 | Owner | State machines |
 |---|---|
-| `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync, feedback triage, runs (bench) |
+| `planar` | plan, plan step, task, question, decision, scenario, artifact, annotation, handoff, session, workbench sync, runs (bench) |
 | `planar-agent` | agent work claim, agent action, host queue entry |
 | `planar-ext` | external link sync status, sync event |
 | derived (read-only) | health, resume readiness, closeout gate |
@@ -216,8 +216,8 @@ stateDiagram-v2
     [*] --> draft : artifact add --status draft
     draft --> active : artifact update --status active
     active --> draft : artifact update --status draft
-    active --> superseded : artifact update --status superseded · import / synthesize replace
-    active --> retired : artifact update --status retired · import: source doc disappeared
+    active --> superseded : artifact update --status superseded
+    active --> retired : artifact update --status retired
     superseded --> [*]
     retired --> [*]
 ```
@@ -754,27 +754,7 @@ Template kinds by role: Jira `epic` / `story` / `sub-task`; GitHub
 subtree's mirror links and writes `strategy-abandoned` events; remote
 counterparts are never deleted.
 
-### 5.6 Import and synthesize
-
-Both stage an LLM hand-off through a fingerprint-keyed cache under
-`~/.planar/cache/` and converge on the same downstream pipeline
-(workbench review → `spec ingest`).
-
-```mermaid
-flowchart LR
-    I[planar import repo] --> SC[deterministic scan:<br/>AGENTS.md / CLAUDE.md / *.md, tree summary, fingerprint]
-    SC -->|no --interpret| OUT[report only]
-    SC -->|--interpret| CH{cache/FP.json exists?}
-    CH -->|no| PEND[write _pending.json, vendor skill runs LLM, re-invoke]
-    CH -->|yes| AP[--apply: child plans per phase, tasks,<br/>artifacts reconciled by source path,<br/>decisions superseded by title,<br/>--apply-removals → cancelled / abandoned]
-    SY[planar synthesize repo] --> SC2[scan docs + source areas + tests + CI] --> CH
-```
-
-Synthesize additionally requires that a proposed task with `status ≠ todo`
-cite a `code_evidence` path that exists. Original docs are kept as
-`kind=research` artifacts.
-
-### 5.7 Handoff and resume
+### 5.6 Handoff and resume
 
 ```mermaid
 sequenceDiagram
@@ -793,7 +773,7 @@ sequenceDiagram
     A2->>P: planar-agent claim --entity task:ID --no-transition (task already doing)
 ```
 
-### 5.8 Health and doctor
+### 5.7 Health and doctor
 
 ```mermaid
 flowchart TD
@@ -815,27 +795,10 @@ flowchart TD
 `planar health` is read-only; the recovery reference (`skills/planar/references/recovery.md`) is the guided-write companion.
 Genuinely active or blocked work can keep `overall = degraded` by design.
 
-### 5.9 Introspect, triage, report
+### 5.9 Feedback triage
 
-```mermaid
-flowchart LR
-    I1[planar report --json --days N] --> I2[redacted signal:<br/>failure-cluster, retry-pattern,<br/>abandoned-workflow, gap-feature]
-    I2 --> I3{{preview, --apply confirm}}
-    I3 --> I4[question add / task add on the<br/>association's planar-feedback plan, title-deduped]
-    I4 --> T1{{planar-feedback-triager preview, confirm}}
-    T1 --> T2["feedback triage set task:N|question:N<br/>--severity --disposition --reproduction"]
-    T2 --> R1{{issue-report preview, confirm}}
-    R1 --> R2[gh issue create] --> R3[external_links linkback]
-    R3 --> T3[triage set --disposition reported-external]
-```
-
-Triage value sets (`feedback_triage` table): severity `info`, `low`,
-`medium`, `high`, `critical`; disposition `untriaged`,
-`needs-reproduction`, `accepted`, `retained-question`, `dismissed`,
-`reported-external`, `duplicate`; reproduction `not-run`, `reproduced`,
-`not-reproduced`, `inconclusive`. `duplicate` requires `duplicate_of` and
-the chain is cycle-checked. A finding outside the `planar-feedback` plan is
-refused as `different_feedback_plan`.
+Removed in plan 1142 (task 7473). The verbs and the `planar-feedback-triager` role are
+preserved at tag `archive/feedback-triage`; the `feedback_triage` table (migration 00028) stays in the schema.
 
 ---
 
@@ -853,7 +816,7 @@ flowchart TD
     N -->|0| UNSET[unset: project_unassociated]
     N -->|1| ONE[that association]
     N -->|2+| UNSET2[unset: project_multiple_associations]
-    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply, feedback triage set,<br/>audit publish-decision, decision accept/withdraw,<br/>task update, closure compute, sync push/pull/resolve}
+    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply,<br/>audit publish-decision, decision accept/withdraw,<br/>task update, closure compute, sync push/pull/resolve}
     G -->|no| WRITE[write]
     G -->|yes| CMP{operator scope covers entity scope?<br/>assoc:org covers repo:member since decision 1121}
     CMP -->|yes| WRITE
@@ -877,7 +840,7 @@ bug, unless noted.
 | `planar health` `overall` is one of `ok`, `degraded`, `critical` | the retired health skill (since removed; fixed — now names `ok` and `degraded`) | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
 | Whole-tree `ext propagate <plan>` is not yet implemented | the retired propagate skill (since removed); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
 | Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench (**fixed at task 6926** — now cites `src/engine/workbench/terminal.cppm`) | `src/engine/workbench/terminal.cppm` |
-| `closure compute` is deferred with its dependencies | header comment in `src/engine/closure/store.cppm` | `compute.cpp` implements the tree-sitter extraction and is wired to `planar closure compute` |
+| `closure compute` was removed with its engine (plan 1142, task 7469) | moved to branch `dev/grouping-solvers` | none on master |
 | `derive_from_cwd` redirects a git-worktree cwd to its parent repo | Zig-era behaviour | Not ported; the module header names it as a residual gap |
 
 ---
@@ -898,5 +861,4 @@ bug, unless noted.
 | workbench sync | `src/engine/workbench/sync.cppm`, `terminal.cppm` | `00007_workbench.up.sql` |
 | spec ingest | `src/engine/ingest/{parse,diff,coverage,materialize}.cppm` | |
 | external link, sync event | `src/engine/external/sync.cpp`, `link.cpp` | `00006_external.up.sql`, `00027_external_sync_baseline.up.sql` |
-| feedback triage | `src/engine/planning/feedback_triage.cppm` | `00028_feedback_triage.up.sql` |
 | scope | `src/engine/identity/scope.cppm` | |

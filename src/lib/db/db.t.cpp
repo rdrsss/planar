@@ -7,7 +7,7 @@
 // commit-persists / rollback-on-scope-exit-discards, and a read-only
 // connection refusing a write.
 //
-// Include-before-import is deliberate (see core/version.t.cpp): MSVC's
+// Include-before-import is deliberate : MSVC's
 // supported direction for mixing textual std headers with IFC imports is
 // include-then-import, not the reverse.
 #include <catch2/catch_test_macros.hpp>

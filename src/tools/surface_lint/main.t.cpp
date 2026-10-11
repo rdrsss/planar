@@ -254,8 +254,8 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
   }
 
   SECTION("capability_exemption: an exempted mutate shape is silent beside a non-exempted one that still fires") {
-    // Paired within one file, one role: `planar plan create` is in
-    // k_capability_exemptions for (agents/planar-introspector.md, introspector);
+    // Paired within one file, one role: `planar-agent pull` is in
+    // k_capability_exemptions for (agents/planar-reviewer.md, reviewer);
     // `planar decision add` is not. If the exemption table match broke to
     // always-exempt or never-exempt, this file's finding count would move
     // to 0 or 2 instead of staying at exactly 1.
@@ -263,7 +263,7 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 1);
-    CHECK(out == "agents/planar-introspector.md:9: surface-capability-drift: read-only role contains coordination or entity "
+    CHECK(out == "agents/planar-reviewer.md:9: surface-capability-drift: read-only role contains coordination or entity "
                  "write: planar decision add\n"
                  "surface-lint: 1 finding(s) across 1 files\n");
   }
@@ -561,15 +561,15 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 4 finding(s) across 2 files\n");
   }
 
-  SECTION("--command-inventory-json: the pinned 225-entry command_classes table") {
+  SECTION("--command-inventory-json: the pinned 198-entry command_classes table") {
     auto const [out, status] = capture(bin.string(), {"--command-inventory-json"});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);
     CHECK(out.starts_with(R"({"version":1,"commands":[)"));
-    CHECK(count_occurrences(out, "\"command\":") == 225);
+    CHECK(count_occurrences(out, "\"command\":") == 198);
     CHECK(out.contains(R"({"command":"planar init","access":"mutate"})"));
-    CHECK(count_occurrences(out, "\"access\":\"read\"") + count_occurrences(out, "\"access\":\"mutate\"") == 225);
+    CHECK(count_occurrences(out, "\"access\":\"read\"") + count_occurrences(out, "\"access\":\"mutate\"") == 198);
   }
 
   SECTION("usage error: no repo-root argument is a usage error, not a crash") {

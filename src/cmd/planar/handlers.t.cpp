@@ -68,7 +68,6 @@
 //   $Z workspace doctor --json   (same)
 //     b'{"orgs":[{"slug":"acme","org_id":1,"issues_found":0,
 //       "issues_repaired":[]}]}\n'
-//   $Z skills   -> exit 0, its own help page on stdout (see the case below)
 //
 // Timestamps are the only fields not asserted literally — they are wall
 // clock. Everything around them is.
@@ -550,60 +549,6 @@ TEST_CASE("unlink attributes the audit row to $PLANAR_VENDOR", "[cmd][handlers][
     CHECK(stmt->column_text(0) == "claude");
     CHECK(stmt->column_text(1) == "abc123");
   }
-}
-
-TEST_CASE("skills renders its own help page and exits 0 without a database", "[cmd][handlers][parity]") {
-  // A childless node is a LEAF here (`cliapp::leaf_keys`), so without a handler
-  // this verb would answer `error: not implemented yet` and exit 64. The
-  // oracle answers exit 0 and a help page; these bytes are that page.
-  auto const fx  = make_fixture("skills");
-  auto const got = dispatch(fx, {"skills"});
-  CHECK(got.code == 0);
-  CHECK(got.err.empty());
-  CHECK_FALSE(got.db_open);
-  // Re-baselined onto CLI11's formatter by task 6123 and pinned exactly.
-  // The prose is the operator's only pointer to where the skill lives now
-  // and to `planar health`, and losing it would silently strand anyone who
-  // runs the retired verb.
-  CHECK(got.out ==
-        "The skill tree is skills/planar/, installed by install.sh. `planar health`\n"
-        "reports install drift. This verb is retired and will be removed next release.\n"
-        "\n"
-        "\n"
-        "skills [OPTIONS]\n"
-        "\n"
-        "\n"
-        "OPTIONS:\n"
-        "  -h,     --help              Print this help message and exit\n"
-        "\n"
-        "Examples:\n"
-        "  planar skills\n"
-        "\n"
-        "Exit codes:\n"
-        "  0  Success.\n"
-        "  1  Generic failure: entity not found, an unmapped error, or a busy source.\n"
-        "  2  Bad input: an invalid value or entity ref, or a parse failure such as an unknown flag or a missing argument.\n");
-
-  // `planar skills --help` renders the SAME page through dispatch's help
-  // path rather than the handler. Both routes must agree — if they did not,
-  // the handler would be rendering something the tree does not say.
-  auto const helped = dispatch(fx, {"skills", "--help"});
-  CHECK(helped.code == 0);
-  CHECK(helped.out == got.out);
-}
-
-TEST_CASE("skills rejects a positional the way a flagless leaf must", "[cmd][handlers][parity]") {
-  auto const fx  = make_fixture("skillsx");
-  auto const got = dispatch(fx, {"skills", "extra"});
-  // The EXIT CODE is the contract and did not move: 2 on the operator
-  // binary, where planar-agent and planar-watch would say 1. Task 6123
-  // re-baselined the wording — CLI11 reports a rejected extra token as
-  // `ExtrasError` where etcli distinguished `TooManyPositionals`. Decision
-  // 1004 (task 6271) then moved the formatted message to stderr alone and
-  // dropped the CamelCase tag — the new bytes are pinned exactly.
-  CHECK(got.code == 2);
-  CHECK(got.out.empty());
-  CHECK(got.err == "error: skills: The following argument was not expected: extra\n");
 }
 
 TEST_CASE("workspace doctor on an empty database: zero bytes vs {\"orgs\":[]}", "[cmd][handlers][parity][terminator]") {
@@ -2717,8 +2662,7 @@ TEST_CASE("resume packet populates all eight sections from a fully-linked fixtur
   // single-task fixture and the assertions below cannot tell the
   // difference — confirmed as live SURVIVORS by break-probing the
   // decisions/questions/recent-activity filters against an earlier,
-  // single-task version of this fixture (see
-  // scripts/break-probe-logs/6455-resume-packet.jsonl).
+  // single-task version of this fixture.
   auto const other_task = seed_task(fx, "OTHER_TASK", "unrelated");
   REQUIRE(
       dispatch(fx, {"capture", "session", "--task", std::to_string(other_task), "--vendor-session-id", "other", "--json"}).code ==

@@ -3,8 +3,8 @@
 # The FIRST layer-3 target in the C++ tree, and the first point at which a
 # C++ binary runs a verb end to end. Milestones M0-M4 built engine buckets
 # only: libraries and unit tests, no main(), no dispatch. Three consecutive
-# cycles blocked leaves (`unlink`, `dashboard`, `report`, `skills`,
-# `workspace init`, and the ingest apply/import/synthesize trio) on this
+# cycles blocked leaves (`unlink`, `dashboard`, `report`,
+# `workspace init`, and the ingest apply trio) on this
 # layer's absence, because D20 (decision 947) puts a verb that composes
 # several layer-2 peers at layer 3.
 #
@@ -87,12 +87,6 @@
 #                      6110) already carried the diagnose-and-repair pass
 #                      and BOTH renderers, so the handler is nine lines of
 #                      wiring. That thinness is evidence, not a shortcut.
-#   skills             Retired upstream (plan 918 M5) and reduced to a
-#                      placeholder node -- but a placeholder that this
-#                      tree, unlike the Zig one, must bind to a handler,
-#                      because `cliapp::leaf_keys` classifies a childless node
-#                      as a LEAF and dispatch would otherwise answer exit
-#                      64 against the oracle's help page and exit 0.
 #
 # NOT landed, each blocked at LAYER 2 rather than layer 3 -- which corrects
 # the premise this file was written under. The dependency inventory is in
@@ -103,30 +97,9 @@
 #                              next-work, claim-scope resolution, the
 #                              latest-action fold-in and its JSON writers).
 #                              Not ported.
-#   report                     LANDED at task 6352, once `engine_introspect`
-#                              (task 6121) and `engine_introspection_adapters`
-#                              (tasks 6102, 6352) were both complete AND the
-#                              layer-1 `introspection_preview` extraction
-#                              (decision 981) let the two meet through
-#                              `bundle::preview` without an `engine_* ->
-#                              engine_*` edge. Its OTHER reputed blocker --
-#                              that it scans the operator's home directory
-#                              for vendor transcripts and is therefore not
-#                              hermetically testable -- did not survive a
-#                              probe: run under this file's own pinned
-#                              arena, `report --json` reports every vendor
-#                              as {"state":"unavailable","scanned":0} and
-#                              cli_log as "disabled" (or "unavailable" when
-#                              logging is on but the DB adapter has nothing
-#                              to report). The scan follows $HOME, which
-#                              run_pinned() already redirects, so the leaf
-#                              was testable here exactly like every other
-#                              one all along. See handlers/report/command.cppm.
 #   spec ingest --apply        needs engine.ingestor.apply (1,616 lines)
 #                              and engine.workbench (unported entirely).
 #                              engine_ingest here is the READ side only.
-#   import / synthesize        LANDED at task 6106 after the layer-2 importer
-#                              and synthesize staging engines were ported.
 #
 # Omitting an unported child from a group node stays the rule (the removed
 # `workflow run` was one such leaf), so `planar workspace --help` lists one command where the oracle
@@ -167,32 +140,6 @@
 #                               layer-2 edge. Same seam
 #                               `agentatomic::task_policy` uses.
 #
-#   feedback triage      LANDED at task 6303, with
-#                        `engine.planning.feedback_triage` (302 Zig lines)
-#                        underneath it. What this family cost was the
-#                        FIXTURE, not the code: `findingPlan` compares the
-#                        finding's plan slug against the literal
-#                        `planar-feedback`, so a plain plan makes every
-#                        interesting arm refuse with `DifferentFeedbackPlan`
-#                        for the same uninteresting reason. A usable arena
-#                        needs an association (a bare registered project
-#                        refuses `plan create` at exit 5), a plan created
-#                        with that exact slug, and — for the QUESTION arm —
-#                        a `derives-from` entity link, which `question add
-#                        --plan` writes for you. `AmbiguousFeedbackPlan` is
-#                        reachable ONLY through a question carrying two such
-#                        links, and is unreachable for a task at all.
-#                        Oracle-captured empty states, unchanged by the port:
-#                          feedback triage list --json  -> exit 0, `[]\n`
-#                          feedback triage list         -> exit 0,
-#                                                          `(no feedback triage)\n`
-#                          feedback triage show 1 --json -> exit 2,
-#                            `error: finding must be task:<id> or question:<id>`
-#                        The `<finding>` positional is an ENTITY REF, not an
-#                        integer, and the id inside it takes Zig's `parseInt`
-#                        spelling: `task:+2` and `task:1_0` both parse,
-#                        `task:2_` does not.
-#
 # NOT landed, with the oracle behavior captured so the port that lands them
 # has bytes to hit:
 #
@@ -206,14 +153,6 @@
 #                        success where the oracle produces a packet.
 #   capture commits      Task 6099. 1205 lines of git shelling, no
 #                        process-spawn seam. Deferred WITH its dependency.
-#   report               Task 6121. Needs the two introspect buckets. Its
-#                        full `--json` envelope was re-captured this cycle
-#                        and is unchanged from task 6106's finding: every
-#                        vendor reports `{"state":"unavailable","scanned":0}`
-#                        and `cli_log` reports `disabled` under a pinned
-#                        arena, so the leaf IS hermetically testable here;
-#                        the unported buckets are the whole of what blocks it.
-#
 # --- terminator contract ---------------------------------------------------
 #
 # Inherited from commit 5728133 (the M4 boundary review's F1) and NOT
@@ -266,13 +205,7 @@
 #   - policy.audit rows -- following the precedent every engine bucket
 #     already documents; task 6100 is the open operator decision.
 #
-# --- task 6189: three engine-complete families, wired ---------------------
-#
-# Seven leaves, and the reason they landed together is that all three of
-# their buckets were finished at LAYER 2 and had never been called. Task
-# 6109 (engine_local) and task 6095 (engine_closure, engine_grouping) each
-# shipped the whole read/write path AND byte-exact renderers for every
-# render mode and every refusal line. What was missing was a caller.
+# --- task 6189: the local family, wired ----------------------------------
 #
 #   local list/link/unlink/import/migrate
 #                      The whole family. It opens NO database -- the durable
@@ -285,29 +218,10 @@
 #                      per run) and two different zero-byte empty cases, all
 #                      of which the renderers own and this layer writes
 #                      verbatim.
-#   closure show       The read half. `closure compute` STAYS a declared
-#                      exit-64 refusal: its extractor is 1637 lines of
-#                      tree-sitter AST work over a filesystem corpus walk,
-#                      tree-sitter is not vendored here, and its handler
-#                      would additionally compose engine_planning +
-#                      engine_identity. Same shape as `bench harvest` and
-#                      `models resolve` -- a family with one ported leaf and
-#                      one refusal, named rather than silently absent.
-#   groups recommend   The whole `groups` family, read-only. `--solver
-#                      mtkahypar` is ACCEPTED rather than refused, because
-#                      the degradation is REPORTED (`solver:"greedy"`,
-#                      `optimal_available:false`); master ships no solver arm
-#                      (decision 1293). An unknown `--solver` value is still exit 2,
-#                      so the flag is validated rather than ignored.
 #
-# The three DEPENDS added here -- engine_local, engine_closure,
-# engine_grouping -- are all layer-2 and none of the three handlers composes
-# two buckets, so no leaf in this batch needed the D20 shape.
-#
-# `groups recommend --solver mtkahypar` is absent from parity.t.cpp. The
-# accept-and-degrade behavior is pinned against this binary alone in
-# closure_groups_leaves.t.cpp; the solver arm lives on branch
-# `dev/grouping-solvers` (decision 1293).
+# The `closure`, `groups`, `bench` and `run` families were extracted to
+# branch `dev/grouping-solvers` (plan 1142); the `closures`, `runs`,
+# `run_events` and `run_touches` tables stay as read-only history.
 
 # --- task 6258: the adapter factory, and ONE leaf ------------------------
 #
@@ -439,7 +353,6 @@ planar_binary(planar
     handler.cppm
     scope.cppm
     main.cppm
-    handlers/explore/command.cppm
     handlers/help/command.cppm
     declare.cppm
     surface.cppm
@@ -475,7 +388,6 @@ planar_binary(planar
     # spellings mirror the CLI's own `planar link` vs `planar links add`.
     handlers/link/command.cppm
     handlers/unlink/command.cppm
-    handlers/skills/command.cppm
     handlers/workspace/command.cppm
     handlers/workspace/routing.cppm
     handlers/workspace/regenerate.cppm
@@ -526,16 +438,12 @@ planar_binary(planar
     handlers/plan/step_list.cppm
     handlers/plan/step_add.cppm
     handlers/assoc/command.cppm
-    handlers/assoc/detect.cppm
     handlers/assoc/members.cppm
     handlers/assoc/remove.cppm
     handlers/assoc/add.cppm
     handlers/assoc/create.cppm
     handlers/assoc/list.cppm
     handlers/scope/command.cppm
-    handlers/scope/clear.cppm
-    handlers/scope/pop.cppm
-    handlers/scope/use.cppm
     handlers/scope/suggest.cppm
     handlers/scope/show.cppm
     handlers/search/command.cppm
@@ -549,12 +457,10 @@ planar_binary(planar
     handlers/health/hygiene.cppm
     handlers/audit/command.cppm
     handlers/audit/handoff_readiness.cppm
-    handlers/audit/publish_decision.cppm
     handlers/audit/session.cppm
     handlers/audit/commits.cppm
     handlers/audit/trail.cppm
     handlers/dashboard/command.cppm
-    handlers/report/command.cppm
     handlers/task/command.cppm
     handlers/task/facts_stage.cppm
     handlers/task/facts.cppm
@@ -577,11 +483,6 @@ planar_binary(planar
     handlers/task/touches_list.cppm
     handlers/task/touches_infer.cppm
     handlers/task/touches_add.cppm
-    handlers/feedback/command.cppm
-    handlers/feedback/triage_set.cppm
-    handlers/feedback/triage_show.cppm
-    handlers/feedback/triage_list.cppm
-    handlers/feedback/triage.cppm
     handlers/question/command.cppm
     handlers/question/link.cppm
     handlers/question/show.cppm
@@ -641,19 +542,6 @@ planar_binary(planar
     handlers/handoff/create.cppm
     handlers/resume/command.cppm
     handlers/resume/validate.cppm
-    handlers/shared/runs.cppm
-    handlers/run/command.cppm
-    handlers/run/show.cppm
-    handlers/run/finish.cppm
-    handlers/run/event.cppm
-    handlers/run/start.cppm
-    handlers/bench/command.cppm
-    handlers/bench/show.cppm
-    handlers/bench/finish.cppm
-    handlers/bench/harvest.cppm
-    handlers/bench/touch.cppm
-    handlers/bench/event.cppm
-    handlers/bench/start.cppm
     handlers/local/command.cppm
     handlers/local/migrate.cppm
     handlers/local/import.cppm
@@ -669,19 +557,11 @@ planar_binary(planar
     handlers/templates/list.cppm
     handlers/config/command.cppm
     handlers/config/path.cppm
-    handlers/config/init.cppm
     handlers/config/validate.cppm
     handlers/config/edit.cppm
     handlers/config/show.cppm
-    handlers/closure/command.cppm
-    handlers/closure/show.cppm
-    handlers/closure/compute.cppm
-    handlers/groups/command.cppm
-    handlers/groups/recommend.cppm
     handlers/spec/command.cppm
     handlers/spec/ingest.cppm
-    handlers/import/command.cppm
-    handlers/synthesize/command.cppm
     verb_classification.cppm
     worktree_gate.cppm
     cli_log.cppm
@@ -703,7 +583,6 @@ planar_binary(planar
     handlers/shared/ext_adapter_factory.cpp
     handlers/link/command.cpp
     handlers/unlink/command.cpp
-    handlers/skills/command.cpp
     handlers/workspace/command.cpp
     handlers/workbench/command.cpp
     handlers/capture/command.cpp
@@ -718,9 +597,7 @@ planar_binary(planar
     handlers/health/command.cpp
     handlers/audit/command.cpp
     handlers/dashboard/command.cpp
-    handlers/report/command.cpp
     handlers/task/command.cpp
-    handlers/feedback/command.cpp
     handlers/question/command.cpp
     handlers/decision/command.cpp
     handlers/scenario/command.cpp
@@ -733,15 +610,10 @@ planar_binary(planar
     handlers/links/command.cpp
     handlers/handoff/command.cpp
     handlers/resume/command.cpp
-    handlers/shared/runs.cpp
     handlers/local/command.cpp
     handlers/templates/command.cpp
     handlers/config/command.cpp
-    handlers/closure/command.cpp
-    handlers/groups/command.cpp
     handlers/spec/command.cpp
-    handlers/import/command.cpp
-    handlers/synthesize/command.cpp
     dispatch.cpp
   DEPENDS
     cmd_internal
@@ -754,33 +626,20 @@ planar_binary(planar
     json_text
     # New at task 6357, for `planar health` (handlers/health/command.cpp): the
     # `resolve_homes`/`is_::status` composition folds the layer-1 classifier
-    # in directly, the same shape `report` composes its two engine buckets
-    # with (see the `engine_introspect`/`engine_introspection_adapters`
-    # note below).
+    # in directly.
     installed_surface
-    engine_closure
     engine_config
     engine_diagnose
     engine_entitylink
     engine_external
     engine_extsync
-    engine_grouping
     engine_identity
-    # New at task 6352, for `report` (handlers/report/command.cpp): the DB-aggregate
-    # half (`engine_introspect`) and the filesystem-discovery half
-    # (`engine_introspection_adapters`) it composes. Both were already
-    # ported (tasks 6121, 6102) and are D15-forbidden from depending on
-    # each other; this binary is where they are legally allowed to meet.
-    engine_introspect
-    engine_introspection_adapters
     # New at task 6324, for `task packet` (handlers/task/command.cpp). The leaf uses
     # exactly one entry point — `packet::assemble_task` plus its two
     # renderers. It does NOT reach the spec-ingest read pipeline; see
     # src/engine/ingest/CMakeLists.txt for why the routing packet shares
     # that bucket instead of getting an `engine_routing` one of its own.
     engine_ingest
-    engine_importer
-    engine_synthesize
     engine_local
     engine_health
     engine_planning
@@ -790,7 +649,6 @@ planar_binary(planar
     # output renderers as well as the two mutations — see its own header for
     # why those renderers live in the engine rather than here.
     engine_promotion
-    engine_runs
     engine_runtime
     engine_search
     engine_tree

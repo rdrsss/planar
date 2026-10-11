@@ -29,7 +29,7 @@
 // saw what it claims to. The tests read the source tree from
 // PLANAR_SOURCE_ROOT, exactly as schema.t.cpp reads PLANAR_HOSTQUEUE_SOURCE_DIR.
 //
-// Include-before-import is deliberate (see core/version.t.cpp / db.t.cpp).
+// Include-before-import is deliberate (see db.t.cpp).
 #include <catch2/catch_test_macros.hpp>
 
 import std;

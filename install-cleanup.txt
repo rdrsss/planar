@@ -69,3 +69,21 @@ agents/codex/
 agents/copilot/
 agents/gemini/
 agents/opencode/
+# planar import and planar synthesize, their engines and their role agents
+# left the tree with plan 1142, task 7471 (preserved at tag
+# archive/import-synthesize). A re-install removes the staged role files and
+# the Codex TOML renders they left behind.
+agents/planar-importer.md
+agents/planar-synthesizer.md
+codex-agents/planar-importer.toml
+codex-agents/planar-synthesizer.toml
+
+# Retired planar-introspector role (plan 1142, task 7472): the usage
+# introspection engines left the tree with it, so a re-install over a tree
+# from an older release removes the staged role spec.
+agents/planar-introspector.md
+
+# Retired planar-feedback-triager role (plan 1142, task 7473): the `planar
+# feedback triage` verbs and their engine left the tree with it, so a re-install
+# over a tree from an older release removes the staged role spec.
+agents/planar-feedback-triager.md

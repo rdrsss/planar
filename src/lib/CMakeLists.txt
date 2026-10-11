@@ -54,22 +54,9 @@
 # preview renderers, and the provenance-bearing routing-fact materializer. It
 # depends only on `db`; the pipeline's APPLY step is deliberately absent,
 # because it composes six other layer-2 engine buckets and therefore has no
-# legal home inside one (see src/engine/ingest/CMakeLists.txt). `src/engine/runs`
-# (plan 996, task 6095) is the run-record lifecycle behind `planar bench *`
-# and `planar run *` — both verb families write the SAME `runs` /
-# `run_events` / `run_touches` tables (`run` does NOT use `workflow_runs`,
-# despite the name) and differ only in their surface. It depends only on
-# `db`; `bench harvest` is deferred with its git-subprocess dependency (see
-# src/engine/runs/CMakeLists.txt). `src/engine/closure` (plan 996, task 6095) is the
-# read side of a task's derived symbol-level closure (`closure show`); the
-# `closure compute` extractor is deferred with its tree-sitter, filesystem-walk,
-# and cross-bucket-handler dependencies (see src/engine/closure/CMakeLists.txt). `src/engine/grouping` (plan 996, task 6095)
-# is the closure-replication-minimizing slice recommender behind `groups
-# recommend`; it reads the same `closures` table as `src/engine/closure` through
-# its OWN query rather than depending on that bucket (a layer-2-to-layer-2
-# edge would FATAL), mirroring what the Zig originals do. Master ships
-# greedy only; the solver arm lives on branch `dev/grouping-solvers`
-# (decision 1293).
+# legal home inside one (see src/engine/ingest/CMakeLists.txt). The closure,
+# grouping and run-record engines were extracted to branch
+# `dev/grouping-solvers` (plan 1142, decision 1293); their tables stay.
 # The Lua-workflow discovery bucket (`src/engine/workflows`, plan 996, task
 # 6096) was removed with `planar workflow` (task 7453).
 # `json_text` (plan 996, task 6109, decision D19) is a layer-1 base library
@@ -100,8 +87,8 @@
 # `git` (plan 996, tasks 6128 and 6137) is the layer-1 git-subprocess seam —
 # `git -C <dir> <args>`, trimmed, with every non-zero exit collapsing to "no
 # answer". Its absence is what deferred FOUR separate ports (`capture
-# session`'s start-context stamp, the worktree gate, `bench harvest`,
-# `capture commits`) and it had already been duplicated privately inside two
+# session`'s start-context stamp, the worktree gate, `bench harvest`
+# (since extracted), `capture commits`) and it had already been duplicated privately inside two
 # `cmd_*` binaries (`handlers/init.cpp`'s `probe_git_origin`,
 # `planar-agent/locality.cpp`'s `run_git`), both of which are now thin
 # wrappers over it. Layer 1 is forced rather than chosen: `detect_worktree`
@@ -115,8 +102,8 @@
 # program ran and failed", which `git` deliberately erases and which
 # callers render as different refusals. Its absence was cited as the blocker
 # on FIVE leaves; verified at task 6272, it was the real and only blocker on
-# exactly ONE (the removed `workflow run`) — `capture commits` and `bench harvest` are
-# blocked on ~1100 and ~671 unported engine lines respectively, and `audit
+# exactly ONE (the removed `workflow run`) — `capture commits` is
+# blocked on ~1100 unported engine lines, and `audit
 # commits` needs `listFiltered`, which is pure SQL and not spawn-blocked at
 # all. Both bodies moved DOWN from layer 3 unchanged in behavior; `editor`
 # and `ext_adapter_factory` are now thin delegates. DEPENDS nothing.
@@ -148,15 +135,6 @@
 # src/engine/workbench/CMakeLists.txt for the full account, the filesystem-safety
 # argument, and the three deferred verbs.
 
-# `introspection_preview` (plan 996, task 6352, decision 981) is a layer-1
-# base library holding the redacted preview vocabulary (`vendor`/`category`/
-# `coverage_state`/`warning_kind` plus `preview` and its three row structs)
-# extracted out of `src/engine/introspection_adapters` so that BOTH
-# `src/engine/introspection_adapters` and `src/engine/introspect` can depend on it
-# downward instead of the D15-forbidden `engine_introspect ->
-# engine_introspection_adapters` edge the oracle's own `Bundle.preview`
-# field would otherwise require. Same D19 shape as `scope_ref`/`json_text`.
-# DEPENDS nothing.
 # `http` (plan 996, task 6041) is a layer-1 base library: the HTTP
 # request/response vocabulary, an abstract `transport`, and a libcurl-backed
 # `curl_transport` carrying the M7 30-second whole-request AND connect
@@ -195,7 +173,6 @@ add_subdirectory(git)
 add_subdirectory(process)
 add_subdirectory(http)
 add_subdirectory(adapter)
-add_subdirectory(introspection_preview)
 add_subdirectory(installed_surface)
 add_subdirectory(activity_rollup)
 add_subdirectory(incident_model)

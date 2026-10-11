@@ -1,75 +1,15 @@
 // @file scope_leaves.t.cpp
-// @brief In-process tests for the five `planar scope` leaves wired by plan
-// 996, task 6214: `show`, `suggest`, `use`, `pop`, `clear`.
+// @brief In-process tests for the two live `planar scope` leaves wired by
+// plan 996, task 6214: `show` and `suggest`. The plan-153-M5 removal stubs
+// `use`, `pop` and `clear` were deleted in plan 1142 (task 7463); their
+// absence is pinned by the binary-level parity test, not here.
 //
-// ## THE TWO WORKING LEAVES DISAGREE ABOUT WHAT "THE CWD PROJECT" MEANS,
-// ## AND THAT IS THE CENTRAL CASE HERE
+// ## THE TWO WORKING LEAVES DISAGREE ABOUT WHAT "THE CWD PROJECT" MEANS
 //
-// `scope show` resolves by LONGEST PATH PREFIX, so it answers from any
-// directory at or below a registered project root. `scope suggest` queries
-// `projects where root_path = ?` — an EXACT match — so it answers only AT
-// the root and reports "no scope suggestions for cwd" one directory down.
-//
-// Both were captured from `zig/zig-out/bin/planar` at the SAME two cwds in
-// the SAME arena, and the pair is asserted together in one case rather than
-// separately, because that is the only shape that fails if someone
-// "harmonises" them. A subdirectory that suggests nothing while showing a
-// scope reads like a bug until you know it is the contract; the fix that
-// looks obvious (widen `suggest` to a prefix match) is a behaviour change
-// this port is not entitled to make.
-//
-// ## `scope suggest --json` IS NDJSON, INCLUDING WHEN EMPTY (task 6257)
-//
-// Populated, it emits ONE JSON OBJECT PER LINE with no wrapper:
-//
-//     {"slug":"demo","association_id":1,"reason":"explicit member"}
-//     {"slug":"other","association_id":2,"reason":"explicit member"}
-//
-// Empty, it emits NOTHING — zero bytes, exit 0. That is the NDJSON
-// contract: N lines for N results, and N may be zero.
-//
-// It did not used to. Empty emitted a single `{"proposals":[]}` object
-// under a key no populated invocation ever produced, so a consumer written
-// against either shape broke on the other — and the empty case is the one
-// people write their parser against first, because it is the easy fixture.
-// Decision 1090 authorises this pin rewrite, applying to task 6257 the
-// reasoning decision 1067 applied to its own nine rows: with the oracle
-// deleted there is nothing left to reproduce bug-for-bug against, so D2's
-// rule no longer decides defects with real consequences. 6257 is one, and the rule chosen for the whole
-// shape-split family (6257 / 6270 / 6326) is NDJSON-with-zero-lines,
-// because it leaves the POPULATED shape — the one field consumers actually
-// read — byte-identical, and it is what `links list --json` already did.
-//
-// ## AN UNKNOWN `--scope` WRITES **TWO** STDERR LINES
-//
-//     error: resolving scope: scope slug not found: nosuchscope
-//     error: SlugNotFound
-//
-// exit 1. The first names the slug the operator typed and is written by
-// `resolveForReadSet` itself; the second is the bare Zig tag main reports
-// after the error propagates. Emitting only one of the two is the easy
-// mistake in both directions — drop the first and the operator cannot see
-// WHICH slug was wrong, drop the second and every script grepping the tag
-// breaks — so both lines are asserted as one exact payload.
-//
-// `--scope ""` takes this SAME path, with the slug interpolated as nothing.
-// That is worth its own case: the sibling `--status ""` flag on five other
-// families comma-splits to zero tokens and never reaches its validator at
-// all, which has already produced one withdrawn defect report on this
-// milestone. `--scope` is not comma-split, so the empty value DOES reach
-// the resolver and DOES refuse. Captured, not assumed.
-//
-// ## THE THREE REMOVAL STUBS ARE REFUSALS EITHER WAY, SO THE BYTES ARE THE
-// ## ONLY CONTRACT
-//
-// An unported leaf refuses at exit 64 with "not implemented in this build".
-// These three refuse at exit 2 with a paragraph naming plan 153 M5 and
-// three concrete remedies. Nothing about "it refused" distinguishes the
-// two, so each stub asserts its FULL stderr payload and its exit code, and
-// each asserts `db_opened() == false` — the oracle's `removed.zig` never
-// calls `ensureDb`, so a port that opened SQLite to refuse would create and
-// migrate a database on a pure error path.
-//
+// `show` matches the cwd by longest prefix; `suggest` matches the project
+// root exactly. Each case pins the bytes the operator sees, not just the
+// exit code.
+
 // ## HOME / DB SAFETY
 //
 // Every fixture builds an explicit environment map rooted at its own
@@ -408,77 +348,6 @@ TEST_CASE("suggest lists EVERY membership, one JSON object per line", "[cmd][sco
   // client), so the two verbs answer differently on the same cwd. Pinned
   // so a change to the ranking surfaces here rather than in a listing verb.
   CHECK(dispatch(fx, {"scope", "show"}).out == std::format("resolved scope (from cwd):\n  project:demo\n{}", k_trailer));
-}
-
-TEST_CASE("use / pop / clear refuse at exit 2 WITHOUT opening SQLite", "[cmd][scope][removed]") {
-  auto const fx = make_fixture("removed");
-
-  for (auto const& verb : {"use", "pop", "clear"}) {
-    INFO("removed leaf: scope " << verb);
-    auto const got = dispatch(fx, {"scope", std::string{verb}});
-    // Exit 2, NOT 64. An unported leaf answers 64 with "not implemented in
-    // this build" — a promise that a later build will implement it. These
-    // three will not; the verb is gone.
-    CHECK(got.code == 2);
-    CHECK(got.out.empty());
-    CHECK(got.err == std::format("error: `planar scope {}` was removed in plan 153 M5; the active scope stack is gone. "
-                                 "Pass --scope <slug> to individual verbs, or cd into a registered scope. Run `planar "
-                                 "scope show` to inspect the cwd-derived scope.\n",
-                                 verb));
-    // The lazy-database rule on a pure refusal path: `removed.zig` never
-    // calls `ensureDb`, so refusing must not create and migrate a database.
-    CHECK_FALSE(got.db_open);
-  }
-
-  // `scope use` takes an OPTIONAL positional, and supplying it changes
-  // nothing — same bytes, same code. A port that echoed the slug back, or
-  // that refused differently when one was given, would break here.
-  auto const with_arg = dispatch(fx, {"scope", "use", "somescope"});
-  CHECK(with_arg.code == 2);
-  CHECK(with_arg.err == dispatch(fx, {"scope", "use"}).err);
-  CHECK_FALSE(with_arg.db_open);
-
-  // ...and nothing above created the database file at all.
-  CHECK_FALSE(std::filesystem::exists(fx.db_path));
-}
-
-// Task 6664, closing the gate blind spot task 6661 found: `make
-// surface-check` hashes only the schema catalog and every `--help` page, and
-// `allow_extras` (cliapp/surface.cppm:98) appears in NEITHER — the catalog
-// emitter never writes it and no help renderer prints it. Task 6635's Probe C
-// deleted all three `set_allow_extras` calls in `declare_scope` and the gate
-// stayed clean at 312 points with every existing Catch2 case (including the
-// one just above) still passing, because that case never hands the three
-// verbs a token CLI11 itself would otherwise reject. THIS case does: an
-// unrecognized flag is exactly the shape `set_allow_extras` exists to
-// swallow before the handler's own `removed_in_m5` refusal ever gets a
-// chance to run.
-//
-//     with allow_extras:    the plan-153-M5 removal paragraph (below)
-//     without allow_extras: `error: <verb>: The following arguments were
-//                           not expected: --stack-name bar` (CLI11's own
-//                           message, not the handler's)
-//
-// Both refuse at exit 2, which is precisely why exit status cannot stand in
-// for the message: this case asserts the byte-for-byte paragraph, not just
-// "it failed".
-TEST_CASE("use / pop / clear swallow an unrecognized flag into the SAME removal paragraph",
-          "[cmd][scope][removed][allow_extras]") {
-  auto const fx = make_fixture("removed-extras");
-
-  for (auto const& verb : {"use", "pop", "clear"}) {
-    INFO("allow_extras leaf: scope " << verb);
-    auto const got = dispatch(fx, {"scope", std::string{verb}, "somescope", "--stack-name", "bar"});
-    CHECK(got.code == 2);
-    CHECK(got.out.empty());
-    CHECK(got.err == std::format("error: `planar scope {}` was removed in plan 153 M5; the active scope stack is gone. "
-                                 "Pass --scope <slug> to individual verbs, or cd into a registered scope. Run `planar "
-                                 "scope show` to inspect the cwd-derived scope.\n",
-                                 verb));
-    CHECK_FALSE(got.db_open);
-  }
-
-  CHECK_FALSE(std::filesystem::exists(fx.db_path));
 }
 
 TEST_CASE("reason_from_source maps the four known sources and passes anything else through", "[engine][scope][suggest][reason]") {

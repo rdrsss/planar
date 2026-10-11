@@ -19,7 +19,7 @@
 /// documented exit-1-on-degraded contract reads — wrong on any machine with
 /// a managed install.
 ///
-/// Task 6357 closed that gap the same way task 6352 closed `report`'s
+/// Task 6357 closed that gap by promoting the classifier to layer 1
 /// (decision 981): rather than a direct `engine_health -> engine_<classifier>`
 /// edge (the `engine_* -> engine_*` shape D15/D18 FATAL on), the classifier
 /// was ported straight to LAYER 1 as `planar.installed_surface` — it holds
@@ -164,11 +164,11 @@ export auto hygiene(db::connection& conn, const hygiene_options& options) -> std
 export auto render_hygiene_text(const hygiene_report& report) -> std::string;
 
 /// @brief The `check`/`with_projection_freshness` half's stale-handoff
-/// cutoff, in hours: the one `planar.core.thresholds` shares with `planar report`
+/// cutoff, in hours: the one `planar.core.thresholds` shares with `planar health`
 /// and `planar-watch diagnose`.
 export inline constexpr std::int64_t stale_handoff_threshold_hours = core::stale_handoff_threshold_hours;
 
-/// @brief The installed-projection section of `report`.
+/// @brief The installed-projection section of the health report.
 ///
 /// Member order is the JSON key order the oracle emits.
 export struct projection_freshness {
@@ -242,7 +242,7 @@ export auto check(db::connection& conn, std::string_view db_path) -> std::expect
 /// @return The report with `projection_freshness` (and possibly `overall`) updated.
 export auto with_projection_freshness(report report_in, const installed_surface::status_result& status) -> report;
 
-/// @brief Render `report` the way `planar health` prints it without
+/// @brief Render the health report the way `planar health` prints it without
 /// `--json`. Mirrors the oracle's `renderText` label set.
 /// @param report The report to render.
 /// @return The complete stdout payload INCLUDING its trailing newline.

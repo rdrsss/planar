@@ -24,11 +24,11 @@ namespace {
 
 namespace parity = planar::cmd::parity;
 
-/// @brief The fifteen role files, by stem.
+/// @brief The eleven role files, by stem.
 constexpr std::array k_agent_stems{
-    "planar-coder",       "planar-reviewer", "planar-orchestrator",     "planar-test-coder",   "planar-janitor",
-    "planar-research",    "planar-planner",  "planar-spec-reviewer",    "planar-ingestor",     "planar-importer",
-    "planar-synthesizer", "planar-ext-sync", "planar-feedback-triager", "planar-introspector", "planar-sync-reconciler",
+    "planar-coder",    "planar-reviewer", "planar-orchestrator",    "planar-test-coder",
+    "planar-janitor",  "planar-research", "planar-planner",         "planar-spec-reviewer",
+    "planar-ingestor", "planar-ext-sync", "planar-sync-reconciler",
 };
 
 /// @brief The doctrine documents: shared text, not agents, and not renamed.
@@ -163,7 +163,7 @@ auto has_problem(std::vector<std::string> const& problems, std::string_view need
 
 } // namespace
 
-TEST_CASE("agents/ holds exactly fifteen planar-prefixed role files that follow the frontmatter contract",
+TEST_CASE("agents/ holds exactly eleven planar-prefixed role files that follow the frontmatter contract",
           "[cmd][agent][agents-contract]") {
   std::vector<std::string> agents;
   for (auto const& entry : std::filesystem::directory_iterator(repo("agents"))) {
@@ -185,7 +185,7 @@ TEST_CASE("agents/ holds exactly fifteen planar-prefixed role files that follow 
     expected.push_back(std::string{stem} + ".md");
   }
   std::ranges::sort(expected);
-  CHECK(agents.size() == 15);
+  CHECK(agents.size() == 11);
   CHECK(agents == expected);
 }
 
@@ -205,6 +205,13 @@ TEST_CASE("the three doctrine documents keep their names and carry no planar map
     count += entry.is_regular_file() && entry.path().extension() == ".md" ? 1 : 0;
   }
   CHECK(count == k_agent_stems.size() + k_doctrine.size());
+}
+
+TEST_CASE("the importer and synthesizer agents are gone with their verbs", "[cmd][agent][agents-contract]") {
+  // `planar import` and `planar synthesize` were removed (plan 1142, task 7471);
+  // their role files left agents/ in the same change, so no agent names a removed verb.
+  CHECK_FALSE(std::filesystem::exists(repo("agents/planar-importer.md")));
+  CHECK_FALSE(std::filesystem::exists(repo("agents/planar-synthesizer.md")));
 }
 
 TEST_CASE("agents/models.md is gone with the routing tier table", "[cmd][agent][agents-contract][routing]") {
@@ -242,11 +249,10 @@ TEST_CASE("a file with a top-level model or a bare file name fails", "[cmd][agen
 TEST_CASE("no authored text dispatches an agent by its bare role name", "[cmd][agent][agents-contract]") {
   // `--role coder` stays bare: it is a role value, not an agent name, and is
   // not matched here.
-  std::string const roles =
-      "coder|reviewer|orchestrator|test-coder|janitor|research|planner|spec-reviewer|ingestor|importer|synthesizer|ext-sync|"
-      "feedback-triager|introspector|sync-reconciler";
-  std::regex const dispatch{"(subagent_type|agent_type|agent)[ \\t]*[:=][ \\t]*[`\"']?(" + roles + ")\\b|--agent[ =](" + roles +
-                            ")\\b|subagent type `(" + roles + ")`"};
+  std::string const roles = "coder|reviewer|orchestrator|test-coder|janitor|research|planner|spec-reviewer|ingestor|ext-sync|"
+                            "sync-reconciler";
+  std::regex const  dispatch{"(subagent_type|agent_type|agent)[ \\t]*[:=][ \\t]*[`\"']?(" + roles + ")\\b|--agent[ =](" + roles +
+                             ")\\b|subagent type `(" + roles + ")`"};
 
   std::vector<std::filesystem::path> files;
   for (auto const* dir : {"agents", "evals", "docs"}) {
@@ -281,4 +287,11 @@ TEST_CASE("queue run still accepts the bare role value", "[cmd][agent][agents-co
   auto const got = parity::run_pinned(std::filesystem::path{PLANAR_CPP_BIN}, args, arena.cpp_root, "bare-role");
   INFO("stdout:\n" << got.out << "stderr:\n" << got.err);
   CHECK(got.code == 0);
+}
+
+TEST_CASE("the removed feedback-triager role has no file under agents/", "[cmd][agent][agents-contract]") {
+  // Plan 1142, task 7473. The triage verbs and the role spec left the tree
+  // together; the role's source is preserved at tag archive/feedback-triage.
+  CHECK_FALSE(std::filesystem::exists(repo("agents/planar-feedback-triager.md")));
+  CHECK_FALSE(std::filesystem::exists(repo("codex-agents/planar-feedback-triager.toml")));
 }

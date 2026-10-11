@@ -140,7 +140,7 @@ This composes naturally with `plan list`, `task list`, `question list`, `scenari
 
 Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against a target entity's stored `(scope_kind, scope_id)` and refuses if they disagree.
 
-**It runs on ten verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All ten are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
+**It runs on nine verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All nine are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
 
 ### Removed: the active scope stack
 
@@ -160,15 +160,14 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 
 ### Which verbs are guarded
 
-**Measured against the source at task 6075 (2026-09-11).** Ten verbs, eight
+**Measured against the source at task 7468 (2026-10-10).** Nine verbs, seven
 call sites (`sync push` and `sync pull` share one; `decision accept` and
-`decision withdraw` share their transition helper):
+`decision withdraw` share their transition helper). Task 6075 measured ten
+verbs and eight call sites, before `audit publish-decision` was removed:
 
 | Verb | Comparison |
 |------|-----------|
 | `spec ingest <plan> --apply` | membership-aware |
-| `feedback triage set` | membership-aware |
-| `audit publish-decision` | membership-aware |
 | `planar-ext sync push <link\|kind:id>` | membership-aware |
 | `planar-ext sync pull <link\|kind:id>` | membership-aware |
 | `planar-ext sync resolve <event-id>` | membership-aware |
@@ -191,7 +190,7 @@ The reasoning: strict equality could not distinguish "my own member repo" from "
 
 ### Membership-aware coverage
 
-For all ten guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
+For all nine guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
 
 ### `--scope` does not mean the same thing on every verb
 
@@ -199,7 +198,7 @@ The guard's documented remedy — "pass `--scope <entity-scope>`" — assumes `-
 
 | Meaning | Effect | Verbs |
 |---------|--------|-------|
-| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision`, `decision accept`, `decision withdraw` |
+| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `decision accept`, `decision withdraw` |
 | **Patch field** | **Reassigns the entity's stored scope — it moves the row.** | `plan update`, `artifact update`, `annotate update` |
 | Read filter | Restricts which rows are listed. | the `list` verbs, `search`, `tree`, `dashboard`, `health` |
 | Inert | Accepted, parsed, discarded. | `planar-ext ext propagate` |
@@ -244,9 +243,9 @@ Associations have a `kind` that describes how they were formed:
 
 The `slug` on an association is the stable identifier used in scope references, config overrides, and workbench directory names. It must match `[a-z0-9:._-]+`.
 
-`planar assoc detect` auto-detects associations from the current repo's git remote and parent path. `planar assoc create` creates one manually; `planar assoc add` adds a repo to it.
+`planar assoc create` creates an association manually; `planar assoc add` adds a repo to it.
 
-**SQLite table:** `associations`, `project_associations`. **Primary verbs:** `planar assoc create`, `planar assoc add`, `planar assoc list`, `planar assoc members`, `planar assoc detect`.
+**SQLite table:** `associations`, `project_associations`. **Primary verbs:** `planar assoc create`, `planar assoc add`, `planar assoc list`, `planar assoc members`.
 
 ---
 
@@ -300,39 +299,6 @@ The routing table is built in two passes. The static pass is always-on and deter
 See [docs/architecture.md § Workspace State Directory Model](architecture.md#workspace-state-directory-model) for the full layout and [docs/workflows.md § Recipe 12](workflows.md#recipe-12--working-in-a-polyrepo-workspace) for the end-to-end recipe.
 
 **SQLite tables:** `associations` (the `kind=org` row), `project_associations` (member projects). **Primary verbs:** `planar workspace init`, `planar workspace doctor`, `planar workspace routing build`, `planar workspace routing show`, `planar workspace regenerate`.
-
----
-
-## Transcription vs Synthesis
-
-Two verbs onboard an existing repo into Planar. They share the downstream `planar-ingestor` pipeline but enter from different contracts; the choice is load-bearing.
-
-- `import` is a **transcription** verb. It reads the repo's existing planning docs and emits them as Planar artifacts as-is. Bullets in a roadmap become tasks verbatim, frontmatter dictates classification, and status inference is bounded by an explicit confidence floor. Reach for it when the repo's planning material is clean, structured, current, and largely correlates with shipped code.
-
-- `synthesize` is a **synthesis** verb. It reads both the existing docs *and* the source tree as input, then produces fresh `product_spec` / `tech_spec` / `roadmap` artifacts via an LLM pass. The original docs are preserved on the same anchor plan as `kind=research` reference artifacts — superseded but not deleted. Reach for it when the planning material is scattered across multiple drafts, mid-evolution, or contradicted by reality (e.g. a roadmap claims a milestone is done but no source files back the claim).
-
-The load-bearing rule for `synthesize` is that **code presence beats text claims**. A task the LLM proposes with `status != "todo"` must cite a `code_evidence` path that exists in the probed source tree; the binary's `validate_result()` step (`src/engine/synthesize/synthesize.cpp`) refuses results that violate the invariant. A roadmap line that says "M3 is finished" is treated as TODO unless source files, tests, or CI configs corroborate the claim. The greenfield case (no source detected) collapses naturally onto all-todo output.
-
-### Picking between the two
-
-| Repo shape | Pick |
-|---|---|
-| Clean structured docs + recent, code matches docs | `import` |
-| Multiple roadmaps, ambiguous statuses, partial implementation | `synthesize` |
-| Docs-only, no source code yet (greenfield) | `synthesize` |
-| `docs/` + complete code + tests with reliable status correlation | `import` (consider `--interpret` for LLM polish) |
-
-Both verbs land in the same downstream pipeline: artifacts in the workbench, review by the operator, then the `planar-ingestor` agent to decompose into the plan / task graph. The only divergence is at the entry point — what counts as the authoritative planning material.
-
-### Concrete examples
-
-**Greenfield (docs-only).** Your repo has `docs/product-roadmap.md` describing five phases but no source code yet — just the planning material and a README. Run `synthesize`: codeprobe finds zero source-file evidence, the request is flagged greenfield, and every task lands `status=todo`. Run `import` instead and git-log correlation matches the roadmap-adding commits to dozens of phase-1 task titles, marking 100+ tasks done because the commits *added* the roadmaps. The synthesis path makes the false-done problem structurally impossible.
-
-**Docs-with-code (clean).** Your repo has conventional `docs/<project>_<kind>.md` naming, a working `Sources/` tree, and tests under `Tests/`. Run `import` for a faithful transcription that preserves the existing structure exactly. Run `synthesize` for an LLM-curated reorganization grounded in code-evidence: tasks are graded by what the source tree actually shows, and `code_evidence` citations annotate every non-todo task. Both produce similar plans; the choice is whether you want the repo's own structure or a fresh LLM read.
-
-**Mid-evolution (docs lie).** Your roadmap claims Phase 2 is done; your code shows `internal/sessions/` is empty. Run `synthesize`: Phase 2 lands `status=active` (or todo) despite the roadmap claim because the EvidenceMap has `source=none, tests=none` for that area. The original Phase 2 done-claim survives as a `kind=research` reference artifact on the anchor plan, so operators see both narratives — the synthesized version is primary, the original docs are reference. Run `import` here and you'd transcribe the doc-claim verbatim, propagating the false-done into Planar's data model.
-
-See [docs/cli-reference.md](cli-reference.md) for the full `import` and `synthesize` flag tables, and [docs/workflows.md](workflows.md) for end-to-end onboarding recipes for each repo shape ([Recipe 7](workflows.md#recipe-7--adopt-an-existing-repo-into-planar), [Recipe 7a](workflows.md#recipe-7a--greenfield-onboard-with-synthesize), [Recipe 7b](workflows.md#recipe-7b--docs-with-code-onboard-with-synthesize), [Recipe 7c](workflows.md#recipe-7c--mid-evolution-onboard-with-synthesize)).
 
 ---
 
@@ -1099,76 +1065,17 @@ pass — surfaces failures with a classification (`test-wrong-author-error` /
 
 **SQLite tables:** none. **Primary entry points:** `agents/planar-test-coder.md`, `planar test-spec status` (gating verb), `planar spec ingest --strict` (ingest-time gate).
 
-## Usage Introspection Privacy Model
+## Opt-in CLI capture
 
-Planar's usage-introspection loop (capture → report → introspect) applies a two-tier privacy model. The two tiers provide different guarantees and must not be conflated.
+`[introspection].cli_log = false` by default. No `cli_invocations` rows are written until the operator sets `cli_log = true` in `~/.planar/config.toml`. The always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) are not affected by the setting.
 
-### Tier 1: Diagnostic bundle (entity text excluded by query construction)
+**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`.
 
-`planar report [--json]` reads no entity text by query construction. The aggregate queries in `src/engine/introspect/introspect.cpp` select counts, error categories, verb paths, statuses, timestamps and coverage counters from the observability tables. They never select `title`, `body`, `summary`, scope slugs, file paths, or the `args_shape` column, so flag lists are never shown. Verb paths are shown only when the live CLI tree names them; a structured operand in the second slot (digits or `word:digits`) is kept as typed at any length. Older stored rows the tree does not name render as `<unrecognized>` and are not purged.
+The usage report and the introspector role that read this log were removed in plan 1142 (task 7472); their source is preserved at tag `archive/introspection`.
 
-The `cli_invocations` writer records flag **names** (only those the resolved verb declares, else `--<unknown>`), positional **arity**, and verb-path tokens the live tree names (else `<unknown>`). It never writes an argument value.
-
-This is not a claim that the whole report is redacted: transcript-derived `introspection_preview` signals and any finding text are not structurally redacted. The operator's full preview before posting is the boundary.
-
-### Tier 2: Preview-gated finding text
-
-Findings filed by the introspector (`planar question add` / `planar task add` on the feedback plan) may legitimately reference verb paths and error categories in their body. Their only guarantee is the **mandatory preview gate** in the report-an-issue procedure (the planar skill's `external-sync.md` reference) — the operator personally reviews every byte of issue body text before it posts to GitHub. Skills and docs must present the bundle as free of entity text by query construction, name the preview as the only redaction boundary, and never describe the bundle as redacted by construction.
-
-### Transcript mining: cross-vendor and ephemeral by design
-
-Transcript adapters recognize supported Claude, Codex, and Copilot local
-session schemas; the opt-in CLI log remains the authoritative source for
-invocations it contains. Each adapter immediately normalizes records to
-vendor, verb path, category, count, and time range. **Transcript text
-(operator messages, assistant responses, tool output prose), argument values,
-entity titles, scope slugs, and raw transcript paths are never persisted to a
-Planar entity, SQLite table, snapshot, or failure output.** Unknown schema
-versions and malformed records are skipped with counted warnings. A missing or
-disabled source is reported in `signal_coverage`, not conflated with an
-observed zero.
-
-The default `planar-introspector` run is a read-only preview. Only a separately
-confirmed apply phase creates or reuses the feedback plan and files approved,
-deduplicated findings. Cancellation before the gate writes nothing; mixed
-apply results retain successful independent findings and return exact recovery
-for the failures.
-
-### Opt-in capture
-
-`[introspection].cli_log = false` by default. No `cli_invocations` rows are written until the operator sets `cli_log = true` in `~/.planar/config.toml`. The report verb distinguishes "logging disabled" from "no activity in the window" — the operator is never shown fabricated zeros. The always-on observability tables (`agent_actions`, `sync_events`, `agent_work_claims`, `handoffs`) render normally regardless of the `cli_log` setting.
-
-**SQLite tables:** `cli_invocations` (opt-in; args shape only), `agent_actions`, `sync_events`, `agent_work_claims`, `handoffs` (always-on, read by `report`). **Primary entry points:** `planar report [--json]` (diagnostic bundle), `agents/planar-introspector.md` (agent role spec).
-
-## Feedback triage
-
-Feedback findings remain ordinary task or question rows on a feedback plan;
-their review state is kept separately in `feedback_triage`. One row targets
-exactly one task or question and records severity
-(`info|low|medium|high|critical`), disposition, reproduction status, optional
-same-plan duplicate target, and redacted evidence. External issue identity
-continues to live in `external_links`, so local triage never predicts or
-duplicates publication state.
-
-The `planar-feedback-triager` agent is preview-first. It may
-recommend `duplicate`, `accepted`, `needs-reproduction`,
-`retained-question`, `dismissed`, or—only after verified publication—
-`reported-external`. The caller shows the proposed entity, relationship, and
-`planar feedback triage set` changes and waits for explicit row-level approval.
-An initial `--apply` request is not confirmation. Optional external reporting
-then enters the report-an-issue procedure, which shows the complete issue body and requires
-a second approval. Declining that gate posts nothing and leaves completed
-local triage intact.
-
-Multi-finding application is not atomic across independent findings. Verified
-completed rows remain applied if another target fails; the operator receives
-`outcome=partial`, action counts, and an idempotent inspection or retry command
-for each failure.
-
-**SQLite tables:** `feedback_triage`, plus existing finding entities and
-`external_links`. **Primary entry points:** `planar feedback triage
-list|show|set`, and
-[`agents/planar-feedback-triager.md`](../agents/planar-feedback-triager.md).
+Structured feedback triage was removed in plan 1142 (task 7473). Its verbs and the
+`planar-feedback-triager` role are preserved at tag `archive/feedback-triage`; the `feedback_triage`
+table (migration 00028) stays in the schema.
 
 ---
 

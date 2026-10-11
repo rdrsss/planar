@@ -260,8 +260,7 @@ struct projection_link_t {
   std::string_view file;
   std::string_view target;
 };
-constexpr std::array<projection_link_t, 2> k_projection_links{
-    projection_link_t{"docs/cli-reference.md", "../commands/claude/pl-synthesize.md"},
+constexpr std::array<projection_link_t, 1> k_projection_links{
     projection_link_t{"docs/workflows.md", "../commands/claude/pl-workspace-scan.md"},
 };
 auto is_projection_only_link(std::string const& file, std::string_view target) -> bool {
@@ -772,19 +771,15 @@ constexpr command_class_t m_(std::string_view s) {
   return {s, access_t::mutate};
 }
 
-constexpr std::array<command_class_t, 225> k_command_classes{
+constexpr std::array<command_class_t, 198> k_command_classes{
     m_("planar init"),
     r_("planar scope show"),
     r_("planar scope suggest"),
-    r_("planar scope use"),
-    r_("planar scope pop"),
-    r_("planar scope clear"),
     r_("planar assoc list"),
     m_("planar assoc create"),
     m_("planar assoc add"),
     m_("planar assoc remove"),
     r_("planar assoc members"),
-    m_("planar assoc detect"),
     m_("planar plan create"),
     r_("planar plan show"),
     r_("planar plan list"),
@@ -924,7 +919,6 @@ constexpr std::array<command_class_t, 225> k_command_classes{
     r_("planar audit trail"),
     r_("planar audit commits"),
     r_("planar audit session"),
-    m_("planar audit publish-decision"),
     r_("planar audit handoff-readiness"),
     r_("planar health hygiene"),
     r_("planar dashboard"),
@@ -933,7 +927,6 @@ constexpr std::array<command_class_t, 225> k_command_classes{
     r_("planar config show"),
     m_("planar config edit"),
     r_("planar config validate"),
-    m_("planar config init"),
     r_("planar config path"),
     r_("planar templates list"),
     r_("planar templates show"),
@@ -948,30 +941,9 @@ constexpr std::array<command_class_t, 225> k_command_classes{
     m_("planar local unlink"),
     m_("planar local import"),
     m_("planar local migrate"),
-    r_("planar skills"),
-    m_("planar import"),
-    m_("planar synthesize"),
     r_("planar version"),
     r_("planar completion"),
     r_("planar schema"),
-    r_("planar report"),
-    m_("planar bench start"),
-    m_("planar bench event"),
-    m_("planar bench touch"),
-    m_("planar bench harvest"),
-    m_("planar bench finish"),
-    r_("planar bench show"),
-    m_("planar closure compute"),
-    r_("planar closure show"),
-    m_("planar run start"),
-    m_("planar run event"),
-    m_("planar run finish"),
-    r_("planar run show"),
-    r_("planar groups recommend"),
-    m_("planar explore"),
-    r_("planar feedback triage list"),
-    r_("planar feedback triage show"),
-    m_("planar feedback triage set"),
     r_("planar-agent version"),
     m_("planar-agent pull"),
     r_("planar-agent peek"),
@@ -1009,14 +981,10 @@ struct capability_exemption_t {
   std::string_view role;
   std::string_view shape;
 };
-constexpr std::array<capability_exemption_t, 7> k_capability_exemptions{
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar plan create"},
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar task add"},
-    capability_exemption_t{"agents/planar-introspector.md", "introspector", "planar question add"},
+constexpr std::array<capability_exemption_t, 3> k_capability_exemptions{
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
     capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar skills render"},
 };
 auto is_capability_exemption(std::string const& file, std::string_view role, std::string_view shape) -> bool {
   for (auto const& e : k_capability_exemptions)

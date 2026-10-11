@@ -90,8 +90,4 @@ auto add_positional_optional(CLI::App& app, std::string_view name, std::string_v
   }
 }
 
-auto set_allow_extras(CLI::App& app) -> void {
-  app.allow_extras();
-}
-
 } // namespace planar::cmd

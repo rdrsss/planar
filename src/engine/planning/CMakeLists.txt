@@ -193,7 +193,6 @@ planar_module(engine_planning
     plan_step.cppm
     test_spec_status.cppm
     descendants.cppm
-    feedback_triage.cppm
     strategy.cppm
     closeout.cppm
     touchinfer.cppm
@@ -210,7 +209,6 @@ planar_module(engine_planning
     plan_step.cpp
     test_spec_status.cpp
     descendants.cpp
-    feedback_triage.cpp
     strategy.cpp
     closeout.cpp
     touchinfer.cpp

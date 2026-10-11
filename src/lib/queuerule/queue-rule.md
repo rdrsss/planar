@@ -51,7 +51,7 @@ planar-agent queue run --detach --timeout 2h --vendor <vendor> --role <role> --c
 Run it from the directory the command needs. The command runs there, with
 your environment.
 
-Pass `--claim` only when holding a caller-supervised claim. Always pass
+Pass `--claim` only when holding a claim. Always pass
 `--vendor` and `--role`. Give your own vendor (`claude`,
 `codex`, `copilot`, `gemini`) and your own role (`coder`, `test-coder`,
 `reviewer`, `janitor`, `orchestrator`). The operator reads them in the
@@ -95,7 +95,7 @@ observation stopped. `stalled`, `history_unavailable`, and `error` leave the
 job outcome unknown; inspect the ticket and queue health and report the gap.
 An empty log, absent `status`, or empty active queue proves no result.
 `queue wait` is read-only and never renews a claim. `queue run --claim`
-renews a caller-supervised claim while the submitter waits and runs; a failed
+renews a claim while the submitter waits and runs; a failed
 renewal appears in the output file without stopping the command. Heartbeat
 separately when that renewal is unavailable.
 

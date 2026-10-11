@@ -223,8 +223,11 @@ check 1 "planar-agent: unknown flag"        planar-agent --no-such-flag
 check 1 "planar-watch: unknown flag"        planar-watch --no-such-flag
 check 1 "planar-ext: unknown flag"          planar-ext --no-such-flag
 
-# --- the removed-verb stubs -------------------------------------------------
+# --- the removed verbs (plan 1142, task 7463) -------------------------------
+# Deleted outright, so each is an unknown subcommand: exit 2, not 64.
 check 2 "planar: removed verb (scope use)"  planar scope use anything
+check 2 "planar: removed verb (explore)"    planar explore
+check 2 "planar: removed verb (skills)"     planar skills
 
 # --- `document` (task 6939, review F4): a rejected range is caller evidence
 # disagreeing with the snapshot, so it exits 2 -- NOT 3, which this table
@@ -237,8 +240,6 @@ if ! doc_out="$(cd "$workdir" && "$bin_dir/planar" artifact add Contract --kind 
 fi
 check 2 "planar: document unsupported --kind" planar document project --kind task --id 1 --json
 check 1 "planar: document source not found"   planar document project --kind artifact --id 987654321 --json
-check 2 "planar: document stale range"        planar document validate-range --kind artifact --id 1 \
-  --content-revision stale --start-key k --start-offset 0 --end-key k --end-offset 0 --json
 fcheck 7 "planar: document schema ahead"  planar PLANAR_DB="$fixtures/ahead.db"  -- document project --kind artifact --id 1 --json
 fcheck 1 "planar: document schema behind" planar PLANAR_DB="$fixtures/behind.db" -- document project --kind artifact --id 1 --json
 

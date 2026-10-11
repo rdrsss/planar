@@ -299,42 +299,6 @@ CPMAddPackage(
     "SPDLOG_INSTALL OFF"
 )
 
-# --- tree-sitter Zig parser (task 6189 — derived closure extraction) ------
-# Both sources are pinned release tag archives.  The grammar is built as C
-# rather than through its optional Node tooling; the closure engine consumes
-# only the stable C parser API.
-CPMAddPackage(
-  NAME tree_sitter
-  URL https://codeload.github.com/tree-sitter/tree-sitter/tar.gz/refs/tags/v0.25.10
-  URL_HASH SHA256=ad5040537537012b16ef6e1210a572b927c7cdc2b99d1ee88d44a7dcdc3ff44c
-  DOWNLOAD_ONLY YES EXCLUDE_FROM_ALL YES SYSTEM YES)
-CPMAddPackage(
-  NAME tree_sitter_zig
-  URL https://codeload.github.com/tree-sitter-grammars/tree-sitter-zig/tar.gz/refs/tags/v1.1.2
-  URL_HASH SHA256=612d67059faa90ec7691e5d786d70d8f7c2c8b15b83de901b9b801122ad4cf25
-  DOWNLOAD_ONLY YES EXCLUDE_FROM_ALL YES SYSTEM YES)
-if(tree_sitter_ADDED)
-  add_library(tree_sitter_static STATIC "${tree_sitter_SOURCE_DIR}/lib/src/lib.c")
-  # `lib/include` is the PUBLIC surface; `lib/src` has to be on the search
-  # path too, PRIVATEly, because tree-sitter's own `lib/src/unicode/utf8.h`
-  # includes `"unicode/umachine.h"` -- a path that only resolves with
-  # `lib/src` as a base. A quoted include is searched relative to the
-  # INCLUDING file (`lib/src/unicode/`), so without this the header looks
-  # for `lib/src/unicode/unicode/umachine.h`, which does not exist. macOS
-  # tolerated the omission; Linux does not, and failed with
-  # "'unicode/umachine.h' file not found" (measured building the Linux
-  # gate, task 6936). tree-sitter's own build adds this directory.
-  target_include_directories(tree_sitter_static SYSTEM PUBLIC "${tree_sitter_SOURCE_DIR}/lib/include")
-  target_include_directories(tree_sitter_static SYSTEM PRIVATE "${tree_sitter_SOURCE_DIR}/lib/src")
-  add_library(tree_sitter::tree_sitter ALIAS tree_sitter_static)
-endif()
-if(tree_sitter_zig_ADDED)
-  add_library(tree_sitter_zig_static STATIC "${tree_sitter_zig_SOURCE_DIR}/src/parser.c")
-  target_include_directories(tree_sitter_zig_static SYSTEM PUBLIC "${tree_sitter_zig_SOURCE_DIR}/src")
-  target_link_libraries(tree_sitter_zig_static PUBLIC tree_sitter::tree_sitter)
-  add_library(tree_sitter::zig ALIAS tree_sitter_zig_static)
-endif()
-
 # --- FTXUI 7.0.3 (planar-watch interactive agent view) -----------------------
 #
 # The terminal UI library behind the bare `planar-watch` interactive view: a
