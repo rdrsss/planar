@@ -241,13 +241,13 @@ auto insert_nested_entry(db::connection& conn, const enqueue_request& request) -
   return insert_entry(conn, request, entry_state::running);
 }
 
-auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t history_days)
+auto enqueue(db::connection& conn, const enqueue_request& request, std::int64_t history_days, const claim_lookup& lookup)
     -> std::expected<enqueued, queue_error> {
   auto txn = conn.begin_transaction(db::lock_mode::immediate);
   if (!txn) {
     return sql_failure("begin enqueue", txn.error());
   }
-  auto expired = delete_expired_history(conn, history_days, request.enqueued_at);
+  auto expired = delete_expired_history(conn, history_days, request.enqueued_at, lookup);
   if (!expired) {
     return std::unexpected(std::move(expired.error()));
   }

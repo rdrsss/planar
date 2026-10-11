@@ -1096,9 +1096,9 @@ TEST_CASE("queue view: with neither PLANAR_DB nor HOME it fails before dispatch 
 
 /// @brief The history row's JSON fields, in order.
 const std::vector<std::string> k_history_fields{
-    "seq",         "outcome",    "exit_code", "signal",    "cancelled_by", "superseded_by", "nested",
-    "parent_seq",  "cwd",        "argv",      "label",     "vendor",       "role",          "log_path",
-    "enqueued_at", "started_at", "ended_at",  "waited_ms", "ran_ms",       "run_limit_ms",  "wait_limit_ms"};
+    "seq",      "outcome",   "exit_code", "signal",       "cancelled_by",  "superseded_by", "nested",      "parent_seq",
+    "cwd",      "argv",      "label",     "vendor",       "role",          "log_path",      "enqueued_at", "started_at",
+    "ended_at", "waited_ms", "ran_ms",    "run_limit_ms", "wait_limit_ms", "claim_token"};
 
 /// @brief `planar-watch queue history [flags]` under the arena's pinned environment.
 auto run_history(const parity::arena& arena, std::string_view tag, std::vector<std::string> flags = {"--json"}) -> capture {
@@ -1135,7 +1135,8 @@ struct ended_spec {
   std::int64_t                waited_ms = 1000;
   std::optional<std::int64_t> ran_ms    = 2000; ///< Empty: the entry never started.
   std::optional<std::int64_t> wait_limit_ms;
-  hq::end_request             end; ///< `ended_at` is the case's own choice and is set here.
+  std::optional<std::string>  claim_token; ///< The `--claim` token the entry named, when any.
+  hq::end_request             end;         ///< `ended_at` is the case's own choice and is set here.
 };
 
 /// @brief Enqueues, starts (when it ran) and ends one entry so that its history
@@ -1148,6 +1149,7 @@ auto seed_ended(planar::db::connection& conn, ended_spec spec) -> std::int64_t {
   request.role          = spec.role;
   request.enqueued_at   = spec.end.ended_at - spec.waited_ms - ran;
   request.wait_limit_ms = spec.wait_limit_ms;
+  request.claim_token   = spec.claim_token;
   auto const seq        = enqueue_or_fail(conn, request);
   if (spec.ran_ms) {
     wall_clock_at clock;
@@ -1346,10 +1348,11 @@ TEST_CASE("queue history: every outcome lists its columns, in JSON and in text",
     add(wait_timeout, 5);
 
     ended_spec anonymous;
-    anonymous.vendor = std::nullopt;
-    anonymous.role   = std::nullopt;
-    anonymous.end    = hq::end_request{.outcome      = hq::history_outcome::cancelled,
-                                       .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = 77}};
+    anonymous.vendor      = std::nullopt;
+    anonymous.role        = std::nullopt;
+    anonymous.claim_token = "a-claim-token";
+    anonymous.end = hq::end_request{.outcome      = hq::history_outcome::cancelled,
+                                    .cancelled_by = hq::canceller{.vendor = std::nullopt, .role = std::nullopt, .pid = 77}};
     add(anonymous, 4);
 
     // The abandoned waiter rejoins the queue: its history row names the new entry.
@@ -1392,6 +1395,12 @@ TEST_CASE("queue history: every outcome lists its columns, in JSON and in text",
   CHECK(int_of(rows[0], "ran_ms") == 65'000);
   CHECK(int_of(rows[0], "run_limit_ms") == 300'000);
   CHECK(is_null(rows[0], "wait_limit_ms"));
+  CHECK(is_null(rows[0], "claim_token"));
+  // Exactly one row named a claim, and its token is reported verbatim.
+  CHECK(std::ranges::count_if(rows, [](const auto& row) { return !is_null(row, "claim_token"); }) == 1);
+  CHECK(std::ranges::count_if(rows, [](const auto& row) {
+          return !is_null(row, "claim_token") && text_of(row, "claim_token") == "a-claim-token";
+        }) == 1);
 
   // signaled: the signal instead of a code.
   CHECK(text_of(rows[1], "outcome") == "signaled");

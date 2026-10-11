@@ -226,4 +226,38 @@ auto queue_log_directory(const std::filesystem::path& db_path) -> std::filesyste
   return db_path.parent_path() / base;
 }
 
+auto claim_standing_lookup(db::connection& conn) -> engine::hostqueue::claim_lookup {
+  return [&conn](std::string_view token) -> hq::claim_standing {
+    // Plans that have not finished: a draft, active or paused plan is open.
+    auto stmt = conn.prepare("select cast(strftime('%s', coalesce(c.released_at, c.lease_expires_at)) as integer) * 1000, "
+                             "p.status "
+                             "from agent_work_claims c "
+                             "left join tasks t on c.entity_kind = 'task' and t.id = c.entity_id "
+                             "left join plan_steps s on c.entity_kind = 'plan_step' and s.id = c.entity_id "
+                             "left join plans p on p.id = case c.entity_kind when 'plan' then c.entity_id "
+                             "when 'task' then t.plan_id else s.plan_id end "
+                             "where c.claim_token = ?");
+    if (!stmt || !stmt->bind_text(1, token)) {
+      return {};
+    }
+    auto stepped = stmt->step();
+    if (!stepped || *stepped == db::step_result::done) {
+      return {};
+    }
+    hq::claim_standing out;
+    if (!stmt->is_null(0)) {
+      out.claim_ended_ms = stmt->column_int64(0);
+    }
+    if (!stmt->is_null(1)) {
+      auto const status = stmt->column_text(1);
+      if (status == "draft" || status == "active" || status == "paused") {
+        out.plan = hq::claim_standing::plan_state::open;
+      } else if (status == "done" || status == "abandoned") {
+        out.plan = hq::claim_standing::plan_state::closed;
+      }
+    }
+    return out;
+  };
+}
+
 } // namespace planar::cmd::agent

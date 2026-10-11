@@ -39,7 +39,8 @@ export auto add(CLI::App& root) -> void {
   run->add_option("--role")->description(
       "The submitting agent's role, recorded with the queue entry; default $PLANAR_ROLE, empty when neither is set");
   run->add_option("--claim")->description(
-      "Renew this claim at half its lease interval while the entry waits and while the command runs; a renewal that "
+      "Renew this claim at half its lease interval while the entry waits and while the command runs, and record the "
+      "token on the entry's history row; a renewal that "
       "fails is reported on standard error (or in the output file) and never stops the command");
   run->add_flag("--notices")
       ->description(
