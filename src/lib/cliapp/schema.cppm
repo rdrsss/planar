@@ -289,7 +289,7 @@ export auto schema_request_of(const parsed_args& args) -> schema_request;
 /// inside the same envelope with `"layout":"compact"`. Both together emit the
 /// one compact row, bare.
 /// @param catalog A catalog produced by `schema_json` (or any emitter of the
-/// same flat shape, such as `planar-execute`'s).
+/// same flat shape).
 /// @param request The selection.
 /// @return The JSON document without a trailing newline, or a message naming
 /// the unknown command.

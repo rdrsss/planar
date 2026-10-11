@@ -632,11 +632,11 @@ struct poller {
     settings.reload(err);
     auto const& now    = settings.current();
     auto        result = hq::poll_and_stop(conn,
-                                           hq::poll_stop_request{.poll     = hq::poll_request{.seq            = seq,
-                                                                                              .host_id        = host_id,
-                                                                                              .slots          = now.slots,
-                                                                                              .stale_after_ms = now.stale_after_ms,
-                                                                                              .run_limit_ms   = run_limit_ms},
+                                           hq::poll_stop_request{.poll = hq::poll_request{.seq            = seq,
+                                                                                          .host_id        = host_id,
+                                                                                          .slots          = now.slots,
+                                                                                          .stale_after_ms = now.stale_after_ms,
+                                                                                          .run_limit_ms   = run_limit_ms},
                                                                  .grace_ms = now.grace_ms},
                                            clock, probe, signaller);
     if (result) {
@@ -1379,8 +1379,8 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
       if (*outcome == hq::history_outcome::abandoned) {
         return refuse_entry(
             std::format("entry {} was reaped after this submitter had already rejoined the queue {} times; giving "
-                                                          "up, the command was not run",
-                                         seq, rejoins),
+                        "up, the command was not run",
+                        seq, rejoins),
             "abandoned, rejoin limit reached");
       }
       return refuse_entry(
@@ -1406,9 +1406,9 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
         rejoin_busy_since = *now;
       } else if (*now - *rejoin_busy_since > settings.current().stale_after_ms) {
         return refuse_entry(std::format("the store stayed busy for longer than the staleness window while entry {} was being put "
-                                                                          "back in the queue; the command was not run",
-                                                         seq),
-                                             "ended: store busy while rejoining");
+                                        "back in the queue; the command was not run",
+                                        seq),
+                            "ended: store busy while rejoining");
       }
       report.once(
           std::format("warning: queue: cannot rejoin the queue after entry {} went missing, will retry: {}", seq, error.message));
@@ -1437,8 +1437,8 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     }
     ++rejoins;
     report.once(std::format("warning: queue: entry {} was reaped while this submitter was not polling; rejoined the queue as "
-                                                              "entry {}",
-                                             seq, rejoined->seq));
+                            "entry {}",
+                            seq, rejoined->seq));
     seq      = rejoined->seq;
     poll.seq = seq;
     last_position.reset();
@@ -1618,19 +1618,19 @@ auto submit(context& ctx, const cliapp::parsed_args& args, queue_run_deps deps, 
     auto const leader = probe.process_start_time(child.pgid);
     if (!leader) {
       report.once(std::format("warning: queue: cannot verify the command's process group before stopping it: {}",
-                                               describe(leader.error())));
+                              describe(leader.error())));
       return false;
     }
     if (leader->has_value() && **leader != child.started) {
       report.once(std::format("warning: queue: not stopping entry {}'s command at its run limit: process group {} no longer "
-                                                                "belongs to it (the id was reused)",
-                                               seq, child.pgid));
+                              "belongs to it (the id was reused)",
+                              seq, child.pgid));
       return false;
     }
     if (auto sent = signaller(child.pgid, sig); !sent && sent.error() != ident::error::no_such_process) {
       if (!(sent.error() == ident::error::not_permitted && hq::group_has_only_zombies(probe, child.pgid))) {
         report.once(std::format("warning: queue: {} to the command's process group failed: {}", signal_name(sig),
-                                                 describe(sent.error())));
+                                describe(sent.error())));
       }
     }
     return true;
@@ -2019,8 +2019,8 @@ auto queue_cancel_with(context& ctx, const cliapp::parsed_args& args, queue_run_
                                              probe, signaller);
     if (advanced) {
       surface_advance(*advanced, report);
-      killed    = killed || std::ranges::any_of(advanced->kills,
-                                                [](const hq::signal_attempt& k) { return k.outcome == hq::signal_outcome::sent; });
+      killed = killed || std::ranges::any_of(advanced->kills,
+                                             [](const hq::signal_attempt& k) { return k.outcome == hq::signal_outcome::sent; });
       signalled = signalled || killed;
       if (!advanced->ended.empty()) {
         return report_stopped(ctx, conn, seq, killed, signalled);

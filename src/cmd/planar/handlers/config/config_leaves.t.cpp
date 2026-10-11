@@ -1204,11 +1204,12 @@ TEST_CASE("no config leaf opens the database", "[cmd][config][db]") {
 }
 
 TEST_CASE("config show --json escapes values, so every line is valid JSON", "[cmd][config][show][json]") {
-  // Found by plan 1033 task 6494: `planar-execute` reads its execution
-  // profiles out of this output, and an array value rendered as JSON text
-  // (`["~/a","/b"]`) came out as `"value":"["~/a","/b"]"` — not JSON. Any
-  // operator value holding a quote or a backslash broke the line the same
-  // way; none of the shipped defaults happens to.
+  // Found by plan 1033 task 6494: `planar-execute` read its execution
+  // profiles out of this output before it left master, and an array value
+  // rendered as JSON text (`["~/a","/b"]`) came out as
+  // `"value":"["~/a","/b"]"` — not JSON. Any operator value holding a quote
+  // or a backslash broke the line the same way; none of the shipped defaults
+  // happens to.
   auto const fx = make_fixture("showjsonescape");
   write_config(fx, "[defaults]\nvendor = 'a\"b\\c'\n");
   auto const r = dispatch(fx, {"config", "show", "--json"});

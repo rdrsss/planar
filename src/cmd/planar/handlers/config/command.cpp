@@ -681,8 +681,8 @@ auto config_validate(context& ctx, const cliapp::parsed_args& args) -> handler_r
 
   // ---- step 6: the removed `[execute]` table (plan 1142, task 7459) ------
   //
-  // planar-execute's configuration left planar with its engine selector and
-  // profiles, so `[execute]` is no longer a known key. A file that still
+  // planar-execute's engine selector and profiles left planar's configuration
+  // with it, so `[execute]` is no longer a known key. A file that still
   // carries one is refused by name rather than having its keys ignored.
   if (std::ranges::any_of(*parsed, [](auto const& kv) { return kv.first == "execute" || kv.first.starts_with("execute."); }) ||
       has_execute_table(*content)) {

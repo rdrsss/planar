@@ -441,8 +441,8 @@ struct arena {
 /// @param tag A short discriminator so a failure names its own case.
 /// @return The created arena.
 inline auto make_arena(std::string_view tag) -> arena {
-  auto const base = std::filesystem::temp_directory_path() /
-                    std::format("planar_cmd_parity_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
+  auto const      base = std::filesystem::temp_directory_path() /
+                         std::format("planar_cmd_parity_{}_{}", tag, std::chrono::steady_clock::now().time_since_epoch().count());
   std::error_code ec;
   // Field-assigned rather than designated-initialized: `arena` declares a
   // destructor and deleted copies (task 6311), which disqualifies it as an

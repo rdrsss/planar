@@ -6141,6 +6141,7 @@ RETARGETED_CASE_ROLES: dict[str, list[str]] = {
     "review-bypass-is-explicit-expert-opt-in/recommendation-never-outputs-bypass": ["agents/methodology.md", "orchestrator"],
     "foreign-flat-lifecycle-success/review-before-complete": ["orchestrator"],
     "phase3-model-routing-host-boundary/preview-binds-tier-and-model": ["orchestrator"],
+    "phase3-model-routing-host-boundary/preview-preserves-task-identity": ["orchestrator"],
     "phase3-model-routing-host-boundary/no-cross-host-vendor-substitution": ["orchestrator"],
     "phase35-is-coverage-driven/coverage-oracle": ["orchestrator"],
     "phase35-is-coverage-driven/no-configurable-cadence": ["agents/methodology.md", "orchestrator"],
@@ -6263,7 +6264,7 @@ class RoleAssertionRetargetTests(unittest.TestCase):
             sum(1 for k in found if not k.startswith("skill-planar-contract/")),
             len(RETARGETED_CASE_ROLES),
         )
-        self.assertEqual(len(found), 56)  # 53 at bb9e5816; +9 for validation-cadence; -6 with the model-routing assertions
+        self.assertEqual(len(found), 57)  # 53 at bb9e5816; +9 for validation-cadence; -6 with the model-routing assertions; +1 restoring preview-preserves-task-identity
 
     def test_coherence_phrase_count_and_roles_are_unchanged(self) -> None:
         source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(
