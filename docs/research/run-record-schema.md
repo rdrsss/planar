@@ -1,5 +1,7 @@
 # Run records & the measurement-rig separation boundary
 
+> **Historical note.** This document is kept as a record. `planar-execute` and its workflow runner now live on the branch `dev/planar-execute`; master does not ship them.
+
 **Status:** design · companion to `migrations/00025_runs.{up,down}.sql`
 **Serves:** the vertical-slice decomposition experiment (strict / eligibility / grouped) and Planar spec v0.1 §5 step 5 ("measurement rig — must survive the §1 excision, not be swept out with it").
 

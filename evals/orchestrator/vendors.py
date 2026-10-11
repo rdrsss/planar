@@ -324,8 +324,7 @@ def build_lifecycle_resume_command(
 # orchestrator-specific (phase3-preview or lifecycle-turn) framing. A raw
 # spawn is "run this model with this prompt and nothing else", the shape
 # `evals/planning/harness.py` (single-turn planning drafts/grades, claude
-# only) and `evals/candidate-spawn/verify.py` (per-candidate spawn probe,
-# every vendor in `agents/models.md` §Candidate Presets) both need. Before
+# only) needs, and what any other raw per-vendor spawn probe needs. Before
 # this, each built its own argv inline, which meant three separate places in
 # this repo constructed a headless vendor-CLI invocation instead of one --
 # undermining the very point of a single choke point for the

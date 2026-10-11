@@ -2,6 +2,17 @@
 
 A changelog of shipped milestones and plans, newest first.
 
+## 2026-10-10
+
+### Plan 1142, milestone 1: Planar ships mechanism only
+
+Planar's code and release bundle now hold mechanism only. The workflow runner and the model-routing surface left master.
+
+- **Moved to a branch.** `planar-execute`, the Lua workflows under `workflows/` and the Centurion client verbs live on the branch `dev/planar-execute`.
+- **Removed with no replacement on master.** `planar workflow`; `planar-agent dispatch`, `planar models`, the routing engine and `agents/models.md`; `planar-agent run`, `planar-agent context` and `planar-watch run`; `planar-agent claim-associate` and the engine-supervision flags on `planar-agent`; and the evals candidate-spawn and rollout harnesses. The routing tables stay in the schema until a later milestone.
+- **Config.** The `[execute]` table is gone, and `planar config validate` now rejects it.
+- **Release bundle.** The bundle ships four binaries: `planar`, `planar-agent`, `planar-watch` and `planar-ext`. The installer removes `bin/planar-execute`, `workflows/` and `agents/models.md` from an older install through `install-cleanup.txt`.
+
 ## 2026-10-04
 
 ### Plan 1104: one `planar` skill replaces the forty `pl-*` skills and the renderer

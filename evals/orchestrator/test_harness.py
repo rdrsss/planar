@@ -6127,8 +6127,6 @@ class RealLedgerAndCwdIsolationTests(unittest.TestCase):
 # 31 case assertions (the 22 `skill-planar-contract/*` ones are task 7213's and
 # are agent-independent), and 18 must/forbid calls in `grade_coherence`.
 RETARGETED_CASE_ROLES: dict[str, list[str]] = {
-    "ambiguous-tier-requires-operator-answer/tier-question-stops-dispatch": ["orchestrator"],
-    "ambiguous-tier-requires-operator-answer/no-round-up": ["agents/models.md", "orchestrator"],
     "archive-and-finalization-capability-boundary/janitor-owns-closeout": ["orchestrator"],
     "archive-and-finalization-capability-boundary/no-plan-status-bypass": ["orchestrator"],
     "archive-and-finalization-capability-boundary/archive-requires-done": ["orchestrator"],
@@ -6143,9 +6141,6 @@ RETARGETED_CASE_ROLES: dict[str, list[str]] = {
     "review-bypass-is-explicit-expert-opt-in/recommendation-never-outputs-bypass": ["agents/methodology.md", "orchestrator"],
     "foreign-flat-lifecycle-success/review-before-complete": ["orchestrator"],
     "phase3-model-routing-host-boundary/preview-binds-tier-and-model": ["orchestrator"],
-    "phase3-model-routing-host-boundary/preview-preserves-task-identity": ["orchestrator"],
-    "phase3-model-routing-host-boundary/no-non-medium-default-for-decided-work": ["agents/models.md", "orchestrator"],
-    "phase3-model-routing-host-boundary/no-title-vocabulary-escalation": ["agents/models.md", "orchestrator"],
     "phase3-model-routing-host-boundary/no-cross-host-vendor-substitution": ["orchestrator"],
     "phase35-is-coverage-driven/coverage-oracle": ["orchestrator"],
     "phase35-is-coverage-driven/no-configurable-cadence": ["agents/methodology.md", "orchestrator"],
@@ -6268,7 +6263,7 @@ class RoleAssertionRetargetTests(unittest.TestCase):
             sum(1 for k in found if not k.startswith("skill-planar-contract/")),
             len(RETARGETED_CASE_ROLES),
         )
-        self.assertEqual(len(found), 62)  # 53 at bb9e5816; +9 for validation-cadence
+        self.assertEqual(len(found), 56)  # 53 at bb9e5816; +9 for validation-cadence; -6 with the model-routing assertions
 
     def test_coherence_phrase_count_and_roles_are_unchanged(self) -> None:
         source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(

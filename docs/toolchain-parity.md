@@ -518,7 +518,7 @@ Docker Desktop 4.93.0, targeting `linux/amd64`. Bookworm supplied glibc
 CMake 4.4.2 used the existing x86_64 SHA-256 pin. The cold portable product
 build ran 1,997 steps with four jobs; image setup, configure, build and export
 took 889 seconds. Both `portable`-labelled tests subsequently passed, inspecting
-all five binaries for startup, glibc-only shared dependencies, no rpath and
+all binaries (then five, including `planar-execute`) for startup, glibc-only shared dependencies, no rpath and
 no GLIBC requirement above 2.36. Full diagnostics and package/archive provenance
 are retained in `build/m1-evidence/task7304/` on the dispatch host. This is
 product-build evidence; bundle assembly and clean-container bundle health

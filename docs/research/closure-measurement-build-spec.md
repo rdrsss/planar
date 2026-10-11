@@ -1,5 +1,7 @@
 # Build Spec — Closure & Measurement Subsystem (v0.1)
 
+> **Historical note.** This document is kept as a record. `planar-execute` and its workflow runner now live on the branch `dev/planar-execute`; master does not ship them.
+
 **Paper working title (placeholder):** *Context Closure as the Unit of Work:
 Replication-Minimizing Task Decomposition for Parallel LLM Agents.* Held
 loosely — the title hardens only after the results are in (if RQ1 prediction

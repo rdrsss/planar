@@ -2785,7 +2785,7 @@ def prepare_lifecycle_fixture(
             "[agents]\nmax_concurrent_threads_per_session = 4\n",
         )
         write_lifecycle_agents(repo, fixture_root)
-        for support in ("cross-scope-writes", "doctrine", "methodology", "models"):
+        for support in ("cross-scope-writes", "doctrine", "methodology"):
             for vendor in ("codex", "claude"):
                 shutil.copy2(
                     ROOT / "agents" / f"{support}.md",

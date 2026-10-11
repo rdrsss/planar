@@ -5,9 +5,8 @@ shorter than `docs/workflows.md`: use this directory when you want to see the
 shape of a session, then follow the reference docs when you need every flag and
 edge case.
 
-Replace placeholder values such as `<plan-id>`, `<task-id>`,
-`<system-slug>`, and `<workflow-name>` with values from your local Planar
-database.
+Replace placeholder values such as `<plan-id>`, `<task-id>` and
+`<system-slug>` with values from your local Planar database.
 
 ## Examples
 
