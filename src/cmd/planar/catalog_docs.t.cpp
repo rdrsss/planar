@@ -215,8 +215,9 @@ TEST_CASE("every leaf of every binary lists exit codes its exit table knows", "[
   // 249 leaves measured 2026-10-10 across the four remaining binaries, after `planar models`,
   // `planar-agent dispatch`, `planar-agent run`/`context` and `planar-watch run` left the tree
   // (plan 1142, tasks 7455 and 7458); the floor keeps a margin of four.
+  // Plan 1142 task 7467 removes seven of them (249 -> 242 measured 2026-10-10).
   CAPTURE(leaves);
-  CHECK(leaves >= 245);
+  CHECK(leaves >= 238);
 }
 
 TEST_CASE("every planar and planar-agent leaf has an example under its own command path", "[catalog][docs]") {
@@ -237,7 +238,8 @@ TEST_CASE("every planar and planar-agent leaf has an example under its own comma
     }
   }
   CAPTURE(checked);
-  CHECK(checked >= 210);
+  // 207 measured 2026-10-10 after task 7467 removed seven planning leaves; the floor keeps a margin of four.
+  CHECK(checked >= 203);
 }
 
 TEST_CASE("--help repeats the catalog's docs for every leaf of the four CLI11 binaries", "[catalog][docs]") {

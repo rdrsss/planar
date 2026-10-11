@@ -125,8 +125,8 @@
 //   - A NONEXISTENT id is `not_found` for them and `no_plan_link` for the
 //     other four, because `plan` walks `plans.parent_plan_id` and `task`
 //     reads `tasks.plan_id` — neither touches `entity_links`. So
-//     `plan diff 999` says `no plan with id 999` where `question diff 999`
-//     says `question 999 is not linked to a plan`. Both exit 1, so the
+//     `task diff 999` says `no task with id 999` where `decision review 999`
+//     says `decision 999 is not linked to a plan`. Both exit 1, so the
 //     exit code does NOT separate them and only the prose does. This is
 //     the arm `editflow.cpp` documents as unreachable; it is unreachable
 //     for four of six families and the only reachable arm for the other
@@ -151,7 +151,7 @@
 //     path for both families, so their `diff` reports a content diff rather
 //     than a whole-document deletion hunk.
 //   - The thin-vs-canonical renderer split DOES still apply, so `plan view`
-//     followed by `plan diff` is noisy for the documented reason.
+//     followed by `task diff` is noisy for the documented reason.
 //   - `apply_mutations` guards `scenario` alone, so a `task` status edit
 //     moves `todo -> done` skipping `doing`, and back. Run in both
 //     directions rather than inferred from the guard's shape. Gate 1 still
@@ -353,6 +353,20 @@ auto families() -> std::vector<family> {
       {"question", "1-q-linked.md"}, {"decision", "1-d-linked.md"}, {"scenario", "1-s-linked.md"}, {"artifact", "1-a-linked.md"}};
 }
 
+/// @brief The families whose `diff` verb survives the removal of the others:
+/// `artifact` alone.
+/// @return The families.
+auto diff_families() -> std::vector<family> {
+  return {{"artifact", "1-a-linked.md"}};
+}
+
+/// @brief The families whose `review` verb survives: decision, scenario and
+/// artifact.
+/// @return The families.
+auto review_families() -> std::vector<family> {
+  return {{"decision", "1-d-linked.md"}, {"scenario", "1-s-linked.md"}, {"artifact", "1-a-linked.md"}};
+}
+
 /// @brief The feature directory `seed_hierarchy` renders into.
 ///
 /// The association level is PRESENT here where `seed_linked`'s cases have
@@ -538,128 +552,6 @@ TEST_CASE("view reports NoPlanLink for an id that does not exist at all", "[cmd]
 // diff
 // ===========================================================================
 
-TEST_CASE("diff against an absent workbench file renders the whole document as a deletion", "[cmd][drafting][diff]") {
-  auto const fx = make_fixture("diffempty");
-  seed_linked(fx);
-
-  // Nothing has written the workbench tree yet, so the filesystem side is
-  // empty and every line of the CANONICAL render is a deletion.
-  auto const res = dispatch(fx, {"question", "diff", "1"});
-  CHECK(res.code == 0);
-  CHECK(res.err.empty());
-  CHECK(res.out.starts_with(std::format("--- db:question:1\n+++ fs:{}\n@@ -1,",
-                                        (fx.root / "wb" / "p1-anchor" / "questions" / "1-q-linked.md").string())));
-  // The canonical renderer's timestamps are PRESENT here and absent from
-  // `view`'s output above. Asserted by content rather than by line count so
-  // it fails if the two renderers are ever unified.
-  CHECK(res.out.contains("-**Created:**"));
-  CHECK(res.out.contains("-**Updated:**"));
-
-  // ...and the hunk is a pure deletion. Checked on the HEADER, because the
-  // body cannot be checked for "no + lines": the `+++ fs:` header itself
-  // starts with `+`, so a naive scan for `+` matches it and passes
-  // vacuously. The `+0,0` half of the range is the unambiguous statement
-  // that the filesystem side contributed nothing.
-  auto const hunk = res.out.find("@@ -1,");
-  REQUIRE(hunk != std::string::npos);
-  CHECK(res.out.substr(hunk).starts_with(std::format("@@ -1,{} +0,0 @@\n", std::ranges::count(res.out, '\n') - 3)));
-}
-
-TEST_CASE("view then diff reports a diff, because the two use different renderers", "[cmd][drafting][diff]") {
-  // THE MOST SURPRISING BEHAVIOUR IN THE QUARTET, and the one most likely
-  // to be "fixed" by a later reader who assumes it is a bug. `view` writes
-  // the THIN render; `diff` compares the CANONICAL render against that same
-  // file. So a `view` immediately followed by a `diff` is never silent.
-  //
-  // Pinned on all four families, because "they agree" is this cycle's
-  // finding and a per-family exception here would be the counterexample.
-  auto fx = make_fixture("viewthendiff");
-  static_cast<void>(install_stub_pager(fx));
-  seed_linked(fx);
-
-  for (auto const& fam : families()) {
-    INFO("family=" << fam.name);
-    REQUIRE(dispatch(fx, {std::string{fam.name}, "view", "1"}).code == 0);
-    auto const res = dispatch(fx, {std::string{fam.name}, "diff", "1"});
-    CHECK(res.code == 0);
-    CHECK(!res.out.empty());
-  }
-
-  // ...but NOT for the same reason in all four, and this is the one place
-  // the families genuinely part company in this flow. It was found by
-  // writing the loop above as a single `contains("**Created:**")` check and
-  // watching `artifact` fail it.
-  //
-  //   question / decision / scenario
-  //       The CONTENT differs. `view` wrote the thin render to the path
-  //       `diff` reads, and `diff` reports the timestamp lines the
-  //       canonical render adds -- a MODIFICATION hunk.
-  //   artifact
-  //       The content is IDENTICAL. The canonical artifact renderer emits
-  //       the same body the thin one does, byte for byte -- no `**Created:**`
-  //       pair at all. What differs is the PATH: `view` wrote under
-  //       `artifacts/` and `diff` reads the feature root, which is empty,
-  //       so the hunk is a pure DELETION of a document that exists on disk
-  //       three directories away.
-  //
-  // The consequence is that unifying the artifact paths would make
-  // `artifact diff` silent after a `view` while leaving its three siblings
-  // noisy -- so the path split is load-bearing in a way a reader looking
-  // only at the renderers would not predict.
-  for (auto const& fam : {"question", "decision", "scenario"}) {
-    INFO("family=" << fam);
-    auto const res = dispatch(fx, {std::string{fam}, "diff", "1"});
-    CHECK(res.out.contains("-**Created:**"));
-    CHECK(res.out.contains(" # ")); // a context line: this is a MODIFICATION.
-  }
-  {
-    auto const res = dispatch(fx, {"artifact", "diff", "1"});
-    CHECK(!res.out.contains("**Created:**"));
-    CHECK(res.out.contains("@@ -1,")); // ...and a pure DELETION.
-    CHECK(res.out.contains("+0,0 @@"));
-  }
-}
-
-TEST_CASE("diff is silent when the workbench file already matches the database", "[cmd][drafting][diff]") {
-  // The `diff -u` contract: equal content writes NOTHING and exits 0. A
-  // caller cannot tell "no changes" from "did not run" by stdout, which is
-  // why the equality is established by `workbench push` -- the CANONICAL
-  // writer -- rather than by this test reconstructing the bytes.
-  //
-  // Reconstructing them was tried first, by stripping the `-` prefix off a
-  // prior `diff`'s deletion hunk, and it did not produce byte-equal content.
-  // Using `workbench push` instead is both simpler and a STRONGER
-  // assertion: it proves `diff` and `workbench push` agree on the path AND
-  // on the bytes, which is exactly the agreement the artifact family
-  // famously does not have.
-  auto const fx = make_fixture("diffsilent");
-  seed_linked(fx);
-
-  auto const noisy = dispatch(fx, {"question", "diff", "1"});
-  REQUIRE(noisy.code == 0);
-  REQUIRE(!noisy.out.empty()); // ...so silence below is a change, not the default.
-
-  REQUIRE(dispatch(fx, {"workbench", "push", "1"}).code == 0);
-
-  auto const quiet = dispatch(fx, {"question", "diff", "1"});
-  CHECK(quiet.code == 0);
-  CHECK(quiet.out.empty());
-  CHECK(quiet.err.empty());
-
-  // ...and `review` in preview mode is silent on the same input, since it
-  // is `diff`.
-  auto const reviewed = dispatch(fx, {"question", "review", "1"});
-  CHECK(reviewed.code == 0);
-  CHECK(reviewed.out.empty());
-
-  // ...while `review --json` still reports, with `has_changes:false`. The
-  // JSON envelope is emitted unconditionally where the text form is not,
-  // and that asymmetry is what a scripted caller depends on.
-  auto const json = dispatch(fx, {"question", "review", "1", "--json"});
-  CHECK(json.code == 0);
-  CHECK(json.out.contains(R"("has_changes":false)"));
-}
-
 TEST_CASE("diff refuses a non-positive id where view does not", "[cmd][drafting][diff]") {
   // The verb asymmetry, pinned in the one place it is visible. `diff` and
   // `review` check `id <= 0`; `view` and `edit` do not and fall through to
@@ -668,7 +560,7 @@ TEST_CASE("diff refuses a non-positive id where view does not", "[cmd][drafting]
   static_cast<void>(install_stub_pager(fx));
   seed_linked(fx);
 
-  for (auto const& fam : families()) {
+  for (auto const& fam : diff_families()) {
     INFO("family=" << fam.name);
     auto const refused = dispatch(fx, {std::string{fam.name}, "diff", "0"});
     CHECK(refused.code == 2);
@@ -716,10 +608,10 @@ TEST_CASE("artifact view and artifact diff disagree about where the file lives",
   // The three siblings do NOT have this split: `view` writes exactly where
   // `diff` reads. Asserted so the artifact case reads as the exception it
   // is rather than as the rule.
-  for (auto const& fam : {std::pair{"question", "questions"}, {"decision", "decisions"}, {"scenario", "scenarios"}}) {
+  for (auto const& fam : {std::pair{"decision", "decisions"}, {"scenario", "scenarios"}}) {
     INFO("family=" << fam.first);
     REQUIRE(dispatch(fx, {std::string{fam.first}, "view", "1"}).code == 0);
-    auto const sibling = dispatch(fx, {std::string{fam.first}, "diff", "1"});
+    auto const sibling = dispatch(fx, {std::string{fam.first}, "review", "1"});
     CHECK(sibling.out.contains(std::format("+++ fs:{}", (dir / fam.second).string())));
   }
 }
@@ -732,7 +624,7 @@ TEST_CASE("review with no verdict is diff, byte for byte", "[cmd][drafting][revi
   auto const fx = make_fixture("reviewpreview");
   seed_linked(fx);
 
-  for (auto const& fam : families()) {
+  for (auto const& fam : diff_families()) {
     INFO("family=" << fam.name);
     auto const differ = dispatch(fx, {std::string{fam.name}, "diff", "1"});
     auto const viewer = dispatch(fx, {std::string{fam.name}, "review", "1"});
@@ -747,29 +639,29 @@ TEST_CASE("review --json emits the summary envelope with an explicit null verdic
   auto const fx = make_fixture("reviewjson");
   seed_linked(fx);
 
-  auto const path = (fx.root / "wb" / "p1-anchor" / "questions" / "1-q-linked.md").string();
+  auto const path = (fx.root / "wb" / "p1-anchor" / "decisions" / "1-d-linked.md").string();
 
   // `verdict` is an explicit `null` in preview mode, NOT an omitted key.
   // A reflected `std::optional` would have dropped it; the envelope is
   // hand-composed for exactly this reason, and the key ORDER is contract.
-  auto const preview = dispatch(fx, {"question", "review", "1", "--json"});
+  auto const preview = dispatch(fx, {"decision", "review", "1", "--json"});
   CHECK(preview.code == 0);
   CHECK(preview.err.empty());
-  CHECK(preview.out == std::format(R"({{"entity":"question","id":1,"anchor_plan_id":1,"workbench_path":"{}",)"
+  CHECK(preview.out == std::format(R"({{"entity":"decision","id":1,"anchor_plan_id":1,"workbench_path":"{}",)"
                                    R"("verdict":null,"has_changes":true,"persisted":false,"persistence":"none"}})"
                                    "\n",
                                    path));
 
-  auto const approved = dispatch(fx, {"question", "review", "1", "--approve", "--json"});
+  auto const approved = dispatch(fx, {"decision", "review", "1", "--approve", "--json"});
   CHECK(approved.code == 0);
-  CHECK(approved.out == std::format(R"({{"entity":"question","id":1,"anchor_plan_id":1,"workbench_path":"{}",)"
+  CHECK(approved.out == std::format(R"({{"entity":"decision","id":1,"anchor_plan_id":1,"workbench_path":"{}",)"
                                     R"("verdict":"approve","has_changes":true,"persisted":false,"persistence":"none"}})"
                                     "\n",
                                     path));
 
   // `request-changes` renders with the DASH, not the underscore its enum
   // arm carries.
-  auto const changes = dispatch(fx, {"question", "review", "1", "--request-changes", "--json"});
+  auto const changes = dispatch(fx, {"decision", "review", "1", "--request-changes", "--json"});
   CHECK(changes.code == 0);
   CHECK(changes.out.contains(R"("verdict":"request-changes")"));
 
@@ -777,10 +669,9 @@ TEST_CASE("review --json emits the summary envelope with an explicit null verdic
   // there is no per-entity review table, so the assertion is that the row
   // and the audit trail are untouched by all three invocations.
   auto conn = open_db(fx);
-  CHECK(scalar(conn, "select status from questions where id = 1") == "open");
-  CHECK(scalar(conn, "select count(*) from audit_log where entity_kind = 'question' and verb = 'review'") == "0");
+  CHECK(scalar(conn, "select status from decisions where id = 1") == "proposed");
+  CHECK(scalar(conn, "select count(*) from audit_log where entity_kind = 'decision' and verb = 'review'") == "0");
 }
-
 TEST_CASE("review in text form with a verdict reports the summary", "[cmd][drafting][review]") {
   auto const fx = make_fixture("reviewtext");
   seed_linked(fx);
@@ -798,7 +689,7 @@ TEST_CASE("review refuses both verdicts together, before opening the database", 
   auto const fx = make_fixture("reviewboth");
   seed_linked(fx);
 
-  for (auto const& fam : families()) {
+  for (auto const& fam : review_families()) {
     INFO("family=" << fam.name);
     auto const res = dispatch(fx, {std::string{fam.name}, "review", "1", "--approve", "--request-changes"});
     CHECK(res.code == 2);
@@ -1228,7 +1119,7 @@ TEST_CASE("task_workbench_dir tries repo-scope, then touches, then cross", "[cmd
   CHECK(!std::filesystem::exists(dir / "tasks" / "proj2" / "5-t-both.md"));
 }
 
-TEST_CASE("plan and task diff read the SAME path view wrote, unlike artifact", "[cmd][drafting][diff][plan][task]") {
+TEST_CASE("task diff reads the SAME path view wrote, unlike artifact", "[cmd][drafting][diff][task]") {
   // The generalisation this file's header warns against, checked instead of
   // assumed. `artifact view` and `artifact diff` disagree about where the
   // file lives; `plan` and `task` do NOT, so their `diff` finds the file
@@ -1239,30 +1130,22 @@ TEST_CASE("plan and task diff read the SAME path view wrote, unlike artifact", "
   seed_hierarchy(fx);
   install_stub_pager(fx);
 
-  REQUIRE(dispatch(fx, {"plan", "view", "2"}).code == 0);
-  auto const plan_diff = dispatch(fx, {"plan", "diff", "2"});
-  CHECK(plan_diff.code == 0);
-  CHECK(plan_diff.out.contains("plans/child.md"));
-  CHECK(!plan_diff.out.contains("+0,0"));
-
   REQUIRE(dispatch(fx, {"task", "view", "3"}).code == 0);
   auto const task_diff = dispatch(fx, {"task", "diff", "3"});
   CHECK(task_diff.code == 0);
   CHECK(task_diff.out.contains("tasks/proj/3-t-repo.md"));
   CHECK(!task_diff.out.contains("+0,0"));
 
-  // ...and the THIN-vs-CANONICAL renderer split still applies to them, so
+  // ...and the THIN-vs-CANONICAL renderer split still applies to it, so
   // the diff is non-empty for the documented reason rather than because the
   // file is missing. Both timestamp lines are what the canonical renderer
   // adds and the thin one omits.
-  CHECK(plan_diff.out.contains("-**Created:**"));
-  CHECK(plan_diff.out.contains("-**Updated:**"));
   CHECK(task_diff.out.contains("-**Created:**"));
   CHECK(task_diff.out.contains("-**Updated:**"));
 }
 
 TEST_CASE("a nonexistent plan or task is not_found, where the other four are no_plan_link",
-          "[cmd][drafting][diff][plan][task][divergence]") {
+          "[cmd][drafting][diff][task][divergence]") {
   // THE FINDING THAT EARNED THIS CYCLE. `plan` walks `plans.parent_plan_id`
   // and `task` reads `tasks.plan_id`; neither consults `entity_links`, so
   // neither can report `NoPlanLink` for a row that is simply absent.
@@ -1274,25 +1157,20 @@ TEST_CASE("a nonexistent plan or task is not_found, where the other four are no_
   auto fx = make_fixture("plantasknotfound");
   seed_hierarchy(fx);
 
-  auto const plan_diff = dispatch(fx, {"plan", "diff", "999"});
-  CHECK(plan_diff.code == 1);
-  CHECK(plan_diff.err == "error: no plan with id 999\n");
-
   auto const task_diff = dispatch(fx, {"task", "diff", "999"});
   CHECK(task_diff.code == 1);
   CHECK(task_diff.err == "error: no task with id 999\n");
 
   // `review` shares `load_snapshot`, so it shares the prose.
-  CHECK(dispatch(fx, {"plan", "review", "999"}).err == "error: no plan with id 999\n");
   CHECK(dispatch(fx, {"task", "review", "999"}).err == "error: no task with id 999\n");
 
   // THE DISCRIMINATION, and the reason this case is not just three string
   // literals: a link-anchored family on the SAME database and the same
   // missing-id shape reports the other wording entirely. If the two arms
   // were ever unified, this half goes red.
-  auto const question_diff = dispatch(fx, {"question", "diff", "999"});
-  CHECK(question_diff.code == 1);
-  CHECK(question_diff.err == "error: question 999 is not linked to a plan; cannot resolve anchor plan\n");
+  auto const decision_review = dispatch(fx, {"decision", "review", "999"});
+  CHECK(decision_review.code == 1);
+  CHECK(decision_review.err == "error: decision 999 is not linked to a plan; cannot resolve anchor plan\n");
 
   // `view` takes the bare-tag path for all six, but the TAG differs for the
   // same reason. (The oracle follows this with stack frames; see this
@@ -1305,17 +1183,13 @@ TEST_CASE("a nonexistent plan or task is not_found, where the other four are no_
   CHECK(task_view.err == "error: cannot resolve anchor plan for task 999: NotFound\nerror: NotFound\n");
 }
 
-TEST_CASE("plan and task keep the diff-strict / view-lenient id asymmetry", "[cmd][drafting][diff][plan][task]") {
+TEST_CASE("task keeps the diff-strict / view-lenient id asymmetry", "[cmd][drafting][diff][task]") {
   // The asymmetry `drafting.cppm`'s table documents, confirmed on the two
   // families that reach it through a different resolver. `view 0` is NOT
   // refused by the handler; it reaches the resolver and reports what the
   // resolver finds — which for these two is `NotFound`, not `NoPlanLink`.
   auto fx = make_fixture("plantaskid");
   seed_hierarchy(fx);
-
-  auto const plan_zero = dispatch(fx, {"plan", "diff", "0"});
-  CHECK(plan_zero.code == 2);
-  CHECK(plan_zero.err == "error: plan id must be a positive integer, got 0\n");
 
   auto const task_zero = dispatch(fx, {"task", "diff", "0"});
   CHECK(task_zero.code == 2);
@@ -1326,23 +1200,15 @@ TEST_CASE("plan and task keep the diff-strict / view-lenient id asymmetry", "[cm
   CHECK(lenient.err.contains("cannot resolve anchor plan for plan 0: NotFound"));
 
   // Non-integer is refused by the shared parse for both verbs.
-  CHECK(dispatch(fx, {"plan", "view", "abc"}).err == "error: plan id must be an integer, got 'abc'\n");
   CHECK(dispatch(fx, {"task", "diff", "abc"}).err == "error: task id must be an integer, got 'abc'\n");
 }
 
-TEST_CASE("plan and task review emit the envelope with their own entity name", "[cmd][drafting][review][plan][task]") {
+TEST_CASE("task review emits the envelope with its own entity name", "[cmd][drafting][review][task]") {
   auto fx = make_fixture("plantaskreview");
   seed_hierarchy(fx);
   install_stub_pager(fx);
 
   auto const dir = hierarchy_feature_dir(fx);
-
-  auto const plan_json = dispatch(fx, {"plan", "review", "2", "--json"});
-  CHECK(plan_json.code == 0);
-  CHECK(plan_json.out == std::format(R"({{"entity":"plan","id":2,"anchor_plan_id":1,"workbench_path":"{}","verdict":null,)"
-                                     R"("has_changes":true,"persisted":false,"persistence":"none"}})"
-                                     "\n",
-                                     (dir / "plans" / "child.md").string()));
 
   auto const task_json = dispatch(fx, {"task", "review", "3", "--json"});
   CHECK(task_json.code == 0);
@@ -1361,12 +1227,12 @@ TEST_CASE("plan and task review emit the envelope with their own entity name", "
 
   // Both verdicts together is refused before the database opens, same as
   // the other four.
-  auto const both = dispatch(fx, {"plan", "review", "2", "--approve", "--request-changes"});
+  auto const both = dispatch(fx, {"task", "review", "3", "--approve", "--request-changes"});
   CHECK(both.code == 2);
   CHECK(both.err == "error: --approve and --request-changes are mutually exclusive\n");
 }
 
-TEST_CASE("the $EDITOR spawn is real for plan and task too, and gets the TEMP path", "[cmd][drafting][edit][spawn][plan][task]") {
+TEST_CASE("the $EDITOR spawn is real for task too, and gets the TEMP path", "[cmd][drafting][edit][spawn][task]") {
   // WITNESSES 1 AND 2 on the two families this task wired. These leaves
   // reach the editor through the same shared body, but they reach it AFTER
   // a different anchor resolver and a different path builder, so a
@@ -1387,10 +1253,6 @@ TEST_CASE("the $EDITOR spawn is real for plan and task too, and gets the TEMP pa
                                                     witness.string()));
   fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();
 
-  auto const plan_res = dispatch(fx, {"plan", "edit", "2"});
-  CHECK(plan_res.code == 0);
-  CHECK(plan_res.err.empty()); // a clean title-only edit is SILENT
-
   auto const task_res = dispatch(fx, {"task", "edit", "3"});
   CHECK(task_res.code == 0);
   CHECK(task_res.err.empty());
@@ -1410,15 +1272,14 @@ TEST_CASE("the $EDITOR spawn is real for plan and task too, and gets the TEMP pa
     CHECK(path.starts_with((fx.root / "tmp" / "planar-edit-").string()));
     CHECK(!path.contains("/wb/"));
   }
-  CHECK(spawns == 2);
+  CHECK(spawns == 1);
 
   // WITNESS 2: the sentinel reached BOTH rows.
   auto conn = open_db(fx);
-  CHECK(scalar(conn, "select title from plans where id = 2") == "EDITED-BY-STUB-4c19");
   CHECK(scalar(conn, "select title from tasks where id = 3") == "EDITED-BY-STUB-4c19");
 }
 
-TEST_CASE("a non-zero $EDITOR exit aborts a plan or task edit without writing", "[cmd][drafting][edit][spawn][plan][task]") {
+TEST_CASE("a non-zero $EDITOR exit aborts a task edit without writing", "[cmd][drafting][edit][spawn][task]") {
   // WITNESS 3 on these two families.
   auto fx = make_fixture("plantaskabort");
   seed_hierarchy(fx);
@@ -1429,16 +1290,11 @@ TEST_CASE("a non-zero $EDITOR exit aborts a plan or task edit without writing", 
                                         "exit 3\n");
   fx.vars["PLANAR_EDITOR"] = (fx.root / "stub-editor").string();
 
-  auto const plan_res = dispatch(fx, {"plan", "edit", "2"});
-  CHECK(plan_res.code == 0); // an aborted edit is not a FAILURE
-  CHECK(plan_res.err == "aborted: editor exited with code 3\n");
-
   auto const task_res = dispatch(fx, {"task", "edit", "3"});
   CHECK(task_res.code == 0);
   CHECK(task_res.err == "aborted: editor exited with code 3\n");
 
   auto conn = open_db(fx);
-  CHECK(scalar(conn, "select title from plans where id = 2") == "Child");
   CHECK(scalar(conn, "select title from tasks where id = 3") == "T repo");
 }
 

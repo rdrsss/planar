@@ -8,7 +8,7 @@
 ///
 /// ## The family is TEN leaves; five land here, five are named refusals
 ///
-/// `question edit`, `question view`, `question diff` and `question review`
+/// `question edit` and `question view`
 /// are the workbench DRAFTING quartet every planning entity carries. They
 /// do not extend CRUD — they round-trip the row through a file under
 /// `$PLANAR_WORKBENCH_ROOT`, diff the file against the row, and gate the

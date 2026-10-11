@@ -772,7 +772,7 @@ constexpr command_class_t m_(std::string_view s) {
   return {s, access_t::mutate};
 }
 
-constexpr std::array<command_class_t, 232> k_command_classes{
+constexpr std::array<command_class_t, 225> k_command_classes{
     m_("planar init"),
     r_("planar scope show"),
     r_("planar scope suggest"),
@@ -789,10 +789,7 @@ constexpr std::array<command_class_t, 232> k_command_classes{
     r_("planar plan show"),
     r_("planar plan list"),
     m_("planar plan update"),
-    m_("planar plan edit"),
     r_("planar plan view"),
-    r_("planar plan diff"),
-    r_("planar plan review"),
     m_("planar plan link"),
     r_("planar plan next"),
     r_("planar plan recommend-strategy"),
@@ -826,8 +823,6 @@ constexpr std::array<command_class_t, 232> k_command_classes{
     m_("planar question add"),
     m_("planar question edit"),
     r_("planar question view"),
-    r_("planar question diff"),
-    r_("planar question review"),
     m_("planar question answer"),
     m_("planar question wontfix"),
     r_("planar question list"),
@@ -836,7 +831,6 @@ constexpr std::array<command_class_t, 232> k_command_classes{
     m_("planar scenario add"),
     m_("planar scenario edit"),
     r_("planar scenario view"),
-    r_("planar scenario diff"),
     r_("planar scenario review"),
     m_("planar scenario verify"),
     m_("planar scenario retire"),
@@ -851,7 +845,6 @@ constexpr std::array<command_class_t, 232> k_command_classes{
     m_("planar decision withdraw"),
     m_("planar decision edit"),
     r_("planar decision view"),
-    r_("planar decision diff"),
     r_("planar decision review"),
     m_("planar decision link"),
     m_("planar artifact add"),

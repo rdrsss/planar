@@ -27,7 +27,6 @@ import planar.cmd.planar.handlers.decision.supersede;
 import planar.cmd.planar.handlers.decision.withdraw;
 import planar.cmd.planar.handlers.decision.edit;
 import planar.cmd.planar.handlers.decision.view;
-import planar.cmd.planar.handlers.decision.diff;
 import planar.cmd.planar.handlers.decision.review;
 import planar.cmd.planar.handlers.decision.link;
 
@@ -500,8 +499,6 @@ auto declare_decision_children(CLI::App& decision) -> void {
   decision_cli::attach_edit(decision);
 
   decision_cli::attach_view(decision);
-
-  decision_cli::attach_diff(decision);
 
   decision_cli::attach_review(decision);
 

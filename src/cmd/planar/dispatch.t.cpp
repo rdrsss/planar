@@ -328,7 +328,7 @@ TEST_CASE("a declared-but-unported LEAF refuses at exit 64, naming itself", "[cm
   // list` until task 6188 ported that one too. It has to be a leaf with no
   // REQUIRED positional, or the parser refuses at exit 2 before dispatch is
   // reached at all and the case would assert the parser's behaviour rather
-  // than the table's — which is what `plan diff` did on the first attempt
+  // than the table's — which is what an earlier draft of this case did on its first attempt
   // at this replacement. It was `scenario list` until task 6195 ported
   // that one too, and `artifact list` until 6196 ported the last planning
   // family out from under it.
@@ -1385,12 +1385,11 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // leaves leaving one inventory in one commit is exactly where one of
   // them silently stays behind while the total still moves by sixteen
   // because something unrelated was dropped in its place.
-  for (auto const& family : {"question", "decision", "scenario", "artifact"}) {
-    for (auto const& verb : {"edit", "view", "diff", "review"}) {
-      auto const leaf = std::format("{} {}", family, verb);
-      INFO("drafting leaf: " << leaf);
-      CHECK_FALSE(unported.contains(leaf));
-    }
+  for (auto const* leaf :
+       {"question edit", "question view", "decision edit", "decision view", "decision review", "scenario edit", "scenario view",
+        "scenario review", "artifact edit", "artifact view", "artifact diff", "artifact review"}) {
+    INFO("drafting leaf: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
   }
   // The `plan` and `task` quartets -- the same eight leaves over the same
   // module -- landed at task 6208. Until then this block asserted the
@@ -1403,20 +1402,17 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // per-leaf loop in this file exists: eight leaves leaving one inventory in
   // one commit is exactly where one silently stays behind while the total
   // still moves by eight because something unrelated was dropped with them.
-  for (auto const& family : {"plan", "task"}) {
-    for (auto const& verb : {"edit", "view", "diff", "review"}) {
-      auto const leaf = std::format("{} {}", family, verb);
-      INFO("drafting leaf, oracle-derived at 6208: " << leaf);
-      CHECK_FALSE(unported.contains(leaf));
-    }
+  for (auto const* leaf : {"plan view", "task edit", "task view", "task diff", "task review"}) {
+    INFO("drafting leaf, oracle-derived at 6208: " << leaf);
+    CHECK_FALSE(unported.contains(leaf));
   }
   // And the divergence the hold existed to surface, pinned where the next
   // reader of this file will see it: `plan` and `task` resolve their anchor
   // through `plans`/`tasks` rather than `entity_links`, so a nonexistent id
   // is `not_found` for them and `no_plan_link` for the other four. The
   // observable difference is the `diff`/`review` prose --
-  //   `plan diff 999`      -> `no plan with id 999`
-  //   `question diff 999`  -> `question 999 is not linked to a plan; ...`
+  //   `task diff 999`      -> `no task with id 999`
+  //   `decision review 999` -> `decision 999 is not linked to a plan; ...`
   // -- both exit 1, so ONLY the prose separates them. Asserted end-to-end
   // in `drafting_leaves.t.cpp`; named here so a future batch that
   // "unifies" the two arms trips a test that explains why not to.
@@ -1513,7 +1509,8 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // Task 7205 adds the `help` leaf (218 -> 219).
   // Task 7319 adds the `update` leaf (219 -> 220).
   // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
-  CHECK(leaves.size() == 203);
+  // Plan 1142 task 7467 removes the seven review and diff leaves (203 -> 196).
+  CHECK(leaves.size() == 196);
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
     INFO("leaf: " << leaf);

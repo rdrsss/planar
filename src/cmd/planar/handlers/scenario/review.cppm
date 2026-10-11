@@ -13,7 +13,7 @@ namespace planar::cmd::handlers::scenario_cli {
 /// @param scenario Input scenario.
 /// @return Registered CLI node.
 export auto attach_review(CLI::App& scenario) -> CLI::App* {
-  CLI::App* review = scenario.add_subcommand("review", "Reviewer entry point for scenario diff.");
+  CLI::App* review = scenario.add_subcommand("review", "Reviewer entry point for the scenario workbench diff.");
   add_bool(*review, "--approve", "Report an approve verdict on the pending workbench diff (not persisted)");
   add_bool(*review, "--request-changes",
            "Report a request-changes verdict on the pending workbench diff (not persisted); excludes --approve");

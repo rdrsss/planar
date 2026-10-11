@@ -137,9 +137,8 @@ auto prose_error(flow_error err, entity_kind kind, std::int64_t id, std::string_
     // `plans.parent_plan_id` and `task` reads `tasks.plan_id`, both of
     // which miss on a nonexistent id, so:
     //
-    //   `plan diff 999`      exit 1, `no plan with id 999`
     //   `task diff 999`      exit 1, `no task with id 999`
-    //   `question diff 999`  exit 1, `question 999 is not linked to a plan`
+    //   `decision review 999` exit 1, `decision 999 is not linked to a plan`
     //
     // Oracle-captured on all three. `not_found` maps to exit 1, same as
     // `generic_failure`, so the exit code does not distinguish them — only

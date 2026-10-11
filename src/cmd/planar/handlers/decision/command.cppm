@@ -9,7 +9,7 @@
 ///
 /// ## The family is ELEVEN leaves; seven land here, four are named refusals
 ///
-/// `decision edit`, `decision view`, `decision diff` and `decision review`
+/// `decision edit`, `decision view` and `decision review`
 /// are the workbench DRAFTING quartet every planning entity carries. They
 /// round-trip the row through a file under `$PLANAR_WORKBENCH_ROOT`, diff
 /// the file against the row, and gate the re-import — `engine_workbench`
@@ -21,7 +21,7 @@
 /// broken there: `decision edit 3` and `decision view 3` abort with an
 /// unhandled `error.NotFound` and a Zig STACK TRACE on stderr (editflow's
 /// `walkToAnchor` cannot resolve an anchor plan for an unlinked decision),
-/// while `decision diff 3` and `decision review 3` report `no decision with
+/// while `decision review 3` reports `no decision with
 /// id 3` for a decision that DOES exist. So the quartet has no coherent
 /// contract to port even if the plumbing existed.
 ///

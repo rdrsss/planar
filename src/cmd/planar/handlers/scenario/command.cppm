@@ -7,7 +7,7 @@
 ///
 /// ## The family is TEN leaves; six land here, four are named refusals
 ///
-/// `scenario edit`, `scenario view`, `scenario diff` and `scenario review`
+/// `scenario edit`, `scenario view` and `scenario review`
 /// are the workbench DRAFTING quartet every planning entity carries. They
 /// round-trip the row through a file under `$PLANAR_WORKBENCH_ROOT`, diff
 /// the file against the row, and gate the re-import — `engine_workbench`

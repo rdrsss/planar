@@ -561,15 +561,15 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 4 finding(s) across 2 files\n");
   }
 
-  SECTION("--command-inventory-json: the pinned 232-entry command_classes table") {
+  SECTION("--command-inventory-json: the pinned 225-entry command_classes table") {
     auto const [out, status] = capture(bin.string(), {"--command-inventory-json"});
     INFO(out);
     REQUIRE(WIFEXITED(status));
     CHECK(WEXITSTATUS(status) == 0);
     CHECK(out.starts_with(R"({"version":1,"commands":[)"));
-    CHECK(count_occurrences(out, "\"command\":") == 232);
+    CHECK(count_occurrences(out, "\"command\":") == 225);
     CHECK(out.contains(R"({"command":"planar init","access":"mutate"})"));
-    CHECK(count_occurrences(out, "\"access\":\"read\"") + count_occurrences(out, "\"access\":\"mutate\"") == 232);
+    CHECK(count_occurrences(out, "\"access\":\"read\"") + count_occurrences(out, "\"access\":\"mutate\"") == 225);
   }
 
   SECTION("usage error: no repo-root argument is a usage error, not a crash") {

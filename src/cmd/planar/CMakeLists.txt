@@ -515,10 +515,7 @@ planar_binary(planar
     handlers/plan/recommend_strategy.cppm
     handlers/plan/next.cppm
     handlers/plan/link.cppm
-    handlers/plan/review.cppm
-    handlers/plan/diff.cppm
     handlers/plan/view.cppm
-    handlers/plan/edit.cppm
     handlers/plan/update.cppm
     handlers/plan/list.cppm
     handlers/plan/show.cppm
@@ -591,15 +588,12 @@ planar_binary(planar
     handlers/question/list.cppm
     handlers/question/wontfix.cppm
     handlers/question/answer.cppm
-    handlers/question/review.cppm
-    handlers/question/diff.cppm
     handlers/question/view.cppm
     handlers/question/edit.cppm
     handlers/question/add.cppm
     handlers/decision/command.cppm
     handlers/decision/link.cppm
     handlers/decision/review.cppm
-    handlers/decision/diff.cppm
     handlers/decision/view.cppm
     handlers/decision/edit.cppm
     handlers/decision/withdraw.cppm
@@ -615,7 +609,6 @@ planar_binary(planar
     handlers/scenario/retire.cppm
     handlers/scenario/verify.cppm
     handlers/scenario/review.cppm
-    handlers/scenario/diff.cppm
     handlers/scenario/view.cppm
     handlers/scenario/edit.cppm
     handlers/scenario/add.cppm

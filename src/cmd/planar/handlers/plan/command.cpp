@@ -33,10 +33,7 @@ import planar.cmd.planar.handlers.plan.create;
 import planar.cmd.planar.handlers.plan.show;
 import planar.cmd.planar.handlers.plan.list;
 import planar.cmd.planar.handlers.plan.update;
-import planar.cmd.planar.handlers.plan.edit;
 import planar.cmd.planar.handlers.plan.view;
-import planar.cmd.planar.handlers.plan.diff;
-import planar.cmd.planar.handlers.plan.review;
 import planar.cmd.planar.handlers.plan.link;
 import planar.cmd.planar.handlers.plan.next;
 import planar.cmd.planar.handlers.plan.recommend_strategy;
@@ -1331,13 +1328,7 @@ auto declare_plan_children(CLI::App& plan) -> void {
 
   plan_cli::attach_update(plan);
 
-  plan_cli::attach_edit(plan);
-
   plan_cli::attach_view(plan);
-
-  plan_cli::attach_diff(plan);
-
-  plan_cli::attach_review(plan);
 
   plan_cli::attach_link(plan);
 

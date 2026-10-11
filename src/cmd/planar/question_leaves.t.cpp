@@ -711,8 +711,8 @@ TEST_CASE("the drafting quartet is SERVED, not refused -- and still writes nothi
   // The question was added WITHOUT `--plan`, so it has no `derives-from`
   // edge and the anchor resolver cannot place it. That is the interesting
   // half: the verbs RUN, and refuse on the DATA rather than on the build.
-  // The two pairs refuse DIFFERENTLY, which is the oracle's asymmetry and
-  // not a rounding of it -- see `editflow.cppm`'s header.
+  // `view` and `edit` refuse with the bare tag, the oracle's asymmetry; see
+  // `editflow.cppm`'s header.
   for (auto const* leaf : {"edit", "view"}) {
     auto const r = dispatch(fx, {"question", leaf, "1"});
     INFO("leaf=" << leaf);
@@ -724,15 +724,6 @@ TEST_CASE("the drafting quartet is SERVED, not refused -- and still writes nothi
     // its own build tree; this build stops at the tag. THE ONE DELIBERATE
     // DIVERGENCE, recorded in `editflow.cppm` and `dispatch.cpp` too.
     CHECK(r.err == "error: cannot resolve anchor plan for question 1: NoPlanLink\nerror: NoPlanLink\n");
-  }
-  for (auto const* leaf : {"diff", "review"}) {
-    auto const r = dispatch(fx, {"question", leaf, "1"});
-    INFO("leaf=" << leaf);
-    CHECK(r.code == 1);
-    CHECK(r.out.empty());
-    // PROSE, naming the family and the id -- these two have `catch` arms
-    // where `view`/`edit` have none.
-    CHECK(r.err == "error: question 1 is not linked to a plan; cannot resolve anchor plan\n");
   }
 
   {

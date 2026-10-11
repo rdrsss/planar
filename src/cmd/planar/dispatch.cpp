@@ -456,15 +456,11 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // and stops. See `editflow.cppm`'s header.
   table.emplace("question edit", handlers::question_edit);
   table.emplace("question view", handlers::question_view);
-  table.emplace("question diff", handlers::question_diff);
-  table.emplace("question review", handlers::question_review);
   table.emplace("decision edit", handlers::decision_edit);
   table.emplace("decision view", handlers::decision_view);
-  table.emplace("decision diff", handlers::decision_diff);
   table.emplace("decision review", handlers::decision_review);
   table.emplace("scenario edit", handlers::scenario_edit);
   table.emplace("scenario view", handlers::scenario_view);
-  table.emplace("scenario diff", handlers::scenario_diff);
   table.emplace("scenario review", handlers::scenario_review);
   table.emplace("artifact edit", handlers::artifact_edit);
   table.emplace("artifact view", handlers::artifact_view);
@@ -487,19 +483,16 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // ONE DIVERGENCE FROM THE OTHER FOUR, and it is the finding that made
   // this a task: on a NONEXISTENT id these two report `not_found`, not
   // `no_plan_link`, because their anchor resolvers read `plans` and `tasks`
-  // rather than `entity_links`. `plan diff 999` prints `no plan with id
-  // 999`; `question diff 999` prints `question 999 is not linked to a
+  // rather than `entity_links`. `task diff 999` prints `no task with id
+  // 999`; `decision review 999` prints `decision 999 is not linked to a
   // plan`. Both are exit 1. See `handlers/drafting.cppm`.
   //
   // What does NOT diverge, and was checked rather than assumed: unlike
   // `artifact`, `view`/`edit` and `diff`/`review` agree about WHERE the
   // file lives for both of these families. The thin-vs-canonical RENDERER
-  // split still applies to them, so `plan view 1 && plan diff 1` still
+  // split still applies to them, so `task view 1 && task diff 1` still
   // reports the two timestamp lines as a pending change.
-  table.emplace("plan edit", handlers::plan_edit);
   table.emplace("plan view", handlers::plan_view);
-  table.emplace("plan diff", handlers::plan_diff);
-  table.emplace("plan review", handlers::plan_review);
   table.emplace("task edit", handlers::task_edit);
   table.emplace("task view", handlers::task_view);
   table.emplace("task diff", handlers::task_diff);

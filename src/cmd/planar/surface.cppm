@@ -158,10 +158,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar plan show", "Show a plan's details, steps, and child plans."},
       {"planar plan list", "List plans."},
       {"planar plan update", "Update mutable fields on a plan."},
-      {"planar plan edit", "Edit a plan in $EDITOR (editor-first flow)."},
       {"planar plan view", "View a plan's workbench file."},
-      {"planar plan diff", "Diff plan against database version."},
-      {"planar plan review", "Reviewer entry point for plan diff."},
       {"planar plan link", "Create an entity link from a plan to another entity."},
       {"planar plan next", "Bucketed claim-aware view of next work on a plan (available / claimed / stale / blocked)."},
       {"planar plan recommend-strategy", "Recommend an execution strategy: compute the parallel-eligible subset of a plan's open "
@@ -202,8 +199,6 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar question add", "Create a new question."},
       {"planar question edit", "Edit a question in $EDITOR (editor-first flow)."},
       {"planar question view", "View question's workbench file."},
-      {"planar question diff", "Diff question against database version."},
-      {"planar question review", "Reviewer entry point for question diff."},
       {"planar question answer", "Record an answer to a question."},
       {"planar question wontfix", "Mark a question as wontfix."},
       {"planar question list", "List questions."},
@@ -213,8 +208,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar scenario add", "Create a new test scenario."},
       {"planar scenario edit", "Edit a scenario in $EDITOR (editor-first flow)."},
       {"planar scenario view", "View scenario's workbench file."},
-      {"planar scenario diff", "Diff scenario against database version."},
-      {"planar scenario review", "Reviewer entry point for scenario diff."},
+      {"planar scenario review", "Reviewer entry point for the scenario workbench diff."},
       {"planar scenario verify", "Record a test run for a scenario (--outcome pass|fail|error|skipped; defaults to pass)."},
       {"planar scenario retire", "Mark a scenario as retired."},
       {"planar scenario list", "List scenarios."},
@@ -229,8 +223,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar decision withdraw", "Withdraw a decision."},
       {"planar decision edit", "Edit a decision in $EDITOR (editor-first flow)."},
       {"planar decision view", "View decision's workbench file."},
-      {"planar decision diff", "Diff decision against database version."},
-      {"planar decision review", "Reviewer entry point for decision diff."},
+      {"planar decision review", "Reviewer entry point for the decision workbench diff."},
       {"planar decision link", "Create an entity link from a decision to another entity."},
       {"planar artifact", "Manage artifacts (tech specs, ADRs, design notes, etc.)."},
       {"planar artifact add", "Register a new artifact."},
@@ -403,7 +396,7 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // quartets — sixteen leaves — left this inventory at task 6205 with
       // the `editflow` port they were all blocked on.
       //
-      // `plan edit | view | diff | review` and `task edit | view | diff |
+      // `plan view` and `task edit | view | diff |
       // review` — the remaining EIGHT — left it at task 6208, which is the
       // oracle run task 6205 held them for. The three paths that hold-note
       // named were each RUN against the oracle in a pinned arena before
@@ -421,8 +414,8 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // What the run DID find is a per-family divergence, and it is the
       // reason this was worth a task rather than a one-line wiring change:
       // for these two families a NONEXISTENT id reports `not_found`, not
-      // `no_plan_link`. `plan diff 999` says `no plan with id 999` where
-      // `question diff 999` says `question 999 is not linked to a plan`.
+      // `no_plan_link`. `task diff 999` says `no task with id 999` where
+      // `decision review 999` says `decision 999 is not linked to a plan`.
       // The `not_found` arm that `editflow.cpp`'s `prose_error` documents
       // as unreachable for the other four is the ONLY arm these two reach.
       // `assoc list` and `assoc remove` left this inventory at task 6279,

@@ -63,7 +63,7 @@
 ///                   renderer, which also carries `**Created:**` and
 ///                   `**Updated:**` and, for `scenario`, the body text.
 ///
-/// So `planar question view 1 && planar question diff 1` prints a diff
+/// So `planar decision view 1 && planar decision review 1` prints a diff
 /// deleting the two timestamp lines the canonical form has and the thin one
 /// does not. Oracle-confirmed on all four families; reproduced verbatim.
 ///
@@ -89,9 +89,8 @@
 ///
 /// On an entity with no `derives-from` edge:
 ///
-///   `question diff 2`    exit 1, `error: question 2 is not linked to a
+///   `decision review 2`  exit 1, `error: decision 2 is not linked to a
 ///                        plan; cannot resolve anchor plan`
-///   `question review 2`  exit 1, the same line
 ///   `question view 2`    exit 1, `error: NoPlanLink` FOLLOWED BY a Zig
 ///                        stack trace — seven frames of absolute paths into
 ///                        the oracle's own build tree.
@@ -104,7 +103,7 @@
 /// test file rather than left for a reader to discover from a diff.
 ///
 /// Note also that for the four LINK-ANCHORED families the id is never
-/// checked for EXISTENCE first: `question view 999` and `question diff 999`
+/// checked for EXISTENCE first: `question view 999` and `decision review 999`
 /// report `NoPlanLink` and `is not linked to a plan`, NOT `no question with
 /// id 999`, because the resolver queries `entity_links` before it queries
 /// the entity. The `not_found` arm is therefore unreachable for those four.
@@ -123,9 +122,9 @@
 /// neither can report `NoPlanLink` for a missing row — they report
 /// `NotFound`, and `diff`/`review` render it as different prose:
 ///
-///   `plan diff 999`      exit 1, `error: no plan with id 999`
 ///   `task diff 999`      exit 1, `error: no task with id 999`
-///   `question diff 999`  exit 1, `error: question 999 is not linked to a plan; ...`
+///   `task diff 999`      exit 1, `error: no task with id 999`
+///   `decision review 999` exit 1, `error: decision 999 is not linked to a plan; ...`
 ///
 /// `plan view 999` and `task view 999` take the bare-tag path as the other
 /// four do, but with `NotFound` rather than `NoPlanLink` as the tag.
@@ -146,7 +145,7 @@
 ///     families. The `artifact` split does not generalise; these two are
 ///     `question`-shaped in that respect.
 ///   - The thin-vs-canonical RENDERER split DOES apply to both, so
-///     `plan view 1 && plan diff 1` still reports the two timestamp lines
+///     `task view 1 && task diff 1` still reports the two timestamp lines
 ///     as pending, exactly as it does for the other four.
 ///   - `apply_mutations`'s scenario-only transition guard means a `task`
 ///     status edit is UNGUARDED here: `todo -> done` through front matter

@@ -213,7 +213,9 @@ TEST_CASE("the catalog walk reaches every binary and fails on an empty descripti
   // left 985 measured 2026-10-10. A floor close to that catches a
   // walk that silently skipped a binary or a field; 630 would have let almost half the surface vanish unnoticed.
   CAPTURE(total);
-  REQUIRE(total >= 970);
+  // Plan 1142 task 7467 removes the seven review and diff verbs (15 flags and
+  // positionals): 970 measured 2026-10-10 after that removal.
+  REQUIRE(total >= 966);
 }
 
 TEST_CASE("the catalog walk allows no binary an empty description", "[catalog][descriptions]") {
