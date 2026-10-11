@@ -80,10 +80,10 @@ using agentactivity::entity_kind;
 using agentactivity::failure_category;
 using agentactivity::locality;
 
-/// @brief The three planning-policy decisions this module must make but may
+/// @brief The four planning-policy decisions this module must make but may
 /// not own. See the file header for why these are callables.
 ///
-/// All three are REQUIRED — none has a permissive default, deliberately. A
+/// All four are REQUIRED — none has a permissive default, deliberately. A
 /// defaulted `check_transition` that returned success would turn every
 /// status guard in this module into a no-op, and nothing in the type
 /// system would say so.
@@ -117,6 +117,32 @@ export struct task_policy {
   /// happened to unblock through the agent plane rather than the
   /// operator-facing verb is the defect this callable exists to close.
   std::function<std::expected<void, agent_error>(db::connection& conn, std::int64_t blocker_id)> clear_unblocked_dependents;
+
+  /// @brief The readiness reasons that hold a task back from being claimed (plan 1142).
+  ///
+  /// Layer 3 binds this to the task packet's readiness (`planar.engine.ingest.packet`), the same
+  /// verdict `task packet` and `plan next` report. An empty list means ready. The reasons are the
+  /// packet's stable names (`blocked_by_open_task`, `open_question_linked`, ...). Called INSIDE the
+  /// claim or pull transaction, on the connection that inserts the claim, so a link written by
+  /// another process cannot slip between this read and the claim.
+  std::function<std::expected<std::vector<std::string>, agent_error>(db::connection& conn, std::int64_t task_id)> unready_reasons;
+};
+
+/// @brief One task that `pull` or `peek` passed over because it was not ready.
+export struct skipped_task {
+  std::int64_t             task_id = 0; ///< The task skipped.
+  std::vector<std::string> reasons;     ///< Its readiness reasons, in the packet's order.
+};
+
+/// @brief The readiness half of a task claim: what the caller allows, and what the claim found.
+///
+/// Owned by the caller for one `claim_entity` call; the engine writes only `unready_reasons`.
+export struct claim_readiness {
+  /// In: claim an unready task anyway. The override is audited (see `claim_entity`).
+  bool allow_unready = false;
+  /// Out: the readiness reasons found for the claimed task. Set when the claim was refused with
+  /// `task_not_ready`, and when it succeeded only because `allow_unready` overrode them.
+  std::vector<std::string> unready_reasons;
 };
 
 // =========================================================================
@@ -148,14 +174,25 @@ export struct task_policy {
 ///
 /// Plan and plan_step claims never touch entity state, whatever
 /// `transition_task` says.
+///
+/// **Readiness (plan 1142).** A task claim is also refused with `task_not_ready` when
+/// `policy.unready_reasons` returns any reason. The check runs inside this transaction, after the
+/// exclusivity check and the `--force` takeover and before the claim row is inserted, so the order
+/// of refusals is contention, then (for a transitioning claim) `illegal_transition`, then
+/// readiness, and a refusal writes nothing. A task whose claim has lapsed is ready for recovery by
+/// the packet's rule; a live claim is `claim_contention` before readiness is asked. When
+/// `readiness->allow_unready` is set an unready task is claimed anyway and exactly one closed
+/// `other` action is written on the claim, with `unready_override` and the overridden reasons in its
+/// summary and metadata. Plan and plan_step claims are not subject to readiness.
 /// @param conn An open, migrated connection (this function owns the transaction).
 /// @param args The claim to acquire.
 /// @param transition_task Whether a task claim also flips `todo -> doing`.
-/// @param policy The injected planning policy (only `check_transition` is used).
+/// @param policy The injected planning policy.
+/// @param readiness The override request and the reasons found, or null for no override and no report.
 /// @return The acquired claim, or `claim_contention` / `illegal_transition` /
-/// `task_not_found` / `query_failed`.
+/// `task_not_ready` / `task_not_found` / `query_failed`.
 export auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args, bool transition_task,
-                         const task_policy& policy) -> std::expected<claim, agent_error>;
+                         const task_policy& policy, claim_readiness* readiness = nullptr) -> std::expected<claim, agent_error>;
 
 /// @brief Arguments to `pull_next`. Mirrors zig's `PullArgs`.
 export struct pull_args {
@@ -181,6 +218,9 @@ export struct pull_result {
   std::optional<claim> acquired;        ///< The claim taken.
   std::int64_t         task_id   = 0;   ///< The task claimed.
   std::int64_t         action_id = 0;   ///< The dispatch action opened.
+  /// Eligible tasks passed over because they were not ready, in selector order (plan 1142). Set
+  /// on `no_work` and on a successful pull alike.
+  std::vector<skipped_task> skipped;
 };
 
 /// @brief Pick the next eligible task on a plan, claim it, flip it to
@@ -190,6 +230,11 @@ export struct pull_result {
 /// `tasks.status = 'todo'`, and NO live claim holds the task. Ordered
 /// `priority asc, id asc` — LOWER priority integers win, which reads
 /// backwards until you notice `priority` is a rank, not a weight.
+///
+/// **Readiness (plan 1142).** Each candidate is then asked `policy.unready_reasons`, inside the
+/// same transaction that inserts the claim. An unready candidate is skipped and recorded in
+/// `pull_result::skipped`; the first ready one is claimed. When none is ready the result is
+/// `no_work` with the skipped list, and nothing is written.
 ///
 /// Single plan only: there is NO child-plan recursion here, unlike the
 /// `next_work` selector `planar plan next` uses. Pulling from an anchor
@@ -201,7 +246,7 @@ export struct pull_result {
 /// query, no writes" claim checkable against it.
 /// @param conn An open, migrated connection (this function owns the transaction).
 /// @param args The pull parameters.
-/// @param policy The injected planning policy (only `check_transition` is used).
+/// @param policy The injected planning policy.
 /// @return The pull outcome, or `claim_contention` / `illegal_transition` /
 /// `query_failed`.
 export auto pull_next(db::connection& conn, const pull_args& args, const task_policy& policy)
@@ -211,6 +256,8 @@ export auto pull_next(db::connection& conn, const pull_args& args, const task_po
 export struct peek_result {
   bool         no_work = false; ///< True when nothing was eligible.
   std::int64_t task_id = 0;     ///< The task `pull` would take.
+  /// Eligible tasks `pull` would pass over because they are not ready, in selector order.
+  std::vector<skipped_task> skipped;
 };
 
 /// @brief Run `pull_next`'s selector and nothing else.
@@ -220,8 +267,11 @@ export struct peek_result {
 /// disagree about what "next" means.
 /// @param conn An open, migrated connection.
 /// @param plan_id The plan to look at.
+/// @param policy The injected planning policy (only `unready_reasons` is used), so `peek` skips the
+/// tasks `pull` would skip.
 /// @return The peek outcome, or `query_failed`.
-export auto peek_next(db::connection& conn, std::int64_t plan_id) -> std::expected<peek_result, agent_error>;
+export auto peek_next(db::connection& conn, std::int64_t plan_id, const task_policy& policy)
+    -> std::expected<peek_result, agent_error>;
 
 // =========================================================================
 // Engine supervision: heartbeat only (plan 1033 D3, task 6488)

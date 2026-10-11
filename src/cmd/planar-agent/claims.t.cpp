@@ -782,3 +782,138 @@ TEST_CASE("a heartbeat against a database it cannot write names the access probl
   }
   CHECK(with_status.out.contains(R"("tag":"QueryFailed")"));
 }
+
+// ===========================================================================
+// Readiness at claim time (plan 1142)
+// ===========================================================================
+
+namespace {
+
+/// Make task `from` depend on task `to`, so `from` is `blocked_by_open_task` while `to` is open.
+auto depends_on(const scratch_dir& scratch, int from, int to) -> void {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                                    "values ('task', {}, 'task', {}, 'depends-on')",
+                                    from, to))
+              .has_value());
+}
+
+/// Link a fresh open question to `task`, so it is `open_question_linked`.
+auto link_open_question(const scratch_dir& scratch, int task) -> void {
+  auto conn = planar::db::connection::open(scratch.db_path().string());
+  REQUIRE(conn.has_value());
+  REQUIRE(conn->execute(std::format("insert into questions (scope_kind, title, status) values ('global', 'q{}', 'open')", task))
+              .has_value());
+  REQUIRE(conn->execute(std::format("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                                    "values ('task', {}, 'question', last_insert_rowid(), 'addresses')",
+                                    task))
+              .has_value());
+}
+
+} // namespace
+
+TEST_CASE("pull skips an unready first-by-priority task and claims the next ready one", "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 3); // priorities 100, 101, 102
+  link_open_question(scratch, 1);
+
+  auto const pulled = run_verb(scratch, {"pull", "1", "--no-locality-probe", "--json"});
+  REQUIRE(pulled.code == 0);
+  CHECK(pulled.out.contains(R"("no_work":false)"));
+  CHECK(pulled.out.contains(R"("skipped_unready":1)"));
+  CHECK(pulled.out.contains(R"("unready":[{"task_id":1,"reasons":["open_question_linked"]}])"));
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "doing");
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where entity_id = 1") == "0");
+
+  // Text mode keeps stdout stable and names the skipped task on stderr.
+  auto const text = run_verb(scratch, {"pull", "1", "--no-locality-probe"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.starts_with("pulled task:3 "));
+  CHECK(text.err == "skipped 1 unready task(s): task:1 (open_question_linked)\n");
+}
+
+TEST_CASE("pull with only unready tasks returns no_work with the skipped count and writes nothing",
+          "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  link_open_question(scratch, 1);
+  link_open_question(scratch, 2);
+
+  auto const json = run_verb(scratch, {"pull", "1", "--no-locality-probe", "--json"});
+  CHECK(json.code == 0);
+  CHECK(json.out ==
+        "{\"ok\":true,\"no_work\":true,\"skipped_unready\":2,\"unready\":[{\"task_id\":1,\"reasons\":[\"open_question_linked\"]},"
+        "{\"task_id\":2,\"reasons\":[\"open_question_linked\"]}]}\n");
+
+  auto const text = run_verb(scratch, {"pull", "1", "--no-locality-probe"});
+  CHECK(text.code == 0);
+  CHECK(text.out == "no_work\n");
+  CHECK(text.err == "skipped 2 unready task(s): task:1 (open_question_linked); task:2 (open_question_linked)\n");
+
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from tasks where status = 'todo'") == "2");
+}
+
+TEST_CASE("claim refuses a blocked task, names the reason and --allow-unready, and writes nothing",
+          "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  depends_on(scratch, 1, 2);
+
+  auto const refused = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"});
+  CHECK(refused.code == 1);
+  CHECK(refused.out.empty());
+  CHECK(refused.err.starts_with("error: claim: task 1 is not ready: blocked_by_open_task\n"));
+  CHECK(refused.err.contains("blocked_by_open_task: finish the dependency"));
+  CHECK(refused.err.contains("planar-agent claim --entity task:1 --allow-unready"));
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "todo");
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions") == "0");
+
+  // `--json` carries the same refusal as an error envelope with a non-zero exit.
+  auto const json = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe", "--json"});
+  CHECK(json.code == 1);
+  CHECK(json.out == "{\"error\":{\"verb\":\"claim\",\"tag\":\"TaskNotReady\"}}\n");
+
+  // A ready task is unaffected.
+  auto const ready = run_verb(scratch, {"claim", "--entity", "task:2", "--no-locality-probe"});
+  CHECK(ready.code == 0);
+}
+
+TEST_CASE("claim --allow-unready claims the task and writes exactly one audit action naming the reasons",
+          "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  depends_on(scratch, 1, 2);
+
+  auto const claimed = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe", "--allow-unready"});
+  CHECK(claimed.code == 0);
+  CHECK(claimed.err.empty());
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
+  CHECK(scalar_text(scratch, "select count(*) from agent_work_claims where entity_id = 1 and status = 'active'") == "1");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where metadata like '%unready_override%'") == "1");
+  CHECK(scalar_text(scratch, "select summary from agent_actions where metadata like '%unready_override%'") ==
+        "unready_override: blocked_by_open_task");
+  CHECK(scalar_text(scratch, "select metadata from agent_actions where metadata like '%unready_override%'") ==
+        R"({"unready_override":true,"reasons":["blocked_by_open_task"]})");
+
+  // A ready task claimed with the flag writes no audit action.
+  auto const ready = run_verb(scratch, {"claim", "--entity", "task:2", "--no-locality-probe", "--allow-unready"});
+  CHECK(ready.code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where metadata like '%unready_override%'") == "1");
+}
+
+TEST_CASE("a live claim stays ClaimContention ahead of readiness", "[cmd][agent][readiness][7482]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"}).code == 0);
+  depends_on(scratch, 1, 2);
+
+  auto const again = run_verb(scratch, {"claim", "--entity", "task:1", "--no-locality-probe"});
+  CHECK(again.code == 1);
+  CHECK(again.err.contains("ClaimContention"));
+  CHECK_FALSE(again.err.contains("not ready"));
+}

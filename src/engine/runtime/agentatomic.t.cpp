@@ -179,6 +179,14 @@ struct recording_policy {
   /// 6875) — a test asserts on this to prove the roll-up ran, and on its
   /// absence to prove it did NOT run for `fail`/`release`.
   std::vector<std::int64_t> unblock_calls;
+  /// The readiness reasons the injected check reports per task id; a task absent here is ready
+  /// (plan 1142).
+  std::map<std::int64_t, std::vector<std::string>> unready;
+  /// Every task id `unready_reasons` was asked about, in order.
+  std::vector<std::int64_t> readiness_calls;
+  /// Whether each `unready_reasons` call saw the connection inside a transaction: the claim and pull
+  /// checks must run in the transaction that inserts the claim.
+  std::vector<bool> readiness_in_transaction;
 
   auto bind() -> atomic::task_policy {
     return atomic::task_policy{
@@ -204,6 +212,13 @@ struct recording_policy {
                                              std::int64_t blocker_id) -> std::expected<void, aa::agent_error> {
           unblock_calls.push_back(blocker_id);
           return {};
+        },
+        .unready_reasons = [this](planar::db::connection& conn,
+                                  std::int64_t            task_id) -> std::expected<std::vector<std::string>, aa::agent_error> {
+          readiness_calls.push_back(task_id);
+          readiness_in_transaction.push_back(conn.in_transaction());
+          auto const found = unready.find(task_id);
+          return found == unready.end() ? std::vector<std::string>{} : found->second;
         },
     };
   }
@@ -407,7 +422,7 @@ TEST_CASE("peek runs pull's selector and writes nothing at all", "[agentatomic]"
   auto const actions_before = scalar_int(conn, "select count(*) from agent_actions");
   auto const status_before  = scalar_text(conn, std::format("select status from tasks where id = {}", task_id_at(conn, 0)));
 
-  auto const peeked = atomic::peek_next(conn, fx.plan_id);
+  auto const peeked = atomic::peek_next(conn, fx.plan_id, policy.bind());
   REQUIRE(peeked.has_value());
   REQUIRE_FALSE(peeked->no_work);
 
@@ -464,7 +479,8 @@ TEST_CASE("peek_next excludes a task with an outbound depends-on edge to a non-t
                            "values ('task', {}, 'task', {}, 'depends-on')",
                            dependent, blocker));
 
-    auto const peeked = atomic::peek_next(conn, fx.plan_id);
+    recording_policy policy;
+    auto const       peeked = atomic::peek_next(conn, fx.plan_id, policy.bind());
     REQUIRE(peeked.has_value());
 
     if (exp.dependent_eligible) {
@@ -506,7 +522,8 @@ TEST_CASE("peek_next and pull_next agree when a depends-on edge excludes the low
                          "values ('task', {}, 'task', {}, 'depends-on')",
                          dependent, blocker));
 
-  auto const peeked = atomic::peek_next(conn, fx.plan_id);
+  recording_policy peek_policy;
+  auto const       peeked = atomic::peek_next(conn, fx.plan_id, peek_policy.bind());
   REQUIRE(peeked.has_value());
   REQUIRE_FALSE(peeked->no_work);
   CHECK(peeked->task_id == blocker);
@@ -518,6 +535,202 @@ TEST_CASE("peek_next and pull_next agree when a depends-on edge excludes the low
   CHECK(pulled->task_id == blocker);
   CHECK(pulled->task_id == peeked->task_id);
   (void)other;
+}
+
+// ===========================================================================
+// Readiness gate (plan 1142)
+// ===========================================================================
+
+TEST_CASE("claim_entity asks readiness inside the claim transaction and claims a ready task", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  auto const       task = task_id_at(conn, 0);
+  recording_policy policy;
+
+  REQUIRE_FALSE(conn.in_transaction());
+  atomic::claim_readiness readiness;
+  auto const              held = atomic::claim_entity(conn, basic_args(fx, task), true, policy.bind(), &readiness);
+  REQUIRE(held.has_value());
+
+  // Asked exactly once, about this task, with the claim transaction open: a link written by another
+  // process after this read cannot reach the INSERT that follows it.
+  REQUIRE(policy.readiness_calls == std::vector<std::int64_t>{task});
+  REQUIRE(policy.readiness_in_transaction == std::vector<bool>{true});
+  REQUIRE(readiness.unready_reasons.empty());
+  REQUIRE(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'other'") == 0);
+}
+
+TEST_CASE("claim_entity refuses an unready task and writes nothing", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  auto const       task = task_id_at(conn, 0);
+  recording_policy policy;
+  policy.unready[task] = {"blocked_by_open_task", "open_question_linked"};
+
+  atomic::claim_readiness readiness;
+  auto const              held = atomic::claim_entity(conn, basic_args(fx, task), true, policy.bind(), &readiness);
+  REQUIRE_FALSE(held.has_value());
+  CHECK(held.error() == aa::agent_error::task_not_ready);
+  CHECK(readiness.unready_reasons == std::vector<std::string>{"blocked_by_open_task", "open_question_linked"});
+
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions") == 0);
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", task)) == "todo");
+  CHECK_FALSE(conn.in_transaction());
+
+  // No readiness slot means no override: the gate cannot be skipped by omission.
+  auto const bare = atomic::claim_entity(conn, basic_args(fx, task), false, policy.bind());
+  REQUIRE_FALSE(bare.has_value());
+  CHECK(bare.error() == aa::agent_error::task_not_ready);
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+}
+
+TEST_CASE("claim_entity with allow_unready claims and writes one audit action naming the reasons", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  auto const       task = task_id_at(conn, 0);
+  recording_policy policy;
+  policy.unready[task] = {"blocked_by_open_task", "proposed_decision_linked"};
+
+  atomic::claim_readiness readiness{.allow_unready = true};
+  auto const              held = atomic::claim_entity(conn, basic_args(fx, task), true, policy.bind(), &readiness);
+  REQUIRE(held.has_value());
+  CHECK(readiness.unready_reasons == std::vector<std::string>{"blocked_by_open_task", "proposed_decision_linked"});
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", task)) == "doing");
+
+  // Exactly one override row, closed ok, on this claim and task, readable by a machine.
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'other'") == 1);
+  CHECK(scalar_text(conn, "select metadata from agent_actions where action_kind = 'other'") ==
+        R"({"unready_override":true,"reasons":["blocked_by_open_task","proposed_decision_linked"]})");
+  CHECK(scalar_text(conn, "select summary from agent_actions where action_kind = 'other'") ==
+        "unready_override: blocked_by_open_task, proposed_decision_linked");
+  CHECK(scalar_text(conn, "select outcome from agent_actions where action_kind = 'other'") == "ok");
+  CHECK(scalar_int(conn, std::format("select count(*) from agent_actions where action_kind = 'other' and claim_id = {} and "
+                                     "entity_kind = 'task' and entity_id = {} and ended_at is not null",
+                                     held->id, task)) == 1);
+  // The transition marker is still there, separately.
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'claim_check'") == 1);
+}
+
+TEST_CASE("allow_unready on a ready task writes no audit action", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  auto const       task = task_id_at(conn, 0);
+  recording_policy policy;
+
+  atomic::claim_readiness readiness{.allow_unready = true};
+  REQUIRE(atomic::claim_entity(conn, basic_args(fx, task), true, policy.bind(), &readiness).has_value());
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'other'") == 0);
+}
+
+TEST_CASE("contention and illegal_transition outrank readiness, and plan claims are not gated", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 2);
+  auto const       held = task_id_at(conn, 0);
+  auto const       done = task_id_at(conn, 1);
+  recording_policy policy;
+  policy.unready[held] = {"open_question_linked"};
+  policy.unready[done] = {"invalid_task_status"};
+
+  // A live claim is contention before readiness is ever asked (an operator re-claim stays refused).
+  atomic::claim_readiness allow{.allow_unready = true};
+  REQUIRE(atomic::claim_entity(conn, basic_args(fx, held), false, policy.bind(), &allow).has_value());
+  policy.readiness_calls.clear();
+  auto const again = atomic::claim_entity(conn, basic_args(fx, held), false, policy.bind(), &allow);
+  REQUIRE_FALSE(again.has_value());
+  CHECK(again.error() == aa::agent_error::claim_contention);
+  CHECK(policy.readiness_calls.empty());
+
+  // A transitioning claim on a task that is not todo keeps its IllegalTransition tag.
+  exec(conn, std::format("update tasks set status = 'done' where id = {}", done));
+  atomic::claim_readiness plain;
+  auto const              refused = atomic::claim_entity(conn, basic_args(fx, done), true, policy.bind(), &plain);
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error() == aa::agent_error::illegal_transition);
+  CHECK(policy.readiness_calls.empty());
+
+  // A plan claim is not a task claim: readiness is not asked.
+  auto plan_args =
+      aa::acquire_args{.session_id = fx.session_id, .kind = aa::entity_kind::plan, .entity_id = fx.plan_id, .vendor = "test"};
+  auto const plan_claim = atomic::claim_entity(conn, plan_args, true, policy.bind(), &plain);
+  REQUIRE(plan_claim.has_value());
+  CHECK(policy.readiness_calls.empty());
+}
+
+TEST_CASE("pull skips an unready first-priority task and claims the next ready one", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn   = open_migrated(scratch);
+  auto const       fx     = seed(conn, 3);
+  auto const       first  = task_id_at(conn, 0);
+  auto const       second = task_id_at(conn, 1);
+  recording_policy policy;
+  policy.unready[first] = {"blocked_by_open_task"};
+
+  auto const pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+  REQUIRE_FALSE(pulled->no_work);
+  CHECK(pulled->task_id == second);
+  REQUIRE(pulled->skipped.size() == 1);
+  CHECK(pulled->skipped[0].task_id == first);
+  CHECK(pulled->skipped[0].reasons == std::vector<std::string>{"blocked_by_open_task"});
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", first)) == "todo");
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", second)) == "doing");
+
+  // Readiness was asked for the skipped task and the chosen one, both inside the pull transaction,
+  // and not for the third, which was never reached.
+  CHECK(policy.readiness_calls == std::vector<std::int64_t>{first, second});
+  CHECK(policy.readiness_in_transaction == std::vector<bool>{true, true});
+}
+
+TEST_CASE("pull with only unready tasks is no_work, names them, and writes nothing", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 2);
+  recording_policy policy;
+  policy.unready[task_id_at(conn, 0)] = {"open_question_linked"};
+  policy.unready[task_id_at(conn, 1)] = {"blocked_by_open_task", "proposed_decision_linked"};
+
+  auto const pulled = atomic::pull_next(
+      conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy.bind());
+  REQUIRE(pulled.has_value());
+  CHECK(pulled->no_work);
+  REQUIRE(pulled->skipped.size() == 2);
+  CHECK(pulled->skipped[1].reasons.size() == 2);
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions") == 0);
+  CHECK(scalar_int(conn, "select count(*) from tasks where status = 'todo'") == 2);
+
+  // peek reports what pull would: nothing, and the same skipped list.
+  auto const peeked = atomic::peek_next(conn, fx.plan_id, policy.bind());
+  REQUIRE(peeked.has_value());
+  CHECK(peeked->no_work);
+  CHECK(peeked->skipped.size() == 2);
+}
+
+TEST_CASE("a readiness failure aborts pull and claim without claiming", "[agentatomic][readiness]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy recording;
+  auto             broken = recording.bind();
+  broken.unready_reasons = [](planar::db::connection&, std::int64_t) -> std::expected<std::vector<std::string>, aa::agent_error> {
+    return std::unexpected(aa::agent_error::query_failed);
+  };
+
+  auto const pulled =
+      atomic::pull_next(conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, broken);
+  REQUIRE_FALSE(pulled.has_value());
+  CHECK(pulled.error() == aa::agent_error::query_failed);
+  auto const claimed = atomic::claim_entity(conn, basic_args(fx, task_id_at(conn, 0)), true, broken);
+  REQUIRE_FALSE(claimed.has_value());
+  CHECK(claimed.error() == aa::agent_error::query_failed);
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
 }
 
 // ===========================================================================

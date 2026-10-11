@@ -130,15 +130,31 @@ export auto append_action(std::string& out, const aa::action& value) -> void;
 // pull / peek
 // =========================================================================
 
-/// @brief `{"ok":true,"no_work":true}` — shared verbatim by `pull` and `peek`.
+/// @brief The most unready tasks `--json` lists by id and reason; the count is never capped.
+export inline constexpr std::size_t skipped_listing_cap = 20;
+
+/// @brief `{"ok":true,"no_work":true,"skipped_unready":<n>,"unready":[...]}` — shared by `pull` and `peek`.
+///
+/// `skipped_unready` is the number of eligible tasks passed over because they were not ready;
+/// `unready` lists the first `skipped_listing_cap` of them as `{"task_id":<id>,"reasons":[...]}`.
+/// @param skipped The tasks passed over, in selector order.
 /// @return The COMPLETE payload, newline included.
-export auto no_work_json() -> std::string;
+export auto no_work_json(const std::vector<agentatomic::skipped_task>& skipped) -> std::string;
 
 /// @brief `no_work` — shared verbatim by `pull` and `peek`.
 /// @return The COMPLETE payload, newline included.
 export auto no_work_text() -> std::string;
 
-/// @brief `pull`'s success payload.
+/// @brief One stderr line naming the tasks passed over as not ready, or empty when none were.
+///
+/// `skipped N unready task(s): task:<id> (<reason>, ...); ...`, listing at most
+/// `skipped_listing_cap` tasks.
+/// @param skipped The tasks passed over, in selector order.
+/// @return The COMPLETE line with its newline, or the empty string.
+export auto skipped_text(const std::vector<agentatomic::skipped_task>& skipped) -> std::string;
+
+/// @brief `pull`'s success payload; carries the `skipped_unready` keys of `no_work_json` only when a
+/// task was skipped, so the payload of a plan with nothing unready is unchanged.
 /// @param result The pull outcome (must not be `no_work`).
 /// @param task The claimed task.
 /// @return The COMPLETE payload, newline included.
@@ -149,10 +165,11 @@ export auto pull_json(const agentatomic::pull_result& result, const aa::task_row
 /// @return The COMPLETE payload, newline included.
 export auto pull_text(const agentatomic::pull_result& result) -> std::string;
 
-/// @brief `peek`'s success payload.
+/// @brief `peek`'s success payload; carries the `skipped_unready` keys only when a task was skipped.
 /// @param task The task `pull` would take.
+/// @param skipped The tasks `pull` would pass over first.
 /// @return The COMPLETE payload, newline included.
-export auto peek_json(const aa::task_row& task) -> std::string;
+export auto peek_json(const aa::task_row& task, const std::vector<agentatomic::skipped_task>& skipped) -> std::string;
 
 /// @brief `next: task:<id> status:<status>`.
 /// @param task The task `pull` would take.

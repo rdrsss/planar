@@ -55,9 +55,8 @@ auto classify_begin_failure(const db::db_error& err) -> aa::agent_error {
 /// pinned by `agentatomic.t.cpp`'s selector unit tests.
 /// @param conn The connection.
 /// @param plan_id The plan to select within.
-/// @return The next eligible task id, unset when none, or `query_failed`.
-auto pick_next_eligible(db::connection& conn, std::int64_t plan_id)
-    -> std::expected<std::optional<std::int64_t>, aa::agent_error> {
+/// @return Every eligible task id in selection order, or `query_failed`.
+auto eligible_task_ids(db::connection& conn, std::int64_t plan_id) -> std::expected<std::vector<std::int64_t>, aa::agent_error> {
   auto stmt = conn.prepare(std::format("select t.id from tasks t\n"
                                        "where t.plan_id = ?\n"
                                        "  and t.status = 'todo'\n"
@@ -75,20 +74,99 @@ auto pick_next_eligible(db::connection& conn, std::int64_t plan_id)
                                        "      and el.to_kind = 'task' and el.relationship = 'depends-on'\n"
                                        "      and blocker.status not in ('done', 'cancelled')\n"
                                        "  )\n"
-                                       "order by t.priority asc, t.id asc\n"
-                                       "limit 1",
+                                       "order by t.priority asc, t.id asc",
                                        k_now));
   if (!stmt || !stmt->bind_int64(1, plan_id)) {
     return std::unexpected(aa::agent_error::query_failed);
   }
-  auto stepped = stmt->step();
-  if (!stepped) {
+  std::vector<std::int64_t> ids;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    if (*stepped != db::step_result::row) {
+      return ids;
+    }
+    ids.push_back(stmt->column_int64(0));
+  }
+}
+
+/// @brief What the selector chose once readiness was applied.
+struct selection {
+  std::optional<std::int64_t> task_id; ///< The first ready eligible task, unset when none.
+  std::vector<skipped_task>   skipped; ///< The eligible tasks passed over before it, with their reasons.
+};
+
+/// @brief The first eligible task that is also ready, plus the ones it passed over (plan 1142).
+///
+/// The one definition behind `pull_next` and `peek_next`. The readiness callable runs on `conn`,
+/// so under `pull_next` it runs inside the claim transaction.
+/// @param conn The connection.
+/// @param plan_id The plan to select within.
+/// @param policy The injected policy; `unready_reasons` must be bound.
+/// @return The selection, or `query_failed` (also when no readiness callable is bound) or the
+/// callable's own failure.
+auto select_next_ready(db::connection& conn, std::int64_t plan_id, const task_policy& policy)
+    -> std::expected<selection, aa::agent_error> {
+  if (!policy.unready_reasons) {
     return std::unexpected(aa::agent_error::query_failed);
   }
-  if (*stepped != db::step_result::row) {
-    return std::optional<std::int64_t>{};
+  auto const ids = eligible_task_ids(conn, plan_id);
+  if (!ids) {
+    return std::unexpected(ids.error());
   }
-  return std::optional<std::int64_t>{stmt->column_int64(0)};
+  selection chosen;
+  for (auto const id : *ids) {
+    auto reasons = policy.unready_reasons(conn, id);
+    if (!reasons) {
+      return std::unexpected(reasons.error());
+    }
+    if (reasons->empty()) {
+      chosen.task_id = id;
+      return chosen;
+    }
+    chosen.skipped.push_back(skipped_task{.task_id = id, .reasons = std::move(*reasons)});
+  }
+  return chosen;
+}
+
+/// @brief `["a","b"]`, with `"` and `\` escaped.
+/// @param reasons The reason names.
+/// @return The JSON array text.
+auto reasons_json(const std::vector<std::string>& reasons) -> std::string {
+  std::string out   = "[";
+  bool        first = true;
+  for (auto const& reason : reasons) {
+    if (!first) {
+      out += ',';
+    }
+    first = false;
+    out += '"';
+    for (auto const c : reason) {
+      if (c == '"' || c == '\\') {
+        out += '\\';
+      }
+      out += c;
+    }
+    out += '"';
+  }
+  out += ']';
+  return out;
+}
+
+/// @brief `a, b, c`.
+/// @param reasons The reason names.
+/// @return The reasons joined for a summary line.
+auto reasons_text(const std::vector<std::string>& reasons) -> std::string {
+  std::string out;
+  for (auto const& reason : reasons) {
+    if (!out.empty()) {
+      out += ", ";
+    }
+    out += reason;
+  }
+  return out;
 }
 
 /// @brief The number of rows the most recent statement on `conn` changed.
@@ -275,37 +353,74 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
 // Claim acquisition
 // =========================================================================
 
-auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args, bool transition_task, const task_policy& policy)
-    -> std::expected<claim, agent_error> {
+auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args, bool transition_task, const task_policy& policy,
+                  claim_readiness* readiness) -> std::expected<claim, agent_error> {
   auto tx = conn.begin_transaction(db::lock_mode::immediate);
   if (!tx) {
     return std::unexpected(classify_begin_failure(tx.error()));
   }
 
-  auto acquired = aa::acquire_claim(conn, args);
+  // Admission runs between the exclusivity check and the INSERT, on this connection and inside this
+  // transaction (plan 1142): the status guard, then readiness. The status guard moved here from
+  // after the insert so that `illegal_transition` still outranks readiness (an `invalid_task_status`
+  // reason must not mask it); with the refusal returned before the insert, nothing is written
+  // either way.
+  std::vector<std::string> overridden;
+  auto                     gated = args;
+  gated.admit                    = [&](db::connection& c) -> std::expected<void, aa::agent_error> {
+    if (args.admit) {
+      if (auto const prior = args.admit(c); !prior) {
+        return std::unexpected(prior.error());
+      }
+    }
+    if (args.kind != aa::entity_kind::task) {
+      return {};
+    }
+    if (transition_task) {
+      auto const current = aa::current_task_status(c, args.entity_id);
+      if (!current) {
+        return std::unexpected(current.error());
+      }
+      // Direct dispatch is an ENTRY into work: only `todo` is eligible, and
+      // this is stricter than the transition matrix (which also allows
+      // `blocked -> doing`). `--no-transition` is the escape hatch for a
+      // caller that wants the bare claim primitive.
+      if (*current != "todo") {
+        return std::unexpected(aa::agent_error::illegal_transition);
+      }
+      auto const allowed = policy.check_transition(*current, "doing");
+      if (!allowed) {
+        return std::unexpected(allowed.error());
+      }
+    }
+    if (!policy.unready_reasons) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    auto reasons = policy.unready_reasons(c, args.entity_id);
+    if (!reasons) {
+      return std::unexpected(reasons.error());
+    }
+    if (reasons->empty()) {
+      return {};
+    }
+    if (readiness != nullptr) {
+      readiness->unready_reasons = *reasons;
+    }
+    if (readiness == nullptr || !readiness->allow_unready) {
+      return std::unexpected(aa::agent_error::task_not_ready);
+    }
+    overridden = std::move(*reasons);
+    return {};
+  };
+
+  auto acquired = aa::acquire_claim(conn, gated);
   if (!acquired) {
     return std::unexpected(acquired.error());
   }
 
   if (args.kind == aa::entity_kind::task && transition_task) {
-    auto const current = aa::current_task_status(conn, args.entity_id);
-    if (!current) {
-      return std::unexpected(current.error());
-    }
-    // Direct dispatch is an ENTRY into work: only `todo` is eligible, and
-    // this is stricter than the transition matrix (which also allows
-    // `blocked -> doing`). `--no-transition` is the escape hatch for a
-    // caller that wants the bare claim primitive.
-    if (*current != "todo") {
-      return std::unexpected(aa::agent_error::illegal_transition);
-    }
-    auto const allowed = policy.check_transition(*current, "doing");
-    if (!allowed) {
-      return std::unexpected(allowed.error());
-    }
-
     // The `and status = 'todo'` predicate is a SECOND read of the same
-    // fact the guard above checked, and the row-count check below is what
+    // fact the admission guard checked, and the row-count check below is what
     // makes it useful: if anything changed the task between the two reads,
     // the UPDATE matches nothing and this refuses instead of reporting a
     // successful claim over a transition that never happened. The Zig
@@ -341,6 +456,32 @@ auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args,
     }
   }
 
+  // The audit row for an override: one closed `other` action on the claim. `agent_actions.kind` has
+  // no kind of its own for it and a migration is out of scope, so the machine-readable marker is the
+  // `unready_override` key in `metadata`, repeated in the summary for a reader of `planar-watch`.
+  if (!overridden.empty()) {
+    auto const metadata = std::format("{{\"unready_override\":true,\"reasons\":{}}}", reasons_json(overridden));
+    auto const audit    = aa::start_action(conn, aa::start_action_args{
+                                                     .session_id  = args.session_id,
+                                                     .claim_id    = acquired->id,
+                                                     .kind        = aa::action_kind::other,
+                                                     .entity      = aa::action_entity_kind::task,
+                                                     .entity_id   = args.entity_id,
+                                                     .vendor      = args.vendor,
+                                                     .vendor_role = args.role,
+                                                     .model       = args.model,
+                                                     .loc         = args.loc,
+                                                     .metadata    = metadata,
+                                                 });
+    if (!audit) {
+      return std::unexpected(audit.error());
+    }
+    auto const summary = std::format("unready_override: {}", reasons_text(overridden));
+    if (auto const closed = aa::end_action(conn, *audit, aa::outcome::ok, summary); !closed) {
+      return std::unexpected(closed.error());
+    }
+  }
+
   auto const committed = commit(*tx);
   if (!committed) {
     return std::unexpected(committed.error());
@@ -355,11 +496,11 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     return std::unexpected(classify_begin_failure(tx.error()));
   }
 
-  auto const picked = pick_next_eligible(conn, args.plan_id);
+  auto picked = select_next_ready(conn, args.plan_id, policy);
   if (!picked) {
     return std::unexpected(picked.error());
   }
-  if (!picked->has_value()) {
+  if (!picked->task_id.has_value()) {
     // Commits an EMPTY transaction and writes nothing. Not a shortcut —
     // committing keeps the (immediate) write lock held for the shortest
     // possible time when the answer is "no work".
@@ -367,9 +508,9 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     if (!committed) {
       return std::unexpected(committed.error());
     }
-    return pull_result{.no_work = true};
+    return pull_result{.no_work = true, .skipped = std::move(picked->skipped)};
   }
-  auto const task_id = **picked;
+  auto const task_id = *picked->task_id;
 
   // The selector already constrained the task to `todo`, so this guard is
   // constant-folded in practice — it is here because the Zig original runs
@@ -422,18 +563,22 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
   if (!committed) {
     return std::unexpected(committed.error());
   }
-  return pull_result{.no_work = false, .acquired = std::move(*acquired), .task_id = task_id, .action_id = *action_id};
+  return pull_result{.no_work   = false,
+                     .acquired  = std::move(*acquired),
+                     .task_id   = task_id,
+                     .action_id = *action_id,
+                     .skipped   = std::move(picked->skipped)};
 }
 
-auto peek_next(db::connection& conn, std::int64_t plan_id) -> std::expected<peek_result, agent_error> {
-  auto const picked = pick_next_eligible(conn, plan_id);
+auto peek_next(db::connection& conn, std::int64_t plan_id, const task_policy& policy) -> std::expected<peek_result, agent_error> {
+  auto picked = select_next_ready(conn, plan_id, policy);
   if (!picked) {
     return std::unexpected(picked.error());
   }
-  if (!picked->has_value()) {
-    return peek_result{.no_work = true};
+  if (!picked->task_id.has_value()) {
+    return peek_result{.no_work = true, .skipped = std::move(picked->skipped)};
   }
-  return peek_result{.no_work = false, .task_id = **picked};
+  return peek_result{.no_work = false, .task_id = *picked->task_id, .skipped = std::move(picked->skipped)};
 }
 
 // =========================================================================

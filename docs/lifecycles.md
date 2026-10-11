@@ -344,7 +344,7 @@ sequenceDiagram
     O->>A: peek PLAN (read-only preview)
     O->>A: pull PLAN --role coder [--parent-action]
     A->>DB: BEGIN IMMEDIATE
-    A->>DB: select next todo task (priority asc, id asc)<br/>not held by a live claim
+    A->>DB: select next todo task (priority asc, id asc)<br/>not held by a live claim, skipping any task the packet reports unready
     A->>DB: insert claim(active), task → doing,<br/>open agent_actions(kind=coder)
     A->>DB: COMMIT
     A-->>O: {claim_token, task_id, action_id} | {no_work:true}

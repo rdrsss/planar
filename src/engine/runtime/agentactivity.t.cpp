@@ -1317,7 +1317,7 @@ TEST_CASE("log's source queries are oldest-first and honour their limit", "[agen
 TEST_CASE("next_work excludes a todo task carrying an open depends-on edge, and stops excluding it once the blocker "
           "closes",
           "[agentactivity][deps][6898]") {
-  // `pull_next`/`peek_next` (agentatomic.cpp's `pick_next_eligible`) have
+  // `pull_next`/`peek_next` (agentatomic.cpp's `eligible_task_ids`) have
   // carried this dependency-exclusion clause since task 6841; `plan
   // next`'s OWN bucketer (`next_work`, this function) did not, so `planar
   // plan next` listed a `todo` task as `available` while `pull`/`peek`

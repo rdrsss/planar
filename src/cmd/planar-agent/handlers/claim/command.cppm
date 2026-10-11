@@ -12,8 +12,8 @@ namespace planar::cmd::agent::handlers::claim_cli {
 /// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- claim --------------------------------------------------------------
-  CLI::App* claim =
-      root.add_subcommand("claim", "Direct entity claim; task claims atomically transition todo to doing by default.");
+  CLI::App* claim = root.add_subcommand(
+      "claim", "Direct entity claim; task claims atomically transition todo to doing by default and refuse an unready task.");
   claim->add_option("--entity")->description("Entity ref: task:<id> | plan:<id> | plan_step:<id>")->required();
   shared::add_vendor(*claim, "Vendor tag (default: planar-agent)", "Vendor session id (e.g. claude:s1)");
   claim->add_option("--role")->description("Role name (planner|coder|reviewer|test_coder|...)");
@@ -26,6 +26,8 @@ export auto add(CLI::App& root) -> void {
   shared::add_no_locality_probe(*claim, "Skip the git locality probe");
   cliapp::add_bool_flag(*claim, "--no-transition",
                         "Claim without changing task status (plan and plan_step are always unchanged)");
+  cliapp::add_bool_flag(*claim, "--allow-unready",
+                        "Claim a task that is not ready anyway; one audit action names the overridden readiness reasons");
   cliapp::add_bool_flag(*claim, "--force", "Take over an existing live claim (operator recovery)");
   shared::add_json(*claim, "Emit machine-readable JSON instead of text");
 }

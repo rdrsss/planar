@@ -85,6 +85,9 @@
 #                    `agentatomic::task_policy`. `policy.cpp` is the whole
 #                    of that seam -- one function, so every handler in this
 #                    binary runs under the same policy.
+#   engine_ingest    the task packet, whose readiness reasons `policy.cpp`
+#                    injects as `task_policy::unready_reasons` so `claim` and
+#                    `pull` refuse an unready task (plan 1142). Read-only.
 #
 # Layer 3 depending on two layer-2 buckets is exactly what the layering
 # allows and what makes the injection legal; see engine/runtime's
@@ -184,6 +187,7 @@ planar_binary(planar_agent
     textview
     json_dom
     engine_planning
+    engine_ingest
     engine_hostqueue
     engine_config
     engine_diagnose

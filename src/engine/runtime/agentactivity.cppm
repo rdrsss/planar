@@ -435,6 +435,10 @@ export enum class agent_error : std::uint8_t {
   /// An engine verb named a different Centurion attempt than the one the
   /// claim is associated with (plan 1033 D4).
   attempt_mismatch,
+  /// The task is not ready to be claimed: its coordination packet lists at least one readiness
+  /// reason and the caller did not ask to override (plan 1142). New with the readiness gate; the
+  /// Zig oracle has no such tag. The reasons travel in the caller's `claim_readiness`, not here.
+  task_not_ready,
 };
 
 /// @brief The Zig error TAG for `err`, as it appears on the operator's
@@ -474,6 +478,11 @@ export struct acquire_args {
   /// `(kind, entity_id)` stale first. Operator recovery only; the normal
   /// path returns `claim_contention` instead.
   bool force = false;
+  /// Runs after the exclusivity check (and the `force` takeover) and before the INSERT, inside the
+  /// caller's immediate transaction, so a refusal it returns leaves no claim row and a competing
+  /// writer cannot change what it read between the check and the insert. Unset runs nothing. Its
+  /// failure is returned unchanged by `acquire_claim`.
+  std::function<std::expected<void, agent_error>(db::connection&)> admit;
 };
 
 /// @brief Insert a new claim.
@@ -489,8 +498,8 @@ export struct acquire_args {
 /// host-side. It is opaque: never parse meaning out of it.
 /// @param conn An open, migrated connection, inside an immediate transaction.
 /// @param args The claim to insert.
-/// @return The inserted row, or `claim_contention` / `worktree_not_found` /
-/// `query_failed`.
+/// @return The inserted row, or `claim_contention` / `worktree_not_found` / the
+/// `args.admit` refusal / `query_failed`.
 export auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expected<claim, agent_error>;
 
 // =========================================================================

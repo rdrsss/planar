@@ -457,7 +457,9 @@ Expired claims (`lease_expires_at < now()`) are NOT active and do not trigger th
 Agent dispatch has one ownership ritual: acquire a claim, heartbeat it at
 TTL/2, then invoke exactly one terminal verb. Both `planar-agent pull <plan>`
 and the default `planar-agent claim --entity task:<id>` atomically acquire the
-claim and move an eligible task from `todo` to `doing`. A direct claim also
+claim and move an eligible, ready task from `todo` to `doing`. Readiness is the task packet's verdict,
+asked inside the claim transaction: `pull` skips an unready task, and `claim` refuses it at exit 1 unless
+`--allow-unready` overrides it (one audit action names the overridden reasons). A direct claim also
 opens a `claim_check` action in that transaction. The marker proves which
 claim owned the status transition; it is not a synthetic completion event.
 `--no-transition` retains the primitive claim-only behavior and creates no

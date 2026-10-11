@@ -721,6 +721,8 @@ auto error_name(agent_error err) -> std::string_view {
     return "SupervisorMismatch";
   case agent_error::attempt_mismatch:
     return "AttemptMismatch";
+  case agent_error::task_not_ready:
+    return "TaskNotReady";
   }
   return "QueryFailed";
 }
@@ -748,6 +750,12 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
     auto const swept = mark_active_stale(conn, args.kind, args.entity_id);
     if (!swept) {
       return std::unexpected(swept.error());
+    }
+  }
+
+  if (args.admit) {
+    if (auto const admitted = args.admit(conn); !admitted) {
+      return std::unexpected(admitted.error());
     }
   }
 
@@ -2116,7 +2124,7 @@ auto next_work(db::connection& conn, std::int64_t plan_id) -> std::expected<std:
     } else if ((status == "todo" || status == "doing") && has_open_dependency) {
       // Task 6898 / decision D6's dependency-exclusion clause, applied to
       // `plan next`'s own bucketer so it agrees with `pull_next` /
-      // `peek_next` (`agentatomic.cpp::pick_next_eligible`) on the same
+      // `peek_next` (`agentatomic.cpp::eligible_task_ids`) on the same
       // row. A `todo`/`doing` task carrying an outbound `depends-on` edge
       // to a non-terminal blocker is not dispatchable yet; folded into
       // `blocked` rather than a new bucket, since that is already the

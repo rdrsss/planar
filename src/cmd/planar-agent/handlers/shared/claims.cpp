@@ -83,6 +83,60 @@ auto check_metadata(const std::optional<std::string>& raw) -> std::optional<doma
   return std::nullopt;
 }
 
+/// @brief The one-line fix for a readiness reason, shown under a refused claim.
+/// @param reason The packet's reason name.
+/// @param task_id The refused task.
+/// @return The hint, or the empty string for a reason without one.
+auto reason_hint(std::string_view reason, std::int64_t task_id) -> std::string {
+  if (reason == "blocked_by_open_task") {
+    return std::format("finish the dependency (planar task show {} lists it)", task_id);
+  }
+  if (reason == "open_question_linked") {
+    return "answer the linked open question";
+  }
+  if (reason == "proposed_decision_linked") {
+    return "accept or withdraw the linked proposed decision";
+  }
+  if (reason == "invalid_task_status") {
+    return "the task is not todo, or another claim holds it; wait for its lease to lapse";
+  }
+  if (reason == "unresolved_citation") {
+    return "repair or re-cite the artifact the task cites";
+  }
+  if (reason == "missing_owning_plan") {
+    return "attach the task to a plan";
+  }
+  if (reason == "missing_title") {
+    return "give the task a title";
+  }
+  return {};
+}
+
+/// @brief The refusal for `claim` on a task that is not ready.
+///
+/// Exit 1, like `ClaimContention` and `IllegalTransition`. Names every reason with its fix and the
+/// command that would succeed.
+/// @param task_id The refused task.
+/// @param reasons Its readiness reasons.
+/// @return The domain error to return from the handler.
+auto not_ready_error(std::int64_t task_id, const std::vector<std::string>& reasons) -> domain_error {
+  std::string list;
+  for (auto const& reason : reasons) {
+    list += list.empty() ? "" : ", ";
+    list += reason;
+  }
+  std::string body = std::format("claim: task {} is not ready: {}", task_id, list);
+  for (auto const& reason : reasons) {
+    if (auto const hint = reason_hint(reason, task_id); !hint.empty()) {
+      body += std::format("\n  {}: {}", reason, hint);
+    }
+  }
+  body += std::format("\n  to claim it anyway, run: planar-agent claim --entity task:{} --allow-unready", task_id);
+  auto err = error_from_body(domain_error_kind::generic_failure, std::move(body));
+  err.tag  = "TaskNotReady";
+  return err;
+}
+
 } // namespace
 
 auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
@@ -177,8 +231,13 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   }
 
   auto const json = cliapp::flag_bool(args, "--json");
+  // Text mode names the tasks passed over on stderr, so stdout stays the stable `pulled ...` or
+  // `no_work` line; `--json` carries them in the payload.
+  if (!json) {
+    ctx.err() << render::skipped_text(result->skipped);
+  }
   if (result->no_work) {
-    ctx.out() << (json ? render::no_work_json() : render::no_work_text());
+    ctx.out() << (json ? render::no_work_json(result->skipped) : render::no_work_text());
     return {};
   }
 
@@ -195,21 +254,24 @@ auto peek(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   if (!conn) {
     return std::unexpected(conn.error());
   }
-  auto const result = atomic::peek_next(**conn, cliapp::positional_int(args, "plan-id").value_or(0));
+  auto const result = atomic::peek_next(**conn, cliapp::positional_int(args, "plan-id").value_or(0), task_policy());
   if (!result) {
     return std::unexpected(verb_error("peek", result.error()));
   }
 
   auto const json = cliapp::flag_bool(args, "--json");
+  if (!json) {
+    ctx.err() << render::skipped_text(result->skipped);
+  }
   if (result->no_work) {
-    ctx.out() << (json ? render::no_work_json() : render::no_work_text());
+    ctx.out() << (json ? render::no_work_json(result->skipped) : render::no_work_text());
     return {};
   }
   auto const task = aa::get_task(**conn, result->task_id);
   if (!task) {
     return std::unexpected(verb_error("task show", task.error()));
   }
-  ctx.out() << (json ? render::peek_json(*task) : render::peek_text(*task));
+  ctx.out() << (json ? render::peek_json(*task, result->skipped) : render::peek_text(*task));
   return {};
 }
 
@@ -258,24 +320,28 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const model   = cliapp::flag_string(args, "--model");
   auto const purpose = cliapp::flag_string(args, "--purpose");
 
-  auto const acquired = atomic::claim_entity(**conn,
-                                             aa::acquire_args{
-                                                 .session_id        = *session,
-                                                 .kind              = entity->kind,
-                                                 .entity_id         = entity->id,
-                                                 .vendor            = vendor,
-                                                 .vendor_session_id = view(vsid),
-                                                 .role              = view(role),
-                                                 .model             = view(model),
-                                                 .worktree_id       = worktree.id,
-                                                 .worktree_path     = view(worktree.path),
-                                                 .purpose           = view(purpose),
-                                                 .ttl_secs          = *ttl,
-                                                 .loc               = loc,
-                                                 .force             = cliapp::flag_bool(args, "--force"),
-                                             },
-                                             !cliapp::flag_bool(args, "--no-transition"), task_policy());
+  atomic::claim_readiness readiness{.allow_unready = cliapp::flag_bool(args, "--allow-unready")};
+  auto const              acquired = atomic::claim_entity(**conn,
+                                                          aa::acquire_args{
+                                                              .session_id        = *session,
+                                                              .kind              = entity->kind,
+                                                              .entity_id         = entity->id,
+                                                              .vendor            = vendor,
+                                                              .vendor_session_id = view(vsid),
+                                                              .role              = view(role),
+                                                              .model             = view(model),
+                                                              .worktree_id       = worktree.id,
+                                                              .worktree_path     = view(worktree.path),
+                                                              .purpose           = view(purpose),
+                                                              .ttl_secs          = *ttl,
+                                                              .loc               = loc,
+                                                              .force             = cliapp::flag_bool(args, "--force"),
+                                                          },
+                                                          !cliapp::flag_bool(args, "--no-transition"), task_policy(), &readiness);
   if (!acquired) {
+    if (acquired.error() == aa::agent_error::task_not_ready) {
+      return std::unexpected(not_ready_error(entity->id, readiness.unready_reasons));
+    }
     return std::unexpected(verb_error("claim", acquired.error()));
   }
 

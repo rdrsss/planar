@@ -30,9 +30,13 @@ through `planar-agent`. There is no `planar agent` namespace.
 
 - **Next task on a plan:** `planar-agent pull <plan-id>` atomically picks the next
   eligible task, claims it, flips it to `doing` and opens a top-level action. When nothing
-  is available it returns `no_work` and the agent stops cleanly.
+  is ready it returns `no_work` and the agent stops cleanly. `pull` skips a task that is not ready
+  (a linked open question, a linked proposed decision, an open dependency) and says so: `--json` adds
+  `skipped_unready` and the reasons.
 - **A hand-picked task:** `planar-agent claim --entity task:<id>`. A direct task claim
-  also flips `todo` to `doing`, so the ordinary terminal verbs work afterwards.
+  also flips `todo` to `doing`, so the ordinary terminal verbs work afterwards. It refuses a task that
+  is not ready (exit 1, nothing written), names the reasons and prints the command that would succeed;
+  `--allow-unready` claims it anyway and records the overridden reasons in an audit action.
 - **Coordination:** an orchestrator claims `plan:<id>` and never uses `pull` for itself,
   because `pull` consumes a feature task. Its coders pass `--parent-action` so the action
   tree links them; without it each coder's action is a disconnected root.

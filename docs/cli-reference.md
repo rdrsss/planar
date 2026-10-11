@@ -6387,7 +6387,13 @@ planar-agent block      --claim <token> --blocker <task-id> [--reason <text>] [-
 # Direct claims — for orchestrator dispatch when the caller already knows the
 # target entity by id. Task claims atomically transition todo → doing unless
 # --no-transition is supplied; plan and plan-step state is never changed.
-planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--force] [--json]
+# A task that is not ready (its task packet lists a readiness reason such as
+# blocked_by_open_task, open_question_linked or proposed_decision_linked) is
+# refused at exit 1 with `error: claim: task <id> is not ready: <reasons>` and
+# the command that would succeed; nothing is written. --allow-unready claims it
+# anyway and writes one audit action naming the overridden reasons. `pull` skips
+# unready tasks instead (see "Readiness at claim time" below).
+planar-agent claim      --entity task:<id>|plan:<id>|plan_step:<id> [--vendor <v>] [--vendor-session <vendor:id>] [--role <r>] [--model <s>] [--ttl <duration>] [--purpose <text>] [--worktree <id-or-path>] [--repo-root <path>] [--no-locality-probe] [--no-transition] [--allow-unready] [--force] [--json]
 planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--json]
 
 # `--model` records the model actually used, verbatim, as an OPAQUE STRING.
@@ -6655,7 +6661,7 @@ Each code is checked against the built binary by `make exit-code-contract` where
 
 | Verb       | Transaction body |
 |------------|------------------|
-| `pull`     | SELECT next eligible task → INSERT `agent_work_claims (status=active)` → UPDATE `tasks.status='doing'` → INSERT `agent_actions`. Returns `{ok, no_work, claim_token, claim, task, action_id}`. No writes on no-eligible-task path. |
+| `pull`     | SELECT eligible tasks → skip each one the task packet reports unready → INSERT `agent_work_claims (status=active)` → UPDATE `tasks.status='doing'` → INSERT `agent_actions`. Returns `{ok, no_work, claim_token, claim, task, action_id}`. No writes on the no-ready-task path. |
 | `complete` | Verify claim active → UPDATE action ended_at + outcome='ok' → UPDATE task status='done' → UPDATE claim status='completed'. |
 | `fail`     | Same as complete with outcome='error', task status='todo', claim status='aborted', and `failure_category` set from `--category` (default `unknown`). |
 | `release`  | Same as fail with outcome='aborted', claim status='released'. (Distinct semantically from fail — "graceful give-up" vs "I tried and failed".) |
@@ -6663,6 +6669,29 @@ Each code is checked against the built binary by `make exit-code-contract` where
 | `peek`     | Read-only: same SELECT as step 1 of pull; no writes. |
 | `reconcile`| SELECT expired active claims → UPDATE status='stale' and optional operator-supplied `failure_category`; a claimed task in `doing` returns to `todo` only when the claim has an ownership action and no active replacement. Direct-claim `claim_check` markers are closed as aborted; the existing ended-session sweep closes other orphaned actions. The sweep runs inside one `BEGIN IMMEDIATE` transaction. `--dry-run` returns `candidates` without writing. `--plan <id>` scopes it to claims and actions belonging to the given plan. |
 | `abort`    | UPDATE claim status='aborted' + released_at + release_reason + optional operator-supplied `failure_category` → restore `doing` → `todo` only for a default direct task claim carrying its transactional `claim_check` marker → close that marker as aborted → INSERT audit `agent_actions` row naming the aborting session. Primitive `--no-transition` and pull claims retain their previous task-status behavior. |
+
+#### Readiness at claim time
+
+`pull` and `claim` ask the same readiness verdict as `task packet` and `plan next` (the packet reasons:
+`missing_title`, `invalid_task_status`, `missing_owning_plan`, `unresolved_citation`,
+`blocked_by_open_task`, `open_question_linked`, `proposed_decision_linked`), and they ask it inside the
+claim transaction. A question or decision linked concurrently therefore cannot slip past them. A `doing`
+task is ready only when its claim has lapsed; a live claim is `ClaimContention` first, before readiness
+is asked. Plans and plan steps are not subject to readiness.
+
+- `pull <plan-id>` skips an eligible task that is not ready and claims the next ready one. With none
+  ready it returns `no_work` and writes nothing. `--json` adds `"skipped_unready": <count>` and
+  `"unready": [{"task_id": <id>, "reasons": [...]}]` (the first 20; the count is never capped) to
+  `no_work` and to a pull that skipped a task. Text mode keeps stdout (`pulled ...` or `no_work`) and
+  prints `skipped N unready task(s): task:<id> (<reasons>); ...` on stderr. `peek` reports the same.
+- `claim --entity task:<id>` on an unready task exits 1 (like `ClaimContention` and `IllegalTransition`),
+  creates no claim, leaves `tasks.status` unchanged and prints `error: claim: task <id> is not ready:
+  <reason>[, <reason>...]`, a hint per reason and `planar-agent claim --entity task:<id> --allow-unready`.
+  With `--json` the stdout envelope's `tag` is `TaskNotReady`.
+- `claim --entity task:<id> --allow-unready` is open to any caller. It claims the task and writes exactly
+  one closed `agent_actions` row of kind `other` on the claim, with
+  `metadata = {"unready_override":true,"reasons":[...]}` and
+  `summary = "unready_override: <reasons>"`. A ready task claimed with the flag writes no such row.
 
 All write verbs open `BEGIN IMMEDIATE` so the writer lock blocks any concurrent claim attempt on the same row. The status-transition guard (`policy.status.check`) is consulted before each `UPDATE tasks SET status` — refusal rolls the transaction back and the claim keeps its previous state.
 
@@ -6677,8 +6706,8 @@ Stable across versions; new keys may be added, existing keys do not change name 
 
 | Verb          | Shape |
 |---------------|-------|
-| `pull`        | `{ok, no_work, claim_token?, claim?, task?, action_id?}` |
-| `peek`        | `{ok, no_work, task?}` |
+| `pull`        | `{ok, no_work, claim_token?, claim?, task?, action_id?}`; plus `skipped_unready` and `unready` on `no_work` and whenever a task was skipped |
+| `peek`        | `{ok, no_work, task?}`; plus `skipped_unready` and `unready` on `no_work` and whenever a task would be skipped |
 | `complete` / `fail` / `release` / `block` | `{ok, claim_token, claim, task}` |
 | `claim` / `heartbeat` | `{ok, claim_token, claim}` |
 | `action start` / `action end` | `{ok, action_id, action}` |

@@ -221,12 +221,61 @@ auto append_action(std::string& out, const aa::action& value) -> void {
 // pull / peek
 // =========================================================================
 
-auto no_work_json() -> std::string {
-  return "{\"ok\":true,\"no_work\":true}\n";
+namespace {
+
+/// @brief Append `,"skipped_unready":<n>,"unready":[...]` (no closing brace).
+/// @param out The buffer to append to.
+/// @param skipped The tasks passed over.
+auto append_skipped(std::string& out, const std::vector<agentatomic::skipped_task>& skipped) -> void {
+  out.append(std::format(",\"skipped_unready\":{},\"unready\":[", skipped.size()));
+  for (std::size_t i = 0; i < skipped.size() && i < skipped_listing_cap; ++i) {
+    if (i > 0) {
+      out.push_back(',');
+    }
+    out.append(std::format("{{\"task_id\":{},\"reasons\":[", skipped[i].task_id));
+    for (std::size_t j = 0; j < skipped[i].reasons.size(); ++j) {
+      if (j > 0) {
+        out.push_back(',');
+      }
+      append_json_string(out, skipped[i].reasons[j]);
+    }
+    out.append("]}");
+  }
+  out.push_back(']');
+}
+
+} // namespace
+
+auto no_work_json(const std::vector<agentatomic::skipped_task>& skipped) -> std::string {
+  std::string out = "{\"ok\":true,\"no_work\":true";
+  append_skipped(out, skipped);
+  out.append("}\n");
+  return out;
 }
 
 auto no_work_text() -> std::string {
   return "no_work\n";
+}
+
+auto skipped_text(const std::vector<agentatomic::skipped_task>& skipped) -> std::string {
+  if (skipped.empty()) {
+    return {};
+  }
+  std::string out = std::format("skipped {} unready task(s):", skipped.size());
+  for (std::size_t i = 0; i < skipped.size() && i < skipped_listing_cap; ++i) {
+    out += i == 0 ? " " : "; ";
+    out += std::format("task:{} (", skipped[i].task_id);
+    for (std::size_t j = 0; j < skipped[i].reasons.size(); ++j) {
+      out += j == 0 ? "" : ", ";
+      out += skipped[i].reasons[j];
+    }
+    out += ')';
+  }
+  if (skipped.size() > skipped_listing_cap) {
+    out += std::format("; and {} more", skipped.size() - skipped_listing_cap);
+  }
+  out += '\n';
+  return out;
 }
 
 auto pull_json(const agentatomic::pull_result& result, const aa::task_row& task) -> std::string {
@@ -236,7 +285,11 @@ auto pull_json(const agentatomic::pull_result& result, const aa::task_row& task)
   append_claim(out, *result.acquired);
   out.append(",\"task\":");
   append_task(out, task);
-  out.append(std::format(",\"action_id\":{}}}\n", result.action_id));
+  out.append(std::format(",\"action_id\":{}", result.action_id));
+  if (!result.skipped.empty()) {
+    append_skipped(out, result.skipped);
+  }
+  out.append("}\n");
   return out;
 }
 
@@ -244,9 +297,12 @@ auto pull_text(const agentatomic::pull_result& result) -> std::string {
   return std::format("pulled task:{} claim:{} action:{}\n", result.task_id, result.acquired->claim_token, result.action_id);
 }
 
-auto peek_json(const aa::task_row& task) -> std::string {
+auto peek_json(const aa::task_row& task, const std::vector<agentatomic::skipped_task>& skipped) -> std::string {
   std::string out = "{\"ok\":true,\"no_work\":false,\"task\":";
   append_task(out, task);
+  if (!skipped.empty()) {
+    append_skipped(out, skipped);
+  }
   out.append("}\n");
   return out;
 }

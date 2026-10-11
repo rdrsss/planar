@@ -153,18 +153,12 @@ TEST_CASE("every renderer payload ends with exactly one newline", "[agentrender]
   atomic::terminal_result ended{.released = claim, .task_id = 2};
 
   std::vector<std::string> payloads{
-      render::no_work_json(),
-      render::no_work_text(),
-      render::pull_json(pulled, task),
-      render::pull_text(pulled),
-      render::peek_json(task),
-      render::peek_text(task),
-      render::claim_json(claim),
-      render::claim_text(claim),
-      render::heartbeat_text(claim),
-      render::terminal_json(ended, task),
-      render::terminal_text(ended, task),
-      render::abort_json(claim, 1),
+      render::no_work_json({}),           render::no_work_text(),
+      render::pull_json(pulled, task),    render::pull_text(pulled),
+      render::peek_json(task, {}),        render::peek_text(task),
+      render::claim_json(claim),          render::claim_text(claim),
+      render::heartbeat_text(claim),      render::terminal_json(ended, task),
+      render::terminal_text(ended, task), render::abort_json(claim, 1),
       render::abort_text(claim, 1),
   };
   for (auto const& payload : payloads) {
@@ -188,7 +182,7 @@ TEST_CASE("the text one-liners match the oracle captures", "[agentrender]") {
   REQUIRE(render::abort_text(claim, 1) == "aborted claim:14dc6e775153923eece9afe572bd8e5f by session:1\n");
   REQUIRE(render::action_end_text(5, aa::outcome::error_) == "ok action:5 outcome:error\n");
   REQUIRE(render::no_work_text() == "no_work\n");
-  REQUIRE(render::no_work_json() == "{\"ok\":true,\"no_work\":true}\n");
+  REQUIRE(render::no_work_json({}) == "{\"ok\":true,\"no_work\":true,\"skipped_unready\":0,\"unready\":[]}\n");
 }
 
 TEST_CASE("the taskless terminal envelope names the claim and carries a null task", "[agentrender][7118]") {
@@ -277,4 +271,45 @@ TEST_CASE("terminal_json inserts a trailing-fields fragment before the closing b
   auto const                    taskless_plain = render::terminal_json(taskless);
   CHECK(render::terminal_json(taskless, R"(,"diagnose":{"state":"clean"})") ==
         taskless_plain.substr(0, taskless_plain.size() - 2) + R"(,"diagnose":{"state":"clean"}})" + "\n");
+}
+
+TEST_CASE("the skipped-unready keys list the first twenty tasks and count them all", "[agentrender][readiness]") {
+  std::vector<atomic::skipped_task> skipped{
+      {.task_id = 7, .reasons = {"blocked_by_open_task", "open_question_linked"}},
+      {.task_id = 9, .reasons = {"proposed_decision_linked"}},
+  };
+  REQUIRE(render::no_work_json(skipped) ==
+          R"({"ok":true,"no_work":true,"skipped_unready":2,"unready":[{"task_id":7,"reasons":["blocked_by_open_task",)"
+          R"("open_question_linked"]},{"task_id":9,"reasons":["proposed_decision_linked"]}]})"
+          "\n");
+  REQUIRE(render::skipped_text(skipped) ==
+          "skipped 2 unready task(s): task:7 (blocked_by_open_task, open_question_linked); task:9 (proposed_decision_linked)\n");
+  REQUIRE(render::skipped_text({}).empty());
+
+  std::vector<atomic::skipped_task> many;
+  for (std::int64_t id = 1; id <= 25; ++id) {
+    many.push_back({.task_id = id, .reasons = {"blocked_by_open_task"}});
+  }
+  auto const json = render::no_work_json(many);
+  REQUIRE(json.find(R"("skipped_unready":25,)") != std::string::npos);
+  REQUIRE(json.find(R"({"task_id":20,)") != std::string::npos);
+  REQUIRE(json.find(R"({"task_id":21,)") == std::string::npos);
+  REQUIRE(render::skipped_text(many).ends_with("; and 5 more\n"));
+}
+
+TEST_CASE("pull and peek success payloads carry the skipped keys only when a task was skipped", "[agentrender][readiness]") {
+  auto const          claim = sample_claim();
+  auto const          task  = sample_task();
+  atomic::pull_result pulled{.no_work   = false,
+                             .acquired  = claim,
+                             .task_id   = 2,
+                             .action_id = 2,
+                             .skipped   = {{.task_id = 1, .reasons = {"open_question_linked"}}}};
+  REQUIRE(render::pull_json(pulled, task)
+              .ends_with(R"(,"action_id":2,"skipped_unready":1,"unready":[{"task_id":1,"reasons":["open_question_linked"]}]})"
+                         "\n"));
+  REQUIRE(render::peek_json(task, pulled.skipped)
+              .ends_with(R"(,"skipped_unready":1,"unready":[{"task_id":1,"reasons":["open_question_linked"]}]})"
+                         "\n"));
+  REQUIRE(render::peek_json(task, {}).find("skipped_unready") == std::string::npos);
 }

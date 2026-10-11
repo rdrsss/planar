@@ -121,6 +121,9 @@ export struct domain_error {
   /// verbatim. When false, the reporting site composes
   /// `"error: " + text + "\n"` around it.
   bool rendered = false;
+  /// @brief The `--json` envelope's `tag`, when the handler names one explicitly. Empty means
+  /// `derive_tag` derives it from `text` or `kind`.
+  std::string tag;
 };
 
 /// @brief Build a `domain_error` from a message BODY — no `error: `
@@ -258,6 +261,9 @@ auto looks_like_bare_tag(std::string_view s) -> bool {
 /// @param err The handler failure.
 /// @return The envelope's `tag` value.
 export auto derive_tag(const domain_error& err) -> std::string {
+  if (!err.tag.empty()) {
+    return err.tag;
+  }
   if (!err.rendered) {
     auto const             sep = err.text.rfind(": ");
     std::string_view const candidate =

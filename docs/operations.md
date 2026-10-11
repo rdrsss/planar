@@ -219,7 +219,8 @@ flowchart TD
 
 **Acquire.** `planar-agent pull <plan>` picks the next eligible task and, in a
 single transaction, opens an active claim, flips `todo -> doing`, and writes
-the top-level action row. For hand-picked work, `planar-agent claim --entity
+the top-level action row. A task that is not ready (a linked open question or proposed decision, an
+open dependency) is skipped; `claim` on one is refused unless `--allow-unready` is given. For hand-picked work, `planar-agent claim --entity
 task:<id>` claims a specific task; by default it also performs the
 `todo -> doing` transition. `--no-transition` keeps the primitive claim-only
 behavior.

@@ -12,7 +12,8 @@ namespace planar::cmd::agent::handlers::pull_cli {
 /// @param root Input root.
 export auto add(CLI::App& root) -> void {
   // --- pull ---------------------------------------------------------------
-  CLI::App* pull = root.add_subcommand("pull", "Atomically pick the next eligible task, claim it, and flip status to doing.");
+  CLI::App* pull = root.add_subcommand(
+      "pull", "Atomically pick the next eligible ready task, claim it, and flip status to doing; unready tasks are skipped.");
   shared::add_vendor(*pull, "Vendor tag (default: planar-agent)", "Vendor session id (e.g. claude:s1)");
   pull->add_option("--role")->description("Role name (planner|coder|reviewer|test_coder|...)");
   shared::add_ttl(*pull, "Lease TTL (default 600s; accepts bare int seconds or suffixed duration: 10m, 1h, 500ms)");
