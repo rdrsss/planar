@@ -35,7 +35,7 @@ namespace {
 /// byte-matched against the built oracle.
 constexpr std::string_view k_starter_edit = R"TOML(# ~/.planar/config.toml — Planar configuration
 #
-# This file was created by "planar config init" (or "planar init").
+# This file was created by "planar config edit" (or "planar init").
 # All keys are optional. Anything you don't set falls through to the
 # embedded defaults shipped in the binary.
 #

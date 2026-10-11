@@ -2540,6 +2540,50 @@ the complete ordered projection to the source state.
 {"contract_version":"block-document-v1","source_uuid":"<db-uuid>","document_id":"<db-uuid>:artifact:1","content_revision":"<sha256>","passages":[{"key":"<db-uuid>:...","kind":"heading","text":"...","source":{"kind":"artifact","id":"1","path":"body","start_line":1,"end_line":1}}]}
 ```
 
+### `planar document validate-range`
+
+```bash
+planar document validate-range --kind plan|artifact --id <id> \
+  --content-revision <revision> --start-key <key> --start-offset <bytes> \
+  --end-key <key> --end-offset <bytes> \
+  --covered-key <key>... --segment-quote <text>... --json
+```
+
+Validates a complete adjacent range at one content revision. Offsets are UTF-8
+byte offsets and must lie on code-point boundaries. Covered keys and segment
+quotes are evidence, not authority: Planar recomputes and compares them before
+returning the canonical keys, segment quotes, and normalized full quote.
+
+**Output (`block-range-validation-v1`):**
+```json
+{"contract_version":"block-range-validation-v1","source_uuid":"<db-uuid>","document_id":"<db-uuid>:artifact:1","content_revision":"<sha256>","covered_keys":["<key>","..."],"segment_quotes":["<text>","..."],"normalized_quote":"<segments joined by \\n>"}
+```
+
+**Rejection reasons.** A rejected range exits `2` with
+`error: document range rejected: <reason>` on stderr. Checks run in this order
+and the first failure is reported:
+
+| Reason | Meaning |
+|--------|---------|
+| `stale_revision` | `--content-revision` is not the revision just projected: the source changed, or the evidence came from another database. |
+| `missing_boundary` | A boundary key or offset is absent. All four are required flags, so the parser normally refuses first (exit `2`). |
+| `foreign_key` | `--start-key` or `--end-key` is not a passage of this projection. |
+| `reversed_range` | The end passage precedes the start passage. |
+| `invalid_utf8_boundary` | An offset is negative, past the passage end, before the start offset in a single-passage range, or splits a UTF-8 code point. |
+| `noncontiguous_covered_keys` | The `--covered-key` list is not exactly the ordered passages from start to end. |
+| `forged_quote` | The `--segment-quote` list is not exactly the projected text of each covered segment. |
+
+The recovery for every reason is the same: re-run `document project`, rebuild
+the evidence from that output, and resend. Retrying unchanged evidence fails
+the same way.
+
+**Exit codes (both leaves):**
+- `0` — success.
+- `1` — the source row is absent; the database file cannot be opened read-only (including when it does not exist); a projection query failed; the schema is **behind** this binary or has a gap.
+- `2` — an unsupported `--kind` (anything but `plan` / `artifact`), a parse failure, or (on `validate-range`) a rejected range.
+- `7` — the schema is **newer** than this binary supports.
+
+---
 
 ## Domain: `annotate`
 
@@ -7175,7 +7219,7 @@ For quick reference, all documented commands grouped by domain:
 | `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario review`, `scenario retire` |
 | `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision review` |
 | `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact review`, `artifact link` |
-| `document` | `document project` |
+| `document` | `document project`, `document validate-range` |
 | `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate capabilities`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
 | `workbench` | `workbench lint`, `workbench push`, `workbench pull`, `workbench status`, `workbench resolve`, `workbench sync`, `workbench archive`, `workbench restore`, `workbench list`, `workbench publish`, `workbench edit` |

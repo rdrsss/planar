@@ -796,7 +796,7 @@ if scen mode-switch; then
 if [[ "$HEALTH" == 1 ]]; then
 mark 22
 # 22. A copy install across all six vendors: nine roots, 3 skill directories and
-# 72 agent files, every one fresh. One byte changed in the installed Claude
+# 66 agent files, every one fresh. One byte changed in the installed Claude
 # skill flips exactly that row to stale and degrades health; restoring it
 # clears it.
 [[ "$(freshness "$TMP/h21")" == "current fresh 69 69 0 0" ]] || fail "all-vendor copy install is not fresh in health: $(freshness "$TMP/h21")"

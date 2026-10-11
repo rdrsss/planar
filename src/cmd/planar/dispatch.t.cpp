@@ -206,6 +206,34 @@ TEST_CASE("an unknown subcommand under a group names the group", "[cmd][dispatch
   CHECK(got.err == "error: annotate: The following argument was not expected: nosuchsub\n");
 }
 
+TEST_CASE("planar help with a trailing word prints the root page and exits 0", "[cmd][dispatch][parity]") {
+  // `help` takes no positional, so CLI11 parses `task` as a second root child.
+  // docs/cli-reference.md documents the root page for `planar help task`; the
+  // two-parsed-children refusal must not catch it.
+  auto const bare = dispatch({"help"});
+  REQUIRE(bare.code == 0);
+  REQUIRE_FALSE(bare.out.empty());
+  auto const got = dispatch({"help", "task"});
+  CHECK(got.code == 0);
+  CHECK(got.err.empty());
+  CHECK(got.out == bare.out);
+}
+
+TEST_CASE("a word that names a root verb under a group is refused naming only that word", "[cmd][dispatch][parity]") {
+  // `config init` and `task show 1 init` each parse two children at one level
+  // (the group and the root's own `init`). Both stay exit 2, and the message
+  // lists the misplaced word alone, not the valid words before it.
+  auto const config_init = dispatch({"config", "init"});
+  CHECK(config_init.code == 2);
+  CHECK(config_init.out.empty());
+  CHECK(config_init.err == "error: planar: The following argument was not expected: init\n");
+
+  auto const task_show = dispatch({"task", "show", "1", "init"});
+  CHECK(task_show.code == 2);
+  CHECK(task_show.out.empty());
+  CHECK(task_show.err == "error: planar: The following argument was not expected: init\n");
+}
+
 TEST_CASE("the removed workflow verb is an unknown subcommand and leaves the schema catalog", "[cmd][dispatch][parity]") {
   // Task 7453 removed `planar workflow`. A removal needs a negative test: the
   // verb must refuse at exit 2 as an unknown subcommand, and no catalog entry
@@ -1289,19 +1317,17 @@ TEST_CASE("every leaf is in exactly one of the two handler populations", "[cmd][
   // `ext`/`sync` GROUP nodes left with them. Verified by running this test
   // against the live tree, not by arithmetic on this comment.
   // Task 6939 adds the two `document` leaves. The parent is a group node,
-  // so only the leaves change this census. Task 7468 removes four leaves
-  // (`document validate-range`, `audit publish-decision`, `assoc detect` and
-  // `config init`): 203 -> 199.
+  // so only the leaves change this census.
   auto const leaves = planar::cliapp::leaf_keys(*tree);
   // Task 7205 adds the `help` leaf (218 -> 219).
   // Task 7319 adds the `update` leaf (219 -> 220).
   // Plan 1142 task 7455 removes `models` (14 leaves) and task 7453 removes the three `workflow` leaves (220 -> 203).
   // Plan 1142 task 7463 removes `explore`, `skills` and the three `scope` stubs (203 -> 198).
-  // Plan 1142 task 7468 removes `document validate-range`, `audit publish-decision`, `assoc detect` and `config init` (198 ->
-  // 194). Task 7472 removes `planar report` (194 -> 193).
-  // Tasks 7469 and 7471 removed 15 leaves (193 -> 178); task 7473 removes `feedback triage list`, `show` and `set`
-  // (178 -> 175), re-measured from the built planar binary.
-  CHECK(leaves.size() == 168);
+  // Plan 1142 task 7468 removes `audit publish-decision`, `assoc detect` and `config init` (198 -> 195; the operator
+  // restored `document validate-range` after review). Task 7472 removes `planar report` (195 -> 194).
+  // Tasks 7469 and 7471 removed 15 leaves (194 -> 179); task 7473 removes `feedback triage list`, `show` and `set`
+  // (179 -> 176); task 7467 removes seven review and diff leaves (176 -> 169), re-measured from the built planar binary.
+  CHECK(leaves.size() == 169);
 
   CHECK(std::ranges::find(leaves, std::string{"update"}) != leaves.end());
   for (auto const& leaf : leaves) {
