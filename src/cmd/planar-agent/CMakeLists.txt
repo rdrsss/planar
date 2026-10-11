@@ -126,6 +126,7 @@ planar_binary(planar_agent
     args.cppm
     locality.cppm
     policy.cppm
+    brief.cppm
     main.cppm
     handlers/shared/cli.cppm
     handlers/version/command.cppm
@@ -165,6 +166,7 @@ planar_binary(planar_agent
     queue_store.cpp
     locality.cpp
     policy.cpp
+    brief.cpp
     handlers/version/version.cpp
     handlers/schema/schema.cpp
     handlers/shared/claims.cpp
