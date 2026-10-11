@@ -926,6 +926,17 @@ auto abort_claim(db::connection& conn, std::string_view claim_token, std::option
   if (changes(conn) == 0) {
     return std::unexpected(agent_error::claim_not_found);
   }
+  // The `claim_nest` action a bare claim opens for `--parent-action` ends with the claim, for task, plan
+  // and plan_step claims alike. (The `claim_check` marker is closed by `reset_direct_claim_task_after_abort`.)
+  auto nest = conn.prepare(std::format("update agent_actions\n"
+                                       "set ended_at = {},\n"
+                                       "    outcome = 'aborted'\n"
+                                       "where claim_id = (select id from agent_work_claims where claim_token = ?)\n"
+                                       "  and ended_at is null and metadata like '%\"claim_nest\":true%'",
+                                       k_now));
+  if (!nest || !nest->bind_text(1, claim_token) || !nest->step()) {
+    return std::unexpected(agent_error::query_failed);
+  }
   return get_claim_by_token(conn, claim_token);
 }
 
@@ -1423,16 +1434,24 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
 
   // --- return tasks to `todo` where THIS claim owns the transition.
   // The evidence is any action row on the claim (pull's role action or a
-  // direct claim's `claim_check`); a `--no-transition` claim has none and
-  // so cannot reset a status it never set. The `not exists` guard keeps a
-  // replacement claim's task from being yanked away.
+  // direct claim's `claim_check`) EXCEPT the bookkeeping rows a bare claim
+  // can carry: the `claim_nest` action opened for `--parent-action` and the
+  // `unready_override` audit row. A `--no-transition` claim has no other
+  // action, so it cannot reset a status it never set. Rows are told apart by
+  // their metadata marker and not by kind, because `pull --role other` opens
+  // an `other` dispatch action whose reset must still work. The `not exists`
+  // guard keeps a replacement claim's task from being yanked away.
   for (auto const& candidate : candidates) {
     if (candidate.kind != entity_kind::task) {
       continue;
     }
     auto reset = conn.prepare(std::format("update tasks set status = 'todo', updated_at = {0}\n"
                                           "where id = ? and status = 'doing'\n"
-                                          "  and exists (select 1 from agent_actions where claim_id = ?)\n"
+                                          "  and exists (\n"
+                                          "    select 1 from agent_actions where claim_id = ?\n"
+                                          "      and coalesce(metadata, '') not like '%\"claim_nest\":true%'\n"
+                                          "      and coalesce(metadata, '') not like '%\"unready_override\":true%'\n"
+                                          "  )\n"
                                           "  and not exists (\n"
                                           "    select 1 from agent_work_claims\n"
                                           "    where entity_kind = 'task' and entity_id = ? and status = 'active'\n"
@@ -1447,7 +1466,8 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
     auto close = conn.prepare(std::format("update agent_actions\n"
                                           "set ended_at = {},\n"
                                           "    outcome = 'aborted'\n"
-                                          "where claim_id = ? and action_kind = 'claim_check' and ended_at is null",
+                                          "where claim_id = ? and ended_at is null\n"
+                                          "  and (action_kind = 'claim_check' or metadata like '%\"claim_nest\":true%')",
                                           k_now));
     if (!close || !close->bind_int64(1, candidate.id) || !close->step()) {
       return std::unexpected(agent_error::query_failed);

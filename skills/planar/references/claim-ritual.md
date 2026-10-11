@@ -12,8 +12,9 @@ through `planar-agent`. There is no `planar agent` namespace.
    `todo`. `plan next --json` always carries every bucket (available, claimed, stale,
    blocked); its text form hides claimed and stale unless asked; see
    `planar plan next --help`.
-2. Check readiness with `planar task packet <task-id> --json`. A claim still succeeds on
-   an unready packet, so `ready: false` is your stop signal, not the claim's. Readiness
+2. Check readiness with `planar task packet <task-id> --json`. `pull` skips an
+   unready task and `claim` refuses one (exit 1) unless `--allow-unready` is given;
+   `ready: false` names the reasons. Readiness
    covers coordination only: the task is `todo` (or `doing` under a stale or expired
    claim), has a plan, its citations resolve, and nothing holds it back. The named
    `reasons` are `missing_title`, `invalid_task_status`, `missing_owning_plan`,

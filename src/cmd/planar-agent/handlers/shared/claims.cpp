@@ -87,7 +87,7 @@ auto check_metadata(const std::optional<std::string>& raw) -> std::optional<doma
 /// @param reason The packet's reason name.
 /// @param task_id The refused task.
 /// @return The hint, or the empty string for a reason without one.
-auto reason_hint(std::string_view reason, std::int64_t task_id) -> std::string {
+auto reason_hint(std::string_view reason, std::int64_t task_id, std::string_view status) -> std::string {
   if (reason == "blocked_by_open_task") {
     return std::format("finish the dependency (planar task show {} lists it)", task_id);
   }
@@ -98,7 +98,8 @@ auto reason_hint(std::string_view reason, std::int64_t task_id) -> std::string {
     return "accept or withdraw the linked proposed decision";
   }
   if (reason == "invalid_task_status") {
-    return "the task is not todo, or another claim holds it; wait for its lease to lapse";
+    return std::format("the task is {}; only a todo task, or a doing task with no live claim, can be claimed",
+                       status.empty() ? "not claimable" : status);
   }
   if (reason == "unresolved_citation") {
     return "repair or re-cite the artifact the task cites";
@@ -118,8 +119,9 @@ auto reason_hint(std::string_view reason, std::int64_t task_id) -> std::string {
 /// command that would succeed.
 /// @param task_id The refused task.
 /// @param reasons Its readiness reasons.
+/// @param status The task's current status, for the `invalid_task_status` hint (empty when unknown).
 /// @return The domain error to return from the handler.
-auto not_ready_error(std::int64_t task_id, const std::vector<std::string>& reasons) -> domain_error {
+auto not_ready_error(std::int64_t task_id, const std::vector<std::string>& reasons, std::string_view status) -> domain_error {
   std::string list;
   for (auto const& reason : reasons) {
     list += list.empty() ? "" : ", ";
@@ -127,7 +129,7 @@ auto not_ready_error(std::int64_t task_id, const std::vector<std::string>& reaso
   }
   std::string body = std::format("claim: task {} is not ready: {}", task_id, list);
   for (auto const& reason : reasons) {
-    if (auto const hint = reason_hint(reason, task_id); !hint.empty()) {
+    if (auto const hint = reason_hint(reason, task_id, status); !hint.empty()) {
       body += std::format("\n  {}: {}", reason, hint);
     }
   }
@@ -360,7 +362,8 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                                                           !cliapp::flag_bool(args, "--no-transition"), task_policy(), &readiness);
   if (!acquired) {
     if (acquired.error() == aa::agent_error::task_not_ready) {
-      return std::unexpected(not_ready_error(entity->id, readiness.unready_reasons));
+      auto const task = aa::get_task(**conn, entity->id);
+      return std::unexpected(not_ready_error(entity->id, readiness.unready_reasons, task ? std::string_view{task->status} : ""));
     }
     return std::unexpected(verb_error("claim", acquired.error()));
   }

@@ -473,6 +473,7 @@ auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args,
                                                    .vendor_role      = args.role,
                                                    .model            = args.model,
                                                    .loc              = args.loc,
+                                                   .metadata         = aa::claim_nest_metadata,
                                                });
     if (!nested) {
       return std::unexpected(nested.error());

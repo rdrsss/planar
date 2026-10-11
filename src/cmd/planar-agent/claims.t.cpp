@@ -1122,3 +1122,108 @@ TEST_CASE("claim and pull without --ttl take a two-hour lease and --help states 
     CHECK_FALSE(help.out.contains("600"));
   }
 }
+
+// ===========================================================================
+// Bookkeeping actions of a bare claim must not let reconcile reset the task (plan 1142)
+// ===========================================================================
+
+namespace {
+
+/// Two tasks: task 1 pulled (its dispatch action 1 is the parent), task 2 left `doing` with no claim.
+auto doing_task_with_parent(scratch_dir const& scratch) -> void {
+  seed(scratch, 2);
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe"}).code == 0);
+  write_sql(scratch, "update tasks set status = 'doing' where id = 2");
+}
+
+/// Lapse every claim on `task_id` and sweep.
+auto lapse_and_reconcile(scratch_dir const& scratch, int task_id) -> void {
+  write_sql(scratch, std::format("update agent_work_claims set lease_expires_at = '2000-01-01T00:00:00.000Z' "
+                                 "where entity_id = {}",
+                                 task_id));
+  REQUIRE(run_verb(scratch, {"reconcile"}).code == 0);
+}
+
+} // namespace
+
+TEST_CASE("reconcile leaves a doing task alone after a stale bare claim with --parent-action",
+          "[cmd][agent][readiness][recovery][reconcile][1142]") {
+  scratch_dir scratch;
+  doing_task_with_parent(scratch);
+  REQUIRE(
+      run_verb(scratch, {"claim", "--entity", "task:2", "--no-transition", "--no-locality-probe", "--parent-action", "1"}).code ==
+      0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 2 and ended_at is null") == "1");
+
+  lapse_and_reconcile(scratch, 2);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where entity_id = 2") == "stale");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "doing");
+  // The nested bookkeeping row is closed with the claim, so diagnose has no unended action to flag.
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 2 and ended_at is null") == "0");
+}
+
+TEST_CASE("reconcile leaves a doing task alone after a stale bare claim with --allow-unready",
+          "[cmd][agent][readiness][recovery][reconcile][1142]") {
+  scratch_dir scratch;
+  doing_task_with_parent(scratch);
+  link_open_question(scratch, 2);
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "task:2", "--no-transition", "--no-locality-probe", "--allow-unready"}).code ==
+          0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 2 and metadata like '%unready_override%'") ==
+        "1");
+
+  lapse_and_reconcile(scratch, 2);
+  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "doing");
+
+  // Both bookkeeping rows together.
+  scratch_dir both;
+  doing_task_with_parent(both);
+  link_open_question(both, 2);
+  REQUIRE(run_verb(both, {"claim", "--entity", "task:2", "--no-transition", "--no-locality-probe", "--allow-unready",
+                          "--parent-action", "1"})
+              .code == 0);
+  lapse_and_reconcile(both, 2);
+  CHECK(scalar_text(both, "select status from tasks where id = 2") == "doing");
+  CHECK(scalar_text(both, "select count(*) from agent_actions where claim_id = 2 and ended_at is null") == "0");
+}
+
+TEST_CASE("reconcile still resets a task whose claim owns the transition", "[cmd][agent][reconcile][1142]") {
+  // Regression guard: pull --role other opens an `other` dispatch action, which is real evidence.
+  scratch_dir other;
+  seed(other, 1);
+  REQUIRE(run_verb(other, {"pull", "1", "--no-locality-probe", "--role", "other"}).code == 0);
+  CHECK(scalar_text(other, "select action_kind from agent_actions where claim_id = 1") == "other");
+  lapse_and_reconcile(other, 1);
+  CHECK(scalar_text(other, "select status from tasks where id = 1") == "todo");
+
+  // And a transitioning direct claim (claim_check marker) with a parent resets too.
+  scratch_dir direct;
+  seed(direct, 2);
+  REQUIRE(run_verb(direct, {"pull", "1", "--no-locality-probe"}).code == 0);
+  REQUIRE(run_verb(direct, {"claim", "--entity", "task:2", "--no-locality-probe", "--parent-action", "1"}).code == 0);
+  lapse_and_reconcile(direct, 2);
+  CHECK(scalar_text(direct, "select status from tasks where id = 2") == "todo");
+}
+
+TEST_CASE("a bare claim's nested action is closed by abort", "[cmd][agent][reconcile][1142]") {
+  scratch_dir scratch;
+  doing_task_with_parent(scratch);
+  REQUIRE(
+      run_verb(scratch, {"claim", "--entity", "task:2", "--no-transition", "--no-locality-probe", "--parent-action", "1"}).code ==
+      0);
+  auto const token = scalar_text(scratch, "select claim_token from agent_work_claims where entity_id = 2");
+  REQUIRE(run_verb(scratch, {"abort", "--claim", token, "--reason", "test"}).code == 0);
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where claim_id = 2 and ended_at is null") == "0");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 2") == "doing");
+}
+
+TEST_CASE("the invalid_task_status hint names the status and the claimable states", "[cmd][agent][readiness][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  write_sql(scratch, "update tasks set status = 'done' where id = 1");
+  auto const refused = run_verb(scratch, {"claim", "--entity", "task:1", "--no-transition", "--no-locality-probe"});
+  CHECK(refused.code == 1);
+  CHECK(refused.err.contains("invalid_task_status: the task is done; only a todo task, or a doing task with no live claim, "
+                             "can be claimed"));
+  CHECK_FALSE(refused.err.contains("wait for its lease"));
+}

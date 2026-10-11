@@ -227,12 +227,12 @@ namespace {
 /// @param out The buffer to append to.
 /// @param skipped The tasks passed over.
 auto append_skipped(std::string& out, const std::vector<agentatomic::skipped_task>& skipped) -> void {
-  out.append(std::format(",\"skipped_unready\":{},\"unready\":[", skipped.size()));
+  out += std::format(",\"skipped_unready\":{},\"unready\":[", skipped.size());
   for (std::size_t i = 0; i < skipped.size() && i < skipped_listing_cap; ++i) {
     if (i > 0) {
       out.push_back(',');
     }
-    out.append(std::format("{{\"task_id\":{},\"reasons\":[", skipped[i].task_id));
+    out += std::format("{{\"task_id\":{},\"reasons\":[", skipped[i].task_id);
     for (std::size_t j = 0; j < skipped[i].reasons.size(); ++j) {
       if (j > 0) {
         out.push_back(',');
@@ -285,7 +285,7 @@ auto pull_json(const agentatomic::pull_result& result, const aa::task_row& task)
   append_claim(out, *result.acquired);
   out.append(",\"task\":");
   append_task(out, task);
-  out.append(std::format(",\"action_id\":{}", result.action_id));
+  out += std::format(",\"action_id\":{}", result.action_id);
   if (!result.skipped.empty()) {
     append_skipped(out, result.skipped);
   }

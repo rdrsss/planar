@@ -461,6 +461,14 @@ export auto error_name(agent_error err) -> std::string_view;
 /// length the claim already holds. The reconcile stale threshold is a separate value.
 export inline constexpr std::int64_t default_lease_secs = 7200;
 
+/// @brief The `agent_actions.metadata` of the open action `claim_entity` writes for a claim that
+/// has no `claim_check` marker but was asked for a `--parent-action`.
+///
+/// Together with the audit row's `"unready_override":true` it marks an action as bookkeeping that is
+/// NOT evidence the claim moved the task: `reconcile` ignores marked rows when it decides whether to
+/// return a task to `todo`.
+export inline constexpr std::string_view claim_nest_metadata = R"({"claim_nest":true})";
+
 /// @brief Arguments to `acquire_claim`. Mirrors zig's `AcquireArgs`.
 export struct acquire_args {
   std::int64_t                    session_id{};                   ///< Owning session.
