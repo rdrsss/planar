@@ -643,20 +643,22 @@ TEST_CASE("heartbeat refuses --as and --attempt as unknown flags, writing nothin
   CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'heartbeat'") == beats_before);
 }
 
-TEST_CASE("a legacy engine-supervised claim reads as before: its caller reports status, and it completes",
+TEST_CASE("a legacy engine-supervised claim heartbeats and completes like an ordinary claim",
           "[cmd][agent][supervision][7454][7458]") {
   scratch_dir scratch;
   auto const  token = pulled(scratch, 1);
   // A row written before the removal: handed to the engine under attempt A1.
   write_sql(scratch, "update agent_work_claims set supervisor = 'engine', attempt_id = 'A1' where id = 1");
 
-  // The caller of a legacy engine claim may still report status, and the
-  // lease stays where the engine left it. Renewal is no longer reachable
-  // from the binary, so a TTL-less renewal attempt is refused.
+  // The caller of a legacy engine claim heartbeats it like any ordinary claim:
+  // a status report is recorded, and a TTL extends the lease.
   auto const lease_before = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
   CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--status", "still here"}).code == 0);
-  CHECK(scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1") == lease_before);
-  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "3600"}).code != 0);
+  CHECK(actions_of(scratch, "heartbeat") == "1");
+  CHECK(run_verb(scratch, {"heartbeat", "--claim", token, "--ttl", "3600"}).code == 0);
+  auto const lease_after = scalar_text(scratch, "select lease_expires_at from agent_work_claims where id = 1");
+  CHECK(lease_after > lease_before);
+  CHECK(scalar_text(scratch, "select status from agent_work_claims where id = 1") == "active");
   // The terminal verbs no longer consult the supervisor column at all.
   auto const done = run_verb(scratch, {"complete", "--claim", token, "--no-locality-probe"});
   CHECK(done.code == 0);

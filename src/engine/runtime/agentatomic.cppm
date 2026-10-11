@@ -227,11 +227,12 @@ export auto peek_next(db::connection& conn, std::int64_t plan_id) -> std::expect
 // Engine supervision: heartbeat only (plan 1033 D3, task 6488)
 // =========================================================================
 //
-// The `--as engine --attempt` pair on `heartbeat` is the one remaining
-// supervised path. No verb hands a claim to the engine any more, and the
-// terminal verbs, `reconcile` and `abort` no longer consult the supervisor
-// column, so a claim carrying a legacy `supervisor` value is an ordinary
-// claim everywhere except this heartbeat gate.
+// The engine actor below is no longer reachable from any verb: no verb hands
+// a claim to the engine, and `heartbeat` refuses `--as` and `--attempt` as
+// unknown flags, so the CLI only ever builds a caller gate. The terminal
+// verbs, `reconcile`, `abort` and the heartbeat gate itself no longer consult
+// the supervisor column for the caller, so a claim carrying a legacy
+// `supervisor` value is an ordinary claim to its caller everywhere.
 
 /// @brief Who is issuing a supervised heartbeat.
 export enum class actor : std::uint8_t {
@@ -248,10 +249,10 @@ export struct supervisor_gate {
 /// @brief Heartbeat a claim with supervision enforced.
 ///
 ///   - caller claim, caller actor: exactly the pre-plan-1033 heartbeat.
+///   - engine claim, caller actor: an ordinary heartbeat. The caller extends the
+///     lease, and reports status, as on any other claim (task 7458).
 ///   - engine claim, engine actor with the associated attempt: extends the lease.
-///   - engine claim, caller actor, `status` given, no `ttl`: STATUS ONLY —
-///     the status action is written and the lease is left exactly as it was.
-///   - engine claim, caller actor, no `status` or a `ttl`: `supervisor_mismatch`.
+///     Not reachable from the CLI (see the note above).
 ///   - caller claim, engine actor: `supervisor_mismatch`.
 ///
 /// `status`, when given, is recorded as a closed `heartbeat` action whose

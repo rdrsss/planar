@@ -86,8 +86,8 @@ export auto current_version(connection& conn) -> std::expected<std::uint32_t, db
 /// `planar` owns migration, so it APPLIES the pending chain and then
 /// refuses only `ahead`; `planar-agent`, `planar-watch` and `planar-ext`
 /// consume the schema and refuse BOTH directions (`behind` means "run
-/// `planar init`"). `planar-execute` holds no SQLite handle and is out of
-/// scope entirely. `planar-watch`'s refusal on `behind` was raised as an
+/// `planar init`"). The removed `planar-execute` held no SQLite handle and was
+/// out of scope entirely. `planar-watch`'s refusal on `behind` was raised as an
 /// operator question (task 6691) and DECIDED (decision 1120): keep it. All
 /// five binaries ship and install together as one bundle, so a schema
 /// mismatch on this binary is an installation-integrity signal, not an

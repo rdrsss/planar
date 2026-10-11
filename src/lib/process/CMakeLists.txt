@@ -20,10 +20,9 @@
 #     shell-quoted, and its behavior was measured against four consumers. It
 #     is a git-probe vocabulary, not a spawn vocabulary. Merging them would
 #     mean picking one of two incompatible error contracts.
-#   - `engine/execute/host.cpp`'s `capture_process` is NOT folded in. It is
-#     internal-linkage on purpose: `planar_engine_execute` is the
-#     architecture guard's "execute carrier" and must not grow a reachable
-#     surface into the rest of the tree.
+#   - `engine/execute/host.cpp`'s `capture_process` (the execute engine was
+#     removed) was NOT folded in. It had internal linkage on purpose, so no
+#     reachable surface could grow out of it into the rest of the tree.
 #
 # DEPENDS nothing: `fork`/`execv`/`posix_spawnp`/`waitpid` and `<filesystem>`
 # only. No DB handle, no logging, no JSON. Keeping it dependency-free is

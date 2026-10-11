@@ -85,7 +85,7 @@ export auto json_string(std::string_view text) -> std::string;
 // shortest-round-trip-in-fixed-notation algorithm, plus a fifth site that
 // had never implemented it at all. ONLY ONE OF THEM WAS CORRECT:
 //
-//   src/engine/execute/manifest.cpp  `format_double`      (correct)
+//   src/engine/execute/manifest.cpp (since removed)  `format_double`  (correct)
 //   src/cmd/planar/handlers/search.cpp   `format_zig_float`   (WRONG --
 //       it never stripped the `+` from `to_chars(scientific)`'s `e+NN`,
 //       and `std::from_chars` REJECTS a leading `+` rather than skipping
@@ -134,8 +134,9 @@ export auto json_string(std::string_view text) -> std::string;
 ///
 /// NOT JSON-SAFE. Non-finite input returns Zig's bare spellings — `inf`,
 /// `-inf`, `nan` — none of which is legal JSON. That is deliberate: the Lua
-/// manifest surface in `engine/execute` renders these values outside a JSON
-/// document and its pins require exactly those three strings. Every JSON
+/// manifest surface in the removed `engine/execute` rendered these values
+/// outside a JSON document, and its pins required exactly those three
+/// strings. Every JSON
 /// emitter must go through append_json_double() instead.
 /// @param value The value to render.
 /// @return The decimal text, with no exponent.

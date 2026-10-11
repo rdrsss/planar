@@ -21,9 +21,9 @@
 ///     thing, reachable only from `cmd_*`, and named for `$EDITOR`.
 ///   * `planar.cmd.planar.handlers.ext_adapter_factory::spawn_capture`
 ///     (layer 3) — `posix_spawnp` with a captured stdout.
-///   * `planar.engine.execute`'s `capture_process` — internal linkage on
-///     purpose, and must stay that way (that target may never grow a reach
-///     into the rest of the tree).
+///   * The removed `planar.engine.execute`'s `capture_process` — internal
+///     linkage on purpose, which kept it from reaching into the rest of the
+///     tree.
 ///
 /// This module is the second and third of those, moved DOWN to layer 1
 /// unchanged in behavior. Both former homes are now thin delegates. Layer 1

@@ -186,8 +186,8 @@ export enum class action_kind : std::uint8_t {
   claim_associate,     ///< Legacy: a claim handed to the engine supervisor (no verb writes it now).
   claim_terminal,      ///< Legacy: the engine's terminal verb on a claim (no verb writes it now).
   supervisor_override, ///< Legacy: an operator terminating an engine claim (no verb writes it now).
-  run_submitted,       ///< A Centurion run's submission.
-  run_reconciled,      ///< A terminal verb re-issued by post-crash reconciliation.
+  run_submitted,       ///< Legacy: a Centurion run's submission (no verb writes it now).
+  run_reconciled,      ///< Legacy: a terminal verb re-issued by post-crash reconciliation (no verb writes it now).
 };
 
 /// @brief Whether `kind` is one of the engine-supervision kinds.
@@ -427,10 +427,10 @@ export enum class agent_error : std::uint8_t {
   /// 6843; see `db::is_busy`). Distinct from `query_failed` because an
   /// operator or orchestrator should retry, not escalate.
   busy,
-  /// The caller is not the claim's supervisor: a caller terminal verb or
-  /// lease extension on an engine claim, or an engine verb on a caller
-  /// claim, or a supervisor change back to `caller` (plan 1033 D3). New
-  /// with the engine supervisor; the Zig oracle has no such tag.
+  /// The actor is not the claim's supervisor: an engine actor on a caller
+  /// claim (plan 1033 D3). New with the engine supervisor; the Zig oracle
+  /// has no such tag. No verb passes an engine actor any more (task 7458),
+  /// and a caller is never refused on a legacy engine-supervised claim.
   supervisor_mismatch,
   /// An engine verb named a different Centurion attempt than the one the
   /// claim is associated with (plan 1033 D4).

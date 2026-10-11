@@ -318,11 +318,10 @@ auto heartbeat(context& ctx, const cliapp::parsed_args& args) -> handler_result 
     }
   }
 
-  // One immediate transaction in the engine: the supervisor check, the
-  // lease (untouched for a caller status report on an engine claim, plan
-  // 1033 D3), and the status action land together or not at all. The
-  // heartbeat acts only as the caller; the engine actor is no longer
-  // reachable from this binary (task 7458).
+  // One immediate transaction in the engine: the lease and the status action
+  // land together or not at all. The heartbeat acts only as the caller, and a
+  // legacy engine-supervised claim is an ordinary claim to it; the engine actor
+  // is no longer reachable from this binary (task 7458).
   auto const refreshed = atomic::supervised_heartbeat(**conn, token, ttl, view(status), atomic::supervisor_gate{});
   if (!refreshed) {
     return std::unexpected(verb_error("heartbeat", refreshed.error()));

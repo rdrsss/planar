@@ -114,7 +114,7 @@ TEST_CASE("planar-agent's declared verb set includes the bounded queue observer"
   // So the set is now the oracle's whole eighteen top-level verbs, still
   // asserted EXACTLY — a completeness check against reality, so an
   // invented verb fails it just as it did before.
-  CHECK(names == std::set<std::string, std::less<>>{// The fourteen with real handlers.
+  CHECK(names == std::set<std::string, std::less<>>{// The fifteen with real handlers.
                                                     "abort", "action", "block", "claim", "complete", "end", "fail", "heartbeat",
                                                     "peek", "pull", "reconcile", "release", "schema", "start", "version",
                                                     // Plan 1080: the host-wide build and test queue's domain

@@ -17,9 +17,11 @@
 # Every binary here MUST be declared with planar_binary() (cmake/module.cmake),
 # never a bare add_executable(): the helper is what registers the target into
 # PLANAR_MODULE_TARGETS so cmake/architecture.cmake's D15 walk sees it at all.
-# A raw add_executable() sits outside the guard entirely — the gap task 6050
-# found, and the one cmake/tests/architecture-guard-fixture/unregistered-target-caught/
-# stands guard over.
+# A raw add_executable() sits outside the guard entirely, the gap task 6050
+# found. cmake/tests/architecture-guard-fixture/cmd-binary-db/ proves a
+# registered executable is walked, and planar-binary-real/ proves
+# planar_binary()'s registration runs. unregistered-target-caught/ guards a
+# different gap: an unregistered planar_* intermediate target hiding edges.
 
 add_subdirectory(internal)
 add_subdirectory(planar)
