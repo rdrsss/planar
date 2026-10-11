@@ -78,8 +78,6 @@ Two annotations are load-bearing:
   **Prefer the path forms.** A whole-repo touch collides with *any* same-repo
   touch under parallel-eligibility rule 2, so a plan whose tasks carry only
   repo edges is no more parallel-eligible than one that declares nothing.
-  Path declarations are also the seeds closure extraction reads.
-
   A bare path resolves only when the anchor's association has exactly one
   member repo; with two there is no principled choice, and the entry is
   reported rather than guessed. An entry naming an unknown repo

@@ -71,16 +71,14 @@ the `planar` binary.
 | `6` | Precondition conflict: slug conflict, or the entity already exists. | `slug_conflict`, `already_exists` |
 | `7` | Database schema is **newer** than this binary supports. | `schema_version_ahead` |
 | `8` | **Worktree-gate refusal**: a planning verb was run from inside a git worktree. Outside the `domain_error_kind` bucket table entirely — `planar.cmd.planar.worktree_gate` returns it directly, before the parser even runs, so it fires even when the invocation's flags would also fail to parse. `--scope` does not bypass it. | `planar.cmd.planar.worktree_gate::check` |
-| `10` | **Update available** — not a failure. Only `planar update --check` returns it, when the installed release differs from the latest one (see [Domain: `update`](#domain-update)). Outside the `domain_error_kind` table; the handler returns it through `passthrough_code`. No other verb returns 10 of its own (`workflow run` passes a workflow's own status through verbatim). | `planar update --check` |
+| `10` | **Update available** — not a failure. Only `planar update --check` returns it, when the installed release differs from the latest one (see [Domain: `update`](#domain-update)). Outside the `domain_error_kind` table; the handler returns it through `passthrough_code`. No other verb returns 10 of its own. | `planar update --check` |
 | `64` | Handler is **not implemented** — a placeholder verb. NOT `EX_USAGE`. | `not_implemented` |
 | `130` | **Interrupted by `SIGINT`** (128 + 2): a plain `planar update` caught it before its installer hand-off, removed its download directory and released the mutation lock. Outside the `domain_error_kind` table, through `passthrough_code`. | `planar update` |
 | `143` | **Interrupted by `SIGTERM`** (128 + 15), as for `130`. | `planar update` |
 
 **Usage errors exit `2`, not `64`.** An unknown flag, a missing required
 positional and a missing flag value are all `parse_error` on this binary. This
-is oracle-matched: 536 pinned refusals in
-`scripts/parity-data/6316-refusal-differential.jsonl` agree on `2` for those
-arms. `64` is reserved for a verb whose handler does not exist yet.
+is pinned by the CLI parity tests. `64` is reserved for a verb whose handler does not exist yet.
 
 ### The code for a usage error depends on WHICH BINARY
 
@@ -192,7 +190,7 @@ boolean `dirty`, and `compiler`. Version queries do not open the database.
 planar [GLOBAL FLAGS] <subcommand> [subcommand args]
 ```
 
-**Bare invocation.** When `planar` is called with no subcommand it prints the root help/usage text and exits 0, on a TTY or otherwise. There is no interactive terminal interface: `planar explore` is a reserved leaf that currently prints its own help page and exits 0 — see [Domain: `explore`](#domain-explore).
+**Bare invocation.** When `planar` is called with no subcommand it prints the root help/usage text and exits 0, on a TTY or otherwise. There is no interactive terminal interface in `planar`; the interactive agent view is `planar-watch`.
 
 ### Global Flags
 
@@ -210,7 +208,7 @@ Global flags must appear before the subcommand. They are not repeated in per-com
 
 ## Cross-scope guard
 
-The cross-scope guard is a refusal mechanism that runs at the top of nine specific verbs — those that walk from a parent entity to derived rows, or mutate one existing entity in a way the audit judged worth guarding (see [Guarded verbs](#guarded-verbs); it is NOT on every mutating verb). It is layered on top of the strict write-scope resolver described in [Scope Shorthand](#scope-shorthand): the resolver picks the operator's intended scope; the guard then compares that against the *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. See [docs/concepts.md § Cross-scope guard](./concepts.md#cross-scope-guard) for the conceptual model.
+The cross-scope guard is a refusal mechanism that runs at the top of seven specific verbs — those that walk from a parent entity to derived rows, or mutate one existing entity in a way the audit judged worth guarding (see [Guarded verbs](#guarded-verbs); it is NOT on every mutating verb). It is layered on top of the strict write-scope resolver described in [Scope Shorthand](#scope-shorthand): the resolver picks the operator's intended scope; the guard then compares that against the *target entity's* stored `(scope_kind, scope_id)` and refuses if they disagree. See [docs/concepts.md § Cross-scope guard](./concepts.md#cross-scope-guard) for the conceptual model.
 
 ### Resolution → guard pipeline
 
@@ -236,7 +234,7 @@ The refusal is a multi-line message naming both scopes and listing three remedia
        Refusing cross-scope write without explicit operator intent
 ```
 
-The exit code is `5` (`domain_error_kind::scope_mismatch`) — the same code as the ambiguous-workspace-root refusal described in [Scope in `docs/concepts.md`](./concepts.md#scope) — see e.g. `spec ingest --apply`'s and `feedback triage set`'s refusal messages, both worded "Refusing cross-scope write; pass --scope \<slug\> or cd into the right repo." An unresolvable `--scope` slug (`SlugNotFound`) is the only scope-related failure that exits `1`. No database writes occur before either refusal.
+The exit code is `5` (`domain_error_kind::scope_mismatch`) — the same code as the ambiguous-workspace-root refusal described in [Scope in `docs/concepts.md`](./concepts.md#scope) — see e.g. `spec ingest --apply`'s refusal message, worded "Refusing cross-scope write; pass --scope \<slug\> or cd into the right repo." An unresolvable `--scope` slug (`SlugNotFound`) is the only scope-related failure that exits `1`. No database writes occur before either refusal.
 
 ### No escape hatch
 
@@ -257,7 +255,7 @@ thing everywhere. Measured at task 6075:
 
 | Meaning | Effect of passing `--scope` | Verbs |
 |---------|----------------------------|-------|
-| **Write-scope selector** | Sets the operator scope the write resolves under. This is the one the guard's remedy assumes. | `plan create`, `task add`, `task update`, `artifact add`, `decision add`, `question add`, `scenario add`, `annotate add`, `closure compute`, `spec ingest`, `feedback triage set`, `audit publish-decision` |
+| **Write-scope selector** | Sets the operator scope the write resolves under. This is the one the guard's remedy assumes. | `plan create`, `task add`, `task update`, `artifact add`, `decision add`, `question add`, `scenario add`, `annotate add`, `spec ingest`, `decision accept`, `decision withdraw` |
 | **Patch field** | **Reassigns the entity's stored scope** — it moves the row. | `plan update`, `artifact update`, `annotate update` |
 | **Read filter** | Restricts which rows are listed. | `plan list`, `artifact list`, `decision list`, `question list`, `scenario list`, `annotate list`, `search`, `tree`, `dashboard`, `health` |
 | **Inert** | Accepted, parsed, discarded. | `planar-ext ext propagate` |
@@ -270,10 +268,9 @@ does not exist for them, and could not be offered without a new flag.
 
 ### Guarded verbs
 
-**Measured against the source at task 6075 (2026-09-11), re-measured at
-task 6825 (2026-09-21), and again at task 7468 (2026-10-10), not aspirational.**
-Nine verbs carry a cross-scope check; seven `guard_with_membership` call
-sites implement them (`sync push` and `sync pull` share one; `decision accept`
+**Measured against the source with `grep -rn guard_with_membership src/cmd`,
+not aspirational.** Seven verbs carry a cross-scope check; five
+`guard_with_membership` call sites implement them (`sync push` and `sync pull` share one; `decision accept`
 and `decision withdraw` share their transition helper). Every other mutating verb — including several this
 table claimed for years — performs **no** scope comparison.
 
@@ -297,13 +294,12 @@ accepts an entity at `repo:<project>` when the operator's write scope is an
 association that project belongs to (via `project_associations`). The reverse
 direction — operator `repo:`, entity `assoc:` — still refuses with exit 5.
 
-This was not always true. Until decision 1121 (task 6735), `task update` and
-`closure compute` called `engine::identity::check_scope_guard` directly —
+This was not always true. Until decision 1121 (task 6735), `task update`
+called `engine::identity::check_scope_guard` directly —
 strict equality after `assoc:` normalization — so an `assoc:<org>` →
 `repo:<member>` write was **accepted** by `spec ingest --apply` and
-**refused** by `task update`, from the identical working directory. Task 6075
-measured the split; decision 1121 widened those two to match the rest, on the
-grounds that strict equality could not tell "my own member repo" from "an
+**refused** by `task update`, from the identical working directory. Decision
+1121 widened `task update` to match the rest, on the grounds that strict equality could not tell "my own member repo" from "an
 unrelated repo" and refused both identically. The guard stops a write leaking
 sideways, not an association acting on its own member.
 
@@ -397,7 +393,7 @@ planar initialized
 
 Inspects the cwd-derived scope and proposes associations the current directory could be wired into. Scope itself is no longer managed as ambient state: it is a pure function of `(--scope flag, cwd, db schema)`. To change resolved scope, `cd` into a registered scope or pass `--scope <slug>` to the target verb.
 
-Plan 153 M5 removed the `planar scope use`, `planar scope pop`, and `planar scope clear` subcommands and dropped the underlying `active_scope` table (migration `0009_drop_active_scope.sql`). The removed verbs survive as exit-1 redirect stubs that print a one-line corrective message pointing at this section; they will be removed entirely in a future release.
+Plan 153 M5 removed the active scope stack and dropped the underlying `active_scope` table (migration `0009_drop_active_scope.sql`). The `planar scope use`, `pop` and `clear` redirect stubs were deleted in plan 1142; those words now fail as unknown subcommands at exit 2.
 
 ---
 
@@ -468,18 +464,6 @@ cd into a registered scope or pass --scope <slug> to any verb.
 **Schema effects:** Reads `associations`, `project_associations`, `projects`. No writes.
 
 **Capture:** None (read-only).
-
----
-
-### `planar scope use|pop|clear`
-
-Removed in plan 153 M5. Invoking any of these verbs prints a one-line corrective message on stderr and exits 2:
-
-```
-error: `planar scope use` was removed in plan 153 M5; the active scope stack is gone. Pass --scope <slug> to individual verbs, or cd into a registered scope. Run `planar scope show` to inspect the cwd-derived scope.
-```
-
-To switch scope: `cd` into the target project / workspace root, or pass `--scope <slug>` to the verb in question. To inspect: `planar scope show`.
 
 ---
 
@@ -1682,7 +1666,7 @@ planar task touches add <task-id> <repo-slug> [--path <p>] [--scope <scope>]
 ```
 (`path` is `null` for a repo-level add.)
 
-**Advisory — association-less repo.** If the named repo belongs to **no association**, a warning is printed to stderr (naming a same-basename alternative when one exists) and the write proceeds. This is not a scope check: link verbs are [deliberately unguarded](concepts.md#cross-scope-guard) because a touches edge to a repo in a *different* association is the legitimate polyrepo workflow. A repo in *no* association is different — nothing can reach it, so it is nearly always a stale duplicate slug chosen over the live one. Declarations on such a repo still compute eligibility correctly (rule 2 compares `(repo_id, path)` tuples and never reads the filesystem), but closure extraction reads `projects.root_path`, so seeds resolve against the wrong checkout and unreadable files are skipped silently.
+**Advisory — association-less repo.** If the named repo belongs to **no association**, a warning is printed to stderr (naming a same-basename alternative when one exists) and the write proceeds. This is not a scope check: link verbs are [deliberately unguarded](concepts.md#cross-scope-guard) because a touches edge to a repo in a *different* association is the legitimate polyrepo workflow. A repo in *no* association is different — nothing can reach it, so it is nearly always a stale duplicate slug chosen over the live one. Declarations on such a repo still compute eligibility correctly (rule 2 compares `(repo_id, path)` tuples and never reads the filesystem).
 
 **Schema effects:** Inserts into `entity_links(from_kind='task', from_id=<task-id>, to_kind='repo', to_id=<repo-id>, relationship='touches')`; with `--path`, also inserts `task_touch_paths(task_id=<task-id>, repo_id=<repo-id>, path=<p>)`.
 
@@ -5799,14 +5783,13 @@ List every recorded projection across both kinds and all vendors. The vendor col
 
 Test hook: when set, `planar local` uses this directory as the operator's `$HOME` for resolving `~/.planar/local/` and the per-vendor projection targets, and ignores `$CODEX_HOME`. Production use never sets this.
 
-## The editflow quartet: `edit` / `view` / `diff` / `review`
+## The editflow verbs: `edit` / `view` / `diff` / `review`
 
 Six entity families — `plan`, `task`, `question`, `decision`, `scenario`
-and `artifact` — each expose the same four editor-first verbs over their
-workbench file. Twenty-four leaves, one shared implementation
-(`handlers/drafting.cppm`): the bodies are identical modulo the family
-noun and its positional name, so they are documented once here rather
-than twenty-four times.
+and `artifact` — expose editor-first verbs over their workbench file.
+Seventeen leaves share one implementation (`handlers/drafting.cppm`): the
+bodies are identical modulo the family noun and its positional name, so they
+are documented once here.
 
 | verb | what it does |
 |------|--------------|
@@ -5823,24 +5806,25 @@ planar <family> diff   <id>
 planar <family> review <id> [--approve] [--request-changes] [--json]
 ```
 
-`<family>` is one of `plan`, `task`, `question`, `decision`, `scenario`,
-`artifact`. The positional is that family's id (`plan-id`, `task-id`, …).
-
-The twenty-four concrete leaves this covers:
+The positional is that family's id (`plan-id`, `task-id`, …). Not every
+family has every verb. The seventeen concrete leaves are:
 
 | family | leaves |
 |--------|--------|
-| `plan` | `planar plan edit`, `planar plan view`, `planar plan diff`, `planar plan review` |
+| `plan` | `planar plan view` |
 | `task` | `planar task edit`, `planar task view`, `planar task diff`, `planar task review` |
-| `question` | `planar question edit`, `planar question view`, `planar question diff`, `planar question review` |
-| `decision` | `planar decision edit`, `planar decision view`, `planar decision diff`, `planar decision review` |
-| `scenario` | `planar scenario edit`, `planar scenario view`, `planar scenario diff`, `planar scenario review` |
+| `question` | `planar question edit`, `planar question view` |
+| `decision` | `planar decision edit`, `planar decision view`, `planar decision review` |
+| `scenario` | `planar scenario edit`, `planar scenario view`, `planar scenario review` |
 | `artifact` | `planar artifact edit`, `planar artifact view`, `planar artifact diff`, `planar artifact review` |
+
+`planar plan edit`, `plan diff`, `plan review`, `question diff`,
+`question review`, `scenario diff` and `decision diff` were removed in plan
+1142; they fail as unknown subcommands at exit 2.
 
 ### The four verbs do NOT validate alike
 
-This asymmetry is operator-visible on every failing invocation, and is
-reproduced from the oracle deliberately rather than smoothed over:
+This asymmetry is operator-visible on every failing invocation:
 
 | verb | rejects `id <= 0`? | maps failures to prose? |
 |------|--------------------|-------------------------|
@@ -5849,30 +5833,25 @@ reproduced from the oracle deliberately rather than smoothed over:
 | `diff` | **yes** | **yes** |
 | `review` | **yes** | **yes** |
 
-So `planar question diff 0` exits 2 with `question id must be a positive
+So `planar artifact diff 0` exits 2 with `artifact id must be a positive
 integer, got 0`, while `planar question view 0` falls through to the
 resolver and reports a missing plan link instead. `view` and `edit` have
 no failure-mapping arms at all: a failure surfaces as the bare error tag.
 
 ### A nonexistent id reports differently per family
 
-`plan` and `task` resolve their anchor directly (`plans.parent_plan_id`,
-`tasks.plan_id`); the other four resolve theirs through `entity_links`.
-That changes the refusal text:
+`task` resolves its anchor directly (`tasks.plan_id`); the other families
+resolve theirs through `entity_links`. That changes the refusal text:
 
 ```
-planar plan diff 999      →  no plan with id 999
-planar task diff 999      →  no task with id 999
-planar question diff 999  →  question 999 is not linked to a plan; ...
+planar task diff 999       →  no task with id 999
+planar decision review 999 →  decision 999 is not linked to a plan; ...
 ```
 
 ### `--no-pull` and `--json` on `edit` are DECLARED AND INERT
 
 Both flags appear in `planar schema` and are accepted, and the handler
-reads neither. They exist because the oracle declares them and dropping
-them would break catalog parity; refusing them would reject an invocation
-the oracle accepts. Recorded here rather than left for an operator to
-discover — do not expect `edit --json` to produce JSON.
+reads neither. Do not expect `edit --json` to produce JSON.
 
 **Description:** `view` renders the entity to its workbench path. For
 `plan`, the ANCHOR plan renders to the feature's `README.md` and every
@@ -5909,47 +5888,6 @@ planar workbench edit <plan> [--editor <cmd>] [--json]
 
 **Exit codes:**
 - `1` — plan not found.
-
----
-
-## Domain: `bench`
-
-Record and query benchmark run data — the measurement rig. A run is minted
-once, accumulates journal events and file touches, and is then closed with
-a terminal status. Nothing here changes planning state.
-
-| leaf | purpose |
-|------|---------|
-| `planar bench start` | Mint a new run record and print its `run_uid`. |
-| `planar bench event` | Append a journal event to a run. |
-| `planar bench touch` | Record a declared or actual file touch for a run. |
-| `planar bench harvest` | Harvest `git diff` as actual touches for a run/task. |
-| `planar bench finish` | Set the terminal status on a run. |
-| `planar bench show` | Show a run's full state (header + events + touches). |
-
-**Arguments and flags.** Bracketed entries are optional; every other flag is required. `bench start --task` is repeatable and limits the declared-touch snapshot to the given task ids; omitted, every plan task is snapshotted.
-
-| leaf | arguments and flags |
-|------|---------------------|
-| `planar bench start` | `<run-uid> --plan <n> --arm <text> --base-sha <text> --config-hash <text> [--config-json <text>] [--corpus-repo <text>] [--task <text>...]` |
-| `planar bench event` | `<run-uid> --kind <text> --seq <n> [--payload <text>]` |
-| `planar bench touch` | `<run-uid> --task <n> --path <text> --kind <text>` |
-| `planar bench harvest` | `<run-uid> --task <n> --worktree <text> [--base <text>] [--head <text>]` |
-| `planar bench finish` | `<run-uid> --status <text>` |
-| `planar bench show` | `<run-uid> [--json]` |
-
-**The declared-vs-actual distinction is the point.** `touch` records what a
-run SAID it would change; `harvest` records what it actually changed, read
-out of `git diff`. Comparing the two is why both exist — a run that touched
-files it never declared is the finding the rig is built to surface.
-
-`start` takes the `run_uid` as its required positional and prints it back; every other verb takes the same `run_uid`, so a session is
-normally `start` → repeated `event`/`touch` → `harvest` → `finish`.
-
-**Schema effects:** `show` reads; the other five write the benchmark run
-tables. No planning entity is read or written.
-
-**Capture:** None.
 
 ---
 
@@ -6099,23 +6037,6 @@ shell.
 
 ---
 
-### `planar skills`
-
-**Synopsis:**
-```
-planar skills
-```
-
-**Description:** **Retired.** Rendering and drift detection moved to the
-external renderer binary (plan 918 M5). Planar no longer renders
-vendor projections nor tracks their install-drift in-band. The command
-remains so that an operator running it gets told where the functionality
-went rather than a bare unknown-command error.
-
-**Capture:** None.
-
----
-
 ### `planar task cancel <task-id>`
 
 **Synopsis:**
@@ -6165,35 +6086,11 @@ planar plan divergence <plan-id> [--json]
 
 **Description:** Report the declared-vs-derived closure divergence for a
 plan's open tasks (decision D4). Declared closure is what the tasks say
-they touch; derived closure is what the graph implies. A divergence means
+they touch; derived closure is what the `closures` table holds (no verb on master writes it). A divergence means
 one of the two is wrong, and the report names which tasks disagree rather
 than silently reconciling them.
 
 **Schema effects:** Reads `tasks`, `entity_links`, and the closure tables.
-
-**Capture:** None (read-only).
-
----
-
-### `planar groups recommend <plan-id>`
-
-**Synopsis:**
-```
-planar groups recommend <plan-id> [--json] [--budget <n>] [--solver <name>]
-```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--budget <n>` | Per-slice window budget, an unsigned 32-bit integer (default `128000`). An unparseable or out-of-range value is refused as invalid input. |
-| `--solver <name>` | Requested solver (`greedy` default, or `mtkahypar`). The recommendation's `solver` field reports the one that actually ran; `--solver mtkahypar` is accepted and degrades to `greedy` with `optimal_available:false` on this build, which ships greedy only. The solver arm lives on branch `dev/grouping-solvers` (decision 1293). An unknown value is refused. |
-
-**Description:** Recommend closure-minimizing task slices for a plan —
-groupings that keep each slice's touched surface as small as possible.
-Advisory: it proposes slices, it does not create or reorder anything.
-
-**Schema effects:** Reads `tasks` and the closure/touches tables.
 
 **Capture:** None (read-only).
 
@@ -6791,7 +6688,7 @@ security boundary.
 
 ## Binary: `planar-watch`
 
-`planar-watch` is the human-facing **read-only viewer** for live agent activity. See `docs/architecture.md` § "Four-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; `planar explore` is reserved for launching Planar Explorer and is not yet implemented (bare `planar` prints the root help) — see [Domain: `explore`](#domain-explore).
+`planar-watch` is the human-facing **read-only viewer** for live agent activity. See `docs/architecture.md` § "Four-binary architecture" for the binary split. Note: `planar-watch` is the scriptable NDJSON streaming viewer; bare `planar` prints the root help.
 
 Schema-version handshake: `planar-watch` is a **consumer** of the schema, not its owner. Startup queries `schema_migrations.max(version)` and refuses with exit **7** when the live DB is older than the binary's embedded minimum (same code `planar-agent` uses; remediation message "run `planar init`").
 
@@ -7250,177 +7147,6 @@ The catalog is built from the command tree at startup (no DB access), so the ver
 
 ---
 
-## Domain: `run`
-
-Operational run-record surface for Planar-native workflow execution. Run records track a workflow's lifecycle — start, streamed journal events, and a terminal finish — and are queryable via `planar run show`. The `run` domain uses `arm=op` (the operational arm), distinguishing it from the measurement-rig `planar bench` surface (which uses `arm=strict`, `arm=eligibility`, etc. and additionally tracks declared/actual file touches and git-diff harvests).
-
-Both `planar run` and `planar bench` write to the same `runs` + `run_events` tables (migration `00025_runs`). The read surface is shared: `planar run show` displays records from both. The `run` domain does NOT manage claims — claim lifecycle is `planar-agent pull` / `complete` / `fail` / `release`. Use `planar run` to bracket the outer workflow trace; claims inside the workflow use `planar-agent`.
-
----
-
-### `planar run start`
-
-**Synopsis:**
-```
-planar run start --plan <plan-id> [--workflow <name>] [--json]
-```
-
-**Description:** Mint a new operational run record for the named plan and print its `run_uid` (a stable string identifier) as JSON. The run starts in `running` status. The caller uses `run_uid` for all subsequent `event` and `finish` calls.
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--plan <plan-id>` | Plan id to associate the run with. | Required. |
-| `--workflow <name>` | Human-readable workflow name (free-form). When supplied, it is recorded as the `workflow_name` on the run row. | (none) |
-| `--json` | Emit a JSON object. | off |
-
-**Output (`--json`):**
-```json
-{"run_uid":"run-2026-06-14-abc123","plan_id":7,"arm":"op"}
-```
-
-**Schema effects:** Inserts into `runs(run_uid, plan_id, arm, status='running', started_at)`. When `--workflow <name>` is supplied the name is stored as the `arm` value instead of the default `"op"`.
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success.
-- `1` — plan id not found or invalid integer.
-
----
-
-### `planar run event <run-uid>`
-
-**Synopsis:**
-```
-planar run event <run-uid> --kind <kind> [--payload <text>] [--json]
-```
-
-**Description:** Append a journal event to the named run. The sequence number is auto-incremented server-side. Repeat for each meaningful step during workflow execution.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<run-uid>` | Run uid returned by `run start`. |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--kind <kind>` | Event kind (free-form label, e.g. `step`, `note`, `error`). | Required. |
-| `--payload <text>` | Optional event payload body. | none |
-| `--json` | Emit a JSON result object. | off |
-
-**Output (`--json`):**
-```json
-{"ok":true,"run_uid":"run-2026-06-14-abc123","seq":1,"kind":"step"}
-```
-
-**Schema effects:** Inserts into `run_events(run_uid, seq, kind, payload, at)`.
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success.
-- `1` — run uid not found or run is already in a terminal status.
-
----
-
-### `planar run finish <run-uid>`
-
-**Synopsis:**
-```
-planar run finish <run-uid> --status <status> [--json]
-```
-
-**Description:** Set the terminal status on a run. After `finish`, no further `event` calls are accepted.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<run-uid>` | Run uid returned by `run start`. |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--status <status>` | Terminal status. Accepted values: `completed`, `aborted`, `error`. | Required. |
-| `--json` | Emit a JSON result object. | off |
-
-**Output (`--json`):**
-```json
-{"run_uid":"run-2026-06-14-abc123","status":"completed"}
-```
-
-**Schema effects:** Updates `runs(status, ended_at)`.
-
-**Capture:** None.
-
-**Exit codes:**
-- `0` — success.
-- `1` — run uid not found; or run is already in a terminal status; or `--status` value is not one of the accepted values.
-
----
-
-### `planar run show <run-uid>`
-
-**Synopsis:**
-```
-planar run show <run-uid> [--json]
-```
-
-**Description:** Show a run's full state — header metadata and all journal events in sequence order.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<run-uid>` | Run uid returned by `run start`. |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--json` | Emit a JSON object with `run` header and `events` array. | off |
-
-**Output (human):**
-```
-run run-2026-06-14-abc123  plan:7  status:completed
-  started:  2026-06-14T10:00:00Z
-  ended:    2026-06-14T10:05:30Z
-  workflow: my-workflow
-
-events:
-  1  step     "Started coder dispatch"
-  2  step     "Coder cycle complete"
-  3  note     "Integration tests passed"
-```
-
-**Output (`--json`):**
-```json
-{
-  "run_uid":"run-2026-06-14-abc123","plan_id":7,"arm":"op","status":"completed","started_at":"2026-06-14T10:00:00Z","ended_at":"2026-06-14T10:05:30Z",
-  "events": [
-    {"id":1,"seq":1,"kind":"step","payload":"Started coder dispatch","created_at":"2026-06-14T10:00:01Z"},
-    {"id":2,"seq":2,"kind":"step","payload":"Coder cycle complete","created_at":"2026-06-14T10:04:00Z"},
-    {"id":3,"seq":3,"kind":"note","payload":"Integration tests passed","created_at":"2026-06-14T10:05:00Z"}
-  ]
-}
-```
-
-**Schema effects:** Reads `runs`, `run_events`. No writes.
-
-**Capture:** None (read-only).
-
-**Exit codes:**
-- `0` — success.
-- `1` — run uid not found.
-
----
-
 ## Domain: `search`
 
 ### `planar search <query> [--kind <kind>] [--status <status>] [--scope <scope>] [--plan <id>] [--limit <n>] [--json]`
@@ -7428,25 +7154,6 @@ events:
 **Description:** Full-text search across plans, tasks, questions, scenarios, decisions, and artifacts (backed by the FTS5 index from migration `00011_slug_refs_fts`). Without `--scope`, search uses the cwd-derived read set: workspace roots search the org plus member projects, and member repo cwd searches the most specific repo. Narrow results with `--kind` (restrict to a single entity kind), `--status`, `--scope`, or `--plan` (entities under a given plan); cap with `--limit`. `--json` emits the structured result list.
 
 **Schema effects:** Reads the FTS index and the underlying entity tables. No writes.
-
----
-
-## Domain: `explore`
-
-### `planar explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]`
-
-**Description:** Reserved for launching Planar Explorer, a separate project that presents a read-only view of the planning graph. Not yet implemented: the command prints its own help page and exits 0. It does not open the database.
-
-**Flags:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--plan <id>` | Reserved: seed initial focus on the given plan ID. | unset |
-| `--task <id>` | Reserved: seed initial focus on the given task ID. | unset |
-| `--scope <s>` | Reserved: seed the scope filter. | cwd-derived |
-| `--plain` | Print the help page. This is currently the only behavior. | off |
-
-**Schema effects:** None.
 
 ---
 
@@ -7460,14 +7167,14 @@ For quick reference, all documented commands grouped by domain:
 | `config` | `config show`, `config show --effective`, `config show --raw`, `config show --defaults`, `config edit`, `config validate`, `config path` |
 | `templates` | `templates list`, `templates show`, `templates render`, `templates validate`, `templates init`, `templates path` |
 | `tree` | `tree` |
-| `scope` | `scope show`, `scope suggest` (`scope use`/`pop`/`clear` removed in plan 153 M5) |
+| `scope` | `scope show`, `scope suggest` |
 | `assoc` | `assoc list`, `assoc create`, `assoc add`, `assoc remove`, `assoc members` |
 | `plan` | `plan create`, `plan show`, `plan list`, `plan update`, `plan descendants`, `plan step add`, `plan step done`, `plan step skip`, `plan step link`, `plan link` |
 | `task` | `task add`, `task show`, `task list`, `task update`, `task edit`, `task view`, `task diff`, `task review`, `task done`, `task reopen`, `task block`, `task link`, `task facts stage`, `task touches add`, `task touches remove` |
-| `question` | `question add`, `question answer`, `question wontfix`, `question list`, `question show`, `question edit`, `question view`, `question diff`, `question review`, `question link` |
-| `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario diff`, `scenario retire` |
-| `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision diff` |
-| `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact link` |
+| `question` | `question add`, `question answer`, `question wontfix`, `question list`, `question show`, `question edit`, `question view`, `question link` |
+| `scenario` | `scenario add`, `scenario verify`, `scenario list`, `scenario show`, `scenario edit`, `scenario view`, `scenario review`, `scenario retire` |
+| `decision` | `decision add`, `decision accept`, `decision supersede`, `decision withdraw`, `decision list`, `decision show`, `decision edit`, `decision view`, `decision review` |
+| `artifact` | `artifact add`, `artifact show`, `artifact list`, `artifact update`, `artifact edit`, `artifact view`, `artifact diff`, `artifact review`, `artifact link` |
 | `document` | `document project` |
 | `annotate` | `annotate add`, `annotate show`, `annotate list`, `annotate capabilities`, `annotate update`, `annotate remove`, `annotate tag`, `annotate resolve`, `annotate dismiss`, `annotate archive`, `annotate bulk-resolve`, `annotate bulk-dismiss`, `annotate bulk-archive`, `annotate verify`, `annotate sweep` |
 | `promote` | `promote`, `demote` |
@@ -7483,101 +7190,9 @@ For quick reference, all documented commands grouped by domain:
 | `health` | `health` |
 | `links` | `links add`, `links list`, `links remove`, `links trail` (no `links update`) |
 | `search` | `search <query>` |
-| `explore` | `explore [--plan <id>] [--task <id>] [--scope <s>] [--plain]` |
 | `spec` | `spec ingest` |
 | `test-spec` | `test-spec status` |
 | `local` | `local list`, `local link`, `local unlink`, `local import`, `local migrate` |
 | `--help` | `--help` / `-h` on any node (no `help` verb) |
-| `run` | `run start`, `run event`, `run finish`, `run show` |
 | `schema` | `schema` (also on `planar-agent`, `planar-watch` and `planar-ext`) |
 | `update` | `update`, `update --check`, `update --version <tag>` |
-## Domain: `closure`
-
-Derived-closure extraction: given a task's touched `(repo, path)` seeds, walk
-the source with tree-sitter and persist the files that task's work actually
-reaches. `closure compute` does the walk and writes; `closure show` reads back
-what was written.
-
-Rows are classified by `role`:
-
-| Role | Meaning |
-|------|---------|
-| `modify` | A seed path itself — the file the task touches directly. |
-| `reference` | Reached from a seed by a direct source reference. |
-| `transitive` | Reached only through another reference. |
-
-**SQLite tables:** reads `task_touch_paths` for seeds and `projects.root_path`
-to resolve them against a checkout; writes the closure rows `closure show`
-reads back.
-
----
-
-### `planar closure compute <task-id>`
-
-**Synopsis:**
-```
-planar closure compute <task-id> [--scope <slug>] [--json]
-```
-
-**Description:** Run the extractor over a task's seeds and persist the closure.
-Seeds come from `task_touch_paths`, so a task with no touched paths has nothing
-to walk and is refused rather than silently writing an empty closure.
-
-Seed paths are resolved against `projects.root_path`, which is why a project
-registered with a path that does not match your checkout produces an empty or
-wrong result — see the association-less-repo advisory under
-[`task touches add`](#planar-task-touches-add-task-id-repo-slug---path-p).
-
-**Scope guard:** Refuses when the operator's resolved write scope disagrees
-with the task's, using the membership-aware comparison (see
-[Cross-scope guard](#cross-scope-guard); strict equality here was widened to
-match the other guarded verbs by decision 1121).
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<task-id>` | The task whose seeds to walk (integer). |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--scope <slug>` | Write-scope override for the cross-scope guard. | cwd-derived |
-| `--json` | Emit the row-count summary as JSON. | off |
-
-**Output:** A count summary — seeds walked, and rows written per role.
-
-**Exit codes:**
-- `0` — closure computed and persisted.
-- `1` — the task has no seeds, or a query failed.
-- `5` — cross-scope guard refusal.
-
----
-
-### `planar closure show <task-id>`
-
-**Synopsis:**
-```
-planar closure show <task-id> [--json]
-```
-
-**Description:** Read back a task's persisted closure rows. Read-only; it never
-recomputes, so a task whose closure was never computed reads back empty rather
-than triggering a walk.
-
-**Arguments:**
-
-| Argument | Description |
-|----------|-------------|
-| `<task-id>` | The task whose closure to read (integer). |
-
-**Options:**
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--json` | Emit the rows as JSON. | off |
-
-**Exit codes:**
-- `0` — rows rendered (including none).
-- `1` — query failure.

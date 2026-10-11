@@ -2,6 +2,18 @@
 
 A changelog of shipped milestones and plans, newest first.
 
+## 2026-10-11
+
+### Plan 1142, milestone 2: verbs that are not mechanism left master
+
+Verbs that prescribed a method, or that nothing used, are gone, with the engines and role agents behind them.
+
+- **Moved to a branch.** `planar closure`, `planar groups`, `planar bench` and `planar run`, the closure, grouping and runs engines, the vendored tree-sitter, and the three research documents live on the branch `dev/grouping-solvers`.
+- **Archived at tags.** `planar import`, `planar synthesize` and the importer and synthesizer agents: tag `archive/import-synthesize`. `planar report`, the introspection engines, the `introspection.transcripts.*` config keys and the introspector agent: tag `archive/introspection`. `planar feedback triage` and the feedback-triager agent: tag `archive/feedback-triage`.
+- **Removed with no replacement.** `planar explore`, `planar skills`, `planar scope use`, `pop` and `clear`; `plan edit`, `plan diff`, `plan review`, `question diff`, `question review`, `scenario diff` and `decision diff`; `document validate-range`, `audit publish-decision`, `assoc detect` and `config init`.
+- **Changed.** `plan recommend-strategy` reads declared touches only, so `--closure-source` is gone and the JSON key `closure_source` is always `"declared"`. The cross-scope guard now covers seven verbs: `spec ingest --apply`, `task update`, `decision accept`, `decision withdraw`, and `planar-ext sync push`, `sync pull` and `sync resolve`.
+- **Kept.** The CLI usage log (`cli_invocations`, `introspection.cli_log`, `introspection.retention_days`) and the `feedback_triage` table stay. Eleven role agents remain under `agents/`.
+
 ## 2026-10-10
 
 ### Plan 1142, milestone 1: Planar ships mechanism only

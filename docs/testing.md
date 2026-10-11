@@ -410,8 +410,7 @@ before they were deleted, and assert them against the current binary alone.
 They remain the strongest grading on help text, exit codes, error wording and
 the `schema` catalog, and they cannot be re-derived. A comment that says "the
 oracle declares X" records where a pinned byte came from; do not add new
-ones. `scripts/parity-data/parity-triage.md` holds the rationale for the
-pins.
+ones.
 
 ## Exit codes
 

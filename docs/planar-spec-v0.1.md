@@ -1,6 +1,6 @@
 # Planar — Design Spec v0.1
 
-**Status:** active design · supersedes prior platform-scoped framing
+**Status:** historical design · supersedes prior platform-scoped framing. The closure, grouping and measurement machinery this document specifies was removed from master in plan 1142 and is preserved on branch `dev/grouping-solvers`; the text below describes that design, not the shipped CLI.
 **Scope discipline:** this document defines the *reduced* Planar. Anything not in service of the one-line mandate below is out of scope by default and must justify its inclusion.
 
 ---
@@ -118,7 +118,7 @@ Re-orient against this. The mandate (§0) is the filter: if a task does not serv
 1. **Excise & rescope.** Remove the Lua execution layer from the repo; archive the toy as an independent project (may consume Planar as a client). Make it a clean cut, not a gradual deprecation — a half-removed engine keeps attracting maintenance. Rewrite Planar's one-line definition to §0.
 2. **Pin the formalization.** Commit §1–§2 as the spec/method section: context unit, role partition, the hypergraph objective, the metric. Cheap — prose and notation. Do it before code so the code has a target. *(This document is the seed.)*
 3. **Closure computation — the long pole. Attack first after the spec.** Build the static extractor: parse a real task graph over a real repo; emit $C(t)$ per task at symbol granularity with `modify` / `reference` / `transitive-beneath` roles. Everything downstream is blocked here; if closures are wrong, the grouping optimizes noise. **Budget the most risk to this step.**
-4. **Grouping.** Feed closures into an off-the-shelf hypergraph partitioner (KaHyPar) with the replication objective and the window budget as balance constraint. A greedy overlap-merge is a fine first pass to sanity-check before reaching for the solver. (Planar's master ships the greedy arm only; the Mt-KaHyPar solver arm lives on branch `dev/grouping-solvers`, decision 1293.)
+4. **Grouping.** Feed closures into an off-the-shelf hypergraph partitioner (KaHyPar) with the replication objective and the window budget as balance constraint. A greedy overlap-merge is a fine first pass to sanity-check before reaching for the solver. (Both the greedy arm and the Mt-KaHyPar solver arm live on branch `dev/grouping-solvers`.)
 5. **Measurement rig.** The minimal *instrumented* executor — run a slice against a model, count tokens loaded and reused, emit the delta. No Lua, no workflow engine; just enough to produce the number. This is the instrument; it must survive the §1 excision, not be swept out with it.
 6. **Baseline & result.** Dependency-topological ordering as the control. Run grouped vs. control on the corpus (§6). Produce the number.
 7. *(Deferred.)* Host-agnostic seam + writeup. Downstream of having a result.

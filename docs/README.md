@@ -65,5 +65,5 @@ it works and how to use it.
 - [Design specification v0.1](planar-spec-v0.1.md) and the
   [architecture decision records](adrs.md). The reasoning behind the design.
 - [Changelog](changelog.md).
-- [Research instrumentation](research/README.md). Documentation of the
-  measurement instrument that Planar includes.
+- [Research instrumentation](research/README.md). A pointer to the branch that
+  holds the removed measurement instrument.

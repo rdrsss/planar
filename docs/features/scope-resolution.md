@@ -102,24 +102,10 @@ it is a **patch field** that reassigns the entity's stored scope. See
 
 Plan 153 M5 dropped the `active_scope` table
 (`migrations/00009_drop_active_scope.up.sql`) and the verbs that manipulated
-it. Measured behaviour of what operators may still type:
-
-| Typed | Result |
-|-------|--------|
-| `planar scope use` | retired-verb notice, **exit 2** |
-| `planar scope pop` | retired-verb notice, **exit 2** |
-| `planar scope clear` | retired-verb notice, **exit 2** |
-| `planar scope use <slug>` | retired-verb notice, **exit 2** — the stub declares an optional positional and `allow_extras`, so the notice is NOT preempted |
-| `planar scope use --bogus` <!-- cli-lint-ignore: the flag's ABSENCE is the point --> | retired-verb notice, **exit 2** — same reason: the handler runs before CLI11 can reject the flag (task 6446) |
-| `planar scope push` / `planar scope swap` | parse error, exit 2 — these never existed |
-
-The notice reads:
-
-```
-error: `planar scope pop` was removed in plan 153 M5; the active scope stack
-is gone. Pass --scope <slug> to individual verbs, or cd into a registered
-scope. Run `planar scope show` to inspect the cwd-derived scope.
-```
+it. The redirect stubs that once answered `scope use`, `scope pop` and
+`scope clear` were deleted in plan 1142. Those three, like `scope push` and
+`scope swap` (which never existed), now fail as unknown subcommands at
+**exit 2**. To switch scope, `cd` into the target or pass `--scope <slug>`.
 
 ## CLI
 

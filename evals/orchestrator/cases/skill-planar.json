@@ -40,13 +40,13 @@
       "pattern": "Write through the owning binary\\."
     },
     {
-      "id": "invariant-04-guard-ten-verbs",
-      "description": "SKILL.md states invariant 4: Cross-scope guard: ten verbs.",
+      "id": "invariant-04-guard-seven-verbs",
+      "description": "SKILL.md states invariant 4: Cross-scope guard: seven verbs.",
       "mode": "all",
       "paths": [
         "skills/planar/SKILL.md"
       ],
-      "pattern": "Cross-scope guard: ten verbs\\."
+      "pattern": "Cross-scope guard: seven verbs\\."
     },
     {
       "id": "invariant-05-scope-four-things",

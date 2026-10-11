@@ -179,7 +179,7 @@ The thirteen invariants, by their lead phrase:
 | 1 | Claim, heartbeat, one terminal verb. |
 | 2 | Never split the terminal verb. |
 | 3 | Write through the owning binary. |
-| 4 | Cross-scope guard: nine verbs. |
+| 4 | Cross-scope guard: seven verbs. |
 | 5 | `--scope` means four things. |
 | 6 | Read back every mutation. |
 | 7 | Planning verbs refuse in worktrees. |

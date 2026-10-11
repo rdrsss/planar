@@ -21,10 +21,9 @@ helpers used by multiple families.
 | `audit/`, `health/`, `dashboard/` | Audit operations, health checks and summary views. |
 | `spec/`, `test_spec/` | Specification ingestion and test-spec operations. |
 | `config/`, `templates/` | Configuration plane and propagation templates. |
-| `tree/`, `search/`, `groups/` | Hierarchical, search and grouped read views. |
-| `local/`, `skills/` | Operator-local assets and installed skill views. |
-| `import/`, `synthesize/` | Import existing planning content and synthesize new artifacts. |
-| `explore/` | Exploration command. |
+| `tree/`, `search/` | Hierarchical and search read views. |
+| `local/` | Operator-local assets. |
+| `document/`, `help/`, `update/` | Document projection, help pages and the installer hand-off. |
 | `version/`, `completion/`, `schema/` | Version, shell completion and the flat command catalog. |
 | `shared/` | Shared handler helpers; no root CLI app. |
 

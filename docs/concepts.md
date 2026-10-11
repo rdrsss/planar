@@ -140,11 +140,11 @@ This composes naturally with `plan list`, `task list`, `question list`, `scenari
 
 Layered on top of the write resolver, the [cross-scope guard](#cross-scope-guard) compares the operator's resolved scope against a target entity's stored `(scope_kind, scope_id)` and refuses if they disagree.
 
-**It runs on nine verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All nine are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
+**It runs on seven verbs, not on every mutation** — see [§ Cross-scope guard](#cross-scope-guard) below for the measured list. All seven are membership-aware: an operator scope `assoc:<org>` covers an entity scoped to one of the org's member projects, via `project_associations`. The reverse direction — operator project, entity org — refuses with exit 5.
 
 ### Removed: the active scope stack
 
-Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. Operators who habitually typed those verbs get a retired-verb notice pointing at `planar scope show`, at **exit 2** (measured at task 6676; earlier editions of this page said exit 1). This holds for every arm — a trailing slug (`scope use someslug`) and an unknown flag (`scope use --bogus`) both still print the notice, because the retired stubs declare `allow_extras` so the handler runs before CLI11 can reject anything (task 6446). `planar scope push` and `planar scope swap` never existed at all.
+Earlier releases maintained a per-database `active_scope` table and exposed `planar scope use`, `planar scope pop`, and `planar scope clear` to manipulate it. Plan 153 M5 dropped the table (migration `migrations/00009_drop_active_scope.up.sql`) and removed the verbs; concurrent sessions sharing one database can no longer trample each other through stack manipulation. The redirect stubs for those verbs were deleted in plan 1142; `planar scope use`, `pop` and `clear` now fail as unknown subcommands at exit 2, like `planar scope push` and `planar scope swap`, which never existed.
 
 **SQLite tables:** `associations`, `project_associations`, `projects`. **Primary verbs:** `planar scope show` (derived view), `planar scope suggest`. Set the scope for any verb by `cd`-ing into the target or passing `--scope <slug>`.
 
@@ -160,10 +160,9 @@ The motivating incident: an operator running from `~/work/lectio/` invoked `plan
 
 ### Which verbs are guarded
 
-**Measured against the source at task 7468 (2026-10-10).** Nine verbs, seven
-call sites (`sync push` and `sync pull` share one; `decision accept` and
-`decision withdraw` share their transition helper). Task 6075 measured ten
-verbs and eight call sites, before `audit publish-decision` was removed:
+**Measured against the source** with `grep -rn guard_with_membership src/cmd`.
+Seven verbs, five call sites (`sync push` and `sync pull` share one; `decision
+accept` and `decision withdraw` share their transition helper):
 
 | Verb | Comparison |
 |------|-----------|
@@ -174,7 +173,6 @@ verbs and eight call sites, before `audit publish-decision` was removed:
 | `decision accept` | membership-aware |
 | `decision withdraw` | membership-aware |
 | `task update` | membership-aware |
-| `closure compute` | membership-aware |
 
 The two classes the guard was designed around — bulk-write-from-parent (the lectio incident pattern) and mutating-an-existing-entity — describe its *intent*. They do not describe its coverage. Most mutating-existing-entity verbs are **not** guarded: `plan update`, `plan step add/done/skip`, `task done/reopen/block`, `question edit`, `scenario edit`, `decision edit`, `decision supersede`, `artifact update`, `annotate update`, `planar-ext ext create --from`, `planar-ext ext propagate-one`, `link`, `unlink`. Earlier editions of this document listed those as guarded; they never were.
 
@@ -184,13 +182,13 @@ The two classes the guard was designed around — bulk-write-from-parent (the le
 
 Every guarded call site uses the cmd-layer `guard_with_membership`.
 
-This was not always true. `task update` and `closure compute` called `engine::identity::check_scope_guard` directly — strict equality after `assoc:` normalization — so an `assoc:<org>` → `repo:<member>` write was **accepted** by `spec ingest --apply` and **refused** by `task update`, from the identical working directory. Task 6075 measured the split; decision 1121 (task 6735) resolved it by widening those two to match the other eight.
+This was not always true. `task update` called `engine::identity::check_scope_guard` directly — strict equality after `assoc:` normalization — so an `assoc:<org>` → `repo:<member>` write was **accepted** by `spec ingest --apply` and **refused** by `task update`, from the identical working directory. Decision 1121 (task 6735) resolved it by widening `task update` to match the other guarded verbs.
 
 The reasoning: strict equality could not distinguish "my own member repo" from "an unrelated repo" — it refused both identically. That is not a stricter reading of the guard's purpose but a blind one. The guard exists to stop a write leaking *sideways* (repo A mutating an entity owned by unrelated repo B), not to stop an association acting on its own member, which is the ordinary case the association scope exists to serve.
 
 ### Membership-aware coverage
 
-For all nine guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
+For all seven guarded verbs, the comparison is not strict equality. An operator scope `assoc:<org>` covers any entity whose stored scope is a project belonging to the org via `project_associations`. From a workspace-root cwd with `--scope assoc:work`, those verbs accept writes targeting `repo:repo-a`, `repo:repo-b`, and so on — the org operator is "above" its member projects. The reverse direction (operator `repo:repo-a`, entity in `assoc:work`) still refuses with exit 5.
 
 ### `--scope` does not mean the same thing on every verb
 
@@ -198,7 +196,7 @@ The guard's documented remedy — "pass `--scope <entity-scope>`" — assumes `-
 
 | Meaning | Effect | Verbs |
 |---------|--------|-------|
-| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `closure compute`, `spec ingest`, `decision accept`, `decision withdraw` |
+| Write-scope selector | Sets the scope the write resolves under. | the create/add verbs, `task update`, `spec ingest`, `decision accept`, `decision withdraw` |
 | **Patch field** | **Reassigns the entity's stored scope — it moves the row.** | `plan update`, `artifact update`, `annotate update` |
 | Read filter | Restricts which rows are listed. | the `list` verbs, `search`, `tree`, `dashboard`, `health` |
 | Inert | Accepted, parsed, discarded. | `planar-ext ext propagate` |
@@ -533,7 +531,7 @@ The model-driven `planar-orchestrator` agent runs the sequential strategies in e
 
 Parallel eligibility is computed from what each task **declares** it touches. Rule 2 treats an empty touch set as "touches everything," so an undeclared task is never eligible. That default is deliberate: the failure mode of omission is *safe* — an undeclared task serializes rather than falsely parallelizing.
 
-It is also the binding constraint in practice. Nothing populated `task_touch_paths` but hand declaration, so most open tasks were serialized for lack of a declaration rather than for genuine conflict — and the rows are load-bearing twice over, since [closure extraction](planar-spec-v0.1.md#1-the-central-term-context-closure) uses them as its seeds and reports `NoSeeds` without them.
+It is also the binding constraint in practice. Nothing populated `task_touch_paths` but hand declaration, so most open tasks were serialized for lack of a declaration rather than for genuine conflict.
 
 `planar task touches infer <task-id>` closes that gap. It reads the task's own title, body, and next_action, resolves the path-shaped tokens against the repo tree, and proposes `task_touch_paths` rows. It **previews by default**; `--apply` writes.
 
@@ -1119,7 +1117,7 @@ Planar ships as four executables, each with a disjoint capability boundary over 
 
 | Binary | Audience | Writes to |
 |---|---|---|
-| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. Also registers the `explore` leaf, which is reserved for launching Planar Explorer and currently prints its help and exits 0 (see [`planar explore`](cli-reference.md#domain-explore)). |
+| `planar` | Operator (human + scripts) | Planning entities (`plans`, `tasks.status` via manual transitions, `decisions`, `questions`, `scenarios`, `artifacts`, `annotations`, …) — everything **except** `agent_work_claims`. It does not write `agent_actions` either, save for one best-effort exception: the entity-create provenance hook (plan 467 D2/D3) appends a `created <entity>` action when `decision`/`question`/`artifact add` runs under an active agent claim; with no active claim it is a silent no-op. |
 | `planar-agent` | Agent (vendor hook, orchestrator dispatch) + operator recovery | `agent_actions`, `agent_work_claims`, `tasks.status` (the last only as part of atomic coordinated operations: `pull`, `complete`, `fail`, `release`, `block`). It also writes `queue_entries` and `queue_history` in `planar.db`, the host-wide build and test queue (via `queue run` and `queue cancel`). **Never** to plan / decision / question / scenario / artifact / annotation. |
 | `planar-watch` | Operator (live view) + scripts (`--json`) | **Nothing.** Opens SQLite via `file:?mode=ro` so the driver itself rejects every write SQL string. |
 | `planar-ext` | Operator + ext-sync agent (operational plane) | Exactly `external_links`, `external_systems`, `sync_events`. Planning tables (`plans`, `tasks`, `questions`, `artifacts`, …) are opened read-only, and the allowlist is enforced at the SQLite layer by a `sqlite3_set_authorizer` callback that fires on the parsed table name, not by convention (decisions 995–1001). Owns both operational adapters, Jira and GitHub Issues. |

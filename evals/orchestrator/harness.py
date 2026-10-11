@@ -1268,7 +1268,7 @@ SKILL_INVARIANT_LEADS = [
     "Claim, heartbeat, one terminal verb.",
     "Never split the terminal verb.",
     "Write through the owning binary.",
-    "Cross-scope guard: ten verbs.",
+    "Cross-scope guard: seven verbs.",
     "`--scope` means four things.",
     "Read back every mutation.",
     "Planning verbs refuse in worktrees.",

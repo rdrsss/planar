@@ -27,7 +27,7 @@ Three mechanisms, in layers, decide whether a status write lands:
    which is why re-answering an answered question or re-retiring a retired
    scenario is a silent no-op rather than a refusal.
 2. **Verb-level guards** layered on top by the handler: the claim-atomic
-   guard on task verbs, the cross-scope guard on nine verbs, required
+   guard on task verbs, the cross-scope guard on seven verbs, required
    flags such as `--reason`.
 3. **Engine roll-ups** that run *after* a write inside the same transaction
    and can move a *different* entity: plan auto-promotion, dependency
@@ -816,7 +816,7 @@ flowchart TD
     N -->|0| UNSET[unset: project_unassociated]
     N -->|1| ONE[that association]
     N -->|2+| UNSET2[unset: project_multiple_associations]
-    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply,<br/>audit publish-decision, decision accept/withdraw,<br/>task update, closure compute, sync push/pull/resolve}
+    U & REPO & ONE --> G{guarded verb?<br/>spec ingest --apply,<br/>decision accept/withdraw,<br/>task update, sync push/pull/resolve}
     G -->|no| WRITE[write]
     G -->|yes| CMP{operator scope covers entity scope?<br/>assoc:org covers repo:member since decision 1121}
     CMP -->|yes| WRITE
@@ -840,7 +840,6 @@ bug, unless noted.
 | `planar health` `overall` is one of `ok`, `degraded`, `critical` | the retired health skill (since removed; fixed — now names `ok` and `degraded`) | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
 | Whole-tree `ext propagate <plan>` is not yet implemented | the retired propagate skill (since removed); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
 | Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench (**fixed at task 6926** — now cites `src/engine/workbench/terminal.cppm`) | `src/engine/workbench/terminal.cppm` |
-| `closure compute` was removed with its engine (plan 1142, task 7469) | moved to branch `dev/grouping-solvers` | none on master |
 | `derive_from_cwd` redirects a git-worktree cwd to its parent repo | Zig-era behaviour | Not ported; the module header names it as a residual gap |
 
 ---

@@ -44,8 +44,9 @@ arguments, output fields, exit codes) comes from the binaries; see the discovery
    agent actions through `planar-agent`, external links through `planar-ext`; `planar-watch`
    never writes. The table above is the boundary; it is enforced by
    each binary's verb set, not by a runtime ACL, so nothing stops a wrong-binary write.
-4. **Cross-scope guard: nine verbs.** Only nine verbs compare scopes (among them
-   `spec ingest --apply`, `task update`, `decision accept` and `planar-ext sync push`).
+4. **Cross-scope guard: seven verbs.** Only seven verbs compare scopes:
+   `spec ingest --apply`, `task update`, `decision accept`, `decision withdraw` and
+   `planar-ext sync push`, `sync pull` and `sync resolve`.
    A mismatch exits 5 with no bypass flag. `assoc:<org>` covers an entity at
    `repo:<member>`; the reverse refuses. Never claim the guard covers every write.
 5. **`--scope` means four things.** It selects the write scope on write verbs; it is a

@@ -62,7 +62,7 @@ artifacts: product-spec.md, tech-spec.md, roadmap.md, test-spec.md
 ### Step 2 — Review and edit
 
 <!-- surface-lint-ignore surface-path-missing: illustrative touches-annotation syntax, not a real path -->
-Open the workbench directory. Read all four documents. Edit the `roadmap.md` section headers and bullet points — these become plan and task rows. **Annotate every testable bullet with a `[slug: foo-bar]` tag** so the test-spec can cite it by stable name even before ids are assigned. **Also annotate the files each bullet will touch** — `[touches: src/engine/x.cpp]`, or `[touches: <repo-slug>:src/engine/x.cpp]` in a polyrepo association. This is the cheapest moment to record it: you are holding the spec and already know the target files, whereas inferring them later from prose recovers only 20–44% of tasks. Touch declarations are what parallel-eligibility rule 2 reads and what closure extraction seeds from; a task with none is treated as touching everything and never runs in parallel. Edit the `## Decisions` section in `tech-spec.md` — these become decision rows. Edit acceptance criteria in `product-spec.md` — these become scenario rows. Edit the `## Scenarios` section in `test-spec.md` — each `### Scenario:` H3 becomes a `test_scenarios` row with `verifies` edges to the cited tasks. Cite tasks via `**Verifies:** task:<slug>` referencing the `[slug: …]` annotations on the roadmap bullets. The test-spec's four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens** — name the bucket in each scenario title (e.g. `### Scenario: Error return — export fails on missing header`), not as `### <bucket>` group headers; the coverage-gap checklist at the bottom is the reviewer's compliance pass.
+Open the workbench directory. Read all four documents. Edit the `roadmap.md` section headers and bullet points — these become plan and task rows. **Annotate every testable bullet with a `[slug: foo-bar]` tag** so the test-spec can cite it by stable name even before ids are assigned. **Also annotate the files each bullet will touch** — `[touches: src/engine/x.cpp]`, or `[touches: <repo-slug>:src/engine/x.cpp]` in a polyrepo association. This is the cheapest moment to record it: you are holding the spec and already know the target files, whereas inferring them later from prose recovers only 20–44% of tasks. Touch declarations are what parallel-eligibility rule 2 reads; a task with none is treated as touching everything and never runs in parallel. Edit the `## Decisions` section in `tech-spec.md` — these become decision rows. Edit acceptance criteria in `product-spec.md` — these become scenario rows. Edit the `## Scenarios` section in `test-spec.md` — each `### Scenario:` H3 becomes a `test_scenarios` row with `verifies` edges to the cited tasks. Cite tasks via `**Verifies:** task:<slug>` referencing the `[slug: …]` annotations on the roadmap bullets. The test-spec's four return-path buckets (happy / empty-null / error / edge) are a **coverage-reasoning lens** — name the bucket in each scenario title (e.g. `### Scenario: Error return — export fails on missing header`), not as `### <bucket>` group headers; the coverage-gap checklist at the bottom is the reviewer's compliance pass.
 
 When satisfied, signal readiness to ingest.
 
@@ -686,7 +686,7 @@ planar task update 142 --next-action "rerun make test"
 # … coder works, then returns; the orchestrator owns the terminal verb …
 ```
 
-No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the nine verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
+No `--scope` flag is needed. The resolver sees that `cwd` is inside the registered `project:repo-a` root, ranks `project` above the org association `project:repo-a` belongs to, and resolves to `project:repo-a`. The success line shows `[from cwd]`. Note what the guard does and does not cover here: `task update` is one of the seven verbs that run the cross-scope guard, so if the dispatcher accidentally `cd`-ed into `repo-b` for a task owned by `repo-a`, `task update` refuses with a multi-line error naming both scopes and pointing at `--scope` (or `cd` into the correct repo) as the remediation — there is no flag-based bypass. A verb outside the guarded set writes from any cwd. The guarded set is listed in [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs); everything else writes without comparing scopes.
 
 This is the dominant pattern. Every coder, ingestor, and planner skill that runs against a known repo cwd works without scope plumbing.
 
@@ -840,7 +840,7 @@ Use this when your daily working tree is a workspace directory (`~/work/`, `~/pr
 
 **What happens:** `planar workspace init` builds the org + project rows in one transaction, creates the state directory under `~/.planar/workspaces/<org_id>/`, scans the member repos to produce a structured routing table, regenerates `AGENTS.md` from that table, and installs symlinks at the workspace root (`AGENTS.md`, `CLAUDE.md`) that point at the canonical content. Subsequent shape changes (new repo, new plans, dependencies shifting) are absorbed by re-running the routing build and regenerate verbs; the symlinks stay valid.
 
-**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on nine verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `decision accept`, `decision withdraw`, `closure compute`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
+**Scope discipline in a workspace.** The [cross-scope guard](concepts.md#cross-scope-guard) fires on seven verbs, not only on `spec ingest` (the original lectio incident). The comparison is membership-aware: when you are working from the workspace root (`~/work/`), cwd resolves to `org:work`, which covers entities scoped to any member repo, so a `planar task update 142` against a task that belongs to repo A is accepted. The reverse direction is refused with exit 5: from inside `~/work/repo-a`, a write against an entity stored at `org:work` (or at an unrelated repo) needs `--scope` naming the entity's scope, or a `cd` into it. The same rule applies to `spec ingest --apply`, `decision accept`, `decision withdraw`, and single-target `planar-ext sync push`/`sync pull`/`sync resolve`. Every other mutating verb — including `plan update`, `decision edit`, `decision supersede`, `artifact update`, `ext create --from`, `ext propagate`, and `link`/`unlink` — writes without comparing scopes (see [`docs/cli-reference.md § Guarded verbs`](cli-reference.md#guarded-verbs)). Create verbs (`task add`, `decision add`, etc.) and entity-link verbs (`task link`, `links add`, `task touches add`) are not guarded — they are designed to cross scopes.
 
 ### Step 1 — Initialize the workspace
 
@@ -1239,7 +1239,7 @@ The verb opens the workbench file for artifact 42 in `$EDITOR`. On save:
 - Allowed frontmatter mutations (title, status, priority on tasks, etc.) are applied through the M5 mutation validator.
 - Disallowed mutations (identity fields, anchor moves without `--allow-replan`) are rejected; the workbench file is preserved so the operator can fix and retry.
 
-Same shape across kinds: `task edit`, `question edit`, `decision edit`, `scenario edit`.
+Same shape across kinds: `task edit`, `question edit`, `decision edit`, `scenario edit`. `plan` has `view` only.
 
 ### Step 2 — View or diff without editing
 
@@ -1248,7 +1248,7 @@ planar artifact view 42      # exec $PAGER on the workbench file
 planar artifact diff 42      # unified diff between DB and FS
 ```
 
-`view` is the read path; `diff` shows where the FS file has diverged from what the DB would render. Both auto-push if the file is missing.
+`view` is the read path; `diff` shows where the FS file has diverged from what the DB would render. Both auto-push if the file is missing. `diff` exists on `task` and `artifact` only.
 
 ### Step 3 — Resolve a concurrent-change conflict
 
@@ -1269,21 +1269,13 @@ and settle the conflict with `planar workbench resolve <event-id>
 update path itself (rather than the editor flow), `planar task
 update <id> --force --reason "<why>"` is the escape hatch.
 
-### Step 4 — Bulk-review across many entities
-
-For sweeping through every open question (or every open task) tied to a plan:
+### Step 4 — Report a verdict on a pending diff
 
 ```
-planar question review 226
-planar task review     226
+planar task review 226 --approve
 ```
 
-Each verb builds a focal file (`REVIEW.md` or `TASKS.md`) in a temp session directory, copies the originating artifact alongside as context, and execs `$EDITOR` on the directory. On save, populated blocks become per-entity verb invocations:
-
-- Question review: a non-blank `### Answer` block → `planar question answer <id> "<body>"`; a single line `WONTFIX` (case-sensitive) → `planar question wontfix <id>`; blank → skip.
-- Task review: each task block has editable `Status:`, `Priority:`, `Next-action:` lines; non-empty changes apply via `planar task update`.
-
-The session directory is removed on success; preserved on save failure so unsaved work survives. Add `--editor-hints` to drop a `.code-workspace` (VS Code) and `.vimrc-local` (Vim) in the session dir.
+`task review` computes the same workbench diff as `task diff` and reports an `--approve` or `--request-changes` verdict on it. The verdict is printed (or emitted with `--json`); it is not persisted. `artifact`, `decision` and `scenario` have the same `review` verb; `plan` and `question` do not.
 
 ### Step 5 — Bulk-edit the whole feature
 
@@ -1297,8 +1289,8 @@ Push the plan's entities to the workbench, exec `$EDITOR` on the feature directo
 
 - One file, one entity: `<entity> edit`.
 - Read-only inspection: `<entity> view`.
-- "Is the FS file in sync with the DB?": `<entity> diff`.
-- Sweep through open questions or tasks on a plan: `<entity> review`.
+- "Is the FS file in sync with the DB?": `task diff` or `artifact diff`.
+- Report a verdict on that diff: `<entity> review` (`task`, `artifact`, `decision`, `scenario`).
 - "I want to edit 4 files at once on one plan": `workbench edit`.
 - Old `push → edit → pull` rhythm: still works; it's just no longer the default.
 
@@ -1314,7 +1306,7 @@ By design, the `planar` binary has **no `planar agent` subcommand**. Agent obser
 |--------|------|-------|
 | `planar` (this binary) | Operator reads of agent state, folded into existing verbs. | `dashboard --agents`, `plan next`, `tree`, `audit trail`, `health` |
 | `planar-agent` | Agent ritual + operator-recovery writes. Owns every write to `agent_work_claims` / `agent_actions`. | `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`end`, `ingest`, `reconcile`, `abort` |
-| `planar-watch` | Live streaming viewer. Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `run list`/`show`, `sync-events`, `queue`, `queue history` |
+| `planar-watch` | Live streaming viewer. Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `sync-events`, `queue`, `queue history` |
 
 This recipe covers the **planar** binary's read surface. The claim ritual for `planar-agent` is in `agents/methodology.md` § Coordination claims; the streaming-viewer recipe for `planar-watch` is [Recipe 19](#recipe-19--live-agent-cockpit-with-planar-watch).
 
