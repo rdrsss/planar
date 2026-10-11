@@ -235,6 +235,36 @@ auto seed_reviewed_reconcile_anchor(const fixture& fx) -> std::string {
   return "1";
 }
 
+// @brief Prepares a project, an association and one draft plan in `fx`.
+auto seed_plan(const fixture& fx, std::string_view title) -> void {
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", std::string(title), "--json"}).code == 0);
+}
+
+// @brief Deletes the pushed workbench file of artifact `id`.
+auto remove_workbench_file(const fixture& fx, std::int64_t id) -> std::string {
+  std::string const prefix = std::format("{}-", id);
+  for (auto const& entry : std::filesystem::recursive_directory_iterator(fx.root / "wb")) {
+    if (entry.is_regular_file() && entry.path().extension() == ".md" && entry.path().filename().string().starts_with(prefix)) {
+      auto const name = entry.path().filename().string();
+      std::filesystem::remove(entry.path());
+      return name;
+    }
+  }
+  FAIL("no workbench file for artifact " << id);
+  return {};
+}
+
+// @brief The single integer a one-row query returns.
+auto scalar(planar::db::connection& conn, std::string_view sql) -> std::int64_t {
+  auto stmt = conn.prepare(sql);
+  REQUIRE(stmt.has_value());
+  REQUIRE(stmt->step().has_value());
+  return stmt->column_int64(0);
+}
+
 } // namespace
 
 // ===========================================================================
@@ -724,7 +754,7 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
   REQUIRE(excluded != nullptr);
   REQUIRE(excluded->array.size() == 1);
   CHECK(excluded->array[0].find("rule")->integer == 7);
-  CHECK(excluded->array[0].find("reason")->string == "excluded by rule 7: routing packet is not ready");
+  CHECK(excluded->array[0].find("reason")->string == "excluded by rule 7: task packet is not ready");
 }
 
 TEST_CASE("spec ingest membership-authorized apply preserves the anchor repository scope on every descendant",
@@ -1211,4 +1241,142 @@ TEST_CASE("spec ingest re-ingest of a four-document plan is zero-diff", "[cmd][s
 
   auto conn = open_db(fx);
   CHECK(dump_planning_inventory(conn) == before);
+}
+
+TEST_CASE("spec ingest fails when the linked roadmap has no file, even if another artifact parses as a work list",
+          "[cmd][spec][ingest][work-list][unreadable]") {
+  auto const fx = make_fixture("roadmap_missing");
+  seed_plan(fx, "Roadmap missing");
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- The real work [slug: real-work]\n", "--json"})
+              .code == 0);
+  // This tech spec parses as a work list too; it must not stand in for the roadmap.
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech", "--kind", "tech_spec", "--plan", "1", "--body",
+                        "## Decisions\n\n### Use SQLite\n\nWe chose it.\n\n## M9\n\n- Not the work list [slug: impostor]\n",
+                        "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+  auto const removed = remove_workbench_file(fx, 1);
+
+  for (auto const& args :
+       {std::vector<std::string>{"spec", "ingest", "1"}, std::vector<std::string>{"spec", "ingest", "1", "--apply"}}) {
+    auto const res = dispatch(fx, args);
+    CHECK(res.code != 0);
+    CHECK(res.err.contains("reading roadmap artifact"));
+    CHECK(res.err.contains(removed));
+  }
+
+  auto conn = open_db(fx);
+  CHECK(count(conn, "tasks") == 0);
+  CHECK(count(conn, "decisions") == 0);
+  CHECK(scalar(conn, "select count(*) from plans where status = 'draft'") == 1);
+}
+
+TEST_CASE("spec ingest --apply fails on an unreadable non-roadmap artifact and preview only warns",
+          "[cmd][spec][ingest][work-list][unreadable]") {
+  auto const fx = make_fixture("tech_missing");
+  seed_plan(fx, "Tech missing");
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- The real work [slug: real-work]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech", "--kind", "tech_spec", "--plan", "1", "--body",
+                        "## Decisions\n\n### Use SQLite\n\nWe chose it.\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+  auto const removed = remove_workbench_file(fx, 2);
+
+  auto const preview = dispatch(fx, {"spec", "ingest", "1"});
+  CHECK(preview.code == 0);
+  CHECK(preview.err.contains("warning:"));
+  CHECK(preview.err.contains(removed));
+
+  auto const applied = dispatch(fx, {"spec", "ingest", "1", "--apply"});
+  CHECK(applied.code != 0);
+  CHECK(applied.err.contains(removed));
+
+  auto conn = open_db(fx);
+  CHECK(count(conn, "tasks") == 0);
+  CHECK(count(conn, "decisions") == 0);
+}
+
+TEST_CASE("spec ingest with no roadmap kind uses the single artifact that parses as a work list and cites it",
+          "[cmd][spec][ingest][work-list][cites]") {
+  auto const fx = make_fixture("design_note_work_list");
+  seed_plan(fx, "Design note work list");
+  REQUIRE(dispatch(fx, {"artifact", "add", "Plan notes", "--kind", "design_note", "--plan", "1", "--body",
+                        "## M1\n\n- Do the noted work [slug: noted-work]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech", "--kind", "tech_spec", "--plan", "1", "--body",
+                        "## Decisions\n\n### Use SQLite\n\nWe chose it.\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"spec", "ingest", "1", "--apply"}).code == 0);
+
+  auto conn = open_db(fx);
+  REQUIRE(scalar(conn, "select count(*) from tasks where slug = 'noted-work'") == 1);
+  auto const task_id = scalar(conn, "select id from tasks where slug = 'noted-work'");
+  CHECK(scalar(conn, std::format("select count(*) from entity_links where from_kind = 'task' and from_id = {} "
+                                 "and to_kind = 'artifact' and to_id = 1 and relationship = 'cites'",
+                                 task_id)) == 1);
+  // The tech spec is one of the four spec kinds, so it is still cited too.
+  CHECK(scalar(conn, std::format("select count(*) from entity_links where from_kind = 'task' and from_id = {} "
+                                 "and to_kind = 'artifact' and to_id = 2 and relationship = 'cites'",
+                                 task_id)) == 1);
+
+  auto const packet = dispatch(fx, {"task", "packet", std::to_string(task_id), "--json"});
+  REQUIRE(packet.code == 0);
+  CHECK(packet.out.contains("\"ref\":\"artifact:1\""));
+  CHECK(packet.out.contains("\"ref\":\"artifact:2\""));
+}
+
+TEST_CASE("spec ingest --strict refuses a scenario that verifies an unknown task slug", "[cmd][spec][ingest][strict][refs]") {
+  auto const fx = make_fixture("strict_unknown_verifies");
+  seed_plan(fx, "Strict refs");
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- The real work [slug: real-work]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tests", "--kind", "test_spec", "--plan", "1", "--body",
+                        "## Scenarios\n\n### Scenario: typo\n\n**Verifies:** task:no-such-slug\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+
+  auto const strict = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(strict.code == 2);
+  CHECK(strict.err.contains("--strict refused"));
+  CHECK(strict.err.contains("no-such-slug"));
+  // Without --strict the same preview still succeeds: the gate is the flag.
+  CHECK(dispatch(fx, {"spec", "ingest", "1"}).code == 0);
+
+  auto conn = open_db(fx);
+  CHECK(count(conn, "tasks") == 0);
+  CHECK(count(conn, "test_scenarios") == 0);
+}
+
+TEST_CASE("spec ingest --strict refuses an unresolved depends slug and accepts resolvable references",
+          "[cmd][spec][ingest][strict][refs]") {
+  auto const fx = make_fixture("strict_depends");
+  seed_plan(fx, "Strict depends");
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- First [slug: first-task]\n- Second [slug: second-task] [depends: ghost-task]\n", "--json"})
+              .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+  auto const refused = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(refused.code == 2);
+  CHECK(refused.err.contains("ghost-task"));
+
+  // A reference to a slug the roadmap declares resolves, and a scenario
+  // verifying it is fine; one that cites nothing stays a warning.
+  REQUIRE(dispatch(fx, {"artifact", "update", "1", "--body",
+                        "## M1\n\n- First [slug: first-task]\n- Second [slug: second-task] [depends: first-task]\n", "--json"})
+              .code == 0);
+  REQUIRE(
+      dispatch(fx,
+               {"artifact", "add", "Tests", "--kind", "test_spec", "--plan", "1", "--body",
+                "## Scenarios\n\n### Scenario: ok\n\n**Verifies:** task:first-task\n\n### Scenario: orphan\n\nCites nothing.\n",
+                "--json"})
+          .code == 0);
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+  auto const accepted = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(accepted.code == 0);
+  CHECK(accepted.err.contains("orphan"));
 }

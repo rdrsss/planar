@@ -80,25 +80,10 @@ auto append_reason(std::vector<readiness_reason>& reasons, readiness_reason valu
   if (auto c = a.current_digest <=> b.current_digest; c != 0) {
     return c < 0;
   }
-  if (a.required != b.required) {
-    return !a.required;
-  }
-  if (a.covered != b.covered) {
-    return !a.covered;
-  }
   if (auto c = a.status <=> b.status; c != 0) {
     return c < 0;
   }
   if (auto c = a.provenance <=> b.provenance; c != 0) {
-    return c < 0;
-  }
-  if (auto c = a.materializer_version <=> b.materializer_version; c != 0) {
-    return c < 0;
-  }
-  if (auto c = a.current_materializer_version <=> b.current_materializer_version; c != 0) {
-    return c < 0;
-  }
-  if (auto c = a.freshness <=> b.freshness; c != 0) {
     return c < 0;
   }
   return a.display_label < b.display_label;
@@ -131,17 +116,10 @@ auto append_evidence_field(std::string& out, std::string_view name, const std::v
     append_json_string(out, item.source_digest);
     out.append(",\"current_digest\":");
     append_json_string(out, item.current_digest);
-    out.append(std::format(",\"required\":{},\"covered\":{}", item.required, item.covered));
     out.append(",\"status\":");
     append_json_string(out, item.status);
     out.append(",\"provenance\":");
     append_json_string(out, item.provenance);
-    out.append(",\"materializer_version\":");
-    append_json_string(out, item.materializer_version);
-    out.append(",\"current_materializer_version\":");
-    append_json_string(out, item.current_materializer_version);
-    out.append(",\"freshness\":");
-    append_json_string(out, item.freshness);
     out.push_back('}');
   }
   out.push_back(']');
@@ -291,14 +269,16 @@ auto append_references_field(std::string& out, const std::vector<reference>& val
   return out;
 }
 
-/// @brief The tasks this one directly `depends-on`, whatever their status.
+/// @brief The tasks this one directly `depends-on`, whatever their status, as
+/// display evidence.
 ///
-/// The row's status is the dependency task's own `tasks.status`; `compile_task`
-/// reads `done` and `cancelled` as finished.
+/// The row's status is the dependency task's own `tasks.status`. Which of them
+/// block is decided by `co::unfinished_dependencies`, not here. A self-link is
+/// left out, as it is there.
 [[nodiscard]] auto dependency_evidence(db::connection& conn, std::int64_t task_id)
     -> std::expected<std::vector<evidence>, packet_error> {
   auto ids = conn.prepare("select to_id from entity_links where from_kind='task' and from_id=? "
-                          "and to_kind='task' and relationship='depends-on' order by to_id");
+                          "and to_kind='task' and relationship='depends-on' and to_id != from_id order by to_id");
   if (!ids || !ids->bind_int64(1, task_id)) {
     return std::unexpected(packet_error::query_failed);
   }
@@ -457,14 +437,8 @@ auto compile_task(const task_input& input) -> task_packet {
       }
     }
   }
-  {
-    static constexpr std::string_view finished[] = {"done", "cancelled"};
-    for (const auto& dependency : input.dependencies) {
-      if (!status_in(dependency.status, finished)) {
-        append_reason(reasons, r::blocked_by_open_task);
-        break;
-      }
-    }
+  if (!input.blocking_dependencies.empty()) {
+    append_reason(reasons, r::blocked_by_open_task);
   }
   if (!input.open_questions.empty()) {
     append_reason(reasons, r::open_question_linked);
@@ -521,9 +495,13 @@ auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<
   if (!dependencies) {
     return std::unexpected(dependencies.error());
   }
-  // The question and decision links are decided by `planar.coordination`, the
-  // functions `recommend-strategy` rules 5 and 6 call, so the packet and the
-  // rule cannot disagree about which link is open.
+  // The dependency, question and decision links are decided by
+  // `planar.coordination`, the functions `recommend-strategy` rules 5 and 6
+  // call, so the packet and the rule cannot disagree about which link blocks.
+  auto blocking = co::unfinished_dependencies(conn, task_id);
+  if (!blocking) {
+    return std::unexpected(packet_error::query_failed);
+  }
   auto open_question_ids = co::open_questions_linked(conn, task_id);
   if (!open_question_ids) {
     return std::unexpected(packet_error::query_failed);
@@ -548,17 +526,18 @@ auto assemble_task(db::connection& conn, std::int64_t task_id) -> std::expected<
   if (!claims) {
     return std::unexpected(claims.error());
   }
-  task_input input{.task_id            = task_id,
-                   .status             = task_status,
-                   .title              = title,
-                   .body               = body,
-                   .next_action        = next_action,
-                   .owning_plans       = std::move(owning),
-                   .references         = std::move(*references),
-                   .dependencies       = std::move(*dependencies),
-                   .open_questions     = std::move(*open_questions),
-                   .proposed_decisions = std::move(*proposed_decisions),
-                   .claims             = std::move(*claims)};
+  task_input input{.task_id               = task_id,
+                   .status                = task_status,
+                   .title                 = title,
+                   .body                  = body,
+                   .next_action           = next_action,
+                   .owning_plans          = std::move(owning),
+                   .references            = std::move(*references),
+                   .dependencies          = std::move(*dependencies),
+                   .blocking_dependencies = std::move(*blocking),
+                   .open_questions        = std::move(*open_questions),
+                   .proposed_decisions    = std::move(*proposed_decisions),
+                   .claims                = std::move(*claims)};
   return compile_task(input);
 }
 
@@ -622,17 +601,10 @@ auto render_json(const task_packet& packet) -> std::string {
       append_json_string(out, item.source_digest);
       out.append(",\"current_digest\":");
       append_json_string(out, item.current_digest);
-      out.append(std::format(",\"required\":{},\"covered\":{}", item.required, item.covered));
       out.append(",\"status\":");
       append_json_string(out, item.status);
       out.append(",\"provenance\":");
       append_json_string(out, item.provenance);
-      out.append(",\"materializer_version\":");
-      append_json_string(out, item.materializer_version);
-      out.append(",\"current_materializer_version\":");
-      append_json_string(out, item.current_materializer_version);
-      out.append(",\"freshness\":");
-      append_json_string(out, item.freshness);
       out.push_back('}');
     }
     out.push_back(']');

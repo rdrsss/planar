@@ -99,26 +99,20 @@ namespace planar::engine::ingest::packet {
 /// envelope as `policy_version` and inside the canonical body as `policy`.
 export inline constexpr std::string_view policy_version = "routing-packet-v3";
 
-/// @brief One piece of evidence the packet compiled, with its provenance and
-/// freshness.
+/// @brief One piece of evidence the packet compiled, with its provenance.
 ///
-/// A bare `evidence` is required, covered, `ready` and `current`, so a loader
-/// that sets only the identity fields produces a well-formed row.
+/// A bare `evidence` is `ready`, so a loader that sets only the identity
+/// fields produces a well-formed row.
 export struct evidence {
-  std::string  kind;                         ///< Entity or fact kind, e.g. `product_spec`, `claim`.
-  std::int64_t id = 0;                       ///< Source row id.
-  std::string  locator;                      ///< `artifact:12#Overview`, `next_action`, a path, …
-  std::string  text;                         ///< The semantic payload the digest is taken over.
-  std::string  display_label;                ///< Human label; in `canonical`, never in the digest.
-  std::string  source_digest;                ///< Digest recorded when the evidence was materialized.
-  std::string  current_digest;               ///< Digest recomputed live; empty when unresolvable.
-  bool         required   = true;            ///< Whether readiness depends on this row.
-  bool         covered    = true;            ///< Scenario/coverage membership.
-  std::string  status     = "ready";         ///< Lifecycle status, checked per evidence class.
-  std::string  provenance = "planar";        ///< Where the row came from, e.g. `artifact:12`.
-  std::string  materializer_version;         ///< Version stored with the fact.
-  std::string  current_materializer_version; ///< Version the running binary would write.
-  std::string  freshness = "current";        ///< `current` or `stale`.
+  std::string  kind;                  ///< Entity or fact kind, e.g. `product_spec`, `claim`.
+  std::int64_t id = 0;                ///< Source row id.
+  std::string  locator;               ///< `artifact:12#Overview`, `next_action`, a path, …
+  std::string  text;                  ///< The semantic payload the digest is taken over.
+  std::string  display_label;         ///< Human label; in `canonical`, never in the digest.
+  std::string  source_digest;         ///< Digest recorded when the evidence was materialized.
+  std::string  current_digest;        ///< Digest recomputed live; empty when unresolvable.
+  std::string  status     = "ready";  ///< Lifecycle status, checked per evidence class.
+  std::string  provenance = "planar"; ///< Where the row came from, e.g. `artifact:12`.
 };
 
 /// @brief One citation of an artifact, derived from a `cites` entity link.
@@ -140,17 +134,18 @@ export struct reference {
 /// Field order is load-bearing: it is the key order of both the JSON `input`
 /// object and the canonical body.
 export struct task_input {
-  std::int64_t           task_id = 0;        ///< `tasks.id`.
-  std::string            status;             ///< `tasks.status`.
-  std::string            title;              ///< `tasks.title`.
-  std::string            body;               ///< `tasks.body`, coalesced to empty.
-  std::string            next_action;        ///< `tasks.next_action`, coalesced to empty.
-  std::vector<evidence>  owning_plans;       ///< The plan the task belongs to; 0 or 1 row.
-  std::vector<reference> references;         ///< The artifacts the task `cites`, ordered by kind then id.
-  std::vector<evidence>  dependencies;       ///< Tasks this one `depends-on`, with their `tasks.status`.
-  std::vector<evidence>  open_questions;     ///< Linked questions whose status is `open`.
-  std::vector<evidence>  proposed_decisions; ///< Linked decisions whose status is `proposed`.
-  std::vector<evidence>  claims;             ///< Active claims; a lapsed lease is reported as `expired`.
+  std::int64_t              task_id = 0;           ///< `tasks.id`.
+  std::string               status;                ///< `tasks.status`.
+  std::string               title;                 ///< `tasks.title`.
+  std::string               body;                  ///< `tasks.body`, coalesced to empty.
+  std::string               next_action;           ///< `tasks.next_action`, coalesced to empty.
+  std::vector<evidence>     owning_plans;          ///< The plan the task belongs to; 0 or 1 row.
+  std::vector<reference>    references;            ///< The artifacts the task `cites`, ordered by kind then id.
+  std::vector<evidence>     dependencies;          ///< Tasks this one `depends-on`, with their `tasks.status`; display evidence.
+  std::vector<std::int64_t> blocking_dependencies; ///< The unfinished ones, from `planar.coordination`; decides reason 5.
+  std::vector<evidence>     open_questions;        ///< Linked questions whose status is `open`.
+  std::vector<evidence>     proposed_decisions;    ///< Linked decisions whose status is `proposed`.
+  std::vector<evidence>     claims;                ///< Active claims; a lapsed lease is reported as `expired`.
 };
 
 /// @brief Why a packet is not ready.

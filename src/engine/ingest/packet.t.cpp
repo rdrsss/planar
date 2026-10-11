@@ -343,6 +343,18 @@ TEST_CASE("an unfinished dependency blocks the task until it is done or cancelle
   }
 }
 
+TEST_CASE("a task that depends on itself is not blocked by it", "[packet]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  auto packet = degraded(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) values "
+                               "('task',100,'task',100,'depends-on')");
+  CHECK(packet->reasons.empty());
+  CHECK(packet->input.blocking_dependencies.empty());
+  CHECK(packet->input.dependencies.size() == 1);
+}
+
 TEST_CASE("only a direct depends-on link from the task blocks it", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
@@ -671,15 +683,11 @@ TEST_CASE("the canonical order is total for rows sharing an identity key", "[pac
   low.text           = "same";
   low.source_digest  = "x";
   low.current_digest = "a";
-  low.required       = false;
-  low.covered        = false;
   low.status         = "resolved";
   low.provenance     = "artifact:1";
 
   auto high           = low;
   high.current_digest = "b";
-  high.required       = true;
-  high.covered        = true;
   high.status         = "ready";
   high.provenance     = "artifact:2";
 
@@ -713,16 +721,18 @@ TEST_CASE("compile_task decides the coordination reasons from the input alone", 
   input.owning_plans = {plan};
   CHECK(pk::compile_task(input).ready());
 
-  // A finished dependency holds nothing back, an unfinished one does.
+  // The blocking verdict is the coordination predicate's list; the display
+  // evidence alone decides nothing.
   pk::evidence dependency;
   dependency.kind    = "dependency";
   dependency.id      = 8;
-  dependency.status  = "done";
+  dependency.status  = "doing";
   input.dependencies = {dependency};
   CHECK(pk::compile_task(input).ready());
-  input.dependencies[0].status = "doing";
+  input.blocking_dependencies = {8};
   CHECK(reason_names(pk::compile_task(input)) == std::vector<std::string>{"blocked_by_open_task"});
   input.dependencies.clear();
+  input.blocking_dependencies.clear();
 
   // A live claim holds a doing task; an expired one does not.
   pk::evidence claim;
@@ -826,6 +836,38 @@ TEST_CASE("render_json lists references in place of citations and facts", "[pack
   // `references` sits after the owning plan and before the dependencies.
   CHECK(json.find(R"("owning_plans":)") < json.find(R"("references":)"));
   CHECK(json.find(R"("references":)") < json.find(R"("dependencies":)"));
+}
+
+TEST_CASE("an evidence row carries no fact-era fields, and the digest ignores its display label", "[packet]") {
+  pk::evidence dependency;
+  dependency.kind          = "dependency";
+  dependency.id            = 8;
+  dependency.locator       = "task:8";
+  dependency.text          = "T";
+  dependency.display_label = "Eight";
+  dependency.status        = "done";
+
+  pk::task_input input;
+  input.dependencies = {dependency};
+  const auto packet  = pk::compile_task(input);
+
+  const std::string row =
+      R"({"kind":"dependency","id":8,"locator":"task:8","text":"T","display_label":"Eight","source_digest":"","current_digest":"","status":"done","provenance":"planar"})";
+  CHECK(packet.canonical.find(R"("dependencies":[)" + row + "]") != std::string::npos);
+  CHECK(pk::render_json(packet).find(R"("dependencies":[)" + row + "]") != std::string::npos);
+  for (const std::string_view gone : {"\"required\"", "\"covered\"", "materializer_version", "\"freshness\""}) {
+    INFO("field: " << gone);
+    CHECK(packet.canonical.find(gone) == std::string::npos);
+    CHECK(pk::render_json(packet).find(gone) == std::string::npos);
+  }
+
+  // The digest is over the semantic body: the label is display-only.
+  auto renamed                          = input;
+  renamed.dependencies[0].display_label = "Renamed";
+  const auto other                      = pk::compile_task(renamed);
+  CHECK(other.digest == packet.digest);
+  CHECK(other.canonical != packet.canonical);
+  CHECK(packet.canonical.find("display_label") != std::string::npos);
 }
 
 TEST_CASE("expand_reference prints exactly the cited section or the whole body", "[packet][references]") {

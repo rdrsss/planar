@@ -339,19 +339,24 @@ auto extract_content_section(std::string_view body) -> std::string {
   return std::string{section};
 }
 
-/// @brief The anchor's artifacts as ingest reads them, plus the ones it skipped.
+/// @brief One linked artifact whose workbench file could not be read.
+struct unreadable_artifact {
+  std::string kind;    ///< The artifact kind, from the database.
+  std::string message; ///< Names the artifact and the missing file.
+};
+
+/// @brief The anchor's artifacts as ingest reads them, plus the ones it could not read.
 struct anchor_artifacts {
   std::vector<parse_ns::source_artifact> artifacts_;  ///< Readable artifacts, ascending id.
-  std::vector<std::string>               unreadable_; ///< One message per artifact with no workbench file.
+  std::vector<unreadable_artifact>       unreadable_; ///< One entry per linked artifact with no workbench file.
 };
 
 /// @brief Reads every artifact derived from `anchor_id`, whatever its kind,
 /// in ascending id order, and extracts each `## Content` section. Strips
 /// front matter the way zig's `readArtifactBody` did, per artifact.
 ///
-/// An artifact with no file in the workbench is skipped and reported in
-/// `unreadable_`, so a document that was never pushed does not block the
-/// ingest of the others.
+/// An artifact with no file in the workbench is reported in `unreadable_`
+/// with its database kind; the caller decides whether that blocks the run.
 /// @param conn Database connection.
 /// @param feature_dir Workbench feature directory.
 /// @param anchor_id Anchor plan id.
@@ -381,8 +386,10 @@ auto load_anchor_artifacts(db::connection& conn, std::string_view feature_dir, s
     auto const    path = std::filesystem::path(feature_dir) / wb_feature::artifact_filename(art.id_, art.title_, art.kind_);
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-      out.unreadable_.push_back(std::format("artifact {} '{}' ({}) has no workbench file at {}; run workbench push to include it",
-                                            art.id_, art.title_, art.kind_, path.string()));
+      out.unreadable_.push_back(
+          {.kind    = art.kind_,
+           .message = std::format("artifact {} '{}' ({}) has no workbench file at {}; run workbench push to include it", art.id_,
+                                  art.title_, art.kind_, path.string())});
       continue;
     }
     std::ostringstream buf;
@@ -651,31 +658,21 @@ auto resolve_task_from_roadmap_mapping(db::connection& conn, std::int64_t anchor
   return stmt->column_int64(0);
 }
 
-/// @brief Resolves every roadmap citation's task id and records the `cites`
-/// edge from that task to the anchor's roadmap artifact.
+/// @brief Resolves every work-list citation's task id and records the `cites`
+/// edge from that task to the artifact the work list was read from.
 ///
 /// Stages no routing fact: a task's citations are its `cites` links, and
 /// `reconcile_reviewed_artifact_links` re-adds the reviewed artifacts' links
 /// for every descendant task.
 /// @param conn Database connection.
 /// @param diff Parsed specification diff.
+/// @param artifact_id The selected work-list artifact (the roadmap when one is linked).
 /// @return Success, or apply failure.
-auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff) -> std::expected<void, apply_error> {
-  auto artifact_stmt = conn.prepare("select a.id from artifacts a "
-                                    "join entity_links el on el.from_kind = 'artifact' and el.from_id = a.id "
-                                    " and el.to_kind = 'plan' and el.to_id = ? and el.relationship = 'derives-from' "
-                                    "where a.kind = 'roadmap' order by a.id limit 1");
-  if (!artifact_stmt || !artifact_stmt->bind_int64(1, diff.anchor_plan_id_)) {
-    return std::unexpected(apply_error{.message = "QueryFailed"});
-  }
-  auto stepped = artifact_stmt->step();
-  if (!stepped) {
-    return std::unexpected(apply_error{.message = "QueryFailed"});
-  }
-  if (*stepped != db::step_result::row) {
+auto reconcile_roadmap_citations(db::connection& conn, const diff_ns::diff& diff, std::int64_t artifact_id)
+    -> std::expected<void, apply_error> {
+  if (artifact_id <= 0) {
     return {};
   }
-  auto const artifact_id = artifact_stmt->column_int64(0);
 
   for (auto const& c : diff.roadmap_citations_) {
     std::int64_t task_id = 0;
@@ -867,14 +864,17 @@ join decisions d on d.id=el.from_id and d.status='accepted' order by t.id,d.id)"
 /// task through normal audited entity-link writes.
 /// @param conn An open, migrated database connection.
 /// @param anchor_plan_id The root plan whose subtree's tasks are linked.
+/// @param work_list_artifact_id The selected work-list artifact, linked whatever its kind.
 /// @return Success, or the mapped engine failure.
-auto reconcile_reviewed_artifact_links(db::connection& conn, std::int64_t anchor_plan_id) -> std::expected<void, std::string> {
+auto reconcile_reviewed_artifact_links(db::connection& conn, std::int64_t anchor_plan_id, std::int64_t work_list_artifact_id)
+    -> std::expected<void, std::string> {
   auto stmt = conn.prepare(R"(with recursive plan_tree(id) as (
   select id from plans where id=? union all select child.id from plans child join plan_tree parent on child.parent_plan_id=parent.id
 ) select t.id,a.id from tasks t join plan_tree pt on pt.id=t.plan_id
 join entity_links el on el.from_kind='artifact' and el.to_kind='plan' and el.to_id=? and el.relationship='derives-from'
-join artifacts a on a.id=el.from_id where a.kind in ('product_spec','tech_spec','roadmap','test_spec') order by t.id,a.id)");
-  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, anchor_plan_id))
+join artifacts a on a.id=el.from_id where (a.kind in ('product_spec','tech_spec','roadmap','test_spec') or a.id=?) order by t.id,a.id)");
+  if (!stmt || !stmt->bind_int64(1, anchor_plan_id) || !stmt->bind_int64(2, anchor_plan_id) ||
+      !stmt->bind_int64(3, work_list_artifact_id))
     return std::unexpected(std::string{"QueryFailed"});
   while (true) {
     auto stepped = stmt->step();
@@ -922,6 +922,8 @@ struct apply_options {
   bool apply_removals = false;
   /// @brief Anchor entity scope inherited by all derived planning entities.
   std::optional<std::string_view> scope;
+  /// @brief The artifact the task bullets were read from; every task cites it.
+  std::int64_t work_list_artifact_id = 0;
 };
 
 /// @brief Commits `diff` to the database. Preview (`opts.apply == false`)
@@ -1106,7 +1108,7 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     }
   }
 
-  if (auto citations = reconcile_roadmap_citations(conn, diff); !citations) {
+  if (auto citations = reconcile_roadmap_citations(conn, diff, opts.work_list_artifact_id); !citations) {
     return std::unexpected(citations.error());
   }
 
@@ -1258,7 +1260,7 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
     res.questions_answered += 1;
   }
 
-  if (auto linked = reconcile_reviewed_artifact_links(conn, diff.anchor_plan_id_); !linked) {
+  if (auto linked = reconcile_reviewed_artifact_links(conn, diff.anchor_plan_id_, opts.work_list_artifact_id); !linked) {
     return std::unexpected(apply_error{.message = linked.error()});
   }
   if (auto linked = reconcile_accepted_decision_links(conn, diff.anchor_plan_id_); !linked) {
@@ -1284,6 +1286,50 @@ auto apply_diff(db::connection& conn, const diff_ns::diff& diff, const apply_opt
 // ===========================================================================
 // The handler
 // ===========================================================================
+
+/// @brief Lists every slug reference the specification carries that names no task.
+///
+/// A scenario `**Verifies:** task:<slug>` ref and a roadmap `[depends: <slug>]`
+/// ref resolve when the slug is declared by a roadmap bullet or already names a
+/// task in the anchor's tree. Numeric refs are not checked here.
+/// @param conn Database connection.
+/// @param milestones The parsed work list.
+/// @param diff The proposed change set.
+/// @param anchor_plan_id Anchor plan id.
+/// @return One message per unresolved reference, in source order.
+auto unresolved_references(db::connection& conn, std::span<const parse_ns::milestone> milestones, const diff_ns::diff& diff,
+                           std::int64_t anchor_plan_id) -> std::vector<std::string> {
+  std::set<std::string> declared;
+  for (auto const& ms : milestones) {
+    for (auto const& item : ms.work_items_) {
+      if (!item.slug_.empty()) {
+        declared.insert(item.slug_);
+      }
+    }
+  }
+  auto const resolves = [&](std::string_view slug) {
+    return declared.contains(std::string{slug}) || task_id_by_slug_in_tree(conn, slug, anchor_plan_id).has_value();
+  };
+
+  std::vector<std::string> out;
+  for (auto const& se : diff.scenarios_) {
+    for (auto const& ref : se.verifies_) {
+      if (!ref.slug_.empty() && !resolves(ref.slug_)) {
+        out.push_back(std::format("scenario '{}' verifies {}:{}", se.title_, ref.kind_, ref.slug_));
+      }
+    }
+  }
+  for (auto const& ms : milestones) {
+    for (auto const& item : ms.work_items_) {
+      for (auto const& dep : item.depends_) {
+        if (!resolves(dep)) {
+          out.push_back(std::format("task '{}' depends on {}", item.title_, dep));
+        }
+      }
+    }
+  }
+  return out;
+}
 
 /// @brief One plan argument, end to end: anchor lookup, cross-scope guard,
 /// artifact read, parse, diff, render, strict gate, apply. Mirrors zig's
@@ -1346,8 +1392,21 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
     ctx.err() << std::format("plan {} ({}): reading artifacts: {}\n", anc.id, anc.slug, loaded.error());
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading artifacts"));
   }
+  // The work list is chosen from the database kind before any file is read:
+  // a linked roadmap whose file is missing fails here rather than letting
+  // some other artifact that happens to parse as a work list stand in for it.
   for (auto const& skipped : loaded->unreadable_) {
-    ctx.err() << std::format("warning: {}\n", skipped);
+    if (skipped.kind == "roadmap") {
+      ctx.err() << std::format("plan {} ({}): reading roadmap artifact: {}\n", anc.id, anc.slug, skipped.message);
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading roadmap artifact"));
+    }
+  }
+  for (auto const& skipped : loaded->unreadable_) {
+    if (apply_flag) {
+      ctx.err() << std::format("plan {} ({}): reading artifact: {}\n", anc.id, anc.slug, skipped.message);
+      return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading artifact"));
+    }
+    ctx.err() << std::format("warning: {}\n", skipped.message);
   }
   auto const& artifacts = loaded->artifacts_;
 
@@ -1356,7 +1415,8 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
     ctx.err() << std::format("plan {} ({}): {}\n", anc.id, anc.slug, work_index.error());
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, "reading work list"));
   }
-  auto const milestones = parse_ns::parse_roadmap(artifacts[*work_index].body_);
+  auto const milestones            = parse_ns::parse_roadmap(artifacts[*work_index].body_);
+  auto const work_list_artifact_id = artifacts[*work_index].id_;
 
   auto sections = parse_ns::collect_spec_sections(artifacts);
   if (!sections) {
@@ -1415,6 +1475,15 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
   }
 
   if (strict) {
+    auto const unresolved = unresolved_references(conn, milestones, *diff, anc.id);
+    if (!unresolved.empty()) {
+      ctx.err() << std::format("plan {}: --strict refused: {} unresolved reference(s): ", anc.id, unresolved.size());
+      for (std::size_t i = 0; i < unresolved.size(); ++i) {
+        ctx.err() << (i > 0 ? "; " : "") << unresolved[i];
+      }
+      ctx.err() << "\n";
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--strict refused"));
+    }
     bool const require_scenario_coverage = false;
     auto const cov                       = cov_ns::compute(*diff);
     bool const refuses_on_coverage       = cov.refuses_strict(require_scenario_coverage);
@@ -1492,7 +1561,8 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
       // do. An association may authorize a repository anchor through
       // membership without widening every derived descendant to association
       // scope.
-      .scope = entity_scope,
+      .scope                 = entity_scope,
+      .work_list_artifact_id = work_list_artifact_id,
   };
   auto result = apply_diff(conn, *diff, opts);
   if (!result) {

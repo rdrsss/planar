@@ -220,8 +220,7 @@ void warn_open_descendants(context& ctx, db::connection& conn, std::int64_t plan
 /// @param task_id The task to inspect.
 /// @param verb The caller's verb for its query-failure diagnostic.
 /// @return Whether the assembled packet is ready.
-auto routing_packet_ready(db::connection& conn, std::int64_t task_id, std::string_view verb)
-    -> std::expected<bool, domain_error> {
+auto task_packet_ready(db::connection& conn, std::int64_t task_id, std::string_view verb) -> std::expected<bool, domain_error> {
   auto packet = engine::ingest::packet::assemble_task(conn, task_id);
   if (!packet) {
     return std::unexpected(error_from_body(domain_error_kind::generic_failure, std::format("{} packet: QueryFailed", verb)));
@@ -929,7 +928,7 @@ auto plan_next(context& ctx, const cliapp::parsed_args& args) -> handler_result 
   // holds it back) must remain blocked.
   for (auto& row : *rows) {
     if (row.bucket == aa::next_work_bucket::available) {
-      auto ready = routing_packet_ready(**conn, row.task_id, "plan next");
+      auto ready = task_packet_ready(**conn, row.task_id, "plan next");
       if (!ready) {
         return std::unexpected(ready.error());
       }
@@ -1119,7 +1118,7 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
   std::vector<st::task_ref> packet_ready;
   packet_ready.reserve(rec->parallel_eligible.size());
   for (auto& task : rec->parallel_eligible) {
-    auto ready = routing_packet_ready(**conn, task.id, "recommend-strategy");
+    auto ready = task_packet_ready(**conn, task.id, "recommend-strategy");
     if (!ready) {
       return std::unexpected(ready.error());
     }
@@ -1127,7 +1126,7 @@ auto plan_recommend_strategy(context& ctx, const cliapp::parsed_args& args) -> h
       packet_ready.push_back(std::move(task));
       continue;
     }
-    task.excluded_by.push_back(st::exclusion{.rule = 7, .reason = "excluded by rule 7: routing packet is not ready"});
+    task.excluded_by.push_back(st::exclusion{.rule = 7, .reason = "excluded by rule 7: task packet is not ready"});
     rec->serialized.push_back(std::move(task));
   }
   rec->parallel_eligible = std::move(packet_ready);

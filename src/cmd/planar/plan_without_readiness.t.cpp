@@ -17,7 +17,7 @@ namespace {
 
 namespace parity = planar::cmd::parity;
 
-/// @brief The reason names the plan-level packet used to emit.
+// @brief The reason names the plan-level packet used to emit.
 constexpr std::array<std::string_view, 16> k_removed_reasons{
     "missing_strict_preview",   "missing_review_rubric",    "missing_reviewed_artifacts",
     "missing_locked_decisions", "missing_required_outputs", "missing_goal",
@@ -26,16 +26,16 @@ constexpr std::array<std::string_view, 16> k_removed_reasons{
     "invalid_apply_boundary",   "invalid_locked_decisions", "invalid_strict_preview",
     "non_current_artifacts"};
 
-/// @brief A scratch arena with the two binaries a claim needs.
+// @brief A scratch arena with the two binaries a claim needs.
 struct world {
   parity::arena         arena = parity::make_arena("plan_without_readiness");
   std::filesystem::path root  = arena.cpp_root;
   int                   seq   = 0;
 
-  /// @brief Run one verb and return its capture.
-  /// @param bin The binary to run.
-  /// @param args The arguments after the binary name.
-  /// @return The exit code and both streams.
+  // @brief Run one verb and return its capture.
+  // @param bin The binary to run.
+  // @param args The arguments after the binary name.
+  // @return The exit code and both streams.
   auto run(std::filesystem::path const& bin, std::vector<std::string> const& args) -> parity::capture {
     auto got = parity::run_pinned(bin, args, root, std::format("pwr{}", ++seq));
     INFO(bin.filename().string() << " " << args.front() << " -> " << got.code << ": " << got.err << got.out);
@@ -51,9 +51,9 @@ struct world {
   }
 };
 
-/// @brief Names the first removed reason that appears in `text`, or the empty string.
-/// @param text The output to scan.
-/// @return A removed reason found in `text`, or empty.
+// @brief Names the first removed reason that appears in `text`, or the empty string.
+// @param text The output to scan.
+// @return A removed reason found in `text`, or empty.
 auto find_removed_reason(std::string_view text) -> std::string {
   for (auto const reason : k_removed_reasons) {
     if (text.contains(reason)) {
