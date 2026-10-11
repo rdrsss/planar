@@ -12,6 +12,10 @@ auto coverage::has_gaps() const -> bool {
   return !uncovered_task_slugs_.empty() || !orphan_scenarios_.empty();
 }
 
+auto coverage::refuses_strict(bool require_scenario_coverage) const -> bool {
+  return require_scenario_coverage && has_gaps();
+}
+
 auto compute(const diff::diff& d) -> coverage {
   // Slugs cited by at least one scenario. Numeric refs contribute nothing —
   // they cannot be tied back to a roadmap bullet at preview time.

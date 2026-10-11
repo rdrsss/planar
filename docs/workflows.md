@@ -89,7 +89,7 @@ project:my-app/billing-export-csv/
 coverage: 5 tasks (5 with slug, 0 without); 0 uncovered
 ```
 
-The `coverage:` line follows the totals. It reports how many of the tasks have a `[slug:]` annotation and how many of those slugs are cited by at least one scenario in `test-spec.md`. Uncovered slugs and orphan scenarios (missing `**Verifies:**` line) are listed inline. To turn the gate into a hard refusal, run with `--strict`:
+The `coverage:` line follows the totals. It reports how many of the tasks have a `[slug:]` annotation and how many of those slugs are cited by at least one scenario in `test-spec.md`. Uncovered slugs and orphan scenarios (missing `**Verifies:**` line) are listed inline and reported as warnings; they do not fail the preview. `--strict` adds the slug-collision refusal:
 
 ```
 planar spec ingest 42 --strict
@@ -128,7 +128,7 @@ Review the diff. If it looks correct:
 planar spec ingest 42 --apply
 ```
 
-`--apply` is an operator gate: run it only after you have confirmed the previewed diff. Add `--strict` to the apply call when the test-spec is meant to be complete — the gate will reject the apply if any slug-bearing task is still uncovered.
+`--apply` is an operator gate: run it only after you have confirmed the previewed diff. Add `--strict` to the apply call to refuse on a slug collision. Uncovered slug-bearing tasks are reported as warnings, so read the `coverage:` line before you apply.
 
 Tasks, child plans, and decisions are now in the database. A successful apply also activates a `draft` anchor plan (the apply summary ends with `(anchor plan activated)`). Confirm before execution:
 

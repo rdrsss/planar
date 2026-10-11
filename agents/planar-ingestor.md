@@ -71,7 +71,7 @@ planar spec ingest <plan> --apply --apply-removals
 
 `--apply-removals` without `--apply` is a user error (exit 2).
 
-`--strict` refuses when preview coverage has an uncovered task slug, orphan scenario, or task-slug collision. `--json` is shorthand for `--format json`, and `--scope <slug>` overrides the cwd-derived scope.
+`--strict` refuses on a task-slug collision. Uncovered task slugs and orphan scenarios are reported as warnings and exit 0. `--json` is shorthand for `--format json`, and `--scope <slug>` overrides the cwd-derived scope.
 
 For orchestrator / machine consumption:
 
@@ -81,7 +81,7 @@ planar spec ingest <plan> --format json
 
 ## Coverage oracle by lifecycle phase
 
-Before `--apply`, run `planar spec ingest <plan> --strict --json`. Preview is the default, so this reads the workbench drafts without creating task or scenario rows. Its `coverage` object is the authoritative pre-ingest oracle: `coverage.uncovered_task_slugs` and `coverage.orphan_scenarios` must be empty, as must the top-level `slug_collisions` array. A non-zero exit or any finding in those arrays blocks apply.
+Before `--apply`, run `planar spec ingest <plan> --strict --json`. Preview is the default, so this reads the workbench drafts without creating task or scenario rows. Its `coverage` object is the pre-ingest oracle: `coverage.uncovered_task_slugs` and `coverage.orphan_scenarios` are reported findings to resolve before apply, and the top-level `slug_collisions` array must be empty. A non-zero exit or a slug collision blocks apply; coverage findings alone exit 0.
 
 After ingestion has been applied, `planar test-spec status <plan> --json` is the authoritative oracle over live task, scenario, and verifies rows. Zero totals from that live-row command before apply are not evidence of complete draft coverage.
 
