@@ -382,9 +382,18 @@ stateDiagram-v2
 `action_kind` set: `planner`, `ingestor`, `coder`, `test_coder`,
 `reviewer`, `ext_sync`, `ext_propagate`, `orchestrator`, `resume`,
 `workbench_sync`, `spec_draft`, `claim_check`, `heartbeat`, `tool_call`,
-`user_message`, `assistant_message`, `other`. `outcome` set: `ok`, `error`,
-`aborted`, `timeout`. `parent_action_id` builds the orchestrator → coder
-forest that `planar-watch tree` walks.
+`user_message`, `assistant_message`, `other`, `review`. `outcome` set: `ok`,
+`error`, `aborted`, `timeout`. `parent_action_id` builds the orchestrator →
+coder forest that `planar-watch tree` walks.
+
+A `review` action is not part of that open/closed lifecycle: `planar-agent
+review` writes it already closed, with a `verdict` (`approve` or
+`request-changes`), under the reviewer's own session and linked to the
+reviewed claim (`claim_id`) and, as a child, to the reviewed claim's earliest
+action. It is refused when the caller's session is the reviewed claim's
+session, so a review is evidence that someone other than the coder looked.
+`action start --kind review` is refused and `pull --role review` degrades to
+`coder`.
 
 ### 3.4 Host queue entry
 

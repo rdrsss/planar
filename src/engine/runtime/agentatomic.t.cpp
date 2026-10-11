@@ -1592,3 +1592,296 @@ TEST_CASE("only one of two racing terminal verbs succeeds", "[agentatomic][concu
   REQUIRE(scalar_text(first, std::format("select status from tasks where id = {}", pulled->task_id)) == "done");
   REQUIRE(scalar_text(first, std::format("select status from agent_work_claims where claim_token = '{}'", token)) == "completed");
 }
+
+// ===========================================================================
+// record_review (plan 1142, task mo-review-record)
+// ===========================================================================
+
+namespace {
+
+/// Pull the plan's only task under a vendor session and return its claim.
+auto pull_under_session(planar::db::connection& conn, const fixture& fx, std::optional<std::string_view> vendor_session)
+    -> aa::claim {
+  recording_policy policy;
+  auto const       pulled = atomic::pull_next(conn,
+                                              atomic::pull_args{.plan_id           = fx.plan_id,
+                                                                .session_id        = fx.session_id,
+                                                                .vendor            = "claude",
+                                                                .vendor_session_id = vendor_session,
+                                                                .role              = "coder"},
+                                              policy.bind());
+  REQUIRE(pulled.has_value());
+  REQUIRE(pulled->acquired.has_value());
+  return *pulled->acquired;
+}
+
+auto count_actions(planar::db::connection& conn) -> std::int64_t {
+  return scalar_int(conn, "select count(*) from agent_actions");
+}
+
+auto count_sessions(planar::db::connection& conn) -> std::int64_t {
+  return scalar_int(conn, "select count(*) from sessions");
+}
+
+auto review_args_for(std::string_view reviewed, std::optional<std::string_view> session,
+                     std::optional<std::string_view> reviewer_claim = std::nullopt) -> atomic::review_args {
+  return atomic::review_args{.reviewed_claim_token    = reviewed,
+                             .reviewer_claim_token    = reviewer_claim,
+                             .reviewer_vendor_session = session,
+                             .vendor                  = "claude",
+                             .verdict                 = aa::review_verdict::approve,
+                             .summary                 = "reads well"};
+}
+
+} // namespace
+
+TEST_CASE("a review under a different session writes one closed review action, a child of the claim's action",
+          "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn   = open_migrated(scratch);
+  auto const      fx     = seed(conn, 1);
+  auto const      coder  = pull_under_session(conn, fx, "claude:coder-1");
+  auto const      root   = scalar_int(conn, std::format("select min(id) from agent_actions where claim_id = {}", coder.id));
+  auto const      before = count_actions(conn);
+
+  auto args       = review_args_for(coder.claim_token, "claude:reviewer-1");
+  args.verdict    = aa::review_verdict::request_changes;
+  auto const done = atomic::record_review(conn, args);
+  REQUIRE(done.has_value());
+  REQUIRE(count_actions(conn) == before + 1);
+  CHECK(done->parent_action_id == root);
+  CHECK(done->verdict == aa::review_verdict::request_changes);
+
+  auto const row = aa::get_action_by_id(conn, done->action_id);
+  REQUIRE(row.has_value());
+  CHECK(row->kind == aa::action_kind::review);
+  CHECK(row->verdict == aa::review_verdict::request_changes);
+  CHECK(row->claim_id == coder.id);
+  CHECK(row->parent_action_id == root);
+  CHECK(row->summary == "reads well");
+  CHECK(row->ended_at.has_value());
+  CHECK(row->result == aa::outcome::ok);
+  CHECK(row->metadata == R"({"reviewer_session":"claude:reviewer-1"})");
+  // The action belongs to the REVIEWER's session, not the coder's.
+  CHECK(row->session_id != coder.session_id);
+  CHECK(scalar_text(conn, std::format("select vendor_session_id from sessions where id = {}", row->session_id)) ==
+        "claude:reviewer-1");
+
+  auto const found = aa::reviews_for_claim(conn, coder.claim_token);
+  REQUIRE(found.has_value());
+  REQUIRE(found->size() == 1);
+  CHECK(found->front().action_id == done->action_id);
+  CHECK(found->front().verdict == aa::review_verdict::request_changes);
+  CHECK(found->front().reviewer_session == "claude:reviewer-1");
+  CHECK_FALSE(found->front().reviewer_claim.has_value());
+}
+
+TEST_CASE("a review from the reviewed claim's own session is refused and writes nothing", "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn     = open_migrated(scratch);
+  auto const      fx       = seed(conn, 1);
+  auto const      coder    = pull_under_session(conn, fx, "claude:coder-1");
+  auto const      actions  = count_actions(conn);
+  auto const      sessions = count_sessions(conn);
+
+  auto const same = atomic::record_review(conn, review_args_for(coder.claim_token, "claude:coder-1"));
+  REQUIRE_FALSE(same.has_value());
+  CHECK(same.error() == aa::agent_error::reviewer_not_independent);
+
+  // The coder's own claim, named as the reviewer claim, is the same session too.
+  auto const self = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, coder.claim_token));
+  REQUIRE_FALSE(self.has_value());
+  CHECK(self.error() == aa::agent_error::reviewer_not_independent);
+
+  CHECK(count_actions(conn) == actions);
+  CHECK(count_sessions(conn) == sessions);
+  CHECK(aa::reviews_for_claim(conn, coder.claim_token)->empty());
+}
+
+TEST_CASE("a reviewer claim that shares the coder's vendor session is refused; a distinct one is accepted",
+          "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn  = open_migrated(scratch);
+  auto const      fx    = seed(conn, 1);
+  auto const      coder = pull_under_session(conn, fx, "claude:coder-1");
+  exec(conn, "insert into sessions (vendor, vendor_session_id) values ('claude', 'claude:rev')");
+  auto const reviewer_session = scalar_int(conn, "select id from sessions where vendor_session_id = 'claude:rev'");
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global','r','rev-plan','active')");
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global','r2','rev-plan-2','active')");
+  auto const rev_plan   = scalar_int(conn, "select id from plans where slug = 'rev-plan'");
+  auto const rev_plan_2 = scalar_int(conn, "select id from plans where slug = 'rev-plan-2'");
+
+  auto mint = [&](std::string_view vendor_session, std::int64_t entity) {
+    auto const claim = aa::acquire_claim(conn, aa::acquire_args{.session_id        = reviewer_session,
+                                                                .kind              = aa::entity_kind::plan,
+                                                                .entity_id         = entity,
+                                                                .scope             = aa::claim_scope::shared,
+                                                                .vendor            = "claude",
+                                                                .vendor_session_id = vendor_session,
+                                                                .role              = "reviewer"});
+    REQUIRE(claim.has_value());
+    return *claim;
+  };
+  auto const colliding = mint("claude:coder-1", rev_plan);
+  auto const distinct  = mint("claude:rev", rev_plan_2);
+
+  auto const before  = count_actions(conn);
+  auto const refused = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, colliding.claim_token));
+  REQUIRE_FALSE(refused.has_value());
+  CHECK(refused.error() == aa::agent_error::reviewer_not_independent);
+  CHECK(count_actions(conn) == before);
+
+  auto const accepted = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, distinct.claim_token));
+  REQUIRE(accepted.has_value());
+  auto const row = aa::get_action_by_id(conn, accepted->action_id);
+  REQUIRE(row.has_value());
+  // The reviewer claim's own session owns the action, and the metadata names both.
+  CHECK(row->session_id == reviewer_session);
+  CHECK(row->metadata == std::format(R"({{"reviewer_session":"claude:rev","reviewer_claim":"{}"}})", distinct.claim_token));
+  auto const found = aa::reviews_for_claim(conn, coder.claim_token);
+  REQUIRE(found.has_value());
+  REQUIRE(found->size() == 1);
+  CHECK(found->front().reviewer_claim == distinct.claim_token);
+}
+
+TEST_CASE("a reviewed claim with no vendor session is reviewed only under a reviewer claim that has one",
+          "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn  = open_migrated(scratch);
+  auto const      fx    = seed(conn, 1);
+  auto const      coder = pull_under_session(conn, fx, std::nullopt);
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global','r','rev-plan','active')");
+  exec(conn, "insert into plans (scope_kind, title, slug, status) values ('global','r2','rev-plan-2','active')");
+  auto const rev_plan   = scalar_int(conn, "select id from plans where slug = 'rev-plan'");
+  auto const rev_plan_2 = scalar_int(conn, "select id from plans where slug = 'rev-plan-2'");
+  exec(conn, "insert into sessions (vendor, vendor_session_id) values ('claude', 'claude:rev')");
+  auto const reviewer_session = scalar_int(conn, "select id from sessions where vendor_session_id = 'claude:rev'");
+
+  auto mint = [&](std::optional<std::string_view> vendor_session, std::int64_t entity) {
+    auto const claim = aa::acquire_claim(conn, aa::acquire_args{.session_id        = reviewer_session,
+                                                                .kind              = aa::entity_kind::plan,
+                                                                .entity_id         = entity,
+                                                                .scope             = aa::claim_scope::shared,
+                                                                .vendor            = "claude",
+                                                                .vendor_session_id = vendor_session,
+                                                                .role              = "reviewer"});
+    REQUIRE(claim.has_value());
+    return *claim;
+  };
+  auto const without = mint(std::nullopt, rev_plan);
+  auto const with    = mint("claude:rev", rev_plan_2);
+  auto const before  = count_actions(conn);
+
+  // Nothing to compare a bare session id against.
+  auto const by_session = atomic::record_review(conn, review_args_for(coder.claim_token, "claude:rev"));
+  REQUIRE_FALSE(by_session.has_value());
+  CHECK(by_session.error() == aa::agent_error::reviewer_not_independent);
+  // A reviewer claim without a vendor session cannot be told apart either.
+  auto const by_blank = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, without.claim_token));
+  REQUIRE_FALSE(by_blank.has_value());
+  CHECK(by_blank.error() == aa::agent_error::reviewer_not_independent);
+  CHECK(count_actions(conn) == before);
+
+  auto const by_claim = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, with.claim_token));
+  REQUIRE(by_claim.has_value());
+  CHECK(count_actions(conn) == before + 1);
+}
+
+TEST_CASE("record_review refuses an unknown claim, an unknown reviewer claim and an anonymous caller without writing",
+          "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn     = open_migrated(scratch);
+  auto const      fx       = seed(conn, 1);
+  auto const      coder    = pull_under_session(conn, fx, "claude:coder-1");
+  auto const      actions  = count_actions(conn);
+  auto const      sessions = count_sessions(conn);
+
+  auto const unknown = atomic::record_review(conn, review_args_for("0123456789abcdef0123456789abcdef", "claude:reviewer-1"));
+  REQUIRE_FALSE(unknown.has_value());
+  CHECK(unknown.error() == aa::agent_error::claim_not_found);
+
+  auto const no_reviewer =
+      atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt, "0123456789abcdef0123456789abcdef"));
+  REQUIRE_FALSE(no_reviewer.has_value());
+  CHECK(no_reviewer.error() == aa::agent_error::reviewer_claim_not_found);
+
+  auto const anonymous = atomic::record_review(conn, review_args_for(coder.claim_token, std::nullopt));
+  REQUIRE_FALSE(anonymous.has_value());
+  CHECK(anonymous.error() == aa::agent_error::reviewer_unidentified);
+
+  CHECK(count_actions(conn) == actions);
+  CHECK(count_sessions(conn) == sessions);
+}
+
+TEST_CASE("a review may follow the claim's completion and is found by the reviewed claim", "[agentatomic][review]") {
+  scratch_db_path  scratch;
+  auto             conn  = open_migrated(scratch);
+  auto const       fx    = seed(conn, 1);
+  auto const       coder = pull_under_session(conn, fx, "claude:coder-1");
+  recording_policy policy;
+  REQUIRE(atomic::complete_work(conn, coder.claim_token, std::nullopt, policy.bind()).has_value());
+
+  REQUIRE(atomic::record_review(conn, review_args_for(coder.claim_token, "claude:reviewer-1")).has_value());
+  auto second    = review_args_for(coder.claim_token, "claude:reviewer-2");
+  second.verdict = aa::review_verdict::request_changes;
+  REQUIRE(atomic::record_review(conn, second).has_value());
+
+  auto const found = aa::reviews_for_claim(conn, coder.claim_token);
+  REQUIRE(found.has_value());
+  REQUIRE(found->size() == 2);
+  CHECK(found->at(0).verdict == aa::review_verdict::approve);
+  CHECK(found->at(1).verdict == aa::review_verdict::request_changes);
+  CHECK(aa::reviews_for_claim(conn, "0123456789abcdef0123456789abcdef")->empty());
+}
+
+TEST_CASE("no review row can carry a NULL verdict, and the schema refuses a foreign verdict", "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn  = open_migrated(scratch);
+  auto const      fx    = seed(conn, 1);
+  auto const      coder = pull_under_session(conn, fx, "claude:coder-1");
+  REQUIRE(atomic::record_review(conn, review_args_for(coder.claim_token, "claude:reviewer-1")).has_value());
+  REQUIRE(atomic::record_review(conn, review_args_for(coder.claim_token, "claude:reviewer-2")).has_value());
+
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'review'") == 2);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind = 'review' and verdict is null") == 0);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions where action_kind <> 'review' and verdict is not null") == 0);
+  auto const bad = conn.execute("update agent_actions set verdict = 'lgtm' where action_kind = 'review'");
+  CHECK_FALSE(bad.has_value());
+}
+
+TEST_CASE("a review row does not make a bare claim look like it moved the task", "[agentatomic][review]") {
+  // `reconcile` returns a task to todo only when the claim owns the move; any action on the claim
+  // counts as that evidence except the bookkeeping kinds. A review is somebody else's verdict.
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  auto const      fx   = seed(conn, 1);
+  auto const      task = task_id_at(conn, 0);
+
+  auto bare              = basic_args(fx, task);
+  bare.ttl_secs          = -60;
+  bare.vendor_session_id = "claude:coder-1";
+  auto const held        = aa::acquire_claim(conn, bare);
+  REQUIRE(held.has_value());
+  exec(conn, std::format("update tasks set status = 'doing' where id = {}", task));
+
+  REQUIRE(atomic::record_review(conn, review_args_for(held->claim_token, "claude:reviewer-1")).has_value());
+  REQUIRE(aa::reconcile_stale(conn, aa::reconcile_policy{}).has_value());
+  CHECK(scalar_text(conn, std::format("select status from tasks where id = {}", task)) == "doing");
+}
+
+TEST_CASE("a review never becomes the claim's latest activity", "[agentatomic][review]") {
+  scratch_db_path scratch;
+  auto            conn   = open_migrated(scratch);
+  auto const      fx     = seed(conn, 1);
+  auto const      coder  = pull_under_session(conn, fx, "claude:coder-1");
+  auto const      before = aa::latest_action_for_claim(conn, coder.id);
+  REQUIRE(before.has_value());
+  REQUIRE(before->has_value());
+
+  REQUIRE(atomic::record_review(conn, review_args_for(coder.claim_token, "claude:reviewer-1")).has_value());
+  auto const after = aa::latest_action_for_claim(conn, coder.id);
+  REQUIRE(after.has_value());
+  REQUIRE(after->has_value());
+  CHECK((*after)->id == (*before)->id);
+  CHECK((*after)->kind != aa::action_kind::review);
+}

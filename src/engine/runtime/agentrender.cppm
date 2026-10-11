@@ -274,6 +274,23 @@ export auto action_start_text(const aa::action& value, std::string_view claim_to
 export auto action_end_text(std::int64_t action_id, aa::outcome result) -> std::string;
 
 // =========================================================================
+// review
+// =========================================================================
+
+/// @brief `review recorded: action <id> verdict <verdict> for claim <first 8 token chars>`.
+///
+/// A review whose claim had no action to hang under (`parent_action_id` unset) says so after the
+/// claim, so the root placement is visible rather than silent.
+/// @param value The recorded review.
+/// @return The COMPLETE payload, newline included.
+export auto review_text(const agentatomic::review_result& value) -> std::string;
+
+/// @brief `{"ok":true,"action_id":<id>,"verdict":"…","reviewed_claim":"<token>","parent_action_id":<id|null>}`.
+/// @param value The recorded review.
+/// @return The COMPLETE payload, newline included.
+export auto review_json(const agentatomic::review_result& value) -> std::string;
+
+// =========================================================================
 // reconcile
 // =========================================================================
 

@@ -6474,6 +6474,10 @@ planar-agent heartbeat  --claim <token> [--ttl <duration>] [--status <text>] [--
 planar-agent action start  --claim <token> --kind <kind> [--entity <kind>:<id>] [--vendor-role <s>] [--repo-root <path>] [--no-locality-probe] [--metadata <json>] [--json]
 planar-agent action end    --action <id> [--outcome ok|error|aborted|timeout] [--summary <s>] [--json]
 
+# Review records — the reviewer's verdict on a claim, written from the reviewer's
+# own claim or vendor session. See "`planar-agent review`" below.
+planar-agent review     --claim <reviewed-token> --verdict approve|request-changes --summary <text> [--reviewer-claim <token>] [--vendor <s>] [--vendor-session <vendor:id>] [--json]
+
 # Vendor hook ingestion — translates hook events into the primitives.
 # M2 ships a skeleton handler; full adapter routing lands in M4.
 planar-agent ingest     --vendor claude --event @<file|-> [--json]
@@ -6777,11 +6781,39 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `complete` / `fail` / `release` / `block` | `{ok, claim_token, claim, task}` |
 | `claim` / `heartbeat` | `{ok, claim_token, claim}` |
 | `action start` / `action end` | `{ok, action_id, action}` |
+| `review`      | `{ok, action_id, verdict, reviewed_claim, parent_action_id}` (`parent_action_id` is `null` when the reviewed claim has no action to hang under) |
 | `ingest`      | `{ok, sessions_created, claims_created, actions_created, events_processed}` |
 | `reconcile`   | `{ok, claims_marked_stale, actions_closed, candidates?}` (`candidates` present only with `--dry-run`; each is `{kind, id, claim}`) |
 | `abort`       | `{ok, claim_token, claim, aborting_session}` |
 
 `ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and the `run_id` and `stage` columns, which are always null). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+
+### `planar-agent review`
+
+`review` records one reviewer's verdict on a claim as an `agent_actions` row of kind `review`. It is run under the **reviewer's** own claim or vendor session, never the coder's: the verb is refused when the caller's session is the reviewed claim's session, so a claim cannot vouch for its own work. The reviewed claim may be active or ended, since a review can follow a return or a `complete`. It records evidence; it does not change the claim, the task or any status, and `complete` does not read it.
+
+| Flag | Description |
+|------|-------------|
+| `--claim <token>` | The claim under review. Required. |
+| `--verdict approve\|request-changes` | The verdict. Required; stored on the action's `verdict` column. |
+| `--summary <text>` | What the review found, stored as the action's summary. Required. |
+| `--reviewer-claim <token>` | The reviewer's own claim. Its `vendor_session` is the caller's session, and the review belongs to that claim's session. |
+| `--vendor-session <id>` | The reviewer's vendor session id (for example `claude:s2`), used when no reviewer claim is named. When both are given the reviewer claim's session wins. |
+| `--vendor <name>` | Vendor tag recorded on the review when no reviewer claim names one (default `planar-agent`). |
+| `--json` | Emit `{ok, action_id, verdict, reviewed_claim, parent_action_id}`. |
+
+The caller's session must be identifiable: pass `--reviewer-claim` or `--vendor-session`. The reviewed claim's session is its `vendor_session`. When the reviewed claim has none (it was taken without `--vendor-session`), a bare session id cannot be compared with nothing, so the review is accepted only under a `--reviewer-claim` whose claim carries a vendor session; the reviewer claim's token must also differ from the reviewed token, and its session row from the reviewed claim's.
+
+What it writes, in one transaction: a closed action (`outcome` `ok`) of kind `review` with `claim_id` set to the **reviewed** claim, so the reviews of a claim are found by that claim; `parent_action_id` set to the reviewed claim's earliest non-review action, so `planar-watch tree` draws the verdict under the work it judges (a claim with no action at all gets a root review action, and the text output says so); `session_id` the reviewer's session; and `metadata` `{"reviewer_session":"…","reviewer_claim":"…"}` (a key is left out when unknown). The reviewed claim's `planar-watch ps` activity does not show the verdict, and `reconcile` does not count a review as proof that the claim moved its task.
+
+| Exit | When |
+|------|------|
+| `0` | Recorded. Text: `review recorded: action <id> verdict <v> for claim <first 8 token characters>`. |
+| `1` | The reviewed claim or the reviewer claim does not exist (the message names the token); or the caller's session is the reviewed claim's session (`ReviewerNotIndependent`; run the review under a different claim or session than the coder's). Nothing is written, not even a session row. |
+| `2` | `--verdict` missing or not `approve` / `request-changes`; `--summary` missing; or neither `--reviewer-claim` nor `--vendor-session` was given. The database is not opened. |
+| `7` | The schema is behind or ahead of this binary. |
+
+`action start --kind review` is refused (exit 2) and `pull --role review` records a `coder` row, so the verb above is the only writer of review records. Engine code reads them with `reviews_for_claim`.
 
 ### `planar-agent reconcile` flags
 

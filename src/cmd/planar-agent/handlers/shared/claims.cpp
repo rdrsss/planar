@@ -186,7 +186,9 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   // role: the dispatch row is a `coder` row, never a forged audit row.
   auto const role   = cliapp::flag_string(args, "--role");
   auto const parsed = role.has_value() ? aa::action_kind_from_text(*role) : std::nullopt;
-  auto const kind   = parsed.has_value() && !aa::is_supervision_kind(*parsed) ? *parsed : aa::action_kind::coder;
+  auto const kind   = parsed.has_value() && !aa::is_supervision_kind(*parsed) && *parsed != aa::action_kind::review
+                          ? *parsed
+                          : aa::action_kind::coder;
 
   // Two independent reasons to skip: the operator asked, or this action
   // kind does not probe by default. Pull picks a role kind, so its

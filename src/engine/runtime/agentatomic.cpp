@@ -7,11 +7,14 @@ module planar.engine.runtime.agentatomic;
 
 import std;
 import planar.db;
+import planar.json_text;
 import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.session;
 
 namespace planar::engine::runtime::agentatomic {
 
-namespace aa = agentactivity;
+namespace aa  = agentactivity;
+namespace ses = ::planar::engine::runtime::session;
 
 namespace {
 
@@ -799,6 +802,133 @@ auto supervised_heartbeat(db::connection& conn, std::string_view claim_token, st
     return std::unexpected(committed.error());
   }
   return current;
+}
+
+auto record_review(db::connection& conn, const review_args& args) -> std::expected<review_result, agent_error> {
+  auto tx = conn.begin_transaction(db::lock_mode::immediate);
+  if (!tx) {
+    return std::unexpected(classify_begin_failure(tx.error()));
+  }
+
+  auto reviewed = aa::get_claim_by_token(conn, args.reviewed_claim_token);
+  if (!reviewed) {
+    return std::unexpected(reviewed.error());
+  }
+
+  std::optional<aa::claim> reviewer;
+  if (args.reviewer_claim_token.has_value()) {
+    auto found = aa::get_claim_by_token(conn, *args.reviewer_claim_token);
+    if (!found) {
+      return std::unexpected(found.error() == aa::agent_error::claim_not_found ? aa::agent_error::reviewer_claim_not_found
+                                                                               : found.error());
+    }
+    reviewer = std::move(*found);
+  }
+
+  // Who is calling: the reviewer claim's vendor session when it has one, else the one the caller
+  // passed. A reviewer claim without a vendor session still identifies the caller, by its token.
+  std::optional<std::string> caller_session;
+  if (reviewer.has_value() && reviewer->vendor_session_id.has_value()) {
+    caller_session = reviewer->vendor_session_id;
+  } else if (args.reviewer_vendor_session.has_value()) {
+    caller_session = std::string{*args.reviewer_vendor_session};
+  }
+  if (!reviewer.has_value() && !caller_session.has_value()) {
+    return std::unexpected(aa::agent_error::reviewer_unidentified);
+  }
+
+  // The refusals. A claim cannot review itself, nor can its sessions row.
+  if (reviewer.has_value() && (reviewer->id == reviewed->id || reviewer->session_id == reviewed->session_id)) {
+    return std::unexpected(aa::agent_error::reviewer_not_independent);
+  }
+  if (reviewed->vendor_session_id.has_value()) {
+    if (caller_session.has_value() && *caller_session == *reviewed->vendor_session_id) {
+      return std::unexpected(aa::agent_error::reviewer_not_independent);
+    }
+  } else if (!reviewer.has_value() || !reviewer->vendor_session_id.has_value()) {
+    // Nothing to compare the caller against: the reviewed claim has no vendor session, so only a
+    // reviewer claim that carries one proves the caller is somebody else.
+    return std::unexpected(aa::agent_error::reviewer_not_independent);
+  }
+
+  std::int64_t reviewer_session_row = 0;
+  if (reviewer.has_value()) {
+    reviewer_session_row = reviewer->session_id;
+  } else {
+    std::string_view const vendor  = args.vendor.empty() ? std::string_view{"planar-agent"} : args.vendor;
+    auto const             ensured = ses::ensure_active(conn, vendor, std::string_view{*caller_session});
+    if (!ensured) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    reviewer_session_row = *ensured;
+  }
+
+  // The reviewed claim's earliest action that is not itself a review: the work the verdict is about.
+  std::optional<std::int64_t> parent;
+  {
+    auto stmt = conn.prepare("select id from agent_actions where claim_id = ? and action_kind <> 'review'\n"
+                             "order by id asc limit 1");
+    if (!stmt || !stmt->bind_int64(1, reviewed->id)) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(aa::agent_error::query_failed);
+    }
+    if (*stepped == db::step_result::row) {
+      parent = stmt->column_int64(0);
+    }
+  }
+
+  std::string metadata = "{";
+  if (caller_session.has_value()) {
+    metadata += "\"reviewer_session\":";
+    json_text::append_json_string(metadata, *caller_session);
+  }
+  if (reviewer.has_value()) {
+    metadata += metadata.size() > 1 ? ",\"reviewer_claim\":" : "\"reviewer_claim\":";
+    json_text::append_json_string(metadata, reviewer->claim_token);
+  }
+  metadata += '}';
+
+  auto const                      entity = reviewed->kind == aa::entity_kind::task        ? aa::action_entity_kind::task
+                                           : reviewed->kind == aa::entity_kind::plan_step ? aa::action_entity_kind::plan_step
+                                                                                          : aa::action_entity_kind::plan;
+  std::string_view const          vendor = reviewer.has_value()   ? std::string_view{reviewer->vendor}
+                                           : !args.vendor.empty() ? args.vendor
+                                                                  : std::string_view{"planar-agent"};
+  std::optional<std::string_view> model;
+  if (reviewer.has_value() && reviewer->model.has_value()) {
+    model = std::string_view{*reviewer->model};
+  }
+  auto const action_id = aa::start_action(conn, aa::start_action_args{
+                                                    .session_id       = reviewer_session_row,
+                                                    .parent_action_id = parent,
+                                                    .claim_id         = reviewed->id,
+                                                    .kind             = aa::action_kind::review,
+                                                    .entity           = entity,
+                                                    .entity_id        = reviewed->entity_id,
+                                                    .vendor           = vendor,
+                                                    .vendor_role      = std::string_view{"reviewer"},
+                                                    .model            = model,
+                                                    .metadata         = metadata,
+                                                });
+  if (!action_id) {
+    return std::unexpected(action_id.error());
+  }
+  if (auto const closed = aa::end_action(conn, *action_id, aa::outcome::ok, args.summary); !closed) {
+    return std::unexpected(closed.error());
+  }
+  auto stamp = conn.prepare("update agent_actions set verdict = ? where id = ?");
+  if (!stamp || !stamp->bind_text(1, aa::to_text(args.verdict)) || !stamp->bind_int64(2, *action_id) || !stamp->step()) {
+    return std::unexpected(aa::agent_error::query_failed);
+  }
+
+  if (auto const committed = commit(*tx); !committed) {
+    return std::unexpected(committed.error());
+  }
+  return review_result{
+      .action_id = *action_id, .parent_action_id = parent, .verdict = args.verdict, .reviewed = std::move(*reviewed)};
 }
 
 } // namespace planar::engine::runtime::agentatomic

@@ -186,13 +186,13 @@ auto read_claim_row(const db::statement& stmt) -> std::expected<claim, agent_err
   return row;
 }
 
-/// @brief The canonical 18-column action projection.
+/// @brief The canonical 19-column action projection.
 constexpr std::string_view k_action_columns = "select id, session_id, session_entry_id, parent_action_id, claim_id,\n"
                                               "       action_kind, entity_kind, entity_id,\n"
                                               "       vendor, vendor_role, model,\n"
                                               "       started_at, ended_at, outcome, summary,\n"
                                               "       head_sha, dirty,\n"
-                                              "       metadata\n"
+                                              "       metadata, verdict\n"
                                               "from agent_actions\n";
 
 /// @brief Decode one row of `k_action_columns`.
@@ -236,6 +236,9 @@ auto read_action_row(const db::statement& stmt) -> std::expected<action, agent_e
     row.dirty = dirty_state_from_text(*dirty);
   }
   row.metadata = opt_text(stmt, 17);
+  if (auto const verdict = opt_text(stmt, 18); verdict.has_value()) {
+    row.verdict = review_verdict_from_text(*verdict);
+  }
   return row;
 }
 
@@ -484,8 +487,30 @@ auto to_text(action_kind value) -> std::string_view {
     return "run_submitted";
   case action_kind::run_reconciled:
     return "run_reconciled";
+  case action_kind::review:
+    return "review";
   }
   return "other";
+}
+
+auto to_text(review_verdict value) -> std::string_view {
+  switch (value) {
+  case review_verdict::approve:
+    return "approve";
+  case review_verdict::request_changes:
+    return "request-changes";
+  }
+  return "approve";
+}
+
+auto review_verdict_from_text(std::string_view text) -> std::optional<review_verdict> {
+  if (text == "approve") {
+    return review_verdict::approve;
+  }
+  if (text == "request-changes") {
+    return review_verdict::request_changes;
+  }
+  return std::nullopt;
 }
 
 auto is_supervision_kind(action_kind kind) -> bool {
@@ -612,7 +637,7 @@ auto failure_category_from_text(std::string_view text) -> std::optional<failure_
 }
 
 auto action_kind_from_text(std::string_view text) -> std::optional<action_kind> {
-  static constexpr std::array<std::pair<std::string_view, action_kind>, 22> k_table{{
+  static constexpr std::array<std::pair<std::string_view, action_kind>, 23> k_table{{
       {"planner", action_kind::planner},
       {"ingestor", action_kind::ingestor},
       {"coder", action_kind::coder},
@@ -635,6 +660,7 @@ auto action_kind_from_text(std::string_view text) -> std::optional<action_kind> 
       {"supervisor_override", action_kind::supervisor_override},
       {"run_submitted", action_kind::run_submitted},
       {"run_reconciled", action_kind::run_reconciled},
+      {"review", action_kind::review},
   }};
   for (auto const& [name, value] : k_table) {
     if (name == text) {
@@ -723,6 +749,12 @@ auto error_name(agent_error err) -> std::string_view {
     return "AttemptMismatch";
   case agent_error::task_not_ready:
     return "TaskNotReady";
+  case agent_error::reviewer_not_independent:
+    return "ReviewerNotIndependent";
+  case agent_error::reviewer_unidentified:
+    return "ReviewerUnidentified";
+  case agent_error::reviewer_claim_not_found:
+    return "ReviewerClaimNotFound";
   }
   return "QueryFailed";
 }
@@ -1451,6 +1483,7 @@ auto reconcile_stale(db::connection& conn, const reconcile_policy& policy) -> st
                                           "    select 1 from agent_actions where claim_id = ?\n"
                                           "      and coalesce(metadata, '') not like '%\"claim_nest\":true%'\n"
                                           "      and coalesce(metadata, '') not like '%\"unready_override\":true%'\n"
+                                          "      and action_kind <> 'review'\n"
                                           "  )\n"
                                           "  and not exists (\n"
                                           "    select 1 from agent_work_claims\n"
@@ -1787,9 +1820,12 @@ auto list_actions(db::connection& conn, std::int64_t limit) -> std::expected<std
 }
 
 auto latest_action_for_claim(db::connection& conn, std::int64_t claim_id) -> std::expected<std::optional<action>, agent_error> {
-  auto rows =
-      collect_actions(conn, std::string{k_action_columns} + "where claim_id = ?\norder by started_at desc, id desc\nlimit 1",
-                      [claim_id](db::statement& stmt) { return stmt.bind_int64(1, claim_id).has_value(); });
+  // A `review` row is a verdict ABOUT the claim written by someone else; it is not what the claim's
+  // owner is doing, so it never stands in for the claim's current activity.
+  auto rows = collect_actions(conn,
+                              std::string{k_action_columns} +
+                                  "where claim_id = ? and action_kind <> 'review'\norder by started_at desc, id desc\nlimit 1",
+                              [claim_id](db::statement& stmt) { return stmt.bind_int64(1, claim_id).has_value(); });
   if (!rows) {
     return std::unexpected(rows.error());
   }
@@ -1797,6 +1833,42 @@ auto latest_action_for_claim(db::connection& conn, std::int64_t claim_id) -> std
     return std::optional<action>{};
   }
   return std::optional<action>{std::move(rows->front())};
+}
+
+auto reviews_for_claim(db::connection& conn, std::string_view claim_token)
+    -> std::expected<std::vector<review_row>, agent_error> {
+  auto stmt = conn.prepare("select a.id, a.verdict, coalesce(a.summary, ''), a.started_at,\n"
+                           "       json_extract(a.metadata, '$.reviewer_session'),\n"
+                           "       json_extract(a.metadata, '$.reviewer_claim'),\n"
+                           "       a.session_id\n"
+                           "from agent_actions a\n"
+                           "join agent_work_claims c on c.id = a.claim_id\n"
+                           "where c.claim_token = ? and a.action_kind = 'review' and a.verdict is not null\n"
+                           "order by a.id asc");
+  if (!stmt || !stmt->bind_text(1, claim_token)) {
+    return std::unexpected(agent_error::query_failed);
+  }
+  std::vector<review_row> rows;
+  while (true) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    if (*stepped != db::step_result::row) {
+      return rows;
+    }
+    auto const verdict = review_verdict_from_text(stmt->column_text(1));
+    if (!verdict.has_value()) {
+      return std::unexpected(agent_error::query_failed);
+    }
+    rows.push_back(review_row{.action_id           = stmt->column_int64(0),
+                              .verdict             = *verdict,
+                              .summary             = stmt->column_text(2),
+                              .recorded_at         = stmt->column_text(3),
+                              .reviewer_session    = opt_text(*stmt, 4),
+                              .reviewer_claim      = opt_text(*stmt, 5),
+                              .reviewer_session_id = stmt->column_int64(6)});
+  }
 }
 
 auto list_actions_by_entity(db::connection& conn, std::string_view entity_kind, std::int64_t entity_id, std::int64_t limit)
@@ -2000,19 +2072,20 @@ auto walk_action_forest(db::connection& conn, std::optional<std::int64_t> root_s
     -> std::expected<std::vector<forest_node>, agent_error> {
   std::string const anchor_filter =
       root_session_id.has_value() ? "where parent_action_id is null and session_id = ?" : "where parent_action_id is null";
-  auto const sql = std::format("with recursive tree(action_id, parent_action_id, session_id, claim_id, depth) as (\n"
-                               "  select id, parent_action_id, session_id, claim_id, 0\n"
-                               "  from agent_actions\n"
-                               "  {}\n"
-                               "  union all\n"
-                               "  select a.id, a.parent_action_id, a.session_id, a.claim_id, t.depth + 1\n"
-                               "  from agent_actions a\n"
-                               "  join tree t on a.parent_action_id = t.action_id\n"
-                               ")\n"
-                               "select action_id, parent_action_id, session_id, claim_id, depth\n"
-                               "from tree\n"
-                               "order by action_id asc",
-                               anchor_filter);
+  auto const sql =
+      std::format("with recursive tree(action_id, parent_action_id, session_id, claim_id, action_kind, verdict, depth) as (\n"
+                  "  select id, parent_action_id, session_id, claim_id, action_kind, verdict, 0\n"
+                  "  from agent_actions\n"
+                  "  {}\n"
+                  "  union all\n"
+                  "  select a.id, a.parent_action_id, a.session_id, a.claim_id, a.action_kind, a.verdict, t.depth + 1\n"
+                  "  from agent_actions a\n"
+                  "  join tree t on a.parent_action_id = t.action_id\n"
+                  ")\n"
+                  "select action_id, parent_action_id, session_id, claim_id, depth, action_kind, verdict\n"
+                  "from tree\n"
+                  "order by action_id asc",
+                  anchor_filter);
 
   auto stmt = conn.prepare(sql);
   if (!stmt) {
@@ -2036,7 +2109,9 @@ auto walk_action_forest(db::connection& conn, std::optional<std::int64_t> root_s
                                 .session_id       = stmt->column_int64(2),
                                 .claim_id         = opt_int(*stmt, 3),
                                 .depth            = stmt->column_int64(4),
-                                .is_last_sibling  = false});
+                                .is_last_sibling  = false,
+                                .kind             = action_kind_from_text(stmt->column_text(5)).value_or(action_kind::other),
+                                .verdict          = review_verdict_from_text(stmt->column_text(6))});
   }
   annotate_last_sibling(nodes);
   return nodes;

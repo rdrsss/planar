@@ -67,6 +67,8 @@
 #             pull / peek / claim / heartbeat /
 #             complete / fail / release / block / action start|end /
 #             reconcile / abort. See the section below.
+#   review    (plan 1142, task mo-review-record) -- records a reviewer's verdict
+#             on a claim; refused from the claim's own session.
 #
 # Parse failures (exit 1 — NOT the operator binary's 2) are covered across
 # the set, so 0 and 1 are both produced by this binary and a mapping
@@ -138,6 +140,7 @@ planar_binary(planar_agent
     handlers/claim/command.cppm
     handlers/heartbeat/command.cppm
     handlers/action/command.cppm
+    handlers/review/command.cppm
     handlers/ingest/command.cppm
     handlers/reconcile/command.cppm
     handlers/abort/command.cppm
@@ -153,6 +156,7 @@ planar_binary(planar_agent
     handlers/shared/terminal.cppm
     handlers/shared/recovery.cppm
     handlers/action/action.cppm
+    handlers/review/review.cppm
     handlers/ingest/ingest.cppm
     handlers/queue/queue.cppm
     handlers/queue/status.cppm
@@ -171,6 +175,7 @@ planar_binary(planar_agent
     handlers/shared/terminal.cpp
     handlers/shared/recovery.cpp
     handlers/action/action.cpp
+    handlers/review/review.cpp
     handlers/ingest/ingest.cpp
     handlers/queue/queue.cpp
     handlers/queue/status.cpp

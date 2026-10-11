@@ -1039,3 +1039,74 @@ TEST_CASE("planar-watch tree nests a claim taken with a parent action under that
   CHECK(tree.out.contains("\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 scope:project:seed"));
   CHECK(tree.out.find("action:", 1) == std::string::npos);
 }
+
+TEST_CASE("planar-watch renders a review action under the reviewed claim's action, with its verdict",
+          "[cmd][watch][handlers][review]") {
+  // The write half is `planar-agent review`; this drives the same engine entry point and reads the
+  // result back through `tree`, `actions` and `feed`, since a `cmd` target cannot import its sibling.
+  namespace aa     = planar::engine::runtime::agentactivity;
+  namespace atomic = planar::engine::runtime::agentatomic;
+
+  auto const fx = make_fixture("reviewrender");
+  seed_database(fx);
+  std::string  reviewed_token;
+  std::int64_t reviewer_session_row = 0;
+  {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    exec(*conn, "insert into tasks (scope_kind, scope_id, plan_id, title, status, priority) "
+                "values ('association', 1, 1, 'Third', 'todo', 102)");
+    atomic::task_policy const permissive{
+        .check_transition = [](std::string_view, std::string_view) -> std::expected<void, aa::agent_error> { return {}; },
+        .unready_reasons = [](planar::db::connection&, std::int64_t) -> std::expected<std::vector<std::string>, aa::agent_error> {
+          return std::vector<std::string>{};
+        },
+    };
+    auto const claimed = atomic::claim_entity(*conn,
+                                              aa::acquire_args{.session_id        = 1,
+                                                               .kind              = aa::entity_kind::task,
+                                                               .entity_id         = 3,
+                                                               .vendor            = "seedvendor",
+                                                               .vendor_session_id = "coder-session",
+                                                               .role              = "coder"},
+                                              true, permissive);
+    REQUIRE(claimed.has_value());
+    reviewed_token      = claimed->claim_token;
+    auto const reviewed = atomic::record_review(*conn, atomic::review_args{.reviewed_claim_token    = reviewed_token,
+                                                                           .reviewer_vendor_session = "reviewer-session",
+                                                                           .vendor                  = "seedvendor",
+                                                                           .verdict = aa::review_verdict::request_changes,
+                                                                           .summary = "needs a negative test"});
+    REQUIRE(reviewed.has_value());
+    auto stmt = conn->prepare("select id from sessions where vendor_session_id = 'reviewer-session'");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    reviewer_session_row = stmt->column_int64(0);
+  }
+
+  auto const tree = dispatch(fx, {"tree"});
+  REQUIRE(tree.code == 0);
+  INFO(tree.out);
+  // The review is a child of the claim's action and names its verdict and the reviewed claim; it is
+  // not drawn as a second copy of the claim's own status line.
+  CHECK(tree.out.contains(
+      std::format("\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 review:request-changes  reviewer_session:{}  claim:{}\n",
+                  reviewer_session_row, reviewed_token)));
+
+  auto const actions = dispatch(fx, {"actions", "--kind", "review"});
+  REQUIRE(actions.code == 0);
+  CHECK(actions.out.contains("kind:review"));
+  CHECK(actions.out.contains("verdict:request-changes"));
+  auto const json = dispatch(fx, {"actions", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.contains(R"("verdict":"request-changes")"));
+
+  auto const feed = dispatch(fx, {"feed"});
+  REQUIRE(feed.code == 0);
+  CHECK(feed.out.contains("action_started  review request-changes\n"));
+
+  // The coder's claim keeps its own activity: the verdict is not what the coder is doing.
+  auto const ps = dispatch(fx, {"ps"});
+  REQUIRE(ps.code == 0);
+  CHECK_FALSE(ps.out.contains("needs a negative test"));
+}

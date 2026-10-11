@@ -305,8 +305,9 @@ auto actions(context& ctx, const cliapp::parsed_args& args) -> handler_result {
     // A NULL entity renders as `-` with id `0` — the columns stay aligned
     // and the row is still identifiable by its action id.
     std::string_view const entity_kind = row.entity.has_value() ? aa::to_text(*row.entity) : std::string_view{"-"};
-    out.append(std::format("  action:{}  kind:{}  vendor:{}  entity:{}:{}  started:{}\n", row.id, aa::to_text(row.kind),
-                           row.vendor, entity_kind, row.entity_id.value_or(0), row.started_at));
+    out.append(std::format("  action:{}  kind:{}  vendor:{}  entity:{}:{}  started:{}{}\n", row.id, aa::to_text(row.kind),
+                           row.vendor, entity_kind, row.entity_id.value_or(0), row.started_at,
+                           row.verdict.has_value() ? std::format("  verdict:{}", aa::to_text(*row.verdict)) : std::string{}));
   }
   if (json) {
     out.append("]}\n");

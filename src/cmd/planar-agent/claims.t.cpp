@@ -1227,3 +1227,227 @@ TEST_CASE("the invalid_task_status hint names the status and the claimable state
                              "can be claimed"));
   CHECK_FALSE(refused.err.contains("wait for its lease"));
 }
+
+// ===========================================================================
+// review (plan 1142, task mo-review-record)
+// ===========================================================================
+
+namespace {
+
+/// Pull the plan's next task under `session` and return its claim token.
+auto pull_token(const scratch_dir& scratch, std::string_view session) -> std::string {
+  std::vector<std::string> argv{"pull", "1", "--no-locality-probe", "--vendor", "claude", "--role", "coder"};
+  if (!session.empty()) {
+    argv.push_back("--vendor-session");
+    argv.emplace_back(session);
+  }
+  auto const pulled = run_verb(scratch, argv);
+  REQUIRE(pulled.code == 0);
+  return scalar_text(scratch, "select claim_token from agent_work_claims order by id desc limit 1");
+}
+
+auto review_rows(const scratch_dir& scratch) -> std::string {
+  return scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'review'");
+}
+
+auto all_rows(const scratch_dir& scratch) -> std::string {
+  return scalar_text(scratch, "select (select count(*) from agent_actions) || '/' || (select count(*) from sessions)");
+}
+
+} // namespace
+
+TEST_CASE("review under a different session records one review action, a child of the claim's action",
+          "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token = pull_token(scratch, "claude:coder-1");
+  auto const root  = scalar_text(scratch, std::format("select min(id) from agent_actions where claim_id = (select id from "
+                                                      "agent_work_claims where claim_token = '{}')",
+                                                      token));
+
+  auto const done = run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "Matches the spec",
+                                       "--vendor", "claude", "--vendor-session", "claude:reviewer-1"});
+  REQUIRE(done.code == 0);
+  INFO(done.err);
+  CHECK(done.out.starts_with("review recorded: action "));
+  CHECK(done.out.contains(" verdict approve for claim " + token.substr(0, 8)));
+  CHECK(review_rows(scratch) == "1");
+
+  CHECK(scalar_text(scratch, "select verdict from agent_actions where action_kind = 'review'") == "approve");
+  CHECK(scalar_text(scratch, "select summary from agent_actions where action_kind = 'review'") == "Matches the spec");
+  CHECK(scalar_text(scratch, "select parent_action_id from agent_actions where action_kind = 'review'") == root);
+  CHECK(scalar_text(scratch, "select claim_id from agent_actions where action_kind = 'review'") ==
+        scalar_text(scratch, std::format("select id from agent_work_claims where claim_token = '{}'", token)));
+  CHECK(scalar_text(scratch, "select ended_at is not null and outcome = 'ok' from agent_actions where action_kind = 'review'") ==
+        "1");
+  CHECK(scalar_text(scratch, "select metadata from agent_actions where action_kind = 'review'") ==
+        R"({"reviewer_session":"claude:reviewer-1"})");
+  CHECK(scalar_text(scratch, "select s.vendor_session_id from agent_actions a join sessions s on s.id = a.session_id "
+                             "where a.action_kind = 'review'") == "claude:reviewer-1");
+
+  // The coder's claim is untouched by the verdict: still active, task still doing.
+  CHECK(scalar_text(scratch, std::format("select status from agent_work_claims where claim_token = '{}'", token)) == "active");
+  CHECK(scalar_text(scratch, "select status from tasks where id = 1") == "doing");
+
+  // --json carries the same facts.
+  auto const json = run_verb(scratch, {"review", "--claim", token, "--verdict", "request-changes", "--summary", "Add a test",
+                                       "--vendor-session", "claude:reviewer-1", "--json"});
+  REQUIRE(json.code == 0);
+  CHECK(json.out.contains(R"("verdict":"request-changes")"));
+  CHECK(json.out.contains(std::format(R"("reviewed_claim":"{}")", token)));
+  CHECK(json.out.contains(std::format(R"("parent_action_id":{})", root)));
+  CHECK(json.out.contains(R"("action_id":)"));
+  CHECK(review_rows(scratch) == "2");
+}
+
+TEST_CASE("review from the reviewed claim's own session is refused and writes nothing", "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token  = pull_token(scratch, "claude:coder-1");
+  auto const before = all_rows(scratch);
+
+  auto const same = run_verb(
+      scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "LGTM", "--vendor-session", "claude:coder-1"});
+  CHECK(same.code == 1);
+  CHECK(same.err.contains("run the review under a different claim or session than the coder's"));
+  CHECK(same.out.empty());
+
+  // Naming the coder's own claim as the reviewer claim is the same session.
+  auto const own =
+      run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "LGTM", "--reviewer-claim", token});
+  CHECK(own.code == 1);
+  CHECK(own.err.contains("different claim or session"));
+
+  // --json carries the refusal's tag on stdout like every other refused verb.
+  auto const json = run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "LGTM",
+                                       "--vendor-session", "claude:coder-1", "--json"});
+  CHECK(json.code == 1);
+  CHECK(json.out.contains("ReviewerNotIndependent"));
+
+  CHECK(all_rows(scratch) == before);
+  CHECK(review_rows(scratch) == "0");
+}
+
+TEST_CASE("review refuses a missing or invalid verdict at exit 2 and never writes a NULL-verdict row",
+          "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token  = pull_token(scratch, "claude:coder-1");
+  auto const before = all_rows(scratch);
+
+  auto const missing =
+      run_verb(scratch, {"review", "--claim", token, "--summary", "no verdict", "--vendor-session", "claude:reviewer-1"});
+  CHECK(missing.code == 2);
+  CHECK(missing.err.contains("--verdict is required"));
+
+  auto const invalid = run_verb(scratch, {"review", "--claim", token, "--verdict", "lgtm", "--summary", "bad verdict",
+                                          "--vendor-session", "claude:reviewer-1"});
+  CHECK(invalid.code == 2);
+  CHECK(invalid.err.contains("invalid --verdict 'lgtm'"));
+
+  auto const blank = run_verb(scratch, {"review", "--claim", token, "--verdict", "", "--summary", "empty verdict",
+                                        "--vendor-session", "claude:reviewer-1"});
+  CHECK(blank.code == 2);
+
+  auto const no_summary =
+      run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--vendor-session", "claude:reviewer-1"});
+  CHECK(no_summary.code == 2);
+  CHECK(no_summary.err.contains("--summary is required"));
+
+  auto const anonymous = run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "who am I"});
+  CHECK(anonymous.code == 2);
+  CHECK(anonymous.err.contains("pass --reviewer-claim <token> or --vendor-session <id>"));
+
+  // Every refusal above left the database as it was...
+  CHECK(all_rows(scratch) == before);
+  CHECK(review_rows(scratch) == "0");
+
+  // ...and the verb that does write has no path that stores a review without its verdict.
+  REQUIRE(run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "fine", "--vendor-session",
+                             "claude:reviewer-1"})
+              .code == 0);
+  REQUIRE(run_verb(scratch, {"review", "--claim", token, "--verdict", "request-changes", "--summary", "not fine",
+                             "--vendor-session", "claude:reviewer-2"})
+              .code == 0);
+  CHECK(review_rows(scratch) == "2");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind = 'review' and verdict is null") == "0");
+  CHECK(scalar_text(scratch, "select count(*) from agent_actions where action_kind <> 'review' and verdict is not null") == "0");
+}
+
+TEST_CASE("review names an unknown claim token and writes nothing", "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token  = pull_token(scratch, "claude:coder-1");
+  auto const before = all_rows(scratch);
+
+  auto const unknown = run_verb(scratch, {"review", "--claim", "0123456789abcdef0123456789abcdef", "--verdict", "approve",
+                                          "--summary", "x", "--vendor-session", "claude:reviewer-1"});
+  CHECK(unknown.code == 1);
+  CHECK(unknown.err.contains("no claim with token 0123456789abcdef0123456789abcdef"));
+
+  auto const no_reviewer = run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "x",
+                                              "--reviewer-claim", "fedcba9876543210fedcba9876543210"});
+  CHECK(no_reviewer.code == 1);
+  CHECK(no_reviewer.err.contains("no reviewer claim with token fedcba9876543210fedcba9876543210"));
+  CHECK(all_rows(scratch) == before);
+}
+
+TEST_CASE("a reviewed claim without a vendor session is reviewed only under a reviewer claim that has one",
+          "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 1);
+  auto const token = pull_token(scratch, "");
+  REQUIRE(scalar_text(scratch, "select vendor_session_id is null from agent_work_claims where id = 1") == "1");
+
+  // The reviewer's own claim, taken the way a reviewer takes one.
+  REQUIRE(run_verb(scratch, {"claim", "--entity", "plan:1", "--no-locality-probe", "--vendor", "claude", "--vendor-session",
+                             "claude:reviewer-1", "--role", "reviewer"})
+              .code == 0);
+  auto const reviewer = scalar_text(scratch, "select claim_token from agent_work_claims where entity_kind = 'plan'");
+  auto const before   = all_rows(scratch);
+
+  // A bare session id cannot be compared with nothing.
+  auto const by_session = run_verb(
+      scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "ok", "--vendor-session", "claude:reviewer-1"});
+  CHECK(by_session.code == 1);
+  CHECK(by_session.err.contains("the reviewed claim has no vendor session"));
+  CHECK(by_session.err.contains("--reviewer-claim"));
+  CHECK(all_rows(scratch) == before);
+
+  auto const by_claim =
+      run_verb(scratch, {"review", "--claim", token, "--verdict", "approve", "--summary", "ok", "--reviewer-claim", reviewer});
+  REQUIRE(by_claim.code == 0);
+  CHECK(review_rows(scratch) == "1");
+  CHECK(scalar_text(scratch, "select metadata from agent_actions where action_kind = 'review'") ==
+        std::format(R"({{"reviewer_session":"claude:reviewer-1","reviewer_claim":"{}"}})", reviewer));
+  // The review belongs to the reviewer claim's session, not to a fresh one.
+  CHECK(scalar_text(scratch, "select a.session_id = c.session_id from agent_actions a join agent_work_claims c "
+                             "on c.entity_kind = 'plan' where a.action_kind = 'review'") == "1");
+}
+
+TEST_CASE("review is reserved: action start refuses the kind and pull --role review degrades to coder",
+          "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  seed(scratch, 2);
+  auto const token = pull_token(scratch, "claude:coder-1");
+
+  auto const forged = run_verb(scratch, {"action", "start", "--claim", token, "--kind", "review", "--no-locality-probe"});
+  CHECK(forged.code == 2);
+  CHECK(forged.err.contains("written only by `planar-agent review`"));
+  CHECK(review_rows(scratch) == "0");
+
+  REQUIRE(run_verb(scratch, {"pull", "1", "--no-locality-probe", "--role", "review"}).code == 0);
+  CHECK(review_rows(scratch) == "0");
+  CHECK(scalar_text(scratch, "select action_kind from agent_actions where claim_id = 2 order by id limit 1") == "coder");
+}
+
+TEST_CASE("review shows its flags on --help and in the schema catalog", "[cmd][agent][review][1142]") {
+  scratch_dir scratch;
+  auto const  help = run_verb(scratch, {"review", "--help"});
+  REQUIRE(help.code == 0);
+  for (auto const* flag : {"--claim", "--verdict", "--summary", "--reviewer-claim", "--vendor-session", "--json"}) {
+    INFO(flag);
+    CHECK(help.out.contains(flag));
+  }
+  CHECK(help.out.contains("approve | request-changes"));
+}

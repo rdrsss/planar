@@ -398,4 +398,43 @@ export auto block_work(db::connection& conn, std::string_view claim_token, std::
                        std::optional<std::string_view> reason, const task_policy& policy)
     -> std::expected<terminal_result, agent_error>;
 
+/// @brief The inputs of `record_review`.
+export struct review_args {
+  std::string_view                reviewed_claim_token;    ///< The claim under review (any status).
+  std::optional<std::string_view> reviewer_claim_token;    ///< The reviewer's own claim, when it has one.
+  std::optional<std::string_view> reviewer_vendor_session; ///< The reviewer's vendor session id, when no claim is named.
+  std::string_view                vendor;                  ///< Vendor tag for the action when no reviewer claim names one.
+  agentactivity::review_verdict   verdict{};               ///< The verdict to record.
+  std::string_view                summary;                 ///< The reviewer's summary, stored as the action's summary.
+};
+
+/// @brief What `record_review` wrote.
+export struct review_result {
+  std::int64_t                  action_id{};      ///< The new `review` action.
+  std::optional<std::int64_t>   parent_action_id; ///< The reviewed claim's earliest action, unset when it has none.
+  agentactivity::review_verdict verdict{};        ///< The recorded verdict.
+  agentactivity::claim          reviewed;         ///< The reviewed claim.
+};
+
+/// @brief Record a review verdict on a claim, in one transaction (plan 1142).
+///
+/// Writes exactly one closed `agent_actions` row of kind `review`: `claim_id` is the REVIEWED claim
+/// (so `reviews_for_claim` finds it), `parent_action_id` is that claim's earliest non-review
+/// action (so `planar-watch tree` hangs it under the reviewed work), `session_id` is the
+/// REVIEWER's session, `verdict` and `summary` are the arguments, and `metadata` is
+/// `{"reviewer_session":..,"reviewer_claim":..}` (a key is omitted when unknown).
+///
+/// **Independence.** The caller's session is the reviewer claim's `vendor_session_id` when a
+/// reviewer claim is named, else `reviewer_vendor_session`. The review is refused with
+/// `reviewer_not_independent` when that equals the reviewed claim's `vendor_session_id`, when the
+/// reviewer claim IS the reviewed claim or shares its `sessions` row, and, because a claim without a
+/// vendor session cannot be compared, whenever the reviewed claim has none and the reviewer does not
+/// name its own claim carrying a vendor session. Naming neither a claim nor a session is
+/// `reviewer_unidentified`. Every refusal writes nothing (not even a `sessions` row).
+/// @param conn An open, migrated connection (this function owns the transaction).
+/// @param args The review.
+/// @return The result, or `claim_not_found` (the reviewed claim), `reviewer_claim_not_found`,
+/// `reviewer_not_independent`, `reviewer_unidentified`, `busy` or `query_failed`.
+export auto record_review(db::connection& conn, const review_args& args) -> std::expected<review_result, agent_error>;
+
 } // namespace planar::engine::runtime::agentatomic

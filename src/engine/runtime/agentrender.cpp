@@ -11,7 +11,8 @@ import planar.engine.runtime.agentatomic;
 
 namespace planar::engine::runtime::agentrender {
 
-namespace aa = agentactivity;
+namespace aa     = agentactivity;
+namespace atomic = agentatomic;
 
 // The one shared escape table, layer 1. See json_text.cppm.
 using json_text::append_json_string;
@@ -214,6 +215,11 @@ auto append_action(std::string& out, const aa::action& value) -> void {
   field_enum(out, "dirty", value.dirty);
   out.push_back(',');
   field_text(out, "metadata", value.metadata);
+  if (value.verdict.has_value()) {
+    // Only a `review` action carries one; every other action's object keeps the shape it always had.
+    out.push_back(',');
+    field_enum(out, "verdict", value.verdict);
+  }
   out.push_back('}');
 }
 
@@ -404,6 +410,27 @@ auto action_start_text(const aa::action& value, std::string_view claim_token) ->
 
 auto action_end_text(std::int64_t action_id, aa::outcome result) -> std::string {
   return std::format("ok action:{} outcome:{}\n", action_id, aa::to_text(result));
+}
+
+// =========================================================================
+// review
+// =========================================================================
+
+auto review_text(const agentatomic::review_result& value) -> std::string {
+  auto const short_token = std::string_view{value.reviewed.claim_token}.substr(0, 8);
+  return std::format("review recorded: action {} verdict {} for claim {}{}\n", value.action_id, aa::to_text(value.verdict),
+                     short_token, value.parent_action_id.has_value() ? "" : " (the claim has no action; recorded as a root)");
+}
+
+auto review_json(const agentatomic::review_result& value) -> std::string {
+  std::string out = std::format("{{\"ok\":true,\"action_id\":{},\"verdict\":", value.action_id);
+  append_json_string(out, aa::to_text(value.verdict));
+  out.append(",\"reviewed_claim\":");
+  append_json_string(out, value.reviewed.claim_token);
+  out.append(",");
+  field_int(out, "parent_action_id", value.parent_action_id);
+  out.append("}\n");
+  return out;
 }
 
 // =========================================================================

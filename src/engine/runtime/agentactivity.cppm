@@ -188,6 +188,16 @@ export enum class action_kind : std::uint8_t {
   supervisor_override, ///< Legacy: an operator terminating an engine claim (no verb writes it now).
   run_submitted,       ///< Legacy: a Centurion run's submission (no verb writes it now).
   run_reconciled,      ///< Legacy: a terminal verb re-issued by post-crash reconciliation (no verb writes it now).
+  /// A review verdict on a claim, written only by `planar-agent review` (migration 00042, plan 1142).
+  /// `action start --kind` refuses it and `pull --role` degrades it to `coder`, so the verdict
+  /// rows are the audit trail of the review verb alone.
+  review,
+};
+
+/// @brief A reviewer's verdict. Mirrors `agent_actions.verdict`.
+export enum class review_verdict : std::uint8_t {
+  approve,         ///< `approve`.
+  request_changes, ///< `request-changes`.
 };
 
 /// @brief Whether `kind` is one of the engine-supervision kinds.
@@ -226,6 +236,16 @@ export enum class dirty_state : std::uint8_t {
   dirty,
   unknown,
 };
+
+/// @brief The stored token for `value`.
+/// @param value The enumerator.
+/// @return The exact text the CHECK constraint accepts.
+export auto to_text(review_verdict value) -> std::string_view;
+
+/// @brief Parse a verdict token; unset for anything but `approve` and `request-changes`.
+/// @param text The candidate token.
+/// @return The verdict, or unset.
+export auto review_verdict_from_text(std::string_view text) -> std::optional<review_verdict>;
 
 /// @brief The stored token for `value`.
 /// @param value The enumerator.
@@ -369,6 +389,7 @@ export struct action {
   std::optional<std::string>        head_sha;         ///< Locality: HEAD sha.
   std::optional<dirty_state>        dirty;            ///< Locality: cleanliness.
   std::optional<std::string>        metadata;         ///< Opaque caller text; never parsed here.
+  std::optional<review_verdict>     verdict;          ///< Set on `review` actions only.
 };
 
 /// @brief The subset of a `tasks` row the agent verbs render.
@@ -439,6 +460,13 @@ export enum class agent_error : std::uint8_t {
   /// reason and the caller did not ask to override (plan 1142). New with the readiness gate; the
   /// Zig oracle has no such tag. The reasons travel in the caller's `claim_readiness`, not here.
   task_not_ready,
+  /// A review was asked for from the reviewed claim's own session, or from a claim whose session
+  /// cannot be told apart from it (plan 1142). Writes nothing.
+  reviewer_not_independent,
+  /// A review named neither a reviewer claim nor a vendor session, so the caller's session is unknown.
+  reviewer_unidentified,
+  /// A review named a reviewer claim that does not exist.
+  reviewer_claim_not_found,
 };
 
 /// @brief The Zig error TAG for `err`, as it appears on the operator's
@@ -1000,6 +1028,29 @@ export auto list_actions(db::connection& conn, std::int64_t limit) -> std::expec
 export auto latest_action_for_claim(db::connection& conn, std::int64_t claim_id)
     -> std::expected<std::optional<action>, agent_error>;
 
+/// @brief One recorded review of a claim.
+export struct review_row {
+  std::int64_t               action_id{};           ///< The `review` action's row id.
+  review_verdict             verdict{};             ///< The reviewer's verdict.
+  std::string                summary;               ///< The reviewer's summary; empty when none was stored.
+  std::string                recorded_at;           ///< When the review was recorded.
+  std::optional<std::string> reviewer_session;      ///< The reviewer's vendor session id, when known.
+  std::optional<std::string> reviewer_claim;        ///< The reviewer's own claim token, when it named one.
+  std::int64_t               reviewer_session_id{}; ///< The `sessions` row the review action belongs to.
+};
+
+/// @brief Every review recorded against a claim, oldest first.
+///
+/// A review is an `agent_actions` row of kind `review` whose `claim_id` is the REVIEWED claim, so
+/// this finds reviews by the claim they are about, whichever session wrote them. Rows without a
+/// verdict never appear (the `review` verb cannot write one). A token that names no claim yields an
+/// empty list, not an error. Read-only; the claim-gate checks (task 7492) and conformance read it.
+/// @param conn An open connection.
+/// @param claim_token The reviewed claim's token.
+/// @return The reviews, or `query_failed`.
+export auto reviews_for_claim(db::connection& conn, std::string_view claim_token)
+    -> std::expected<std::vector<review_row>, agent_error>;
+
 /// @brief `planar-watch log`'s action source, filtered to one entity.
 /// @param conn An open connection.
 /// @param entity_kind The stored `entity_kind` token, verbatim — NOT parsed
@@ -1155,7 +1206,9 @@ export struct forest_node {
   std::int64_t                depth{};          ///< 0 at a root.
   /// @brief Whether this node has no later sibling — the `└──` vs `├──`
   /// decision. Computed in a second pass over the flattened walk.
-  bool is_last_sibling = false;
+  bool                          is_last_sibling = false;
+  action_kind                   kind            = action_kind::other; ///< The action's kind.
+  std::optional<review_verdict> verdict;                              ///< The verdict, on `review` actions.
 };
 
 /// @brief Walk the orchestrator -> sub-agent action forest.

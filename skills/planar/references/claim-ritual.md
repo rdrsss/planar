@@ -101,6 +101,15 @@ releases its coordination claim explicitly rather than waiting out the lease.
 - **Direct.** The agent that claimed the work runs the terminal verb itself, after its
   validation evidence is green.
 
+## Reviews are recorded, not asserted
+
+A reviewer records its verdict with `planar-agent review --claim <reviewed-token> --verdict
+approve|request-changes --summary <text>`, passing its own `--reviewer-claim <token>` or
+`--vendor-session <id>`. The verb is refused when that session is the reviewed claim's session,
+so run the review under a different claim or session than the coder's. It writes one `review`
+action under the reviewed claim and changes no status; the terminal verb stays with the
+orchestrator or the claim's owner.
+
 ## Lapsed-claim recovery
 
 When `complete` fails with `ClaimNotActive` because the lease expired, but the task is
