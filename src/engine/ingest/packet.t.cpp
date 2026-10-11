@@ -1,41 +1,27 @@
 // @file packet.t.cpp
-// @brief Engine-level tests for `planar.engine.ingest.packet` (plan 996, task
-// 6324).
+// @brief Engine-level tests for `planar.engine.ingest.packet`.
 //
 // ## BOTH ARMS, OR THE SUITE PROVES NOTHING
 //
-// A bare task trips FIFTEEN reasons, and a plan's only task tripped seventeen
-// when task 6298 measured it. That is the shape that makes this verb easy to
-// fake: an implementation that ALWAYS refuses satisfies every `not_ready`
-// assertion anyone would naturally write, and a fixture that is one row short
-// of ready looks exactly like a correct implementation refusing correctly.
+// An implementation that ALWAYS refuses satisfies every `not_ready` assertion
+// anyone would naturally write, and a fixture that is one row short of ready
+// looks exactly like a correct implementation refusing correctly.
 //
-// So the fixture below is built READY FIRST — `assemble_task` on the untouched
-// arena returns a packet with an EMPTY reasons list — and every other case is
-// that same arena with ONE thing broken. Each degraded case therefore asserts
-// two things at once: that the reason fires, and (because the ready case is
-// pinned separately) that it fires for the stated reason rather than because
-// the fixture never worked.
+// So the fixture below is built READY FIRST. `assemble_task` on the untouched
+// arena returns a packet with an EMPTY reasons list, and every other case is
+// that same arena with ONE thing broken, usually paired with the repair that
+// clears it. Each degraded case therefore asserts two things at once: that the
+// reason fires, and (because the ready case is pinned separately) that it
+// fires for the stated reason rather than because the fixture never worked.
 //
 // `ready_fixture_is_actually_ready` is deliberately the first case in the
-// file. If it ever goes red, every case after it is meaningless, and reading
-// them as "the rules still work" would be the exact false green this file
-// exists to prevent.
+// file. If it ever goes red, every case after it is meaningless.
 //
-// ## ORACLE PROVENANCE
+// ## READINESS IS COORDINATION ONLY (plan 1142)
 //
-// Every expectation here was measured against `zig/zig-out/bin/planar` built
-// at this cycle's base, in a scratch arena under a temp root (`PLANAR_DB`
-// pointed at a throwaway file — never the operator's database). Exit codes
-// were read from the command itself, never through a pipe.
-//
-// The identical SQL seed below was then replayed as a 21-arm differential —
-// four golden captures (ready/blocked x json/text), two refusals, and fifteen
-// one-axis degradations — through BOTH binaries against the SAME database
-// file. All 21 agreed on stdout, stderr and exit code byte for byte. The
-// shared-file arrangement is deliberate: both trees are at schema v33, so
-// migrating once and running both against it removes migration difference
-// from the comparison and leaves only the verb's own bytes.
+// The arena still carries cited specs, a scenario, a touch and an accepted
+// decision, and a case strips every one of them: none affects `ready`. The
+// reasons are the seven in packet.cppm, and one case pins their order.
 //
 // ## THE DIGESTS IN THE SEED ARE NOT DERIVED FROM THE CODE UNDER TEST
 //
@@ -45,7 +31,7 @@
 // `hashlib.sha256` over the documented preimage, an implementation with no
 // relationship to this tree, and each carries its preimage in a comment.
 //
-// ## REFERENCES, NOT FACTS (plan 1142)
+// ## REFERENCES, NOT FACTS
 //
 // The packet reads no `routing_task_facts` row. Its citations are references
 // derived from the task's `cites` entity links, and `expand_reference` resolves
@@ -91,9 +77,8 @@ auto open_migrated(const scratch_db_path& scratch) -> planar::db::connection {
 
 /// @brief Run one statement, asserting it succeeded.
 ///
-/// Guarded rather than fire-and-forget: an oracle probe written alongside this
-/// file went vacuous because two seed statements failed silently into
-/// /dev/null and the run compared an arena that was never built.
+/// Guarded rather than fire-and-forget: a seed statement that failed silently
+/// would leave a test comparing an arena that was never built.
 auto exec(planar::db::connection& conn, std::string_view sql) -> void {
   auto ok = conn.execute(sql);
   INFO("sql: " << sql);
@@ -121,7 +106,6 @@ constexpr std::int64_t plan_id    = 1;
 /// @brief Seed the shared arena: one READY task (100), its satisfied
 /// dependency (101), and one bare root task (200) on the same active plan.
 ///
-/// This is the byte-identical SQL the differential ran through both binaries.
 auto seed(planar::db::connection& conn) -> void {
   exec(conn, "insert into projects (id, slug, name, root_path) values (1, 'pkt', 'pkt', '/tmp/pkt')");
   exec(conn, "insert into plans (id, scope_kind, scope_id, title, slug, summary, status) "
@@ -207,16 +191,46 @@ TEST_CASE("ready fixture is actually ready", "[packet]") {
   // happens to have no complaints.
   CHECK(packet->input.task_id == ready_task);
   CHECK(packet->input.status == "doing");
-  CHECK(packet->input.acceptance_criteria == "The packet compiles with zero readiness reasons.");
   CHECK(packet->input.owning_plans.size() == 1);
-  CHECK(packet->input.anchor_plans.size() == 1);
   CHECK(packet->input.references.size() == 4);
-  CHECK(packet->input.decisions.size() == 1);
-  CHECK(packet->input.scenarios.size() == 1);
   CHECK(packet->input.dependencies.size() == 1);
-  CHECK(packet->input.touches.size() == 1);
-  CHECK(packet->input.validation_gates.size() == 1);
+  CHECK(packet->input.open_questions.empty());
+  CHECK(packet->input.proposed_decisions.empty());
+  CHECK(packet->input.claims.empty());
   CHECK(packet->digest.size() == 64);
+}
+
+TEST_CASE("a task created with nothing else is ready", "[packet]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  // Task 200 is what `task add 'Bare task'` leaves: no body, no next action, no
+  // artifact, no decision, no scenario, no touch, no validation section.
+  auto packet = pk::assemble_task(conn, bare_task);
+  REQUIRE(packet.has_value());
+  INFO("reasons: " << std::format("{}", reason_names(*packet)));
+  CHECK(packet->reasons.empty());
+  CHECK(packet->ready());
+  CHECK(packet->input.references.empty());
+}
+
+TEST_CASE("spec documents, facts, scenarios and touches never affect readiness", "[packet]") {
+  scratch_db_path scratch;
+  auto            conn = open_migrated(scratch);
+  seed(conn);
+
+  // Strip from the ready task everything the old readiness rules demanded: the
+  // body and its sections, the next action, every cited spec, the decision, the
+  // scenario links and the touch. Readiness does not depend on any of it.
+  exec(conn, "update tasks set body=null, next_action=null where id=100");
+  exec(conn, "delete from entity_links where (from_kind='task' and from_id=100 and to_kind in ('artifact','decision')) "
+             "or (from_kind='test_scenario' and to_kind in ('task','plan'))");
+  exec(conn, "delete from task_touch_paths where task_id=100");
+  auto packet = pk::assemble_task(conn, ready_task);
+  REQUIRE(packet.has_value());
+  CHECK(packet->reasons.empty());
+  CHECK(packet->input.references.empty());
 }
 
 TEST_CASE("the ready packet's references are derived from the cites links with independent digests", "[packet]") {
@@ -250,8 +264,6 @@ TEST_CASE("the ready packet's references are derived from the cites links with i
     CHECK(got.label == expected[i].label);
     CHECK(got.status == "active");
   }
-  // The decision link is NOT a reference: decisions have their own array.
-  CHECK(packet->input.decisions.size() == 1);
 
   // No fact is stored, and none is read: the arena holds no fact row.
   auto stmt = conn.prepare("select count(*) from routing_task_facts");
@@ -259,60 +271,10 @@ TEST_CASE("the ready packet's references are derived from the cites links with i
   REQUIRE(stmt->step().has_value());
   CHECK(stmt->column_int64(0) == 0);
 
-  // The satisfied dependency's `done` is REWRITTEN to `satisfied` by the
-  // loader query, which is what makes the evidence-class walk accept it.
+  // The dependency is listed with the dependency task's own status.
   REQUIRE(packet->input.dependencies.size() == 1);
-  CHECK(packet->input.dependencies[0].status == "satisfied");
-  // Anchor resolves to the owning plan itself when the plan has no parent.
-  CHECK(packet->input.anchor_plans[0].id == plan_id);
-  CHECK(packet->input.scenarios[0].covered);
-}
-
-// ===========================================================================
-// The blocked arm.
-// ===========================================================================
-
-TEST_CASE("a bare task reports its reasons in emission order", "[packet]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  seed(conn);
-
-  auto packet = pk::assemble_task(conn, bare_task);
-  REQUIRE(packet.has_value());
-  CHECK_FALSE(packet->ready());
-
-  // Captured from the oracle. This is the ORDER OF THE CHECKS in
-  // `compile_task`, deduplicated — NOT sorted, and not grouped. Pinned as a
-  // sequence rather than a set precisely because a future "tidy up the
-  // reasons" change would pass a set comparison.
-  const std::vector<std::string> expected = {"missing_body",        "missing_acceptance_section", "generic_acceptance",
-                                             "generic_next_action", "missing_product_spec",       "missing_tech_spec",
-                                             "missing_roadmap",     "missing_test_spec",          "missing_locked_decision",
-                                             "missing_touch",       "absent_validation_gates",    "uncovered_required_scenario"};
-  CHECK(reason_names(*packet) == expected);
-
-  // NOT present, and each absence is meaningful because the presence case is
-  // pinned elsewhere in this file: the task HAS a title, IS `todo`, and DOES
-  // own an active plan.
-  const auto names = reason_names(*packet);
-  CHECK(std::ranges::find(names, "missing_title") == names.end());
-  CHECK(std::ranges::find(names, "invalid_task_status") == names.end());
-  CHECK(std::ranges::find(names, "missing_owning_plan") == names.end());
-  CHECK(std::ranges::find(names, "missing_anchor_plan") == names.end());
-}
-
-TEST_CASE("a root task is not missing a dependency", "[packet]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  seed(conn);
-
-  // A root task declares no dependency by design. It can still be blocked by
-  // every other missing readiness input, but absence of an edge is not itself
-  // an error. A declared unfinished dependency remains invalid below.
-  auto packet = pk::assemble_task(conn, bare_task);
-  REQUIRE(packet.has_value());
-  const auto names = reason_names(*packet);
-  CHECK(std::ranges::find(names, "missing_dependency") == names.end());
+  CHECK(packet->input.dependencies[0].id == 101);
+  CHECK(packet->input.dependencies[0].status == "done");
 }
 
 // ===========================================================================
@@ -338,83 +300,148 @@ TEST_CASE("editing a cited artifact moves its reference digest and the packet di
   CHECK(packet->input.references[1].digest == before->input.references[1].digest);
 }
 
-TEST_CASE("a retired cited artifact is an unresolved citation", "[packet]") {
+TEST_CASE("a retired cited artifact is an unresolved citation until the citation resolves", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
 
   auto packet = degraded(conn, "update artifacts set status='retired' where id=10");
   CHECK(reason_names(*packet) == std::vector<std::string>{"unresolved_citation"});
+
+  // Repair: the citation resolves again and the reason clears.
+  auto repaired = degraded(conn, "update artifacts set status='active' where id=10");
+  CHECK(repaired->reasons.empty());
 }
 
-TEST_CASE("dropping a cites link drops the reference and the kind it supplied", "[packet]") {
+TEST_CASE("dropping a cites link drops the reference and raises nothing", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
 
   auto packet =
       degraded(conn, "delete from entity_links where from_kind='task' and from_id=100 and to_kind='artifact' and to_id=11");
-  CHECK(reason_names(*packet) == std::vector<std::string>{"missing_tech_spec"});
+  CHECK(packet->reasons.empty());
   CHECK(packet->input.references.size() == 3);
 }
 
-TEST_CASE("an unfinished dependency is invalid rather than missing", "[packet]") {
+TEST_CASE("an unfinished dependency blocks the task until it is done or cancelled", "[packet]") {
+  for (const std::string_view unfinished : {"todo", "doing", "blocked"}) {
+    INFO("dependency status: " << unfinished);
+    scratch_db_path scratch;
+    auto            conn = open_migrated(scratch);
+    seed(conn);
+
+    auto packet = degraded(conn, std::format("update tasks set status='{}' where id=101", unfinished));
+    CHECK(reason_names(*packet) == std::vector<std::string>{"blocked_by_open_task"});
+    REQUIRE(packet->input.dependencies.size() == 1);
+    CHECK(packet->input.dependencies[0].status == unfinished);
+
+    // Each clears when the cause is resolved.
+    CHECK(degraded(conn, "update tasks set status='done' where id=101")->reasons.empty());
+    CHECK(degraded(conn, std::format("update tasks set status='{}' where id=101", unfinished))->reasons.size() == 1);
+    CHECK(degraded(conn, "update tasks set status='cancelled' where id=101")->reasons.empty());
+  }
+}
+
+TEST_CASE("only a direct depends-on link from the task blocks it", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
 
-  // The edge still exists, so `missing_dependency` does NOT fire — the packet
-  // distinguishes "no dependency declared" from "declared and not done".
-  auto       packet = degraded(conn, "update tasks set status='todo' where id=101");
-  const auto names  = reason_names(*packet);
-  CHECK(names == std::vector<std::string>{"invalid_dependency"});
+  // An unfinished task that depends ON the ready task, and one it is merely
+  // related to, hold nothing back: the ready task's own dependency is `done`.
+  exec(conn, "insert into tasks (id, scope_kind, scope_id, plan_id, title, status, priority, slug) values "
+             "(102, 'global', null, 1, 'Dependent', 'todo', 100, 'pkt-dependent'),"
+             "(103, 'global', null, 1, 'Related', 'todo', 100, 'pkt-related')");
+  exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) values "
+             "('task',102,'task',100,'depends-on'),"
+             "('task',100,'task',103,'derives-from')");
+  auto packet = pk::assemble_task(conn, ready_task);
+  REQUIRE(packet.has_value());
+  CHECK(packet->reasons.empty());
+
+  // The dependent itself is blocked by the ready task only while that is open.
+  auto dependent = pk::assemble_task(conn, 102);
+  REQUIRE(dependent.has_value());
+  CHECK(reason_names(*dependent) == std::vector<std::string>{"blocked_by_open_task"});
 }
 
-TEST_CASE("an open question blocks and an answered one does not", "[packet]") {
-  {
+TEST_CASE("an open question linked to the task blocks it until the question is answered", "[packet]") {
+  for (const auto* link : {"('task',100,'question',40,'addresses')", "('question',40,'task',100,'addresses')"}) {
+    INFO("link: " << link);
     scratch_db_path scratch;
     auto            conn = open_migrated(scratch);
     seed(conn);
     exec(conn, "insert into questions (id, scope_kind, scope_id, title, body, status) "
                "values (40,'global',null,'Q','Q body.','open')");
-    exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
-               "values ('task',100,'question',40,'addresses')");
+    exec(conn, std::format("insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) values {}", link));
     auto linked = pk::assemble_task(conn, ready_task);
     REQUIRE(linked.has_value());
-    CHECK(reason_names(*linked) == std::vector<std::string>{"unresolved_question"});
-  }
-  {
+    CHECK(reason_names(*linked) == std::vector<std::string>{"open_question_linked"});
+    REQUIRE(linked->input.open_questions.size() == 1);
+    CHECK(linked->input.open_questions[0].id == 40);
+
     // The paired presence case: the same link with an ANSWERED question leaves
     // the packet ready, so the assertion above is about the status and not
     // about linking a question at all.
-    scratch_db_path scratch;
-    auto            conn = open_migrated(scratch);
-    seed(conn);
-    exec(conn, "insert into questions (id, scope_kind, scope_id, title, body, status, answer_body, answered_at) "
-               "values (40,'global',null,'Q','Q body.','answered','A','2020-01-01T00:00:00.000Z')");
-    exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
-               "values ('task',100,'question',40,'addresses')");
-    auto packet = pk::assemble_task(conn, ready_task);
-    REQUIRE(packet.has_value());
-    CHECK(packet->reasons.empty());
+    auto answered = degraded(conn, "update questions set status='answered', answer_body='A', "
+                                   "answered_at='2020-01-01T00:00:00.000Z' where id=40");
+    CHECK(answered->reasons.empty());
+    CHECK(answered->input.open_questions.empty());
   }
 }
 
-TEST_CASE("a lapsed lease blocks the packet and a live one does not", "[packet]") {
+TEST_CASE("a proposed decision linked to the task blocks it until the decision is accepted", "[packet]") {
+  for (const auto* link : {"('task',100,'decision',41,'cites')", "('decision',41,'task',100,'cites')"}) {
+    INFO("link: " << link);
+    scratch_db_path scratch;
+    auto            conn = open_migrated(scratch);
+    seed(conn);
+    exec(conn, "insert into decisions (id, scope_kind, scope_id, title, body, status) "
+               "values (41,'global',null,'Pending','Pending body.','proposed')");
+    exec(conn, std::format("insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) values {}", link));
+    auto linked = pk::assemble_task(conn, ready_task);
+    REQUIRE(linked.has_value());
+    CHECK(reason_names(*linked) == std::vector<std::string>{"proposed_decision_linked"});
+    REQUIRE(linked->input.proposed_decisions.size() == 1);
+    CHECK(linked->input.proposed_decisions[0].id == 41);
+
+    auto accepted = degraded(conn, "update decisions set status='accepted' where id=41");
+    CHECK(accepted->reasons.empty());
+    CHECK(accepted->input.proposed_decisions.empty());
+  }
+}
+
+TEST_CASE("a live claim blocks a doing task and a lapsed or stale one does not", "[packet]") {
   constexpr std::string_view session = "insert into sessions (id, vendor, started_at) "
                                        "values (1,'claude','2000-01-01T00:00:00.000Z')";
+  const auto                 insert  = [](std::string_view status, std::string_view lease) {
+    return std::format("insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, status, vendor, "
+                       "lease_expires_at) values (1,'tok',1,'task',100,'{}','claude','{}')",
+                       status, lease);
+  };
   {
     scratch_db_path scratch;
     auto            conn = open_migrated(scratch);
     seed(conn);
     exec(conn, session);
-    auto packet = degraded(conn, "insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, "
-                                 "status, vendor, lease_expires_at) "
-                                 "values (1,'tok',1,'task',100,'active','claude','2000-01-01T00:00:00.000Z')");
+    auto packet = degraded(conn, insert("active", "2999-01-01T00:00:00.000Z"));
+    // A live lease always holds the task, whoever asks: `task packet` takes no
+    // caller to compare the claim's holder against.
+    CHECK(reason_names(*packet) == std::vector<std::string>{"invalid_task_status"});
+    REQUIRE(packet->input.claims.size() == 1);
+    CHECK(packet->input.claims[0].status == "active");
+  }
+  {
+    scratch_db_path scratch;
+    auto            conn = open_migrated(scratch);
+    seed(conn);
+    exec(conn, session);
+    auto packet = degraded(conn, insert("active", "2000-01-01T00:00:00.000Z"));
     // The row is `status='active'`; only the LEASE has passed. The loader
-    // re-derives `expired` from `lease_expires_at`, so a stale claim is
-    // visible evidence rather than an absent row that silently permits.
-    CHECK(reason_names(*packet) == std::vector<std::string>{"inactive_claim"});
+    // re-derives `expired` from `lease_expires_at`, so the task is recoverable
+    // and the evidence stays visible.
+    CHECK(packet->reasons.empty());
     REQUIRE(packet->input.claims.size() == 1);
     CHECK(packet->input.claims[0].status == "expired");
   }
@@ -423,120 +450,93 @@ TEST_CASE("a lapsed lease blocks the packet and a live one does not", "[packet]"
     auto            conn = open_migrated(scratch);
     seed(conn);
     exec(conn, session);
-    auto packet = degraded(conn, "insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, "
-                                 "status, vendor, lease_expires_at) "
-                                 "values (1,'tok',1,'task',100,'active','claude','2999-01-01T00:00:00.000Z')");
+    // A reconcile-marked `stale` claim is not live whatever its lease says.
+    auto packet = degraded(conn, insert("stale", "2999-01-01T00:00:00.000Z"));
     CHECK(packet->reasons.empty());
-    REQUIRE(packet->input.claims.size() == 1);
-    CHECK(packet->input.claims[0].status == "active");
   }
-}
-
-TEST_CASE("a draft plan invalidates both plan classes", "[packet]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  seed(conn);
-
-  // Owning and anchor are the SAME row here, and both classes report — the
-  // walk does not deduplicate across classes, only within the reason list.
-  auto packet = degraded(conn, "update plans set status='draft' where id=1");
-  CHECK(reason_names(*packet) == std::vector<std::string>{"invalid_owning_plan", "invalid_anchor_plan"});
-}
-
-TEST_CASE("a scenario outside the anchor plan stays visible but uncovered", "[packet]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  seed(conn);
-
-  auto packet = degraded(conn, "delete from entity_links where from_kind='test_scenario' and to_kind='plan'");
-  CHECK(reason_names(*packet) == std::vector<std::string>{"uncovered_required_scenario"});
-  // The scenario is NOT dropped from the packet. Coverage is a separate fact
-  // from linkage, so the operator can see which scenario failed to qualify.
-  REQUIRE(packet->input.scenarios.size() == 1);
-  CHECK_FALSE(packet->input.scenarios[0].covered);
-  CHECK(packet->input.scenarios[0].status == "ready");
-}
-
-TEST_CASE("a whole-repo touch satisfies the touch requirement", "[packet]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  seed(conn);
-
   {
-    // Absence first...
-    scratch_db_path inner_scratch;
-    auto            inner = open_migrated(inner_scratch);
-    seed(inner);
-    auto packet = degraded(inner, "delete from task_touch_paths where task_id=100");
-    CHECK(reason_names(*packet) == std::vector<std::string>{"missing_touch"});
+    // A doing task nobody holds (an operator set it by hand) is recoverable.
+    scratch_db_path scratch;
+    auto            conn = open_migrated(scratch);
+    seed(conn);
+    auto packet = pk::assemble_task(conn, ready_task);
+    REQUIRE(packet.has_value());
+    CHECK(packet->input.status == "doing");
+    CHECK(packet->reasons.empty());
   }
-  // ...then presence via the OTHER of the two touch sources, so the assertion
-  // above is about having no touch rather than about the path table
-  // specifically.
-  exec(conn, "delete from task_touch_paths where task_id=100");
-  exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
-             "values ('task',100,'repo',1,'touches')");
-  auto packet = pk::assemble_task(conn, ready_task);
-  REQUIRE(packet.has_value());
-  CHECK(packet->reasons.empty());
-  REQUIRE(packet->input.touches.size() == 1);
-  CHECK(packet->input.touches[0].locator == "repo:1");
 }
 
-TEST_CASE("a closed task is an invalid status for dispatch", "[packet]") {
+TEST_CASE("a task that is not todo or doing is an invalid status for dispatch", "[packet]") {
+  for (const std::string_view closed : {"done", "cancelled", "blocked"}) {
+    INFO("status: " << closed);
+    scratch_db_path scratch;
+    auto            conn = open_migrated(scratch);
+    seed(conn);
+
+    auto packet = degraded(conn, std::format("update tasks set status='{}' where id=100", closed));
+    CHECK(reason_names(*packet) == std::vector<std::string>{"invalid_task_status"});
+    // Reopened, it is ready again.
+    CHECK(degraded(conn, "update tasks set status='todo' where id=100")->reasons.empty());
+  }
+}
+
+TEST_CASE("an orphaned task is missing its owning plan and nothing else", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
 
-  auto packet = degraded(conn, "update tasks set status='done' where id=100");
-  CHECK(reason_names(*packet) == std::vector<std::string>{"invalid_task_status"});
-}
-
-TEST_CASE("an orphaned task loses its plan and its scenario coverage together", "[packet]") {
-  scratch_db_path scratch;
-  auto            conn = open_migrated(scratch);
-  seed(conn);
-
-  // Dropping `plan_id` takes the anchor with it, and the anchor is what the
-  // scenario's coverage subquery joins against — so coverage fails as a
-  // CONSEQUENCE, not independently. Pinned because "unlink the plan, get two
-  // reasons" is surprising until you see why.
   auto packet = degraded(conn, "update tasks set plan_id=null where id=100");
-  CHECK(reason_names(*packet) ==
-        std::vector<std::string>{"missing_owning_plan", "missing_anchor_plan", "uncovered_required_scenario"});
+  CHECK(reason_names(*packet) == std::vector<std::string>{"missing_owning_plan"});
 }
 
-TEST_CASE("boilerplate acceptance text is rejected as generic", "[packet]") {
+TEST_CASE("a draft owning plan does not hold the task back", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
 
-  // `works as expected` is one of three banned phrases, matched
-  // case-insensitively.
-  auto packet = degraded(conn, "update tasks set body='Body.\n\n## Acceptance Criteria\nWorks as expected.\n\n"
-                               "## Required validation\ncmake --build build/debug\n' where id=100");
-  CHECK(reason_names(*packet) == std::vector<std::string>{"generic_acceptance"});
+  CHECK(degraded(conn, "update plans set status='draft' where id=1")->reasons.empty());
 }
 
-TEST_CASE("a child plan anchors on its parent", "[packet]") {
+TEST_CASE("every reason a task trips is reported once, in the documented order", "[packet]") {
+  // Trip all seven through SQL on one task: no title cannot be seeded through
+  // `tasks.title not null`-style SQL without being blank, so a space stands in.
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
-
-  exec(conn, "insert into plans (id, scope_kind, scope_id, title, slug, status, parent_plan_id) "
-             "values (2,'global',null,'Child','child','active',1)");
-  exec(conn, "update tasks set plan_id=2 where id=100");
-  // Coverage now has to be measured against the PARENT, so re-point the
-  // scenario's ownership edge at plan 1 and assert it still qualifies.
-  exec(conn, "delete from entity_links where from_kind='test_scenario' and to_kind='plan'");
-  exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) "
-             "values ('test_scenario',30,'plan',1,'derives-from')");
+  exec(conn, "insert into sessions (id, vendor, started_at) values (1,'claude','2000-01-01T00:00:00.000Z')");
+  exec(conn, "insert into agent_work_claims (id, claim_token, session_id, entity_kind, entity_id, status, vendor, "
+             "lease_expires_at) values (1,'tok',1,'task',100,'active','claude','2999-01-01T00:00:00.000Z')");
+  exec(conn, "update tasks set title=' ', plan_id=null where id=100");
+  exec(conn, "update artifacts set status='retired' where id=10");
+  exec(conn, "update tasks set status='doing' where id=101");
+  exec(conn, "insert into questions (id, scope_kind, scope_id, title, body, status) values (40,'global',null,'Q','B','open')");
+  exec(conn,
+       "insert into decisions (id, scope_kind, scope_id, title, body, status) values (41,'global',null,'D','B','proposed')");
+  exec(conn, "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) values "
+             "('task',100,'question',40,'addresses'),('task',100,'decision',41,'cites')");
 
   auto packet = pk::assemble_task(conn, ready_task);
   REQUIRE(packet.has_value());
-  CHECK(packet->reasons.empty());
-  CHECK(packet->input.owning_plans[0].id == 2);
-  CHECK(packet->input.anchor_plans[0].id == 1);
+  const std::vector<std::string> expected = {"missing_title",           "invalid_task_status",  "missing_owning_plan",
+                                             "unresolved_citation",     "blocked_by_open_task", "open_question_linked",
+                                             "proposed_decision_linked"};
+  CHECK(reason_names(*packet) == expected);
+}
+
+TEST_CASE("the reason vocabulary is exactly the seven coordination reasons", "[packet]") {
+  // The removed spec-quality, fact, evidence-class and claim-evidence reasons
+  // have no enumerator, so there is no spelling left to emit.
+  const std::vector<std::string> expected = {"missing_title",           "invalid_task_status",  "missing_owning_plan",
+                                             "unresolved_citation",     "blocked_by_open_task", "open_question_linked",
+                                             "proposed_decision_linked"};
+  std::vector<std::string>       names;
+  for (std::uint8_t i = 0; i < 16; ++i) {
+    const auto name = pk::reason_name(static_cast<pk::readiness_reason>(i));
+    if (name != "unknown") {
+      names.emplace_back(name);
+    }
+  }
+  CHECK(names == expected);
 }
 
 // ===========================================================================
@@ -593,7 +593,7 @@ TEST_CASE("a display-only rename moves the canonical body but not the digest", "
 
 TEST_CASE("the envelope carries the digest and no canonical body", "[packet][digest]") {
   const auto packet = pk::compile_task(pk::task_input{});
-  CHECK(packet.canonical.starts_with("{\"policy\":\"routing-packet-v2\",\"task_id\":"));
+  CHECK(packet.canonical.starts_with("{\"policy\":\"routing-packet-v3\",\"task_id\":"));
   const auto json = pk::render_json(packet);
   CHECK(json.find("\"digest\":\"") != std::string::npos);
   CHECK(json.find("\"canonical\":") == std::string::npos);
@@ -617,13 +617,12 @@ TEST_CASE("the canonical body ignores evidence input order", "[packet]") {
   const auto d = make("d", "test_spec", 5);
 
   pk::task_input forward;
-  forward.task_id             = 42;
-  forward.status              = "doing";
-  forward.title               = R"(Exact "title"; $(still data))";
-  forward.body                = "Body.\n## Acceptance Criteria\nReal criteria.\n";
-  forward.next_action         = "Do the specific thing.";
-  forward.acceptance_criteria = "Real criteria.";
-  forward.references          = {a, b, c, d};
+  forward.task_id     = 42;
+  forward.status      = "doing";
+  forward.title       = R"(Exact "title"; $(still data))";
+  forward.body        = "Body.\n## Acceptance Criteria\nReal criteria.\n";
+  forward.next_action = "Do the specific thing.";
+  forward.references  = {a, b, c, d};
 
   auto reversed       = forward;
   reversed.references = {d, c, b, a};
@@ -685,63 +684,70 @@ TEST_CASE("the canonical order is total for rows sharing an identity key", "[pac
   high.provenance     = "artifact:2";
 
   pk::task_input forward;
-  forward.decisions  = {low, high};
-  auto reversed      = forward;
-  reversed.decisions = {high, low};
+  forward.proposed_decisions  = {low, high};
+  auto reversed               = forward;
+  reversed.proposed_decisions = {high, low};
 
   CHECK(pk::compile_task(forward).canonical == pk::compile_task(reversed).canonical);
 }
 
-TEST_CASE("an empty input names every applicable reason", "[packet]") {
-  // The pure compiler on a fully empty input. This is the only way to reach
-  // `missing_title` and the two plan-absence reasons at the head of the list,
-  // and it pins that the head of the emission order is what it claims to be.
+TEST_CASE("an empty input names every reason that applies to it", "[packet]") {
+  // The pure compiler on a fully empty input: no title, a status that is
+  // neither todo nor doing, no plan. It pins that the head of the emission
+  // order is what packet.cppm documents.
   const auto                     packet   = pk::compile_task(pk::task_input{});
-  const std::vector<std::string> expected = {
-      "missing_title",           "missing_body",        "invalid_task_status",     "missing_acceptance_section",
-      "generic_acceptance",      "generic_next_action", "missing_owning_plan",     "missing_anchor_plan",
-      "missing_product_spec",    "missing_tech_spec",   "missing_roadmap",         "missing_test_spec",
-      "missing_locked_decision", "missing_touch",       "absent_validation_gates", "uncovered_required_scenario"};
+  const std::vector<std::string> expected = {"missing_title", "invalid_task_status", "missing_owning_plan"};
   CHECK(reason_names(packet) == expected);
 }
 
-TEST_CASE("the fact and evidence reasons are no longer emitted", "[packet]") {
-  // The packet carries no facts. Evidence that would once have raised
-  // `missing_provenance`, `stale_mandatory_evidence` or `stale_fact` (a blank
-  // provenance, a digest that drifted) raises no reason now, so a task cannot
-  // be held back by a freshness rule over data the packet no longer holds.
-  pk::evidence scenario;
-  scenario.kind           = "test_scenario";
-  scenario.id             = 30;
-  scenario.locator        = "scenario:30";
-  scenario.text           = "Scenario body.";
-  scenario.source_digest  = "one";
-  scenario.current_digest = "two"; // drifted
-  scenario.status         = "ready";
-  scenario.provenance     = ""; // blank
-  scenario.freshness      = "stale";
+TEST_CASE("compile_task decides the coordination reasons from the input alone", "[packet]") {
+  pk::evidence plan;
+  plan.kind   = "plan";
+  plan.id     = 1;
+  plan.status = "active";
 
   pk::task_input input;
-  input.scenarios  = {scenario};
-  const auto names = reason_names(pk::compile_task(input));
-  for (auto const* gone : {"missing_provenance", "stale_mandatory_evidence", "stale_fact", "missing_acceptance_fact",
-                           "missing_next_action_fact", "invalid_mandatory_fact", "contradictory_mandatory_fact"}) {
-    INFO("reason: " << gone);
-    CHECK(std::ranges::find(names, gone) == names.end());
-  }
+  input.task_id      = 7;
+  input.status       = "todo";
+  input.title        = "Title";
+  input.owning_plans = {plan};
+  CHECK(pk::compile_task(input).ready());
+
+  // A finished dependency holds nothing back, an unfinished one does.
+  pk::evidence dependency;
+  dependency.kind    = "dependency";
+  dependency.id      = 8;
+  dependency.status  = "done";
+  input.dependencies = {dependency};
+  CHECK(pk::compile_task(input).ready());
+  input.dependencies[0].status = "doing";
+  CHECK(reason_names(pk::compile_task(input)) == std::vector<std::string>{"blocked_by_open_task"});
+  input.dependencies.clear();
+
+  // A live claim holds a doing task; an expired one does not.
+  pk::evidence claim;
+  claim.kind   = "claim";
+  claim.id     = 1;
+  claim.status = "active";
+  input.status = "doing";
+  input.claims = {claim};
+  CHECK(reason_names(pk::compile_task(input)) == std::vector<std::string>{"invalid_task_status"});
+  input.claims[0].status = "expired";
+  CHECK(pk::compile_task(input).ready());
 }
 
 TEST_CASE("render_text names every reason and ends with the canonical body", "[packet]") {
   scratch_db_path scratch;
   auto            conn = open_migrated(scratch);
   seed(conn);
+  exec(conn, "update tasks set status='done' where id=200");
 
   auto blocked = pk::assemble_task(conn, bare_task);
   REQUIRE(blocked.has_value());
   const auto text = pk::render_text(*blocked);
   CHECK(text.starts_with(std::format("task packet {}: not_ready\n", bare_task)));
   CHECK(text.find(std::format("digest: {}\n", blocked->digest)) != std::string::npos);
-  CHECK(text.find("reasons:\n- missing_body\n") != std::string::npos);
+  CHECK(text.find("reasons:\n- invalid_task_status\n") != std::string::npos);
   CHECK(text.ends_with(blocked->canonical + "\n"));
   // A task citing nothing prints no references block.
   CHECK(text.find("references (expand") == std::string::npos);
@@ -750,7 +756,7 @@ TEST_CASE("render_text names every reason and ends with the canonical body", "[p
   REQUIRE(ready.has_value());
   const auto ready_text = pk::render_text(*ready);
   CHECK(ready_text.starts_with(std::format("task packet {}: ready\n", ready_task)));
-  // A ready packet emits NO `reasons:` block at all — not an empty one.
+  // A ready packet emits NO `reasons:` block at all, not an empty one.
   CHECK(ready_text.find("reasons:") == std::string::npos);
   // The references block lists ref, a 12-character digest prefix and the label
   // per citation, and says how to expand one. It carries no cited text.
@@ -773,17 +779,27 @@ TEST_CASE("render_json carries the policy version in the envelope", "[packet]") 
 
   // The version rides in the envelope so a consumer can establish that two
   // packets are comparable before reading `input`.
-  CHECK(json.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{)"));
+  CHECK(json.starts_with(R"({"policy_version":"routing-packet-v3","ready":true,"input":{)"));
   CHECK(json.find(R"("reasons":[]})") != std::string::npos);
   CHECK(json.ends_with("\n"));
   // The envelope carries no escaped `canonical` copy of the policy.
-  CHECK(json.find(R"(\"policy\":\"routing-packet-v2\")") == std::string::npos);
+  CHECK(json.find(R"(\"policy\":\"routing-packet-v3\")") == std::string::npos);
 
-  auto blocked = pk::assemble_task(conn, bare_task);
+  exec(conn, "update tasks set status='todo' where id=101");
+  exec(conn, "insert into questions (id, scope_kind, scope_id, title, body, status) values (40,'global',null,'Q','B','open')");
+  exec(conn,
+       "insert into entity_links (from_kind,from_id,to_kind,to_id,relationship) values ('task',100,'question',40,'addresses')");
+  auto blocked = pk::assemble_task(conn, ready_task);
   REQUIRE(blocked.has_value());
   const auto blocked_json = pk::render_json(*blocked);
   CHECK(blocked_json.find(R"("ready":false)") != std::string::npos);
-  CHECK(blocked_json.find(R"("reasons":["missing_body","missing_acceptance_section")") != std::string::npos);
+  CHECK(blocked_json.find(R"("reasons":["blocked_by_open_task","open_question_linked"]})") != std::string::npos);
+  // None of the removed fields is part of the input any more.
+  for (std::string_view gone :
+       {"acceptance_criteria", "anchor_plans", "\"decisions\"", "\"scenarios\"", "\"touches\"", "validation_gates"}) {
+    INFO("field: " << gone);
+    CHECK(blocked_json.find(gone) == std::string::npos);
+  }
 }
 
 // ===========================================================================
@@ -807,9 +823,9 @@ TEST_CASE("render_json lists references in place of citations and facts", "[pack
       R"({{"ref":"artifact:10","kind":"product_spec","id":10,"locator":"body","digest":"{}","label":"Product","status":"active"}})",
       d_product);
   CHECK(json.find(R"("references":[)" + first + ",") != std::string::npos);
-  // `references` sits where `citations` did: after the plans, before decisions.
-  CHECK(json.find(R"("anchor_plans":)") < json.find(R"("references":)"));
-  CHECK(json.find(R"("references":)") < json.find(R"("decisions":)"));
+  // `references` sits after the owning plan and before the dependencies.
+  CHECK(json.find(R"("owning_plans":)") < json.find(R"("references":)"));
+  CHECK(json.find(R"("references":)") < json.find(R"("dependencies":)"));
 }
 
 TEST_CASE("expand_reference prints exactly the cited section or the whole body", "[packet][references]") {
@@ -924,21 +940,4 @@ TEST_CASE("a packet shaped like task 7252 renders under 16 KB as text and lists 
   auto expanded = pk::expand_reference(conn, ready_task, "artifact:13");
   REQUIRE(expanded.has_value());
   CHECK(expanded->text.size() >= 41672);
-}
-
-TEST_CASE("compile_task: an OPTIONAL scenario raises no reason", "[packet]") {
-  // `scenario.required` guards `uncovered_required_scenario`, and no fixture
-  // set `required = false`, so a mutant dropping the guard made an ADVISORY row
-  // hold up a task that is genuinely dispatchable.
-  pk::task_input input;
-
-  pk::evidence scenario = {};
-  scenario.kind         = "scenario";
-  scenario.required     = false;
-  scenario.covered      = false;
-  input.scenarios       = {scenario};
-
-  const auto names = reason_names(pk::compile_task(input));
-  INFO("reasons: " << std::format("{}", names));
-  CHECK(std::ranges::find(names, "uncovered_required_scenario") == names.end());
 }

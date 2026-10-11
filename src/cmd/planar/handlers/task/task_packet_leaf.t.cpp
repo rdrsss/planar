@@ -1,6 +1,5 @@
 // @file task_packet_leaf.t.cpp
-// @brief In-process tests for `planar task packet <task-id> [--json]` (plan
-// 996, task 6324).
+// @brief In-process tests for `planar task packet <task-id> [--json]` .
 //
 // The readiness RULES are pinned at the engine level in
 // `src/engine/ingest/packet.t.cpp`, on the same SQL seed. This file covers
@@ -31,14 +30,12 @@
 // implementation from one that always refuses — and seventeen reasons on a
 // bare task make "always refuses" a very convincing impostor.
 //
-// ## ORACLE PROVENANCE
+// ## READINESS IS COORDINATION ONLY
 //
-// The expected bytes were captured from `zig/zig-out/bin/planar` built at this
-// cycle's base, in a scratch arena (`PLANAR_DB` under a temp root, never the
-// operator's database), and replayed as a 21-arm differential through both
-// binaries against the same database file. All 21 agreed on stdout, stderr and
-// exit code. Exit codes were read from the command itself, never through a
-// pipe.
+// A task created with `task add` and nothing else is ready. The reasons are the
+// seven in `packet.cppm`; this file drives them the way an operator reaches
+// them, with `task link`, `question add` and `decision add`, and clears each
+// with the verb that resolves its cause.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -99,9 +96,8 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
 
 /// @brief Run raw SQL, asserting it succeeded.
 ///
-/// Every seed step is guarded. An oracle probe for this cycle went vacuous
-/// because two seed statements failed silently into /dev/null and the run
-/// compared an arena that had never been built.
+/// Every seed step is guarded: a statement that failed silently would leave
+/// the test comparing an arena that had never been built.
 auto exec_sql(const fixture& fx, std::string_view sql) -> void {
   auto conn = planar::db::connection::open(fx.db_path.string());
   REQUIRE(conn.has_value());
@@ -191,7 +187,7 @@ TEST_CASE("task packet: the ready arm is genuinely reachable through the CLI", "
   CHECK(res.out.find(R"("reasons":[])") != std::string::npos);
 
   // The envelope's shape, in the order a consumer reads it.
-  CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v2","ready":true,"input":{"task_id":100,)"));
+  CHECK(res.out.starts_with(R"({"policy_version":"routing-packet-v3","ready":true,"input":{"task_id":100,)"));
   // No `canonical` copy: `input` is the only serialized body of the evidence.
   CHECK(res.out.find(R"("canonical":)") == std::string::npos);
   // The digest sits where `canonical` used to: after `input`, before `reasons`.
@@ -203,26 +199,93 @@ TEST_CASE("task packet: the ready arm is genuinely reachable through the CLI", "
   CHECK(res.err.empty());
 }
 
-TEST_CASE("task packet: an unready packet is exit 0 with named reasons", "[task-packet]") {
+TEST_CASE("task packet: a hand-made task with no artifacts and no scenarios is ready", "[task-packet]") {
+  auto const fx = make_fixture("handmade");
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Hand-made plan", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Do the thing", "--plan", "1", "--json"}).code == 0);
+
+  // No spec, no body, no decision, no scenario, no touch: nothing to prepare.
+  auto const res = dispatch(fx, {"task", "packet", "1", "--json"});
+  INFO("stdout: " << res.out);
+  CHECK(res.code == 0);
+  CHECK(res.out.contains(R"("ready":true)"));
+  CHECK(res.out.ends_with(R"("reasons":[]})"
+                          "\n"));
+
+  auto const text = dispatch(fx, {"task", "packet", "1"});
+  CHECK(text.code == 0);
+  CHECK(text.out.starts_with("task packet 1: ready\ndigest: "));
+  CHECK_FALSE(text.out.contains("reasons:"));
+}
+
+TEST_CASE("task packet: a refusal is exit 0 with named reasons in the documented order, each clearing when resolved",
+          "[task-packet]") {
   auto const fx = make_fixture("blocked");
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Hand-made plan", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Blocked task", "--plan", "1", "--json"}).code == 0); // task 1
+  REQUIRE(dispatch(fx, {"task", "add", "Prerequisite", "--plan", "1", "--json"}).code == 0); // task 2
+  REQUIRE(dispatch(fx, {"question", "add", "Which database?", "--body", "Pick one.", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"decision", "add", "Pick SQLite", "--body", "SQLite.", "--json"}).code == 0);
+
+  auto const reasons = [&]() {
+    auto const res = dispatch(fx, {"task", "packet", "1", "--json"});
+    INFO("stdout: " << res.out);
+    // Exit 0. A refusal is a successful ANSWER, and an orchestrator that read
+    // this as an error would lose the reasons that explain it.
+    REQUIRE(res.code == 0);
+    auto const at = res.out.rfind(R"("reasons":[)");
+    REQUIRE(at != std::string::npos);
+    return res.out.substr(at);
+  };
+  CHECK(reasons() == R"("reasons":[]})"
+                     "\n");
+
+  // Link the three causes in the reverse of the documented order, to show the
+  // order comes from the packet and not from the order of the links.
+  REQUIRE(dispatch(fx, {"task", "link", "1", "decision:1", "--relationship", "cites"}).code == 0);
+  CHECK(reasons() == R"("reasons":["proposed_decision_linked"]})"
+                     "\n");
+  REQUIRE(dispatch(fx, {"task", "link", "1", "question:1", "--relationship", "addresses"}).code == 0);
+  CHECK(reasons() == R"("reasons":["open_question_linked","proposed_decision_linked"]})"
+                     "\n");
+  REQUIRE(dispatch(fx, {"task", "link", "1", "task:2", "--relationship", "depends-on"}).code == 0);
+  CHECK(reasons() == R"("reasons":["blocked_by_open_task","open_question_linked","proposed_decision_linked"]})"
+                     "\n");
+
+  // The text form names the same reasons in the same order.
+  auto const text = dispatch(fx, {"task", "packet", "1"});
+  CHECK(text.code == 0);
+  CHECK(text.out.starts_with("task packet 1: not_ready\ndigest: "));
+  CHECK(text.out.contains("\nreasons:\n- blocked_by_open_task\n- open_question_linked\n- proposed_decision_linked\n"));
+
+  // Each clears when its cause is resolved, by the verb that resolves it.
+  REQUIRE(dispatch(fx, {"task", "update", "2", "--status", "doing", "--json"}).code == 0);
+  CHECK(reasons().starts_with(R"("reasons":["blocked_by_open_task",)"));
+  REQUIRE(dispatch(fx, {"task", "done", "2"}).code == 0);
+  CHECK(reasons() == R"("reasons":["open_question_linked","proposed_decision_linked"]})"
+                     "\n");
+  REQUIRE(dispatch(fx, {"question", "answer", "1", "--answer", "SQLite."}).code == 0);
+  CHECK(reasons() == R"("reasons":["proposed_decision_linked"]})"
+                     "\n");
+  REQUIRE(dispatch(fx, {"decision", "accept", "1"}).code == 0);
+  CHECK(reasons() == R"("reasons":[]})"
+                     "\n");
+}
+
+TEST_CASE("task packet: a task that is already done is not claimable", "[task-packet]") {
+  auto const fx = make_fixture("closed");
   seed(fx);
 
+  // The seeded bare task is ready; closing it is the one change.
+  CHECK(dispatch(fx, {"task", "packet", "200", "--json"}).out.contains(R"("ready":true)"));
+  exec_sql(fx, "update tasks set status='done' where id=200");
   auto const res = dispatch(fx, {"task", "packet", "200", "--json"});
-  INFO("stdout: " << res.out);
-
-  // Exit 0. A refusal is a successful ANSWER, and an orchestrator that read
-  // this as an error would lose the reasons that explain it.
   CHECK(res.code == 0);
-  CHECK(res.out.find(R"("ready":false)") != std::string::npos);
-
-  // The reasons arrive NAMED and in emission order — an operator cannot act on
-  // a bare "not ready". Pinned as the literal array prefix rather than as a
-  // membership test, because the order is contract and a set comparison would
-  // not notice it changing.
-  CHECK(res.out.find(R"("reasons":["missing_body","missing_acceptance_section","generic_acceptance",)"
-                     R"("generic_next_action","missing_product_spec","missing_tech_spec","missing_roadmap",)"
-                     R"("missing_test_spec","missing_locked_decision","missing_touch",)"
-                     R"("absent_validation_gates","uncovered_required_scenario"]})") != std::string::npos);
+  CHECK(res.out.contains(R"("ready":false)"));
+  CHECK(res.out.ends_with(R"("reasons":["invalid_task_status"]})"
+                          "\n"));
 }
 
 TEST_CASE("task packet: the policy version rides in the envelope, not only the body", "[task-packet]") {
@@ -235,8 +298,8 @@ TEST_CASE("task packet: the policy version rides in the envelope, not only the b
   // Packets compare only within one policy version. A consumer has to
   // establish that before comparing packets, so the version sits at the top
   // of the envelope. The envelope has no escaped `canonical` copy of it.
-  CHECK(res.out.find(R"("policy_version":"routing-packet-v2")") != std::string::npos);
-  CHECK(res.out.find(R"(\"policy\":\"routing-packet-v2\")") == std::string::npos);
+  CHECK(res.out.find(R"("policy_version":"routing-packet-v3")") != std::string::npos);
+  CHECK(res.out.find(R"(\"policy\":\"routing-packet-v3\")") == std::string::npos);
 }
 
 TEST_CASE("task packet: the digest is a change detector", "[task-packet]") {
@@ -303,7 +366,7 @@ TEST_CASE("task packet: the text rendering names ready, digest, reasons and body
   CHECK(ready.out.starts_with("task packet 100: ready\ndigest: "));
   // A ready packet prints NO reasons block — not an empty one.
   CHECK(ready.out.find("reasons:") == std::string::npos);
-  CHECK(ready.out.find(R"({"policy":"routing-packet-v2","task_id":100)") != std::string::npos);
+  CHECK(ready.out.find(R"({"policy":"routing-packet-v3","task_id":100)") != std::string::npos);
   // The citations arrive as references, taken from the task's `cites` links,
   // and carry none of the cited text.
   CHECK(ready.out.contains("references (expand one with: planar task packet 100 --expand <ref>):\n"));
@@ -314,10 +377,11 @@ TEST_CASE("task packet: the text rendering names ready, digest, reasons and body
   CHECK_FALSE(ready.out.contains("Spec section body for"));
   CHECK_FALSE(ready.out.contains("\"facts\""));
 
+  exec_sql(fx, "update tasks set status='done' where id=200");
   auto const blocked = dispatch(fx, {"task", "packet", "200"});
   REQUIRE(blocked.code == 0);
   CHECK(blocked.out.starts_with("task packet 200: not_ready\ndigest: "));
-  CHECK(blocked.out.find("\nreasons:\n- missing_body\n- missing_acceptance_section\n") != std::string::npos);
+  CHECK(blocked.out.find("\nreasons:\n- invalid_task_status\n") != std::string::npos);
   CHECK(blocked.out.ends_with("\n"));
 }
 

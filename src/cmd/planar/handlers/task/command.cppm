@@ -90,9 +90,10 @@ export auto task_show(context& ctx, const cliapp::parsed_args& args) -> handler_
 /// Compiles the authoritative current routing packet for a task. With
 /// `--expand <ref>` it prints one referenced artifact, or one section of it,
 /// instead: a reference the task does not cite exits 1 and names the
-/// reference. This is the
-/// verb the ORCHESTRATOR reads to decide whether a task is dispatchable, so
-/// two things about its result shape are contract rather than presentation:
+/// reference. This is the verb an agent reads to learn whether a task can be
+/// taken now (coordination readiness only; see `planar.engine.ingest.packet`),
+/// so two things about its result shape are contract rather than
+/// presentation:
 ///
 ///   - **An unready packet is exit 0.** `ready: false` with a populated
 ///     `reasons` array is a successful answer to the question asked, not a

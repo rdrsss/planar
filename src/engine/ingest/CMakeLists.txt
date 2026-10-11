@@ -75,5 +75,6 @@ planar_module(engine_ingest
     packet.cpp
   DEPENDS
     db
+    coordination
     json_text
     sha256)

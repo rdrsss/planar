@@ -218,6 +218,7 @@ planar_module(engine_planning
     json_text
     log
     scope_ref
+    coordination
     policy
     sha256
     document_authority

@@ -36,6 +36,13 @@
 // because the fixture matched nothing; the paired populated case is what
 // tells the two apart.
 //
+// ## READINESS MOVES AVAILABLE TASKS TO BLOCKED
+//
+// The selector buckets a task from its status and claim; the task packet then
+// moves an `available` row to `blocked` when a coordination fact holds it
+// back (an unfinished dependency, an open question, a proposed decision). The
+// last case in this file drives that through the operator verbs.
+//
 // ## ORACLE PROVENANCE
 //
 // Every expected byte was captured from `zig/zig-out/bin/planar` built at
@@ -316,15 +323,16 @@ TEST_CASE("the text header counts every bucket while printing only two of them",
   CHECK(ran.err.empty());
   // The header's counts are the TRUE totals, and the claimed / stale rows
   // are absent beneath them. Oracle-captured; it reads like a bug.
-  CHECK(ran.out == "plan:1  available:0  claimed:1  stale:1  blocked:6  done:1\n"
-                   "  blocked    task:6  Foxtrot child  [pri:1]\n"
-                   "  blocked    task:2  Bravo todo  [pri:5]\n"
+  CHECK(ran.out == "plan:1  available:5  claimed:1  stale:1  blocked:1  done:1\n"
+                   "  available  task:6  Foxtrot child  [pri:1]\n"
+                   "  available  task:2  Bravo todo  [pri:5]\n"
+                   // The one row whose own status is `blocked`.
                    "  blocked    task:4  Delta blocked  [pri:10]\n"
                    // `doing` with no live claim, surfaced as AVAILABLE. The
                    // only row in this fixture that reaches that arm.
-                   "  blocked    task:11  Kilo doing unclaimed  [pri:17]\n"
-                   "  blocked    task:1  Alpha todo  [pri:20]\n"
-                   "  blocked    task:7  Golf blocker  [pri:40]\n");
+                   "  available  task:11  Kilo doing unclaimed  [pri:17]\n"
+                   "  available  task:1  Alpha todo  [pri:20]\n"
+                   "  available  task:7  Golf blocker  [pri:40]\n");
 }
 
 TEST_CASE("the two include flags each reveal exactly their own bucket", "[cmd][plan][next][text][flags]") {
@@ -405,8 +413,9 @@ TEST_CASE("the JSON form carries every bucket regardless of the text flags", "[c
   // Neither include flag was passed and both arrays are populated anyway.
   CHECK(ran.out.contains(R"("claimed":[{"task":{"id":9,)"));
   CHECK(ran.out.contains(R"("stale":[{"task":{"id":10,)"));
-  CHECK(ran.out.contains(R"("blocked":[{"id":6,)"));
-  CHECK(ran.out.ends_with(R"("summary":{"available":0,"claimed":1,"stale":1,"blocked":6,"done":1}})"
+  CHECK(ran.out.contains(R"("blocked":[{"id":4,)"));
+  CHECK(ran.out.contains(R"("available":[{"id":6,)"));
+  CHECK(ran.out.ends_with(R"("summary":{"available":5,"claimed":1,"stale":1,"blocked":1,"done":1}})"
                           "\n"));
 
   // The claimed / stale envelope wraps the task and carries the claim
@@ -419,7 +428,6 @@ TEST_CASE("the JSON form carries every bucket regardless of the text flags", "[c
   // available and blocked are BARE task objects with no envelope. The
   // paired presence for the absence above: `"available":[{"task":` would
   // mean the envelope leaked across buckets.
-  CHECK(ran.out.contains(R"("available":[])"));
   CHECK_FALSE(ran.out.contains(R"("available":[{"task":)"));
   CHECK_FALSE(ran.out.contains(R"("blocked":[{"task":)"));
 
@@ -491,9 +499,46 @@ TEST_CASE("plan next and plan descendants AGREE that a plan_id-attached task is 
   // result rather than a stray anchor-scoped row.
   auto const child = dispatch(fx, {"plan", "next", "2"});
   CHECK(child.code == 0);
-  // The task belongs to the shared subtree, but is not dispatchable until
-  // its routing packet is materialized. `plan next` therefore surfaces it
-  // in the same blocked bucket the operator must resolve before claiming.
-  CHECK(child.out == "plan:2  available:0  claimed:0  stale:0  blocked:1  done:0\n"
-                     "  blocked    task:6  Foxtrot child  [pri:1]\n");
+  // The task belongs to the shared subtree and nothing holds it back, so it is
+  // available: readiness covers coordination facts only.
+  CHECK(child.out == "plan:2  available:1  claimed:0  stale:0  blocked:0  done:0\n"
+                     "  available  task:6  Foxtrot child  [pri:1]\n");
+}
+
+TEST_CASE("plan next blocks a task held back by a dependency, a question or a decision and releases it when resolved",
+          "[cmd][plan][next][readiness]") {
+  auto const fx = make_fixture("readiness");
+  REQUIRE(dispatch(fx, {"init", "--skip-project", "--allow-no-repo", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Hand-made plan", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Held task", "--plan", "1", "--priority", "1", "--json"}).code == 0);     // task 1
+  REQUIRE(dispatch(fx, {"task", "add", "Prerequisite", "--plan", "1", "--priority", "50", "--json"}).code == 0); // task 2
+  REQUIRE(dispatch(fx, {"question", "add", "Which way?", "--body", "Pick.", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"decision", "add", "Pick a way", "--body", "A way.", "--json"}).code == 0);
+
+  // Nothing prepared and nothing linked: both tasks are available.
+  auto const before = dispatch(fx, {"plan", "next", "1"});
+  CHECK(before.out == "plan:1  available:2  claimed:0  stale:0  blocked:0  done:0\n"
+                      "  available  task:1  Held task  [pri:1]\n"
+                      "  available  task:2  Prerequisite  [pri:50]\n");
+
+  // Each cause alone moves task 1 to blocked, and resolving it brings it back.
+  REQUIRE(dispatch(fx, {"task", "link", "1", "task:2", "--relationship", "depends-on"}).code == 0);
+  CHECK(dispatch(fx, {"plan", "next", "1"}).out.contains("  blocked    task:1  Held task"));
+  REQUIRE(dispatch(fx, {"task", "update", "2", "--status", "doing", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "done", "2"}).code == 0);
+  CHECK(dispatch(fx, {"plan", "next", "1"}).out.contains("  available  task:1  Held task"));
+
+  REQUIRE(dispatch(fx, {"task", "link", "1", "question:1", "--relationship", "addresses"}).code == 0);
+  CHECK(dispatch(fx, {"plan", "next", "1"}).out.contains("  blocked    task:1  Held task"));
+  REQUIRE(dispatch(fx, {"question", "answer", "1", "--answer", "This way."}).code == 0);
+  CHECK(dispatch(fx, {"plan", "next", "1"}).out.contains("  available  task:1  Held task"));
+
+  REQUIRE(dispatch(fx, {"task", "link", "1", "decision:1", "--relationship", "cites"}).code == 0);
+  auto const held = dispatch(fx, {"plan", "next", "1"});
+  CHECK(held.out == "plan:1  available:0  claimed:0  stale:0  blocked:1  done:1\n"
+                    "  blocked    task:1  Held task  [pri:1]\n");
+  REQUIRE(dispatch(fx, {"decision", "accept", "1"}).code == 0);
+  auto const released = dispatch(fx, {"plan", "next", "1"});
+  CHECK(released.out == "plan:1  available:1  claimed:0  stale:0  blocked:0  done:1\n"
+                        "  available  task:1  Held task  [pri:1]\n");
 }

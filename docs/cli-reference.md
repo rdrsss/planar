@@ -978,7 +978,7 @@ planar plan next <plan-id> [--include-claimed] [--include-stale] [--json]
 | `stale` | Task has a `stale` claim, or an `active` claim whose lease has expired without a reconcile pass. |
 | `blocked` | Task status `blocked`, OR a `todo`/`doing` task carrying an outbound `depends-on` edge (`entity_links`) to a task whose status is not `done`/`cancelled`. |
 
-Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (task 6841 / decision D6): a task with an open `depends-on` blocker never lands in `available`. This is a distinct query from `pull`/`peek`'s selector — not literally shared code — but the two agree on which rows are dispatchable, so an operator reading `plan next` sees the same eligibility an agent's `pull`/`peek` would (task 6898). `plan next` additionally folds a routing-packet-readiness gate into `blocked` that `pull`/`peek` do NOT apply (they exclude on the dependency clause only, per D6). This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
+Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (task 6841 / decision D6): a task with an open `depends-on` blocker never lands in `available`. This is a distinct query from `pull`/`peek`'s selector — not literally shared code — but the two agree on which rows are dispatchable, so an operator reading `plan next` sees the same eligibility an agent's `pull`/`peek` would (task 6898). `plan next` additionally folds the task packet's coordination readiness (see [`task packet`](#planar-task-packet-task-id)) into `blocked`: a task with an `open` linked question or a `proposed` linked decision, or a dependency the claim-aware clause did not see, is `blocked` here, and a task with no artifacts, scenarios or body is not. `pull`/`peek` do NOT apply that gate (they exclude on the dependency clause only, per D6). This is the operator's read surface; agents call `planar-agent peek` / `pull`. There is no `planar agent` subcommand by design — agent observability lives on `planar-watch` (M8) and ritual writes live on `planar-agent`.
 
 **Options:**
 
@@ -1032,6 +1032,8 @@ Two open tasks are parallel-eligible iff **all six** hold:
 | 6 | No `proposed` decision linked to the task. |
 
 A task may be excluded by multiple rules; every rule it trips is listed in `excluded_by`.
+
+Rules 5 and 6 use the same predicates as the `open_question_linked` and `proposed_decision_linked` reasons of [`task packet`](#planar-task-packet-task-id), so the two cannot disagree about a link. A task that passes the rules is then checked against its packet; one whose packet is not ready (for example a dependency in another plan, which rule 1 does not walk) is excluded with `"excluded by rule 7: routing packet is not ready"`. The packet needs no artifact, scenario or body, so a hand-made task is not excluded by rule 7.
 
 **Options:**
 
@@ -1600,9 +1602,23 @@ planar task packet <task-id> [--json]
 planar task packet <task-id> --expand <ref> [--json]
 ```
 
-**Description:** Compile the authoritative current routing packet for a task: its text, plan context, decisions, scenarios, dependencies, touches, claims and the references it cites, with a `ready` verdict and the named `reasons` when it is not ready. The orchestrator reads `--json` to decide whether a task is dispatchable; `ready: false` is a stop.
+**Description:** Compile the current packet for a task: its text, owning plan, dependencies, open questions, proposed decisions, claims and the references it cites, with a `ready` verdict and the named `reasons` when it is not ready. `ready: false` is a stop for an agent about to take the task.
 
-The packet holds no cited text and no routing fact. Each artifact the task `cites` (an `entity_links` row, task to artifact) is a **reference**: `ref` (`artifact:<id>`), `kind` (the artifact's kind), `id`, `locator` (`body`, the whole artifact), `digest` (SHA-256 over the artifact's body), `label` (its title) and `status`. The digest is read live, so editing a cited artifact moves the reference digest and the packet digest. Decisions the task cites are listed in their own `decisions` array. A packet for a task shaped like the largest one measured (sixteen facts, four cited artifacts) is under 16 KB as text.
+**Readiness covers coordination facts only.** A task is ready when it is claimable, unblocked, its citations resolve and no open question or proposed decision is linked to it. A task created with `task add` and nothing else is ready: spec documents, the task's body, test scenarios, touches and validation sections never affect `ready`. `task packet` takes no caller, so a live claim always makes the task not ready. `reasons` are emitted in this fixed order, each at most once; read a reason by name, never by position.
+
+| Reason | Fires when |
+|--------|------------|
+| `missing_title` | The title is blank. |
+| `invalid_task_status` | The task is not claimable: it is not `todo` or `doing`, or it is held by a live claim. A `doing` task whose claim is stale or expired, or that has none, is claimable (recovery). |
+| `missing_owning_plan` | The task has no plan. |
+| `unresolved_citation` | A cited artifact has no digest or is not `active`, `draft` or `ready`. |
+| `blocked_by_open_task` | A `depends-on` link from the task reaches a task that is not `done` or `cancelled`. |
+| `open_question_linked` | A question linked to the task, in either direction, is `open` (the condition of [`recommend-strategy`](#planar-plan-recommend-strategy-plan-id) rule 5). |
+| `proposed_decision_linked` | A decision linked to the task, in either direction, is `proposed` (rule 6). |
+
+Each clears when its cause is resolved: the dependency is done or cancelled, the question answered or won't-fix, the decision accepted, withdrawn or superseded. `plan next` and `recommend-strategy` (rule 7) read this same verdict.
+
+The packet holds no cited text and no routing fact. Each artifact the task `cites` (an `entity_links` row, task to artifact) is a **reference**: `ref` (`artifact:<id>`), `kind` (the artifact's kind), `id`, `locator` (`body`, the whole artifact), `digest` (SHA-256 over the artifact's body), `label` (its title) and `status`. The digest is read live, so editing a cited artifact moves the reference digest and the packet digest, and never the verdict. A packet for a task that cites four large artifacts is under 16 KB as text.
 
 **Arguments:**
 
@@ -1617,7 +1633,7 @@ The packet holds no cited text and no routing fact. Each artifact the task `cite
 | `--json` | Emit the packet envelope, or with `--expand` the expansion object, as JSON. | off |
 | `--expand <ref>` | Print one cited artifact (`artifact:<id>`) or one section of it (`artifact:<id>#<heading>`) and nothing else. The heading match is case-insensitive and a section runs to the next heading of the same or shallower level. | none |
 
-**Output:** text mode prints `task packet <id>: ready|not_ready`, the `digest:`, a `reasons:` block when not ready, a `references (expand one with: ...)` block listing `- <ref> <12-character digest> <label>` per citation, and the canonical body. `--json` prints `{"policy_version","ready","input","digest","reasons"}`; `input.references` is an array of `{"ref","kind","id","locator","digest","label","status"}` in kind-then-id order. `input` has no `citations` or `facts` array and the envelope has no `canonical` copy.
+**Output:** text mode prints `task packet <id>: ready|not_ready`, the `digest:`, a `reasons:` block when not ready, a `references (expand one with: ...)` block listing `- <ref> <12-character digest> <label>` per citation, and the canonical body. `--json` prints `{"policy_version","ready","input","digest","reasons"}`; `policy_version` is `routing-packet-v3`, and two packets are comparable only under the same one. `input` holds `task_id`, `status`, `title`, `body`, `next_action`, `owning_plans`, `references`, `dependencies`, `open_questions`, `proposed_decisions` and `claims`. `input.references` is an array of `{"ref","kind","id","locator","digest","label","status"}` in kind-then-id order. `input` has no `citations` or `facts` array and the envelope has no `canonical` copy.
 
 With `--expand`, text mode prints the section, or the whole body without a fragment, followed by a newline. `--json` prints `{"ref":"<ref as given>","digest":"<64 hex>","text":"<section>"}`. The `digest` of a whole-artifact expansion equals the reference's `digest`.
 

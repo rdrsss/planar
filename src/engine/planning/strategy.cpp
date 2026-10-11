@@ -7,6 +7,7 @@ module planar.engine.planning.strategy;
 
 import std;
 import planar.db;
+import planar.coordination;
 import planar.json_text;
 
 namespace planar::engine::planning::strategy {
@@ -343,38 +344,6 @@ auto blocked_by_not_done(db::connection& conn, std::int64_t task_id, const std::
   return std::optional<std::int64_t>{};
 }
 
-/// Rules 5 & 6: is the task linked, in EITHER direction, to a `kind` entity
-/// whose status is `status_value`?
-auto linked_to_unresolved(db::connection& conn, std::string_view kind, std::string_view status_value, std::int64_t task_id)
-    -> std::expected<bool, strategy_error> {
-  // `kind` is a module-internal literal (`question` / `decision`), never
-  // operator input, so interpolating the table name is safe here.
-  auto const sql  = std::format("select 1 from entity_links el join {0}s e on e.id = "
-                                "(case when el.from_kind = 'task' then el.to_id else el.from_id end) "
-                                "where ((el.from_kind = 'task' and el.from_id = ? and el.to_kind = '{0}') "
-                                "or (el.to_kind = 'task' and el.to_id = ? and el.from_kind = '{0}')) "
-                                "and e.status = ? limit 1",
-                                kind);
-  auto       stmt = conn.prepare(sql);
-  if (!stmt) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  if (auto b1 = stmt->bind_int64(1, task_id); !b1) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  if (auto b2 = stmt->bind_int64(2, task_id); !b2) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  if (auto b3 = stmt->bind_text(3, status_value); !b3) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  auto stepped = stmt->step();
-  if (!stepped) {
-    return std::unexpected(strategy_error::query_failed);
-  }
-  return *stepped == db::step_result::row;
-}
-
 constexpr std::string_view k_singleton_files[] = {
     "CLAUDE.md",
     "AGENTS.md",
@@ -440,22 +409,24 @@ auto recommend(db::connection& conn, std::int64_t plan_id) -> std::expected<reco
 
   // ---- Rule 5: open question linked -------------------------------------
   for (auto& t : tasks) {
-    auto linked = linked_to_unresolved(conn, "question", "open", t.id);
+    // The packet's `open_question_linked` reason asks the same function.
+    auto linked = coordination::open_questions_linked(conn, t.id);
     if (!linked) {
-      return std::unexpected(linked.error());
+      return std::unexpected(strategy_error::query_failed);
     }
-    if (*linked) {
+    if (!linked->empty()) {
       add_exclusion(t, 5, "excluded by rule 5: linked to an open question");
     }
   }
 
   // ---- Rule 6: proposed decision linked ---------------------------------
   for (auto& t : tasks) {
-    auto linked = linked_to_unresolved(conn, "decision", "proposed", t.id);
+    // The packet's `proposed_decision_linked` reason asks the same function.
+    auto linked = coordination::proposed_decisions_linked(conn, t.id);
     if (!linked) {
-      return std::unexpected(linked.error());
+      return std::unexpected(strategy_error::query_failed);
     }
-    if (*linked) {
+    if (!linked->empty()) {
       add_exclusion(t, 6, "excluded by rule 6: linked to a proposed decision");
     }
   }

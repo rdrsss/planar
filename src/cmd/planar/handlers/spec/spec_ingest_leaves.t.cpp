@@ -605,12 +605,8 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
               "test_scenarios where body like 'Acceptance scenario auto-drafted by the ingestor.%' and status != 'retired'") ==
         1);
   REQUIRE(before.execute("update plans set status='draft' where parent_plan_id=1"));
-  // The body carries a `## Required validation` section: task readiness still
-  // requires a validation gate, and ingest no longer appends one (a later task
-  // removes that readiness reason). The dispatch views asserted below are about
-  // the references, so the body is made ready on that axis.
   REQUIRE(before.execute("update tasks set body='## Acceptance Criteria\n\n- Deliver the reviewed task\n\n## Repository "
-                         "Scope\n\n- touches: planar\n\n## Required validation\n\n- Run the reviewed scenario.\n' where id=1"));
+                         "Scope\n\n- touches: planar\n' where id=1"));
   REQUIRE(dispatch(fx, {"artifact", "update", "4", "--body",
                         "## Scenarios\n\n### Scenario: reviewed root\n\n**Verifies:** task:reviewed-root\n\n**Acceptance:** The "
                         "reviewed root is dispatchable.\n",
@@ -679,16 +675,31 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
   CHECK(strategy_json->find("parallel_eligible")->array.size() == 1);
   CHECK(strategy_json->find("serialized")->array.empty());
 
-  // Reconciliation is deliberately not repeated here. Dropping the roadmap
-  // citation leaves a task whose packet is incomplete (`missing_roadmap`); both
-  // dispatch views must now remove the task from availability.
+  // Reconciliation is deliberately not repeated here. A citation is not a
+  // readiness fact: dropping the roadmap citation leaves the task ready.
   REQUIRE(after.execute("delete from entity_links where from_kind='task' and from_id=1 and to_kind='artifact' and "
                         "relationship='cites' and to_id in (select id from artifacts where kind='roadmap')"));
+  {
+    auto still_ready = dispatch(fx, {"task", "packet", "1", "--json"});
+    REQUIRE(still_ready.code == 0);
+    CHECK(still_ready.out.contains(R"("ready":true)"));
+    CHECK(still_ready.out.contains(R"("reasons":[])"));
+  }
+  // A coordination fact is: a dependency on unfinished work in another plan
+  // leaves a task whose packet is not ready (`blocked_by_open_task`). Rule 1
+  // sees only the plan's own tree, so the strategy view reaches rule 7. Both
+  // dispatch views must now remove the task from availability.
+  REQUIRE(after.execute("insert into plans (scope_kind, scope_id, title, slug, status) "
+                        "values ('global', null, 'Other work', 'other-work', 'active')"));
+  REQUIRE(after.execute("insert into tasks (scope_kind, scope_id, plan_id, title, status, priority, slug) "
+                        "select 'global', null, id, 'Other task', 'todo', 100, 'other-task' from plans where slug='other-work'"));
+  REQUIRE(after.execute("insert into entity_links (from_kind, from_id, to_kind, to_id, relationship) "
+                        "select 'task', 1, 'task', id, 'depends-on' from tasks where slug='other-task'"));
   {
     auto incomplete_packet = dispatch(fx, {"task", "packet", "1", "--json"});
     REQUIRE(incomplete_packet.code == 0);
     CHECK(incomplete_packet.out.contains(R"("ready":false)"));
-    CHECK(incomplete_packet.out.contains(R"("missing_roadmap")"));
+    CHECK(incomplete_packet.out.contains(R"("blocked_by_open_task")"));
   }
   auto incomplete_next = dispatch(fx, {"plan", "next", "1", "--json"});
   REQUIRE(incomplete_next.code == 0);

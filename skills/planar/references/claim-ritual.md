@@ -13,7 +13,13 @@ through `planar-agent`. There is no `planar agent` namespace.
    blocked); its text form hides claimed and stale unless asked; see
    `planar plan next --help`.
 2. Check readiness with `planar task packet <task-id> --json`. A claim still succeeds on
-   an unready packet, so `ready: false` is your stop signal, not the claim's. The packet
+   an unready packet, so `ready: false` is your stop signal, not the claim's. Readiness
+   covers coordination only: the task is `todo` (or `doing` under a stale or expired
+   claim), has a plan, its citations resolve, and nothing holds it back. The named
+   `reasons` are `missing_title`, `invalid_task_status`, `missing_owning_plan`,
+   `unresolved_citation`, `blocked_by_open_task` (an unfinished `depends-on` target),
+   `open_question_linked` and `proposed_decision_linked`, in that order; select one by
+   name. A task created with `task add` and nothing else is ready. The packet
    lists the artifacts the task cites as references (ref, digest, label) and carries no
    spec text: read one cited section with
    `planar task packet <task-id> --expand artifact:<id>#<heading>`. A spec artifact edited

@@ -656,3 +656,129 @@ TEST_CASE("declared paths alone decide recommend-strategy: disjoint paths parall
   CHECK(rec.out.contains(R"("summary":{"open_tasks":5,"eligible":2,"serialized":3,"fan_out_available":true})"));
   CHECK(rec.out.contains(R"("closure_source":"declared")"));
 }
+
+// ===========================================================================
+// Coordination readiness (plan 1142).
+// ===========================================================================
+
+namespace {
+
+/// @brief The `excluded_by` rule numbers recommend-strategy reports for the
+/// task titled `title`, in array order, from either list.
+auto rules_for(const fixture& fx, std::string_view plan, std::string_view title) -> std::string {
+  auto const rec = dispatch(fx, {"plan", "recommend-strategy", std::string{plan}, "--json"});
+  REQUIRE(rec.code == 0);
+  auto const at = rec.out.find(std::format(R"("title":"{}")", title));
+  REQUIRE(at != std::string::npos);
+  auto const eligible_end = rec.out.find(R"("serialized":)");
+  if (at < eligible_end) {
+    return "eligible";
+  }
+  auto const  open  = rec.out.find(R"("excluded_by":[)", at);
+  auto const  close = rec.out.find("]", open);
+  std::string rules;
+  for (auto pos = rec.out.find(R"("rule":)", open); pos != std::string::npos && pos < close;
+       pos      = rec.out.find(R"("rule":)", pos + 1)) {
+    rules += rec.out[pos + 7];
+  }
+  return rules;
+}
+
+/// @brief The reasons `task packet --json` reports for `task`, as the raw array text.
+auto packet_reasons(const fixture& fx, std::string_view task) -> std::string {
+  auto const res = dispatch(fx, {"task", "packet", std::string{task}, "--json"});
+  REQUIRE(res.code == 0);
+  auto const at = res.out.rfind(R"("reasons":)");
+  REQUIRE(at != std::string::npos);
+  return res.out.substr(at + 10, res.out.size() - at - 10 - 2);
+}
+
+} // namespace
+
+TEST_CASE("a hand-made task with no artifacts is available to recommend-strategy", "[cmd][plan][strategy][readiness]") {
+  auto const fx = make_fixture("handmade");
+  seed(fx);
+  REQUIRE(dispatch(fx, {"plan", "create", "Hand-made"}).code == 0);
+  auto const plan = std::to_string(scalar(fx, "select id from plans where title='Hand-made'"));
+  REQUIRE(dispatch(fx, {"task", "add", "Bare", "--plan", plan}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Touching", "--plan", plan}).code == 0);
+  auto const repo = scalar(fx, "select id from projects limit 1");
+  exec_sql(fx, std::format("insert into task_touch_paths (task_id,repo_id,path) "
+                           "select id,{},'src/one.cpp' from tasks where title='Touching'",
+                           repo));
+
+  // The task packet is ready with no reasons for both.
+  CHECK(packet_reasons(fx, std::to_string(scalar(fx, "select id from tasks where title='Bare'"))) == "[]");
+  CHECK(packet_reasons(fx, std::to_string(scalar(fx, "select id from tasks where title='Touching'"))) == "[]");
+
+  // A task that declares a touch is parallel-eligible: no artifact, scenario or
+  // body is required. A task with none is serialized by rule 2 alone and never
+  // by rule 7, because rule 2 is about touches and the packet is ready.
+  CHECK(rules_for(fx, plan, "Touching") == "eligible");
+  CHECK(rules_for(fx, plan, "Bare") == "2");
+}
+
+TEST_CASE("recommend-strategy and the task packet agree on an open question or a proposed decision",
+          "[cmd][plan][strategy][readiness]") {
+  auto const fx = make_fixture("agree");
+  seed(fx);
+  REQUIRE(dispatch(fx, {"plan", "create", "Agreement"}).code == 0);
+  auto const plan = std::to_string(scalar(fx, "select id from plans where title='Agreement'"));
+  REQUIRE(dispatch(fx, {"task", "add", "Subject", "--plan", plan}).code == 0);
+  auto const task = std::to_string(scalar(fx, "select id from tasks where title='Subject'"));
+  auto const repo = scalar(fx, "select id from projects limit 1");
+  exec_sql(fx, std::format("insert into task_touch_paths (task_id,repo_id,path) values ({},{},'src/one.cpp')", task, repo));
+  REQUIRE(dispatch(fx, {"question", "add", "Which?", "--body", "Pick."}).code == 0);
+  REQUIRE(dispatch(fx, {"decision", "add", "Choose", "--body", "Choice."}).code == 0);
+  auto const question = std::to_string(scalar(fx, "select id from questions where title='Which?'"));
+  auto const decision = std::to_string(scalar(fx, "select id from decisions where title='Choose'"));
+
+  CHECK(rules_for(fx, plan, "Subject") == "eligible");
+  CHECK(packet_reasons(fx, task) == "[]");
+
+  // Link the question from the task, and the decision from the decision side:
+  // the rule and the packet read both directions through one predicate.
+  REQUIRE(dispatch(fx, {"task", "link", task, std::format("question:{}", question), "--relationship", "addresses"}).code == 0);
+  CHECK(rules_for(fx, plan, "Subject") == "5");
+  CHECK(packet_reasons(fx, task) == R"(["open_question_linked"])");
+
+  REQUIRE(dispatch(fx, {"decision", "link", decision, std::format("task:{}", task), "--relationship", "cites"}).code == 0);
+  CHECK(rules_for(fx, plan, "Subject") == "56");
+  CHECK(packet_reasons(fx, task) == R"(["open_question_linked","proposed_decision_linked"])");
+
+  // Resolving one cause clears it from both, and only it.
+  REQUIRE(dispatch(fx, {"question", "answer", question, "--answer", "This."}).code == 0);
+  CHECK(rules_for(fx, plan, "Subject") == "6");
+  CHECK(packet_reasons(fx, task) == R"(["proposed_decision_linked"])");
+  REQUIRE(dispatch(fx, {"decision", "accept", decision}).code == 0);
+  CHECK(rules_for(fx, plan, "Subject") == "eligible");
+  CHECK(packet_reasons(fx, task) == "[]");
+}
+
+TEST_CASE("rule 7 reads the coordination readiness: a dependency outside the plan holds a task back until it is done",
+          "[cmd][plan][strategy][readiness]") {
+  auto const fx = make_fixture("rule7");
+  seed(fx);
+  REQUIRE(dispatch(fx, {"plan", "create", "Held"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Elsewhere"}).code == 0);
+  auto const plan  = std::to_string(scalar(fx, "select id from plans where title='Held'"));
+  auto const other = std::to_string(scalar(fx, "select id from plans where title='Elsewhere'"));
+  REQUIRE(dispatch(fx, {"task", "add", "Waiting", "--plan", plan}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "Prerequisite", "--plan", other}).code == 0);
+  auto const waiting      = std::to_string(scalar(fx, "select id from tasks where title='Waiting'"));
+  auto const prerequisite = std::to_string(scalar(fx, "select id from tasks where title='Prerequisite'"));
+  auto const repo         = scalar(fx, "select id from projects limit 1");
+  exec_sql(fx, std::format("insert into task_touch_paths (task_id,repo_id,path) values ({},{},'src/one.cpp')", waiting, repo));
+  REQUIRE(dispatch(fx, {"task", "link", waiting, std::format("task:{}", prerequisite), "--relationship", "depends-on"}).code ==
+          0);
+
+  // Rule 1 walks only the plan's own tree, so it cannot see the prerequisite;
+  // the packet can, and rule 7 carries its verdict.
+  CHECK(rules_for(fx, plan, "Waiting") == "7");
+  CHECK(packet_reasons(fx, waiting) == R"(["blocked_by_open_task"])");
+
+  REQUIRE(dispatch(fx, {"task", "update", prerequisite, "--status", "doing", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "done", prerequisite}).code == 0);
+  CHECK(rules_for(fx, plan, "Waiting") == "eligible");
+  CHECK(packet_reasons(fx, waiting) == "[]");
+}
