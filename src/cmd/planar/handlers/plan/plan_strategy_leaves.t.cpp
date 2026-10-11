@@ -17,9 +17,10 @@
 //   * An EMPTY touch set means opposite things. Under `recommend-strategy` it
 //     is "touches everything" and drops the task via rule 2; under
 //     `divergence` it simply never conflicts and contributes no overlap.
-//   * `--closure-source` exists ONLY on `recommend-strategy`. On `divergence`
-//     it is a parse-time refusal, and `divergence`'s JSON carries no
-//     `closure_source` field.
+//   * `recommend-strategy` reads DECLARED touches only and takes no source
+//     flag. `divergence` is the one verb that reads the closure rows, and its
+//     JSON carries no `closure_source` key. The recommendation's JSON keeps
+//     `closure_source` pinned to "declared" for consumers.
 //   * `jaccard` renders TWO ways: shortest-round-trip in JSON (`0`, `0.5`,
 //     `0.3333333333333333`) and fixed four-decimal in text (`0.0000`,
 //     `0.5000`, `0.3333`). A single formatter would be wrong in one arm.
@@ -390,11 +391,13 @@ TEST_CASE("an empty touch set drops a task under recommend-strategy and is inert
                    "\n");
 }
 
-TEST_CASE("the closure source flips rule 2 for recommend-strategy and is what divergence measures", "[cmd][plan][strategy][d4]") {
+TEST_CASE("recommend-strategy ignores the shared closure symbol that divergence still measures", "[cmd][plan][strategy][d4]") {
   auto const fx = make_fixture("flip");
   seed(fx);
 
-  // declared: different files -> both eligible, fan-out available.
+  // Plan 3 declares different files, and both tasks share a `reference`
+  // symbol in their closure rows. The recommendation reads declared touches
+  // only, so both stay eligible and fan-out is available.
   auto const declared = dispatch(fx, {"plan", "recommend-strategy", "3", "--json"});
   CHECK(declared.code == 0);
   CHECK(declared.out == R"({"plan_id":3,"closure_source":"declared","parallel_eligible":[)"
@@ -404,26 +407,13 @@ TEST_CASE("the closure source flips rule 2 for recommend-strategy and is what di
                         R"("recommended_note":"parallel-fanout available: 2 eligible tasks"})"
                         "\n");
 
-  // derived: the shared `reference` symbol serializes both. Note BOTH sides
-  // name the same symbol.
-  auto const derived = dispatch(fx, {"plan", "recommend-strategy", "3", "--closure-source", "derived", "--json"});
-  CHECK(derived.code == 0);
-  CHECK(derived.out == R"({"plan_id":3,"closure_source":"derived","parallel_eligible":[],"serialized":[)"
-                       R"({"id":3,"slug":"t6310-flip-a","title":"flip A","excluded_by":[{"rule":2,)"
-                       R"("reason":"excluded by rule 2: overlaps task 4 on shared.helper"}]},)"
-                       R"({"id":4,"slug":null,"title":"flip B","excluded_by":[{"rule":2,)"
-                       R"("reason":"excluded by rule 2: overlaps task 3 on shared.helper"}]}],)"
-                       R"("summary":{"open_tasks":2,"eligible":0,"serialized":2,"fan_out_available":false},)"
-                       R"("recommended_note":"no fan-out: no eligible tasks; run sequentially"})"
-                       "\n");
+  auto const declared_text = dispatch(fx, {"plan", "recommend-strategy", "3"});
+  CHECK(declared_text.code == 0);
+  CHECK(declared_text.out.starts_with("plan:3  source:declared  open:2  eligible:2  serialized:0  fan_out_available:yes\n"));
 
-  // An explicit `declared` is byte-identical to the default.
-  auto const explicit_declared = dispatch(fx, {"plan", "recommend-strategy", "3", "--closure-source", "declared", "--json"});
-  CHECK(explicit_declared.code == 0);
-  CHECK(explicit_declared.out == declared.out);
-
-  // divergence sees exactly that one pair flip. Jaccard is 1.0 -- rendered
-  // `1` in JSON, `1.0000` in text.
+  // divergence is the one verb that still reads the closure rows. It sees
+  // exactly that one pair flip. Jaccard is 1.0 -- rendered `1` in JSON,
+  // `1.0000` in text.
   auto const div = dispatch(fx, {"plan", "divergence", "3", "--json"});
   CHECK(div.code == 0);
   CHECK(div.out == R"({"plan_id":3,"open_tasks":2,"pairs":1,"declared_overlaps":0,)"
@@ -513,8 +503,9 @@ TEST_CASE("a transitive-only shared symbol is excluded from the derived set", "[
                    R"("derived_overlaps":0,"flips":0,"jaccard":0})"
                    "\n");
 
-  // ...and rule 2 sees no overlap under `derived`, so both stay eligible.
-  auto const rec = dispatch(fx, {"plan", "recommend-strategy", "7", "--closure-source", "derived", "--json"});
+  // ...and rule 2 reads declared touches, which do not overlap, so both stay
+  // eligible.
+  auto const rec = dispatch(fx, {"plan", "recommend-strategy", "7", "--json"});
   CHECK(rec.code == 0);
   CHECK(rec.out.contains(R"("summary":{"open_tasks":2,"eligible":2,"serialized":0,"fan_out_available":true})"));
 }
@@ -576,46 +567,92 @@ TEST_CASE("both leaves refuse a missing plan at exit 1 and a non-integer id at e
   }
 }
 
-TEST_CASE("closure-source is validated before the database and exists on only one of the two leaves",
+TEST_CASE("the closure-source flag is an unknown option on recommend-strategy and on divergence alike",
           "[cmd][plan][strategy][refusal][flag]") {
   auto const fx = make_fixture("source");
   seed(fx);
 
-  auto const bogus = dispatch(fx, {"plan", "recommend-strategy", "3", "--closure-source", "bogus", "--json"});
-  CHECK(bogus.code == 2);
-  CHECK(bogus.err == "error: --closure-source must be 'declared' or 'derived', got 'bogus'\n");
+  // The flag is removed from recommend-strategy, so the parser refuses it
+  // before the handler runs, for every value an operator might type. The
+  // wording is deliberately NOT pinned (CLI11's `The following arguments were
+  // not expected` is the parser's own text). What is pinned is the exit code,
+  // the empty stdout, and the stderr diagnostic. Decision 1004 moved parse
+  // failures to stderr.
+  for (auto const& value : {"derived", "declared", "bogus", ""}) {
+    INFO("value: '" << value << "'");
+    auto const refused = dispatch(fx, {"plan", "recommend-strategy", "3", "--closure-source", value, "--json"});
+    CHECK(refused.code == 2);
+    CHECK(refused.out.empty());
+    CHECK(refused.err.contains("error:"));
+  }
 
-  auto const empty = dispatch(fx, {"plan", "recommend-strategy", "3", "--closure-source", "", "--json"});
-  CHECK(empty.code == 2);
-  CHECK(empty.err == "error: --closure-source must be 'declared' or 'derived', got ''\n");
+  // The removed flag never reaches the handler, so a nonexistent plan still
+  // fails as a parse refusal at exit 2, not as a plan lookup at exit 1.
+  auto const unknown_on_missing = dispatch(fx, {"plan", "recommend-strategy", "99999", "--closure-source", "derived", "--json"});
+  CHECK(unknown_on_missing.code == 2);
+  CHECK(unknown_on_missing.out.empty());
 
-  // The flag is checked BEFORE the plan is looked up: a bad source on a
-  // nonexistent plan reports the FLAG, at exit 2, not the plan at exit 1.
-  auto const both_wrong = dispatch(fx, {"plan", "recommend-strategy", "99999", "--closure-source", "bogus", "--json"});
-  CHECK(both_wrong.code == 2);
-  CHECK(both_wrong.err == "error: --closure-source must be 'declared' or 'derived', got 'bogus'\n");
-
-  // `divergence` does not declare the flag at all, so this dies in the
-  // PARSER rather than in the handler. The wording is deliberately NOT
-  // pinned: CLI11 says `The following arguments were not expected` where the
-  // oracle's etcli-zig says `unknown flag (got --closure-source)`, and that
-  // gap is systemic across every ported leaf (reproduced on `plan
-  // descendants`, `plan next`, `plan show` and `plan list`, none of which
-  // this task touched) rather than anything introduced here.
-  //
-  // What IS pinned is the part that agrees and that this leaf owns: the exit
-  // code, and the stream split. Decision 1004 (task 6271) moved every
-  // parse-failure diagnostic to stderr, matching the handler-level refusals
-  // above -- stdout stays empty on a parser refusal now too. This block used
-  // to pin the opposite split (message on stdout, kind on stderr) as
-  // load-bearing measured behavior; that shape predates the decision.
+  // `divergence` never declared it, so it refuses the same way.
   auto const unknown = dispatch(fx, {"plan", "divergence", "3", "--closure-source", "derived", "--json"});
   CHECK(unknown.code == 2);
   CHECK(unknown.out.empty());
   CHECK(unknown.err.contains("error:"));
-  // The flag really is absent from this leaf and present on the sibling --
-  // asserting the refusal alone would pass even if BOTH leaves rejected it.
-  auto const accepted = dispatch(fx, {"plan", "recommend-strategy", "3", "--closure-source", "derived", "--json"});
-  CHECK(accepted.code == 0);
-  CHECK(accepted.out.contains(R"("closure_source":"derived")"));
+
+  // Without the flag the verb still succeeds, so the refusal above is about
+  // the flag and not about the plan.
+  auto const plain = dispatch(fx, {"plan", "recommend-strategy", "3", "--json"});
+  CHECK(plain.code == 0);
+}
+
+TEST_CASE("declared paths alone decide recommend-strategy: disjoint paths parallelize, overlapping paths serialize",
+          "[cmd][plan][strategy][declared]") {
+  auto const fx = make_fixture("declared");
+  seed(fx);
+
+  // Build the plan the way the operator does, through the task verbs, then
+  // declare the touches directly on the same project the seed uses.
+  REQUIRE(dispatch(fx, {"plan", "create", "P9 declared"}).code == 0);
+  auto const plan = std::to_string(scalar(fx, "select id from plans where title='P9 declared'"));
+  for (auto const* title : {"disjoint A", "disjoint B", "overlap A", "overlap B", "untouched"}) {
+    REQUIRE(dispatch(fx, {"task", "add", title, "--plan", plan}).code == 0);
+  }
+  auto const repo    = scalar(fx, "select id from projects limit 1");
+  auto const task_id = [&fx](std::string_view title) {
+    return scalar(fx, std::format("select id from tasks where title='{}'", title));
+  };
+  exec_sql(fx, std::format("insert into task_touch_paths (task_id,repo_id,path) values ({},{},'src/one.zig')",
+                           task_id("disjoint A"), repo));
+  exec_sql(fx, std::format("insert into task_touch_paths (task_id,repo_id,path) values ({},{},'src/two.zig')",
+                           task_id("disjoint B"), repo));
+  exec_sql(fx, std::format("insert into task_touch_paths (task_id,repo_id,path) values ({},{},'src/shared.zig')",
+                           task_id("overlap A"), repo));
+  exec_sql(fx, std::format("insert into task_touch_paths (task_id,repo_id,path) values ({},{},'src/shared.zig')",
+                           task_id("overlap B"), repo));
+
+  auto const a = task_id("disjoint A");
+  auto const b = task_id("disjoint B");
+  auto const c = task_id("overlap A");
+  auto const d = task_id("overlap B");
+  auto const u = task_id("untouched");
+
+  auto const rec = dispatch(fx, {"plan", "recommend-strategy", plan, "--json"});
+  CHECK(rec.code == 0);
+  // The two disjoint tasks are parallel-eligible.
+  CHECK(rec.out.contains(std::format(R"("parallel_eligible":[{{"id":{},"slug":null,"title":"disjoint A"}},)"
+                                     R"({{"id":{},"slug":null,"title":"disjoint B"}}])",
+                                     a, b)));
+  // The two tasks on the same path drop, each naming the other and the path.
+  CHECK(rec.out.contains(std::format(R"({{"id":{},"slug":null,"title":"overlap A","excluded_by":[{{"rule":2,)"
+                                     R"("reason":"excluded by rule 2: overlaps task {} on src/shared.zig"}}]}})",
+                                     c, d)));
+  CHECK(rec.out.contains(std::format(R"({{"id":{},"slug":null,"title":"overlap B","excluded_by":[{{"rule":2,)"
+                                     R"("reason":"excluded by rule 2: overlaps task {} on src/shared.zig"}}]}})",
+                                     d, c)));
+  // A task with no declared touches is touches-everything under rule 2.
+  CHECK(rec.out.contains(
+      std::format(R"X({{"id":{},"slug":null,"title":"untouched","excluded_by":[{{"rule":2,)X"
+                  R"X("reason":"excluded by rule 2: no task_touches declared (treated as touches-everything)"}}]}})X",
+                  u)));
+  CHECK(rec.out.contains(R"("summary":{"open_tasks":5,"eligible":2,"serialized":3,"fan_out_available":true})"));
+  CHECK(rec.out.contains(R"("closure_source":"declared")"));
 }

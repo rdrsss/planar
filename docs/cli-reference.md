@@ -1071,7 +1071,7 @@ Applies the SAME dependency-exclusion clause `planar-agent pull`/`peek` apply (t
 
 **Synopsis:**
 ```
-planar plan recommend-strategy <plan-id> [--json] [--closure-source declared|derived]
+planar plan recommend-strategy <plan-id> [--json]
 ```
 
 **Description:** Read-only execution-strategy recommender. Computes the parallel-eligible subset of a plan's open (`todo`) tasks by applying the six parallel-eligibility rules and reports the eligible subset plus the serialized remainder with per-task exclusion reasons. This is the single source of truth for parallelizability (decision 370) consumed by the orchestrator and the parallel-fan-out gate; the rules are not re-derived elsewhere. Writes nothing.
@@ -1094,13 +1094,15 @@ A task may be excluded by multiple rules; every rule it trips is listed in `excl
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--json` | Emit JSON instead of text. | off |
-| `--closure-source declared\|derived` | Rule-2 overlap signal: `declared` (default, `task_touches`) or `derived` (computed closure). | `declared` |
+
+Rule 2 reads declared touches only. There is no source flag; `--closure-source` is an unknown option (exit 2).
 
 **JSON shape:**
 
 ```json
 {
   "plan_id": 12,
+  "closure_source": "declared",
   "parallel_eligible": [ { "id": 1, "slug": null, "title": "..." } ],
   "serialized": [
     { "id": 5, "slug": null, "title": "...",

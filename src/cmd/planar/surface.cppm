@@ -660,8 +660,8 @@ export auto unported_paths() -> std::span<std::string_view const> {
       // arms. `divergence` runs NO unilateral rule (measured: a 7-task
       // fixture where `recommend-strategy` serialized five reported
       // `declared_overlaps:0 derived_overlaps:0 flips:0`), an empty touch
-      // set means opposite things to the two, `--closure-source` exists on
-      // only one of them, and `jaccard` renders shortest-round-trip in JSON
+      // set means opposite things to the two, `recommend-strategy` reads
+      // declared touches only, and `jaccard` renders shortest-round-trip in JSON
       // but fixed-4-decimal in text. See strategy.cppm.
       //
       // `spec ingest` left this inventory at task 6365. Its brief carried the
