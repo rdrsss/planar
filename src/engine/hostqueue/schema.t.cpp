@@ -79,6 +79,11 @@ constexpr std::array k_fingerprint_ledger{
                     "claim ends. Compatible: the column is the one migration 00042 added and NULL keeps the older "
                     "meaning, a binary at queue version 1 never names it and prunes by age alone, and no stored value "
                     "or liveness or slot rule changes, so compat stays 1"},
+    fingerprint_pin{2, "7275b0a01e1b342363a30e4067368466f53ca045aaa2c38740e2fcc402ab5662",
+                    "task mo-policy-enforce-complete (plan 1142), still queue version 2: history_for_claim adds one read-only "
+                    "select over queue_history by the claim_token column migration 00042 already added (indexed), so "
+                    "`complete` can find the runs a claim recorded. Nothing stored changes and no existing statement, "
+                    "liveness or slot rule is touched, so compat stays 1 and an older binary never runs the new read"},
 };
 
 // ---------------------------------------------------------------------------

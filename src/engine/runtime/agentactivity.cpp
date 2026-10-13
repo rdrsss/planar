@@ -755,6 +755,8 @@ auto error_name(agent_error err) -> std::string_view {
     return "ReviewerUnidentified";
   case agent_error::reviewer_claim_not_found:
     return "ReviewerClaimNotFound";
+  case agent_error::completion_unmet:
+    return "PolicyUnmet";
   }
   return "QueryFailed";
 }

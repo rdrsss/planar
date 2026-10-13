@@ -247,6 +247,7 @@ planar_module(engine_runtime
     capture.cppm
     agentactivity.cppm
     agentatomic.cppm
+    completion.cppm
     agentrender.cppm
     handoff.cppm
     resumecheck.cppm
@@ -259,6 +260,7 @@ planar_module(engine_runtime
     capture.cpp
     agentactivity.cpp
     agentatomic.cpp
+    completion.cpp
     agentrender.cpp
     handoff.cpp
     resumecheck.cpp

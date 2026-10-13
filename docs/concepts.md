@@ -253,6 +253,8 @@ Policy is the small set of per-scope facts Planar checks at one verb, kept in `c
 
 The boundary rule keeps policy from becoming a workflow engine: a key is admitted only when it is a fact one verb can check, or when it only displays. A key that says what happens next (a step, a retry, a branch, a condition) is refused by `planar config validate`, as is any unknown key. `planar config show --effective` prints each key with the table it came from. Keys, types and defaults: [docs/cli-reference.md](cli-reference.md#the-policy-tables).
 
+`planar-agent complete` enforces `review_required` and `task_gate`: it refuses, writing nothing and leaving the claim active, until the claim has an approving `review` from another session and a passing queued run (exact argv, the claim's token, the claim's repository root or worktree) of the gate. The refusal names the command that would succeed. Details: [docs/cli-reference.md](cli-reference.md#binary-planar-agent).
+
 Which association's table applies to an entity follows its scope: an association-scoped plan uses its own association, a repo-scoped plan uses the project's association when the project belongs to exactly one, and everything else (no association, several associations, global) uses the top-level table. `planar-agent brief <plan>` shows the policy in force for a plan, with each key's source, next to the claim protocol it implies; queue command templates appear there only when `use_queue` is true.
 
 ## Project

@@ -895,6 +895,45 @@ TEST_CASE("the history row carries the entry's claim token verbatim, whatever th
         static_cast<std::ptrdiff_t>(endings.size()));
 }
 
+TEST_CASE("history_for_claim returns exactly the rows that name the token, decoded, oldest first",
+          "[engine][hostqueue][hq-history][mo-policy-enforce-complete]") {
+  scratch_dir scratch;
+  auto        conn = open_scratch_store(scratch);
+
+  auto const token = std::string{"0123456789abcdef0123456789abcdef"};
+  auto       named = [&](std::string claim, std::vector<std::string> argv, std::int64_t exit_code, std::int64_t ended_at) {
+    auto request        = request_for("run");
+    request.claim_token = std::move(claim);
+    request.argv        = std::move(argv);
+    auto const seq      = enqueue_one(conn, request);
+    end_one(conn, seq, {.outcome = hq::history_outcome::exited, .exit_code = exit_code, .ended_at = ended_at});
+    return seq;
+  };
+  auto const later   = named(token, {"make", "test"}, 0, k_enqueued_at + 20);
+  auto const earlier = named(token, {"make", "test", "-j"}, 2, k_enqueued_at + 10);
+  named(token + "0", {"make", "test"}, 0, k_enqueued_at + 15);                        // a longer token is another token
+  named("0123456789ABCDEF0123456789ABCDEF", {"make", "test"}, 0, k_enqueued_at + 16); // no case folding
+  end_one(conn, enqueue_one(conn, request_for("untokened")),
+          {.outcome = hq::history_outcome::exited, .exit_code = 0, .ended_at = k_enqueued_at + 17});
+
+  auto const rows = hq::history_for_claim(conn, token);
+  REQUIRE(rows.has_value());
+  REQUIRE(rows->size() == 2);
+  CHECK(rows->at(0).seq == earlier);
+  CHECK(rows->at(0).argv == std::vector<std::string>{"make", "test", "-j"});
+  CHECK(rows->at(0).exit_code == 2);
+  CHECK(rows->at(0).cwd == "/work/planar");
+  CHECK(rows->at(1).seq == later);
+  CHECK(rows->at(1).argv == std::vector<std::string>{"make", "test"});
+
+  auto const none = hq::history_for_claim(conn, "ffffffffffffffffffffffffffffffff");
+  REQUIRE(none.has_value());
+  CHECK(none->empty());
+  auto const blank = hq::history_for_claim(conn, "");
+  REQUIRE(blank.has_value());
+  CHECK(blank->empty());
+}
+
 namespace {
 
 constexpr std::int64_t k_prune_now = k_enqueued_at + 400 * hq::k_ms_per_day;

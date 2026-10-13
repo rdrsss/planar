@@ -88,6 +88,8 @@ the owning plan's status. Never split it into `planar task done` followed by
 `task done`, `task cancel` or `task update --status` on a live-claimed task refuses and prints
 the `planar-agent complete --claim <token>` command that would succeed.
 
+When the scope's policy sets `review_required` or `task_gate`, `complete` refuses (exit 1, claim stays active) until the claim has an approving `planar-agent review` from another session and a passing `planar-agent queue run --claim <token> -- <gate argv>` run from the claim's repository root or worktree; the refusal prints the command that would succeed.
+
 `complete`, `fail` and `block` refuse a plan or plan-step claim (`ClaimNotOnTask`).
 `release` is the one verb that also ends a plan or plan-step claim, so an orchestrator
 releases its coordination claim explicitly rather than waiting out the lease.

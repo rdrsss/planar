@@ -231,6 +231,17 @@ export auto find_history(db::connection& conn, std::int64_t seq) -> std::expecte
 export auto list_history(db::connection& conn, std::optional<std::int64_t> ended_since = std::nullopt)
     -> std::expected<std::vector<history_row>, queue_error>;
 
+/// @brief Reads the history rows whose `claim_token` is exactly `claim_token`, oldest first.
+///
+/// This is how a gate check finds the queued runs a claim recorded with `queue run --claim`. The
+/// token is compared verbatim (never folded, trimmed or prefix-matched), and a token no row carries
+/// yields an empty list. Uses the `claim_token` index.
+/// @param conn An open `planar.db` that passed `check_queue_schema`; a read-only connection is enough.
+/// @param claim_token The token to match.
+/// @return The rows ordered by `ended_at`, then sequence number; empty when none; or the failure.
+export auto history_for_claim(db::connection& conn, std::string_view claim_token)
+    -> std::expected<std::vector<history_row>, queue_error>;
+
 /// @brief The milliseconds in one retention day.
 export constexpr std::int64_t k_ms_per_day = 86'400'000;
 

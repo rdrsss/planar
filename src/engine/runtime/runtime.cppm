@@ -12,5 +12,6 @@ export import planar.engine.runtime.snapshot;
 export import planar.engine.runtime.capture;
 export import planar.engine.runtime.agentactivity;
 export import planar.engine.runtime.agentatomic;
+export import planar.engine.runtime.completion;
 export import planar.engine.runtime.agentrender;
 export import planar.engine.runtime.sessioncommits;

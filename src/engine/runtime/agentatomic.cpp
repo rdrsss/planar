@@ -302,6 +302,14 @@ auto terminal_transition(db::connection& conn, const terminal_args& targs, const
       return std::unexpected(allowed.error());
     }
 
+    // Plan 1142: `complete` alone is held to the configured review and gate requirements. The check
+    // runs before any write, so a refusal rolls back nothing and leaves the claim active.
+    if (targs.verb == "complete" && policy.check_completion) {
+      if (auto const admitted = policy.check_completion(conn, *held); !admitted) {
+        return std::unexpected(admitted.error());
+      }
+    }
+
     // Captured BEFORE the flip, because the recompute below needs it and
     // the claim row is about to be replaced by its released form.
     plan_id = aa::task_plan_id(conn, held->entity_id);
