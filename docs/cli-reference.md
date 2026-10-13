@@ -5389,6 +5389,7 @@ agent a policy governs cannot switch it off from its own environment
 [policy]
 review_required = true
 task_gate = ["make", "test"]
+use_queue = true            # required beside task_gate
 confirm_before = ["task done", "plan closeout"]
 
 [associations."org:acme".policy]
@@ -5406,6 +5407,18 @@ review_required = false     # beats the top-level value for this association
 | `use_queue` | bool | brief, `queue rule` (prints the mandate), conformance | `false` |
 
 A gate value is an argv array such as `["make", "test"]`, not a shell string.
+Gate evidence is a queued run, so `task_gate` requires `use_queue = true` in
+the same scope, judged on each scope's effective values: the `[policy]` table
+on its own, and each `[associations."<slug>".policy]` table on its own keys
+falling back to `[policy]` (an association that sets its own `task_gate`
+inherits `use_queue = true` from `[policy]`; one that inherits the gate and sets
+`use_queue = false` is refused). `planar config validate` refuses a gate
+without it, and `planar-agent brief` shows `policy.valid` as `false`:
+
+```
+error: policy.task_gate: gate evidence is a queued run, so use_queue = true is required in the same scope (add use_queue = true under [policy])
+```
+
 This table is the key set only: each verb reads the effective values in its
 own change.
 

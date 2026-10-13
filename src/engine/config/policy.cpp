@@ -147,6 +147,66 @@ void resolve_key(const toml_map& file, std::optional<std::string_view> assoc_slu
 
 } // namespace
 
+namespace {
+
+/// @brief A boolean `key` in `section`, when the document carries one of that type.
+auto boolean_in(const toml_map& doc, std::string_view section, std::string_view key) -> std::optional<bool> {
+  const auto it = doc.find(std::format("{}.{}", section, key));
+  if (it == doc.end() || it->second.kind_ != toml_value::kind::boolean) {
+    return std::nullopt;
+  }
+  return it->second.bool_;
+}
+
+/// @brief Whether `section` carries a well-typed `task_gate`.
+auto has_gate_in(const toml_map& doc, std::string_view section) -> bool {
+  const auto it = doc.find(std::format("{}.task_gate", section));
+  return it != doc.end() && well_typed("task_gate", it->second);
+}
+
+/// @brief The finding for a gate that has no `use_queue = true` beside it.
+auto gate_needs_queue(std::string key, std::string_view section_label) -> policy_finding {
+  return policy_finding{.key     = std::move(key),
+                        .message = std::format("gate evidence is a queued run, so use_queue = true is required in the same scope "
+                                               "(add use_queue = true under [{}])",
+                                               section_label)};
+}
+
+/// @brief Refuse a `task_gate` whose effective scope does not turn `use_queue` on.
+///
+/// Gate evidence is a queued run, so each scope is checked on its effective
+/// values: the top-level table on its own, and each association table on its own
+/// keys falling back to the top level. An association table that overrides
+/// neither key repeats the top-level result and is not reported twice.
+void check_gate_requires_queue(const toml_map& doc, std::vector<policy_finding>& findings) {
+  const bool top_gate  = has_gate_in(doc, "policy");
+  const bool top_queue = boolean_in(doc, "policy", "use_queue").value_or(false);
+  if (top_gate && !top_queue) {
+    findings.push_back(gate_needs_queue("policy.task_gate", "policy"));
+  }
+  std::set<std::string, std::less<>> slugs;
+  for (const auto& entry : doc) {
+    if (const auto assoc = split_association_key(entry.first); assoc.has_value() && !assoc->sub.empty()) {
+      slugs.emplace(assoc->slug);
+    }
+  }
+  for (const auto& slug : slugs) {
+    const auto section   = association_section(slug);
+    const bool own_gate  = has_gate_in(doc, std::format("associations.{}.policy", slug));
+    const auto own_queue = boolean_in(doc, std::format("associations.{}.policy", slug), "use_queue");
+    if (!own_gate && !own_queue.has_value()) {
+      continue;
+    }
+    const bool gate  = own_gate || top_gate;
+    const bool queue = own_queue.value_or(top_queue);
+    if (gate && !queue) {
+      findings.push_back(gate_needs_queue(std::format("associations.{}.policy.task_gate", slug), section));
+    }
+  }
+}
+
+} // namespace
+
 auto validate_policy(const toml_map& doc) -> std::vector<policy_finding> {
   std::vector<policy_finding> findings;
   for (const auto& [key, value] : doc) {
@@ -164,6 +224,8 @@ auto validate_policy(const toml_map& doc) -> std::vector<policy_finding> {
       }
     }
   }
+  check_gate_requires_queue(doc, findings);
+  std::ranges::stable_sort(findings, {}, &policy_finding::key);
   return findings;
 }
 

@@ -289,18 +289,20 @@ TEST_CASE("brief shows queue templates only when use_queue is true", "[cmd][agen
     CHECK_FALSE(r.out.contains("queue run"));
     CHECK(r.out.contains("use_queue=false [default]"));
   }
-  SECTION("a gate without use_queue: still none") {
+  SECTION("a gate without use_queue: still none, and the config reads as invalid") {
     scratch.write_config("[policy]\ntask_gate = [\"make\", \"test\"]\n");
     auto const r = run_verb(scratch, {"brief", "2"});
     REQUIRE(r.code == 0);
     CHECK_FALSE(r.out.contains("queue run"));
     CHECK(r.out.contains("task_gate=[\"make\",\"test\"] [policy]"));
+    CHECK(r.out.contains("INVALID config: 1 finding(s)"));
   }
   SECTION("use_queue = false explicitly: none") {
     scratch.write_config("[policy]\nuse_queue = false\ntask_gate = [\"make\", \"test\"]\n");
     auto const r = run_verb(scratch, {"brief", "2"});
     REQUIRE(r.code == 0);
     CHECK_FALSE(r.out.contains("queue run"));
+    CHECK(r.out.contains("INVALID config: 1 finding(s)"));
   }
   SECTION("use_queue = true shows the gate template, quoted, in text and JSON") {
     scratch.write_config("[policy]\nuse_queue = true\ntask_gate = [\"sh\", \"-c\", \"echo 'hi' $HOME\"]\n");
@@ -365,6 +367,19 @@ TEST_CASE("brief renders with policy.valid=false for an invalid or unreadable co
     CHECK_FALSE(parsed.find("policy")->find("valid")->boolean);
     REQUIRE(parsed.find("policy")->find("findings")->array.size() == 1);
     CHECK(parsed.find("policy")->find("findings")->array[0].find("key")->string == "policy.after_review");
+  }
+  SECTION("a task_gate without use_queue is a policy finding that makes the policy invalid") {
+    scratch.write_config("[policy]\ntask_gate = [\"make\", \"test\"]\n");
+    auto const json = run_verb(scratch, {"brief", "2", "--json"});
+    REQUIRE(json.code == 0);
+    auto const parsed = parse(json.out);
+    CHECK_FALSE(parsed.find("policy")->find("valid")->boolean);
+    REQUIRE(parsed.find("policy")->find("findings")->array.size() == 1);
+    auto const& finding = parsed.find("policy")->find("findings")->array[0];
+    CHECK(finding.find("key")->string == "policy.task_gate");
+    CHECK(
+        finding.find("message")->string ==
+        "gate evidence is a queued run, so use_queue = true is required in the same scope (add use_queue = true under [policy])");
   }
   SECTION("a mistyped value") {
     scratch.write_config("[policy]\nreview_required = \"yes\"\n");

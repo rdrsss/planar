@@ -354,12 +354,15 @@ review_required = true
     CHECK(text.contains("confirm before: task done"));
     CHECK(text.size() < 4096);
   }
-  SECTION("without use_queue no queue template renders even when a gate is set") {
+  SECTION("without use_queue no queue template renders even when a gate is set, and the policy is invalid") {
     auto const config   = parse_config(R"([policy]
 task_gate = ["make", "test"]
 )");
     auto const gathered = agent::gather_brief(*conn, 2, config);
     REQUIRE(gathered.has_value());
+    CHECK_FALSE(gathered->policy.valid);
+    REQUIRE(gathered->policy.findings.size() == 1);
+    CHECK(gathered->policy.findings[0].key == "policy.task_gate");
     auto const text = agent::render_brief_text(*gathered);
     CHECK(text.contains("task_gate=[\"make\",\"test\"] [policy]"));
     CHECK_FALSE(text.contains("queue run"));

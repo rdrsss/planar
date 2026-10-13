@@ -456,6 +456,7 @@ TEST_CASE("policy: the top-level table supplies values and names its section", "
 review_required = true
 task_gate = ["make", "test"]
 confirm_before = ["task done", "plan closeout"]
+use_queue = true
 )");
   auto       policy = effective_policy(file, std::nullopt);
   REQUIRE(policy.has_value());
@@ -463,10 +464,11 @@ confirm_before = ["task done", "plan closeout"]
   REQUIRE(policy->values.task_gate.has_value());
   CHECK(*policy->values.task_gate == std::vector<std::string>{"make", "test"});
   CHECK(policy->values.confirm_before == std::vector<std::string>{"task done", "plan closeout"});
-  CHECK_FALSE(policy->values.use_queue);
+  CHECK(policy->values.use_queue);
   CHECK(policy->sources.at("review_required").kind == policy_source_kind::top_level);
   CHECK(policy->sources.at("review_required").section == "policy");
-  CHECK(policy->sources.at("use_queue").kind == policy_source_kind::embedded_default);
+  CHECK(policy->sources.at("use_queue").kind == policy_source_kind::top_level);
+  CHECK(policy->sources.at("require_scenario_coverage").kind == policy_source_kind::embedded_default);
 }
 
 TEST_CASE("policy: association beats top level beats default, key by key", "[effective][policy]") {
@@ -523,7 +525,7 @@ require_model = ["x"]
 TEST_CASE("policy: an empty task_gate argv and an empty argv element are refused", "[effective][policy]") {
   CHECK(validate_policy(parse_ok("[policy]\ntask_gate = []\n")).size() == 1);
   CHECK(validate_policy(parse_ok("[policy]\ntask_gate = [\"make\", \"\"]\n")).size() == 1);
-  CHECK(validate_policy(parse_ok("[policy]\ntask_gate = [\"make\"]\n")).empty());
+  CHECK(validate_policy(parse_ok("[policy]\nuse_queue = true\ntask_gate = [\"make\"]\n")).empty());
 }
 
 TEST_CASE("policy: workflow-shaped and unknown keys are refused by name", "[effective][policy]") {
@@ -553,6 +555,75 @@ TEST_CASE("policy: a nested table under policy is named, and policy itself must 
   CHECK(policy_keys_named(validate_policy(parse_ok("[policy.retry]\ncount = 2\n"))) ==
         std::vector<std::string>{"policy.retry.count"});
   CHECK(policy_keys_named(validate_policy(parse_ok("policy = true\n"))) == std::vector<std::string>{"policy"});
+}
+
+TEST_CASE("policy: a task_gate needs use_queue = true in the same effective scope", "[effective][policy][gate]") {
+  SECTION("a top-level gate without use_queue is refused, naming the key, the scope and the fix") {
+    auto const file     = parse_ok("[policy]\ntask_gate = [\"make\", \"test\"]\n");
+    auto const findings = validate_policy(file);
+    REQUIRE(findings.size() == 1);
+    CHECK(findings[0].key == "policy.task_gate");
+    CHECK(
+        findings[0].message ==
+        "gate evidence is a queued run, so use_queue = true is required in the same scope (add use_queue = true under [policy])");
+    CHECK_FALSE(effective_policy(file, std::nullopt).has_value());
+    CHECK_FALSE(effective_policy(file, "acme").has_value());
+  }
+  SECTION("use_queue = false beside the gate is refused; true is accepted") {
+    CHECK(validate_policy(parse_ok("[policy]\nuse_queue = false\ntask_gate = [\"make\"]\n")).size() == 1);
+    CHECK(validate_policy(parse_ok("[policy]\nuse_queue = true\ntask_gate = [\"make\"]\n")).empty());
+  }
+  SECTION("an association that inherits the gate and turns use_queue off is refused by name") {
+    auto const file     = parse_ok(R"([policy]
+use_queue = true
+task_gate = ["make", "test"]
+[associations."acme".policy]
+use_queue = false
+)");
+    auto const findings = validate_policy(file);
+    REQUIRE(findings.size() == 1);
+    CHECK(findings[0].key == "associations.acme.policy.task_gate");
+    CHECK(findings[0].message.contains("under [associations.\"acme\".policy]"));
+    CHECK_FALSE(effective_policy(file, "acme").has_value());
+    CHECK_FALSE(effective_policy(file, std::nullopt).has_value());
+  }
+  SECTION("an association with its own gate inherits use_queue from the top level") {
+    auto const file = parse_ok(R"([policy]
+use_queue = true
+[associations."acme".policy]
+task_gate = ["make", "test"]
+)");
+    CHECK(validate_policy(file).empty());
+    auto const acme = effective_policy(file, "acme");
+    REQUIRE(acme.has_value());
+    CHECK(acme->values.use_queue);
+    CHECK(acme->values.task_gate.has_value());
+  }
+  SECTION("an association with its own gate and no use_queue anywhere is refused") {
+    auto const findings = validate_policy(parse_ok("[associations.\"acme\".policy]\ntask_gate = [\"make\"]\n"));
+    REQUIRE(findings.size() == 1);
+    CHECK(findings[0].key == "associations.acme.policy.task_gate");
+  }
+  SECTION("an association that sets use_queue = true beside the top-level gate is accepted for itself") {
+    auto const file = parse_ok(R"([policy]
+use_queue = true
+task_gate = ["make"]
+[associations."acme".policy]
+use_queue = true
+[associations."beta".policy]
+review_required = true
+)");
+    CHECK(validate_policy(file).empty());
+  }
+  SECTION("a mistyped use_queue counts as unset: the type finding and the gate finding are both reported") {
+    auto const findings = validate_policy(parse_ok("[policy]\nuse_queue = \"yes\"\ntask_gate = [\"make\"]\n"));
+    CHECK(policy_keys_named(findings) == std::vector<std::string>{"policy.task_gate", "policy.use_queue"});
+  }
+  SECTION("resolve_policy_lenient still resolves a gate without use_queue, for display") {
+    auto const policy = resolve_policy_lenient(parse_ok("[policy]\ntask_gate = [\"make\"]\n"), std::nullopt);
+    CHECK(policy.values.task_gate.has_value());
+    CHECK_FALSE(policy.values.use_queue);
+  }
 }
 
 TEST_CASE("policy: no environment variable changes a value or its source", "[effective][policy][env]") {
