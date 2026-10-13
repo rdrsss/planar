@@ -6527,7 +6527,7 @@ planar-agent schema
 
 **Terminal-verb envelope for a plan or plan_step claim (task 7118):** `release` is the only terminal verb that accepts a plan or plan_step claim (`complete`, `fail` and `block` refuse it with `ClaimNotOnTask`). Such a claim holds no task, so the response names none: `--json` emits `{"ok":true,"claim_token":"...","claim":{...},"task":null}` and the human line is `ok entity:<kind>:<id> claim_status:released`. A task claim's envelope (`"task":{...}`, `ok task:<id> status:<s> claim_status:<s>`) is unchanged. Before this fix the response looked up the task whose id equalled the plan's id and reported that unrelated row.
 
-**Policy-required review and gate on `complete` (plan 1142).** `complete` is the one terminal verb the policy holds to a requirement; `fail`, `release`, `block` and `abort` are never refused for policy. The check runs in the same transaction that would end the claim, so a refusal exits `1`, writes nothing, and leaves the claim `active` and the task `doing`. The policy is resolved for the claim's scope (the task's plan, then that plan's association, as `config show --effective --scope` does) from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path). No policy value is read from the environment, so an agent cannot relax it by setting a variable. With neither key set, or with no policy table in the file, `complete` is unchanged and reads nothing extra.
+**Policy-required review and gate on `complete`.** `complete` is the one terminal verb the policy holds to a requirement; `fail`, `release`, `block` and `abort` are never refused for policy. The check runs in the same transaction that would end the claim, so a refusal exits `1`, writes nothing, and leaves the claim `active` and the task `doing`. The policy is resolved for the claim's scope (the task's plan, then that plan's association, as `config show --effective --scope` does) from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path). No policy value is read from the environment, so an agent cannot relax it by setting a variable. With neither key set, or with no policy table in the file, `complete` is unchanged and reads nothing extra.
 
 - **`review_required = true`:** the claim's latest `review` action (see `planar-agent review`) must have verdict `approve` and have been written by a session other than the claim's. A claim with no review, a review whose verdict is NULL, a same-session review, or a latest review of `request-changes` is refused, and the message names which.
 - **`task_gate = ["make", "test"]`:** the host queue's history must hold a PASSING run (`outcome = exited` and `exit_code = 0`) whose `argv` equals the gate element by element (the decoded JSON arrays are compared: no shell splitting, no prefix match, no case folding, so `["make","test","-j"]`, `["make"]` and `["sh","-c","make test"]` do not count), whose `claim_token` is the completing claim's (recorded by `queue run --claim <token>`), and whose `cwd` is the claim's recorded repository root or its worktree path. Directories compare as absolute paths with symlinks resolved and no trailing separator; a run in a subdirectory does not count. A claim that recorded neither path (taken with `--no-locality-probe` outside a repository) can show no gate run, and the refusal says so.
@@ -6541,7 +6541,7 @@ error: complete: claim 1a2b3c4d cannot complete: review_required: no review with
   to record the gate run, run from the claim's repository root or worktree: planar-agent queue run --claim '<token>' -- 'make' 'test'
 ```
 
-**Policy at claim time: `require_model` and the recorded digest (plan 1142).** `claim` and `pull` read the policy of the claim's scope from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path), inside the claim's transaction, before contention and readiness are asked. The scope is the claimed entity's: a task's plan, then that plan's association; `pull <plan-id>` uses the plan itself; a `plan` claim uses that plan and a `plan_step` claim its step's plan; an entity with no association uses the top-level `[policy]` table. No environment variable is consulted.
+**Policy at claim time: `require_model` and the recorded digest.** `claim` and `pull` read the policy of the claim's scope from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path), inside the claim's transaction, before contention and readiness are asked. The scope is the claimed entity's: a task's plan, then that plan's association; `pull <plan-id>` uses the plan itself; a `plan` claim uses that plan and a `plan_step` claim its step's plan; an entity with no association uses the top-level `[policy]` table. No environment variable is consulted.
 
 - **`require_model = true`:** a claim or pull with `--role coder` that passes no `--model`, or `--model ''`, is refused: exit `1`, `--json` tag `PolicyUnmet`, no claim, no action, no task change. The message names the flag: `error: claim: policy require_model = true: coder claims must say which model they use (add --model '<id>')` (`pull:` for a pull). Any other role, and a claim that names no role, is not affected; the model is recorded verbatim and never checked against a list. The default is `false`, under which nothing is refused.
 - **The digest.** Every claim of every role and entity kind records `policy_digest(effective policy)` in `agent_work_claims.policy_digest` when it is taken (`pull` records it for the claim it takes), so conformance can grade a claim against the policy it ran under. The same effective values give the same digest; a changed value gives a different one. It is stored on the row and is not part of any `--json` envelope.
@@ -6909,7 +6909,7 @@ The `schema` catalog entry for `brief` pins the flag, the positional, the exampl
 
 ### `planar-agent review`
 
-`review` records one reviewer's verdict on a claim as an `agent_actions` row of kind `review`. It is run under the **reviewer's** own claim or vendor session, never the coder's: the verb is refused when the caller's session is the reviewed claim's session, so a claim cannot vouch for its own work. The reviewed claim may be active or ended, since a review can follow a return or a `complete`. It records evidence; it does not change the claim, the task or any status, and `complete` does not read it.
+`review` records one reviewer's verdict on a claim as an `agent_actions` row of kind `review`. It is run under the **reviewer's** own claim or vendor session, never the coder's: the verb is refused when the caller's session is the reviewed claim's session, so a claim cannot vouch for its own work. The reviewed claim may be active or ended, since a review can follow a return or a `complete`. It records evidence; it does not change the claim, the task or any status. `complete` reads it only when the scope's policy sets `review_required`.
 
 | Flag | Description |
 |------|-------------|
@@ -7225,7 +7225,6 @@ SEQ  STATE    POS  NOTES     WAITED  RAN    VENDOR  ROLE    LABEL       DIRECTOR
 | `enqueued_at`, `started_at` | Wall-clock milliseconds |
 | `waited_ms`, `ran_ms` | Durations at the moment of the listing |
 | `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` when no limit applies |
-| `claim_token` | The `--claim` token the run named, verbatim; `null` for a run without one |
 
 **Schema effects:** Reads `queue_entries` in `planar.db`. No writes; the database is never created or migrated.
 
@@ -7278,6 +7277,7 @@ SEQ  OUTCOME    RESULT    ENDED                 WAITED  RAN    NOTES            
 | `enqueued_at`, `started_at`, `ended_at` | Wall-clock milliseconds |
 | `waited_ms`, `ran_ms` | Durations, from the recorded times |
 | `run_limit_ms`, `wait_limit_ms` | The limits in force; `null` when no limit applies |
+| `claim_token` | The `--claim` token the run named, verbatim; `null` for a run without one |
 
 **Schema effects:** Reads `queue_history` in `planar.db`. No writes; the database is never created or migrated.
 

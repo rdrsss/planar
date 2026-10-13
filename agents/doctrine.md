@@ -53,19 +53,23 @@ which evidence was reproduced and which was accepted from the packet.
 
 ## Builds and tests are queued, not locked
 
-Full rule: [`agents/methodology.md §Builds and tests go through the host queue`](methodology.md#builds-and-tests-go-through-the-host-queue).
+Full rule: [`agents/methodology.md §Using the host queue`](methodology.md#using-the-host-queue).
+The mandate itself is printed by `planar-agent queue rule` only for a scope
+whose policy sets `use_queue = true`.
 
-Summary: agents on one machine share its cores, so builds and test runs are
+Summary: agents on one machine share its cores, so builds and test runs can be
 ordered host-wide through one queue instead of each agent deciding when it is
 safe to start. The queue does not lock a build directory or a resource; it
-serializes execution, and a dead submitter cannot leave it stuck. Submit the
-command, observe its ticket with a finite `queue wait` budget, and treat the
-structured reason and recorded outcome as the truth rather than the process
-exit code alone. A short observation slice can be resumed on the same ticket
-after an explicit decision. A queue that refuses is reported to
-the operator, never bypassed by running the command directly: the operator
-chose refusal over bypass. Only a Planar with no queue at all is the exception,
-and the agent then says Planar needs upgrading.
+serializes execution, and a dead submitter cannot leave it stuck. Where the
+operator's policy sets `use_queue = true` for the scope, submit the command,
+observe its ticket with a finite `queue wait` budget, and treat the structured
+reason and recorded outcome as the truth rather than the process exit code
+alone. A short observation slice can be resumed on the same ticket after an
+explicit decision. Where the policy requires the queue and it refuses, report
+that to the operator and never bypass it by running the command directly: the
+operator chose refusal over bypass. Only a Planar with no queue at all is the
+exception, and the agent then says Planar needs upgrading. Where the policy
+does not require it, using the queue is the agent's choice.
 
 ---
 

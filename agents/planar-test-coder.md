@@ -109,9 +109,9 @@ Verification expansion validates its changed tests with applicable task checks.
 Report first-run failures and do not move the full milestone suite into every
 coverage or remediation cycle.
 
-## Builds and tests go through the host queue
+## Host queue
 
-Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role test-coder`.
+Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it (§ Using the host queue); submit with `--role test-coder`. Without that policy the queue is optional.
 
 ## Iteration and status
 

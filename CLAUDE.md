@@ -297,8 +297,9 @@ ctest --test-dir build/debug --output-on-failure
   running. Older queue-capable installs without `wait` use a finite JSON
   status observer. `planar-agent queue rule` prints the full rule, including
   what to do when the queue refuses (exit 125: stop and report, never run the
-  command directly); the operator enables its mandate with `[policy] use_queue
-  = true` (or an `[associations."<slug>".policy]` table) in `config.toml`. The queue does not replace any gate; see
+  command directly); the operator enables its mandate with
+  `[policy] use_queue = true` (or an `[associations."<slug>".policy]` table)
+  in `config.toml`. The queue does not replace any gate; see
   [docs/testing.md](docs/testing.md).
 - `clang-tidy` is advisory. `clang-format --Werror` and the Doxygen pass
   gate.

@@ -114,9 +114,9 @@ risk or gaps. Do not demand the full suite for every task merely because its
 source changed, or call a scheduled barrier gate a missing task gate. At the
 barrier, require the milestone profile for the exact accumulated candidate.
 
-## Builds and tests go through the host queue
+## Host queue
 
-Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role reviewer`.
+Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it (§ Using the host queue); submit with `--role reviewer`. Without that policy the queue is optional.
 
 ## Tier
 

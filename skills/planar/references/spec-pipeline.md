@@ -109,7 +109,9 @@ operator's behalf.
 Before ingest it is the only coverage oracle: it must exit 0, the top-level
 `slug_collisions` must be empty, and any entries in `coverage.uncovered_task_slugs`
 or `coverage.orphan_scenarios` are reported findings to resolve before ingest. A
-strict preview exits 0 on coverage gaps alone. `planar test-spec status <plan-id>` reads live rows,
+strict preview exits 0 on coverage gaps alone, unless the scope's policy sets
+`require_scenario_coverage = true`: then uncovered task slugs and orphan
+scenarios make it exit 2. `planar test-spec status <plan-id>` reads live rows,
 so before ingest it legitimately shows zeros; use it only after apply.
 
 ## Stage 4: ingest, operator-gated

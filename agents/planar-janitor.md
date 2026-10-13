@@ -181,9 +181,9 @@ Return one of:
 - `abort`: the confirmed profile would overwrite foreign state, identifies the
   wrong refs, or requests an unsafe/unsupported action.
 
-## Builds and tests go through the host queue
+## Host queue
 
-Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role janitor`.
+Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it (§ Using the host queue); submit with `--role janitor`. Without that policy the queue is optional.
 
 ## Status reporting
 

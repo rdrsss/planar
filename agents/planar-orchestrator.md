@@ -49,9 +49,9 @@ separately from task completion and automatic plan-status promotion. Routine
 focused fixes use existing authorization. Before finalization, require the full
 milestone profile and the review disposition due at that boundary.
 
-## Builds and tests go through the host queue
+## Host queue
 
-Every build and test run goes through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it; submit with `--role orchestrator`.
+Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it (§ Using the host queue); submit with `--role orchestrator`. Without that policy the queue is optional.
 
 ## Tier
 
