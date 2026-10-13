@@ -5389,6 +5389,7 @@ agent a policy governs cannot switch it off from its own environment
 [policy]
 review_required = true
 task_gate = ["make", "test"]
+use_queue = true            # required beside task_gate
 confirm_before = ["task done", "plan closeout"]
 
 [associations."org:acme".policy]
@@ -5406,6 +5407,23 @@ review_required = false     # beats the top-level value for this association
 | `use_queue` | bool | brief, `queue rule` (prints the mandate), conformance | `false` |
 
 A gate value is an argv array such as `["make", "test"]`, not a shell string.
+Gate evidence is a queued run, so `task_gate` requires `use_queue = true` in
+the same scope, judged on each scope's effective values: the `[policy]` table
+on its own, and each `[associations."<slug>".policy]` table on its own keys
+falling back to `[policy]` (an association that sets its own `task_gate`
+inherits `use_queue = true` from `[policy]`; one that inherits the gate and sets
+`use_queue = false` is refused). `planar config validate` refuses a gate
+without it, and `planar-agent brief` shows `policy.valid` as `false`:
+
+```
+error: policy.task_gate: gate evidence is a queued run, so use_queue = true is required in the same scope (add use_queue = true under [policy])
+```
+
+`confirm_before` entries are lowercase verb paths of one to four words (`"task
+done"`, `"plan closeout"`); `config validate` checks the spelling only, not
+that the verb exists. Planar never enforces the list: the brief shows it so the
+orchestrator knows which verbs wait for the operator.
+
 This table is the key set only: each verb reads the effective values in its
 own change.
 
@@ -6845,6 +6863,7 @@ policy digest 3b63f137...; scope top-level (global_scope)
   review_required=false [default]
   use_queue=false [default]
   ...
+confirm with the operator before: task done; plan closeout
 protocol (lease 7200s, heartbeat every 1h):
   claim: planar-agent claim --entity task:<id> --role coder --model '<model>' --ttl 7200 --worktree '<path>'
   heartbeat: planar-agent heartbeat --claim '<token>'
@@ -6868,7 +6887,7 @@ protocol (lease 7200s, heartbeat every 1h):
 | `wave` | `{fan_out_available, parallel, serialized}`; each task is `{id, slug, title, why}` with `why` as `[{rule, reason}]` (empty for a wave member). |
 | `readiness` | `[{id, slug, ready, reasons}]` for each unclaimed todo task. |
 | `policy` | `{association, scope_reason, valid, findings, digest, values, sources}`; `values` is `{confirm_before, require_model, require_scenario_coverage, review_required, task_gate, use_queue}` and `sources` maps each key to `{kind, section}`. |
-| `confirm_before` | The policy's verb paths, `[]` when unset. |
+| `confirm_before` | The policy's verb paths, `[]` when unset. The text form prints them with the policy section as `confirm with the operator before: <path>; <path>`, plus a protocol note line, only when the list is not empty. |
 | `protocol` | `{lease_ttl_secs, heartbeat_every_secs, templates}` with `templates` as `[{name, command}]`. |
 
 The `schema` catalog entry for `brief` pins the flag, the positional, the examples and the exit codes (`planar-agent schema`); a golden test pins the JSON bytes.

@@ -1233,6 +1233,87 @@ TEST_CASE("config validate names the expected type for a mistyped policy value",
   cleanup(fx);
 }
 
+TEST_CASE("config validate refuses a task_gate unless use_queue is on in the same scope",
+          "[cmd][config][validate][policy][gate]") {
+  auto const gate_message = [](std::string_view scope) {
+    return std::format(
+        "gate evidence is a queued run, so use_queue = true is required in the same scope (add use_queue = true under [{}])",
+        scope);
+  };
+  SECTION("a top-level gate without use_queue exits 1 with the fix") {
+    auto const fx = make_fixture("gateq1");
+    write_config(fx, "[policy]\ntask_gate = [\"make\", \"test\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains(std::format("error: policy.task_gate: {}", gate_message("policy"))));
+    CHECK_FALSE(r.out.contains("config validate: ok"));
+    cleanup(fx);
+  }
+  SECTION("use_queue = true beside the gate validates") {
+    auto const fx = make_fixture("gateq2");
+    write_config(fx, "[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 0);
+    CHECK(r.out == "config validate: ok\n");
+    cleanup(fx);
+  }
+  SECTION("an association that inherits the gate and sets use_queue = false is refused by name") {
+    auto const fx = make_fixture("gateq3");
+    write_config(fx,
+                 "[policy]\nuse_queue = true\ntask_gate = [\"make\"]\n[associations.\"org:acme\".policy]\nuse_queue = false\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains(
+        std::format("error: associations.org:acme.policy.task_gate: {}", gate_message("associations.\"org:acme\".policy"))));
+    CHECK_FALSE(r.err.contains("error: policy.task_gate"));
+    cleanup(fx);
+  }
+  SECTION("an association with its own gate inherits use_queue from the top level") {
+    auto const fx = make_fixture("gateq4");
+    write_config(fx, "[policy]\nuse_queue = true\n[associations.\"org:acme\".policy]\ntask_gate = [\"make\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 0);
+    cleanup(fx);
+  }
+  SECTION("an association with its own gate and no use_queue anywhere is refused") {
+    auto const fx = make_fixture("gateq5");
+    write_config(fx, "[associations.\"org:acme\".policy]\ntask_gate = [\"make\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains("error: associations.org:acme.policy.task_gate: gate evidence is a queued run"));
+    cleanup(fx);
+  }
+}
+
+TEST_CASE("config validate refuses a confirm_before entry that is not a verb path", "[cmd][config][validate][policy][confirm]") {
+  SECTION("top-level and association entries with capitals, extra spaces or punctuation") {
+    auto const fx = make_fixture("confirmbad");
+    write_config(fx, "[policy]\nconfirm_before = [\"task done\", \"Plan Closeout\"]\n"
+                     "[associations.\"org:acme\".policy]\nconfirm_before = [\"task  done\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains("error: policy.confirm_before: must be an array of verb paths"));
+    CHECK(r.err.contains("error: associations.org:acme.policy.confirm_before: must be an array of verb paths"));
+    cleanup(fx);
+  }
+  SECTION("a non-array value is refused") {
+    auto const fx = make_fixture("confirmbad2");
+    write_config(fx, "[policy]\nconfirm_before = \"task done\"\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains("error: policy.confirm_before: must be an array of verb paths"));
+    cleanup(fx);
+  }
+  SECTION("valid verb paths, and an empty list, validate") {
+    auto const fx = make_fixture("confirmok");
+    write_config(fx, "[policy]\nconfirm_before = [\"task done\", \"plan closeout\", \"spec "
+                     "ingest\"]\n[associations.\"org:acme\".policy]\nconfirm_before = []\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 0);
+    cleanup(fx);
+  }
+}
+
 TEST_CASE("config validate accepts a file with valid policy tables", "[cmd][config][validate][policy]") {
   auto const fx = make_fixture("policyok");
   write_config(fx, R"([policy]
@@ -1254,7 +1335,7 @@ review_required = false
 
 TEST_CASE("config show --effective prints every policy key with its source", "[cmd][config][show][effective][policy]") {
   auto const fx = make_fixture("policyshow");
-  write_config(fx, "[policy]\nreview_required = true\ntask_gate = [\"make\", \"test\"]\n");
+  write_config(fx, "[policy]\nreview_required = true\ntask_gate = [\"make\", \"test\"]\nuse_queue = true\n");
   auto const r = dispatch(fx, {"config", "show", "--effective"});
   REQUIRE(r.code == 0);
   CHECK(effective_row(r.out, "policy.review_required") ==
@@ -1265,7 +1346,8 @@ TEST_CASE("config show --effective prints every policy key with its source", "[c
   CHECK(effective_row(r.out, "policy.confirm_before") == "policy.confirm_before = []  [embedded default]");
   CHECK(effective_row(r.out, "policy.require_scenario_coverage") ==
         "policy.require_scenario_coverage = false  [embedded default]");
-  CHECK(effective_row(r.out, "policy.use_queue") == "policy.use_queue = false  [embedded default]");
+  CHECK(effective_row(r.out, "policy.use_queue") ==
+        std::format("policy.use_queue = true  [config file: {}, policy]", fx.cfg.string()));
   cleanup(fx);
 }
 
