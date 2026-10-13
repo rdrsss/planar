@@ -142,18 +142,19 @@ auto build_protocol(const engine::config::policy_values& policy, std::int64_t le
   out.heartbeat_every_secs = lease_ttl_secs / 2;
   auto const token         = shell_quote("<token>");
   auto const text          = shell_quote("<text>");
-  out.templates.push_back(
-      brief_template{"claim", std::format("planar-agent claim --entity task:<id> --role coder --model {} --ttl {} --worktree {}",
-                                          shell_quote("<model>"), lease_ttl_secs, shell_quote("<path>"))});
+  out.templates.push_back(brief_template{
+      "claim", std::format("planar-agent claim --entity {} --role coder --model {} --ttl {} --worktree {}",
+                           shell_quote("task:<id>"), shell_quote("<model>"), lease_ttl_secs, shell_quote("<path>"))});
   out.templates.push_back(brief_template{"heartbeat", std::format("planar-agent heartbeat --claim {}", token)});
   out.templates.push_back(brief_template{"complete", std::format("planar-agent complete --claim {} --summary {}", token, text)});
   out.templates.push_back(brief_template{"fail", std::format("planar-agent fail --claim {} --reason {}", token, text)});
   out.templates.push_back(brief_template{"release", std::format("planar-agent release --claim {} --reason {}", token, text)});
+  out.templates.push_back(brief_template{
+      "block", std::format("planar-agent block --claim {} --blocker {} --reason {}", token, shell_quote("<task-id>"), text)});
   out.templates.push_back(
-      brief_template{"block", std::format("planar-agent block --claim {} --blocker <task-id> --reason {}", token, text)});
-  out.templates.push_back(
-      brief_template{"review", std::format("planar-agent review --claim {} --verdict approve|request-changes --summary {}",
-                                           shell_quote("<reviewed-token>"), text)});
+      brief_template{"review", std::format("planar-agent review --claim {} --verdict {} --summary {} --reviewer-claim {}",
+                                           shell_quote("<reviewed-token>"), shell_quote("<approve|request-changes>"), text,
+                                           shell_quote("<reviewer-token>"))});
   if (policy.use_queue) {
     std::string gate = std::format("planar-agent queue run --claim {} -- ", token);
     if (policy.task_gate.has_value()) {
@@ -163,7 +164,7 @@ auto build_protocol(const engine::config::policy_values& policy, std::int64_t le
         first = false;
       }
     } else {
-      gate += "<command>";
+      gate += shell_quote("<command>");
     }
     out.templates.push_back(brief_template{"gate", std::move(gate)});
   }
@@ -342,6 +343,9 @@ auto gather_brief(db::connection& conn, std::int64_t plan_id, const engine::conf
   out.policy.digest  = cfg::policy_digest(out.policy.resolved.values);
   out.confirm_before = out.policy.resolved.values.confirm_before;
   out.protocol       = build_protocol(out.policy.resolved.values, aa::default_lease_secs);
+  if (out.counts.todo + out.counts.doing + out.counts.blocked == 0) {
+    out.protocol.templates.clear(); // nothing is left to claim, complete or review
+  }
   return out;
 }
 
@@ -454,6 +458,9 @@ auto render_brief_text(const brief& value) -> std::string {
 
   out += std::format("protocol (lease {}s, heartbeat every {}):\n", value.protocol.lease_ttl_secs,
                      format_duration(value.protocol.heartbeat_every_secs));
+  if (value.protocol.templates.empty()) {
+    out += "  none: no todo, doing or blocked task remains\n";
+  }
   for (auto const& t : value.protocol.templates) {
     out += std::format("  {}: {}\n", t.name, t.command);
   }

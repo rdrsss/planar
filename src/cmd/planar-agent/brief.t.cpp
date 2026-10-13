@@ -194,13 +194,14 @@ TEST_CASE("the protocol derives the heartbeat interval from the default lease an
     by_name[t.name] = t.command;
   }
   CHECK(by_name.at("claim") ==
-        "planar-agent claim --entity task:<id> --role coder --model '<model>' --ttl 7200 --worktree '<path>'");
+        "planar-agent claim --entity 'task:<id>' --role coder --model '<model>' --ttl 7200 --worktree '<path>'");
   CHECK(by_name.at("heartbeat") == "planar-agent heartbeat --claim '<token>'");
   for (auto const* verb : {"complete", "fail", "release", "block"}) {
     CHECK(by_name.at(verb).starts_with(std::format("planar-agent {} --claim '<token>'", verb)));
   }
-  CHECK(by_name.at("review") ==
-        "planar-agent review --claim '<reviewed-token>' --verdict approve|request-changes --summary '<text>'");
+  CHECK(by_name.at("review") == "planar-agent review --claim '<reviewed-token>' --verdict '<approve|request-changes>' --summary "
+                                "'<text>' --reviewer-claim '<reviewer-token>'");
+  CHECK(by_name.at("block") == "planar-agent block --claim '<token>' --blocker '<task-id>' --reason '<text>'");
   CHECK_FALSE(by_name.contains("gate"));
 }
 
@@ -224,7 +225,7 @@ TEST_CASE("queue templates appear only under use_queue and quote each gate eleme
   CHECK(gate_of(values) == "planar-agent queue run --claim '<token>' -- 'sh' '-c' 'echo '\\''hi'\\'' $HOME'");
 
   values.task_gate.reset();
-  CHECK(gate_of(values) == "planar-agent queue run --claim '<token>' -- <command>");
+  CHECK(gate_of(values) == "planar-agent queue run --claim '<token>' -- '<command>'");
 }
 
 TEST_CASE("the brief of a 20-task milestone is complete, read-only and under 4 KB", "[cmd][agent][brief][compose]") {
@@ -316,7 +317,8 @@ TEST_CASE("the brief of a 20-task milestone is complete, read-only and under 4 K
   CHECK(text.contains(std::format("policy digest {}", brief.policy.digest)));
   CHECK(text.contains("heartbeat every 1h"));
   CHECK(text.contains("planar-agent heartbeat --claim '<token>'"));
-  CHECK(text.contains("planar-agent review --claim '<reviewed-token>' --verdict approve|request-changes --summary '<text>'"));
+  CHECK(text.contains("planar-agent review --claim '<reviewed-token>' --verdict '<approve|request-changes>' --summary '<text>' "
+                      "--reviewer-claim '<reviewer-token>'"));
   CHECK_FALSE(text.contains("queue run"));
   CHECK_FALSE(text.contains("confirm with the operator"));
 
