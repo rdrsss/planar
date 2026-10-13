@@ -80,6 +80,14 @@ using agentactivity::entity_kind;
 using agentactivity::failure_category;
 using agentactivity::locality;
 
+/// @brief What `task_policy::claim_policy` is asked about: one claim about to be taken.
+export struct claim_request {
+  entity_kind  kind = entity_kind::task; ///< What is claimed; `plan` for a `pull`, whose task is not yet chosen.
+  std::int64_t entity_id{};              ///< Which one.
+  std::optional<std::string_view> role;  ///< The claim's role, when given.
+  std::optional<std::string_view> model; ///< The claim's model, when given.
+};
+
 /// @brief The four planning-policy decisions this module must make but may
 /// not own. See the file header for why these are callables.
 ///
@@ -137,6 +145,17 @@ export struct task_policy {
   /// `release` or `block`. Unlike the four callables above it MAY be left unbound: an unbound check
   /// admits every completion, which is how a caller that has no policy (and every engine test) runs.
   std::function<std::expected<void, agent_error>(db::connection& conn, const claim& held)> check_completion;
+
+  /// @brief The policy decision for a claim about to be taken (plan 1142).
+  ///
+  /// Layer 3 binds this to the configured policy, which this bucket may not import. Called INSIDE the
+  /// claim or pull transaction, on the connection that inserts the claim, before the exclusivity check
+  /// and before anything is written. It returns `claim_policy_unmet` to refuse, which leaves no claim,
+  /// or the digest of the effective policy for the claim's scope, which `claim_entity` and `pull_next`
+  /// store as `agent_work_claims.policy_digest`; an unset digest stores NULL. Like `check_completion`
+  /// it MAY be left unbound: an unbound decision admits every claim and records no digest.
+  std::function<std::expected<std::optional<std::string>, agent_error>(db::connection& conn, const claim_request& request)>
+      claim_policy;
 };
 
 /// @brief One task that `pull` or `peek` passed over because it was not ready.
@@ -195,13 +214,17 @@ export struct claim_readiness {
 /// `readiness->allow_unready` is set an unready task is claimed anyway and exactly one closed
 /// `other` action is written on the claim, with `unready_override` and the overridden reasons in its
 /// summary and metadata. Plan and plan_step claims are not subject to readiness.
+///
+/// **Claim policy (plan 1142).** `policy.claim_policy`, when bound, is asked first of all, inside the
+/// transaction: it may refuse with `claim_policy_unmet` (nothing is written), and the digest it
+/// returns is stored on the claim as `policy_digest`. Contention and readiness are consulted after it.
 /// @param conn An open, migrated connection (this function owns the transaction).
 /// @param args The claim to acquire.
 /// @param transition_task Whether a task claim also flips `todo -> doing`.
 /// @param policy The injected planning policy.
 /// @param readiness The override request and the reasons found, or null for no override and no report.
 /// @return The acquired claim, or `claim_contention` / `illegal_transition` /
-/// `task_not_ready` / `task_not_found` / `query_failed`.
+/// `task_not_ready` / `claim_policy_unmet` / `task_not_found` / `query_failed`.
 export auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args, bool transition_task,
                          const task_policy& policy, claim_readiness* readiness = nullptr) -> std::expected<claim, agent_error>;
 
@@ -253,6 +276,10 @@ export struct pull_result {
 /// plan therefore returns nothing when all its own direct tasks are taken,
 /// even if a milestone child has work.
 ///
+/// **Claim policy (plan 1142).** `policy.claim_policy`, when bound, is asked once with the plan
+/// before any candidate is read: a refusal (`claim_policy_unmet`) writes nothing, and the digest it
+/// returns is stored on the claim taken, whose scope is the plan's.
+///
 /// The nothing-eligible path COMMITS an empty transaction and returns
 /// `no_work` — it writes not one row, which is what makes `peek`'s "same
 /// query, no writes" claim checkable against it.
@@ -260,7 +287,7 @@ export struct pull_result {
 /// @param args The pull parameters.
 /// @param policy The injected planning policy.
 /// @return The pull outcome, or `claim_contention` / `illegal_transition` /
-/// `query_failed`.
+/// `claim_policy_unmet` / `query_failed`.
 export auto pull_next(db::connection& conn, const pull_args& args, const task_policy& policy)
     -> std::expected<pull_result, agent_error>;
 

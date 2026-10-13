@@ -255,6 +255,8 @@ The boundary rule keeps policy from becoming a workflow engine: a key is admitte
 
 `planar-agent complete` enforces `review_required` and `task_gate`: it refuses, writing nothing and leaving the claim active, until the claim has an approving `review` from another session and a passing queued run (exact argv, the claim's token, the claim's repository root or worktree) of the gate. The refusal names the command that would succeed. Details: [docs/cli-reference.md](cli-reference.md#binary-planar-agent).
 
+`planar-agent claim` and `pull` enforce `require_model`: when it is `true`, a `--role coder` claim without `--model` is refused (exit 1, nothing written). Every claim records the digest of the policy it was taken under, so a later reader can tell which policy applied. A policy that cannot be applied records no digest and refuses only coder claims. `planar spec ingest --strict` enforces `require_scenario_coverage` for the anchor plan's scope: uncovered task slugs and orphan scenarios then make `--strict` exit 2 instead of only warning.
+
 Which association's table applies to an entity follows its scope: an association-scoped plan uses its own association, a repo-scoped plan uses the project's association when the project belongs to exactly one, and everything else (no association, several associations, global) uses the top-level table. `planar-agent brief <plan>` shows the policy in force for a plan, with each key's source, next to the claim protocol it implies; queue command templates appear there only when `use_queue` is true.
 
 ## Project

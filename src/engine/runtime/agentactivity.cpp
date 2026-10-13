@@ -756,6 +756,7 @@ auto error_name(agent_error err) -> std::string_view {
   case agent_error::reviewer_claim_not_found:
     return "ReviewerClaimNotFound";
   case agent_error::completion_unmet:
+  case agent_error::claim_policy_unmet:
     return "PolicyUnmet";
   }
   return "QueryFailed";
@@ -798,14 +799,14 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
                                        "  status, vendor, vendor_session_id, role, model,\n"
                                        "  worktree_id, worktree_path,\n"
                                        "  repo_root, branch, head_sha_at_claim, dirty_at_claim,\n"
-                                       "  purpose, base_ref,\n"
+                                       "  purpose, base_ref, policy_digest,\n"
                                        "  lease_expires_at\n"
                                        ") values (\n"
                                        "  lower(hex(randomblob(16))), ?, ?, ?, ?,\n"
                                        "  'active', ?, ?, ?, ?,\n"
                                        "  ?, ?,\n"
                                        "  ?, ?, ?, ?,\n"
-                                       "  ?, ?,\n"
+                                       "  ?, ?, ?,\n"
                                        "  strftime('%Y-%m-%dT%H:%M:%fZ','now', {})\n"
                                        ")",
                                        seconds_modifier(args.ttl_secs)));
@@ -828,6 +829,7 @@ auto acquire_claim(db::connection& conn, const acquire_args& args) -> std::expec
   ok      = ok && bind_opt_text(*stmt, 14, claim_dirty_text(args.loc));
   ok      = ok && bind_opt_text(*stmt, 15, args.purpose);
   ok      = ok && bind_opt_text(*stmt, 16, args.base_ref);
+  ok      = ok && bind_opt_text(*stmt, 17, args.policy_digest);
   if (!ok || !stmt->step()) {
     return std::unexpected(agent_error::query_failed);
   }

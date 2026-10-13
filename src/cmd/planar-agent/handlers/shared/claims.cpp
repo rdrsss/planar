@@ -15,7 +15,9 @@ import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.agentrender;
 import planar.engine.runtime.session;
+import planar.cmd.internal.config_path;
 import planar.cmd.planar_agent.args;
+import planar.cmd.planar_agent.claim_policy;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
@@ -225,26 +227,34 @@ auto pull(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const purpose  = cliapp::flag_string(args, "--purpose");
   auto const base_ref = cliapp::flag_string(args, "--base-ref");
 
-  auto const result = atomic::pull_next(**conn,
-                                        atomic::pull_args{
-                                            .plan_id           = cliapp::positional_int(args, "plan-id").value_or(0),
-                                            .session_id        = *session,
-                                            .vendor            = vendor,
-                                            .vendor_session_id = view(vsid),
-                                            .role              = view(role),
-                                            .model             = view(model),
-                                            .worktree_id       = worktree.id,
-                                            .worktree_path     = view(worktree.path),
-                                            .purpose           = view(purpose),
-                                            .base_ref          = view(base_ref),
-                                            .ttl_secs          = *ttl,
-                                            .loc               = loc,
-                                            .kind              = kind,
-                                            .metadata          = view(metadata),
-                                            .parent_action_id  = *parent,
-                                        },
-                                        task_policy());
+  // The configured policy decides inside the pull transaction (plan 1142): `require_model` for a coder
+  // pull, and the digest every claim records. The report carries the refusal's text out.
+  claim_policy_report report;
+  auto                policy = task_policy();
+  policy.claim_policy        = claim_policy_decision(internal::resolve_config_path(ctx.env()), "pull", &report);
+  auto const result          = atomic::pull_next(**conn,
+                                                 atomic::pull_args{
+                                                     .plan_id           = cliapp::positional_int(args, "plan-id").value_or(0),
+                                                     .session_id        = *session,
+                                                     .vendor            = vendor,
+                                                     .vendor_session_id = view(vsid),
+                                                     .role              = view(role),
+                                                     .model             = view(model),
+                                                     .worktree_id       = worktree.id,
+                                                     .worktree_path     = view(worktree.path),
+                                                     .purpose           = view(purpose),
+                                                     .base_ref          = view(base_ref),
+                                                     .ttl_secs          = *ttl,
+                                                     .loc               = loc,
+                                                     .kind              = kind,
+                                                     .metadata          = view(metadata),
+                                                     .parent_action_id  = *parent,
+                                                 },
+                                                 policy);
   if (!result) {
+    if (result.error() == aa::agent_error::claim_policy_unmet) {
+      return std::unexpected(claim_policy_refusal(report));
+    }
     return std::unexpected(verb_error("pull", result.error()));
   }
 
@@ -343,6 +353,12 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   auto const model   = cliapp::flag_string(args, "--model");
   auto const purpose = cliapp::flag_string(args, "--purpose");
 
+  // The configured policy decides inside the claim transaction (plan 1142): `require_model` for a coder
+  // claim, and the digest every claim records. The report carries the refusal's text out.
+  claim_policy_report report;
+  auto                policy = task_policy();
+  policy.claim_policy        = claim_policy_decision(internal::resolve_config_path(ctx.env()), "claim", &report);
+
   atomic::claim_readiness readiness{.allow_unready = cliapp::flag_bool(args, "--allow-unready")};
   auto const              acquired = atomic::claim_entity(**conn,
                                                           aa::acquire_args{
@@ -361,8 +377,11 @@ auto claim(context& ctx, const cliapp::parsed_args& args) -> handler_result {
                                                               .force             = cliapp::flag_bool(args, "--force"),
                                                               .parent_action_id  = *parent,
                                                           },
-                                                          !cliapp::flag_bool(args, "--no-transition"), task_policy(), &readiness);
+                                                          !cliapp::flag_bool(args, "--no-transition"), policy, &readiness);
   if (!acquired) {
+    if (acquired.error() == aa::agent_error::claim_policy_unmet) {
+      return std::unexpected(claim_policy_refusal(report));
+    }
     if (acquired.error() == aa::agent_error::task_not_ready) {
       auto const task = aa::get_task(**conn, entity->id);
       return std::unexpected(not_ready_error(entity->id, readiness.unready_reasons, task ? std::string_view{task->status} : ""));

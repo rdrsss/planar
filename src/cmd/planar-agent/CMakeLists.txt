@@ -131,6 +131,7 @@ planar_binary(planar_agent
     locality.cppm
     policy.cppm
     completion_policy.cppm
+    claim_policy.cppm
     brief.cppm
     main.cppm
     handlers/shared/cli.cppm
@@ -176,6 +177,7 @@ planar_binary(planar_agent
     locality.cpp
     policy.cpp
     completion_policy.cpp
+    claim_policy.cpp
     brief.cpp
     handlers/version/version.cpp
     handlers/schema/schema.cpp

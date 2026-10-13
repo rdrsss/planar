@@ -47,7 +47,8 @@ state, live and stale claims, the parallel wave, readiness, the policy and the c
   disconnected root. The id must name an existing action, else the verb refuses and writes
   nothing.
 - Record the model actually used with `--model <name>` on `pull` or `claim`. It is stored
-  verbatim and never validated.
+  verbatim and never validated. Where the policy sets `require_model = true`, a `--role coder`
+  claim without `--model` is refused (exit 1) and the error names the flag.
 - Size the lease to the work with `--ttl` on `pull` or `claim`; the default is 7200
   seconds (two hours), so a short task needs no flag and a longer one sets `--ttl`. Flags: see `planar-agent claim --help` and
   `planar-agent pull --help`.

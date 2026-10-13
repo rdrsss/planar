@@ -465,4 +465,21 @@ auto parse_toml(std::string_view content) -> std::expected<toml_map, toml_error>
   return out;
 }
 
+auto load_toml_file(const std::filesystem::path& path) -> std::expected<toml_map, std::string> {
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec)) {
+    return toml_map{};
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return std::unexpected(std::format("cannot read {}", path.string()));
+  }
+  std::string const content{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  auto              parsed = parse_toml(content);
+  if (!parsed) {
+    return std::unexpected(std::format("{}: line {}: {}", path.string(), parsed.error().line, parsed.error().message));
+  }
+  return std::move(*parsed);
+}
+
 } // namespace planar::engine::config

@@ -734,6 +734,87 @@ TEST_CASE("a readiness failure aborts pull and claim without claiming", "[agenta
 }
 
 // ===========================================================================
+// Claim policy (plan 1142)
+// ===========================================================================
+
+TEST_CASE("claim_policy is asked inside the claim transaction and its digest is stored on the claim",
+          "[agentatomic][claim-policy]") {
+  scratch_db_path                    scratch;
+  auto                               conn = open_migrated(scratch);
+  auto const                         fx   = seed(conn, 2);
+  recording_policy                   recording;
+  auto                               policy = recording.bind();
+  std::vector<atomic::claim_request> asked;
+  std::vector<bool>                  in_transaction;
+  policy.claim_policy = [&](planar::db::connection&      c,
+                            const atomic::claim_request& request) -> std::expected<std::optional<std::string>, aa::agent_error> {
+    asked.push_back(request);
+    in_transaction.push_back(c.in_transaction());
+    return std::optional<std::string>{"digest-for-test"};
+  };
+
+  auto args          = basic_args(fx, task_id_at(conn, 0));
+  args.role          = "coder";
+  args.model         = "m-1";
+  auto const claimed = atomic::claim_entity(conn, args, true, policy);
+  REQUIRE(claimed.has_value());
+  REQUIRE(asked.size() == 1);
+  CHECK(asked[0].kind == aa::entity_kind::task);
+  CHECK(asked[0].entity_id == task_id_at(conn, 0));
+  CHECK(asked[0].role == std::optional<std::string_view>{"coder"});
+  CHECK(asked[0].model == std::optional<std::string_view>{"m-1"});
+  CHECK(in_transaction == std::vector<bool>{true});
+  CHECK(scalar_text(conn, "select policy_digest from agent_work_claims") == "digest-for-test");
+
+  // A pull asks once, with the plan, before any task is read, and records the digest on the claim it takes.
+  asked.clear();
+  recording.readiness_calls.clear();
+  auto const pulled =
+      atomic::pull_next(conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy);
+  REQUIRE(pulled.has_value());
+  REQUIRE(asked.size() == 1);
+  CHECK(asked[0].kind == aa::entity_kind::plan);
+  CHECK(asked[0].entity_id == fx.plan_id);
+  CHECK(scalar_text(conn, "select policy_digest from agent_work_claims order by id desc limit 1") == "digest-for-test");
+
+  // An unbound decision admits the claim and records NULL.
+  auto const unbound   = recording.bind();
+  auto       plan_args = basic_args(fx, fx.plan_id);
+  plan_args.kind       = aa::entity_kind::plan;
+  auto const plain     = atomic::claim_entity(conn, plan_args, false, unbound);
+  REQUIRE(plain.has_value());
+  CHECK(scalar_int(conn, "select policy_digest is null from agent_work_claims order by id desc limit 1") == 1);
+}
+
+TEST_CASE("a claim_policy refusal aborts claim and pull before anything is read or written", "[agentatomic][claim-policy]") {
+  scratch_db_path  scratch;
+  auto             conn = open_migrated(scratch);
+  auto const       fx   = seed(conn, 1);
+  recording_policy recording;
+  auto             policy = recording.bind();
+  policy.claim_policy     = [](planar::db::connection&,
+                               const atomic::claim_request&) -> std::expected<std::optional<std::string>, aa::agent_error> {
+    return std::unexpected(aa::agent_error::claim_policy_unmet);
+  };
+
+  auto const claimed = atomic::claim_entity(conn, basic_args(fx, task_id_at(conn, 0)), true, policy);
+  REQUIRE_FALSE(claimed.has_value());
+  CHECK(claimed.error() == aa::agent_error::claim_policy_unmet);
+  CHECK(aa::error_name(claimed.error()) == "PolicyUnmet");
+  CHECK(recording.readiness_calls.empty());
+
+  auto const pulled =
+      atomic::pull_next(conn, atomic::pull_args{.plan_id = fx.plan_id, .session_id = fx.session_id, .vendor = "test"}, policy);
+  REQUIRE_FALSE(pulled.has_value());
+  CHECK(pulled.error() == aa::agent_error::claim_policy_unmet);
+  CHECK(recording.readiness_calls.empty());
+
+  CHECK(scalar_int(conn, "select count(*) from agent_work_claims") == 0);
+  CHECK(scalar_int(conn, "select count(*) from agent_actions") == 0);
+  CHECK(scalar_text(conn, "select status from tasks") == "todo");
+}
+
+// ===========================================================================
 // Terminal verbs — the atomicity evidence
 // ===========================================================================
 
