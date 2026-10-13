@@ -253,7 +253,8 @@ different projects do not compile or run suites at the same time. The queue is
 command is the process that runs it. The states an entry moves through are the
 diagram in [`lifecycles.md` §3.4](lifecycles.md#34-host-queue-entry), the verbs
 and exit codes are in [`cli-reference.md` §Queue verbs](cli-reference.md#queue-verbs),
-and the rule agents follow is printed by `planar-agent queue rule`.
+and how to use it, with the mandate where the operator's policy sets
+`use_queue = true`, is printed by `planar-agent queue rule`.
 
 **Where it lives.** The queue's state is three tables in `planar.db`
 (`queue_entries`, `queue_history` and `queue_schema`), in the file `PLANAR_DB`

@@ -185,7 +185,12 @@ started directly. It is submitted to the host-wide queue, so two builds do
 not run at once and one agent's `make test` does not starve another's. The
 queue is `planar-agent queue`; see [the queue verbs](cli-reference.md#queue-verbs)
 for the full contract and [operations.md](operations.md#4-the-host-build-and-test-queue)
-for running it. `planar-agent queue rule` prints the rule agents follow.
+for running it. `planar-agent queue rule` prints how to use the queue, and
+prints the requirement to use it only where the operator's policy sets
+`use_queue = true` (`[policy]` or an `[associations."<slug>".policy]` table in
+`config.toml`; no environment override). This repository's contributor rule is
+that its agents use the queue, so a contributor enables it in their own
+`config.toml`.
 
 Every gate above has a queued form: the gate's own command after the argument
 terminator, run from the directory it needs.

@@ -134,8 +134,9 @@ task.
 
 ## Builds and tests go through the host queue
 
-In a Planar-managed repository, run builds and test suites through the host-wide queue
-instead of directly: `planar-agent queue run --detach --vendor <vendor> --role <role> --
+When the operator's policy sets `use_queue = true` for your scope (the brief shows it,
+and `planar-agent queue rule` prints the mandate then), run builds and test suites through
+the host-wide queue instead of directly: `planar-agent queue run --detach --vendor <vendor> --role <role> --
 <command>`, then use `planar-agent queue wait <seq> --timeout <budget> --json`.
 Choose a finite budget covering expected backlog and runtime, or use one short
 slice and save the ticket for an explicit later wait on that same sequence.

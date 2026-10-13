@@ -202,6 +202,7 @@ planar_binary(planar_agent
     engine_ingest
     engine_hostqueue
     engine_config
+    engine_identity
     engine_diagnose
     core
     process)
@@ -224,6 +225,7 @@ if(TARGET planar_cmd_planar_agent_tests)
     "PLANAR_CPP_BIN=\"$<TARGET_FILE:planar_cmd_planar_agent>\""
     # queue_rule.t.cpp holds the built binary to the authored rule file.
     "PLANAR_QUEUE_RULE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/lib/queuerule/queue-rule.md\""
+    "PLANAR_QUEUE_MANDATE_SOURCE=\"${PROJECT_SOURCE_DIR}/src/lib/queuerule/queue-mandate.md\""
     # queue_roles.t.cpp reads the authored role files and skill sources.
     "PLANAR_REPO_ROOT=\"${PROJECT_SOURCE_DIR}\"")
   target_include_directories(planar_cmd_planar_agent_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")

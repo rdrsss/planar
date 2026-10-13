@@ -630,29 +630,18 @@ or target-specific commands.
 - [ ] No references to files that have been renamed or deleted (grep for
       all file paths cited in changed documents).
 
-<!-- queue-lint-ignore-begin: the queue rule text below is pinned byte for byte to src/lib/queuerule/queue-rule.md and its Examples line lists the programs -->
-## Builds and tests go through the host queue
+<!-- queue-lint-ignore-begin: the queue rule text below is pinned byte for byte to src/lib/queuerule/queue-rule.md and src/lib/queuerule/queue-mandate.md, and its Examples line lists the programs -->
+## Using the host queue
 
-Every build and every test run on this machine goes through one host-wide
-queue, so that agents in different projects do not build at the same time.
-Submit the command to the queue and collect its recorded outcome. Do not run
-it yourself.
+The host queue is one line, shared by every project on this machine, for
+commands that are expensive to run: builds and test suites. Submit a command
+to it, and it runs the command at its turn and records the outcome, so agents
+in different projects do not build at the same time.
 
-### What counts as a build or test command
-
-A command goes through the queue when it does any of these:
-
-- compiles or links code;
-- runs a test suite, or any part of one;
-- uses more than one core for more than a minute.
-
-Examples: `make`, `make test`, `cmake --build`, `ninja`, `ctest`, `cargo build`, `cargo test`, `go build`, `go test`, `npm test`, `pytest`, `tox`, `gradle build`, and linters and static analysers that build first.
-
-Not queued: reading files, searching, version control, formatting a single file, a program's `--help`, and the Planar commands themselves.
-
-When a command is not on the list and you are unsure, queue it. Queuing a
-cheap command costs a short wait. Not queuing an expensive one costs every
-other agent on the host.
+Whether an agent must use the queue is the operator's policy, `use_queue` in
+`config.toml`. This text describes how to use it. `planar-agent queue rule`
+adds the instruction to send every build and test through the queue, and names
+its source, only when the policy of the caller's scope requires it.
 
 ### Before the first submission
 
@@ -664,7 +653,7 @@ planar-agent queue rule >/dev/null
 
 Exit 0 establishes that the queue exists. For a nonzero exit, inspect the
 diagnostic and installed command catalog; only a verified absence of the
-`queue` verb permits the no-queue path below. A queue that exists but cannot
+`queue` verb means the installed Planar has no queue. A queue that exists but cannot
 be read has refused. Do not use general `--help` alone as an absence test:
 older Planar versions can answer unknown-command help with general help and
 exit 0. If the queue exists, discover the `wait` leaf once using the compact
@@ -825,21 +814,49 @@ timeout, stalled observation, or observer error. Inspect `wait_reason` and
 with `queue status <seq> --json`.
 
 When a submit exits 125, or the queue cannot be used (its store cannot be
-opened, or it failed inside), stop. Report the `error:` line to the operator,
-word for word, and say which command you were trying to run. The command must
-not be run directly. Do not retry in a loop, and do not look for another way
-to run the build. The operator decided that an unreachable queue is refused,
-not bypassed.
+opened, or it failed inside), the command did not run and nothing was
+recorded. Stop. Report the `error:` line to the operator, word for word, and
+say which command you were trying to run. Do not retry in a loop.
 
 An entry that ended `cancelled` or `wait_timeout` is not this case. It is an
-outcome of a ticket you hold, and the table above says what to do. The
-command is still never run directly.
+outcome of a ticket you hold, and the table above says what to do.
+
+## Builds and tests go through the host queue
+
+The operator's policy requires this: `use_queue = true` for your scope. Every
+build and every test run on this machine goes through the host queue. Submit
+the command to the queue and collect its recorded outcome. Do not run it
+yourself.
+
+### What counts as a build or test command
+
+A command goes through the queue when it does any of these:
+
+- compiles or links code;
+- runs a test suite, or any part of one;
+- uses more than one core for more than a minute.
+
+Examples: `make`, `make test`, `cmake --build`, `ninja`, `ctest`, `cargo build`, `cargo test`, `go build`, `go test`, `npm test`, `pytest`, `tox`, `gradle build`, and linters and static analysers that build first.
+
+Not queued: reading files, searching, version control, formatting a single file, a program's `--help`, and the Planar commands themselves.
+
+When a command is not on the list and you are unsure, queue it. Queuing a
+cheap command costs a short wait. Not queuing an expensive one costs every
+other agent on the host.
+
+### If the queue refuses, never bypass it
+
+When a submit exits 125, or the queue cannot be used, the command must not be
+run directly. Do not look for another way to run the build. The operator
+decided that an unreachable queue is refused, not bypassed. An entry that ended
+`cancelled` or `wait_timeout` is an outcome of a ticket you hold, and the table
+of outcomes says what to do. The command is still never run directly.
 
 ### If Planar has no queue: run directly and say so
 
 Use this only after verifying the installed Planar lacks the `queue` verb.
 Nonzero `queue rule` alone does not establish absence. An older install with
-`queue` but without `wait` uses the finite compatibility path above.
+`queue` but without `wait` uses the finite compatibility path.
 
 Run the build or test command directly. Then tell the operator that Planar
 needs upgrading so that builds and tests can go through the queue.
@@ -880,7 +897,11 @@ re-running but bisecting, or reverting a merge that was never at fault.
 So do not treat the `BUILD_EXIT` tell as the general rule. It is the tell for
 one variant. The general rule is the operational one:
 
-**Builds and tests go through the host queue.** The queue runs one command
+**Builds and tests go through the host queue, when the operator's policy says
+so.** The mandate is not Planar's default. `planar-agent queue rule` prints it
+only for a scope whose policy sets `use_queue = true` (in `config.toml`,
+`[policy]` or `[associations."<slug>".policy]`), and then names that policy as
+its source; the rule below applies in exactly those scopes. The queue runs one command
 at a time on the host, which is what keeps two builds out of one build
 directory, whether they come from two lanes, the orchestrator's own gates,
 the lint target, the test suite or a break-probe script that rebuilds per

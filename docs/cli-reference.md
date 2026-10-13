@@ -5403,7 +5403,7 @@ review_required = false     # beats the top-level value for this association
 | `require_model` | bool | coder `claim` / `pull` | `false` |
 | `confirm_before` | array of verb paths | the orchestrator brief only | `[]` |
 | `require_scenario_coverage` | bool | `spec ingest --strict` | `false` |
-| `use_queue` | bool | brief, `queue rule`, conformance | `false` |
+| `use_queue` | bool | brief, `queue rule` (prints the mandate), conformance | `false` |
 
 A gate value is an argv array such as `["make", "test"]`, not a shell string.
 This table is the key set only: each verb reads the effective values in its
@@ -6646,20 +6646,27 @@ Exit 124 can mean an observer deadline, recorded run timeout, or child exit 124.
 planar-agent queue rule
 ```
 
-`queue rule` prints the rule that tells an agent to send its builds and tests through the queue, so the operator can paste it into a project's own agent guide. It writes the text to standard output, byte for byte, and exits **0**. It takes no argument and no flag (there is no `--json`; the text is Markdown, and it begins with the `##` heading "Builds and tests go through the host queue").
+`queue rule` prints how to use the host queue, and, only where the operator's policy requires it, the instruction to send every build and test through it. It writes Markdown to standard output and exits **0**. It takes no argument and no flag (there is no `--json`).
 
-The text is one authored file, `src/lib/queuerule/queue-rule.md`, embedded into `planar-agent` at build time. It holds:
+The text has two parts, each one authored file embedded into `planar-agent` at build time.
 
-- what counts as a build or test command, with examples, and what does not;
-- the detached submit and status polling procedure; the bounded `queue wait` recipe is being adopted in the agent guidance alongside this reference contract;
+**The how-to** (`src/lib/queuerule/queue-rule.md`) is always printed. It begins with the `##` heading "Using the host queue" and holds:
+
+- the detached submit and the bounded `queue wait` recipe;
 - the instruction to pass `--vendor` and `--role`;
-- the instruction, for an agent that holds a task claim, to pass `--claim <token>` to `queue run` (detached and foreground) so the queue renews the claim while the entry waits and runs, in place of renewing it by hand between polls;
+- the instruction, for an agent that holds a task claim, to pass `--claim <token>` to `queue run` (detached and foreground) so the queue renews the claim while the entry waits and runs;
 - what to do on each outcome `queue status` reports;
-- the instruction to stop and report when a queue command exits **125**, and that the command must not then be run directly;
 - what a non-zero exit from the detached submit means (no ticket was issued) and the route for each code;
-- the check for a Planar without the queue (`planar-agent queue rule >/dev/null` exits non-zero), the fallback of running the command directly and telling the operator that Planar needs upgrading, and a table that sets this apart from exit 125. The check is `queue rule`, not `--help`: an older Planar answers an unknown command's `--help` with its general help and exits 0, so a `--help` check would pass where there is no queue. `queue rule` exits non-zero there and opens no database.
+- what an exit **125** refusal means, and to stop and report it;
+- the check that the installed Planar has the queue (`planar-agent queue rule >/dev/null`), which is `queue rule` and not `--help`: an older Planar answers an unknown command's `--help` with its general help and exits 0, so a `--help` check would pass where there is no queue.
 
-`queue rule` **opens no database**, and is the one queue verb that needs no `planar.db`. It reads no environment variable and no configuration file, so it prints the same text with `PLANAR_DB` unusable and with `HOME` and `PLANAR_DB` unset, and it creates nothing on disk.
+**The mandate** (`src/lib/queuerule/queue-mandate.md`) is printed after the how-to only when the caller's scope has `use_queue = true`. It begins with the `##` heading "Builds and tests go through the host queue", names the operator's policy as its source, and holds what counts as a build or test command (with examples, what is not queued, and "when unsure, queue it"), that a refusal is never bypassed by running the command directly, the fallback of running directly and telling the operator that Planar needs upgrading for a Planar that has no `queue` verb, and the table that sets that apart from a refusal. A final line `Source: operator policy use_queue = true (<config path>, [policy])` names the table that set it; an association's table reads `[associations."<slug>".policy]`.
+
+**The policy** is the one `planar-agent brief` shows: the `[policy]` table of `config.toml` (`PLANAR_CONFIG_PATH`, else `~/.planar/config.toml`), refined by the `[associations."<slug>".policy]` table of the caller's association, which wins; the shipped default is `use_queue = false`. No environment variable participates: `PLANAR_USE_QUEUE=1` changes nothing. The caller's association is derived from the working directory, as for every write verb.
+
+`queue rule` never fails on configuration. A config file that cannot be read or parsed, or a `[policy]` table with an unknown or mistyped key, prints the how-to and one final line `policy unreadable: <finding>`, grants no mandate, and exits 0. `planar config validate` reports the finding in full.
+
+`queue rule` **opens no database** unless some `[associations."<slug>".policy]` table sets `use_queue`, which is the only case where the working directory's association matters. Then it opens `planar.db` read-only (it never creates it and applies nothing) to find the association; if the database is unreachable, the working directory has no single association, or the schema is not this binary's, the top-level policy alone decides and a final line `scope not resolved (<reason>); only the top-level [policy] table was consulted` says so. With no config file, or with only a top-level policy, it prints the same text with `PLANAR_DB` unusable and with `HOME` and `PLANAR_DB` unset, and it creates nothing on disk.
 
 #### Known limits
 

@@ -16,4 +16,25 @@ auto queue_rule_text() -> std::string_view {
   return planar::queuerule::queue_rule_text();
 }
 
+auto queue_mandate_text() -> std::string_view {
+  return planar::queuerule::queue_mandate_text();
+}
+
+auto render_queue_rule(const rule_policy& policy) -> std::string {
+  std::string out{queue_rule_text()};
+  if (policy.mandate) {
+    out += '\n';
+    out += queue_mandate_text();
+    out += std::format("\nSource: operator policy use_queue = true ({})\n", policy.source);
+  }
+  if (!policy.notes.empty()) {
+    out += '\n';
+    for (auto const& note : policy.notes) {
+      out += note;
+      out += '\n';
+    }
+  }
+  return out;
+}
+
 } // namespace planar::engine::hostqueue
