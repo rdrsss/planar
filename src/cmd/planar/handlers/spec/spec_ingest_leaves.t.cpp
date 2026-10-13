@@ -1022,6 +1022,127 @@ TEST_CASE("spec ingest --strict accepts a fully covered roadmap", "[cmd][spec][i
   CHECK(count(conn, "test_scenarios") == 0);
 }
 
+// ---------------------------------------------------------------------------
+// --strict under the require_scenario_coverage policy (plan 1142)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// @brief A project-scoped plan whose roadmap proposes one slug-bearing task and, when `with_orphan`, a
+/// test spec holding a scenario that cites nothing; `config.toml` is written to the fixture's own path.
+auto make_policy_fixture(std::string_view tag, bool with_orphan) -> fixture {
+  auto fx                       = make_fixture(tag);
+  fx.vars["PLANAR_CONFIG_PATH"] = (fx.root / "config.toml").string();
+  REQUIRE(dispatch(fx, {"init", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string(), "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Policy fixture", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Tech Spec", "--kind", "tech_spec", "--plan", "1", "--body", "", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"artifact", "add", "Roadmap", "--kind", "roadmap", "--plan", "1", "--body",
+                        "## M1\n\n- Needs a scenario [slug: needs-coverage]\n- Also bare [slug: also-bare]\n", "--json"})
+              .code == 0);
+  if (with_orphan) {
+    REQUIRE(dispatch(fx, {"artifact", "add", "Test Spec", "--kind", "test_spec", "--plan", "1", "--body",
+                          "## Scenarios\n\n### Scenario: cites nothing\n\nNo task reference.\n", "--json"})
+                .code == 0);
+  }
+  REQUIRE(dispatch(fx, {"workbench", "push", "1", "--json"}).code == 0);
+  return fx;
+}
+
+void write_policy_config(const fixture& fx, std::string_view text) {
+  std::ofstream out(fx.root / "config.toml", std::ios::binary | std::ios::trunc);
+  out << text;
+}
+
+} // namespace
+
+TEST_CASE("spec ingest --strict refuses uncovered tasks and orphan scenarios when the policy requires coverage",
+          "[cmd][spec][ingest][strict][policy]") {
+  auto fx = make_policy_fixture("strict_policy", true);
+  write_policy_config(fx, "[policy]\nrequire_scenario_coverage = true\n");
+
+  auto const refused = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(refused.code == 2);
+  CHECK(refused.err.contains("plan 1: --strict refused: 2 uncovered task slug(s): also-bare, needs-coverage"));
+  CHECK(refused.err.contains("1 orphan scenario(s): cites nothing"));
+  CHECK(refused.err.contains("policy require_scenario_coverage = true"));
+  CHECK(refused.err.contains("error: --strict refused"));
+  {
+    auto conn = open_db(fx);
+    CHECK(count(conn, "tasks") == 0);
+    CHECK(count(conn, "test_scenarios") == 0);
+  }
+
+  // The refusal is the gate's, not the preview's: without --strict the same input previews and exits 0.
+  CHECK(dispatch(fx, {"spec", "ingest", "1"}).code == 0);
+
+  // No variable in the environment switches the policy off.
+  for (std::string const name :
+       {"PLANAR_REQUIRE_SCENARIO_COVERAGE", "PLANAR_POLICY_REQUIRE_SCENARIO_COVERAGE", "REQUIRE_SCENARIO_COVERAGE"}) {
+    INFO("variable " << name);
+    fx.vars[name] = "false";
+    CHECK(dispatch(fx, {"spec", "ingest", "1", "--strict"}).code == 2);
+    fx.vars.erase(name);
+  }
+}
+
+TEST_CASE("spec ingest --strict stays report-only when the policy key is absent or false",
+          "[cmd][spec][ingest][strict][policy]") {
+  auto fx = make_policy_fixture("strict_policy_off", true);
+
+  // No config file, an unrelated policy table, and an explicit false all keep the report.
+  for (std::string_view const config :
+       {"", "[policy]\nreview_required = true\n", "[policy]\nrequire_scenario_coverage = false\n"}) {
+    INFO("config:\n" << config);
+    write_policy_config(fx, config);
+    auto const res = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+    CHECK(res.code == 0);
+    CHECK(res.err.contains("warning: plan 1: 2 task(s) without a scenario: also-bare, needs-coverage"));
+    CHECK(res.err.contains("warning: plan 1: 1 orphan scenario(s) cite no task: cites nothing"));
+  }
+}
+
+TEST_CASE("spec ingest --strict applies the policy of the anchor's association only", "[cmd][spec][ingest][strict][policy]") {
+  auto fx = make_policy_fixture("strict_policy_assoc", false);
+
+  // The plan's association asks for coverage; the top level does not.
+  write_policy_config(fx, "[policy]\nrequire_scenario_coverage = false\n"
+                          "[associations.\"project:proj\".policy]\nrequire_scenario_coverage = true\n");
+  auto const refused = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(refused.code == 2);
+  CHECK(refused.err.contains("2 uncovered task slug(s): also-bare, needs-coverage"));
+  CHECK(refused.err.contains("policy require_scenario_coverage = true"));
+
+  // Another association's table does not apply.
+  write_policy_config(fx, "[policy]\nrequire_scenario_coverage = false\n"
+                          "[associations.\"project:elsewhere\".policy]\nrequire_scenario_coverage = true\n");
+  CHECK(dispatch(fx, {"spec", "ingest", "1", "--strict"}).code == 0);
+
+  // The association's false wins over a top-level true.
+  write_policy_config(fx, "[policy]\nrequire_scenario_coverage = true\n"
+                          "[associations.\"project:proj\".policy]\nrequire_scenario_coverage = false\n");
+  CHECK(dispatch(fx, {"spec", "ingest", "1", "--strict"}).code == 0);
+}
+
+TEST_CASE("spec ingest --strict refuses, naming the file, when the policy in config.toml cannot be applied",
+          "[cmd][spec][ingest][strict][policy]") {
+  auto fx = make_policy_fixture("strict_policy_bad", false);
+
+  write_policy_config(fx, "[policy]\nafter_review = \"dispatch\"\n");
+  auto const unknown = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  CHECK(unknown.code == 2);
+  CHECK(unknown.err.contains("--strict refused: the policy in config.toml cannot be applied"));
+  CHECK(unknown.err.contains("policy.after_review"));
+  CHECK(unknown.err.contains("planar config validate"));
+
+  write_policy_config(fx, "[policy\nrequire_scenario_coverage = true\n");
+  CHECK(dispatch(fx, {"spec", "ingest", "1", "--strict"}).code == 2);
+
+  // The preview does not read the policy, so it is not held up by it.
+  CHECK(dispatch(fx, {"spec", "ingest", "1"}).code == 0);
+}
+
 // ===========================================================================
 // --apply-removals requires --apply
 // ===========================================================================

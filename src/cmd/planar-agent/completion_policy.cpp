@@ -11,6 +11,7 @@ import planar.engine.runtime.agentactivity;
 import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.completion;
 import planar.cmd.planar_agent.brief;
+import planar.cmd.planar_agent.claim_policy;
 import planar.cmd.planar_agent.exit;
 
 namespace planar::cmd::agent {
@@ -30,62 +31,6 @@ auto has_policy_tables(const cfg::toml_map& doc) -> bool {
     std::string_view const key = entry.first;
     return key.starts_with("policy.") || key.contains(".policy.");
   });
-}
-
-/// @brief Read and parse the config file; a missing file is an empty document.
-/// @param path The located path, or unset.
-/// @return The document, or the reason it could not be read.
-auto load_config(const std::optional<std::filesystem::path>& path) -> std::expected<cfg::toml_map, std::string> {
-  if (!path.has_value()) {
-    return cfg::toml_map{};
-  }
-  std::error_code ec;
-  if (!std::filesystem::exists(*path, ec)) {
-    return cfg::toml_map{};
-  }
-  std::ifstream in(*path, std::ios::binary);
-  if (!in) {
-    return std::unexpected(std::format("cannot read {}", path->string()));
-  }
-  std::string content{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
-  auto        parsed = cfg::parse_toml(content);
-  if (!parsed) {
-    return std::unexpected(std::format("{}: line {}: {}", path->string(), parsed.error().line, parsed.error().message));
-  }
-  return std::move(*parsed);
-}
-
-/// @brief The association whose policy table applies to the claim's task: the task's plan decides, and a
-/// task without a plan falls back to its own scope.
-/// @param conn The connection.
-/// @param task_id The claim's task.
-/// @return The association slug (unset for top-level policy only), or `query_failed`.
-auto task_association(db::connection& conn, std::int64_t task_id) -> std::expected<std::optional<std::string>, aa::agent_error> {
-  if (auto const plan_id = aa::task_plan_id(conn, task_id); plan_id.has_value()) {
-    auto const found = cfg::policy_association_for_plan(conn, *plan_id);
-    if (!found) {
-      return std::unexpected(aa::agent_error::query_failed);
-    }
-    return found->slug;
-  }
-  auto stmt = conn.prepare("select scope_kind, scope_id from tasks where id = ?");
-  if (!stmt || !stmt->bind_int64(1, task_id)) {
-    return std::unexpected(aa::agent_error::query_failed);
-  }
-  auto const stepped = stmt->step();
-  if (!stepped) {
-    return std::unexpected(aa::agent_error::query_failed);
-  }
-  if (*stepped != db::step_result::row) {
-    return std::optional<std::string>{};
-  }
-  auto const kind  = stmt->column_text(0);
-  auto const id    = stmt->is_null(1) ? std::optional<std::int64_t>{} : std::optional<std::int64_t>{stmt->column_int64(1)};
-  auto const found = cfg::policy_association_for_scope(conn, kind, id);
-  if (!found) {
-    return std::unexpected(aa::agent_error::query_failed);
-  }
-  return found->slug;
 }
 
 /// @brief Join clauses with `; `.
@@ -128,7 +73,7 @@ auto completion_check(std::optional<std::filesystem::path> config_path, completi
     if (held.kind != aa::entity_kind::task) {
       return {};
     }
-    auto const doc = load_config(path);
+    auto const doc = path.has_value() ? cfg::load_toml_file(*path) : std::expected<cfg::toml_map, std::string>{cfg::toml_map{}};
     if (!doc) {
       if (report != nullptr) {
         report->claim_token    = held.claim_token;
@@ -140,7 +85,7 @@ auto completion_check(std::optional<std::filesystem::path> config_path, completi
     if (!has_policy_tables(*doc)) {
       return {};
     }
-    auto const association = task_association(conn, held.entity_id);
+    auto const association = policy_association_for_entity(conn, aa::entity_kind::task, held.entity_id);
     if (!association) {
       return std::unexpected(association.error());
     }

@@ -470,6 +470,10 @@ export enum class agent_error : std::uint8_t {
   /// `complete` was refused because the policy requires a review or a gate run the claim has not
   /// shown (plan 1142). The unmet requirements travel in the caller's report, not here.
   completion_unmet,
+  /// `claim` or `pull` was refused by the configured policy: a coder claim without a model while
+  /// `require_model` is set, or a policy that cannot be applied (plan 1142). The text travels in the
+  /// caller's report, not here. Writes nothing.
+  claim_policy_unmet,
 };
 
 /// @brief The Zig error TAG for `err`, as it appears on the operator's
@@ -514,6 +518,9 @@ export struct acquire_args {
   std::optional<std::string_view> worktree_path;                  ///< Worktree path.
   std::optional<std::string_view> purpose;                        ///< Free-text purpose.
   std::optional<std::string_view> base_ref;                       ///< Git ref.
+  /// Digest of the effective policy the claim is taken under, stored in `agent_work_claims.policy_digest`;
+  /// unset stores NULL.
+  std::optional<std::string_view> policy_digest;
   /// Lease TTL in seconds. Rendered into the SQL text, not bound — see
   /// this file's header. Negative values are legal at this API (they mint
   /// an already-expired claim for tests) and unreachable from the CLI.

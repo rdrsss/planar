@@ -8,11 +8,13 @@ module planar.cmd.planar.handlers.spec_ingest;
 import std;
 import planar.cliapp.args;
 import planar.db;
+import planar.engine.config;
 import planar.engine.ingest;
 import planar.engine.planning;
 import planar.engine.entitylink;
 import planar.engine.runtime.session;
 import planar.engine.workbench;
+import planar.cmd.internal.config_path;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
@@ -1331,6 +1333,42 @@ auto unresolved_references(db::connection& conn, std::span<const parse_ns::miles
   return out;
 }
 
+/// @brief Whether the anchor's policy requires scenario coverage under `--strict`.
+///
+/// The policy is the one of the anchor plan's own scope: the plan gives its association
+/// (`policy_association_for_plan`), and `effective_policy` merges that association's `policy` table, the
+/// top-level `[policy]` table and the embedded default from the `config.toml` the invocation locates. No
+/// environment variable participates. A missing file, or one without policy tables, is the default
+/// (`false`).
+/// @param ctx Invocation context.
+/// @param conn Database connection.
+/// @param plan_id The anchor plan.
+/// @return The key's value, or why the policy in config.toml cannot be applied.
+auto require_scenario_coverage_policy(context& ctx, db::connection& conn, std::int64_t plan_id)
+    -> std::expected<bool, std::string> {
+  namespace cfg   = engine::config;
+  auto const path = internal::resolve_config_path(ctx.env());
+  auto const doc  = path.has_value() ? cfg::load_toml_file(*path) : std::expected<cfg::toml_map, std::string>{cfg::toml_map{}};
+  if (!doc) {
+    return std::unexpected(doc.error());
+  }
+  std::optional<std::string> slug;
+  if (auto const association = cfg::policy_association_for_plan(conn, plan_id); association.has_value()) {
+    slug = association->slug;
+  }
+  auto const resolved =
+      cfg::effective_policy(*doc, slug.has_value() ? std::optional<std::string_view>{std::string_view{*slug}} : std::nullopt);
+  if (!resolved) {
+    std::string problem;
+    for (auto const& finding : resolved.error()) {
+      problem += problem.empty() ? "" : "; ";
+      problem += std::format("{}: {}", finding.key, finding.message);
+    }
+    return std::unexpected(std::move(problem));
+  }
+  return resolved->values.require_scenario_coverage;
+}
+
 /// @brief One plan argument, end to end: anchor lookup, cross-scope guard,
 /// artifact read, parse, diff, render, strict gate, apply. Mirrors zig's
 /// `runOnePlan`.
@@ -1484,10 +1522,16 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
       ctx.err() << "\n";
       return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--strict refused"));
     }
-    bool const require_scenario_coverage = false;
-    auto const cov                       = cov_ns::compute(*diff);
-    bool const refuses_on_coverage       = cov.refuses_strict(require_scenario_coverage);
-    bool const has_slug_collisions       = !diff->slug_collisions_.empty();
+    auto const coverage_policy = require_scenario_coverage_policy(ctx, conn, anc.id);
+    if (!coverage_policy) {
+      ctx.err() << std::format("plan {}: --strict refused: the policy in config.toml cannot be applied: {}\n"
+                               "  fix the file, then check it with: planar config validate\n",
+                               anc.id, coverage_policy.error());
+      return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--strict refused"));
+    }
+    auto const cov                 = cov_ns::compute(*diff);
+    bool const refuses_on_coverage = cov.refuses_strict(*coverage_policy);
+    bool const has_slug_collisions = !diff->slug_collisions_.empty();
     if (!refuses_on_coverage && cov.has_gaps()) {
       if (!cov.uncovered_task_slugs_.empty()) {
         ctx.err() << std::format("warning: plan {}: {} task(s) without a scenario: ", anc.id, cov.uncovered_task_slugs_.size());
@@ -1547,6 +1591,9 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
           }
           ctx.err() << diff->slug_collisions_[i].slug_;
         }
+      }
+      if (refuses_on_coverage) {
+        ctx.err() << " (policy require_scenario_coverage = true)";
       }
       ctx.err() << "\n";
       return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--strict refused"));

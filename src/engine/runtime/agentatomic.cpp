@@ -376,9 +376,21 @@ auto claim_entity(db::connection& conn, const agentactivity::acquire_args& args,
   // after the insert so that `illegal_transition` still outranks readiness (an `invalid_task_status`
   // reason must not mask it); with the refusal returned before the insert, nothing is written
   // either way.
+  std::optional<std::string> digest;
+  if (policy.claim_policy) {
+    auto decided = policy.claim_policy(
+        conn, claim_request{.kind = args.kind, .entity_id = args.entity_id, .role = args.role, .model = args.model});
+    if (!decided) {
+      return std::unexpected(decided.error());
+    }
+    digest = std::move(*decided);
+  }
   std::vector<std::string> overridden;
   auto                     gated = args;
-  gated.admit                    = [&](db::connection& c) -> std::expected<void, aa::agent_error> {
+  if (digest.has_value()) {
+    gated.policy_digest = *digest;
+  }
+  gated.admit = [&](db::connection& c) -> std::expected<void, aa::agent_error> {
     if (args.admit) {
       if (auto const prior = args.admit(c); !prior) {
         return std::unexpected(prior.error());
@@ -531,6 +543,18 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     return std::unexpected(classify_begin_failure(tx.error()));
   }
 
+  // The policy of the pulled plan's scope decides before any task is chosen, so a refused pull reads
+  // nothing and writes nothing, and the digest recorded is that of the scope every candidate shares.
+  std::optional<std::string> digest;
+  if (policy.claim_policy) {
+    auto decided = policy.claim_policy(
+        conn, claim_request{.kind = aa::entity_kind::plan, .entity_id = args.plan_id, .role = args.role, .model = args.model});
+    if (!decided) {
+      return std::unexpected(decided.error());
+    }
+    digest = std::move(*decided);
+  }
+
   auto picked = select_next_ready(conn, args.plan_id, policy);
   if (!picked) {
     return std::unexpected(picked.error());
@@ -555,21 +579,23 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
     return std::unexpected(allowed.error());
   }
 
-  auto acquired = aa::acquire_claim(conn, aa::acquire_args{
-                                              .session_id        = args.session_id,
-                                              .kind              = aa::entity_kind::task,
-                                              .entity_id         = task_id,
-                                              .vendor            = args.vendor,
-                                              .vendor_session_id = args.vendor_session_id,
-                                              .role              = args.role,
-                                              .model             = args.model,
-                                              .worktree_id       = args.worktree_id,
-                                              .worktree_path     = args.worktree_path,
-                                              .purpose           = args.purpose,
-                                              .base_ref          = args.base_ref,
-                                              .ttl_secs          = args.ttl_secs,
-                                              .loc               = args.loc,
-                                          });
+  auto acquired =
+      aa::acquire_claim(conn, aa::acquire_args{
+                                  .session_id        = args.session_id,
+                                  .kind              = aa::entity_kind::task,
+                                  .entity_id         = task_id,
+                                  .vendor            = args.vendor,
+                                  .vendor_session_id = args.vendor_session_id,
+                                  .role              = args.role,
+                                  .model             = args.model,
+                                  .worktree_id       = args.worktree_id,
+                                  .worktree_path     = args.worktree_path,
+                                  .purpose           = args.purpose,
+                                  .base_ref          = args.base_ref,
+                                  .policy_digest = digest.has_value() ? std::optional<std::string_view>{*digest} : std::nullopt,
+                                  .ttl_secs      = args.ttl_secs,
+                                  .loc           = args.loc,
+                              });
   if (!acquired) {
     return std::unexpected(acquired.error());
   }

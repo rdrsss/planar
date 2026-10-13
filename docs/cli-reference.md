@@ -5168,7 +5168,7 @@ Default mode is **preview**: prints a tree-shaped diff and exits 0 without apply
 
 Apply mode is atomic per anchor plan. All derived rows for one anchor plan run inside one SQLite savepoint: child plans, tasks, decisions, test scenarios, links, optional removals, the anchor `draft` -> `active` flip, and the successful action audit either all commit or all roll back. A failed apply leaves no partial derived graph for that anchor and should not require workbench cleanup. When multiple `<plan>` arguments are supplied, each anchor has its own atomic boundary; one plan may apply successfully while another rolls back, and the command exits non-zero if any plan fails.
 
-A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. Slug collisions are reported separately. `--strict` refuses (exit 2) on a slug collision, and on a reference that resolves to no task: a scenario `**Verifies:** task:<slug>` or a roadmap `[depends: <slug>]` naming a slug that no roadmap bullet declares and no task in the anchor's tree holds. Uncovered tasks and orphan scenarios are reported as `warning:` lines on stderr and do not change the exit code; no setting makes them refuse yet.
+A `coverage:` line follows the totals on every run. It reports how many tasks carry a `[slug:]`, how many slug-bearing tasks are verified by at least one test-spec scenario, and any orphan scenarios whose `**Verifies:**` line failed to parse. Slug collisions are reported separately. `--strict` refuses (exit 2) on a slug collision, and on a reference that resolves to no task: a scenario `**Verifies:** task:<slug>` or a roadmap `[depends: <slug>]` naming a slug that no roadmap bullet declares and no task in the anchor's tree holds. Uncovered tasks and orphan scenarios are reported as `warning:` lines on stderr and do not change the exit code, unless the anchor plan's effective policy sets `require_scenario_coverage = true`: then `--strict` refuses them too (exit 2), listing every uncovered task slug and orphan scenario and ending the line with `(policy require_scenario_coverage = true)`, and writes nothing. The policy is that of the anchor plan's scope (its association's `[associations."<slug>".policy]` table, else the top-level `[policy]` table, else the default `false`), read from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path); no environment variable overrides it. A `config.toml` whose policy cannot be applied refuses `--strict` (exit 2) with `plan <id>: --strict refused: the policy in config.toml cannot be applied: <findings>`; a preview or `--apply` without `--strict` never reads the policy.
 
 A linked `roadmap` artifact whose workbench file is missing fails the run, preview or apply, naming the file; no other artifact stands in for it. Any other linked artifact with no workbench file is a `warning:` on a preview and a failure on `--apply`, because applying without it would drop its decisions, questions and scenarios.
 
@@ -5261,7 +5261,7 @@ Writes (only with `--apply`, atomically per anchor plan):
 **Exit codes:**
 - `0` — success (preview or apply).
 - `1` — plan not found, a linked roadmap or (on `--apply`) another linked artifact with no workbench file, a failed apply.
-- `2` — no work list or an ambiguous one, a title that appears in two artifacts, `--apply-removals` without `--apply`, `--strict` refused due to a slug collision or an unresolved reference.
+- `2` — no work list or an ambiguous one, a title that appears in two artifacts, `--apply-removals` without `--apply`, `--strict` refused due to a slug collision, an unresolved reference, or (under `require_scenario_coverage = true`) an uncovered task or orphan scenario.
 - `5` — `--apply` refused by the cross-scope guard.
 
 A single-plan run exits with the code of its own failure. A run over several plans exits `2` when any of them fails, whatever the reasons; each plan's reason is on standard error.
@@ -5406,8 +5406,10 @@ review_required = false     # beats the top-level value for this association
 | `use_queue` | bool | brief, `queue rule` (prints the mandate), conformance | `false` |
 
 A gate value is an argv array such as `["make", "test"]`, not a shell string.
-This table is the key set only: each verb reads the effective values in its
-own change.
+`complete` enforces `review_required` and `task_gate`, `claim` and `pull`
+enforce `require_model`, and `spec ingest --strict` enforces
+`require_scenario_coverage`; the sections of those verbs hold the rules. The
+other keys are read by the verbs named in the table.
 
 **Boundary rule.** A key is admitted only if it is a fact Planar can check at
 one verb, or only displays. A key that says what happens next (a step, retry,
@@ -6521,6 +6523,12 @@ error: complete: claim 1a2b3c4d cannot complete: review_required: no review with
   to record the gate run, run from the claim's repository root or worktree: planar-agent queue run --claim '<token>' -- 'make' 'test'
 ```
 
+**Policy at claim time: `require_model` and the recorded digest (plan 1142).** `claim` and `pull` read the policy of the claim's scope from the `config.toml` the invocation locates (`PLANAR_CONFIG_PATH`, else the default path), inside the claim's transaction, before contention and readiness are asked. The scope is the claimed entity's: a task's plan, then that plan's association; `pull <plan-id>` uses the plan itself; a `plan` claim uses that plan and a `plan_step` claim its step's plan; an entity with no association uses the top-level `[policy]` table. No environment variable is consulted.
+
+- **`require_model = true`:** a claim or pull with `--role coder` that passes no `--model`, or `--model ''`, is refused: exit `1`, `--json` tag `PolicyUnmet`, no claim, no action, no task change. The message names the flag: `error: claim: policy require_model = true: coder claims must say which model they use (add --model '<id>')` (`pull:` for a pull). Any other role, and a claim that names no role, is not affected; the model is recorded verbatim and never checked against a list. The default is `false`, under which nothing is refused.
+- **The digest.** Every claim of every role and entity kind records `policy_digest(effective policy)` in `agent_work_claims.policy_digest` when it is taken (`pull` records it for the claim it takes), so conformance can grade a claim against the policy it ran under. The same effective values give the same digest; a changed value gives a different one. It is stored on the row and is not part of any `--json` envelope.
+- **A policy that cannot be applied** (a `config.toml` that does not parse, or whose policy tables `planar config validate` refuses) records no digest (NULL). A `--role coder` claim or pull is then refused (`claim: the policy in config.toml cannot be applied: <findings>`, exit `1`, tag `PolicyUnmet`), because the broken file might hold a `require_model`; every other claim goes ahead, so a broken file does not stop unrelated work.
+
 **Milestone diagnosis on `complete` (plan 1132, task 7383).** When a `planar-agent complete` promotes a milestone plan to `done` (the in-transaction roll-up flipped it; only `complete` can, because `fail` and `release` return the task to `todo` and `block` sets `blocked`), the verb diagnoses that milestone after its transaction commits, over the milestone's lifetime window, and appends the result to its own output:
 
 - **Text:** the existing line, one newline (a blank line), then `diagnose: clean`, or `diagnose: <n> finding(s)` followed by one `<severity> <check-id> <entity> -> <recovery>` line per finding, or `diagnose: unavailable (<reason>)` with reason `busy` or `query-failed` (`schema-unsupported` cannot occur: `planar-agent` requires the exact schema version). A run that could not read an input a check needs appends `(partial: <input> unavailable)` to the header; an input the operator turned off (`[introspection].cli_log`) is not a partial run.
@@ -6812,7 +6820,7 @@ Stable across versions; new keys may be added, existing keys do not change name 
 | `reconcile`   | `{ok, claims_marked_stale, actions_closed, candidates?}` (`candidates` present only with `--dry-run`; each is `{kind, id, claim}`) |
 | `abort`       | `{ok, claim_token, claim, aborting_session}` |
 
-`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and the `run_id` and `stage` columns, which are always null). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
+`ClaimRow` matches the `agent_work_claims` row shape with snake_case keys, except `policy_digest`, which is stored but not emitted (including nullable `failure_category`, locality columns `repo_root`, `branch`, `head_sha_at_claim`, `dirty_at_claim`, worktree columns `worktree_id`, `worktree_path`, and the `run_id` and `stage` columns, which are always null). `Task` matches `planar task show --json`. `ActionRow` matches `agent_actions` (including locality columns `head_sha`, `dirty`).
 
 ### `planar-agent brief`
 
