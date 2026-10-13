@@ -320,16 +320,18 @@ TEST_CASE("the recorded digest is stable for one policy and differs between poli
   CHECK(first.size() == 64);
   release_all();
 
-  fx.write_config("[policy]\nreview_required = true\ntask_gate = [\"make\", \"test\"]\n");
+  fx.write_config("[policy]\nreview_required = true\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n");
   REQUIRE(fx.claim("task:1", "coder", std::nullopt).code == 0);
   auto const second = fx.newest_digest();
   CHECK(second != first);
-  CHECK(second == digest_of(cfg::policy_values{.review_required = true, .task_gate = std::vector<std::string>{"make", "test"}}));
+  CHECK(second == digest_of(cfg::policy_values{
+                      .review_required = true, .task_gate = std::vector<std::string>{"make", "test"}, .use_queue = true}));
   release_all();
 
   // The same effective values written another way are the same digest.
-  fx.write_config("[policy]\nreview_required = false\ntask_gate = [\"make\", \"test\"]\n"
+  fx.write_config("[policy]\nreview_required = false\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n"
                   "[associations.\"nowhere\".policy]\nreview_required = true\n");
   REQUIRE(fx.pull(1, "coder", std::nullopt).code == 0);
-  CHECK(fx.newest_digest() == digest_of(cfg::policy_values{.task_gate = std::vector<std::string>{"make", "test"}}));
+  CHECK(fx.newest_digest() ==
+        digest_of(cfg::policy_values{.task_gate = std::vector<std::string>{"make", "test"}, .use_queue = true}));
 }
