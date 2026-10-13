@@ -12,6 +12,7 @@
 import std;
 import planar.engine.config.toml;
 
+using planar::engine::config::load_toml_file;
 using planar::engine::config::parse_toml;
 using planar::engine::config::toml_error;
 using planar::engine::config::toml_value;
@@ -385,4 +386,75 @@ TEST_CASE("parse_toml: a header-looking line INSIDE a multi-line string is not a
   CHECK(result->at("external.jira.base_url").string_ == "https://x");
   CHECK(result->at("external.jira.status.todo").string_ == "To Do");
   CHECK(result->at("external.jira.blurb").string_.find("not a real header") != std::string::npos);
+}
+
+namespace {
+
+/// A scratch directory removed, after its permissions are restored, when the test ends.
+struct scratch_dir {
+  std::filesystem::path path;
+
+  scratch_dir()
+      : path(std::filesystem::temp_directory_path() /
+             std::format("planar_toml_test_{}", std::chrono::steady_clock::now().time_since_epoch().count())) {
+    std::filesystem::create_directories(path);
+  }
+
+  scratch_dir(const scratch_dir&)            = delete;
+  scratch_dir& operator=(const scratch_dir&) = delete;
+
+  ~scratch_dir() {
+    std::error_code ec;
+    std::filesystem::permissions(path, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
+    std::filesystem::remove_all(path, ec);
+  }
+};
+
+} // namespace
+
+TEST_CASE("load_toml_file: a missing file, or a missing directory, is the empty document", "[toml][load]") {
+  scratch_dir dir;
+  auto const  missing = load_toml_file(dir.path / "config.toml");
+  REQUIRE(missing.has_value());
+  CHECK(missing->empty());
+
+  auto const no_dir = load_toml_file(dir.path / "absent" / "config.toml");
+  REQUIRE(no_dir.has_value());
+  CHECK(no_dir->empty());
+
+  std::ofstream(dir.path / "config.toml") << "[policy]\nuse_queue = true\n";
+  auto const present = load_toml_file(dir.path / "config.toml");
+  REQUIRE(present.has_value());
+  CHECK(present->contains("policy.use_queue"));
+}
+
+TEST_CASE("load_toml_file: a file that cannot be looked up is an error, not an empty document", "[toml][load]") {
+  // Declared before the directory it restores, so it runs first when the case ends, whichever way.
+  struct restore_permissions {
+    std::filesystem::path directory;
+
+    ~restore_permissions() {
+      std::error_code ec;
+      std::filesystem::permissions(directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
+    }
+  };
+
+  scratch_dir dir;
+  auto const  file = dir.path / "locked" / "config.toml";
+  std::filesystem::create_directories(file.parent_path());
+  std::ofstream(file) << "[policy]\nrequire_model = true\n";
+  restore_permissions const restore{file.parent_path()};
+  std::filesystem::permissions(file.parent_path(), std::filesystem::perms::none, std::filesystem::perm_options::replace);
+
+  // A superuser looks through the directory anyway; the check is meaningful only where the permission is enforced.
+  std::error_code probe;
+  static_cast<void>(std::filesystem::exists(file, probe));
+  if (!probe) {
+    return;
+  }
+
+  auto const loaded = load_toml_file(file);
+  REQUIRE_FALSE(loaded.has_value());
+  CHECK(loaded.error().contains("cannot read"));
+  CHECK(loaded.error().contains(file.string()));
 }

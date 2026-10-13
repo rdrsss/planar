@@ -227,12 +227,36 @@ TEST_CASE("require_model: a coder pull without --model is refused and reads and 
   CHECK(fx.pull(1, "coder", "").code == 1);
   CHECK(fx.state() == before);
 
+  // A pull records a coder action when it names no role, an unrecognised one or `review`, so it is bound as a coder pull.
+  // (A plain `claim` that names no role keeps its exemption, above: the claim records no action kind of its own.)
+  for (auto const role : {std::optional<std::string_view>{}, std::optional<std::string_view>{"not-a-role"},
+                          std::optional<std::string_view>{"review"}, std::optional<std::string_view>{"run_submitted"}}) {
+    INFO("role: " << role.value_or("(none)"));
+    auto const refused = fx.pull(1, role, std::nullopt);
+    CHECK(refused.code == 1);
+    CHECK(refused.err.contains("require_model = true"));
+    CHECK(fx.state() == before);
+  }
+
   // A reviewer's pull is not bound, and a named model satisfies the coder's.
   CHECK(fx.pull(1, "reviewer", std::nullopt).code == 0);
   auto const named = fx.pull(1, "coder", "m-2");
   INFO("stderr:\n" << named.err);
   CHECK(named.code == 0);
   CHECK(fx.scalar("select model from agent_work_claims order by id desc limit 1") == "m-2");
+  CHECK(fx.newest_digest() == digest_of(cfg::policy_values{.require_model = true}));
+}
+
+TEST_CASE("require_model: a role-less pull that names a model is a coder pull and is recorded as one",
+          "[cmd][agent][claim][policy][1142]") {
+  auto fx = make_fixture("reqpullnorole");
+  fx.write_config("[policy]\nrequire_model = true\n");
+
+  auto const pulled = fx.pull(1, std::nullopt, "m-0");
+  INFO("stderr:\n" << pulled.err);
+  CHECK(pulled.code == 0);
+  CHECK(fx.scalar("select model from agent_work_claims order by id desc limit 1") == "m-0");
+  CHECK(fx.scalar("select count(*) from agent_actions where action_kind = 'coder'") == "1");
   CHECK(fx.newest_digest() == digest_of(cfg::policy_values{.require_model = true}));
 }
 

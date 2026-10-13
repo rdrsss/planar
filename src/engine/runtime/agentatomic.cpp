@@ -545,10 +545,13 @@ auto pull_next(db::connection& conn, const pull_args& args, const task_policy& p
 
   // The policy of the pulled plan's scope decides before any task is chosen, so a refused pull reads
   // nothing and writes nothing, and the digest recorded is that of the scope every candidate shares.
+  // The dispatch row's action kind, not the raw `--role` text, is the role the policy sees: a pull with no
+  // role, or one `pull` degrades to `coder`, records a coder action and is bound as a coder claim.
   std::optional<std::string> digest;
   if (policy.claim_policy) {
     auto decided = policy.claim_policy(
-        conn, claim_request{.kind = aa::entity_kind::plan, .entity_id = args.plan_id, .role = args.role, .model = args.model});
+        conn, claim_request{
+                  .kind = aa::entity_kind::plan, .entity_id = args.plan_id, .role = aa::to_text(args.kind), .model = args.model});
     if (!decided) {
       return std::unexpected(decided.error());
     }

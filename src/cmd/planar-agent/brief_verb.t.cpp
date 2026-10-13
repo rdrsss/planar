@@ -325,7 +325,7 @@ TEST_CASE("brief shows queue templates only when use_queue is true", "[cmd][agen
     scratch.write_config("[policy]\nuse_queue = true\n");
     auto const r = run_verb(scratch, {"brief", "2"});
     REQUIRE(r.code == 0);
-    CHECK(r.out.contains("  gate: planar-agent queue run --claim '<token>' -- <command>\n"));
+    CHECK(r.out.contains("  gate: planar-agent queue run --claim '<token>' -- '<command>'\n"));
   }
 }
 
@@ -619,7 +619,7 @@ TEST_CASE("brief --json is pinned byte for byte", "[cmd][agent][brief][verb][jso
   // Keys in documented order, `brief_version` first. A change to this string is a change to the contract: bump
   // `brief_version` when a key is removed or changes meaning.
   constexpr std::string_view golden =
-      R"GOLDEN({"brief_version":1,"plan":{"id":2,"slug":"m1","title":"Milestone one","status":"active"},"anchor":{"id":1,"slug":"anc","title":"Anchor","status":"active"},"counts":{"todo":2,"doing":2,"blocked":0,"done":0,"cancelled":0},"milestones":[{"plan":{"id":2,"slug":"m1","title":"Milestone one","status":"active"},"counts":{"todo":2,"doing":2,"blocked":0,"done":0,"cancelled":0}}],"claims":[{"claim_id":1,"entity":"task:3","state":"live","role":"coder","model":"m","worktree":"/w/it's","vendor":"claude","expires_at":"2099-01-01T00:00:00.000Z","covered_tasks":[3]},{"claim_id":2,"entity":"task:4","state":"stale","role":null,"model":null,"worktree":null,"vendor":"claude","expires_at":"2000-01-01T00:00:00.000Z","covered_tasks":[4]}],"wave":{"fan_out_available":true,"parallel":[{"id":1,"slug":"alpha","title":"Alpha","why":[]},{"id":2,"slug":"beta","title":"Beta","why":[]}],"serialized":[]},"readiness":[{"id":1,"slug":"alpha","ready":true,"reasons":[]},{"id":2,"slug":"beta","ready":true,"reasons":[]}],"policy":{"association":null,"scope_reason":"global_scope","valid":true,"findings":[],"digest":"3b63f1376435bab1a2ea9897beb537dd4158d86ae4934a2254d63e0ec31a6fa9","values":{"confirm_before":[],"require_model":false,"require_scenario_coverage":false,"review_required":false,"task_gate":null,"use_queue":false},"sources":{"review_required":{"kind":"default","section":""},"task_gate":{"kind":"default","section":""},"require_model":{"kind":"default","section":""},"confirm_before":{"kind":"default","section":""},"require_scenario_coverage":{"kind":"default","section":""},"use_queue":{"kind":"default","section":""}}},"confirm_before":[],"protocol":{"lease_ttl_secs":7200,"heartbeat_every_secs":3600,"templates":[{"name":"claim","command":"planar-agent claim --entity task:<id> --role coder --model '<model>' --ttl 7200 --worktree '<path>'"},{"name":"heartbeat","command":"planar-agent heartbeat --claim '<token>'"},{"name":"complete","command":"planar-agent complete --claim '<token>' --summary '<text>'"},{"name":"fail","command":"planar-agent fail --claim '<token>' --reason '<text>'"},{"name":"release","command":"planar-agent release --claim '<token>' --reason '<text>'"},{"name":"block","command":"planar-agent block --claim '<token>' --blocker <task-id> --reason '<text>'"},{"name":"review","command":"planar-agent review --claim '<reviewed-token>' --verdict approve|request-changes --summary '<text>'"}]}}
+      R"GOLDEN({"brief_version":1,"plan":{"id":2,"slug":"m1","title":"Milestone one","status":"active"},"anchor":{"id":1,"slug":"anc","title":"Anchor","status":"active"},"counts":{"todo":2,"doing":2,"blocked":0,"done":0,"cancelled":0},"milestones":[{"plan":{"id":2,"slug":"m1","title":"Milestone one","status":"active"},"counts":{"todo":2,"doing":2,"blocked":0,"done":0,"cancelled":0}}],"claims":[{"claim_id":1,"entity":"task:3","state":"live","role":"coder","model":"m","worktree":"/w/it's","vendor":"claude","expires_at":"2099-01-01T00:00:00.000Z","covered_tasks":[3]},{"claim_id":2,"entity":"task:4","state":"stale","role":null,"model":null,"worktree":null,"vendor":"claude","expires_at":"2000-01-01T00:00:00.000Z","covered_tasks":[4]}],"wave":{"fan_out_available":true,"parallel":[{"id":1,"slug":"alpha","title":"Alpha","why":[]},{"id":2,"slug":"beta","title":"Beta","why":[]}],"serialized":[]},"readiness":[{"id":1,"slug":"alpha","ready":true,"reasons":[]},{"id":2,"slug":"beta","ready":true,"reasons":[]}],"policy":{"association":null,"scope_reason":"global_scope","valid":true,"findings":[],"digest":"3b63f1376435bab1a2ea9897beb537dd4158d86ae4934a2254d63e0ec31a6fa9","values":{"confirm_before":[],"require_model":false,"require_scenario_coverage":false,"review_required":false,"task_gate":null,"use_queue":false},"sources":{"review_required":{"kind":"default","section":""},"task_gate":{"kind":"default","section":""},"require_model":{"kind":"default","section":""},"confirm_before":{"kind":"default","section":""},"require_scenario_coverage":{"kind":"default","section":""},"use_queue":{"kind":"default","section":""}}},"confirm_before":[],"protocol":{"lease_ttl_secs":7200,"heartbeat_every_secs":3600,"templates":[{"name":"claim","command":"planar-agent claim --entity 'task:<id>' --role coder --model '<model>' --ttl 7200 --worktree '<path>'"},{"name":"heartbeat","command":"planar-agent heartbeat --claim '<token>'"},{"name":"complete","command":"planar-agent complete --claim '<token>' --summary '<text>'"},{"name":"fail","command":"planar-agent fail --claim '<token>' --reason '<text>'"},{"name":"release","command":"planar-agent release --claim '<token>' --reason '<text>'"},{"name":"block","command":"planar-agent block --claim '<token>' --blocker '<task-id>' --reason '<text>'"},{"name":"review","command":"planar-agent review --claim '<reviewed-token>' --verdict '<approve|request-changes>' --summary '<text>' --reviewer-claim '<reviewer-token>'"}]}}
 )GOLDEN";
   CHECK(r.out == golden);
 
@@ -738,4 +738,214 @@ TEST_CASE("brief shows the confirm_before verbs in text and JSON, and nothing wh
     CHECK(text.out.contains("confirm with the operator before: task done; plan closeout; spec ingest; decision accept\n"));
     CHECK(text.out.size() < 4096);
   }
+}
+
+namespace {
+
+/// Split a command the way a POSIX shell does for the quoting the brief writes: single-quoted runs, with an embedded quote
+/// written `'\''`. A `<`, `>` or `|` outside quotes would be a redirection or a pipe, so `unquoted_metachar` is set instead of
+/// the character joining a word.
+struct shell_words {
+  std::vector<std::string> words;
+  bool                     unquoted_metachar = false;
+};
+
+auto split_shell(std::string_view command) -> shell_words {
+  shell_words out;
+  std::string current;
+  bool        in_word  = false;
+  bool        in_quote = false;
+  for (std::size_t i = 0; i < command.size(); ++i) {
+    char const c = command[i];
+    if (in_quote) {
+      if (c == '\'') {
+        in_quote = false;
+      } else {
+        current += c;
+      }
+    } else if (c == '\'') {
+      in_quote = true;
+      in_word  = true;
+    } else if (c == '\\' && i + 1 < command.size()) {
+      current += command[++i];
+      in_word = true;
+    } else if (c == ' ') {
+      if (in_word) {
+        out.words.push_back(std::move(current));
+        current.clear();
+        in_word = false;
+      }
+    } else {
+      if (c == '<' || c == '>' || c == '|') {
+        out.unquoted_metachar = true;
+      }
+      current += c;
+      in_word = true;
+    }
+  }
+  if (in_word) {
+    out.words.push_back(std::move(current));
+  }
+  return out;
+}
+
+/// Every flag `app` declares, plus `--help`.
+auto declared_flags(const CLI::App& app) -> std::set<std::string, std::less<>> {
+  std::set<std::string, std::less<>> names;
+  for (auto const* option : app.get_options()) {
+    names.insert(option->get_name(false, true));
+  }
+  names.insert("--help");
+  return names;
+}
+
+/// The protocol templates `brief <plan> --json` prints, as name and command.
+auto templates_of(const jd::json_value& parsed) -> std::vector<std::pair<std::string, std::string>> {
+  std::vector<std::pair<std::string, std::string>> out;
+  for (auto const& t : parsed.find("protocol")->find("templates")->array) {
+    out.emplace_back(t.find("name")->string, t.find("command")->string);
+  }
+  return out;
+}
+
+} // namespace
+
+TEST_CASE("every brief template names a real verb with real flags and is safe to paste into a shell",
+          "[cmd][agent][brief][verb][templates]") {
+  scratch_dir scratch;
+  {
+    auto conn = create_db(scratch);
+    build_fixture(conn);
+  }
+  scratch.write_config("[policy]\nuse_queue = true\n"); // adds the gate template with its `<command>` placeholder
+  auto const json = run_verb(scratch, {"brief", "2", "--json"});
+  REQUIRE(json.code == 0);
+  auto const templates = templates_of(parse(json.out));
+  REQUIRE(templates.size() == 8);
+
+  auto const root = agent::root_app();
+  for (auto const& [name, command] : templates) {
+    INFO("template " << name << ": " << command);
+    auto const split = split_shell(command);
+    CHECK_FALSE(split.unquoted_metachar); // every `<placeholder>` and `a|b` is single-quoted
+    REQUIRE(split.words.size() >= 3);
+    REQUIRE(split.words[0] == "planar-agent");
+
+    const CLI::App* target = root->get_subcommand_no_throw(split.words[1]);
+    REQUIRE(target != nullptr);
+    std::size_t next = 2;
+    if (split.words[1] == "queue") {
+      target = target->get_subcommand_no_throw(split.words[2]);
+      REQUIRE(target != nullptr);
+      next = 3;
+    }
+    auto const names = declared_flags(*target);
+    for (std::size_t i = next; i < split.words.size(); ++i) {
+      if (split.words[i] == "--") {
+        break; // the queued command's own words
+      }
+      if (split.words[i].starts_with("--")) {
+        INFO("flag " << split.words[i]);
+        CHECK(names.contains(split.words[i]));
+      }
+    }
+  }
+}
+
+TEST_CASE("the brief's review template carries what the review verb requires", "[cmd][agent][brief][verb][templates][review]") {
+  scratch_dir scratch;
+  {
+    auto conn = create_db(scratch);
+    build_fixture(conn);
+  }
+  auto const json = run_verb(scratch, {"brief", "2", "--json"});
+  REQUIRE(json.code == 0);
+  std::string review;
+  for (auto const& [name, command] : templates_of(parse(json.out))) {
+    if (name == "review") {
+      review = command;
+    }
+  }
+  REQUIRE_FALSE(review.empty());
+
+  // Fill each placeholder the way an agent would and run the verb: the template must get past flag validation (exit 2), to the
+  // claim lookup, which refuses the made-up token at exit 1.
+  auto split = split_shell(review).words;
+  REQUIRE(split.size() > 2);
+  split.erase(split.begin()); // `planar-agent`
+  auto fill = [](std::vector<std::string> words) {
+    for (auto& word : words) {
+      if (word == "<reviewed-token>") {
+        word = "0123456789abcdef0123456789abcdef";
+      } else if (word == "<reviewer-token>") {
+        word = "fedcba9876543210fedcba9876543210";
+      } else if (word == "<approve|request-changes>") {
+        word = "approve";
+      } else if (word == "<text>") {
+        word = "looks right";
+      }
+    }
+    return words;
+  };
+  auto const filled = fill(split);
+  auto const ran    = run_verb(scratch, filled);
+  INFO(ran.err);
+  CHECK(ran.code == 1);
+  CHECK(ran.err.contains("no claim with token 0123456789abcdef0123456789abcdef"));
+
+  // The same call without the reviewer identity is what the old template produced: the verb refuses it at exit 2.
+  std::vector<std::string> without;
+  for (std::size_t i = 0; i < filled.size(); ++i) {
+    if (filled[i] == "--reviewer-claim") {
+      ++i;
+      continue;
+    }
+    without.push_back(filled[i]);
+  }
+  auto const refused = run_verb(scratch, without);
+  CHECK(refused.code == 2);
+  CHECK(refused.err.contains("--reviewer-claim"));
+}
+
+TEST_CASE("the brief of a finished plan prints an empty wave and no claim templates", "[cmd][agent][brief][verb][finished]") {
+  scratch_dir scratch;
+  {
+    auto conn = create_db(scratch);
+    exec(conn, "insert into plans (id, scope_kind, title, slug, status) values (1, 'global', 'Done', 'done', 'done')");
+    exec(conn, "insert into tasks (id, scope_kind, plan_id, title, slug, status, priority) values "
+               "(1, 'global', 1, 'One', 'one', 'done', 100), (2, 'global', 1, 'Two', 'two', 'done', 101), "
+               "(3, 'global', 1, 'Three', 'three', 'cancelled', 102)");
+  }
+  scratch.write_config("[policy]\nuse_queue = true\n");
+
+  auto const text = run_verb(scratch, {"brief", "1"});
+  REQUIRE(text.code == 0);
+  CHECK(text.err.empty());
+  CHECK(text.out.contains("tasks 3: todo 0 doing 0 blocked 0 done 2 cancelled 1"));
+  CHECK(text.out.contains("wave (0 parallel): none"));
+  CHECK_FALSE(text.out.contains("planar-agent claim"));
+  CHECK_FALSE(text.out.contains("planar-agent complete"));
+  CHECK_FALSE(text.out.contains("queue run"));
+  CHECK(text.out.contains("protocol (lease 7200s, heartbeat every 1h):\n  none: no todo, doing or blocked task remains\n"));
+
+  auto const json = run_verb(scratch, {"brief", "1", "--json"});
+  REQUIRE(json.code == 0);
+  auto const parsed = parse(json.out);
+  CHECK(parsed.find("protocol")->find("templates")->kind == jd::json_kind::array);
+  CHECK(parsed.find("protocol")->find("templates")->array.empty());
+  CHECK(parsed.find("wave")->find("parallel")->array.empty());
+}
+
+TEST_CASE("the brief keeps the claim templates while any task is todo, doing or blocked", "[cmd][agent][brief][verb][finished]") {
+  scratch_dir scratch;
+  {
+    auto conn = create_db(scratch);
+    exec(conn, "insert into plans (id, scope_kind, title, slug, status) values (1, 'global', 'Open', 'open', 'active')");
+    exec(conn, "insert into tasks (id, scope_kind, plan_id, title, slug, status, priority) values "
+               "(1, 'global', 1, 'One', 'one', 'done', 100), (2, 'global', 1, 'Two', 'two', 'blocked', 101)");
+  }
+  auto const text = run_verb(scratch, {"brief", "1"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.contains("planar-agent claim --entity 'task:<id>'"));
+  CHECK_FALSE(text.out.contains("no todo, doing or blocked task remains"));
 }

@@ -1143,6 +1143,41 @@ TEST_CASE("spec ingest --strict refuses, naming the file, when the policy in con
   CHECK(dispatch(fx, {"spec", "ingest", "1"}).code == 0);
 }
 
+TEST_CASE("spec ingest --strict refuses, without falling back to the top-level policy, when the plan's scope cannot be read",
+          "[cmd][spec][ingest][strict][policy]") {
+  auto fx = make_policy_fixture("strict_policy_scope", false);
+
+  // The association asks for coverage and the top level does not. Were an unreadable scope to fall back to the top-level
+  // table, `--strict` would pass here.
+  write_policy_config(fx, "[policy]\nrequire_scenario_coverage = false\n"
+                          "[associations.\"project:proj\".policy]\nrequire_scenario_coverage = true\n");
+  REQUIRE(dispatch(fx, {"spec", "ingest", "1", "--strict"}).code == 2); // the scope reads: the association's policy refuses
+
+  {
+    auto conn = open_db(fx);
+    // The plan keeps naming an association whose row is gone.
+    REQUIRE(conn.execute("pragma foreign_keys = off").has_value());
+    REQUIRE(conn.execute("update plans set scope_kind = 'association', scope_id = 9999 where id = 1").has_value());
+  }
+  // The workbench files sit under the plan's scope; with the scope gone the ingest looks for them directly under the root.
+  std::optional<std::filesystem::path> pushed;
+  for (auto const& entry : std::filesystem::recursive_directory_iterator(fx.root / "wb")) {
+    if (entry.is_directory() && entry.path().filename() == "p1-policy-fixture") {
+      pushed = entry.path();
+    }
+  }
+  REQUIRE(pushed.has_value());
+  if (pushed->parent_path() != fx.root / "wb") {
+    std::filesystem::copy(*pushed, fx.root / "wb" / "p1-policy-fixture", std::filesystem::copy_options::recursive);
+  }
+  auto const refused = dispatch(fx, {"spec", "ingest", "1", "--strict"});
+  INFO(refused.err);
+  CHECK(refused.code == 2);
+  CHECK(refused.err.contains(
+      "plan 1: --strict refused: the policy scope of the plan could not be read (the plan's scope row does not exist)"));
+  CHECK_FALSE(refused.err.contains("config.toml"));
+}
+
 // ===========================================================================
 // --apply-removals requires --apply
 // ===========================================================================
