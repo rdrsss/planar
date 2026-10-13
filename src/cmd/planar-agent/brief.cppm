@@ -21,9 +21,10 @@
 /// The text rendering stays under 4 KB for a 20-task milestone. The JSON
 /// rendering has a fixed key order and carries `brief_version`.
 ///
-/// Extension seam for `confirm_before` rendering (task 7496): `brief::confirm_before`
-/// carries the policy's verb paths; the text renderer prints it only when
-/// non-empty, and the JSON always carries the array.
+/// `brief::confirm_before` carries the policy's `confirm_before` verb paths. The
+/// text rendering prints them with the policy section as `confirm with the
+/// operator before: <path>; <path>` plus one protocol note, only when non-empty;
+/// the JSON always carries the array. Display only: Planar never enforces it.
 ///
 /// Error boundary: `std::expected<brief, brief_error>`; nothing throws.
 module;

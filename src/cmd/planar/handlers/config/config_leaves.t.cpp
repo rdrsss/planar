@@ -1285,6 +1285,35 @@ TEST_CASE("config validate refuses a task_gate unless use_queue is on in the sam
   }
 }
 
+TEST_CASE("config validate refuses a confirm_before entry that is not a verb path", "[cmd][config][validate][policy][confirm]") {
+  SECTION("top-level and association entries with capitals, extra spaces or punctuation") {
+    auto const fx = make_fixture("confirmbad");
+    write_config(fx, "[policy]\nconfirm_before = [\"task done\", \"Plan Closeout\"]\n"
+                     "[associations.\"org:acme\".policy]\nconfirm_before = [\"task  done\"]\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains("error: policy.confirm_before: must be an array of verb paths"));
+    CHECK(r.err.contains("error: associations.org:acme.policy.confirm_before: must be an array of verb paths"));
+    cleanup(fx);
+  }
+  SECTION("a non-array value is refused") {
+    auto const fx = make_fixture("confirmbad2");
+    write_config(fx, "[policy]\nconfirm_before = \"task done\"\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 1);
+    CHECK(r.err.contains("error: policy.confirm_before: must be an array of verb paths"));
+    cleanup(fx);
+  }
+  SECTION("valid verb paths, and an empty list, validate") {
+    auto const fx = make_fixture("confirmok");
+    write_config(fx, "[policy]\nconfirm_before = [\"task done\", \"plan closeout\", \"spec "
+                     "ingest\"]\n[associations.\"org:acme\".policy]\nconfirm_before = []\n");
+    auto const r = dispatch(fx, {"config", "validate"});
+    CHECK(r.code == 0);
+    cleanup(fx);
+  }
+}
+
 TEST_CASE("config validate accepts a file with valid policy tables", "[cmd][config][validate][policy]") {
   auto const fx = make_fixture("policyok");
   write_config(fx, R"([policy]

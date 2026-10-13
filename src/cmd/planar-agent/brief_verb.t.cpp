@@ -673,3 +673,69 @@ TEST_CASE("the planar-agent schema catalog pins the brief verb's flags, position
   }
   CHECK(codes == std::vector<std::int64_t>{0, 1, 2, 7});
 }
+
+TEST_CASE("brief shows the confirm_before verbs in text and JSON, and nothing when empty", "[cmd][agent][brief][verb][confirm]") {
+  scratch_dir scratch;
+  {
+    auto conn = create_db(scratch);
+    build_fixture(conn);
+    exec(conn, "insert into associations (id, slug, name, kind) values (1, 'acme', 'Acme', 'org')");
+    exec(conn, "update plans set scope_kind = 'association', scope_id = 1 where id in (1, 2, 3)");
+  }
+  auto const confirm_keys = [](const jd::json_value& parsed) {
+    std::vector<std::string> out;
+    for (auto const& entry : parsed.find("confirm_before")->array) {
+      out.push_back(entry.string);
+    }
+    return out;
+  };
+
+  SECTION("a top-level list: text line, protocol note, JSON array and the key's source") {
+    scratch.write_config("[policy]\nconfirm_before = [\"task done\", \"plan closeout\"]\n");
+    auto const text = run_verb(scratch, {"brief", "2"});
+    REQUIRE(text.code == 0);
+    CHECK(text.out.contains("confirm with the operator before: task done; plan closeout\n"));
+    CHECK(text.out.contains("  confirm_before=[\"task done\",\"plan closeout\"] [policy]\n"));
+    CHECK(text.out.contains("  note: a confirm_before verb waits for the operator's confirmation; Planar does not enforce it\n"));
+    CHECK(text.out.size() < 4096);
+
+    auto const json = run_verb(scratch, {"brief", "2", "--json"});
+    REQUIRE(json.code == 0);
+    auto const parsed = parse(json.out);
+    CHECK(confirm_keys(parsed) == std::vector<std::string>{"task done", "plan closeout"});
+    CHECK(parsed.find("policy")->find("sources")->find("confirm_before")->find("kind")->string == "top_level");
+    CHECK(parsed.find("policy")->find("sources")->find("confirm_before")->find("section")->string == "policy");
+  }
+  SECTION("unset or empty: no line, no note, an empty JSON array") {
+    for (std::string_view config : {"", "[policy]\nconfirm_before = []\n"}) {
+      scratch.write_config(config);
+      auto const text = run_verb(scratch, {"brief", "2"});
+      REQUIRE(text.code == 0);
+      CHECK_FALSE(text.out.contains("confirm with the operator"));
+      CHECK_FALSE(text.out.contains("confirm_before verb"));
+      auto const json = run_verb(scratch, {"brief", "2", "--json"});
+      REQUIRE(json.code == 0);
+      CHECK(confirm_keys(parse(json.out)).empty());
+    }
+  }
+  SECTION("an association list overrides the top-level one for that association's plan") {
+    scratch.write_config(
+        "[policy]\nconfirm_before = [\"task done\"]\n[associations.\"acme\".policy]\nconfirm_before = [\"plan closeout\"]\n");
+    auto const text = run_verb(scratch, {"brief", "2"});
+    REQUIRE(text.code == 0);
+    CHECK(text.out.contains("confirm with the operator before: plan closeout\n"));
+    CHECK_FALSE(text.out.contains("before: task done"));
+    CHECK(text.out.contains("confirm_before=[\"plan closeout\"] [associations.\"acme\".policy]"));
+    auto const json = run_verb(scratch, {"brief", "2", "--json"});
+    REQUIRE(json.code == 0);
+    CHECK(confirm_keys(parse(json.out)) == std::vector<std::string>{"plan closeout"});
+  }
+  SECTION("four entries on the 20-task milestone still fit the 4 KB budget") {
+    scratch.write_config("[policy]\nuse_queue = true\ntask_gate = [\"make\", \"test\"]\n"
+                         "confirm_before = [\"task done\", \"plan closeout\", \"spec ingest\", \"decision accept\"]\n");
+    auto const text = run_verb(scratch, {"brief", "2"});
+    REQUIRE(text.code == 0);
+    CHECK(text.out.contains("confirm with the operator before: task done; plan closeout; spec ingest; decision accept\n"));
+    CHECK(text.out.size() < 4096);
+  }
+}

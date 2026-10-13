@@ -449,13 +449,16 @@ auto render_brief_text(const brief& value) -> std::string {
                        source == value.policy.resolved.sources.end() ? std::string{"default"} : source_text(source->second));
   }
   if (!value.confirm_before.empty()) {
-    out += std::format("confirm before: {}\n", join(value.confirm_before, ", "));
+    out += std::format("confirm with the operator before: {}\n", join(value.confirm_before, "; "));
   }
 
   out += std::format("protocol (lease {}s, heartbeat every {}):\n", value.protocol.lease_ttl_secs,
                      format_duration(value.protocol.heartbeat_every_secs));
   for (auto const& t : value.protocol.templates) {
     out += std::format("  {}: {}\n", t.name, t.command);
+  }
+  if (!value.confirm_before.empty()) {
+    out += "  note: a confirm_before verb waits for the operator's confirmation; Planar does not enforce it\n";
   }
   return out;
 }

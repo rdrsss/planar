@@ -318,7 +318,7 @@ TEST_CASE("the brief of a 20-task milestone is complete, read-only and under 4 K
   CHECK(text.contains("planar-agent heartbeat --claim '<token>'"));
   CHECK(text.contains("planar-agent review --claim '<reviewed-token>' --verdict approve|request-changes --summary '<text>'"));
   CHECK_FALSE(text.contains("queue run"));
-  CHECK_FALSE(text.contains("confirm before"));
+  CHECK_FALSE(text.contains("confirm with the operator"));
 
   // Read-only: the connection could not write, and nothing changed.
   CHECK(row_totals(*reader) == before);
@@ -351,7 +351,7 @@ review_required = true
     CHECK(text.contains("review_required=true [associations.\"acme\".policy]"));
     CHECK(text.contains("use_queue=true [policy]"));
     CHECK(text.contains("planar-agent queue run --claim '<token>' -- 'make' 'test'"));
-    CHECK(text.contains("confirm before: task done"));
+    CHECK(text.contains("confirm with the operator before: task done\n"));
     CHECK(text.size() < 4096);
   }
   SECTION("without use_queue no queue template renders even when a gate is set, and the policy is invalid") {
