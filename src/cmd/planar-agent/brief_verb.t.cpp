@@ -936,6 +936,29 @@ TEST_CASE("the brief of a finished plan prints an empty wave and no claim templa
   CHECK(parsed.find("wave")->find("parallel")->array.empty());
 }
 
+TEST_CASE("the brief of a plan with zero tasks prints no claim templates", "[cmd][agent][brief][verb][finished][empty]") {
+  scratch_dir scratch;
+  {
+    auto conn = create_db(scratch);
+    exec(conn, "insert into plans (id, scope_kind, title, slug, status) values (1, 'global', 'Bare', 'bare', 'draft')");
+  }
+  scratch.write_config("[policy]\nuse_queue = true\n");
+
+  auto const text = run_verb(scratch, {"brief", "1"});
+  REQUIRE(text.code == 0);
+  CHECK(text.out.contains("tasks 0: todo 0 doing 0 blocked 0 done 0"));
+  CHECK_FALSE(text.out.contains("planar-agent claim"));
+  CHECK_FALSE(text.out.contains("planar-agent complete"));
+  CHECK_FALSE(text.out.contains("queue run"));
+  CHECK(text.out.contains("none: no todo, doing or blocked task remains"));
+
+  auto const json = run_verb(scratch, {"brief", "1", "--json"});
+  REQUIRE(json.code == 0);
+  auto const parsed = parse(json.out);
+  CHECK(parsed.find("protocol")->find("templates")->kind == jd::json_kind::array);
+  CHECK(parsed.find("protocol")->find("templates")->array.empty());
+}
+
 TEST_CASE("the brief keeps the claim templates while any task is todo, doing or blocked", "[cmd][agent][brief][verb][finished]") {
   scratch_dir scratch;
   {

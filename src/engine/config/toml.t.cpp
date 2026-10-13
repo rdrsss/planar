@@ -429,7 +429,8 @@ TEST_CASE("load_toml_file: a missing file, or a missing directory, is the empty 
 }
 
 TEST_CASE("load_toml_file: a file that cannot be looked up is an error, not an empty document", "[toml][load]") {
-  // Declared before the directory it restores, so it runs first when the case ends, whichever way.
+  // Declared after `dir`, so it is destroyed first and restores the permissions before the directory is removed, whichever way
+  // the case ends.
   struct restore_permissions {
     std::filesystem::path directory;
 
@@ -447,6 +448,7 @@ TEST_CASE("load_toml_file: a file that cannot be looked up is an error, not an e
   std::filesystem::permissions(file.parent_path(), std::filesystem::perms::none, std::filesystem::perm_options::replace);
 
   // A superuser looks through the directory anyway; the check is meaningful only where the permission is enforced.
+  // The early return passes silently on purpose: the repository's expected skip tally is zero, so SKIP() is not used.
   std::error_code probe;
   static_cast<void>(std::filesystem::exists(file, probe));
   if (!probe) {
