@@ -497,6 +497,34 @@ auto list_history(db::connection& conn, std::optional<std::int64_t> ended_since)
   return out;
 }
 
+auto history_for_claim(db::connection& conn, std::string_view claim_token)
+    -> std::expected<std::vector<history_row>, queue_error> {
+  auto const select = select_history();
+  auto       stmt   = conn.prepare(std::format("{} where claim_token = ?1 order by ended_at, seq", select));
+  if (!stmt) {
+    return sql_failure("prepare history for claim", stmt.error());
+  }
+  if (auto bound = stmt->bind_text(1, claim_token); !bound) {
+    return sql_failure("bind history for claim", bound.error());
+  }
+  std::vector<history_row> out;
+  for (;;) {
+    auto stepped = stmt->step();
+    if (!stepped) {
+      return sql_failure("read history rows for claim", stepped.error());
+    }
+    if (*stepped == db::step_result::done) {
+      break;
+    }
+    auto row = read_history(*stmt);
+    if (!row) {
+      return std::unexpected(std::move(row.error()));
+    }
+    out.push_back(std::move(*row));
+  }
+  return out;
+}
+
 namespace {
 
 /// @brief `value - span`, saturating at the type's minimum.

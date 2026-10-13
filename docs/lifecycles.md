@@ -133,6 +133,7 @@ Verb to edge map (`src/cmd/planar/handlers/task/command.cpp`,
 | `task reopen --reason <r> [--status s] [--force]` | `done`/`cancelled` → `todo` (default) or `--status` | `--reason` refused if empty; writes `task_reopens` row; recompute |
 | `task update --status <s> [--force] [--no-auto-promote]` | any matrix edge | claim guard only when `--status` present; `--force` bypasses matrix and claim guard; cross-scope guard runs here only |
 | `planar-agent complete / fail / release / block` | see 3.1 | claim must be live; same transaction flips claim and task |
+| `planar-agent complete` (policy) | `doing` → `done` | additionally refused, in the same transaction and before any write, while `review_required` lacks an independent approving review or `task_gate` lacks a passing queued run under the claim (exit 1, claim stays active) |
 
 Guards:
 

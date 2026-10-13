@@ -15,6 +15,7 @@ import planar.engine.runtime.agentatomic;
 import planar.engine.runtime.agentrender;
 import planar.engine.runtime.sessioncommits;
 import planar.cmd.planar_agent.args;
+import planar.cmd.planar_agent.completion_policy;
 import planar.cmd.planar_agent.context;
 import planar.cmd.planar_agent.exit;
 import planar.cmd.planar_agent.handler;
@@ -136,9 +137,17 @@ auto complete(context& ctx, const cliapp::parsed_args& args) -> handler_result {
   }
   auto const   summary = cliapp::flag_string(args, "--summary");
   plan_roll_up observed;
-  auto const   result = atomic::complete_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(summary),
-                                              task_policy(&observed));
+  // Plan 1142: only `complete` is held to the configured review and gate requirements. The check runs
+  // inside the transaction that would end the claim, so a refusal writes nothing.
+  completion_report report;
+  auto              policy = task_policy(&observed);
+  policy.check_completion  = completion_check(internal::resolve_config_path(ctx.env()), &report);
+  auto const result =
+      atomic::complete_work(**conn, cliapp::flag_string(args, "--claim").value_or(std::string{}), view(summary), policy);
   if (!result) {
+    if (result.error() == aa::agent_error::completion_unmet) {
+      return std::unexpected(completion_refusal(report));
+    }
     return std::unexpected(verb_error("complete", result.error()));
   }
   collect_commits(ctx, *result, cliapp::flag_bool(args, "--no-locality-probe"));

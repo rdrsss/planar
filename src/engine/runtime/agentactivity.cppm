@@ -467,6 +467,9 @@ export enum class agent_error : std::uint8_t {
   reviewer_unidentified,
   /// A review named a reviewer claim that does not exist.
   reviewer_claim_not_found,
+  /// `complete` was refused because the policy requires a review or a gate run the claim has not
+  /// shown (plan 1142). The unmet requirements travel in the caller's report, not here.
+  completion_unmet,
 };
 
 /// @brief The Zig error TAG for `err`, as it appears on the operator's

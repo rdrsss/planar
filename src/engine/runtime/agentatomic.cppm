@@ -126,6 +126,17 @@ export struct task_policy {
   /// claim or pull transaction, on the connection that inserts the claim, so a link written by
   /// another process cannot slip between this read and the claim.
   std::function<std::expected<std::vector<std::string>, agent_error>(db::connection& conn, std::int64_t task_id)> unready_reasons;
+
+  /// @brief The policy check `complete` runs before it ends a task claim (plan 1142).
+  ///
+  /// Layer 3 binds this to the configured policy (`review_required`, `task_gate`) and the host queue's
+  /// history, neither of which this bucket may import. Called INSIDE the `complete` transaction, on
+  /// the connection that ends the claim, after the claim and the task's transition were checked and
+  /// before anything is written; it returns `completion_unmet` to refuse, and the refusal rolls the
+  /// transaction back so the claim stays active. Called for `complete` only, never for `fail`,
+  /// `release` or `block`. Unlike the four callables above it MAY be left unbound: an unbound check
+  /// admits every completion, which is how a caller that has no policy (and every engine test) runs.
+  std::function<std::expected<void, agent_error>(db::connection& conn, const claim& held)> check_completion;
 };
 
 /// @brief One task that `pull` or `peek` passed over because it was not ready.
