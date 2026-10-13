@@ -1343,20 +1343,28 @@ auto unresolved_references(db::connection& conn, std::span<const parse_ns::miles
 /// @param ctx Invocation context.
 /// @param conn Database connection.
 /// @param plan_id The anchor plan.
-/// @return The key's value, or why the policy in config.toml cannot be applied.
+/// @return The key's value, or the refusal text: why the policy in config.toml cannot be applied, or that the plan's scope
+/// could not be read. A scope that cannot be read never falls back to the top-level policy, which could differ from the
+/// association's.
 auto require_scenario_coverage_policy(context& ctx, db::connection& conn, std::int64_t plan_id)
     -> std::expected<bool, std::string> {
   namespace cfg   = engine::config;
   auto const path = internal::resolve_config_path(ctx.env());
   auto const doc  = path.has_value() ? cfg::load_toml_file(*path) : std::expected<cfg::toml_map, std::string>{cfg::toml_map{}};
   if (!doc) {
-    return std::unexpected(doc.error());
+    return std::unexpected(std::format("the policy in config.toml cannot be applied: {}\n"
+                                       "  fix the file, then check it with: planar config validate",
+                                       doc.error()));
   }
-  std::optional<std::string> slug;
-  if (auto const association = cfg::policy_association_for_plan(conn, plan_id); association.has_value()) {
-    slug = association->slug;
+  auto const association = cfg::policy_association_for_plan(conn, plan_id);
+  if (!association) {
+    return std::unexpected(std::format("the policy scope of the plan could not be read ({}), so its policy cannot be applied",
+                                       association.error() == cfg::policy_scope_error::not_found
+                                           ? "the plan's scope row does not exist"
+                                           : "database query failed"));
   }
-  auto const resolved =
+  std::optional<std::string> slug = association->slug;
+  auto const                 resolved =
       cfg::effective_policy(*doc, slug.has_value() ? std::optional<std::string_view>{std::string_view{*slug}} : std::nullopt);
   if (!resolved) {
     std::string problem;
@@ -1364,7 +1372,9 @@ auto require_scenario_coverage_policy(context& ctx, db::connection& conn, std::i
       problem += problem.empty() ? "" : "; ";
       problem += std::format("{}: {}", finding.key, finding.message);
     }
-    return std::unexpected(std::move(problem));
+    return std::unexpected(std::format("the policy in config.toml cannot be applied: {}\n"
+                                       "  fix the file, then check it with: planar config validate",
+                                       problem));
   }
   return resolved->values.require_scenario_coverage;
 }
@@ -1524,9 +1534,7 @@ auto run_one_plan(context& ctx, db::connection& conn, std::string_view plan_arg,
     }
     auto const coverage_policy = require_scenario_coverage_policy(ctx, conn, anc.id);
     if (!coverage_policy) {
-      ctx.err() << std::format("plan {}: --strict refused: the policy in config.toml cannot be applied: {}\n"
-                               "  fix the file, then check it with: planar config validate\n",
-                               anc.id, coverage_policy.error());
+      ctx.err() << std::format("plan {}: --strict refused: {}\n", anc.id, coverage_policy.error());
       return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--strict refused"));
     }
     auto const cov                 = cov_ns::compute(*diff);
