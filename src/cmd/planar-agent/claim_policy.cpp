@@ -97,8 +97,8 @@ auto step_association(db::connection& conn, std::int64_t step_id) -> std::expect
 
 } // namespace
 
-auto policy_association_for_entity(db::connection& conn, aa::entity_kind kind, std::int64_t entity_id)
-    -> std::expected<std::optional<std::string>, aa::agent_error> {
+auto policy_association_for_entity(db::connection& conn, engine::runtime::agentactivity::entity_kind kind, std::int64_t entity_id)
+    -> std::expected<std::optional<std::string>, engine::runtime::agentactivity::agent_error> {
   switch (kind) {
   case aa::entity_kind::task:
     return task_association(conn, entity_id);
@@ -111,7 +111,8 @@ auto policy_association_for_entity(db::connection& conn, aa::entity_kind kind, s
 }
 
 auto claim_policy_decision(std::optional<std::filesystem::path> config_path, std::string verb, claim_policy_report* report)
-    -> std::function<std::expected<std::optional<std::string>, aa::agent_error>(db::connection&, const atomic::claim_request&)> {
+    -> std::function<std::expected<std::optional<std::string>, engine::runtime::agentactivity::agent_error>(
+        db::connection&, const engine::runtime::agentatomic::claim_request&)> {
   return [path = std::move(config_path), verb = std::move(verb),
           report](db::connection&              conn,
                   const atomic::claim_request& request) -> std::expected<std::optional<std::string>, aa::agent_error> {
