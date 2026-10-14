@@ -3,9 +3,8 @@ name: planar
 description: >-
   Planar is local agent-operations infrastructure: plans, tasks, work claims, decisions,
   specs, handoffs and Jira or GitHub Issues sync, kept in one SQLite database behind the
-  planar, planar-agent, planar-watch and planar-ext CLIs. Use this skill
-  whenever a session plans, claims, implements, reviews, hands off or syncs work through
-  those CLIs.
+  planar, planar-agent, planar-watch and planar-ext CLIs. Use this skill when the
+  operator mentions Planar, a Planar plan or task id, or one of those CLIs.
 license: MIT
 metadata:
   version: "0.1.0"
