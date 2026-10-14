@@ -491,7 +491,8 @@ prove Planar made, and prints each removal:
 It then removes the retired `~/.planar` paths listed in `install-cleanup.txt`
 (`commands/`, `copilot/`, `skills/<vendor>/`, `<vendor>-skills/` including
 `opencode-skills/`, `agents/<vendor>/`, and then all of `agents/` and
-`codex-agents/`). The retired renderer binary under `bin/` is listed too, so an install over an older tree removes it.
+`codex-agents/`, with any `agents.old/` or `codex-agents.old/` backup an
+interrupted older install left). The retired renderer binary under `bin/` is listed too, so an install over an older tree removes it.
 
 <!-- retired-ref: agent.db upgrade note -->
 ### Upgrade note: unlinking `agent.db` under a live queue submitter

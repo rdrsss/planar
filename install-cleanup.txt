@@ -99,3 +99,9 @@ codex-agents/planar-feedback-triager.toml
 # lines take effect because the staged files are its evidence.
 agents/
 codex-agents/
+# The backups an interrupted older install could leave of those two trees.
+# No current journal owns them (neither is a managed subtree any more), so
+# nothing would ever remove them otherwise. Like the lines above, they are
+# removed after the sweep.
+agents.old/
+codex-agents.old/

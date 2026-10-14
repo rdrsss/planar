@@ -105,10 +105,12 @@ H="$(new_home age)"
 P="$H/.planar"
 mkdir -p "$P/bin" "$P/lib" "$P/opt/mtkahypar" "$P/commands" "$P/copilot/prompts" "$P/skills/codex" "$P/skills/planar" \
          "$P/agents/claude" "$P/codex-skills/x" "$P/workflows" "$P/scripts/old" "$P/codex-agents" "$P/migrations" \
+         "$P/agents.old" "$P/codex-agents.old" \
          "$P/templates/doc-prompts" "$P/queue-logs" "$P/retired/2026-01-01" "$P/workbench/x" "$P/local" "$P/models" "$P/execute" "$P/workspaces"
 for f in bin/planar bin/planar-execute agents/models.md bin/scriptorium bin/mtkahypar lib/libmtkahypar.dylib opt/mtkahypar/wheel commands/pl-old.md copilot/prompts/p.md \
          skills/codex/s.md skills/planar/OLD.md agents/claude/c.md codex-skills/x/s.md workflows/old.lua scripts/old/gone.sh \
-         scripts/stray.sh codex-agents/planar-gone.toml migrations/00001_ancient.sql; do
+         scripts/stray.sh codex-agents/planar-gone.toml migrations/00001_ancient.sql agents.old/planar-coder.md \
+         codex-agents.old/planar-coder.toml; do
   printf 'old %s\n' "$f" > "$P/$f"
 done
 chmod 755 "$P/bin/planar"
@@ -136,7 +138,7 @@ cmp -s "$BUNDLE/uninstall.sh" "$P/bin/planar-uninstall" && [[ -x "$P/bin/planar-
   || fail "bin/planar-uninstall is not the bundle's uninstall.sh, executable"
 for gone in bin/planar-execute agents/models.md workflows bin/scriptorium bin/mtkahypar lib/libmtkahypar.dylib opt/mtkahypar commands copilot skills/codex agents/claude codex-skills \
             scripts/stray.sh scripts/old workflows/old.lua codex-agents/planar-gone.toml migrations/00001_ancient.sql skills/planar/OLD.md \
-            agents codex-agents; do
+            agents codex-agents agents.old codex-agents.old; do
   [[ ! -e "$P/$gone" && ! -L "$P/$gone" ]] || fail "$gone survived the install"
 done
 no_evidence "$P"
