@@ -439,9 +439,7 @@ scripts/break-probe.sh \
 ```
 
 Exit 0 is `killed`, exit 1 is `SURVIVOR`, exit 3 is `INERT`, exit 2 is a
-broken probe. A survivor is a finding about the test, not a footnote —
-see [`agents/methodology.md`](../agents/methodology.md) § Break-probe
-discipline.
+broken probe. A survivor is a finding about the test, not a footnote.
 
 `INERT` is deliberately not folded into `SURVIVOR`. The two look
 identical from the test's point of view — the mutant builds, the named
