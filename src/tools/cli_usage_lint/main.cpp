@@ -11,9 +11,8 @@
 /// spans and fenced blocks, and reports any `--flag` referenced on a
 /// command that the binary does not actually expose.
 ///
-/// It is the schema-driven half of `make cli-usage-check`; the semantic half,
-/// including the host-queue rule (`surface-queue-command`), is `surface_lint`,
-/// and the two share no finding codes.
+/// It is the schema-driven half of `make cli-usage-check`; the semantic half
+/// is `surface_lint`, and the two share no finding codes.
 ///
 /// The scan is a port of the zig original and keeps its helpers' shape, so
 /// behavior parity is checkable by inspection. Exit-code contract:

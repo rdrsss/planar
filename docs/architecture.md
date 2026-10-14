@@ -903,8 +903,7 @@ toolchain prefix, carries an rpath, or misses the floor: macOS 26.0, or glibc
 `surface-link-missing`, `surface-legacy-reference`,
 `surface-artifact-set-drift`, `surface-capability-drift`,
 `surface-command-drift`, `surface-skill-spec` and
-`surface-path-missing`; the host-queue rule adds `surface-queue-command` and
-`surface-queue-marker-invalid` (below); the retired-reference rule adds
+`surface-path-missing`; the retired-reference rule adds
 `surface-retired-reference` and `surface-retired-ref-marker-invalid`; malformed or unused suppressions use
 `surface-suppression-invalid` and `surface-suppression-unused`. These cover absent repository-relative links,
 pinned retired implementation references, contradictory four-artifact
@@ -932,27 +931,9 @@ preceding non-blank line naming one code and a non-empty rationale:
 
 Unknown, malformed, file-wide, and unused suppressions are errors.
 
-The two queue codes enforce the host-queue rule on authored agent and skill
-sources (plan 1080, [operations.md](operations.md#4-the-host-build-and-test-queue)).
-`surface-queue-command` is reported for an inline code span, or a line of a
-fenced code block, in `agents/` or `skills/` whose first word is a build or
-test program (`make`, `cmake --build`, `ninja`, `ctest`, `cargo build`/`test`,
-`go build`/`test`, `npm test`, `pytest`, `tox`, `gradle build`) and which is not
-given to the queue; a command given to the queue begins `planar-agent queue
-run`, and its program follows a bare `--`. `docs/` is not scanned for it, since
-it describes the tools rather than instructing an agent, and prose outside a
-span or block is never read. `surface-queue-marker-invalid` is reported for an
-unbalanced region marker (below), so a typo cannot exempt the rest of a file.
-These two codes are not suppressible with the comment above, which needs a
-code and a rationale on the line before and cannot sit inside a table row or a
-verbatim section. They have their own markers:
-
-- a line containing `queue-lint-ignore` is exempt, for a line that must keep
-  the command (a failure-signature table row), with the reason beside it;
-- the lines between `<!-- queue-lint-ignore-begin: <reason> -->` and
-  `<!-- queue-lint-ignore-end -->` are exempt, for text pinned byte for byte
-  elsewhere, where a per-line marker would change the bytes (the queue rule in
-  `agents/methodology.md`). The marker lines sit outside the pinned text.
+No check reads build or test commands. Whether authored text runs one
+directly or gives it to `planar-agent queue run` is the operator's policy
+(the scope's `use_queue` key), not a property of the shipped text.
 
 `surface-retired-reference` (plan 1089) keeps the removed separate agent
 database from coming back: its file name, its path variable, its migration

@@ -461,61 +461,21 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
                  "surface-lint: 1 finding(s) across 1 files\n");
   }
 
-  SECTION("queue_command: a span or block line that begins with a build or test program fires; queued, "
-          "prose, marked, region-exempt and out-of-scope text stays silent") {
-    // One file carries every shape: a span, a fenced line, an indented fenced
-    // line behind a `$ ` prompt, two spans on one line, a queued span and a
-    // queued block line (silent), prose naming programs (silent), non-build
-    // `cmake --preset` / `make:` / `go vet` / `npm install` spans (silent), a
-    // line carrying `queue-lint-ignore` (silent), a begin/end region holding a
-    // span, a span line and a fenced line (silent), and a span right after the
-    // region (fires again). docs/ is not gated; skills/ is.
-    auto const [out, status] = capture(bin.string(), {(fixtures / "queue_command").string()});
+  SECTION("direct_build_command: build and test commands run directly in agents/ and skills/ are not findings") {
+    // Whether authored text runs a build or test through the host queue is
+    // the operator's policy, so the lint reads no build or test command. One
+    // agent file runs `make test` in a span, `ctest` in a fence, `cmake
+    // --build` behind a `$ ` prompt and two programs on one line; the skill
+    // runs `pytest -q`; stray and unclosed `queue-lint-ignore` comments, which
+    // once had meaning, are plain HTML comments. All of it is clean, and both
+    // files are scanned (files_scanned == 2), so "clean" is not "unread".
+    auto const [out, status] = capture(bin.string(), {(fixtures / "direct_build_command").string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 1);
-    CHECK(out == "agents/direct.md:6: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `make test`\n"
-                 "agents/direct.md:9: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `ctest --test-dir build`\n"
-                 "agents/direct.md:13: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `$ cmake --build build/debug`\n"
-                 "agents/direct.md:16: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `cargo test --release`\n"
-                 "agents/direct.md:16: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `ninja`\n"
-                 "agents/direct.md:35: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `gradle build`\n"
-                 "skills/skill/SKILL.md:6: surface-queue-command: build or test command is not given to `planar-agent "
-                 "queue run`: `pytest -q`\n"
-                 "skills/skill/SKILL.md: skill-rule frontmatter-present: ok (closed at line 4)\n"
-                 "skills/skill/SKILL.md: skill-rule name-matches-directory: ok (skill)\n"
-                 "skills/skill/SKILL.md: skill-rule name-format: ok (skill)\n"
-                 "skills/skill/SKILL.md: skill-rule description-length: ok (49 of 1024 characters)\n"
-                 "skills/skill/SKILL.md: skill-rule frontmatter-keys: ok (2 keys)\n"
-                 "skills/skill/SKILL.md: skill-rule body-lines: ok (2 of 500 lines)\n"
-                 "skills/skill/SKILL.md: skill-rule links-resolve: ok (every relative link exists)\n"
-                 "skills/skill/SKILL.md: skill-rule references-one-level: ok (every referenced file is one level "
-                 "below SKILL.md)\n"
-                 "surface-lint: 7 finding(s) across 3 files\n");
-  }
-
-  SECTION("queue_marker_invalid: an end without a begin, a begin inside a region and a region never closed are "
-          "reported, and the region state still decides what is exempt") {
-    auto const [out, status] = capture(bin.string(), {(fixtures / "queue_marker_invalid").string()});
-    INFO(out);
-    REQUIRE(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 1);
-    CHECK(out == "agents/markers.md:5: surface-queue-marker-invalid: `queue-lint-ignore-end` without a matching "
-                 "`queue-lint-ignore-begin`\n"
-                 "agents/markers.md:6: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `make`\n"
-                 "agents/markers.md:8: surface-queue-marker-invalid: `queue-lint-ignore-begin` inside the region opened "
-                 "at line 7\n"
-                 "agents/markers.md:11: surface-queue-command: build or test command is not given to `planar-agent queue "
-                 "run`: `ninja`\n"
-                 "agents/markers.md:12: surface-queue-marker-invalid: `queue-lint-ignore-begin` is never closed\n"
-                 "surface-lint: 5 finding(s) across 1 files\n");
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(!out.contains("surface-queue"));
+    CHECK(out.contains("skills/skill/SKILL.md: skill-rule frontmatter-present: ok"));
+    CHECK(out.ends_with("surface-lint: clean (2 files)\n"));
   }
 
   SECTION("retired_refs: scoped hits fire, in a fence too; the changelog, the marked INSTALL.md region and "

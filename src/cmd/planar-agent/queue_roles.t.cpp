@@ -6,9 +6,6 @@
 // citing the host build queue rule in `agents/methodology.md`. These cases read
 // the authored sources from the repository and fail when one of them loses that
 // citation, or when the coder's own instructions stop using the queued form.
-// That no source tells an agent to run a build or test command directly is not
-// checked here: `surface_lint` owns that rule (surface-queue-command,
-// src/tools/surface_lint/main.cpp), over all of `agents/`.
 
 #include <catch2/catch_test_macros.hpp>
 
