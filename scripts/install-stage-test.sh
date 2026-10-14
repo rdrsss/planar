@@ -982,14 +982,27 @@ seed_old_install() {
 for mode in copy link; do
   H="$TMP/h34$mode"; P="$H/.planar"
   seed_old_install "$H" "$mode"
-  # The copy an older install placed and recorded, which the operator edited.
-  edited="$H/.config/opencode/agents/planar-coder.md"
-  printf '\nmy edit\n' >> "$edited"
+  # Copies an older install placed, which the operator then edited: one per
+  # proof form (the derived OpenCode copy, a Markdown copy, the Copilot
+  # .agent.md copy, the Codex TOML). Each becomes a regular file holding the
+  # placed bytes plus an edit, so neither a link nor a byte match proves it.
+  # Three are in the old manifest and are reported; the Copilot one is not
+  # recorded, so it is not Planar's to report and is left silently.
+  edited_oc="$H/.config/opencode/agents/planar-coder.md"
+  edited_md="$H/.claude/agents/planar-coder.md"
+  edited_cp="$H/.copilot/agents/planar-coder.agent.md"
+  edited_cx="$H/.codex/agents/planar-coder.toml"
+  for e in "$edited_oc" "$edited_md" "$edited_cp" "$edited_cx"; do
+    { cat "$e"; printf '\nmy edit\n'; } > "$e.tmp"
+    rm -f "$e"; mv "$e.tmp" "$e"
+  done
   (
     source "$ROOT/scripts/install-lib/install-manifest.sh"
     install_manifest_begin "old-build" "$mode"
     INSTALL_MANIFEST_VENDORS=("${ALL6[@]}")
-    install_manifest_add opencode agent planar-coder "$P/agents/planar-coder.md" "$edited" copy
+    install_manifest_add opencode agent planar-coder "$P/agents/planar-coder.md" "$edited_oc" copy
+    install_manifest_add claude agent planar-coder "$P/agents/planar-coder.md" "$edited_md" "$mode"
+    install_manifest_add codex agent planar-coder "$P/codex-agents/planar-coder.toml" "$edited_cx" "$mode"
     install_manifest_write "$P/install-manifest.json"
   ) || fail "$mode: could not write the old manifest"
   if [[ "$mode" == link ]]; then
@@ -999,17 +1012,24 @@ for mode in copy link; do
   run_install "$REPO" "$H" ${flag[@]+"${flag[@]}"} || fail "$mode: upgrade from placed role agents failed: $(cat "$H/err")"
   left="$(find "$H/.claude/agents" "$H/.codex/agents" "$H/.copilot/agents" "$H/.gemini/agents" \
     "$H/.gemini/antigravity-cli/agents" "$H/.config/opencode/agents" -name 'planar-*' ! -name 'planar-local-*' \
-    ! -path "$edited" ! -name 'planar-mine.md' ! -name 'planar-x.agent.md' | sort)"
+    ! -path "$edited_oc" ! -path "$edited_md" ! -path "$edited_cp" ! -path "$edited_cx" \
+    ! -name 'planar-mine.md' ! -name 'planar-x.agent.md' | sort)"
   [[ -z "$left" ]] || fail "$mode: the upgrade left role agents behind: $left"
   [[ ! -e "$P/agents" && ! -e "$P/codex-agents" ]] || fail "$mode: agents/ or codex-agents/ survived the upgrade"
   for r in "${RETIRED_ROLES[@]}"; do
+    [[ "$r" == coder ]] && continue   # the edited Codex copy stays
     grep -Fq "removed role agent: $H/.codex/agents/planar-$r.toml" "$H/out" || fail "$mode: the removal of the planar-$r Codex agent was not printed"
   done
-  n=$(( ${#RETIRED_ROLES[@]} * 6 - 1 ))
+  n=$(( ${#RETIRED_ROLES[@]} * 6 - 4 ))
   [[ "$mode" == link ]] && n=$((n + 1))
-  grep -Fq "retired $n previous projection(s); left 1" "$H/out" || fail "$mode: unexpected sweep summary: $(grep 'previous projection' "$H/out")"
-  [[ "$(tail -1 "$edited")" == "my edit" ]] || fail "$mode: the edited copy was removed or changed"
-  grep -Fq "left $edited: Planar placed it" "$H/err" || fail "$mode: the edited copy was not reported: $(cat "$H/err")"
+  for e in "$edited_oc" "$edited_md" "$edited_cp" "$edited_cx"; do
+    [[ -f "$e" && ! -L "$e" && "$(tail -1 "$e")" == "my edit" ]] || fail "$mode: the edited copy $e was removed or changed"
+  done
+  grep -Fq "retired $n previous projection(s); left 3" "$H/out" || fail "$mode: unexpected sweep summary: $(grep 'previous projection' "$H/out")"
+  for e in "$edited_oc" "$edited_md" "$edited_cx"; do
+    grep -Fq "left $e: Planar placed it" "$H/err" || fail "$mode: the recorded edited copy $e was not reported: $(cat "$H/err")"
+  done
+  ! grep -Fq "$edited_cp" "$H/err" || fail "$mode: the unrecorded edited Copilot copy was reported"
   [[ -L "$H/.claude/agents/planar-local-helper.md" && "$(cat "$H/.claude/agents/planar-local-helper.md")" == helper ]] \
     || fail "$mode: the planar-local link was touched"
   [[ -f "$H/.codex/agents/planar-local-helper.toml" ]] || fail "$mode: the planar-local Codex agent was removed"
@@ -1023,7 +1043,7 @@ for mode in copy link; do
   done
   check_staged "$REPO" "$H"
   ! grep -Fq '"kind": "agent"' "$P/install-manifest.json" || fail "$mode: the new manifest still records an agent row"
-  ! grep -Fq "$edited" "$P/install-manifest.json" || fail "$mode: the new manifest still records the edited agent"
+  ! grep -Fq "$edited_md" "$P/install-manifest.json" || fail "$mode: the new manifest still records an edited agent"
   run_install "$REPO" "$H" ${flag[@]+"${flag[@]}"} || fail "$mode: re-run after the upgrade failed: $(cat "$H/err")"
   ! grep -Fq 'removed role agent' "$H/out" || fail "$mode: the re-run removed a role agent: $(grep removed "$H/out")"
 done
