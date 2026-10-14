@@ -103,7 +103,8 @@ Never split that into `planar task done` plus `planar-agent release`; a
 process death between the two strands the claim. In orchestrator dispatch the
 orchestrator owns the terminal verb, and coders heartbeat and return. In
 direct-claim dispatch the caller runs it. Full sequence:
-`agents/methodology.md` § Coordination claims.
+`skills/planar/references/claim-ritual.md` and
+`skills/planar/references/dispatch.md`.
 
 ## Operating rules
 

@@ -106,6 +106,24 @@ stranded if the process dies between the two. The terminal verbs avoid that. `pl
 done` and `task update --status` on a live-claimed task refuse and print the terminal
 command that would succeed.
 
+## When a lease lapses
+
+A claim whose lease expires becomes stale. `heartbeat` and the terminal verbs then refuse
+with `ClaimNotActive`, and a heartbeat does not revive it. The task stays `doing`. If the
+work is done, take a new claim without a status change, then run the one terminal verb with
+the new token:
+
+```sh
+planar-agent claim --entity task:<id> --no-transition --json
+```
+
+A plain `claim` fails with `IllegalTransition` because the task is already `doing`. Check
+first that no other session took the task meanwhile (`planar-watch ps --stale`). An
+operator previews expired claims with `planar-agent reconcile --dry-run`; `reconcile` marks
+only claims whose lease has already expired. `planar-agent abort --claim <token>`
+force-releases the one claim it names. `complete`, `fail` and `block` refuse a plan or plan-step claim
+(`ClaimNotOnTask`); `release` ends it. See [recovery.md](recovery.md).
+
 ## Complete once the work is integrated
 
 `planar-agent complete --claim <token> --summary <text>` marks the task `done`. It does not

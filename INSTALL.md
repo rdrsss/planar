@@ -905,4 +905,4 @@ PLANAR_VENDOR=claude-code planar capture session --task 1
 - [docs/cli-reference.md](docs/cli-reference.md) — every command, flag, and exit code.
 - [docs/architecture.md](docs/architecture.md) — system design: storage model, three operational context planes, schema contract, workbench, and configuration.
 - [docs/workflows.md](docs/workflows.md) — end-to-end recipes: planning pipeline, bidirectional workbench, ext-sync propagation.
-- [agents/methodology.md](agents/methodology.md) — how the agent roles collaborate; the phased orchestrator flow.
+- [skills/planar/references/dispatch.md](skills/planar/references/dispatch.md) — handing work to a worker with claims, heartbeats and reviews.
