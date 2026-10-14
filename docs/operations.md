@@ -361,6 +361,9 @@ tokens too. So the files are owner-only:
   modes of the database directly under the install root only. It does create
   a missing database, or migrate a behind one, at the resolved path (`PLANAR_DB`
   when set) with the installed `planar init --skip-project --allow-no-repo`,
+  first copying it with its sidecars into `~/.planar/backups/` when a pending
+  migration drops a table
+  ([INSTALL.md](../INSTALL.md#the-backup-before-a-table-dropping-migration)),
   and refuses, changing nothing, a database ahead of the release it installs
   ([INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install)).
 - An install root shared by several users (a `--prefix` such as `/opt/planar`

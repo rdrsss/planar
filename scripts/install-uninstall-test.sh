@@ -180,7 +180,7 @@ hold_lock() {
 # the list of seeded files to $TMP/seeded.<basename of HOME>.
 seed_data() {
   local p="$1"
-  mkdir -p "$p/queue-logs" "$p/retired/2026-01-01/queue-logs" "$p/workbench/x" "$p/local/skills/mine" "$p/workspaces" \
+  mkdir -p "$p/queue-logs" "$p/retired/2026-01-01/queue-logs" "$p/backups/20261014T000000Z-schema-42" "$p/workbench/x" "$p/local/skills/mine" "$p/workspaces" \
            "$p/models" "$p/execute/default" "$p/templates/doc-prompts"
   printf 'SQLite format 3\nseeded\n' > "$p/planar.db"
   printf 'wal\n' > "$p/planar.db-wal"
@@ -189,6 +189,7 @@ seed_data() {
   printf 'legacy agent db\n' > "$p/retired/2026-01-01/agent.db"
   printf 'legacy wal\n' > "$p/retired/2026-01-01/agent.db-wal"
   printf 'old log\n' > "$p/retired/2026-01-01/queue-logs/7.log"
+  printf 'SQLite format 3\nbacked up\n' > "$p/backups/20261014T000000Z-schema-42/planar.db"
   printf 'readme\n' > "$p/workbench/x/README.md"
   printf '[cfg]\n' > "$p/config.toml"
   printf 'skill\n' > "$p/local/skills/mine/SKILL.md"
@@ -198,9 +199,9 @@ seed_data() {
   printf 'my edited template\n' > "$p/templates/a.toml"
   printf 'formerly shipped, renamed since\n' > "$p/templates/doc-prompts/old-name.md"
 }
-data_sums() { ( cd "$1" && find planar.db planar.db-wal planar.db-shm queue-logs retired workbench config.toml local workspaces models execute templates \
+data_sums() { ( cd "$1" && find planar.db planar.db-wal planar.db-shm queue-logs retired backups workbench config.toml local workspaces models execute templates \
   -type f -exec cksum {} + | LC_ALL=C sort ); }
-DATA_NAMES="planar.db planar.db-wal planar.db-shm queue-logs retired workbench config.toml local workspaces models execute templates"
+DATA_NAMES="planar.db planar.db-wal planar.db-shm queue-logs retired backups workbench config.toml local workspaces models execute templates"
 
 # Hoisted out of the first group: every group builds installed homes with it.
 make_installed() { # make_installed NAME -- an installed, data-seeded home; prints it

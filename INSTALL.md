@@ -149,7 +149,7 @@ It removes, printing each removal:
 - The staging directories and `<name>.old` backups that an interrupted install's journal owns, and an abandoned `planar update`'s recorded download directory.
 
 It keeps, and names:
-- Every [preserved path](#preserved-paths): `planar.db` with its `-wal` and `-shm` sidecars, `queue-logs/`, `retired/` (old queue databases and logs), `workbench/`, `config.toml`, `local/`, `workspaces/`, `models/`, `execute/` and every file in `templates/`. A relocated one is named and left where it is.
+- Every [preserved path](#preserved-paths): `planar.db` with its `-wal` and `-shm` sidecars, `queue-logs/`, `retired/` (old queue databases and logs), `backups/` (copies of `planar.db` taken before a migration that drops tables), `workbench/`, `config.toml`, `local/`, `workspaces/`, `models/`, `execute/` and every file in `templates/`. A relocated one is named and left where it is.
 - The retired old queue database and its sidecars, left from before the [queue upgrade](#upgrade-note-what-installsh-does-with-the-old-queue-plan-1089), which it never reads.
 - Every other entry it does not know, including `.staging-*` and `.old` entries no journal owns: reported, never removed.
 
@@ -185,6 +185,7 @@ The data paths are listed once, in `scripts/install-lib/data-paths.sh`, which `i
 - `planar.db-shm`: its shared-memory index; relocated by `PLANAR_DB`
 - `queue-logs/`: output of detached queue runs
 - `retired/`: databases and logs retired by an upgrade
+- `backups/`: copies of planar.db taken before a migration that drops tables
 - `workbench/`: the planning workbench; relocated by `PLANAR_WORKBENCH_ROOT`
 - `config.toml`: the operator configuration; relocated by `PLANAR_CONFIG_PATH`
 - `local/`: operator-local skills and agents; relocated by `PLANAR_LOCAL_HOME`
@@ -200,10 +201,10 @@ To remove the data by hand, delete the paths in the list above (the commands bel
 
 ```bash
 rm -f ~/.planar/planar.db ~/.planar/planar.db-wal ~/.planar/planar.db-shm ~/.planar/config.toml
-rm -rf ~/.planar/queue-logs ~/.planar/retired ~/.planar/workbench ~/.planar/local ~/.planar/workspaces ~/.planar/models ~/.planar/execute ~/.planar/templates
+rm -rf ~/.planar/queue-logs ~/.planar/retired ~/.planar/backups ~/.planar/workbench ~/.planar/local ~/.planar/workspaces ~/.planar/models ~/.planar/execute ~/.planar/templates
 ```
 
-The by-hand commands name the same twelve paths as the list.
+The by-hand commands name the same thirteen paths as the list.
 
 ## Installer reference
 
@@ -373,6 +374,13 @@ running. The protocol is specified in the header of
    claim lease renewed by `queue run --claim` can lapse while the database is
    migrated. Without a working `planar-watch` it prints one line saying the
    queue could not be checked. It never blocks.
+   When the database is behind and a pending migration drops a table, copy
+   it first, with its `-wal` and `-shm` files when present, into
+   `~/.planar/backups/<UTC time>-schema-<version>/` (the directory is `0700`)
+   and print the copy's path; see [the backup before a table-dropping
+   migration](#the-backup-before-a-table-dropping-migration). A copy that
+   cannot be written, or that does not open at the old schema version, stops
+   the install here with nothing changed.
 7. Record **mutating** (flushed to disk with `sync`), then run the vendor sweep and `install-cleanup.txt`
    (never a data path, never through a symlink), then swap each managed
    subtree: the live `<name>` is renamed to `<name>.old`, the staged one to
@@ -397,6 +405,36 @@ running. The protocol is specified in the header of
    manifest, then `release.json`, then the install stamp last. Record
    **complete** (flushed with `sync`), remove the backups and the staging, and
    remove the journal.
+
+#### The backup before a table-dropping migration
+
+A pending migration is one numbered above the database's schema version and
+at or below the release's. One drops a table when its up file has
+`drop table NAME` and neither creates `NAME` nor renames another table to it,
+so a table rebuild (create the new table, copy, drop the old one, rename) is
+not a drop, and neither is a `temp.` table. The installer reads this from the
+release's `migrations/` directory; migration 00009 (`active_scope`) is such a
+migration. A fresh or current database, or a release whose pending
+migrations drop no table, gets no copy.
+
+The copy is taken under the mutation lock, after the probe and before
+anything changes. `planar.db`, `planar.db-wal` and `planar.db-shm` are copied
+with `cp -p` under their own names (a relocated `PLANAR_DB` keeps its base
+name), so the directory opens as it stands; each copy is compared with its
+source, and a source that changed while it was copied (another process
+committed) is copied again, up to three attempts. The staged `planar-watch`
+then opens the copy read-only and must find it at the old schema version.
+Rows a writer commits after the copy and before the migration are in the
+migrated database but not in the copy. `--dry-run` names the release's
+table-dropping migrations and copies nothing.
+
+`backups/` is a [preserved path](#preserved-paths): no install removes it, and
+the uninstaller keeps it without `--purge`. Copies accumulate, one per
+table-dropping upgrade; delete the ones you no longer need. To go back to a
+copy, stop every Planar process, install a release at the copy's schema
+version, and move the copy's files into place as `planar.db`,
+`planar.db-wal` and `planar.db-shm`, removing any `-wal` or `-shm` the copy
+lacks.
 
 **When it fails.** A failure before step 7 removes only that attempt's staging
 and journal: the previous install, its stamp and `release.json` are untouched.
@@ -626,7 +664,7 @@ That's it. The script:
 - Builds all four binaries from source in its own build directory, `build/install-release/` (never the developer's `build/release/`), by running `cmake --preset release -B build/install-release -DPLANAR_VERSION_META=ON`, `cmake --build`, and `cmake --install … --prefix ~/.planar/.staging-<token>/.cmake-install`, and takes `bin/{planar,planar-agent,planar-watch,planar-ext}` from there.
 - Stages `skills/planar/`, `scripts/` and `migrations/` (for ad-hoc `sqlx` use; the binary embeds them at build time via codegen), all under the same `~/.planar/.staging-<token>/`. It runs no renderer, and it stages nothing from the checkout's `agents/` or `examples/`. The staged paths are recorded in the `extras` list of `install-manifest.json`.
 - Removes the `planar-<role>` agents an older install placed (see the [upgrade note](#upgrade-note-the-previous-skill-and-agent-projections)), then `~/.planar/agents/` and `~/.planar/codex-agents/` through `install-cleanup.txt`.
-- Probes the database with the staged binaries, then swaps `bin/`, `skills/`, `scripts/` and `migrations/` into `~/.planar/` whole, and creates a missing database or migrates a behind one with the installed `planar init --skip-project --allow-no-repo`. `templates/` is placed missing-only.
+- Probes the database with the staged binaries, copies a behind one into `~/.planar/backups/` when a pending migration drops a table, then swaps `bin/`, `skills/`, `scripts/` and `migrations/` into `~/.planar/` whole, and creates a missing database or migrates a behind one with the installed `planar init --skip-project --allow-no-repo`. `templates/` is placed missing-only.
 - Places the staged skill into each vendor whose presence marker exists (the three targets in the [layout reference](#install-layout-reference)), and prints the vendors found and skipped.
 - Writes `~/.planar/release.json`, the record of which release is installed. A source install writes it with `version` set to the sixth token of `planar version` (the release tag, `dev` for a build without one), so a source install is never mistaken for a release, and adds `"source_checkout"`, the absolute path of the checkout it ran from, for the uninstaller's retry command; a prebuilt install copies the bundle's file.
 - Atomically writes `~/.planar/install-manifest.json` after every placement

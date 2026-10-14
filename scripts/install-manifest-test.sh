@@ -578,6 +578,61 @@ done
 ! grep -q 'queue_probe_migrate' "$ROOT/install.sh" "$QR_LIB" || fail "the retired queue_probe_migrate is still referenced"
 
 # ---------------------------------------------------------------------------
+# The backup before a migration that drops tables (tech spec 693, component 12;
+# test spec 695, "the installer backs up before dropping tables").
+# planar_migrations_dropping_tables (scripts/install-lib/db-backup.sh) names the
+# pending up migrations that drop a table for good. A table rebuild, a temp
+# table and a comment are not drops; the range is (FROM, TO]. install.sh takes
+# the copy after the probe and the queue warning and before the mutating
+# record. scripts/install-order-test.sh drives the copy with the real binaries.
+grep -Fqx 'source "$REPO_ROOT/scripts/install-lib/db-backup.sh"' "$ROOT/install.sh" || fail "install.sh does not source db-backup.sh"
+source "$ROOT/scripts/install-lib/db-backup.sh"
+MIGS="$TMP/drops/migrations"
+mkdir -p "$MIGS"
+cat > "$MIGS/00001_rebuild.up.sql" <<'SQL'
+-- The twelve-step rebuild: the table comes back under its own name.
+create table artifacts_new (id integer primary key);
+insert into artifacts_new select id from artifacts;
+drop table artifacts;
+alter table artifacts_new rename to artifacts;
+alter table things rename to things_old;
+create table things (id integer);
+drop table things_old;
+SQL
+cat > "$MIGS/00002_temp.up.sql" <<'SQL'
+create temp table m00002_guard (x integer);
+drop table temp.m00002_guard;
+-- drop table commented_out;
+insert into schema_migrations (version, description) values (2, 'temp');
+SQL
+cat > "$MIGS/00003_gone.up.sql" <<'SQL'
+DROP TABLE IF EXISTS
+  "Routing_Gone";
+drop table main.also_gone;
+create table if not exists kept (x integer);
+drop table kept;
+SQL
+cat > "$MIGS/00004_plain.up.sql" <<'SQL'
+create table fresh (x integer);
+SQL
+printf 'drop table not_an_up;\n' > "$MIGS/00003_gone.down.sql"
+[[ -z "$(planar_migrations_dropping_tables "$MIGS" 0 2)" ]] \
+  || fail "a rebuild, a temp table or a comment counted as a drop: $(planar_migrations_dropping_tables "$MIGS" 0 2)"
+[[ "$(planar_migrations_dropping_tables "$MIGS" 0 4)" == "00003_gone.up.sql: also_gone routing_gone" ]] \
+  || fail "the dropping migration was not named with its tables: '$(planar_migrations_dropping_tables "$MIGS" 0 4)'"
+[[ "$(planar_migrations_dropping_tables "$MIGS" 2 3)" == "00003_gone.up.sql: also_gone routing_gone" ]] \
+  || fail "the upper bound is not inclusive"
+[[ -z "$(planar_migrations_dropping_tables "$MIGS" 3 4)" ]] || fail "the lower bound is not exclusive"
+if planar_migrations_dropping_tables "$TMP/drops/absent" 0 4 >/dev/null; then fail "an absent migrations directory was not refused"; fi
+# The repository's own stream: every migration that drops a table for good.
+[[ "$(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')" == "00009_drop_active_scope.up.sql: active_scope|" ]] \
+  || fail "the repository's table-dropping migrations changed: $(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')"
+_backup_line="$(qr_line '^    planar_db_backup "\$STAGE/bin" "\$ROOT_C" "\$INSTALL_DB_VERSION"')"
+[[ "$(printf '%s\n' "$_backup_line" | grep -c .)" == 1 ]] || fail "install.sh: the backup call is not exactly one line ('$_backup_line')"
+[[ "$_warn_line" -lt "$_backup_line" && "$_backup_line" -lt "$_mutating_line" ]] \
+  || fail "install.sh does not back up after the queue warning and before the mutating record: $_warn_line $_backup_line $_mutating_line"
+
+# ---------------------------------------------------------------------------
 # The live-queue guard and agent.db retirement (plan 1089, task
 # qp-install-retire; tech spec 656 steps 1, 4 and 5, "Override", "Uninstall";
 # test spec 658). The guard and the retire step are queue_live_guard and
@@ -1000,5 +1055,5 @@ install_manifest_write "$unchanged_dest"
 [[ ! -e "$unchanged_dest.tmp.$$" ]] || fail "a no-change write left its temp file"
 
 qr_kill_sleepers
-printf 'install-manifest tests: 14 passed\n'
+printf 'install-manifest tests: 15 passed\n'
 

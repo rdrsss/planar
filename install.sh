@@ -111,6 +111,8 @@ source "$REPO_ROOT/scripts/install-lib/data-paths.sh"
 source "$REPO_ROOT/scripts/install-lib/mutation-lock.sh"
 source "$REPO_ROOT/scripts/install-lib/install-state.sh"
 source "$REPO_ROOT/scripts/install-lib/db-probe.sh"
+# The copy of planar.db taken before a migration that drops tables.
+source "$REPO_ROOT/scripts/install-lib/db-backup.sh"
 # The managed-subtree and vendor name lists, the vendor ownership rules and the
 # release-record readers shared with the uninstaller (plan 1122, plan 1133).
 source "$REPO_ROOT/scripts/install-lib/managed-lists.sh"
@@ -695,6 +697,10 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   log "retire the previous projections, among them the planar-<role> agents an older install placed in the vendor agent directories (with or without --no-vendor)"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
   log "swap bin/, skills/, scripts/ and migrations/ in through <name>.old"
+  _drops="$(planar_migrations_dropping_tables "$SRC_ROOT/migrations" 0 999999 | sed 's/_.*//' | tr '\n' ' ')"
+  if [[ -n "$_drops" ]]; then
+    log "before migrating a behind database, copy it with its -wal and -shm into $PLANAR_HOME/backups/<time>-schema-<version>/ when a pending migration drops tables (this release's: ${_drops% })"
+  fi
   log "create a missing database, or migrate a behind one, with the installed planar init --skip-project --allow-no-repo"
   if [[ -e "$PLANAR_HOME/agent.db" && "$PREBUILT" -eq 1 ]]; then
     log "move $PLANAR_HOME/agent.db, its sidecars and the old numbered queue logs, unread, into $PLANAR_HOME/retired/<date>/"
@@ -1135,6 +1141,25 @@ esac
 # The still-installed read-only planar-watch names live queue entries before the
 # swap (decision 1327). It never blocks.
 planar_queue_warning "$ROOT_C/bin"
+
+# ---------- back up a database a pending migration drops tables from ----------
+
+# Before a behind database is migrated across a migration that drops tables,
+# it is copied, with its -wal and -shm files, into $PLANAR_HOME/backups/ (tech
+# spec 693, component 12). The copy is taken here, before the mutating record,
+# so a failed backup stops the install with nothing changed.
+if [[ "$INSTALL_DB_STATE" == behind ]]; then
+  _drops="$(planar_migrations_dropping_tables "$STAGE/migrations" "$INSTALL_DB_VERSION" "$INSTALL_DB_TARGET")"
+  if [[ -n "$_drops" ]]; then
+    title "Backing up the database"
+    while IFS= read -r _l; do log "pending migration drops tables: $_l"; done <<< "$_drops"
+    planar_db_backup "$STAGE/bin" "$ROOT_C" "$INSTALL_DB_VERSION" \
+      || err "refusing to migrate: the database $PLANAR_INSTALL_DB could not be backed up before a migration that drops tables: $INSTALL_DB_DETAIL. Nothing was changed."
+    ok "backed up $PLANAR_INSTALL_DB (schema $INSTALL_DB_VERSION) to $INSTALL_DB_BACKUP"
+  else
+    vlog "no pending migration drops a table: no backup"
+  fi
+fi
 
 planar_state_unknown_backup "$ROOT_C" && err "$INSTALL_STATE_ERROR"
 # A managed subtree is moved aside whole, so one that is, or holds, a data path

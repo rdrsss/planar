@@ -748,7 +748,9 @@ records are flushed with `sync(1)`) with the phases `prepared`,
 `mutating`, `complete`, `aborted-before-mutation` and `uninstalling`, the
 target release and per-subtree swap progress
 (`scripts/install-lib/journal.sh`): it stages every managed subtree, probes the
-database with the staged binaries, swaps each subtree in by two renames through
+database with the staged binaries, copies a behind database with its `-wal`
+and `-shm` into `backups/` when a pending migration drops a table
+(`scripts/install-lib/db-backup.sh`), swaps each subtree in by two renames through
 `<name>.old`, then creates or migrates the database with the installed
 `planar init`, and writes `release.json` and the install stamp last. A run
 after an interruption resumes the same target, and a `mutating` journal takes
@@ -882,7 +884,7 @@ order and the failure rules are in
 `codex-agents/` from an older install are removed through
 `install-cleanup.txt`. It never removes a data path, and the uninstaller keeps
 them without `--purge`: `planar.db` with `planar.db-wal` and `planar.db-shm`,
-`queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`, `workspaces/`,
+`queue-logs/`, `retired/`, `backups/`, `workbench/`, `config.toml`, `local/`, `workspaces/`,
 `models/`, `execute/` and `templates/`. They live under `~/.planar` unless
 `PLANAR_DB`, `PLANAR_CONFIG_PATH`, `PLANAR_WORKBENCH_ROOT`, `PLANAR_LOCAL_HOME`
 or `PLANAR_TEMPLATES_DIR` relocates one; `--purge` names a relocated path and

@@ -14,6 +14,11 @@
 #     before vendor cleanup or swap; a failed migration and a failed
 #     post-migration probe keep the journal and the backups, name the durable
 #     retry, and the retry completes once the fault is gone;
+#   - before a pending migration that drops tables, the database is copied with
+#     its -wal and -shm into backups/ and the copy's path printed; the copy
+#     opens at the old schema with the WAL's rows; no table-dropping migration
+#     pending writes no backup; a dry run copies nothing; a failed backup stops
+#     the install before any change;
 #   - running and waiting queue entries are named before the swap, and an
 #     absent planar-watch prints one skipped line;
 #   - a kill at each point of a subtree swap is recovered by re-running the same
@@ -75,7 +80,7 @@ case " all $ORDER_GROUPS " in *" $GROUP "*) ;; *) printf 'install-order-test: un
 # mutation lock from a second process while another run is refused, or wait on a paused
 # installer, and run alone after the parallel batch (decision 1328: the lock serializes mutation
 # of one root, and these scenarios test that serialization).
-SCEN_TABLE="recover-journaled:recover refused:concurrent recover-restage:recover updater:handoff faults:db uninstall-pending:handoff queue:db swap-complete:swap swap-bin:swap migfail:db swap-backup-bin:swap swap-swap-skills:swap postprobe:db swap-swap-bin:swap swap-after-mutating:swap roparent:concurrent ahead:db behind:db fresh:db relocated:db durable:db firstkill:concurrent inert:handoff concurrent-refused:concurrent renamed:concurrent uninstall-refused:handoff"
+SCEN_TABLE="recover-journaled:recover refused:concurrent recover-restage:recover updater:handoff faults:db uninstall-pending:handoff queue:db swap-complete:swap swap-bin:swap migfail:db swap-backup-bin:swap swap-swap-skills:swap postprobe:db swap-swap-bin:swap swap-after-mutating:swap roparent:concurrent ahead:db behind:db fresh:db relocated:db durable:db firstkill:concurrent inert:handoff concurrent-refused:concurrent renamed:concurrent uninstall-refused:handoff backup:db backupfail:db nobackup:db backupdry:db"
 SCEN_SERIAL=" concurrent-refused renamed uninstall-refused "
 # shellcheck source=fixtures/scenario-runner.sh
 source "$ROOT/scripts/fixtures/scenario-runner.sh"
@@ -112,7 +117,7 @@ release_json_write() {
 make_bundle() {
   local dest="$1" tag="$2" i names=(planar planar-agent planar-watch planar-ext)
   fake_bundle_make "$ROOT" "$dest"
-  for i in 0 1 2 3 4; do cp -f "${REAL_BINS[$i]}" "$dest/bin/${names[$i]}"; chmod 755 "$dest/bin/${names[$i]}"; done
+  for i in 0 1 2 3; do cp -f "${REAL_BINS[$i]}" "$dest/bin/${names[$i]}"; chmod 755 "$dest/bin/${names[$i]}"; done
   release_json_write "$dest" "$tag"
 }
 # copy_bundle SRC DEST TAG -- another release of an already staged bundle: a copy of it with its
@@ -320,10 +325,9 @@ if scen migfail; then
 H="$(healthy migfail)"; P="$H/.planar"
 planar_at "$P/planar.db" plan create "Keep me" --scope global --json >/dev/null
 db_exec "$P/planar.db" "$(cat "$down")"
-# The head migration creates this table; a stray one makes its transaction fail.
-blocker="$(sed -n 's/^create table \([a-z_]*\) (.*/\1/p' "$(ls "$ROOT/migrations"/*.up.sql | sort | tail -1)" | head -1)"
-[[ -n "$blocker" ]] || fail "could not find a table the head migration creates"
-db_exec "$P/planar.db" "create table $blocker (x integer)"
+# Every up migration ends by recording its version; a trigger that refuses the head's row
+# makes its transaction fail, whatever the migration itself changes.
+db_exec "$P/planar.db" "create trigger test_block_head before insert on schema_migrations when new.version = $HEAD_SCHEMA begin select raise(abort, 'test: the head migration is blocked'); end;"
 run_install "$H" "$B3" --
 [[ "$RC" != 0 ]] || fail "a failed migration reported success: $(show)"
 grep -Fq "could not be brought to this release's schema" "$TMP/err" || fail "the migration failure is not named: $(show)"
@@ -333,7 +337,7 @@ grep -Fq "is incomplete" "$TMP/err" && grep -Fq "binaries may already have chang
 [[ "$(db_rows "$P/planar.db" "select title from plans")" == "[('Keep me',)]" ]] || fail "existing rows did not survive the failed migration"
 retry="$(sed -n '/complete the install with:/{n;s/^  //;p;}' "$TMP/err")"
 [[ "$retry" == "bash $B3/install.sh --prebuilt $B3" ]] || fail "the retry command is not the durable bundle command: '$retry'"
-db_exec "$P/planar.db" "drop table $blocker"
+db_exec "$P/planar.db" "drop trigger test_block_head"
 RC=0
 ( cd "$H/work" && /usr/bin/env -i HOME="$H" PATH="$BASEBIN" NO_COLOR=1 LC_ALL=C TMPDIR="$TMP" /bin/bash -c "$retry" >"$TMP/out" 2>"$TMP/err" ) || RC=$?
 [[ "$RC" == 0 ]] || fail "the printed retry did not complete the install ($RC): $(show)"
@@ -356,6 +360,108 @@ run_install "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "re-running after a post-probe failure did not complete ($RC): $(show)"
 no_evidence "$P"
 pass "a failed post-migration probe keeps the journal; the release retry is the pinned bootstrap"
+fi
+
+# --- the backup before a migration that drops tables ---------------------------------------------
+
+# A copy of B1 whose head up migration FILE is a fixture: the installer reads the bundle's
+# migrations/ to decide whether a pending migration drops tables, while the real binaries
+# still apply their embedded migration. fixture_bundle DEST TAG SQL.
+fixture_bundle() {
+  copy_bundle "$B1" "$1" "$2"
+  printf '%s\n' "$3" > "$(ls "$1/migrations"/*.up.sql | sort | tail -1)"
+}
+# behind_home NAME -- a healthy install whose database holds a plan and is one migration behind.
+behind_home() {
+  local h; h="$(healthy "$1")"
+  planar_at "$h/.planar/planar.db" plan create "Backed up plan" --scope global --json >/dev/null
+  db_exec "$h/.planar/planar.db" "$(cat "$down")"
+  [[ "$(db_version "$h/.planar/planar.db")" == "$((HEAD_SCHEMA - 1))" ]] || fail "$1: the seeded database is not one migration behind"
+  printf '%s' "$h"
+}
+DROP_SQL="drop table fixture_gone;"
+
+if scen backup; then
+BD="$TMP/bundles/drop/planar-bundle"; fixture_bundle "$BD" v1.2.5 "$DROP_SQL"
+H="$(behind_home backup)"; P="$H/.planar"
+# A committed change that lives only in the write-ahead log: the writer dies before a checkpoint.
+( py 'import os,sqlite3,sys
+c=sqlite3.connect(sys.argv[1]); c.execute("pragma journal_mode=wal"); c.execute("pragma wal_autocheckpoint=0")
+c.execute("update plans set title = ? where title = ?", ("Only in the wal", "Backed up plan")); c.commit()
+os.kill(os.getpid(), 9)' "$P/planar.db" ) 2>/dev/null || true
+[[ -s "$P/planar.db-wal" && -e "$P/planar.db-shm" ]] || fail "the seeded database has no -wal and -shm: $(ls -a "$P")"
+run_install "$H" "$BD" --
+[[ "$RC" == 0 ]] || fail "install over a database a pending migration drops tables from failed ($RC): $(show)"
+[[ "$(db_version "$P/planar.db")" == "$HEAD_SCHEMA" ]] || fail "the database was not migrated after the backup"
+copies="$(ls -d "$P/backups"/*/ 2>/dev/null || true)"
+[[ "$(printf '%s\n' "$copies" | grep -c .)" == 1 ]] || fail "not exactly one backup directory: $(ls -la "$P/backups" 2>&1)"
+copy="${copies%/}/planar.db"
+case "${copies%/}" in *-schema-$((HEAD_SCHEMA - 1))) ;; *) fail "the backup directory does not name the old schema: $copies" ;; esac
+[[ -f "$copy" && -f "$copy-wal" && -f "$copy-shm" ]] || fail "the backup lacks planar.db, -wal or -shm: $(ls -a "${copies%/}")"
+grep -Fq "backed up $P/planar.db (schema $((HEAD_SCHEMA - 1))) to $copy" "$TMP/out" || fail "the copy's path was not printed: $(show)"
+grep -Fq "pending migration drops tables: $(ls "$BD/migrations"/*.up.sql | sort | tail -1 | sed 's#.*/##'): fixture_gone" "$TMP/out" \
+  || fail "the dropping migration was not named: $(show)"
+[[ "$(db_version "$copy")" == "$((HEAD_SCHEMA - 1))" ]] || fail "the copy does not open at the old schema: $(db_version "$copy")"
+[[ "$(db_rows "$copy" "select title from plans")" == "[('Only in the wal',)]" ]] || fail "the copy lost the write-ahead log's rows: $(db_rows "$copy" "select title from plans")"
+[[ "$(ls -ld "$P/backups" | cut -c1-10)" == drwx------ ]] || fail "backups/ is not private: $(ls -ld "$P/backups")"
+o="$(cat "$TMP/out")"; bak_at="${o%%backed up*}"; swap_at="${o%%Swapping the managed subtrees*}"
+[[ "${#bak_at}" -lt "${#swap_at}" ]] || fail "the backup was not taken before the swap: $(show)"
+no_evidence "$P"
+# A second release over the now current database writes no further copy.
+run_install "$H" "$BD" --
+[[ "$RC" == 0 ]] || fail "re-installing over the current database failed ($RC): $(show)"
+[[ "$(ls "$P/backups" | grep -c .)" == 1 ]] || fail "a current database was backed up again: $(ls "$P/backups")"
+pass "a pending table-dropping migration backs up planar.db with its -wal and -shm and prints the copy's path"
+fi
+
+if scen nobackup; then
+BK="$TMP/bundles/keep/planar-bundle"; fixture_bundle "$BK" v1.2.6 "create table fixture_kept (x integer);"
+H="$(behind_home nobackup)"; P="$H/.planar"
+run_install "$H" "$BK" --
+[[ "$RC" == 0 ]] || fail "install over a behind database failed ($RC): $(show)"
+[[ "$(db_version "$P/planar.db")" == "$HEAD_SCHEMA" ]] || fail "the behind database was not migrated"
+[[ ! -e "$P/backups" ]] || fail "a release with no table-dropping migration wrote a backup: $(ls -la "$P/backups")"
+! grep -Fq "backed up" "$TMP/out" || fail "a backup was reported: $(show)"
+pass "a release with no table-dropping migration pending writes no backup"
+fi
+
+if scen backupdry; then
+BD="$TMP/bundles/drop/planar-bundle"; fixture_bundle "$BD" v1.2.5 "$DROP_SQL"
+H="$(behind_home backupdry)"; P="$H/.planar"
+before="$(tree_sum "$P")"; before_db="$(cksum < "$P/planar.db")"
+run_install "$H" "$BD" -- --dry-run
+[[ "$RC" == 0 ]] || fail "the dry run failed ($RC): $(show)"
+grep -Fq "copy it with its -wal and -shm into $P/backups/" "$TMP/out" || fail "the dry run does not name the backup: $(show)"
+[[ ! -e "$P/backups" ]] || fail "the dry run wrote a backup: $(ls -la "$P/backups")"
+[[ "$(tree_sum "$P")" == "$before" && "$(cksum < "$P/planar.db")" == "$before_db" ]] || fail "the dry run changed the installation"
+pass "a dry run names the backup and copies nothing"
+fi
+
+if scen backupfail; then
+BD="$TMP/bundles/drop/planar-bundle"; fixture_bundle "$BD" v1.2.5 "$DROP_SQL"
+H="$(behind_home backupfail)"; P="$H/.planar"
+# backups/ cannot be created: a file is in its place.
+printf 'not a directory\n' > "$P/backups"
+before="$(tree_sum "$P")"; before_bin="$(bin_sum "$P/bin")"
+run_install "$H" "$BD" --
+[[ "$RC" == 1 ]] || fail "a failed backup did not stop the install at exit 1 ($RC): $(show)"
+grep -Fq "could not be backed up before a migration that drops tables: cannot create the directory $P/backups" "$TMP/err" || fail "the backup failure is not named: $(show)"
+[[ "$(db_version "$P/planar.db")" == "$((HEAD_SCHEMA - 1))" ]] || fail "the database was migrated although the backup failed"
+[[ "$(tree_sum "$P")" == "$before" && "$(bin_sum "$P/bin")" == "$before_bin" ]] || fail "a failed backup changed the installation"
+grep -Fq '"version": "v1.2.3"' "$P/release.json" || fail "release.json changed"
+no_evidence "$P"
+# A copy that fails after it is written is removed, and the install stops the same way.
+rm -f "$P/backups"
+run_install "$H" "$BD" PLANAR_INSTALL_TEST_FAULT=fail@backup --
+[[ "$RC" == 1 ]] || fail "a faulted backup did not stop the install ($RC): $(show)"
+grep -Fq "test fault injected into the backup" "$TMP/err" || fail "the faulted backup is not named: $(show)"
+[[ -d "$P/backups" && -z "$(ls -A "$P/backups")" ]] || fail "the partial copy was not removed: $(ls -laR "$P/backups" 2>&1)"
+[[ "$(db_version "$P/planar.db")" == "$((HEAD_SCHEMA - 1))" ]] || fail "the database was migrated although the backup faulted"
+no_evidence "$P"
+run_install "$H" "$BD" --
+[[ "$RC" == 0 && "$(db_version "$P/planar.db")" == "$HEAD_SCHEMA" && "$(ls "$P/backups" | grep -c .)" == 1 ]] \
+  || fail "the install did not complete with one backup once the fault was gone ($RC): $(show)"
+pass "a failed backup stops the install before any change"
 fi
 
 if scen queue; then
