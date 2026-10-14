@@ -138,6 +138,13 @@ export struct task_create_args {
   std::optional<std::string>  scope;                        ///< Scope slug accepted by `identity::resolve_slug`.
 };
 
+/// @brief The `audit_log` summary of a `status_change` row that an explicit `--force` made `done`.
+///
+/// Written by `mark_done` and `update_task` when `force` is set and the new status is `done`. The
+/// trail checker `planar.engine.runtime.conformance` reads the same text to list the move as an
+/// operator override rather than an unclaimed completion; the two literals must stay equal.
+export inline constexpr std::string_view forced_done_summary = "done (--force)";
+
 /// @brief Arguments to `update`. Mirrors zig's task.zig `UpdateArgs`.
 export struct task_update_args {
   std::optional<std::string>  title;                   ///< New title, when set.

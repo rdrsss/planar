@@ -686,6 +686,39 @@ TEST_CASE("auto-clearing leaves a distinguishable audit summary", "[task][verbs]
   CHECK(stmt->column_text(0) == std::format("unblocked: task {} is terminal", b->id));
 }
 
+// The conformance check lists a forced `done` as an override by this audit summary, so a plain
+// `done` must not carry it and either forced path must.
+TEST_CASE("an explicit force that sets done records the forced-done audit summary and a plain done does not",
+          "[task][verbs][force]") {
+  scratch_db_path scratch;
+  auto            conn       = open_migrated(scratch);
+  auto            plain      = create_task(conn, task_create_args{.title = "Plain", .status = task_status::doing});
+  auto            via_done   = create_task(conn, task_create_args{.title = "ViaDone", .status = task_status::todo});
+  auto            via_update = create_task(conn, task_create_args{.title = "ViaUpdate", .status = task_status::todo});
+  REQUIRE(plain.has_value());
+  REQUIRE(via_done.has_value());
+  REQUIRE(via_update.has_value());
+  REQUIRE(mark_done(conn, plain->id, false).has_value());
+  REQUIRE(mark_done(conn, via_done->id, true).has_value());
+  REQUIRE(update_task(conn, via_update->id, task_update_args{.status = task_status::done, .force = true}).has_value());
+
+  auto const forced_rows = [&](std::int64_t id) {
+    auto stmt = conn.prepare("select count(*) from audit_log where entity_kind='task' and entity_id=? and verb='status_change' "
+                             "and summary = ?");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->bind_int64(1, id).has_value());
+    REQUIRE(stmt->bind_text(2, planar::engine::planning::forced_done_summary).has_value());
+    auto step = stmt->step();
+    REQUIRE(step.has_value());
+    REQUIRE(*step == planar::db::step_result::row);
+    return stmt->column_int64(0);
+  };
+  CHECK(forced_rows(plain->id) == 0);
+  CHECK(forced_rows(via_done->id) == 1);
+  CHECK(forced_rows(via_update->id) == 1);
+  CHECK(planar::engine::planning::forced_done_summary == "done (--force)");
+}
+
 TEST_CASE("a non-blocked dependent is left alone when its blocker completes", "[task][verbs][6754]") {
   // The status guard: only a row actually AT `blocked` is touched. A
   // dependent an operator already moved to `doing` must not be yanked back
