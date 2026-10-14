@@ -88,7 +88,7 @@ findings, write `None.` for it; do not omit it.
 
 The review packet and four-value verdict remain authoritative. Wrap them in the
 shared feedback contract from
-`doctrine.md` § Operator feedback contract in the Planar agents directory: context names plan,
+the repository's `agents/doctrine.md` § Operator feedback contract: context names plan,
 artifact set, mode, and coverage oracle; the packet's Intent read supplies
 intent; actions count checks and only operator-approved writes; result gives
 outcome plus the complete packet and verified preview/live-row state; warnings

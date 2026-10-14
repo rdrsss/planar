@@ -9,16 +9,19 @@ If the operator has edited files on disk, pull those edits into the database
 before review:
 
 ```text
-/pl-workbench pull <plan-id>
+planar workbench pull <plan-id>
 ```
 
 ## 2. Run The Review
 
+Ask a reviewer, human or agent, to read the specs against the user's intent and
+report a verdict. For example:
+
 ```text
-/pl-spec-review <plan-id>
+Review the specs for plan <plan-id> and report one verdict.
 ```
 
-Read the verdict first:
+One verdict vocabulary you can use:
 
 - `ready-for-ingest`: proceed to ingest preview.
 - `needs-answers`: ask the operator the listed questions.
@@ -34,14 +37,9 @@ planar question list --plan <plan-id> --status open --json
 planar question answer <question-id> --answer "<operator-approved answer>"
 ```
 
-For spec-aware updates, prefer the skill write pass:
-
-```text
-/pl-spec-review <plan-id> --write
-```
-
-Use write mode when the answer must also be reflected in `product-spec.md`,
-`tech-spec.md`, `roadmap.md`, or `test-spec.md`.
+When the answer must also be reflected in `product-spec.md`, `tech-spec.md`,
+`roadmap.md`, or `test-spec.md`, edit those workbench files as well, then pull the
+edits into the database as described below.
 
 ## 4. Close Feature Gaps
 
@@ -57,17 +55,16 @@ Typical edits after review:
 After edits:
 
 ```text
-/pl-workbench push <plan-id>
-/pl-spec-review <plan-id>
+planar workbench pull <plan-id>
 ```
 
-Repeat until the verdict is `ready-for-ingest` or until remaining risk is an
-explicit operator-approved assumption.
+Then review again. You can repeat until the verdict is `ready-for-ingest` or
+until remaining risk is an explicit operator-approved assumption.
 
 ## 5. Confirm Mechanical Readiness
 
 ```text
-/pl-spec-ingest <plan-id> --strict
+planar spec ingest <plan-id> --strict
 planar test-spec status <plan-id> --json
 ```
 

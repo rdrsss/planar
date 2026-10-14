@@ -61,7 +61,7 @@ state, live and stale claims, the parallel wave, readiness, the policy and the c
 - Omitting `--ttl` renews the lease length the claim already holds; an 8-hour claim stays
   8 hours. Pass `--ttl` only to change the length deliberately; it is then absolute, in
   either direction.
-- Heartbeat immediately before and after any long tool call.
+- A long tool call can outlast the lease; heartbeat before and after it if so.
 - Read `expires_at` from the heartbeat output to confirm the lease moved. "Sent" is not
   proof.
 

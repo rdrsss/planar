@@ -2,6 +2,16 @@
 
 A changelog of shipped milestones and plans, newest first.
 
+## 2026-10-14
+
+### Plan 1142: role agents are examples and no longer installed
+
+The `planar-<role>` agents moved from `agents/` to `examples/agents/`. The installer places only the `planar` skill.
+
+- **Moved.** The coder, reviewer, janitor, research, planner, spec-reviewer, ingestor, ext-sync and sync-reconciler agents are in `examples/agents/`. Copy one into your harness's agent directory to use it. The doctrine documents they cite stay under `agents/` in the repository and are not staged.
+- **Upgrade.** The installer removes the `planar-<role>` agents an older install placed in the six vendor agent directories, each only while it is still what Planar placed, and then `~/.planar/agents/` and `~/.planar/codex-agents/`. See the [upgrade note](../INSTALL.md#upgrade-note-the-previous-skill-and-agent-projections).
+- **Release bundle.** The bundle carries no `agents/` or `codex-agents/`.
+
 ## 2026-10-11
 
 ### Plan 1142, milestone 2: verbs that are not mechanism left master

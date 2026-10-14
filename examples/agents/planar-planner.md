@@ -78,7 +78,7 @@ The planner emits a status string at each meaningful phase boundary using `plana
 | Authoring Phase 4 — test spec | `"drafting test-spec"` |
 | All four documents written and pushed; waiting for operator review | `"ready for review"` |
 
-See `methodology.md` in the Planar agents directory, § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+See the repository's `agents/methodology.md`, § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
 
 ## Boundaries
 
