@@ -80,7 +80,7 @@ writes as done and give the retry for the rest.
 
 - Prefer `--from-file` for an existing document and `--body` for inline text.
 - `artifact update --body @file` reads the file verbatim. For a workbench spec, pass a
-  body-only file; see [spec-pipeline.md](spec-pipeline.md).
+  body-only file; see [preparation.md](preparation.md).
 - Use annotations for anchored review notes, not general documents. After creating one,
   `planar annotate verify` reports whether its anchor is clean or has drifted.
 
