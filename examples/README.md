@@ -14,6 +14,7 @@ Replace placeholder values such as `<plan-id>`, `<task-id>` and
 |---------|----------|
 | [`spec-lifecycle.md`](spec-lifecycle.md) | You want to draft specs, review them adversarially, ingest them, and prepare execution. |
 | [`spec-review-loop.md`](spec-review-loop.md) | You have draft specs with open questions and want to turn them into complete, self-consistent artifacts. |
+| [`swarm-orchestration.md`](swarm-orchestration.md) | You want one orchestrator session to run a plan through parallel worker sessions, with claims, queued tests and a separate review. |
 | [`operational-plane.md`](operational-plane.md) | You want to preview and propagate a finished local plan to Jira or GitHub Issues. |
 | [`feedback-contract.md`](feedback-contract.md) | You want a ready-made shape for the closing report of a workflow. |
 

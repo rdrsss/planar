@@ -322,7 +322,7 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `agents/` | `planar-orchestrator.md` and `planar-test-coder.md`, which the orchestrator eval reads, with the doctrine documents beside them; not installed |
 | `examples/agents/` | The example `planar-<role>.md` role agents; not installed |
 | `docs/` | User-facing reference docs (architecture, CLI, skills, concepts, workflows) |
-| `examples/` | Copy-paste oriented examples for the spec, orchestration, workflow, and propagation flows |
+| `examples/` | Copy-paste oriented examples for the spec, orchestration (including a swarm orchestrator prompt), workflow, and propagation flows |
 | `evals/` | Orchestrator and planning evaluation harnesses |
 | `scripts/` | Bash tooling (acceptance validators, session stats, git hooks); independent of the build |
 | `Makefile` | Thin wrapper around `cmake --preset` / `cmake --build` / `ctest` invocations |
