@@ -1431,8 +1431,14 @@ SKILL_INVARIANT_LEADS = [
 _SPLIT_NEGATION = re.compile(
     r"\b(do not|don't|never|must not|forbidden|refuse[sd]?|not)\b", re.IGNORECASE
 )
-# A sentence that names the hazard of the split describes it as a mistake.
-_SPLIT_HAZARD = re.compile(r"\b(split(s|ting)?|strand(s|ed)?)\b", re.IGNORECASE)
+# The hazard stated as the consequence of the split, after the mention in the
+# same sentence: "... splits that", "... strands the claim", "... can leave a
+# claim stranded". A hazard word before the mention ("Split the ending: run
+# ...", "To avoid a stranded claim, run ...") does not exempt it.
+_SPLIT_HAZARD = re.compile(
+    r"\bsplits?\s+that\b|\bstrands?\s+the\s+claim\b|\bleaves?\s+(a|the)\s+claim\s+stranded\b",
+    re.IGNORECASE,
+)
 
 
 def split_terminal_verb_instructions(text: str) -> list[str]:
@@ -1443,9 +1449,9 @@ def split_terminal_verb_instructions(text: str) -> list[str]:
     ("`planar task done` followed by `planar-agent release` splits that, and
     a death between them strands the claim"). A mention is exempt when a
     negation appears in the same list item or paragraph before it (the
-    preceding text up to a blank line or list-item start), or when its own
-    sentence names the hazard (the split, or a stranded claim); a mention
-    that instructs the split has neither and is returned.
+    preceding text up to a blank line or list-item start), or when the rest
+    of its own sentence states the hazard as the consequence (`_SPLIT_HAZARD`);
+    a mention that instructs the split has neither and is returned.
     """
     hits: list[str] = []
     for match in re.finditer(r"planar task done", text):
@@ -1454,12 +1460,10 @@ def split_terminal_verb_instructions(text: str) -> list[str]:
             index = before.rfind(boundary)
             if index != -1:
                 before = before[index + len(boundary) :]
-        sentence_start = max(before.rfind(". "), before.rfind(".\n"))
-        sentence_before = before[sentence_start + 1 :] if sentence_start != -1 else before
         after = text[match.end() : match.end() + 240]
         end = re.search(r"\.(\s|$)|\n\n", after)
-        sentence = sentence_before + after[: end.start() if end else len(after)]
-        if not _SPLIT_NEGATION.search(before) and not _SPLIT_HAZARD.search(sentence):
+        rest_of_sentence = after[: end.start() if end else len(after)]
+        if not _SPLIT_NEGATION.search(before) and not _SPLIT_HAZARD.search(rest_of_sentence):
             line_start = text.rfind("\n", 0, match.start()) + 1
             hits.append(text[line_start : text.find("\n", match.end())])
     return hits
@@ -1647,6 +1651,12 @@ def grade_skill_coherence_negative_control() -> None:
             "Run `planar task done` then `planar-agent release` to finish."
         ),
     }
+    # Instructions to split that carry a hazard word before the mention; the
+    # exemption covers only the hazard stated after it, so both are rejected.
+    split_with_hazard_word = (
+        "Split the ending: run `planar task done`, then `planar-agent release`.",
+        "To avoid a stranded claim, run `planar task done` and then `planar-agent release`.",
+    )
     runs = 0
 
     def expect_rejection(relative: str, mutate: Callable[[str], str], phrase: str) -> None:
@@ -1681,6 +1691,12 @@ def grade_skill_coherence_negative_control() -> None:
     for lead in SKILL_INVARIANT_LEADS:
         expect_rejection(
             "skills/planar/SKILL.md", lambda text, lead=lead: text.replace(lead, ""), lead
+        )
+    for seeded in split_with_hazard_word:
+        expect_rejection(
+            "skills/planar/SKILL.md",
+            lambda text, seeded=seeded: text + f"\n\n{seeded}\n",
+            seeded,
         )
     expect_rejection(
         "skills/planar/SKILL.md",
