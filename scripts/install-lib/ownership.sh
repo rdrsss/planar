@@ -141,13 +141,19 @@ sweep_role_agents() {
 }
 
 # sweep_manifest_records <path> — true when $PLANAR_HOME/install-manifest.json
-# holds <path> as a whole JSON string (the escaping of install-manifest.sh's
-# install_manifest_json_quote, for the backslash and the quote).
+# holds <path> as a whole JSON string. The escaping mirrors
+# install_manifest_json_quote in install-manifest.sh, which writes the
+# manifest (the backslash, the quote, newline, carriage return and tab); it is
+# repeated here because the uninstaller sources this file without that one.
+# Keep the two in step.
 sweep_manifest_records() {
   local manifest="$PLANAR_HOME/install-manifest.json" quoted="$1"
   [[ -f "$manifest" && ! -L "$manifest" ]] || return 1
   quoted="${quoted//\\/\\\\}"
   quoted="${quoted//\"/\\\"}"
+  quoted="${quoted//$'\n'/\\n}"
+  quoted="${quoted//$'\r'/\\r}"
+  quoted="${quoted//$'\t'/\\t}"
   grep -qF -- "\"$quoted\"" "$manifest" 2>/dev/null
 }
 

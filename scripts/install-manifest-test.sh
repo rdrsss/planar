@@ -48,6 +48,26 @@ grep -q '"extras": \[\]' "$MANIFEST"
 ! grep -q 'build-fixture\|"vendor":' "$MANIFEST"
 [[ ! -e "$MANIFEST.tmp.$$" ]]
 
+# The upgrade sweep's manifest lookup (ownership.sh, sweep_manifest_records)
+# finds a path the writer escaped: a backslash, a quote, a tab and a newline in
+# the path, as install_manifest_json_quote writes them. A path the manifest does
+# not hold is not found.
+odd_path="$HOME/odd \\dir \"q\"$(printf '\t')x$(printf '\nn')/planar-coder.md"
+install_manifest_begin "build-odd" copy
+install_manifest_add claude agent planar-coder "$PREFIX/agents/planar-coder.md" "$odd_path" copy
+install_manifest_write "$MANIFEST"
+(
+  PLANAR_HOME="$PREFIX"
+  # shellcheck source=install-lib/ownership.sh
+  source "$ROOT/scripts/install-lib/ownership.sh"
+  sweep_manifest_records "$odd_path" || { echo "sweep_manifest_records missed an escaped path" >&2; exit 1; }
+  ! sweep_manifest_records "$HOME/other/planar-coder.md" || { echo "sweep_manifest_records found an unrecorded path" >&2; exit 1; }
+  # Same text up to the newline, different after it: only the whole escaped
+  # path may match, never one line of it.
+  ! sweep_manifest_records "$HOME/odd \\dir \"q\"$(printf '\t')x$(printf '\nother')/planar-coder.md" \
+    || { echo "sweep_manifest_records matched part of a path" >&2; exit 1; }
+)
+
 # install_manifest_agent_name strips every agent suffix the nine targets use.
 [[ "$(install_manifest_agent_name /x/planar-coder.agent.md)" == planar-coder ]]
 [[ "$(install_manifest_agent_name /x/planar-coder.toml)" == planar-coder ]]
