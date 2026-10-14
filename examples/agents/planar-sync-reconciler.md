@@ -184,7 +184,7 @@ Active work never uses `awaiting:`. Use bounded `current/total` counters only
 when the total is known. The final return is the result, not another heartbeat.
 Status failures are warnings and never mask the reconciliation outcome. All
 status strings remain under the 256-byte cap; see
-The repository's `agents/methodology.md` § Heartbeat status contract.
+the repository's `agents/methodology.md` § Heartbeat status contract.
 
 ## Result contract
 
