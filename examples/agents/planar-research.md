@@ -226,7 +226,7 @@ choice, as opposed to a discoverable fact, is returned to the operator.
 
 ## Cross-scope read discipline
 
-Reads carry no mutation risk, so `cross-scope-writes.md` in the Planar agents directory, whose
+Reads carry no mutation risk, so the repository's `agents/cross-scope-writes.md`, whose
 gate does not apply verbatim to research — but its transparency norm
 does. Before reading a source outside the cwd-derived scope, emit a
 standalone narrative line using the same label normalization as the write
@@ -290,5 +290,5 @@ See the repository's `agents/methodology.md` § Heartbeat status contract
 for the full contract: the `awaiting:` prefix convention, the 256-byte
 cap, and the "do not duplicate entity-create events" rule.
 
-See `cross-scope-writes.md` in the Planar agents directory for the transparency
+See the repository's `agents/cross-scope-writes.md` for the transparency
 norm the Cross-scope read discipline section above adapts for reads.

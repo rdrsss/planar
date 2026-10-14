@@ -290,4 +290,4 @@ See the repository's `agents/methodology.md` § Heartbeat status contract for th
   the orchestrator.
 - Does not exceed the iteration cap; the orchestrator owns that enforcement.
 
-See `cross-scope-writes.md` in the Planar agents directory before any write outside the cwd-derived scope.
+See the repository's `agents/cross-scope-writes.md` before any write outside the cwd-derived scope.
