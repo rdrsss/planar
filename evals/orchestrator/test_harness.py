@@ -6250,6 +6250,35 @@ def missing_coherence_phrases(source: str) -> list[str]:
     ]
 
 
+class SkillFileListTests(unittest.TestCase):
+    """Contract assertions that cover every skill file list their paths by
+    hand (the contract grader takes no globs). A new file under skills/planar/
+    must join each list, or these assertions silently stop covering it."""
+
+    WHOLE_SKILL_ASSERTIONS = (
+        "validation-cadence/skill-states-no-cadence",
+        "skill-planar-contract/forbid-legacy-pl-commands",
+        "skill-planar-contract/forbid-scriptorium",
+        "skill-planar-contract/forbid-split-terminal-verb",
+    )
+
+    def test_every_skill_file_is_listed(self) -> None:
+        skill_files = {
+            p.relative_to(harness.ROOT).as_posix()
+            for p in (harness.ROOT / "skills" / "planar").rglob("*.md")
+        }
+        self.assertTrue(skill_files)
+        found = {}
+        for _, case in harness.load_cases():
+            for assertion in case.get("contract_assertions", []):
+                found[f"{case['id']}/{assertion['id']}"] = set(assertion["paths"])
+        for key in self.WHOLE_SKILL_ASSERTIONS:
+            with self.subTest(assertion=key):
+                self.assertIn(key, found)
+                self.assertEqual(sorted(skill_files - found[key]), [], key)
+        self.assertEqual(sorted(skill_files - set(harness.SKILL_RELS)), [], "SKILL_RELS")
+
+
 class RoleAssertionRetargetTests(unittest.TestCase):
     """Task 7214: every pl-<role> assertion now reads the agent file."""
 
