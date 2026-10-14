@@ -77,7 +77,7 @@ maps to a request, an agent or a command:
 | `pl-handoff`, `pl-resume` | "Hand off task N" or "Resume task N": `references/resume-handoff.md`, over `planar handoff create` and `planar resume` |
 | `pl-plan`, `pl-task`, `pl-question`, `pl-scenario` | ask for the change, or run `planar plan`, `planar task`, `planar question` or `planar scenario` directly |
 | `pl-knowledge`, `pl-promote` | `references/knowledge.md`, over `planar decision`, `planar artifact`, `planar annotate`, `planar links`, `planar promote` and `planar demote` |
-| `pl-workbench`, `pl-workbench-sync`, `pl-workbench-archive` | `references/spec-pipeline.md`, over `planar workbench` |
+| `pl-workbench`, `pl-workbench-sync`, `pl-workbench-archive` | `references/preparation.md`, over `planar workbench` |
 | `pl-ext-create`, `pl-ext-propagate`, `pl-sync`, `pl-audit-trail`, `pl-templates` | `references/external-sync.md` and the `planar-ext-sync` agent, over `planar-ext`, `planar audit trail` and `planar templates` |
 | `pl-local`, `pl-local-import`, `pl-workspace-scan` | `references/local.md`, over `planar local` and `planar workspace` |
 | `pl-init`, `pl-scope` | `planar init` and `planar scope show` |
@@ -200,7 +200,7 @@ The full text is in `SKILL.md`; this page does not restate it.
 | `references/status.md` | Read-only scope status in attention order, and live plan activity. |
 | `references/recovery.md` | Reading `planar health`, each contributor's route, the doctor flow and its triage rules. |
 | `references/resume-handoff.md` | What "resumable" means, capturing state, handing off, resuming from zero context. |
-| `references/spec-pipeline.md` | The four planning documents, the ingest grammar, and the six gated stages to closeout. |
+| `references/preparation.md` | The required and optional inputs for ready work, task readiness reasons, `spec ingest` and its work-list grammar, `task packet` references, and the workbench round trip. |
 | `references/knowledge.md` | Decisions, artifacts, annotations and questions; resolving targets; links; promote and demote. |
 | `references/external-sync.md` | Jira and GitHub Issues: register, create, pull, push, conflicts, propagate, report an issue. |
 | `references/local.md` | Operator-local skills and agents, and polyrepo workspaces. |
@@ -225,7 +225,7 @@ This mirrors the routing table in `SKILL.md`.
 | See what needs attention, in what order | `references/status.md` |
 | Degraded health, stale claims, doctor | `references/recovery.md` |
 | Capture a handoff, validate a resume, enter a worktree | `references/resume-handoff.md` |
-| Draft, review and ingest specs; workbench; closeout | `references/spec-pipeline.md` |
+| Prepare work, ingest a work list, task readiness, workbench | `references/preparation.md` |
 | Decisions, artifacts, annotations, questions, link endpoints | `references/knowledge.md` |
 | Jira or GitHub: register, create, sync, resolve, propagate, report an issue | `references/external-sync.md` |
 | Operator-local skills and agents; workspace scan | `references/local.md` |

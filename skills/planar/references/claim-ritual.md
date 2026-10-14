@@ -28,7 +28,7 @@ state, live and stale claims, the parallel wave, readiness, the policy and the c
    spec text: read one cited section with
    `planar task packet <task-id> --expand artifact:<id>#<heading>`. A spec artifact edited
    mid-run moves that reference's digest and the packet digest; it does not make the
-   packet unready (see [spec-pipeline.md](spec-pipeline.md)).
+   packet unready (see [preparation.md](preparation.md)).
 
 ## Taking the claim
 

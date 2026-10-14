@@ -695,7 +695,7 @@ Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command su
 | 3.5 — Test-coder | `test-coder` | Cycle's tasks intersect uncovered test-spec slugs after coder output |
 | 3.7 — Finalization | `janitor` | Explicit `--finalize` or interactive confirm after Phase 3; merge -> reconcile -> closeout gate |
 | 4 — Propagation | `planar-ext-sync` | User requests `--propagate` |
-| 5 — Archive | `planar workbench archive` (the planar skill's `spec-pipeline.md` reference) | Anchor plan done, user requests `--archive` |
+| 5 — Archive | `planar workbench archive` (see the `workbench archive` entry in [cli-reference.md](cli-reference.md#planar-workbench-archive-plan---filter-mode-failuresall)) | Anchor plan done, user requests `--archive` |
 
 The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; The iteration cap is 5 per reviewer dispatch cycle.
 
