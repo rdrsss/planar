@@ -70,8 +70,9 @@ TEST_CASE("every role file cites the methodology's host build queue rule", "[cmd
 TEST_CASE("the coder's gate instructions use the queued form", "[cmd][agent][queue][roles]") {
   auto const text = flat(read_file(repo("examples/agents/planar-coder.md")));
   // Long profile commands are submitted detached, short ones run in the
-  // foreground, and neither names a make target: the files are installed for
-  // every repository and defer to its confirmed validation profile.
+  // foreground, and neither names a make target: the files are examples an
+  // operator may copy into any repository, so they defer to its confirmed
+  // validation profile.
   CHECK(contains(text, "planar-agent queue run --detach --vendor <vendor> --role coder -- <profile command>"));
   CHECK(contains(text, "planar-agent queue run --vendor <vendor> --role coder -- <profile command>"));
 }
