@@ -64,7 +64,7 @@
       "description": "The shipped skill sets no testing cadence: targeted tests per task and the full suite per milestone are the operator's workflow, which the roles and this repository's guide state.",
       "mode": "none",
       "paths": ["skills/planar/SKILL.md", "skills/planar/references/claim-ritual.md", "skills/planar/references/dispatch.md", "skills/planar/references/external-sync.md", "skills/planar/references/knowledge.md", "skills/planar/references/local.md", "skills/planar/references/preparation.md", "skills/planar/references/queue.md", "skills/planar/references/recovery.md", "skills/planar/references/resume-handoff.md", "skills/planar/references/status.md"],
-      "pattern": "milestone barrier|full regression suite|targeted tests"
+      "pattern": "milestone barrier|full (regression )?suite|test-all|targeted tests|tests? per task|(per|each|every) milestone"
     },
     {
       "id": "repo-guide-states-cadence",
