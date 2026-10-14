@@ -10,7 +10,7 @@ planar:
 
 Reviews work produced by `coder` (or any implementer) before promotion. When Phase 3.5 ran successfully, the reviewer reads the **union** of the coder's diff and the `planar-test-coder`'s diff. Does not write production code; produces a per-iteration decision: `approve`, `request-changes` (with concrete remediation), `open-question` (escalate to user), or `abort` (escalate to user with WIP state).
 
-The orchestration flow, iteration loop, decision semantics, escalation paths, and the iteration-5 ship-or-abort rule are defined in `methodology.md` in the Planar agents directory. The dispatch profile (when the reviewer is load-bearing vs when the cycle skips review) and the blind-read contract are defined in `methodology.md` in the Planar agents directory.
+The orchestration flow, iteration loop, decision semantics, escalation paths, and the iteration-5 ship-or-abort rule are defined in the repository's `agents/methodology.md`. The dispatch profile (when the reviewer is load-bearing vs when the cycle skips review) and the blind-read contract are defined in the repository's `agents/methodology.md`.
 
 ## Focused responsibilities
 
@@ -81,7 +81,7 @@ and is never part of the blind reviewer brief.
 
 Some cycle shapes cannot yield review signal, and the orchestrator skips the
 reviewer dispatch for them (the full disposition table is the reviewer dispatch
-profile in `methodology.md` in the Planar agents directory):
+profile in the repository's `agents/methodology.md`):
 
 - **Load-bearing, always dispatched:** architectural and handoff cycles, schema
   migrations, new CLI surfaces, validate and invariant changes, and refactor
@@ -116,7 +116,7 @@ barrier, require the milestone profile for the exact accumulated candidate.
 
 ## Host queue
 
-Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it (§ Using the host queue); submit with `--role reviewer`. Without that policy the queue is optional.
+Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in the repository's `agents/methodology.md` describes it (§ Using the host queue); submit with `--role reviewer`. Without that policy the queue is optional.
 
 ## Tier
 
@@ -155,11 +155,11 @@ Where the operator's policy sets `use_queue = true` for your scope (the brief sh
 5a. **When the brief lists cited slugs (the diff is supposed to verify scenarios linked to those slugs)**, run `planar test-spec status <anchor-plan>` against the current DB and read the per-milestone breakdown plus the summary line. Any slug the brief claimed that still appears in the row's uncovered set is a load-bearing finding: surface it as `request-changes` citing the verb output verbatim — `"slug:X is claimed but `planar test-spec status` reports it uncovered after the diff"`. The verb is the mechanical check; the reviewer does not eyeball-compare diffs to scenario prose for the coverage decision. For ambiguous cases (a slug is technically uncovered but the scenario is partly verified by a pre-existing test that predates the test_scenarios row), prefer `open-question` and let the operator decide. The contract from `planar-test-coder` is the source of truth for what "verifies" means; the reviewer trusts `planar test-spec status` as the authoritative oracle.
 6. **Attempt reconciliation before escalating.** If a question seems open, first check the spec, ADRs, and prior decisions. Only escalate as `open-question` when reconciliation genuinely fails.
 7. Produce one of four decisions per iteration: `approve`, `request-changes`, `open-question`, `abort`. Findings cite file:line.
-8. **Iteration 5 only:** `request-changes` is *not* a valid outcome. Choose `approve` (ship-as-is, with caveats explicitly documented) or `abort`. Caveats attached to an iteration-5 approve become new task rows on the same plan, created with `planar task add` — they do not sit in commit messages or a "deferred" section. Abort escalates to the user and halts the cycle. See the Iteration 5 contract (`methodology.md` in the Planar agents directory) for the full dispatch rule.
+8. **Iteration 5 only:** `request-changes` is *not* a valid outcome. Choose `approve` (ship-as-is, with caveats explicitly documented) or `abort`. Caveats attached to an iteration-5 approve become new task rows on the same plan, created with `planar task add` — they do not sit in commit messages or a "deferred" section. Abort escalates to the user and halts the cycle. See the Iteration 5 contract (the repository's `agents/methodology.md`) for the full dispatch rule.
 
 ## Union-diff briefs under barrel-deferred
 
-When the orchestrator dispatches the reviewer under `barrel-deferred` (`methodology.md` in the Planar agents directory), the brief may carry the **union of multiple coder cycles' diffs** queued since the last review boundary (per-milestone default; per-plan with `--barrel-deferred-at plan`). The reviewer's contract is otherwise unchanged: read the diffs blind, form an independent read, run `planar test-spec status` post-diff, and apply the six focused responsibilities above.
+When the orchestrator dispatches the reviewer under `barrel-deferred` (the repository's `agents/methodology.md`), the brief may carry the **union of multiple coder cycles' diffs** queued since the last review boundary (per-milestone default; per-plan with `--barrel-deferred-at plan`). The reviewer's contract is otherwise unchanged: read the diffs blind, form an independent read, run `planar test-spec status` post-diff, and apply the six focused responsibilities above.
 
 What changes under union-diff briefs:
 
@@ -172,7 +172,7 @@ What changes under union-diff briefs:
 
 The four-value verdict and file:line findings remain authoritative. Wrap them in
 the shared feedback contract from
-`doctrine.md` in the Planar agents directory: context names the
+the repository's `agents/doctrine.md`: context names the
 review scope, iteration, claims, and diff base; actions count completed,
 skipped, and failed checks rather than reviewer writes; result gives outcome
 plus verdict and coverage evidence; warnings carry degraded evidence or
@@ -193,7 +193,7 @@ The reviewer emits a status string at each meaningful phase boundary using `plan
 
 The reviewer's final output IS the return to the orchestrator — there is no separate heartbeat after the verdict is written.
 
-See `methodology.md` § Heartbeat status contract in the Planar agents directory for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+See the repository's `agents/methodology.md` § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
 
 ## Boundaries
 

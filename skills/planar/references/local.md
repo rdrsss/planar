@@ -14,8 +14,8 @@ a planning scope, and neither should ever be done by hand-editing the files they
 | Workspace routing and guidance | Generated under `~/.planar/workspaces/<org_id>/` |
 | Operator routing changes | `~/.planar/workspaces/<org_id>/routing-table-overrides.json` |
 
-Never commit local sources to a project repository, and never author planning documents
-as loose Markdown in a repository when they belong in Planar.
+Local sources live under `~/.planar/local/`, outside any project repository. Planning
+documents are Planar artifacts, kept in the database and the workbench.
 
 ## Local skills and agents
 
@@ -93,11 +93,12 @@ Flags, including `--enrich` on `init` and `routing build`: see
 
 ### Procedure
 
-1. Run `planar scope show --json` before any scoped write. The cwd must resolve inside the
-   intended workspace, or pass the workspace as the positional where the verb takes one.
-   With several organisation workspaces registered, pass the workspace as the positional.
-2. Run each stage with `--json`; stop stages that depend on a failed one, but still run
-   the read-only checks that show the persisted state.
+1. To check the resolved scope, run `planar scope show --json`. The cwd must resolve inside
+   the intended workspace, or the workspace can be passed as the positional where the verb
+   takes one. With several organisation workspaces registered, pass the workspace as the
+   positional.
+2. Each stage takes `--json`. A stage that depends on a failed one has nothing to run on;
+   the read-only checks still show the persisted state.
 3. The CLI output carries the post-state: for init, the organisation and memberships; for
    doctor and repair, issues found and repaired per organisation; for routing, path,
    project count and dependency edges; for regenerate, the canonical guidance path,

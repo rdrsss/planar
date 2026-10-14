@@ -183,7 +183,7 @@ Return one of:
 
 ## Host queue
 
-Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it (§ Using the host queue); submit with `--role janitor`. Without that policy the queue is optional.
+Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in the repository's `agents/methodology.md` describes it (§ Using the host queue); submit with `--role janitor`. Without that policy the queue is optional.
 
 ## Status reporting
 

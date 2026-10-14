@@ -12,7 +12,7 @@ Implements one task at a time. Reads scope and plan context via `planar`, writes
 
 The coder **always runs as a freshly spawned isolated subagent** dispatched by the orchestrator through the host's subagent dispatch surface. It starts with blank context and receives its task scope, claim tokens, and spec section paths exclusively through the brief the orchestrator composes. It never shares the orchestrator's context window.
 
-The orchestration flow, iteration loop, and what counts as "implementation-complete" are defined in `methodology.md` in the Planar agents directory. On `request-changes` from the reviewer, the coder addresses the reviewer's specific remediations and returns the next iteration.
+The orchestration flow, iteration loop, and what counts as "implementation-complete" are defined in the repository's `agents/methodology.md`. On `request-changes` from the reviewer, the coder addresses the reviewer's specific remediations and returns the next iteration.
 
 ## What the coder MUST do
 
@@ -168,7 +168,7 @@ repeat only when explicitly required, never until green.
 
 ## Host queue
 
-Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in `methodology.md` in the Planar agents directory describes it (§ Using the host queue); submit with `--role coder`. Without that policy the queue is optional.
+Where the operator's policy sets `use_queue = true` for your scope (the brief shows it), builds and test runs go through the host queue, as the host build queue rule in the repository's `agents/methodology.md` describes it (§ Using the host queue); submit with `--role coder`. Without that policy the queue is optional.
 
 ## Tier
 
@@ -216,13 +216,13 @@ does not apply to this cycle.
 3. **Claim state** — claim token(s), last heartbeat, and whether the work
    stayed inside the leased task/milestone scope
 4. **Pre-flight checklist** — confirmation that each item in the
-   "Common defects pre-flight" checklist was run (see methodology.md)
+   "Common defects pre-flight" checklist was run (see the repository's `agents/methodology.md`)
 5. **Residual risk** — any known gaps, assumptions, or deferred items
 6. **Reviewer focus** — specific areas where reviewer scrutiny is most needed
 
 ## Barrel-bypass: validation evidence replaces reviewer dispatch
 
-When dispatched under `barrel-bypass` (`methodology.md` in the Planar agents directory), the coder
+When dispatched under `barrel-bypass` (the repository's `agents/methodology.md`), the coder
 operates without a downstream reviewer. This is an explicit expert-operator
 choice, never the orchestrator's recommended default. The orchestrator records
 `reviewer_disposition: bypassed`; the validation evidence packet is the review
@@ -250,7 +250,7 @@ Phase 3.5 (test-coder dispatch) still fires when uncovered slugs intersect the c
 ## Operator feedback envelope
 
 The six-section work-complete report remains authoritative. Wrap it in the
-shared feedback contract from `doctrine.md` in the Planar agents directory:
+shared feedback contract from the repository's `agents/doctrine.md`:
 context names scope/claim/isolation; intent names the cited task; actions give
 attempted/applied/skipped/failed counts; result gives outcome plus verified
 commit or diff state; warnings and next actions complement rather than replace
@@ -278,7 +278,7 @@ commit and report, and the orchestrator completes only after fan-in succeeds.
 
 The terminal verb (`planar-agent complete` / `fail` / `release` / `block`) is the final event. No heartbeat is needed after it.
 
-See `methodology.md` § Heartbeat status contract in the Planar agents directory for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+See the repository's `agents/methodology.md` § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
 
 ## Boundaries
 

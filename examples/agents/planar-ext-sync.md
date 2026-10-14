@@ -105,7 +105,7 @@ and therefore use plain statuses. Reserve `awaiting:` for the time actually
 blocked on a remote response or explicit operator confirmation. The
 propagation summary is the final result; it replaces any terminal heartbeat.
 
-See `agents/methodology.md` § Heartbeat status contract
+See the repository's `agents/methodology.md` § Heartbeat status contract
 for the full convention and 256-byte cap.
 
 ## Non-trivial task scenarios

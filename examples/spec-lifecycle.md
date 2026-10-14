@@ -5,23 +5,32 @@ graph ready for implementation.
 
 ## 1. Draft The Planning Artifacts
 
+Ask your planner agent, or write the documents yourself, to draft the planning
+artifacts for the feature. For example:
+
 ```text
-/pl-spec-draft "add billing export to CSV"
+Draft a product spec, tech spec, roadmap and test spec for adding billing
+export to CSV.
 ```
 
-Expected result:
+A typical result:
 
 - A draft anchor plan.
 - Four workbench artifacts: `product-spec.md`, `tech-spec.md`,
   `roadmap.md`, and `test-spec.md`.
-- Open questions from the specs registered as first-class question rows.
+- Open questions in the specs. `planar workbench extract-questions <plan-id>`
+  prints them without writing.
 
-Capture the returned plan id as `<plan-id>`.
+Note the anchor plan's id as `<plan-id>`.
 
 ## 2. Review The Specs Adversarially
 
+Ask a reviewer, human or agent, to read the specs against the user's intent. For
+example:
+
 ```text
-/pl-spec-review <plan-id>
+Review the specs for plan <plan-id> for completeness, open questions and test
+coverage before ingestion.
 ```
 
 The review should answer:
@@ -33,19 +42,20 @@ The review should answer:
 - Are test scenarios linked to roadmap slugs?
 
 If the verdict is `needs-answers`, answer the operator prompts before
-ingestion. If the verdict is `needs-spec-work`, approve concrete edits and run:
+ingestion. If the verdict is `needs-spec-work`, edit the workbench files, then
+pull the edits into the database:
 
 ```text
-/pl-spec-review <plan-id> --write
+planar workbench pull <plan-id>
 ```
 
-`--write` applies only operator-approved artifact and question updates. It does
-not ingest the specs.
+`workbench pull` applies filesystem edits to the database. It does not ingest
+the specs.
 
 ## 3. Preview Ingestion
 
 ```text
-/pl-spec-ingest <plan-id> --strict
+planar spec ingest <plan-id> --strict
 ```
 
 Read the preview as the proposed task graph. Check that:
@@ -62,7 +72,7 @@ again. Do not apply an ingest you do not understand.
 ## 4. Apply Ingestion
 
 ```text
-/pl-spec-ingest <plan-id> --apply --strict
+planar spec ingest <plan-id> --apply --strict
 ```
 
 This writes child plans, tasks, decisions, questions, and scenarios to the
@@ -79,10 +89,10 @@ The plan is now ready for orchestration.
 
 ## 6. Launch Execution
 
-```text
-/orchestrator <plan-id>
-```
+Work through the active task graph with whatever dispatch you use. Without a
+dispatcher, claim a task directly:
 
-The orchestrator reads the active task graph, proposes a strategy, waits for
-operator confirmation, and dispatches coder/reviewer cycles.
+```text
+planar-agent pull <plan-id>
+```
 

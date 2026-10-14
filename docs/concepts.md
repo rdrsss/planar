@@ -991,7 +991,7 @@ adds a status cannot silently ship uncolored.
 
 ## Local sandbox
 
-A user-local authoring surface for personal skills and agents under `~/.planar/local/`. The sandbox is one-way: the operator drops a single skill (as a `<name>/SKILL.md` directory) or agent (as a flat `<name>.md` file), then `planar local link` projects a copy into every present vendor's skill and agent directories, the same roots the bundled `planar` skill and `planar-<role>` agents use. Edit the source and run `planar local link` again to refresh the copies.
+A user-local authoring surface for personal skills and agents under `~/.planar/local/`. The sandbox is one-way: the operator drops a single skill (as a `<name>/SKILL.md` directory) or agent (as a flat `<name>.md` file), then `planar local link` projects a copy into every present vendor's skill and agent directories, the vendor skill and agent roots. Edit the source and run `planar local link` again to refresh the copies.
 
 **Directory layout.**
 

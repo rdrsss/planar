@@ -36,20 +36,18 @@ They still cite the doctrine documents under the repository's
 ## Minimal End-To-End Shape
 
 ```text
-/pl-spec-draft "add billing export to CSV"
-/pl-spec-review <plan-id>
-/pl-spec-review <plan-id> --write
-/pl-spec-ingest <plan-id> --strict
-/pl-spec-ingest <plan-id> --apply --strict
+Draft the specs (a planner agent, or by hand in the workbench)
+Review the specs
+planar workbench pull <plan-id>
+planar spec ingest <plan-id> --strict
+planar spec ingest <plan-id> --apply --strict
 planar plan update <plan-id> --status active
-/orchestrator <plan-id>
+planar-agent pull <plan-id>
 ```
 
-The important gates are:
+One way to do it, if you want checks along the way:
 
 - Review specs before ingesting them.
-- Run `pl-spec-review` before `pl-spec-ingest --apply`.
-- Run ingest preview before apply.
-- Activate the plan only after the task graph is coherent.
-- Let the orchestrator propose execution strategy before coder dispatch.
+- Run the ingest preview before `--apply`.
+- Activate the plan once the task graph looks coherent.
 

@@ -286,8 +286,8 @@ Personal skills and agents live under `~/.planar/local/skills/<name>/SKILL.md` a
 | `planar local list` | Reports every recorded projection and its state. |
 | `planar local unlink <name>` | Removes the projections; `--purge` also deletes the source. |
 
-- **Projection.** Each source is copied, never linked, into the same roots as the bundled
-  skill and agents, under the name `planar-local-<name>`. The source is never edited; a
+- **Projection.** Each source is copied, never linked, into the vendor skill and agent roots,
+  under the name `planar-local-<name>`. The source is never edited; a
   skill copy has its frontmatter `name` rewritten to match its directory.
 - **Names.** A local name must match `^[a-z0-9]+(-[a-z0-9]+)*$` and be at most 51
   characters, so `planar-local-<name>` stays within the 64-character Agent Skills limit.

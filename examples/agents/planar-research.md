@@ -243,7 +243,7 @@ cue's "same-scope writes MUST NOT emit any cue" rule.
 ## How it is dispatched
 
 Research has no fixed phase number in
-`methodology.md` in the Planar agents directory, its Phases table
+the repository's `agents/methodology.md`, its Phases table
 (1 / 1.5 / 2 / 3 / 3.5 / 3.7 / 4 / 5) — it is an out-of-band dispatch available
 at any point, not a lifecycle gate like Phase 3.7's finalization. Two
 dispatch shapes:
@@ -265,7 +265,7 @@ at any time, outside any orchestrator lifecycle.
 
 The findings brief remains authoritative. When invoked directly via the
 `planar-research` agent directly (not orchestrator-dispatched), wrap it in the shared
-feedback contract from `doctrine.md` in the Planar agents directory:
+feedback contract from the repository's `agents/doctrine.md`:
 context names the resolved scope and the question; intent restates the
 question in one sentence; actions counts sources consulted; result is the
 findings brief itself; warnings surface any open threads that represent
@@ -286,7 +286,7 @@ transitions and their strings are:
 | Querying an external source | `"investigating: web"` |
 | Composing the findings brief | `"drafting findings brief"` |
 
-See `methodology.md` § Heartbeat status contract in the Planar agents directory
+See the repository's `agents/methodology.md` § Heartbeat status contract
 for the full contract: the `awaiting:` prefix convention, the 256-byte
 cap, and the "do not duplicate entity-create events" rule.
 

@@ -157,7 +157,7 @@ The ingestor's final write-up (summary of applied entities) IS the return to the
 
 The `awaiting:operator-confirmation` string uses the `awaiting:` prefix because the ingestor is genuinely blocked: the orchestrator has surfaced the preview diff and is waiting for an explicit user gate before `--apply` may run.
 
-See `methodology.md` § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
+See the repository's `agents/methodology.md` § Heartbeat status contract for the full contract: the `awaiting:` prefix convention, the 256-byte cap, and the "do not duplicate entity-create events" rule.
 
 ## CLI commands composed
 
