@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "id": "conforms-swarm",
+  "description": "A swarm of peer workers: each worker pulls and completes its own tasks, including in a child plan, and peers review each other.",
+  "style": "swarm",
+  "child_plan": true,
+  "policy": {
+    "review_required": true,
+    "require_model": true,
+    "use_queue": true,
+    "task_gate": [
+      "make",
+      "test"
+    ]
+  },
+  "tasks": [
+    {
+      "title": "a",
+      "final": "done"
+    },
+    {
+      "title": "b",
+      "final": "done"
+    },
+    {
+      "title": "c",
+      "final": "done",
+      "plan": "child"
+    },
+    {
+      "title": "d",
+      "final": "done",
+      "plan": "child"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "worker",
+      "model": "claude-sonnet-5",
+      "vendor": "claude",
+      "session": "worker-1",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "worker-2",
+          "verdict": "approve"
+        }
+      ],
+      "gate_runs": [
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "cwd": "/work/repo",
+          "outcome": "exited",
+          "exit_code": 0
+        }
+      ]
+    },
+    {
+      "task": 2,
+      "status": "completed",
+      "role": "worker",
+      "model": "claude-sonnet-5",
+      "vendor": "claude",
+      "session": "worker-1",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "worker-3",
+          "verdict": "approve"
+        }
+      ],
+      "gate_runs": [
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "cwd": "/work/repo",
+          "outcome": "exited",
+          "exit_code": 0
+        }
+      ]
+    },
+    {
+      "task": 3,
+      "status": "completed",
+      "role": "worker",
+      "model": "claude-sonnet-5",
+      "vendor": "claude",
+      "session": "worker-2",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "worker-3",
+          "verdict": "approve"
+        }
+      ],
+      "gate_runs": [
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "cwd": "/work/repo",
+          "outcome": "exited",
+          "exit_code": 0
+        }
+      ]
+    },
+    {
+      "task": 4,
+      "status": "completed",
+      "role": "worker",
+      "model": "claude-sonnet-5",
+      "vendor": "claude",
+      "session": "worker-3",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "worker-1",
+          "verdict": "approve"
+        }
+      ],
+      "gate_runs": [
+        {
+          "argv": [
+            "make",
+            "test"
+          ],
+          "cwd": "/work/repo",
+          "outcome": "exited",
+          "exit_code": 0
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "conforms": true,
+    "violations": [],
+    "overrides": [],
+    "before_floor": {
+      "claims": 0,
+      "done_tasks": 0
+    }
+  }
+}

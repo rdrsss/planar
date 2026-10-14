@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 import arena
 import queue_observation
+import trail
 import vendors
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -402,6 +403,11 @@ class Options:
     # lifecycle case. 1 (the default) preserves the pre-6859 single-run
     # behavior exactly.
     trials: int = 1
+    # Any orchestrator under test: a prompt file staged as the lifecycle
+    # orchestrator in place of the checkout's `agents/planar-orchestrator.md`.
+    # The grade does not depend on it -- the trail the run leaves is graded the
+    # same whichever prompt produced it (see `trail.py`).
+    orchestrator_prompt: Path | None = None
 
 
 @dataclass
@@ -1176,6 +1182,135 @@ def validate_case(path: Path, case: Any) -> None:
             or claim_rows < 0
         ):
             invalid("expected.post_state.claim_rows must be a non-negative integer")
+        validate_conformance_expectation(expected.get("conformance"), invalid)
+        policy = case["lifecycle"].get("policy")
+        if policy is not None:
+            try:
+                trail.policy_toml(policy)
+            except trail.TrailError as exc:
+                invalid(f"lifecycle.policy: {exc}")
+            unknown = sorted(set(policy) - trail._POLICY_KEYS)
+            if unknown:
+                invalid("lifecycle.policy names unknown key(s): " + ", ".join(unknown))
+
+
+def validate_conformance_expectation(
+    declared: Any, invalid: Callable[[str], Any]
+) -> None:
+    """`expected.conformance`, when a lifecycle case declares it, says what the
+    conformance check must report for the trail the orchestrator leaves:
+    `conforms` (required) and, when it does not conform, `rules`, the exact set
+    of rule numbers (1-6) it must report as broken."""
+    if declared is None:
+        return
+    if not isinstance(declared, dict) or not isinstance(declared.get("conforms"), bool):
+        invalid("expected.conformance must be an object with a boolean conforms")
+    extra = sorted(set(declared) - {"conforms", "rules"})
+    if extra:
+        invalid("expected.conformance names unknown key(s): " + ", ".join(extra))
+    rules = declared.get("rules")
+    if rules is not None:
+        if (
+            not isinstance(rules, list)
+            or not rules
+            or any(isinstance(r, bool) or r not in trail.RULES for r in rules)
+            or len(set(rules)) != len(rules)
+        ):
+            invalid("expected.conformance.rules must be a non-empty set of rule numbers 1-6")
+        if declared["conforms"]:
+            invalid("expected.conformance.rules is only meaningful when conforms is false")
+    elif not declared["conforms"]:
+        invalid("expected.conformance with conforms false must name the broken rules")
+
+
+TRAIL_SNAPSHOT = "trail.sqlite"
+TRAIL_CONFIG = "trail.config.toml"
+
+
+def snapshot_arena_trail(context: "LifecycleContext") -> None:
+    """Keep the trail the run's orchestrator left, and the policy it ran under,
+    so the conformance check can be run again by a regrade."""
+    trail.snapshot_database(
+        Path(context.env["PLANAR_DB"]), context.artifacts / TRAIL_SNAPSHOT
+    )
+    config = Path(context.env["PLANAR_CONFIG_PATH"])
+    write_text(
+        context.artifacts / TRAIL_CONFIG,
+        config.read_text(encoding="utf-8") if config.is_file() else "",
+    )
+
+
+def conformance_expectation_failures(
+    grade: "trail.TrailGrade", declared: dict[str, Any]
+) -> list[str]:
+    """How `grade` differs from a case's `expected.conformance` (empty when it matches)."""
+    problems: list[str] = []
+    if grade.conforms != declared["conforms"]:
+        problems.append(f"conforms was {grade.conforms}, expected {declared['conforms']}")
+    if "rules" in declared:
+        broken = sorted({violation["rule"] for violation in grade.violations})
+        if broken != sorted(declared["rules"]):
+            problems.append(f"broken rules were {broken}, expected {sorted(declared['rules'])}")
+    return problems
+
+
+def grade_artifact_trail(
+    case: dict[str, Any], artifact_dir: Path, options: Options
+) -> None:
+    """Run the conformance check over the trail a host run left.
+
+    Whichever orchestrator produced it, the same report is recorded in
+    `conformance.json`. The case fails only on what it declares in
+    `expected.conformance`; with nothing declared the report is evidence, not
+    a verdict. Artifact sets from before the snapshot existed are skipped
+    unless their `run.json` promises one.
+    """
+    case_id = case["id"]
+    snapshot = artifact_dir / TRAIL_SNAPSHOT
+    run_json = artifact_dir / "run.json"
+    run_meta = read_json(run_json) if run_json.is_file() else {}
+    if not snapshot.is_file():
+        if run_meta.get("artifact_format", 0) >= ARTIFACT_FORMAT_TRAIL:
+            raise live_failure(
+                artifact_dir,
+                case_id,
+                options,
+                f"trail-missing: run.json declares artifact_format "
+                f"{run_meta['artifact_format']} but {TRAIL_SNAPSHOT} is absent",
+            )
+        return
+    declared = case.get("expected", {}).get("conformance")
+    config_path = artifact_dir / TRAIL_CONFIG
+    try:
+        grade = trail.grade_database(
+            snapshot,
+            run_meta["plan_id"],
+            floor=1,
+            config_text=config_path.read_text(encoding="utf-8")
+            if config_path.is_file()
+            else "",
+        )
+    except trail.TrailUnavailable as exc:
+        write_json(artifact_dir / "conformance.json", {"status": "unavailable", "reason": str(exc)})
+        if declared is not None:
+            raise live_failure(artifact_dir, case_id, options, f"conformance unavailable: {exc}")
+        print(f"WARN: {case_id}: conformance not graded: {exc}", flush=True)
+        return
+    except trail.TrailError as exc:
+        raise live_failure(artifact_dir, case_id, options, f"conformance check failed: {exc}")
+    write_json(
+        artifact_dir / "conformance.json", {"status": "graded", "report": grade.report}
+    )
+    if declared is None:
+        return
+    problems = conformance_expectation_failures(grade, declared)
+    if problems:
+        raise live_failure(
+            artifact_dir,
+            case_id,
+            options,
+            "conformance: " + "; ".join(problems) + "\n" + trail.describe(grade),
+        )
 
 
 def select_cases(
@@ -2412,12 +2547,34 @@ INLINE_ORCHESTRATOR_FIXTURE = (
 )
 
 
-def orchestrator_agent_source(root: Path | None = None) -> str:
+def orchestrator_prompt_source(path: Path) -> str:
+    """The text of an orchestrator prompt file, frontmatter removed.
+
+    Any prompt can be put under test: a stock agent file, a swarm prompt, an
+    operator's own. The harness stages the body under its own orchestrator
+    slot name and never inspects it.
+    """
+    if not path.is_file():
+        raise EvalFailure(f"--orchestrator-prompt is not a file: {path}")
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[end + len("\n---\n") :].lstrip("\n")
+    return text
+
+
+def orchestrator_agent_source(
+    root: Path | None = None, prompt: Path | None = None
+) -> str:
     """The orchestrator contract text for the controlled lifecycle fixture.
 
-    Read from `agents/planar-orchestrator.md` in the checkout when it exists;
-    otherwise `INLINE_ORCHESTRATOR_FIXTURE`.
+    `prompt`, when given, is the orchestrator under test. Otherwise it is
+    read from `agents/planar-orchestrator.md` in the checkout when that file
+    exists, else `INLINE_ORCHESTRATOR_FIXTURE`.
     """
+    if prompt is not None:
+        return orchestrator_prompt_source(prompt)
     path = (root or ROOT) / "agents" / f"{vendors.ORCHESTRATOR_AGENT}.md"
     if path.is_file():
         return path.read_text(encoding="utf-8")
@@ -2451,14 +2608,18 @@ def render_codex_agents(root: Path, agents_dir: Path, out_dir: Path) -> None:
 
 
 def write_lifecycle_agents(
-    repo: Path, fixture_root: Path, root: Path | None = None
+    repo: Path,
+    fixture_root: Path,
+    root: Path | None = None,
+    orchestrator_prompt: Path | None = None,
 ) -> None:
     """Stage the lifecycle fixture's Planar surface and controlled agents.
 
     - `.claude/skills/planar/`: the checkout's `skills/planar/` tree;
     - `.claude/agents/planar-orchestrator.md`: the checkout file verbatim
       (`INLINE_ORCHESTRATOR_FIXTURE` wrapped in the shipped frontmatter only
-      when the checkout has no such file);
+      when the checkout has no such file), or `orchestrator_prompt`'s body in
+      the shipped frontmatter when an orchestrator under test is named;
     - `.claude/agents/planar-{coder,reviewer,test-coder}.md`: the fixture
       instructions in the shipped frontmatter contract;
     - `.codex/agents/planar-*.toml`: `scripts/render-codex-agents.py` run
@@ -2475,7 +2636,16 @@ def write_lifecycle_agents(
     claude_dir = repo / ".claude" / "agents"
     claude_dir.mkdir(parents=True, exist_ok=True)
     orchestrator = root / "agents" / f"{vendors.ORCHESTRATOR_AGENT}.md"
-    if orchestrator.is_file():
+    if orchestrator_prompt is not None:
+        write_text(
+            claude_dir / orchestrator.name,
+            controlled_agent_markdown(
+                vendors.ORCHESTRATOR_AGENT,
+                "The orchestrator under test.",
+                orchestrator_agent_source(root, orchestrator_prompt),
+            ),
+        )
+    elif orchestrator.is_file():
         shutil.copyfile(orchestrator, claude_dir / orchestrator.name)
     else:
         write_text(
@@ -2639,9 +2809,12 @@ def prepare_lifecycle_fixture(
             cwd=repo,
             env=env,
         )
+        # `lifecycle.policy` puts the orchestrator under a policy the grade
+        # then holds its trail to (`expected.conformance`).
         write_text(
             Path(env["PLANAR_CONFIG_PATH"]),
-            f'[defaults]\nvendor = "{options.vendor or "codex"}"\n',
+            f'[defaults]\nvendor = "{options.vendor or "codex"}"\n'
+            + trail.policy_toml((case.get("lifecycle") or {}).get("policy")),
         )
         run_command(["planar", "init", "--name", case_id, "--json"], cwd=repo, env=env)
         plan = run_json(
@@ -2776,7 +2949,7 @@ def prepare_lifecycle_fixture(
             "planar-coder, planar-reviewer, and planar-test-coder definitions are the only specialist "
             "contracts for this run.\n\n"
             "Never edit source content in the orchestrator context.\n\n"
-            + orchestrator_agent_source()
+            + orchestrator_agent_source(prompt=options.orchestrator_prompt)
         )
         instructions_path = repo / ".eval" / "orchestrator.instructions.md"
         write_text(instructions_path, instructions)
@@ -2784,13 +2957,18 @@ def prepare_lifecycle_fixture(
             repo / ".codex" / "config.toml",
             "[agents]\nmax_concurrent_threads_per_session = 4\n",
         )
-        write_lifecycle_agents(repo, fixture_root)
-        for support in ("cross-scope-writes", "doctrine", "methodology"):
-            for vendor in ("codex", "claude"):
-                shutil.copy2(
-                    ROOT / "agents" / f"{support}.md",
-                    repo / f".{vendor}" / "agents" / f"{support}.md",
-                )
+        write_lifecycle_agents(
+            repo, fixture_root, orchestrator_prompt=options.orchestrator_prompt
+        )
+        # The stock orchestrator's support documents are staged only for the
+        # stock orchestrator: another prompt brings whatever it needs.
+        if options.orchestrator_prompt is None:
+            for support in ("cross-scope-writes", "doctrine", "methodology"):
+                for vendor in ("codex", "claude"):
+                    shutil.copy2(
+                        ROOT / "agents" / f"{support}.md",
+                        repo / f".{vendor}" / "agents" / f"{support}.md",
+                    )
         env["PATH"] = str(repo / ".eval" / "bin") + os.pathsep + env["PATH"]
         before = run_json(
             ["planar", "plan", "next", plan_id, "--json"], cwd=repo, env=env
@@ -2834,7 +3012,21 @@ def prepare_lifecycle_fixture(
                 # 6876) makes a missing observed/ dir a hard grading
                 # failure rather than a silent legacy skip -- see
                 # grade_lifecycle_artifacts.
-                "artifact_format": ARTIFACT_FORMAT_OBSERVED_LOG,
+                "artifact_format": (
+                    ARTIFACT_FORMAT_TRAIL if options.vendor else ARTIFACT_FORMAT_OBSERVED_LOG
+                ),
+                # The orchestrator under test, recorded for the reader of the
+                # artifacts only; nothing grades from it.
+                "orchestrator_prompt": (
+                    {
+                        "path": str(options.orchestrator_prompt),
+                        "sha256": hashlib.sha256(
+                            options.orchestrator_prompt.read_bytes()
+                        ).hexdigest(),
+                    }
+                    if options.orchestrator_prompt is not None
+                    else None
+                ),
             },
         )
         return LifecycleContext(
@@ -2873,6 +3065,10 @@ def event_objects(path: Path) -> list[dict[str, Any]]:
 # at or above this value with `observed/` missing is a real defect (the
 # collection run failed to produce it) and grading must fail, not skip.
 ARTIFACT_FORMAT_OBSERVED_LOG = 2
+# A host run snapshots the trail its orchestrator left (`trail.sqlite`),
+# so a regrade can run the conformance check again. A run.json at or above this
+# format with the snapshot missing is a grading failure, not a legacy gap.
+ARTIFACT_FORMAT_TRAIL = 3
 
 # The planar-agent wrapper's argv[0] -> legacy lifecycle-event-name mapping.
 # Only a forwarded SUCCESS produces a named lifecycle event: a failed
@@ -3334,6 +3530,10 @@ def collect_lifecycle_artifacts(
         env=env,
     )
     write_json(artifacts / "claims.after.json", claim_state)
+    if options.vendor:
+        # A host run's orchestrator can be any prompt: keep the trail it left
+        # so the conformance check grades it, now and on every regrade.
+        snapshot_arena_trail(context)
     # Task 6858: the fixture's own test-runner argv (see
     # `load_fixture_manifest`), not a hardcoded `make test` -- the
     # foreign-flat fixture runs `./run-tests` instead.
@@ -3644,6 +3844,7 @@ def grade_lifecycle_artifacts(
                 artifact_dir, case_id, options,
                 "fixture ticket lacks an authoritative passing queue outcome",
             )
+    grade_artifact_trail(case, artifact_dir, options)
 
 
 def _lifecycle_pull(
@@ -5288,6 +5489,10 @@ def parse_args(
     # Task 6859: repeat each selected live/lifecycle case this many times and
     # report a per-case pass rate.
     parser.add_argument("--trials", type=int, default=1)
+    # Any orchestrator under test: a prompt file staged in place of the stock
+    # orchestrator for lifecycle host runs. The trail it leaves is graded the
+    # same whichever prompt it is.
+    parser.add_argument("--orchestrator-prompt", type=Path, dest="orchestrator_prompt")
     args = parser.parse_args(argv)
     if args.live:
         mode = "live"
@@ -5308,6 +5513,9 @@ def parse_args(
         keep=args.keep,
         max_usd=args.max_usd,
         trials=args.trials,
+        orchestrator_prompt=args.orchestrator_prompt.resolve()
+        if args.orchestrator_prompt
+        else None,
     )
     return (
         options,
@@ -5381,8 +5589,134 @@ def run_case_trials(
         raise last_exc
 
 
+def check_trail_corpus(specs: list[tuple[Path, dict[str, Any]]]) -> None:
+    """The recorded trails must cover what the checker promises, so a deleted
+    trail cannot quietly thin the lane: every rule 1-6 broken by some trail, an
+    operator override, history before the floor, a descendant plan, and at
+    least three conforming trails written in different orchestrator styles."""
+    broken: set[int] = set()
+    styles: set[str] = set()
+    has_override = has_before_floor = has_descendant = False
+    for _, spec in specs:
+        expected = spec["expected"]
+        broken.update(item["rule"] for item in expected.get("violations", []))
+        if expected["conforms"] and "style" in spec:
+            styles.add(spec["style"])
+        has_override = has_override or bool(expected.get("overrides"))
+        has_before_floor = has_before_floor or bool(
+            expected.get("before_floor", {}).get("claims")
+            or expected.get("before_floor", {}).get("done_tasks")
+        )
+        has_descendant = has_descendant or bool(spec.get("child_plan"))
+    missing = sorted(set(trail.RULES) - broken)
+    if missing:
+        raise EvalFailure(f"no recorded trail breaks rule(s) {missing}")
+    if len(styles) < 3:
+        raise EvalFailure(
+            f"conforming trails cover {len(styles)} orchestrator style(s), need at least 3"
+        )
+    for covered, what in (
+        (has_override, "an operator override"),
+        (has_before_floor, "history before the floor"),
+        (has_descendant, "a descendant plan"),
+    ):
+        if not covered:
+            raise EvalFailure(f"no recorded trail covers {what}")
+
+
+def run_trail_negative_control(
+    specs: list[tuple[Path, dict[str, Any]]], planar: Path
+) -> None:
+    """Prove the lane can fail: a trail graded against the opposite verdict must
+    be refused, naming the difference."""
+    _, spec = next(entry for entry in specs if entry[1]["expected"]["conforms"])
+    wrong = json.loads(json.dumps(spec))
+    wrong["expected"] = {
+        "conforms": False,
+        "violations": [{"rule": 1, "entity": "task:1"}],
+    }
+    try:
+        trail.run_trail(wrong, planar)
+    except trail.TrailError:
+        return
+    raise EvalFailure("trail negative control: a wrong expected verdict was accepted")
+
+
+def run_trails(case_filter: str | None) -> int:
+    """Grade every recorded trail through `planar health conformance`.
+
+    Each trail is built into a throwaway database, graded by the checker, and
+    held to the verdict its file records. Nothing here knows which prompt, vendor
+    or role convention a trail's style stands for; the style is a label for the
+    reader.
+    """
+    specs = trail.load_trails()
+    if not specs:
+        raise EvalFailure("no recorded trails found")
+    check_trail_corpus(specs)
+    try:
+        planar = trail.resolve_planar()
+    except trail.TrailUnavailable as exc:
+        raise EvalFailure(str(exc)) from exc
+    selected = [
+        entry for entry in specs if case_filter is None or entry[1]["id"] == case_filter
+    ]
+    if not selected:
+        raise EvalFailure(f"unknown trail id: {case_filter}")
+    run_trail_negative_control(specs, planar)
+    pass_line("trail negative control")
+    outcomes: list[CaseOutcome] = []
+    for _path, spec in selected:
+        try:
+            trail.run_trail(spec, planar)
+        except trail.TrailError as exc:
+            outcomes.append((spec["id"], "fail", str(exc)))
+        else:
+            pass_line(f"{spec['id']}: recorded trail graded")
+    emit_aggregate_report(
+        outcomes,
+        total=len(selected),
+        unit="recorded trails graded through planar health conformance",
+        pass_message=f"{len(selected)} recorded trails graded through planar health conformance",
+    )
+    return batch_exit_code(outcomes)
+
+
+def grade_trail_command(arguments: Sequence[str]) -> int:
+    """`--grade-trail <database> --plan <id>`: grade an existing trail.
+
+    The database is only read (copied to scratch first); the verdict is the
+    checker's. Exit 0 when the trail conforms, 1 when it does not.
+    """
+    parser = argparse.ArgumentParser(prog="harness.py --grade-trail")
+    parser.add_argument("--grade-trail", type=Path, required=True, dest="database")
+    parser.add_argument("--plan", required=True)
+    parser.add_argument("--floor", type=int, default=1)
+    parser.add_argument("--policy", type=Path, help="a config.toml holding the [policy] to grade under")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args(arguments)
+    try:
+        grade = trail.grade_database(
+            args.database.resolve(),
+            args.plan,
+            floor=args.floor,
+            config_text=args.policy.read_text(encoding="utf-8") if args.policy else "",
+        )
+    except trail.TrailError as exc:
+        raise EvalFailure(str(exc)) from exc
+    print(json.dumps(grade.report, indent=2) if args.json else trail.describe(grade))
+    return grade.exit_code
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(argv or sys.argv[1:])
+    if "--grade-trail" in arguments:
+        return grade_trail_command(arguments)
+    if arguments and arguments[0] == "--trails":
+        parser = argparse.ArgumentParser(prog="harness.py --trails")
+        parser.add_argument("--trails", action="store_true")
+        parser.add_argument("--case", dest="case_filter")
+        return run_trails(parser.parse_args(arguments).case_filter)
     if arguments and arguments[0] == "--resume-queue-ticket":
         if len(arguments) != 2:
             raise EvalFailure("usage: --resume-queue-ticket <retained artifact directory>")

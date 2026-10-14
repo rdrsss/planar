@@ -500,7 +500,7 @@ clean: ## Remove build artifacts
 #    invoke a model host and are opt-in.
 
 .PHONY: eval
-eval: eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures ## Deterministic contract, negative-control, and lifecycle-fixture checks
+eval: eval-orchestrator-unit eval-orchestrator eval-orchestrator-trails eval-orchestrator-fixtures ## Deterministic contract, negative-control, and lifecycle-fixture checks
 
 .PHONY: eval-orchestrator
 eval-orchestrator: ## Orchestrator contract evals
@@ -537,7 +537,7 @@ eval-queue-observation-integration: ## Exercise one live scratch queue ticket th
 	PYTHONDONTWRITEBYTECODE=1 python3 evals/orchestrator/integration_queue_observation.py
 
 .PHONY: eval-contracts
-eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-fixtures ## The PROVIDER-FREE eval lanes, composed into test-all
+eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-trails eval-orchestrator-fixtures ## The PROVIDER-FREE eval lanes, composed into test-all
 
 # Why this exists separately from `make eval`, and why test-all uses it:
 #
@@ -556,6 +556,17 @@ eval-contracts: eval-orchestrator-unit eval-orchestrator-fast eval-orchestrator-
 .PHONY: eval-orchestrator-contract
 eval-orchestrator-contract: ## Backward-compatible alias for the contract lane
 	./scripts/eval-orchestrator.sh --contract-only
+
+# Recorded trails graded by the checker `planar health conformance` runs: three
+# conforming trails in different orchestrator styles, one trail per broken rule,
+# an operator override, history before the floor and a descendant plan. The
+# harness copies each trail's database to scratch and grades it with the built
+# `planar`, so the lane needs the debug build of that one binary.
+.PHONY: eval-orchestrator-trails
+eval-orchestrator-trails: ## Recorded trails graded through planar health conformance (needs the built planar; no model host)
+	$(configure_debug)
+	cmake --build $(CPP_BUILD_DIR) --target planar_cmd_planar
+	PYTHONDONTWRITEBYTECODE=1 PLANAR_EVAL_PLANAR=$(CPP_BIN_ABS)/$(BINARY) python3 evals/orchestrator/harness.py --trails
 
 .PHONY: eval-orchestrator-fixtures
 eval-orchestrator-fixtures: ## Lifecycle fixture replay without a model host

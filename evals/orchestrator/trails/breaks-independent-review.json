@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "breaks-independent-review",
+  "description": "Rule 6: the only review of a completed claim came from the claim's own session.",
+  "policy": {
+    "review_required": true
+  },
+  "tasks": [
+    {
+      "title": "self-reviewed",
+      "final": "done"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "m",
+      "session": "coder",
+      "parent_action": true,
+      "reviews": [
+        {
+          "session": "coder",
+          "verdict": "approve"
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 6,
+        "entity": "claim:1"
+      }
+    ]
+  }
+}

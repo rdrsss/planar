@@ -16,7 +16,7 @@ walk are in [lifecycles.md](lifecycles.md).
 | `make cli-usage-check` | Authored surfaces (`agents/`, `skills/`, `docs/`) and the `docs.examples` the binaries publish in `schema` only use commands and flags the four binaries expose, and pass the semantic surface lint, including the host-queue rule (`surface-queue-command`, [architecture.md](architecture.md#authored-surface-validation)), and `scripts/check-md-anchors.py` fails on a broken in-page anchor in `docs/cli-reference.md` and `INSTALL.md`. |
 | `make surface-check` | Each binary's live schema and help surface matches `scripts/surface-baseline.txt`. |
 | `make exit-code-contract` | The exit codes documented in [cli-reference.md](cli-reference.md) are the ones the binaries return. |
-| `make eval-contracts` | The provider-free eval lanes. |
+| `make eval-contracts` | The provider-free eval lanes: the harness unit tests, the source contracts, the recorded trails graded through `planar health conformance` (`make eval-orchestrator-trails`, which builds `planar` first), and the controlled lifecycle replays. |
 | `make eval-queue-observation-integration` | A live scratch-database detached ticket observed through native wait and the older-queue compatibility path. Needs the debug binaries built first. |
 | `make cpp-lint-gate` | `clang-format --Werror` and the Doxygen doc-comment pass. |
 | `make test-all` | All of the above, composed. This is the gate to run before a pull request. |

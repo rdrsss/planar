@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "breaks-parent-action",
+  "description": "Rule 4: a worker's claim carries no parent action.",
+  "tasks": [
+    {
+      "title": "orphan",
+      "final": "done"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "m",
+      "session": "coder",
+      "parent_action": false
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 4,
+        "entity": "claim:1"
+      }
+    ]
+  }
+}

@@ -21,12 +21,15 @@ treating a green result as evidence for behavior outside the exercised adapter.
 | `contract` | Required instructions exist, forbidden instructions are absent, cross-role invariants agree, and a seeded forbidden regression is detected by the grader. | `make eval-contracts` (composed into `make test-all`) |
 | `live` | An installed host follows the contract in an isolated repository and leaves the expected Planar/Git state. | Operator-invoked only, via `make eval-orchestrator-live`; no result is retained in the repo today |
 | `lifecycle` | A live orchestrator plus project-scoped controlled specialists exercises ordering, recovery, and final state. | Fixture replay is gated (`make eval-orchestrator-fixtures`, part of `make eval-contracts`); a live host run is operator-invoked only, via `make eval-orchestrator-lifecycle` |
+| `trail` | The recorded trail an orchestrator left (claims, actions, reviews, queued runs, task states) is graded by `planar health conformance`, whichever orchestrator wrote it. | `make eval-orchestrator-trails` (composed into `make eval-contracts` and `make eval`) |
 
 This repository has no automated continuous-build configuration (no
 `.github/` directory or equivalent). The gates above are what actually runs,
 and when: `make test-all` composes `eval-contracts` (= `eval-orchestrator-unit`
-+ `eval-orchestrator-fast` + `eval-orchestrator-fixtures`), and `make eval` runs
-`eval-orchestrator-unit eval-orchestrator eval-orchestrator-fixtures`.
++ `eval-orchestrator-fast` + `eval-orchestrator-trails` +
+`eval-orchestrator-fixtures`), and `make eval` runs
+`eval-orchestrator-unit eval-orchestrator eval-orchestrator-trails
+eval-orchestrator-fixtures`.
 Live and lifecycle host modes (`eval-orchestrator-live`,
 `eval-orchestrator-lifecycle`, `eval-planning`) are
 operator-invoked only; no result of one is retained in this repository today.
@@ -118,6 +121,7 @@ make eval-orchestrator-fast
 make eval-orchestrator-unit
 make eval-orchestrator-contract
 make eval-orchestrator-fixtures
+make eval-orchestrator-trails
 ./scripts/eval-orchestrator.sh --list
 ./scripts/eval-orchestrator.sh --contract-only --case classic-lifecycle-success
 ```
@@ -209,6 +213,64 @@ fixture's PATH wrapper.
 
 `--case` accepts either a case id or a JSON path. Without it, contract mode runs
 all cases and live mode runs every case declaring the `live` tier.
+
+## Grading the trail of any orchestrator
+
+The suite grades what an orchestrator *leaves behind*, not which prompt wrote
+it. A **trail** is the claims, actions, reviews, queued runs and task states in
+a Planar database. `evals/orchestrator/trail.py` copies a trail's database to a
+throwaway directory (through SQLite's backup API, so the source is only read),
+runs `planar health conformance <plan> --json` over the copy, validates the
+report against the checker's contract, and judges the checker's own verdict.
+`HOME`, `PLANAR_DB`, `PLANAR_HOME`, `PLANAR_LOCAL_HOME`,
+`PLANAR_WORKBENCH_ROOT` and `PLANAR_CONFIG_PATH` all point into that directory,
+so grading can never write to a source database or to `~/.planar`. Nothing in
+`trail.py` reads a prompt, vendor, role name or case; a test pins that it
+contains none of those tokens.
+
+The `planar` that grades is `PLANAR_EVAL_PLANAR` if set, else the checkout's
+`build/debug/bin/planar`, `bin/planar`, then `planar` on `PATH`: the first that
+has `health conformance`. A planar without it is skipped and named in the
+refusal, so an older installed build cannot grade (or silently pass) a trail.
+
+Three ways in:
+
+- **Recorded trails** (`make eval-orchestrator-trails`, or
+  `./scripts/eval-orchestrator.sh --trails [--case <id>]`). Each file under
+  `evals/orchestrator/trails/` describes a trail (a plan, its tasks, and the
+  claims, reviews and queued runs recorded on them) and the verdict the checker
+  must give it. The plan and tasks are made with the real verbs; the claim rows
+  are the recorded part. The set covers three conforming trails in different
+  orchestrator styles (a session with an orchestrator and dispatched coders, a
+  swarm of peer workers, a Codex session), one trail per broken rule 1-6
+  (including a lapsed `active` claim and a review row with no verdict), an
+  operator `--force` listed as an override, history before the floor that never
+  fails, and a task in a descendant plan. The lane refuses to run if a rule, an
+  override, the floor, a descendant plan or the three conforming styles loses
+  its trail, runs a negative control (a wrong expected verdict must be refused)
+  before the trails, and fails with the checker's own description of the trail
+  on a mismatch. `style` is a label for the reader: the grade does not depend on
+  it. A new trail is one JSON file named for its `id`; unknown keys are refused.
+- **Any existing trail** (`./scripts/eval-orchestrator.sh --grade-trail
+  <planar.db> --plan <id> [--floor N] [--policy config.toml] [--json]`). The
+  database is copied first; the exit code is the checker's (0 conforms, 1 it
+  does not). `--floor` defaults to 1, which grades the whole trail.
+- **Host lifecycle runs.** A lifecycle host run (`--lifecycle`) keeps the trail
+  its orchestrator left (`trail.sqlite`, with the policy in `trail.config.toml`)
+  and records the report in `conformance.json`; `--grade-artifacts` runs the
+  check again from the snapshot. The case fails only on what it declares:
+  `expected.conformance` is `{"conforms": true}` or `{"conforms": false,
+  "rules": [2, 4]}` (the exact set of broken rule numbers). A case may also set
+  `lifecycle.policy` (the `[policy]` keys) to put the orchestrator under a
+  policy that its trail is then held to. Fixture replays, whose scripted
+  orchestrator uses whichever `planar-agent` is on `PATH`, keep their event
+  grading and take no trail snapshot.
+
+**The orchestrator under test is a parameter.** `--orchestrator-prompt <file>`
+stages any prompt file (frontmatter optional) as the lifecycle orchestrator in
+place of `agents/planar-orchestrator.md`, and skips that agent's support
+documents. `run.json` records the prompt's path and hash for the reader; no
+grader reads them.
 
 ## Grading rules
 

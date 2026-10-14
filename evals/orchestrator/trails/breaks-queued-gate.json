@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "breaks-queued-gate",
+  "description": "Rule 5: under use_queue and a task_gate the only recorded run is not the gate.",
+  "policy": {
+    "use_queue": true,
+    "task_gate": [
+      "make",
+      "test"
+    ]
+  },
+  "tasks": [
+    {
+      "title": "wrong gate",
+      "final": "done"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "m",
+      "session": "coder",
+      "parent_action": true,
+      "gate_runs": [
+        {
+          "argv": [
+            "make",
+            "test-all"
+          ],
+          "cwd": "/work/repo",
+          "outcome": "exited",
+          "exit_code": 0
+        }
+      ]
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 5,
+        "entity": "claim:1"
+      }
+    ]
+  }
+}

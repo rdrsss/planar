@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "descendant-plan-is-graded",
+  "description": "A task in a child plan is graded with its anchor.",
+  "child_plan": true,
+  "tasks": [
+    {
+      "title": "anchor task",
+      "final": "todo"
+    },
+    {
+      "title": "child task",
+      "final": "done",
+      "plan": "child"
+    }
+  ],
+  "claims": [],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 1,
+        "entity": "task:2"
+      }
+    ]
+  }
+}

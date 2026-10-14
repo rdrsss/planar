@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "history-before-the-floor-never-fails",
+  "description": "Everything happened before migration 00042 was applied: it is counted before the floor and never graded.",
+  "floor": {
+    "migration_applied_at": "2999-01-01T00:00:00.000Z"
+  },
+  "tasks": [
+    {
+      "title": "old unclaimed",
+      "final": "done"
+    },
+    {
+      "title": "old abandoned",
+      "final": "doing"
+    }
+  ],
+  "claims": [
+    {
+      "task": 2,
+      "status": "stale",
+      "role": "coder",
+      "model": null,
+      "session": "coder",
+      "parent_action": false
+    }
+  ],
+  "expected": {
+    "conforms": true,
+    "violations": [],
+    "before_floor": {
+      "claims": 1,
+      "done_tasks": 1
+    }
+  }
+}

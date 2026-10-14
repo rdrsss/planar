@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "id": "breaks-completed-claim",
+  "description": "Rule 1: a task is done and no claim was ever taken on it.",
+  "tasks": [
+    {
+      "title": "unclaimed",
+      "final": "done"
+    }
+  ],
+  "claims": [],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 1,
+        "entity": "task:1"
+      }
+    ]
+  }
+}
