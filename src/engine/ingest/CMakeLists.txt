@@ -53,8 +53,8 @@
 # it uses to digest a cited artifact and to resolve `--expand <ref>#heading`;
 # a separate `engine_routing` bucket could not depend on them (D15/D18).
 # `materialize` no longer writes anything: the packet cites through the task's
-# `cites` entity links and no `routing_task_facts` row has a reader or a
-# writer. `sha256_hex` is a thin wrapper over layer-1 `planar.sha256`, so
+# `cites` entity links (the fact table it once staged was dropped by migration
+# 00043). `sha256_hex` is a thin wrapper over layer-1 `planar.sha256`, so
 # `DEPENDS sha256` below carries the algorithm.
 
 planar_module(engine_ingest

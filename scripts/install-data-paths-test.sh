@@ -38,7 +38,7 @@ unset PLANAR_DB PLANAR_CONFIG_PATH PLANAR_WORKBENCH_ROOT PLANAR_LOCAL_HOME PLANA
 # shellcheck source=scripts/install-lib/data-paths.sh
 source "$ROOT/scripts/install-lib/data-paths.sh"
 
-want_names="planar.db planar.db-wal planar.db-shm queue-logs retired workbench config.toml local workspaces models execute templates"
+want_names="planar.db planar.db-wal planar.db-shm queue-logs retired backups workbench config.toml local workspaces models execute templates"
 [[ "$(planar_data_path_names | tr '\n' ' ' | sed 's/ $//')" == "$want_names" ]] \
   || fail "data path names or order differ from the spec: $(planar_data_path_names | tr '\n' ' ')"
 pass
@@ -48,7 +48,7 @@ P="$HOME/.planar"
 has_line "$(planar_data_paths_list "$P")" "config.toml|file|$P/config.toml|" || fail "default config.toml location wrong"
 pass
 
-for p in "$P/planar.db" "$P/planar.db-wal" "$P/planar.db-shm" "$P/queue-logs" "$P/queue-logs/7.log" "$P/retired/a/b" \
+for p in "$P/planar.db" "$P/planar.db-wal" "$P/planar.db-shm" "$P/queue-logs" "$P/queue-logs/7.log" "$P/retired/a/b" "$P/backups/x/planar.db" \
          "$P/workbench/x/README.md" "$P/config.toml" "$P/local/skills/mine/SKILL.md" "$P/workspaces/w.json" \
          "$P/models/catalog.json" "$P/execute/default/profile.toml" "$P/templates/a.toml"; do
   planar_is_data_path "$P" "$p" || fail "$p is not recognised as a data path"
@@ -223,7 +223,7 @@ perl -0pi -e 's#/opt/homebrew/opt/llvm/bin/clang(\+\+)?#/bin/sh#g' "$REPO/instal
 {
   printf 'opt/stale-tool/\n'
   for n in $want_names; do
-    case "$n" in queue-logs|retired|workbench|local|workspaces|models|execute|templates) printf '%s/\n' "$n" ;; *) printf '%s\n' "$n" ;; esac
+    case "$n" in queue-logs|retired|backups|workbench|local|workspaces|models|execute|templates) printf '%s/\n' "$n" ;; *) printf '%s\n' "$n" ;; esac
   done
   printf 'workbench/x/README.md\n'
   printf 'templates/a.toml\n'
@@ -261,13 +261,14 @@ run_installer() {
 # seed ROOT -- one file in every data path, plus a list file of what was seeded.
 seed() {
   local r="$1"
-  mkdir -p "$r/queue-logs" "$r/retired/old" "$r/workbench/x" "$r/local/skills/mine" "$r/workspaces" "$r/models" \
+  mkdir -p "$r/queue-logs" "$r/retired/old" "$r/backups/x" "$r/workbench/x" "$r/local/skills/mine" "$r/workspaces" "$r/models" \
            "$r/execute/default" "$r/templates"
   printf 'SQLite format 3\n' > "$r/planar.db"
   printf 'wal bytes\n' > "$r/planar.db-wal"
   printf 'shm bytes\n' > "$r/planar.db-shm"
   printf 'log\n' > "$r/queue-logs/7.log"
   printf 'old\n' > "$r/retired/old/agent.db"
+  printf 'backed up\n' > "$r/backups/x/planar.db"
   printf 'readme\n' > "$r/workbench/x/README.md"
   printf '[x]\n' > "$r/config.toml"
   printf 'skill\n' > "$r/local/skills/mine/SKILL.md"
@@ -275,7 +276,7 @@ seed() {
   printf '{}\n' > "$r/models/catalog.json"
   printf 'p\n' > "$r/execute/default/profile.toml"
   printf 'my edited template\n' > "$r/templates/a.toml"
-  ( cd "$r" && find planar.db planar.db-wal planar.db-shm queue-logs retired workbench config.toml local workspaces models \
+  ( cd "$r" && find planar.db planar.db-wal planar.db-shm queue-logs retired backups workbench config.toml local workspaces models \
       execute templates -type f | sort ) > "$r/../seeded.list"
 }
 sums() { ( cd "$1" && while IFS= read -r f; do cksum "$f" 2>/dev/null || echo "MISSING $f"; done < "$2" ); }

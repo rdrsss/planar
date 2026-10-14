@@ -561,8 +561,6 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
     plans_after_first     = count(conn_after_first, "plans");
     decisions_after_first = count(conn_after_first, "decisions");
     links_after_first     = count(conn_after_first, "entity_links");
-    // Ingest stages no routing fact: the table stays empty through the first apply.
-    CHECK(count(conn_after_first, "routing_task_facts") == 0);
   }
 
   auto const second = dispatch(fx, {"spec", "ingest", anchor, "--apply"});
@@ -577,7 +575,6 @@ TEST_CASE("spec ingest --apply twice does not duplicate rows (idempotency)", "[c
   CHECK(count(conn_after_second, "plans") == plans_after_first);
   CHECK(count(conn_after_second, "decisions") == decisions_after_first);
   CHECK(count(conn_after_second, "entity_links") == links_after_first);
-  CHECK(count(conn_after_second, "routing_task_facts") == 0);
 }
 
 TEST_CASE("spec ingest --apply replays cleanly when a task hangs directly off the anchor plan",
@@ -603,12 +600,11 @@ TEST_CASE("spec ingest --apply replays cleanly when a task hangs directly off th
     REQUIRE(stmt->step().has_value());
     anchor_task_id = stmt->column_int64(0);
     // The first apply really did link the anchor-level task to the four
-    // reviewed artifacts, and wrote no fact; without these links the replay
-    // below would pass for the wrong reason.
+    // reviewed artifacts; without these links the replay below would pass for
+    // the wrong reason.
     CHECK(count(conn, std::format("entity_links where from_kind='task' and from_id={} and to_kind='artifact' and "
                                   "relationship='cites'",
                                   anchor_task_id)) == 4);
-    CHECK(count(conn, "routing_task_facts") == 0);
   }
 
   auto const replay = dispatch(fx, {"spec", "ingest", anchor, "--apply"});
@@ -621,7 +617,6 @@ TEST_CASE("spec ingest --apply replays cleanly when a task hangs directly off th
   CHECK(count(after, std::format("entity_links where from_kind='task' and from_id={} and to_kind='artifact' and "
                                  "relationship='cites'",
                                  anchor_task_id)) == 4);
-  CHECK(count(after, "routing_task_facts") == 0);
 }
 
 TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authored coverage", "[cmd][spec][ingest][reconcile]") {
@@ -651,8 +646,7 @@ TEST_CASE("spec ingest re-apply reconciles reviewed routing evidence and authore
   auto after = open_db(fx);
   CHECK(count(after, "plans where parent_plan_id=1 and status='active'") == 1);
   CHECK(count(after, "entity_links where from_kind='task' and from_id=1 and to_kind='artifact' and relationship='cites'") == 4);
-  // The citations arrive as `cites` links, and ingest writes no routing fact.
-  CHECK(count(after, "routing_task_facts") == 0);
+  // The citations arrive as `cites` links.
   CHECK(count(after,
               "entity_links where from_kind='task' and from_id=1 and to_kind='decision' and to_id=1 and relationship='cites'") ==
         1);

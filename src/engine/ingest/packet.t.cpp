@@ -33,10 +33,9 @@
 //
 // ## REFERENCES, NOT FACTS
 //
-// The packet reads no `routing_task_facts` row. Its citations are references
-// derived from the task's `cites` entity links, and `expand_reference` resolves
-// one of them to text. Cases here seed links only, and a case asserts the
-// seeded database holds no fact row at all.
+// The packet's citations are references derived from the task's `cites`
+// entity links, and `expand_reference` resolves one of them to text. Cases here
+// seed links only. The old fact table is gone (migration 00043).
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -264,12 +263,6 @@ TEST_CASE("the ready packet's references are derived from the cites links with i
     CHECK(got.label == expected[i].label);
     CHECK(got.status == "active");
   }
-
-  // No fact is stored, and none is read: the arena holds no fact row.
-  auto stmt = conn.prepare("select count(*) from routing_task_facts");
-  REQUIRE(stmt.has_value());
-  REQUIRE(stmt->step().has_value());
-  CHECK(stmt->column_int64(0) == 0);
 
   // The dependency is listed with the dependency task's own status.
   REQUIRE(packet->input.dependencies.size() == 1);

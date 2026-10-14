@@ -50,13 +50,11 @@ auto cpp_bin() -> std::filesystem::path {
 ///   `pid`           `workflow_runs.pid` is an OS process id.
 ///   `claim_token`   `agent_work_claims.claim_token` is randomly generated.
 ///   `run_uid`       `runs.run_uid` is randomly generated.
-///   `preview_token` `routing_dispatch_previews.preview_token` likewise.
 ///
 /// The prototype this list was ported from carried `execution_time_ms`,
 /// which does not exist in this schema and therefore named nothing. That is
 /// exactly the rot the case below now makes impossible.
-constexpr std::array<std::string_view, 7> volatile_exact{"at",          "fs_mtime", "duration_ms",  "pid",
-                                                         "claim_token", "run_uid",  "preview_token"};
+constexpr std::array<std::string_view, 6> volatile_exact{"at", "fs_mtime", "duration_ms", "pid", "claim_token", "run_uid"};
 
 /// @brief Whether a column's value is wall-clock-, process- or
 /// randomness-derived rather than a stable planning value.

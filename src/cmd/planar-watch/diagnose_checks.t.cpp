@@ -21,12 +21,9 @@
 //   * A healthy claim, before and after `complete`, gives no claim finding.
 //   * `heartbeat-gap` reads the heartbeat action rows the verb writes.
 //   * `handoff-stale` agrees with the stale-handoff count `planar health` prints.
-//   * Dispatch checks (plan 1132, tasks 7376 and 7377): the dispatch records are the preview and
-//     snapshot rows, written here with consistent synthetic digests. No verb writes them any more
-//     (plan 1142, task 7455), so the project and routing candidate they name are seeded by hand too.
-//   * `dispatch-no-role-action`: the 7335 shape (a preview bound to a claim, a confirm, a complete,
-//     no coder action) is one finding and nothing else; a direct claim doing its own work is none.
 //   * `action-unended`: an action left open under a claim that lapsed.
+//   * `dispatch-no-role-action` and `dispatch-confirmed-late` are unknown checks (exit 2): they read
+//     the routing dispatch tables migration 00043 dropped, and were retired with them.
 //   * `apply-without-preview` (task 7379): the capture log is turned on through `[introspection]
 //     cli_log` in the pinned config file, and `planar spec ingest` runs with and without `--apply`.
 //     There is no workbench spec, so the ingest exits 2, which the log records all the same. With
@@ -59,13 +56,12 @@ namespace {
 namespace parity = planar::cmd::parity;
 
 struct world {
-  parity::arena         arena       = parity::make_arena("watch_diagnose_checks");
-  std::filesystem::path root        = arena.cpp_root;
-  std::filesystem::path op          = std::filesystem::path{PLANAR_OPERATOR_CPP_BIN};
-  std::filesystem::path agent       = std::filesystem::path{PLANAR_AGENT_CPP_BIN};
-  std::filesystem::path watch       = std::filesystem::path{PLANAR_CPP_BIN};
-  int                   seq         = 0;
-  int                   preview_seq = 0;
+  parity::arena         arena = parity::make_arena("watch_diagnose_checks");
+  std::filesystem::path root  = arena.cpp_root;
+  std::filesystem::path op    = std::filesystem::path{PLANAR_OPERATOR_CPP_BIN};
+  std::filesystem::path agent = std::filesystem::path{PLANAR_AGENT_CPP_BIN};
+  std::filesystem::path watch = std::filesystem::path{PLANAR_CPP_BIN};
+  int                   seq   = 0;
 
   auto tag() -> std::string {
     return std::format("c{}", ++seq);
@@ -112,7 +108,7 @@ struct world {
   }
 
   /// Direct writes to the scratch database: a lease or timestamp is moved afterwards (the verbs cannot
-  /// wait one out), and the dispatch rows no verb writes are inserted. Nothing else is written here.
+  /// wait one out). Nothing else is written here.
   auto move_time(std::string_view sql) -> void {
     auto conn = planar::db::connection::open((root / "planar.db").string());
     REQUIRE(conn.has_value());
@@ -175,56 +171,6 @@ struct world {
     REQUIRE(stmt.has_value());
     REQUIRE(stmt->step().has_value());
     return stmt->column_text(0);
-  }
-
-  /// Rows no verb creates, written with a plain INSERT: the project and routing candidate the dispatch rows name.
-  auto seed_routing() -> void {
-    move_time("insert into projects (slug, name) values ('routing-project', 'Routing Project')");
-    move_time("insert into routing_candidates (vendor, candidate_id, fallback_order) values ('claude', 'candidate', 0)");
-  }
-
-  /// The current instant as the whole-second RFC 3339 text a confirmation is stamped with.
-  static auto now_text(int offset_seconds = 0) -> std::string {
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now() +
-                                                                                         std::chrono::seconds{offset_seconds}));
-  }
-
-  /// A preview row for a task, as the orchestrator's preview step left it (no verb writes these rows any
-  /// more, plan 1142 task 7455). Bound to `claim_token` when given. Returns the preview token.
-  auto dispatch_preview(int task_id, std::string_view claim_token) -> std::string {
-    auto token  = std::format("ptok{}", ++preview_seq);
-    auto claim  = claim_token.empty() ? std::string{"null"} : std::format("'{}'", claim_token);
-    auto status = claim_token.empty() ? std::string{"null"} : std::string{"'active'"};
-    move_time(std::format("insert into routing_dispatch_previews (preview_token, task_id, logical_work_item_id, project_id, "
-                          "validation_policy_version, routing_policy_version, profile_rule_version, vendor, role, tier, "
-                          "work_type, complexity, packet_digest, profile_digest, policy_digest, capability_digest, "
-                          "requested_candidate_id, host_id, assignment_class, claim_token, claim_status_at_preview, "
-                          "evidence_state, expires_at) values ('{}', {}, 'w{}', 1, 'v1', 'r1', 'p1', 'claude', 'coder', "
-                          "'medium', 'feature', 'standard', 'pk', 'pf', 'po', 'cp', 1, 'host', 'default', {}, {}, "
-                          "'evidential', '2099-01-01T00:00:00.000Z')",
-                          token, task_id, task_id, claim, status));
-    return token;
-  }
-
-  /// The confirmation of a preview, written as the snapshot the confirm verb used to write: a snapshot
-  /// stamped with `now` (RFC 3339 whole seconds, stored with milliseconds) that spends the preview.
-  /// `claim_token` is accepted so call sites read as they did; the snapshot does not store it.
-  auto dispatch_confirm(std::string_view preview_token, std::string_view now, [[maybe_unused]] std::string_view claim_token = {})
-      -> void {
-    auto stored = now.size() == 20 ? std::string{now.substr(0, 19)} + ".000Z" : std::string{now};
-    move_time(std::format("insert into routing_dispatch_snapshots (dispatch_key, task_id, logical_work_item_id, project_id, "
-                          "validation_policy_version, routing_policy_version, profile_rule_version, vendor, role, tier, "
-                          "work_type, complexity, packet_digest, policy_digest, capability_digest, requested_candidate_id, "
-                          "assignment_class, operator_decision, reviewer_disposition, confirmed_at) "
-                          "select 'key-{0}', task_id, logical_work_item_id, project_id, validation_policy_version, "
-                          "routing_policy_version, profile_rule_version, vendor, role, tier, work_type, complexity, "
-                          "packet_digest, policy_digest, capability_digest, requested_candidate_id, assignment_class, "
-                          "'confirmed', 'required', '{1}' from routing_dispatch_previews where preview_token = '{0}'",
-                          preview_token, stored));
-    move_time(std::format("update routing_dispatch_previews set consumed_at = '{1}', "
-                          "consumed_dispatch_id = (select max(id) from routing_dispatch_snapshots) "
-                          "where preview_token = '{0}'",
-                          preview_token, stored));
   }
 
   /// `planar-watch diagnose --plan 1 --json`, parsed.
@@ -415,64 +361,23 @@ TEST_CASE("handoff-stale agrees with the stale-handoff count planar health print
   CHECK(parsed->find("stale_handoffs")->integer == 1);
 }
 
-const std::vector<std::string> k_dispatch_checks{"dispatch-no-role-action", "dispatch-confirmed-late", "action-unended"};
-
-TEST_CASE("a previewed and confirmed dispatch that completes with no role action is one finding",
-          "[cmd][watch][diagnose][workflow][dispatch]") {
+TEST_CASE("the retired dispatch checks are unknown to planar-watch diagnose", "[cmd][watch][diagnose][workflow][dispatch]") {
   world w;
-  w.seed_routing();
-  // The 7335 shape: the dispatch record binds the claim, the claim completes, no coder action ever ran.
-  auto token   = w.claim(1);
-  auto preview = w.dispatch_preview(1, token);
-  w.dispatch_confirm(preview, world::now_text(), token);
-  CHECK(w.findings(k_dispatch_checks).empty()); // the claim is live and may still start its action
+  auto  token = w.claim(1);
   w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
-
-  auto        parsed = w.diagnose_json(k_dispatch_checks);
-  const auto& found  = parsed.find("findings")->array;
-  REQUIRE(found.size() == 1);
-  CHECK(found[0].find("check")->string == "dispatch-no-role-action");
-  CHECK(found[0].find("entity")->string == "claim:1");
-  CHECK(found[0].find("severity")->string == "warning");
-  std::vector<std::string> evidence;
-  for (const auto& e : found[0].find("evidence")->array) {
-    evidence.push_back(e.string);
+  for (std::string_view retired : {"dispatch-no-role-action", "dispatch-confirmed-late"}) {
+    auto got = parity::run_pinned(
+        w.watch, std::vector<std::string>{"diagnose", "--plan", "1", "--json", "--check", std::string{retired}}, w.root, w.tag());
+    INFO(retired << ": " << got.err);
+    CHECK(got.code == 2);
+    CHECK(got.err.contains(std::format("unknown check '{}'", retired)));
   }
-  CHECK(std::ranges::is_permutation(evidence,
-                                    std::vector<std::string>{"claim:1", "task:1", "dispatch_preview:1", "dispatch_snapshot:1"}));
-}
-
-TEST_CASE("a dispatch with a task-tied coder action under its claim produces no finding",
-          "[cmd][watch][diagnose][workflow][dispatch]") {
-  world w;
-  w.seed_routing();
-  auto token   = w.claim(1);
-  auto preview = w.dispatch_preview(1, token);
-  w.dispatch_confirm(preview, world::now_text(), token);
-  w.planar_agent({"action", "start", "--claim", token, "--kind", "coder", "--entity", "task:1", "--no-locality-probe"});
-  w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
-  CHECK(w.findings(k_dispatch_checks).empty());
-}
-
-TEST_CASE("a direct claim doing its own work yields no dispatch finding, with or without a coder action",
-          "[cmd][watch][diagnose][workflow][dispatch]") {
-  {
-    world w;
-    auto  token = w.claim(1);
-    w.planar_agent({"action", "start", "--claim", token, "--kind", "coder", "--entity", "task:1", "--no-locality-probe"});
-    w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
-    CHECK(w.findings(k_dispatch_checks).empty());
-  }
-  {
-    world w;
-    auto  token = w.claim(1);
-    w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
-    CHECK(w.findings(k_dispatch_checks).empty());
-  }
+  // The checks that remain run against the same database without the routing tables.
+  CHECK(w.findings({"action-unended"}).empty());
 }
 
 TEST_CASE("an action left open under a lapsed claim is reported, and not before the lease runs out",
-          "[cmd][watch][diagnose][workflow][dispatch]") {
+          "[cmd][watch][diagnose][workflow][actions]") {
   world w;
   auto  token = w.claim(1);
   w.planar_agent({"action", "start", "--claim", token, "--kind", "tool_call", "--entity", "task:1", "--no-locality-probe"});
@@ -501,40 +406,6 @@ TEST_CASE("an action left open under a lapsed claim is reported, and not before 
   // still an action left open under an ended claim.
   w.planar_agent({"reconcile"});
   CHECK(w.findings({"action-unended"}) == std::vector<std::string>{"action-unended action:2 warning"});
-}
-
-TEST_CASE("a snapshot confirmed after the role action started is late", "[cmd][watch][diagnose][workflow][dispatch]") {
-  world w;
-  w.seed_routing();
-  auto token   = w.claim(1);
-  auto preview = w.dispatch_preview(1, token);
-  w.planar_agent({"action", "start", "--claim", token, "--kind", "coder", "--entity", "task:1", "--no-locality-probe"});
-  auto confirmed = world::now_text();
-  w.dispatch_confirm(preview, confirmed, token);
-
-  // TIME TRAVEL: a snapshot is immutable and stamped with the caller's whole-second text, and the
-  // verbs write the real clock for the action, so the order of the two is not under the test's
-  // control. The action is moved to 2020-01-01, long before the confirm, and the preview to the day
-  // before it: an action that began before the bound preview existed is claim-time bookkeeping and never late
-  // (decision 1384), so the action must follow the preview.
-  // The single-use trigger refuses an update of a spent preview, so it is dropped on this scratch copy first.
-  w.move_time("drop trigger trg_routing_dispatch_previews_single_use");
-  w.move_time("update routing_dispatch_previews set created_at = '2019-12-31T00:00:00.000Z'");
-  w.move_time("update agent_actions set started_at = '2020-01-01T00:00:00.000Z' where action_kind = 'coder'");
-  auto        parsed = w.diagnose_json(k_dispatch_checks, "36500");
-  const auto& found  = parsed.find("findings")->array;
-  REQUIRE(found.size() == 1);
-  CHECK(found[0].find("check")->string == "dispatch-confirmed-late");
-  CHECK(found[0].find("entity")->string == "claim:1");
-  REQUIRE(found[0].find("evidence_times")->array.size() == 2);
-  CHECK(found[0].find("evidence_times")->array[0].string == "2020-01-01T00:00:00.000Z");
-  // The snapshot's confirmed_at, normalised to the stored format.
-  auto normalised = confirmed.substr(0, confirmed.size() - 1) + ".000Z";
-  CHECK(found[0].find("evidence_times")->array[1].string == normalised);
-
-  // The action starting at the instant of the confirm is not late.
-  w.move_time(std::format("update agent_actions set started_at = '{}' where action_kind = 'coder'", normalised));
-  CHECK(w.findings(k_dispatch_checks, "36500").empty());
 }
 
 TEST_CASE("an ingest apply with no preview before it is reported, and one after a preview is not",
@@ -607,38 +478,6 @@ TEST_CASE("a config file that cannot be parsed makes the capture-log input unava
     }
   }
   CHECK(seen);
-}
-
-TEST_CASE("a dispatch previewed and confirmed without a claim token, then claimed, is still that claim's dispatch",
-          "[cmd][watch][diagnose][workflow][dispatch]") {
-  // Real orchestrator runs preview with no claim token, confirm, and only then claim. The snapshot is
-  // confirmed (the caller's text, a minute in the past here) before the claim row exists.
-  {
-    world w;
-    w.seed_routing();
-    auto preview = w.dispatch_preview(1, "");
-    w.dispatch_confirm(preview, world::now_text(-60));
-    auto token = w.claim(1);
-    w.planar_agent({"complete", "--claim", token, "--no-locality-probe"});
-    // The claim is a dispatch through the spent preview, and it ended with no role action.
-    CHECK(w.findings(k_dispatch_checks) == std::vector<std::string>{"dispatch-no-role-action claim:1 warning"});
-  }
-  {
-    world w;
-    w.seed_routing();
-    auto first = w.dispatch_preview(1, "");
-    w.dispatch_confirm(first, world::now_text(-60));
-    auto token = w.claim(1);
-    w.planar_agent({"action", "start", "--claim", token, "--kind", "coder", "--entity", "task:1", "--no-locality-probe"});
-    // A re-dispatch, bound to the claim, is confirmed after the coder action started.
-    auto second = w.dispatch_preview(1, token);
-    w.dispatch_confirm(second, world::now_text(), token);
-    // TIME TRAVEL: the coder action started between the two confirms.
-    w.move_time(std::format("update agent_actions set started_at = '{}.000Z' where action_kind = 'coder'",
-                            world::now_text(-30).substr(0, 19)));
-    // The first confirm came before the action, so the dispatch was not confirmed late.
-    CHECK(w.findings(k_dispatch_checks).empty());
-  }
 }
 
 TEST_CASE("three failing task shows form one cli-failure-cluster naming the verb and category",

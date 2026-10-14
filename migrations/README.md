@@ -203,6 +203,25 @@ sqlite3 -readonly <planar.db> \
   "select seq, claim_token from queue_history where claim_token is not null"
 ```
 
+### Routing-table drop
+
+Migration 00043 (plan 1142) drops the ten `routing_*` tables 00030 and 00031
+created, with their indexes and triggers and the
+`routing_candidate_compatibility_v1` view. Nothing on master or in
+planar-explorer's schema contract reads them. Its up **deletes their rows for
+good**; `install.sh` copies `planar.db` (with `-wal` and `-shm`) into
+`$PLANAR_HOME/backups/` before it applies a migration that drops tables (see
+[INSTALL.md](../INSTALL.md#the-backup-before-a-table-dropping-migration)).
+Its down recreates the tables, indexes, triggers and view as they stood after
+00032, **empty**: it is the up statements of 00030, 00031 and 00032 without
+their `schema_migrations` rows. To read old routing rows, open the backup
+read-only:
+
+```bash
+sqlite3 -readonly ~/.planar/backups/<time>-schema-42/planar.db \
+  "select count(*) from routing_dispatch_snapshots"
+```
+
 ### Relaxing a constraint on a foreign-key parent table
 
 The usual table rebuild is unsafe for a table other tables REFERENCE. The
