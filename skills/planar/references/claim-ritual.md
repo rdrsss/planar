@@ -91,7 +91,7 @@ the owning plan's status. Never split it into `planar task done` followed by
 `task done`, `task cancel` or `task update --status` on a live-claimed task refuses and prints
 the `planar-agent complete --claim <token>` command that would succeed.
 
-When the scope's policy sets `review_required` or `task_gate`, `complete` refuses (exit 1, claim stays active) until the claim has an approving `planar-agent review` from another session and a passing `planar-agent queue run --claim <token> -- <gate argv>` run from the claim's repository root or worktree; the refusal prints the command that would succeed.
+When the scope's policy sets `review_required` or `task_gate`, `complete` refuses (exit 1, claim stays active) until the claim has an approving `planar-agent review` from another session and a passing queued run of the gate argv, recorded under the claim's token, from the claim's repository root or worktree (see [queue.md](queue.md#gate-evidence)); the refusal prints the command that would succeed.
 
 `complete`, `fail` and `block` refuse a plan or plan-step claim (`ClaimNotOnTask`).
 `release` is the one verb that also ends a plan or plan-step claim, so an orchestrator
@@ -136,35 +136,6 @@ still `doing` and the work is done:
 Before re-claiming, make sure no other session has taken the task meanwhile:
 `planar-watch ps --stale` lists active and stale claims together. Act only on your own
 task.
-
-## Builds and tests go through the host queue
-
-When the operator's policy sets `use_queue = true` for your scope (the brief shows it,
-and `planar-agent queue rule` prints the mandate then), run builds and test suites through
-the host-wide queue instead of directly: `planar-agent queue run --detach --vendor <vendor> --role <role> --
-<command>`, then use `planar-agent queue wait <seq> --timeout <budget> --json`.
-Choose a finite budget covering expected backlog and runtime, or use one short
-slice and save the ticket for an explicit later wait on that same sequence.
-Observation timeout or interruption leaves the job running; inspect the
-structured reason and recorded outcome before judging the gate. An older
-queue-capable install without `wait` uses the finite JSON-status fallback in
-the queue rule; refusal never authorizes a direct build.
-`planar-agent queue rule` prints the full rule. The queue runs the command in your
-directory with your environment and exits with its status; it coordinates every project
-on the host and is not a security boundary. When a `queue` verb refuses at exit 125,
-stop and report; never fall back to running the command directly. `queue run --claim
-<token>` renews your lease while the command waits and runs; against a database that is
-ahead of the binary it warns that it cannot renew, and the lease can lapse, so in a
-migration cycle use the freshly built `planar-agent` for that renewal. An installed
-`planar-agent` older than the queue has no `queue` verb at all; say so in the report and
-run the gates directly.
-
-Size the gates to the scope. A task runs focused tests for its acceptance signal and the
-modules it touched, plus the format, build, parity and policy checks its change can
-break; a filtered run that matches no tests is a failure, so report the matched count.
-The full regression suite runs once at the milestone barrier on the merged candidate,
-not after every task, and a task pass is never reported as a full pass. The repository's
-own contributor guide names the exact commands for each scope.
 
 ## Operator-side claim recovery
 
