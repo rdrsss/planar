@@ -9,10 +9,12 @@
 ///
 /// ## Rules
 ///
-/// 1. **Completed claim.** Every `done` task had a claim that ended `completed`. A task whose latest status
-///    change is an operator `--force` to `done` (the `audit_log` row `status_change` whose summary is
-///    `done (--force)`) is listed as an override, not a violation; a later reopen and a plain `done` make it an
-///    ordinary done task again. The override says whether a claim was live when it was forced.
+/// 1. **Completed claim.** Every `done` task had a claim that ended `completed`. A task whose trailing run of
+///    done-valued status changes (the `status_change` rows since its last status change that is not a `done`:
+///    summary `done`, `done (--force)` or none) holds an operator `--force` to `done` (summary
+///    `done (--force)`) is listed as an override, not a violation, even when a no-op `task done` followed it; a
+///    reopen or any other status change ends the run, so force, reopen and a plain `done` is an ordinary done
+///    task again. The override says whether a claim was live when it was forced.
 /// 2. **Terminal verb.** Every claim ended through a terminal verb: a claim marked `stale`, or still `active`
 ///    past its lease expiry, is a violation. The second half reads the clock, so the same database can pass
 ///    now and fail later; a live `active` claim is work in progress.
@@ -47,7 +49,9 @@
 /// History from before the first release that carries this check never fails; it is counted
 /// separately. The cut-over is a claim id, `floor_claim_id`: claims with a lower id are "before the
 /// floor". A task has no claim id, so the floor carries a time as well, `cut_at`, and a done task that became
-/// done earlier (its latest status change to done, else its `updated_at`) is before the floor. The default is read from the
+/// done earlier is before the floor. When a task became done is the start of its trailing done run, so a no-op
+/// `task done` later does not move it; a task whose latest status change is not a done (it became done through
+/// `planar-agent complete`, which writes no audit row) uses its `updated_at`. The default is read from the
 /// database, so it works on every install without a baked-in id: the cut-over is when migration 00042 was applied
 /// (`schema_migrations.applied_at`); the floor is the lowest claim id claimed at or after that moment
 /// (one past the highest id when there is none), and `cut_at` is that moment. When no row records

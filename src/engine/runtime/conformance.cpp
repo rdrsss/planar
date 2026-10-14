@@ -146,42 +146,55 @@ auto load_claims(db::connection& conn, std::int64_t plan_id) -> std::expected<st
 /// @brief One done task of the plan tree.
 struct done_task {
   std::int64_t                id = 0;
-  std::string                 done_at; ///< When the task last became done: its latest status-change row, else `updated_at`.
+  std::string                 done_at; ///< When the task became done: the start of its trailing done run, else `updated_at`.
   bool                        completed_claim = false;
   std::string                 claim_statuses;  ///< Distinct statuses of the task's claims, comma separated; empty for none.
-  std::optional<std::int64_t> forced_audit_id; ///< Set only when the task's LATEST status change is the forced `done`.
+  std::optional<std::int64_t> forced_audit_id; ///< Set when the trailing done run holds a forced `done`.
   std::optional<std::string>  forced_at;
   bool                        live_claim_at_force = false; ///< A claim on the task was open when it was forced.
 };
 
 auto load_done_tasks(db::connection& conn, std::int64_t plan_id) -> std::expected<std::vector<done_task>, check_error> {
-  // The row that made the task done is its latest `status_change`: nothing else rewrites a task's status, and a
-  // later edit of an old done task writes an `update` row, never a `status_change`. Tasks with no such row (made
-  // by other means) fall back to `updated_at`.
+  // A task's *trailing done run* is the `status_change` rows after its last status change that is not done-valued.
+  // A row is done-valued when its summary is `done`, the forced `done (--force)` or NULL (`task update --status`
+  // writes no summary). The run is where the task last became done: a no-op `task done` on a done task only
+  // lengthens it, so the run's first row gives the time (an explicit `done` row before a NULL one, which may be
+  // an `update` to another status) and any forced row in it is the override. A reopen, a
+  // block or any other status change ends the run. `planar-agent complete`, `pull` and `block` change a task's
+  // status without an audit row, so a task whose latest status change is not done-valued (an empty run) became
+  // done by such a path and falls back to `updated_at`.
   auto stmt = conn.prepare(
       std::string{k_plan_tree} +
-      "select id, coalesce(last_at, updated_at), completed, statuses, last_id, last_at, last_summary,\n"
-      "  case when last_at is null then 0 else exists (\n"
+      "select id, coalesce(first_at, updated_at), completed, statuses, forced_id, forced_at,\n"
+      "  case when forced_at is null then 0 else exists (\n"
       "    select 1 from agent_work_claims c\n"
-      "    where c.entity_kind = 'task' and c.entity_id = x.id and c.claimed_at <= last_at\n"
-      "      and (c.released_at is null or c.released_at >= last_at)) end\n"
+      "    where c.entity_kind = 'task' and c.entity_id = x.id and c.claimed_at <= forced_at\n"
+      "      and (c.released_at is null or c.released_at >= forced_at)) end\n"
       "from (\n"
-      "  select t.id, t.updated_at,\n"
-      "    exists (select 1 from agent_work_claims c\n"
-      "            where c.entity_kind = 'task' and c.entity_id = t.id and c.status = 'completed') as completed,\n"
-      "    coalesce((select group_concat(s, ',') from (select distinct c.status as s from agent_work_claims c\n"
-      "                                                 where c.entity_kind = 'task' and c.entity_id = t.id order by 1)), '') as "
-      "statuses,\n"
-      "    (select a.id from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id and a.verb = 'status_change'\n"
-      "       order by a.id desc limit 1) as last_id,\n"
-      "    (select a.recorded_at from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id\n"
-      "       and a.verb = 'status_change' order by a.id desc limit 1) as last_at,\n"
-      "    (select a.summary from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id and a.verb = 'status_change'\n"
-      "       order by a.id desc limit 1) as last_summary\n"
-      "  from tasks t where t.status = 'done' and t.plan_id in (select id from plan_tree)\n"
+      "  select y.id, y.updated_at, y.completed, y.statuses,\n"
+      "    coalesce((select a.recorded_at from audit_log a where a.entity_kind = 'task' and a.entity_id = y.id\n"
+      "                and a.verb = 'status_change' and a.id > y.boundary and a.summary is not null order by a.id limit 1),\n"
+      "             (select a.recorded_at from audit_log a where a.entity_kind = 'task' and a.entity_id = y.id\n"
+      "                and a.verb = 'status_change' and a.id > y.boundary order by a.id limit 1)) as first_at,\n"
+      "    (select a.id from audit_log a where a.entity_kind = 'task' and a.entity_id = y.id\n"
+      "       and a.verb = 'status_change' and a.id > y.boundary and a.summary = ?2 order by a.id limit 1) as forced_id,\n"
+      "    (select a.recorded_at from audit_log a where a.entity_kind = 'task' and a.entity_id = y.id\n"
+      "       and a.verb = 'status_change' and a.id > y.boundary and a.summary = ?2 order by a.id limit 1) as forced_at\n"
+      "  from (\n"
+      "    select t.id, t.updated_at,\n"
+      "      exists (select 1 from agent_work_claims c\n"
+      "              where c.entity_kind = 'task' and c.entity_id = t.id and c.status = 'completed') as completed,\n"
+      "      coalesce((select group_concat(s, ',') from (select distinct c.status as s from agent_work_claims c\n"
+      "                                                   where c.entity_kind = 'task' and c.entity_id = t.id order by 1)), '') "
+      "as statuses,\n"
+      "      coalesce((select max(a.id) from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id\n"
+      "                  and a.verb = 'status_change' and a.summary is not null and a.summary not in ('done', ?2)), 0) as "
+      "boundary\n"
+      "    from tasks t where t.status = 'done' and t.plan_id in (select id from plan_tree)\n"
+      "  ) y\n"
       ") x\n"
       "order by id");
-  if (!stmt || !stmt->bind_int64(1, plan_id)) {
+  if (!stmt || !stmt->bind_int64(1, plan_id) || !stmt->bind_text(2, k_forced_done_summary)) {
     return std::unexpected(failed());
   }
   std::vector<done_task> rows;
@@ -197,10 +210,10 @@ auto load_done_tasks(db::connection& conn, std::int64_t plan_id) -> std::expecte
                   .done_at         = stmt->column_text(1),
                   .completed_claim = stmt->column_int64(2) != 0,
                   .claim_statuses  = stmt->column_text(3)};
-    if (!stmt->is_null(4) && !stmt->is_null(6) && stmt->column_text(6) == k_forced_done_summary) {
+    if (!stmt->is_null(4)) {
       row.forced_audit_id     = stmt->column_int64(4);
       row.forced_at           = opt_text(*stmt, 5);
-      row.live_claim_at_force = stmt->column_int64(7) != 0;
+      row.live_claim_at_force = stmt->column_int64(6) != 0;
     }
     rows.push_back(std::move(row));
   }

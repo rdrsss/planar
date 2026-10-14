@@ -4867,7 +4867,7 @@ orchestrator, vendor or prompt produced the work. `<plan-id>` is a plan id.
 
 | Rule | Name | Violation |
 |------|------|-----------|
-| 1 | `completed-claim` | A `done` task has no claim that ended `completed`. A task whose latest status change is `task done --force` or `task update --status done --force` is an override: it is listed apart and does not fail the verb, and its line says whether a claim was live when it was forced (`forced, no live claim`, or `a claim was live at the time`). A later `task reopen` and a plain `done` make it an ordinary done task again. |
+| 1 | `completed-claim` | A `done` task has no claim that ended `completed`. A task whose trailing run of done status changes holds `task done --force` or `task update --status done --force` is an override, even if a no-op `task done` followed it: it is listed apart and does not fail the verb, and its line says whether a claim was live when it was forced (`forced, no live claim`, or `a claim was live at the time`). A `task reopen` or any other status change ends the run, so a later plain `done` makes it an ordinary done task again. |
 | 2 | `terminal-verb` | A claim ended `stale`, or is still `active` past its lease expiry. The second half reads the clock, so the same database can pass now and fail later. A live `active` claim is work in progress. |
 | 3 | `coder-model` | Under `require_model`, a `coder` claim records no model, or an empty one. |
 | 4 | `parent-action` | Graded only where an orchestration is visible in the plan tree: some claim has the role `orchestrator`, or some claim has a parent action. Then every claim with a role other than `orchestrator` must have a root action (its first non-review action) under a parent action. A child that the claim's own worker nests under its root with `planar-agent action start` does not count, nor does a parent that belongs to the same claim. A claim with no role is never graded, and a tree with no orchestration (a solo session that pulls its own work) grades no claim on this rule. A `review` row does not count; it is about the claim. |
@@ -4894,9 +4894,10 @@ never fails; it is counted and reported on its own line (`before the floor: N
 claims, M done tasks`). The cut-over is a claim id, the floor: claims with a
 lower id are before it. A task has no claim id, so the floor carries a time as
 well, and a done task that became done before it is before the floor (the time
-is that of the task's latest status change to `done`, so a later edit of an old
-done task does not bring it back; a task with no such record uses its
-`updated_at`). By default
+is that of the first status change in the task's trailing run of `done` changes,
+so neither a later edit nor a no-op `task done` on an old done task brings it
+back; a task whose latest status change is not a `done`, such as one finished
+by `planar-agent complete` after a `task block`, uses its `updated_at`). By default
 both come from the database, so the default works on every install: the time
 is when migration `00042` was applied (`schema_migrations.applied_at`) and the
 floor is the lowest claim id claimed at or after it, or one past the highest

@@ -277,6 +277,66 @@ TEST_CASE("an old done task edited after the cut-over still never fails", "[conf
   CHECK(report.done_tasks_graded == 0);
 }
 
+/// A `status_change` audit row for `task` at `at`; `summary_sql` is a quoted summary or `null`.
+auto status_change(world& w, std::int64_t task, std::string_view summary_sql, std::string_view at) -> void {
+  exec(w.conn, std::format("insert into audit_log (verb, entity_kind, entity_id, summary, recorded_at) "
+                           "values ('status_change', 'task', {}, {}, '{}')",
+                           task, summary_sql, at));
+}
+
+TEST_CASE("a no-op done after a forced done keeps the override and the time the force happened", "[conformance][1142]") {
+  world w;
+  // Forced before the cut-over, then re-written by `task done` and `task update --status done` after it.
+  auto const before = w.add_task("done", k_later);
+  status_change(w, before, "'done (--force)'", k_before);
+  status_change(w, before, "'done'", k_after);
+  status_change(w, before, "null", k_later);
+  // Forced after the cut-over, then a no-op: still an override, still graded.
+  auto const after = w.add_task("done", k_later);
+  status_change(w, after, "'done (--force)'", k_after);
+  status_change(w, after, "'done'", k_later);
+  status_change(w, after, "null", k_later);
+  auto const report = w.grade();
+  CHECK(report.violations.empty());
+  CHECK(report.before.done_tasks == 1);
+  CHECK(report.done_tasks_graded == 1);
+  REQUIRE(report.overrides.size() == 1);
+  CHECK(report.overrides[0].task_id == after);
+}
+
+TEST_CASE("an old plain done rewritten by a no-op after the cut-over stays before the floor", "[conformance][1142]") {
+  world      w;
+  auto const old = w.add_task("done", k_later);
+  status_change(w, old, "'done'", k_before);
+  status_change(w, old, "'done'", k_after);
+  status_change(w, old, "null", k_later);
+  auto const report = w.grade();
+  CHECK(report.conforms());
+  CHECK(report.before.done_tasks == 1);
+  CHECK(report.done_tasks_graded == 0);
+}
+
+TEST_CASE("a done reached without an audit row after an audited block is graded by updated_at", "[conformance][1142]") {
+  world w;
+  // `task block` before the cut-over wrote an audit row; `planar-agent complete` after it wrote none.
+  auto const task = w.add_task("done", k_after);
+  status_change(w, task, "'blocked on task 2'", k_before);
+  auto const report = w.grade();
+  CHECK(summary(report) == strings{std::format("1:task:{}", task)});
+  CHECK(report.before.done_tasks == 0);
+}
+
+TEST_CASE("a reopen between a forced done and a plain done still ends the override", "[conformance][1142]") {
+  world      w;
+  auto const task = w.add_task("done", k_after);
+  status_change(w, task, "'done (--force)'", k_after);
+  status_change(w, task, "'reopen to todo: wrong'", k_after);
+  status_change(w, task, "null", k_later); // `task update --status done` after the reopen
+  auto const report = w.grade();
+  CHECK(summary(report) == strings{std::format("1:task:{}", task)});
+  CHECK(report.overrides.empty());
+}
+
 TEST_CASE("rule 2: a stale claim is exactly one violation", "[conformance][1142]") {
   world      w;
   auto const task   = w.add_task("doing", k_after);
