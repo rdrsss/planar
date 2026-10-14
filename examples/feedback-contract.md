@@ -1,9 +1,8 @@
-# Operator feedback contract
+# Example: an operator feedback contract
 
-Every Planar workflow ends with one compact account of what it understood, what it did,
-and what the operator can do next. This file is the single statement of that envelope;
-the other references point here instead of repeating it. The canonical source is the
-operator feedback contract in `doctrine.md` in the Planar agents directory.
+An example of one way to end a Planar workflow with a compact account of what happened.
+Planar does not require it. Adopt it, change it or ignore it to suit the operator's own
+conventions; nothing in the binaries or the shipped skill checks for it.
 
 ## The seven sections
 
@@ -64,16 +63,10 @@ then the exact retry with the original arguments, for example:
 planar handoff validate 812
 ```
 
-Require a fresh operator confirmation before retrying any destructive or gated write
-(`planar task cancel`, `planar handoff abandon`, `planar-ext sync resolve`,
-`planar spec ingest --apply`). A gated command offered as a next action is offered, not
-run.
+A command offered as a next action is offered, not run.
 
 ## Stronger schemas keep their fields
 
-The envelope is a minimum. Role outputs with their own required fields, such as reviewer
-verdicts, coder work-complete reports, spec-review packets and orchestrator decisions,
-keep those fields and decision taxonomies. They add or map Context, Result, Warnings,
+The envelope is a minimum. Outputs with their own required fields, such as review
+verdicts or work-complete reports, keep those fields. They add or map Context, Result, Warnings,
 Next actions and Recovery around their own schema instead of being flattened into it.
-
-Back to [../SKILL.md](../SKILL.md).

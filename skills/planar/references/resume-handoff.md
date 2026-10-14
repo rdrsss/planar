@@ -13,8 +13,8 @@ it. Both go through `planar`; never reconstruct state from workbench or session 
    task does not count; capture with `--task`.
 
 Task status is not checked, so a `done` task can read as resumable. Failures come back in
-a fixed order (`next_action`, then `snapshot`), each with its remediation command. Fix
-every failure before handing off.
+a fixed order (`next_action`, then `snapshot`), each with its remediation command. The
+remediation command for each is in the output.
 
 ## Capturing during the session
 
@@ -36,20 +36,18 @@ Flags: see `planar capture --help` and its leaves.
    claim. Hand off before the terminal verb: after `release` there is no active claim and
    those fields stay empty. Empty worktree fields are normal for work done without
    isolation.
-4. Read it back with `planar handoff show <handoff-id> --json` and confirm the status is
-   `validated`. Then run `planar resume validate <task-id> --json`.
-5. Only then end the claim with the one terminal verb your role owns (normally `release`,
-   so the task returns to `todo` for the next session); see
-   [claim-ritual.md](claim-ritual.md). A dispatched coder returns instead and leaves the
-   terminal verb to its orchestrator.
+4. Read it back with `planar handoff show <handoff-id> --json` and check that the status
+   is `validated`. Then run `planar resume validate <task-id> --json`.
+5. End the claim with one terminal verb (`release` returns the task to `todo` for
+   the next session); see [claim-ritual.md](claim-ritual.md).
 
 `planar handoff create <snapshot-id>` builds a handoff from a snapshot that already
 exists; the bare `planar handoff <task-id>` form is the normal path.
 
 ## Resuming from zero context
 
-1. `planar resume validate <task-id> --json`. If it fails, apply the listed remediation
-   or stop and report; do not guess at missing state.
+1. `planar resume validate <task-id> --json`. If it fails, the output lists the
+   remediation; missing state cannot be reconstructed from elsewhere.
 2. `planar resume <task-id> --json` for the eight-section packet: identity, state, plan
    position, operational links, recent activity, decisions and questions, linked
    artifacts, and the audit footer. The operational section refreshes stale external
@@ -74,8 +72,8 @@ exists; the bare `planar handoff <task-id>` form is the normal path.
   `handoff`, `capture` and every read work from the worktree.
 - A worktree under the project root inherits the parent's scope. A linked worktree
   created outside the project root resolves to no project; pass `--scope` on reads there.
-- When the previous session died and its claim is stale, inspect the worktree's
-  uncommitted state before reusing it; never discard it without the operator.
+- When the previous session died and its claim is stale, its worktree may hold
+  uncommitted state; inspect it before reusing the worktree.
 
 ## Finding handoffs
 
@@ -87,11 +85,10 @@ exists; the bare `planar handoff <task-id>` form is the normal path.
 - Handoffs older than 24 hours that nobody consumed are stale; clearing them is a doctor
   step in [recovery.md](recovery.md).
 
-## What never to do
+## What does not carry over
 
-- Never terminate a session with only conversational context; the next process has none.
-- Never claim a handoff or snapshot was rolled back because a later step failed. Each is
-  persisted on its own; give the retry for the missing piece, such as
+- Conversational context does not survive the session; the next process has only what
+  was captured.
+- A handoff and a snapshot are each persisted on their own. If a later step fails, the
+  earlier ones remain; retry the missing piece, such as
   `planar handoff validate <handoff-id>`.
-
-Report results with the envelope in [feedback-contract.md](feedback-contract.md).

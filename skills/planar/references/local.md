@@ -19,8 +19,7 @@ as loose Markdown in a repository when they belong in Planar.
 
 ## Local skills and agents
 
-Pick one operation before touching anything: import, link, list, unlink, migrate or
-repair. If the request is ambiguous, ask which.
+The operations are import, link, list, unlink, migrate and repair.
 
 | Operation | Command | Notes |
 |-----------|---------|-------|
@@ -38,13 +37,13 @@ Flags: see `planar local <verb> --help`.
 1. Run the mutation once with `--json` and keep its action rows.
 2. Verify with `planar local list --json`:
    - after import with linking, or after link: every expected install is `live`;
-   - after import with `--no-link`: report the sandbox destination; no install row is
+   - after import with `--no-link`: the output names the sandbox destination; no install row is
      expected yet, and the next step is `planar local link <name>`;
    - after unlink: no install row remains for the name;
-   - after migrate: report migrated and skipped rows; migration does not create missing
+   - after migrate: the output lists migrated and skipped rows; migration does not create missing
      vendor installs;
-   - after repair: report any install still `broken` or `missing`.
-3. `--dry-run` is a preview: report proposed actions with zero applied.
+   - after repair: any install still `broken` or `missing` is listed.
+3. `--dry-run` is a preview: it lists proposed actions and applies none.
 
 ### Rules
 
@@ -64,7 +63,7 @@ Flags: see `planar local <verb> --help`.
 - A destination that exists and is neither a prior Planar projection nor byte-identical
   is refused at exit 6 naming the path; nothing is written when any destination fails.
 - `import --force` replaces an existing sandbox entry and `unlink --purge` deletes the
-  sandbox source. Require clear intent for either, naming the collision or the source.
+  sandbox source.
 - Never delete or modify the external path an import came from.
 - Repair cannot restore a source that disappeared. It removes the stale manifest row and
   the vendor installs because nothing is left to install from.
@@ -85,7 +84,7 @@ routing and guidance for agents working across them.
 | doctor | `planar workspace doctor` checks every registered workspace; it takes no target. |
 | routing show | `planar workspace routing show [<workspace>]` (read-only). |
 | routing build | `planar workspace routing build [<workspace>]`, then `routing show` to verify. |
-| regenerate | Confirm routing exists with `routing show`, then `planar workspace regenerate [<workspace>]`. |
+| regenerate | Check that routing exists with `routing show`, then `planar workspace regenerate [<workspace>]`. |
 | scan (the default refresh) | `routing build`, `routing show`, then `regenerate`. |
 | repair | `doctor`, `routing build`, `routing show`, `regenerate`, then `doctor` again. |
 
@@ -96,16 +95,14 @@ Flags, including `--enrich` on `init` and `routing build`: see
 
 1. Run `planar scope show --json` before any scoped write. The cwd must resolve inside the
    intended workspace, or pass the workspace as the positional where the verb takes one.
-   With several organisation workspaces registered, do not guess; ask.
-2. If the request could mean initialising a new workspace or refreshing an existing one,
-   stop and present the two choices.
-3. Run each stage with `--json`; stop stages that depend on a failed one, but still run
+   With several organisation workspaces registered, pass the workspace as the positional.
+2. Run each stage with `--json`; stop stages that depend on a failed one, but still run
    the read-only checks that show the persisted state.
-4. Report the post-state from the CLI: for init, the organisation and memberships; for
+3. The CLI output carries the post-state: for init, the organisation and memberships; for
    doctor and repair, issues found and repaired per organisation; for routing, path,
    project count and dependency edges; for regenerate, the canonical guidance path,
    project count and bytes written.
-5. A preview is a read: run `scope show` and `routing show`, then list the commands that
+4. A preview is a read: run `scope show` and `routing show`, then list the commands that
    would run, with zero applied. The write verbs have no dry-run flag.
 
 ### Rules
@@ -117,12 +114,10 @@ Flags, including `--enrich` on `init` and `routing build`: see
 - Never edit the generated `routing-table.json` or the generated canonical `AGENTS.md`.
   Put routing changes in `routing-table-overrides.json` and rebuild.
 - `init` that returns a pipeline warning is partial: registration may already be
-  committed. Name it; do not claim a rollback.
+  committed; nothing rolls back.
 - There is no workspace destroy verb in this lifecycle; do not remove a workspace or an
   association to "reset" it.
 - Recovery per stage: unresolved target, `planar workspace routing show <workspace>`;
   missing state, `planar workspace doctor`; stale routing,
   `planar workspace routing build <workspace>`; stale guidance,
   `planar workspace regenerate <workspace>`.
-
-Report results with the envelope in [feedback-contract.md](feedback-contract.md).
