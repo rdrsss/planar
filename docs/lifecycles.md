@@ -606,7 +606,7 @@ closeout path is `planar plan closeout --dry-run`, then apply.
 
 ### 5.2 Spec ingest
 
-Only `spec ingest` exists as a binary verb; drafting and review are skills.
+Only `spec ingest` exists as a binary verb; drafting and review are not Planar verbs.
 Inputs are the anchor's artifacts, read back from the workbench feature
 directory. A work list is required: the `roadmap` artifact, or, when the
 anchor has none, the single artifact that parses as one. Decisions, questions

@@ -1,6 +1,6 @@
 # Planar Workflows
 
-End-to-end recipes for common Planar operations. Role work (drafting, ingesting, orchestrating, reviewing, syncing) is done by dispatching the named `planar-<role>` agent; everything verb-shaped is a CLI command, and `planar <verb> --help` is the reference for its flags. One skill, `planar`, carries the rules that cross verbs, and the recipes name its references where one applies; see [skill-reference.md](skill-reference.md). These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
+End-to-end recipes for common Planar operations. Where a recipe names a role (drafting, ingesting, orchestrating, reviewing, syncing), the example `planar-<role>` agents are one way to do that work; everything verb-shaped is a CLI command, and `planar <verb> --help` is the reference for its flags. One skill, `planar`, is a short reference for what Planar does, and the recipes name its references where one applies; see [skill-reference.md](skill-reference.md). These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
 
 ---
 
@@ -26,7 +26,7 @@ planar-ext ext propagate 7 --system my-gh
 planar workbench archive 7
 ```
 
-Steps 1 and 3 are agent dispatches; the others are verbs. The `planar-orchestrator` agent runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch. The agents are listed in [skill-reference.md](skill-reference.md#the-role-agents).
+Steps 1 and 3 are agent dispatches; the others are verbs. The example `planar-orchestrator` agent runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch; Planar does not require those gates. The agents are listed in [skill-reference.md](skill-reference.md#the-role-agents).
 
 ---
 
@@ -131,7 +131,7 @@ Review the diff. If it looks correct:
 planar spec ingest 42 --apply
 ```
 
-`--apply` is an operator gate: run it only after you have confirmed the previewed diff. Add `--strict` to the apply call to refuse on a slug collision. Uncovered slug-bearing tasks are reported as warnings, so read the `coverage:` line before you apply.
+`--apply` writes the diff the preview showed. Add `--strict` to the apply call to refuse on a slug collision. Uncovered slug-bearing tasks are reported as warnings, so read the `coverage:` line before you apply.
 
 Tasks, child plans, and decisions are now in the database. A successful apply also activates a `draft` anchor plan (the apply summary ends with `(anchor plan activated)`). Confirm before execution:
 
