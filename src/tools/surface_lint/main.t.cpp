@@ -286,9 +286,9 @@ TEST_CASE("surface_lint enforces every check class against fixtures with provabl
   }
 
   SECTION("no feedback envelope rule: a skill without the seven headings is clean") {
-    // The seven-section rule is gone (the contract lives in the skill's
-    // references/feedback-contract.md). clean/docs/clean.md carries no
-    // such heading and must still pass.
+    // The seven-section rule is gone: the report envelope is an example
+    // (examples/feedback-contract.md), not a contract the lint enforces.
+    // clean/docs/clean.md carries no such heading and must still pass.
     auto const [out, status] = capture(bin.string(), {(fixtures / "clean").string()});
     INFO(out);
     REQUIRE(WIFEXITED(status));

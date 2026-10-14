@@ -5,8 +5,8 @@
 /// checks of its own.
 ///
 /// Scope: repository-relative links, retired references, artifact-set and
-/// capability drift, command shapes, path existence and the skill
-/// feedback/recovery headings. `surface-lint-ignore` suppresses the
+/// capability drift, command shapes, path existence and the Agent Skills
+/// format. `surface-lint-ignore` suppresses the
 /// suppressible codes. Whether authored text runs a build or test command
 /// directly or through `planar-agent queue run` is the operator's policy,
 /// not a lint rule, so no check reads build or test commands.
@@ -91,8 +91,8 @@ struct options_t {
 };
 
 // ---------------------------------------------------------------------------
-// Fence tracking — shared shape between the main scan loop, the
-// suppression pre-pass, and the feedback-contract pass.
+// Fence tracking — shared shape between the main scan loop and the
+// suppression pre-pass.
 // ---------------------------------------------------------------------------
 
 struct fence_t {

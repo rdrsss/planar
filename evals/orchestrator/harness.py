@@ -1385,49 +1385,67 @@ SKILL_RELS = ["skills/planar/SKILL.md"] + [
     f"skills/planar/references/{name}.md"
     for name in (
         "claim-ritual",
+        "dispatch",
         "external-sync",
-        "feedback-contract",
         "knowledge",
         "local",
+        "preparation",
+        "queue",
         "recovery",
         "resume-handoff",
-        "preparation",
         "status",
     )
 ]
+
+# The references SKILL.md must route to: how to dispatch, prepare, queue and
+# claim. The skill is a short reference, so it carries at most this many lines.
+SKILL_ROUTED_REFERENCES = (
+    "references/dispatch.md",
+    "references/preparation.md",
+    "references/queue.md",
+    "references/claim-ritual.md",
+)
+SKILL_MAX_LINES = 80
+
+# An orchestrator phase or a role agent: the shipped skill names neither, since
+# roles and phases are one workflow's choices and the role agents are examples.
+SKILL_FORBIDDEN_WORKFLOW = (
+    r"\bPhase [0-9]|\bplanar-(orchestrator|coder|test-coder|reviewer|janitor|research|"
+    r"planner|spec-reviewer|ingestor|ext-sync|sync-reconciler)\b|"
+    r"\b(orchestrator|coder|reviewer|janitor|planner|ingestor)s?\b"
+)
 
 # The retired slash-command prefix, split so this file does not itself carry it.
 LEGACY_COMMAND_PREFIX = "/" + "pl-"
 
 SKILL_INVARIANT_LEADS = [
     "Claim, heartbeat, one terminal verb.",
-    "Never split the terminal verb.",
+    "Choose next work with the claim-aware verbs.",
     "Write through the owning binary.",
-    "Cross-scope guard: seven verbs.",
-    "`--scope` means four things.",
-    "Read back every mutation.",
-    "Planning verbs refuse in worktrees.",
-    "Next work is claim-aware.",
-    "Plan status follows its tasks.",
-    "Operator gates are never automatic.",
-    "Sync pull writes no planning entity.",
-    "Announce cross-scope writes exactly.",
+    "Cross-scope guard.",
+    "Planning writes refuse in a git worktree",
+    "Task writes and terminal verbs recompute the owning plan's status",
     "Isolate from-source binaries.",
 ]
 
 _SPLIT_NEGATION = re.compile(
     r"\b(do not|don't|never|must not|forbidden|refuse[sd]?|not)\b", re.IGNORECASE
 )
+# A sentence that names the hazard of the split describes it as a mistake.
+_SPLIT_HAZARD = re.compile(r"\b(split(s|ting)?|strand(s|ed)?)\b", re.IGNORECASE)
 
 
 def split_terminal_verb_instructions(text: str) -> list[str]:
     """Return each `planar task done` mention not governed by a prohibition.
 
     The skill legitimately NAMES the split in order to forbid it ("Do not run
-    `planar task done` and then `planar-agent release`"). A mention is exempt
-    only when a negation appears in the same list item or paragraph before it
-    (the preceding text up to a blank line or list-item start); a mention that
-    instructs the split has no such negation and is returned.
+    `planar task done` and then `planar-agent release`") or to warn about it
+    ("`planar task done` followed by `planar-agent release` splits that, and
+    a death between them strands the claim"). A mention is exempt when a
+    negation appears in the same list item or paragraph before it (the
+    preceding text up to a blank line or list-item start), or when its own
+    sentence names the hazard (the split, or a stranded claim); a mention
+    that instructs the split has neither and is returned.
     """
     hits: list[str] = []
     for match in re.finditer(r"planar task done", text):
@@ -1436,7 +1454,12 @@ def split_terminal_verb_instructions(text: str) -> list[str]:
             index = before.rfind(boundary)
             if index != -1:
                 before = before[index + len(boundary) :]
-        if not _SPLIT_NEGATION.search(before):
+        sentence_start = max(before.rfind(". "), before.rfind(".\n"))
+        sentence_before = before[sentence_start + 1 :] if sentence_start != -1 else before
+        after = text[match.end() : match.end() + 240]
+        end = re.search(r"\.(\s|$)|\n\n", after)
+        sentence = sentence_before + after[: end.start() if end else len(after)]
+        if not _SPLIT_NEGATION.search(before) and not _SPLIT_HAZARD.search(sentence):
             line_start = text.rfind("\n", 0, match.start()) + 1
             hits.append(text[line_start : text.find("\n", match.end())])
     return hits
@@ -1547,9 +1570,11 @@ def grade_coherence(root: Path = ROOT) -> None:
         r"coder.*(narrative )?report|coder's report",
         ["examples/agents/planar-reviewer.md", "agents/methodology.md"],
     )
-    # The unified `planar` skill and its nine references (plan 1104 M1): no
-    # legacy pl-* command, no scriptorium, no instruction to split the
-    # terminal verb, and the thirteen invariants present in SKILL.md.
+    # The `planar` skill and its ten references: no legacy pl-* command, no
+    # scriptorium, no instruction to split the terminal verb, the seven
+    # mechanism invariants present in SKILL.md, the brief named as the start,
+    # the four routed references, no orchestrator phase or role, and at most
+    # SKILL_MAX_LINES lines.
     forbid(re.escape(LEGACY_COMMAND_PREFIX), SKILL_RELS, ignore_case=False)
     forbid(r"scriptorium", SKILL_RELS)
     split_hits = [
@@ -1567,7 +1592,18 @@ def grade_coherence(root: Path = ROOT) -> None:
         )
     for lead in SKILL_INVARIANT_LEADS:
         must(re.escape(lead), ["skills/planar/SKILL.md"])
-    must(re.escape("references/feedback-contract.md"), ["skills/planar/SKILL.md"])
+    must(re.escape("planar-agent brief"), ["skills/planar/SKILL.md"])
+    for reference in SKILL_ROUTED_REFERENCES:
+        must(re.escape(reference), ["skills/planar/SKILL.md"])
+    forbid(SKILL_FORBIDDEN_WORKFLOW, ["skills/planar/SKILL.md"])
+    skill_lines = len(
+        (root / "skills" / "planar" / "SKILL.md").read_text(encoding="utf-8").splitlines()
+    )
+    if skill_lines > SKILL_MAX_LINES:
+        raise EvalFailure(
+            f"orchestrator-coherence: skills/planar/SKILL.md is {skill_lines} lines, "
+            f"over the {SKILL_MAX_LINES}-line limit"
+        )
     must(r"Output contract — the findings brief", ["examples/agents/planar-research.md"])
     must(r"fork_turns=none", ["evals/orchestrator/harness.py"])
     must(r"complete final response verbatim", ["evals/orchestrator/harness.py"])
@@ -1598,8 +1634,9 @@ def grade_skill_coherence_negative_control() -> None:
     Every skill file gets each forbidden text injected (a legacy slash command, a
     scriptorium reference, an instruction to run `planar task done` then
     `planar-agent release`) and must be rejected with the phrase named; the
-    SKILL.md copy additionally loses each invariant lead in turn, and the
-    feedback-contract citation, and must be rejected naming it. The seeded
+    SKILL.md copy additionally loses each invariant lead in turn, the brief
+    and each routed reference, gains a role agent's name, an orchestrator
+    phase and lines past the limit, and must be rejected naming it. The seeded
     split instruction is a fresh paragraph, so the prohibition-sentence
     exemption cannot absorb it.
     """
@@ -1647,8 +1684,25 @@ def grade_skill_coherence_negative_control() -> None:
         )
     expect_rejection(
         "skills/planar/SKILL.md",
-        lambda text: text.replace("references/feedback-contract.md", ""),
-        "references/feedback-contract.md",
+        lambda text: text.replace("planar-agent brief", "planar-agent"),
+        "planar-agent brief",
+    )
+    for reference in SKILL_ROUTED_REFERENCES:
+        expect_rejection(
+            "skills/planar/SKILL.md",
+            lambda text, reference=reference: text.replace(reference, ""),
+            reference,
+        )
+    for seeded in ("Dispatch the planar-coder agent.", "Phase 3 dispatches the test coder."):
+        expect_rejection(
+            "skills/planar/SKILL.md",
+            lambda text, seeded=seeded: text + f"\n{seeded}\n",
+            seeded,
+        )
+    expect_rejection(
+        "skills/planar/SKILL.md",
+        lambda text: text + "\n" * (SKILL_MAX_LINES + 1),
+        "-line limit",
     )
     pass_line(f"orchestrator-coherence/skill-planar: {runs} seeded-violation self-tests")
 

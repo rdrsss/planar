@@ -43,8 +43,11 @@ not installed, but they name Planar's commands, so the same lints read them.
   checks the `docs.examples` the binaries publish the same way.
 - **Contract.** The eval contract tier (`make eval-contracts`) asserts, through
   `evals/orchestrator/cases/skill-planar.json`, that `SKILL.md` states each of
-  the thirteen invariants, names the four binaries and cites the feedback
-  contract.
+  the seven mechanism invariants, names the four binaries and
+  `planar-agent brief`, routes to the dispatch, preparation, queue and
+  claim-ritual references, and names no role agent or orchestrator phase. The
+  coherence grader also holds `SKILL.md` to at most 80 lines, and
+  `validation-cadence.json` checks that no skill file sets a testing cadence.
 
 The orchestrator lifecycle fixture's final repository test uses a detached
 queue ticket in its isolated arena. The harness records the ticket and log
