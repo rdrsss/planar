@@ -26,7 +26,7 @@ JSON or print empty trees.
 | `db_ok` false | Critical: database unreachable. | `planar config path`, `planar config validate`; fix the reported problem; recheck health. |
 | `integrity_ok` false | Critical: SQLite integrity failure. | Stop and escalate. Reconcile nothing on a corrupt database. |
 | `schema_current` false | Database and binary disagree on schema version. | Report it. Never write migration SQL. Use a binary that matches the database. |
-| `not_resumable_tasks` > 0 | `doing` or `blocked` tasks lacking a `next_action` or a context snapshot. | `planar audit handoff-readiness --json`, then `planar resume validate <task-id> --json` per task; triage below. |
+| `not_resumable_tasks` > 0 | `doing` or `blocked` tasks lacking a `next_action` or a context snapshot. | `planar audit handoff-readiness --json`, then `planar resume validate <task-id> --json` for each task; triage below. |
 | `stale_handoffs` > 0 | `pending` or `validated` handoffs older than 24 hours. | `planar handoff list --status pending,validated --json`, then `planar handoff show <id> --json`; triage below. |
 | expired claims | Interrupted work holding a lapsed lease. | `planar-agent reconcile --dry-run --json`; triage below. |
 | `projection_freshness` `stale` or `missing` | Installed skill or agent files differ from or lack their managed source. | Report the health output's `repair_command` (a full reinstall). Repair is a separate, explicit action. |
