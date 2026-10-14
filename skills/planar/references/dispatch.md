@@ -106,9 +106,25 @@ stranded if the process dies between the two. The terminal verbs avoid that. `pl
 done` and `task update --status` on a live-claimed task refuse and print the terminal
 command that would succeed.
 
-## Complete
+## Complete once the work is integrated
 
-`planar-agent complete --claim <token> --summary <text>` marks the task `done`.
+`planar-agent complete --claim <token> --summary <text>` marks the task `done`. It does not
+look at branches, commits or worktrees, so `done` means whatever the operator's workflow
+says it means. Run it when the work has reached the place that workflow calls integrated:
+merged to an integration branch, pushed, a pull request opened, or simply written in the
+working tree.
+
+One example, for workflows that give each worker its own branch and merge into the
+dispatcher's checkout: confirm the worker's commit is an ancestor of the integration head
+before `complete`.
+
+```sh
+git merge-base --is-ancestor <worker-sha> HEAD && echo integrated
+```
+
+A `git merge <branch>` of a misspelt or nonexistent branch name can print "Already up to
+date" and exit 0, so the merge's own exit status does not show that the worker's commit
+arrived. The ancestry check does.
 
 ## Reviews by a separate actor
 
