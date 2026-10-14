@@ -12,7 +12,7 @@
 /// not a lint rule, so no check reads build or test commands.
 ///
 /// Plan 1089 adds `surface-retired-reference`: the names of the removed agent
-/// database may not appear in `docs/`, `agents/`, `skills/`, `copilot/` or
+/// database may not appear in `docs/`, `agents/`, `skills/`, `copilot/`, `examples/` or
 /// the root guides, except in `docs/changelog.md` and in the marked upgrade
 /// note of `INSTALL.md`. `surface-retired-ref-marker-invalid` flags an unclosed
 /// or misplaced marker (see the checkRetiredReferences comment below).
@@ -334,7 +334,7 @@ auto check_legacy(std::string const& file, std::size_t line_no, std::string_view
 // surfaces. Unlike `k_retired_patterns` above, which fires on every scanned
 // file, these patterns carry a PATH SCOPE and an EXEMPTION LIST:
 //
-//   - SCOPE: `docs/`, `agents/`, `skills/`, `copilot/`, and the root
+//   - SCOPE: `docs/`, `agents/`, `skills/`, `copilot/`, `examples/`, and the root
 //     files `README.md`, `CLAUDE.md`, `AGENTS.md`, `INSTALL.md`. A path outside
 //     the scope (`install.sh`, `scripts/`, `src/`, `migrations/README.md`) is
 //     never read for these patterns: the installer legitimately names the
@@ -373,7 +373,7 @@ constexpr std::array<scoped_retired_pattern_t, 2> k_pending_retired_patterns{{{"
 /// blanked from a line before the pending patterns are matched.
 constexpr std::array<std::string_view, 2> k_pending_retired_exempt_literals{"pl-forward-spec://", "pl-synthesize://"};
 
-constexpr std::array<std::string_view, 4> k_retired_scope_dirs{"docs/", "agents/", "skills/", "copilot/"};
+constexpr std::array<std::string_view, 5> k_retired_scope_dirs{"docs/", "agents/", "skills/", "copilot/", "examples/"};
 constexpr std::array<std::string_view, 4> k_retired_scope_files{"README.md", "CLAUDE.md", "AGENTS.md", "INSTALL.md"};
 constexpr std::array<std::string_view, 1> k_retired_exempt_files{"docs/changelog.md"};
 constexpr std::string_view                k_retired_region_marker = "<!-- retired-ref: agent.db upgrade note -->";
@@ -1501,7 +1501,8 @@ auto collect_markdown(fs::path const& dir, std::vector<fs::path>& paths) -> void
 }
 
 /// Reads the files the retired-reference scope names that the general scan does
-/// not (`README.md`, `INSTALL.md`, a regular-file `AGENTS.md`, `copilot/`) and
+/// not (`README.md`, `INSTALL.md`, a regular-file `AGENTS.md`, `copilot/`, and
+/// `examples/` outside `examples/agents/`) and
 /// runs ONLY `check_retired_references` over them: the other checks were
 /// written for `agents/`, `skills/` and `docs/` and are not asked of a
 /// root guide. `AGENTS.md` is skipped when it is a symlink, because the
@@ -1515,11 +1516,14 @@ auto scan_retired_only_files(fs::path const& root, result_t& result, options_t c
       paths.push_back(path);
   }
   collect_markdown(root / "copilot", paths);
+  collect_markdown(root / "examples", paths);
   std::ranges::sort(paths);
   for (auto const& path : paths) {
     std::string const rel_path = relative_path(path.string(), root.string());
-    std::ifstream     in(path, std::ios::binary);
-    std::string       content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    if (rel_path.starts_with("examples/agents/")) // the general scan reads these
+      continue;
+    std::ifstream in(path, std::ios::binary);
+    std::string   content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     check_retired_references(rel_path, split_lines(content), result.findings, opts);
     ++result.files_scanned;
   }
