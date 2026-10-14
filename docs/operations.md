@@ -8,17 +8,19 @@ run.
 Three flows carry most work:
 
 1. **The spec pipeline** turns a goal into a structured task graph
-   (draft -> review -> ingest).
+   (draft -> review -> ingest). Planar requires only the format ingest reads;
+   the stages are one example (`skills/planar/references/preparation.md`).
 2. **The orchestration lifecycle** turns that graph into merged, reviewed code
-   across six phases.
+   across six phases. It is the flow the example orchestrator follows, not a
+   process Planar requires.
 3. **The claim ritual** is the atomic coordination primitive every
-   code-writing dispatch rides on.
+   code-writing dispatch rides on (`skills/planar/references/claim-ritual.md`
+   and `skills/planar/references/dispatch.md`).
 
 Each section leads with a diagram, then the contract, then pointers into
-[`concepts.md`](concepts.md), [`architecture.md`](architecture.md),
-[`workflows.md`](workflows.md), and `agents/methodology.md` (the
-coordination contract). Nothing here introduces new behavior; it summarizes
-the existing contract.
+[`concepts.md`](concepts.md), [`architecture.md`](architecture.md) and
+[`workflows.md`](workflows.md). Nothing here introduces new behavior; it
+summarizes the existing contract.
 
 ---
 
@@ -112,11 +114,9 @@ execution, optional finalization, and optional propagation/archive.
 Planning and ingestion are hard-gated;
 execution runs a reviewer loop capped at five iterations.
 
-The orchestrator, coder, reviewer, test-coder, and janitor roles that drive
-this lifecycle live in this repo's `agents/`, alongside their companion
-methodology and doctrine docs. Planar itself
-drives the primitive these roles compose: the `planar-agent` claim ritual
-(§3 below).
+The orchestrator, coder, reviewer, test-coder, and janitor role agents that
+drive this lifecycle are examples of one workflow. Planar itself provides the
+primitive these roles compose: the `planar-agent` claim ritual (§3 below).
 
 ```mermaid
 flowchart TD
@@ -184,8 +184,7 @@ verification, Planar reconciliation, branch/worktree cleanup, and
 **Phases 4-5** are explicit: `--propagate` creates external counterparts and
 `--archive` archives the workbench tree. The database retains the feature.
 
-Detail: [`workflows.md` Recipe 2](workflows.md#recipe-2--run-the-orchestrator)
-and `agents/methodology.md`.
+Detail: [`workflows.md` Recipe 2](workflows.md#recipe-2--run-the-orchestrator).
 
 ---
 
@@ -240,8 +239,8 @@ complete. Operator recovery uses `planar-agent reconcile --dry-run` first, then
 `reconcile`, `abort --claim <token>`, or force takeover as appropriate. Recovery
 never mutates a live, unexpired claim.
 
-Detail: [`concepts.md` §Claim-owned task state and recovery](concepts.md#claim-owned-task-state-and-recovery)
-and `agents/methodology.md` § Coordination claims.
+Detail: [`concepts.md` §Claim-owned task state and recovery](concepts.md#claim-owned-task-state-and-recovery),
+`skills/planar/references/claim-ritual.md` and `skills/planar/references/dispatch.md`.
 
 ---
 
@@ -546,5 +545,6 @@ rerun the whole target rather than a single step.
   boundary, workbench, adapters.
 - [Concepts](concepts.md) — the entity and gate mental model.
 - [Workflows](workflows.md) — step-by-step operator recipes.
-- `agents/methodology.md` — authoritative
-  agent-coordination contract.
+- `skills/planar/references/claim-ritual.md` and
+  `skills/planar/references/dispatch.md` — the claim, heartbeat and
+  terminal-verb contract.

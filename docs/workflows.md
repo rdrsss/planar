@@ -1,6 +1,6 @@
 # Planar Workflows
 
-End-to-end recipes for common Planar operations. Role work (drafting, ingesting, orchestrating, reviewing, syncing) is done by dispatching the named `planar-<role>` agent; everything verb-shaped is a CLI command, and `planar <verb> --help` is the reference for its flags. One skill, `planar`, carries the rules that cross verbs, and the recipes name its references where one applies; see [skill-reference.md](skill-reference.md). These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
+End-to-end recipes for common Planar operations. Where a recipe names a role (drafting, ingesting, orchestrating, reviewing, syncing), the example `planar-<role>` agents are one way to do that work; everything verb-shaped is a CLI command, and `planar <verb> --help` is the reference for its flags. One skill, `planar`, is a short reference for what Planar does, and the recipes name its references where one applies; see [skill-reference.md](skill-reference.md). These assume you have run `planar init`, followed its printed `planar assoc create` / `planar assoc add` next steps to establish a project association, and understand the core concepts (see `docs/concepts.md`). `planar plan create` refuses to infer global ownership from an initialized but unassociated project; use `--scope global` only when that ownership is intentional.
 
 ---
 
@@ -26,7 +26,7 @@ planar-ext ext propagate 7 --system my-gh
 planar workbench archive 7
 ```
 
-Steps 1 and 3 are agent dispatches; the others are verbs. The `planar-orchestrator` agent runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch. The agents are listed in [skill-reference.md](skill-reference.md#the-role-agents).
+Steps 1 and 3 are agent dispatches; the others are verbs. The example `planar-orchestrator` agent runs explicit phases (planning / spec review / ingestion / execution / finalization / propagation / archive) with user gates after drafting, before ingestion `--apply`, and before dispatch; Planar does not require those gates. The agents are listed in [skill-reference.md](skill-reference.md#the-role-agents).
 
 ---
 
@@ -131,7 +131,7 @@ Review the diff. If it looks correct:
 planar spec ingest 42 --apply
 ```
 
-`--apply` is an operator gate: run it only after you have confirmed the previewed diff. Add `--strict` to the apply call to refuse on a slug collision. Uncovered slug-bearing tasks are reported as warnings, so read the `coverage:` line before you apply.
+`--apply` writes the diff the preview showed. Add `--strict` to the apply call to refuse on a slug collision. Uncovered slug-bearing tasks are reported as warnings, so read the `coverage:` line before you apply.
 
 Tasks, child plans, and decisions are now in the database. A successful apply also activates a `draft` anchor plan (the apply summary ends with `(anchor plan activated)`). Confirm before execution:
 
@@ -340,7 +340,7 @@ tasks: [44, 45, 46]
 
 **Phase 3.5 still fires across all three barrel modes** when uncovered slugs intersect the cycle. Barrel-bypass bypasses the reviewer, not the coverage gate. The test-coder's `failure-surfaced` outcome halts the cycle and escalates to the operator regardless of mode.
 
-For the canonical contract see `agents/methodology.md` § Barrel modes; for the dispatch-shape concept see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
+The barrel modes are a feature of the example orchestrator, not a Planar requirement; for the dispatch-shape concept see [`docs/concepts.md` §Dispatch shapes](concepts.md#dispatch-shapes).
 
 ---
 
@@ -1311,7 +1311,7 @@ By design, the `planar` binary has **no `planar agent` subcommand**. Agent obser
 | `planar-agent` | Agent ritual + operator-recovery writes. Owns every write to `agent_work_claims` / `agent_actions`. | `pull`, `peek`, `claim`, `heartbeat`, `complete`, `fail`, `release`, `block`, `action start`/`end`, `review`, `ingest`, `reconcile`, `abort` |
 | `planar-watch` | Live streaming viewer. Pure read. | `feed`, `ps`, `claims`, `actions`, `plans`, `log`, `tree`, `sync-events`, `queue`, `queue history` |
 
-This recipe covers the **planar** binary's read surface. The claim ritual for `planar-agent` is in `agents/methodology.md` § Coordination claims; the streaming-viewer recipe for `planar-watch` is [Recipe 19](#recipe-19--live-agent-cockpit-with-planar-watch).
+This recipe covers the **planar** binary's read surface. The claim ritual for `planar-agent` is in `skills/planar/references/claim-ritual.md`; the streaming-viewer recipe for `planar-watch` is [Recipe 19](#recipe-19--live-agent-cockpit-with-planar-watch).
 
 ### Step 1 — Survey what's in flight
 
@@ -1800,7 +1800,7 @@ that runs cleanup as part of the next push.
 
 ## Recipe 21 — Pick an orchestration strategy for a plan
 
-Use this when you dispatch `planar-orchestrator` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); for the canonical contract see `agents/methodology.md` § Orchestration strategies.
+Use this when you dispatch `planar-orchestrator` on an `active` plan and want to understand the strategy gate (Phase 3's first sub-step). The strategy answers "what is the overall methodology for this plan?" — the dispatch-shape gate (nested under it) answers "within that strategy, how do I batch this cycle's work?" For the concept overview see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy); the strategies are the example orchestrator's choices, and Planar records only the metadata a dispatcher attaches.
 
 ### Step 1 — Invoke the orchestrator
 
@@ -1857,7 +1857,7 @@ The strategy gate is skipped; for sequential strategies isolation defaults to `p
 
 ### Custom axis escape hatch
 
-For shapes outside the named menu, name `--strategy custom` in the brief together with the per-axis options: `--isolation worktree`, `--branch-model epic-child`, `--concurrency sequential`, `--reviewer-cadence at-boundary` and `--test-coder-cadence at-boundary`. The orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs. See `agents/methodology.md` § Invalid combinations for the full list.
+For shapes outside the named menu, name `--strategy custom` in the brief together with the per-axis options: `--isolation worktree`, `--branch-model epic-child`, `--concurrency sequential`, `--reviewer-cadence at-boundary` and `--test-coder-cadence at-boundary`. The example orchestrator refuses invalid axis combinations (e.g. `concurrency=fan-out` with `isolation=in-pwd` — parallel coders would clobber pwd) with a diagnostic before any dispatch runs.
 
 ### Worked example — a 4-task plan accepts `parallel-fanout`
 
@@ -2000,7 +2000,7 @@ Reviewer dispatched against epic/worktree-management
 Verdict: approve
 ```
 
-On `approve` → cleanup proceeds. On `request-changes` → see `agents/methodology.md` § Reviewer Decisions. On `open-question` or `abort` → escalates without cleanup.
+On `approve` → cleanup proceeds. On `request-changes` → another coder round, as the dispatcher decides. On `open-question` or `abort` → escalates without cleanup.
 
 ### Step 9 — Cleanup (post-success only)
 
@@ -2047,7 +2047,7 @@ The steps above fan out a **single wave** of mutually-disjoint lanes. When the p
 
 4. **Fan-in retention and resume.** A succeeded lane's worktree is torn down at fan-in; a failed lane's worktree is retained for inspection. On a mid-wave failure, a `failed_clean` lane needs no reconcile (it is available on the next recompute); an `abandoned` lane is reclaimed immediately with `planar-agent reconcile --stale-after 0`. Then recompute and re-fan only the remainder (never restart from wave 1). On plan completion, remove every lane worktree and branch; keep the epic branch until its PR merges.
 
-For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see `agents/planar-orchestrator.md` and `agents/methodology.md`.
+For the per-step orchestrator behavior under `parallel-fanout` and sequential worktree isolation, see `agents/planar-orchestrator.md`.
 
 ---
 
@@ -2159,7 +2159,7 @@ The task is now back in the pickable pool. You can either dispatch a fresh coder
 
 The persisted `worktree_path` on the (now stale or aborted) claim is the recovery key. Without it you'd be left scanning `/repo/.worktrees/` and guessing which directory belonged to which dead coder. With it, every operator-side recovery verb (`planar-watch claims`, `planar-agent reconcile`, `planar-agent abort`) surfaces or operates against the path deterministically, and a fresh `planar-agent claim --worktree <path>` reuses the on-disk checkout instead of creating a new one.
 
-For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the canonical claim ritual see `agents/methodology.md` § Coordination claims.
+For the persistence-on-claim contract see [`docs/concepts.md §Worktree`](concepts.md#worktree); for the claim ritual see `skills/planar/references/claim-ritual.md`.
 
 ---
 

@@ -352,7 +352,7 @@ A plan has a filesystem-safe `slug` unique within its parent scope, used in work
 
 The anchor plan for a feature is the top-level plan with no `parent_plan_id`. Child plans are used for sub-features or roadmap milestones within a larger feature.
 
-**Status auto-promotion (plan 304).** Plan status is a function of task status, enforced at task-write time. The auto-promotion invariant fires inside every task add / update / done / reopen / cancel / block transaction and applies a transition matrix that flips the plan based on the post-write task aggregate. The matrix lives in `agents/methodology.md` § Plan-status invariant.
+**Status auto-promotion (plan 304).** Plan status is a function of task status, enforced at task-write time. The auto-promotion invariant fires inside every task add / update / done / reopen / cancel / block transaction and applies a transition matrix that flips the plan based on the post-write task aggregate. The consequences are listed below.
 
 Two operator-visible consequences:
 
@@ -498,7 +498,7 @@ transaction. Always preview a sweep with `planar-agent reconcile --dry-run
 
 ## Dispatch shapes
 
-The orchestrator's Phase 3 dispatch gate offers six named **dispatch shapes** — each a distinct point on the *grouping* × *reviewer disposition* matrix. The shape picks how many tasks land in one coder cycle AND when (or whether) the reviewer is dispatched. The operator picks one shape per `planar-orchestrator` dispatch at the gate; the choice is recorded as a `session_entries` row (with `prefix='note'` + the sentinel body line `dispatch_shape: <shape>`) for the audit trail.
+The example orchestrator's Phase 3 dispatch gate (`agents/planar-orchestrator.md`, one workflow among many; Planar does not require it) offers six named **dispatch shapes** — each a distinct point on the *grouping* × *reviewer disposition* matrix. The shape picks how many tasks land in one coder cycle AND when (or whether) the reviewer is dispatched. The operator picks one shape per `planar-orchestrator` dispatch at the gate; the choice is recorded as a `session_entries` row (with `prefix='note'` + the sentinel body line `dispatch_shape: <shape>`) for the audit trail.
 
 | Shape              | Grouping                     | Reviewer disposition  | Pick when |
 |--------------------|------------------------------|-----------------------|-----------|
@@ -529,7 +529,7 @@ Recover the per-cycle disposition with `planar audit trail --kind plan <plan-id>
 
 **Pick-when summary:** when in doubt, pick `strict`. Move up the table (toward throughput) when you have high confidence in the gates and the spec, or when the diff cadence makes per-cycle reviewer dispatch wasteful. The orchestrator never picks a barrel mode silently — every shape change is an explicit operator choice at the gate.
 
-For the canonical contract see [`agents/methodology.md` §Barrel modes](../agents/methodology.md#barrel-modes). For the agent's own contract see [`agents/planar-orchestrator.md`](../agents/planar-orchestrator.md).
+For the agent's own contract see [`agents/planar-orchestrator.md`](../agents/planar-orchestrator.md).
 
 **SQLite tables:** none beyond `session_entries`. **Primary entry points:** the `planar-orchestrator` agent (the gate), its barrel-modes contract, `planar audit trail --kind plan <plan-id>` (the forensic surface).
 
@@ -537,7 +537,7 @@ For the canonical contract see [`agents/methodology.md` §Barrel modes](../agent
 
 ## Orchestration strategy
 
-An orchestration strategy is the operator-facing dispatch frame for a plan. It bundles five underlying axes into one named choice the operator confirms at the strategy gate — Phase 3's first sub-step, run **before** the existing dispatch-shape gate. Strategy answers "what is the overall methodology for this plan?" Dispatch shape (the next gate, nested under it) answers "within that strategy, how do I batch *this cycle's* work?"
+An orchestration strategy is the operator-facing dispatch frame the example orchestrator offers for a plan. Planar records no strategy of its own; the section describes one workflow built on Planar's claims and metadata. It bundles five underlying axes into one named choice the operator confirms at the strategy gate — Phase 3's first sub-step, run **before** the existing dispatch-shape gate. Strategy answers "what is the overall methodology for this plan?" Dispatch shape (the next gate, nested under it) answers "within that strategy, how do I batch *this cycle's* work?"
 
 ### The named strategies and isolation choice
 
@@ -600,7 +600,7 @@ Advanced operators can compose a custom strategy with `--strategy custom` plus p
 
 Phase 3 runs the strategy gate first, then the dispatch-shape gate nested under the chosen strategy:
 
-1. **Strategy + isolation gate.** The model orchestrator surfaces its recommendation + a one-line rationale + the runnable strategy menu (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and the isolation choice (`pwd` / `worktree`) where applicable. Operator confirms or overrides. Skipped only when `--strategy <name>` plus any needed axis flags was passed at invocation. The recommendation algorithm is plan-shape-driven with status-quo bias — see `agents/methodology.md` § Recommendation algorithm.
+1. **Strategy + isolation gate.** The model orchestrator surfaces its recommendation + a one-line rationale + the runnable strategy menu (`classic` / `barrel-deferred` / `barrel-bypass` / `parallel-fanout`) and the isolation choice (`pwd` / `worktree`) where applicable. Operator confirms or overrides. Skipped only when `--strategy <name>` plus any needed axis flags was passed at invocation. The recommendation is plan-shape-driven with a status-quo bias.
 2. **Dispatch-shape gate.** Constrained by the strategy: `parallel-fanout` forces the `fan-out` shape; `barrel-deferred` and `barrel-bypass` force their matching shapes; `classic` keeps the full strict / grouped / single menu.
 
 Neither gate has an auto-default — the recommendation never silently turns into an action. `classic` is the continuity guarantee: an operator who always picks (or accepts the recommendation of) `classic` sees no behavioral change relative to today.
@@ -622,7 +622,7 @@ No Planar verb computes this partition: the orchestrator (or the operator) reads
 
 No new schema beyond the existing `agent_actions.metadata` JSON column from migration 00016. The chosen strategy + axes ride on the dispatch row there, and the "last-used strategy for this plan" lookup that drives the recommendation algorithm's stickiness rule is a single indexed read against the most recent dispatch entry's metadata.
 
-For the canonical axis table, named bundles, invalid-combination list, and recommendation algorithm see `agents/methodology.md` § Orchestration strategies. For the "pick a strategy" recipe and a worked `parallel-fanout` example see [`docs/workflows.md` §Recipe 21](workflows.md#recipe-21--pick-an-orchestration-strategy-for-a-plan) and [§Recipe 22](workflows.md#recipe-22--orchestrate-a-multi-task-plan-with-parallel-coders).
+For the "pick a strategy" recipe and a worked `parallel-fanout` example see [`docs/workflows.md` §Recipe 21](workflows.md#recipe-21--pick-an-orchestration-strategy-for-a-plan) and [§Recipe 22](workflows.md#recipe-22--orchestrate-a-multi-task-plan-with-parallel-coders).
 
 **SQLite tables:** none — strategy is metadata on the dispatch row. **Primary entry points:** the `planar-orchestrator` agent (the gate), its orchestration-strategies contract.
 
@@ -674,7 +674,7 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 1. **The parent repo dictates the scope.** A worktree at `<repo>/.worktrees/{epic,cycle}/...` resolves to the same association as `<repo>`. Worktrees are not separately scoped; they inherit. Reads (`planar plan list`, `planar task show`, `planar-watch *`) work transparently from inside a worktree.
 2. **Planning verbs are refused from inside worktrees.** Verbs that mutate planning state (`plan create/update`, `task add/update/done/touches`, `question`, `decision`, `artifact add/update`, `scenario`, `spec ingest`, `link/unlink/links`, `assoc`, `promote`, `demote`, `init`) refuse with a distinct exit code (8) and a message pointing at the parent repo's cwd. `task done` is refused on purpose — coders use `planar-agent complete --claim <token>`, the atomic terminal verb. `--scope <slug>` does NOT override the refusal; the rule is about *where the verb runs*, not which scope it targets.
 
-For the canonical path scheme, branch scheme, lifecycle, the six parallelizability rules, and the conflict-resolution taxonomy see `agents/methodology.md` § Worktrees. For the recovery recipe when a coder dies mid-cycle see [`docs/workflows.md` §Recipe 23](workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
+For recording and reading a worktree path see `skills/planar/references/resume-handoff.md`, and for the parallel wave the brief computes see `skills/planar/references/dispatch.md`. For the recovery recipe when a coder dies mid-cycle see [`docs/workflows.md` §Recipe 23](workflows.md#recipe-23--recover-a-dead-coder-from-its-worktree).
 
 **SQLite tables:** `agent_work_claims` (`worktree_path` column, migration 00015). **Primary entry points:** `planar-agent pull --worktree <path>`, `planar resume <task>`, `planar-watch claims`, `planar dashboard --agents`.
 
@@ -1159,7 +1159,7 @@ The capability boundary is each binary's verb set, not a runtime ACL, and three 
 **Capability invariant — `planar-ext`:** the verb set is `ext register jira|github`, `ext list`, `ext test`, `ext create`, `ext propagate`, `ext propagate-one`, `sync pull`, `sync push`, `sync status`, `sync resolve`, `version`, `schema`. A write to any table outside the three-table allowlist is refused by the authorizer before it executes; `sync pull` emits `remote_title`/`remote_status` proposals rather than writing planning entities (decision 996).
 
 
-The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). The terminal verbs (`complete` / `fail` / `release` / `block`) flip the claim and the task status in a single transaction, which is why the claim ritual must not be split across two commands. See `agents/methodology.md` § Coordination claims and the tech spec § "Agent methodology contract" for the full sequence.
+The ritual every code-writing agent dispatch follows is `planar-agent pull → heartbeat → complete|fail|release|block` (atomic across all three tables). The terminal verbs (`complete` / `fail` / `release` / `block`) flip the claim and the task status in a single transaction, which is why the claim ritual must not be split across two commands. See `skills/planar/references/claim-ritual.md` and `skills/planar/references/dispatch.md` for the full sequence.
 
 **Ordering contract — `planar-ext` does not migrate the database; `planar` must run first.** `planar-ext` (decisions 995–1001) is read-only on planning tables and read-write on exactly `external_links`/`external_systems`/`sync_events`, enforced by a `sqlite3_set_authorizer` allowlist — it is deliberately not the migration owner, so — like `planar-agent` and `planar-watch`, and unlike `planar` — it does **not** auto-apply pending migrations on open. Pointed at a database with no `schema_migrations` table (or one behind the binary's minimum schema version), it refuses with `SchemaVersionBehind` rather than migrating. A database the process cannot open or read, such as one a sandbox blocks, is reported as `DatabaseUnreadable` instead, never as behind. Any operator or agent workflow that talks to `planar-ext` — including test harnesses that allocate a fresh scratch DB per run — must invoke `planar` (any verb; `plan list` and `init` both trigger the auto-migration) against that same `PLANAR_DB` at least once before the first `planar-ext` call.
 
@@ -1174,7 +1174,7 @@ Several agents on one machine, often in different projects, each start builds an
 - **Time is bounded.** A command has a run limit (default 30 minutes, `--timeout`) and may be given a wait limit (`--wait-timeout`). A command past its limit gets SIGTERM, then SIGKILL after `[queue] grace`, and keeps its slot until its process group is empty.
 - **Detached runs.** `queue run --detach` returns a sequence number and an output-file path at once, so a harness that stops long foreground commands can submit a build and observe the saved ticket with finite `queue wait` slices. A later observation uses the same sequence number.
 - **A coordination aid, not a security boundary.** Any caller that can open the store may cancel any entry, and the canceller is recorded. The queue refuses a command that would start a model (`claude`, `codex` and similar), because that would hold a slot for a whole conversation. It does not sandbox the command.
-- **Using it is the operator's policy.** `planar-agent queue rule` prints how to use the queue (submitting, waiting, what an exit 125 refusal means). The instruction that builds and tests are queued host-wide and never run directly is printed only for a scope whose policy sets `use_queue = true` in `config.toml`, and it names that policy as its source; no environment variable enables it. Where it is on, a queue refusal (exit 125) is reported, not bypassed. The how-to reaches agents through the generated workspace guides; the role files, the skills and [`agents/doctrine.md`](../agents/doctrine.md) state the principle for the scopes that enable it.
+- **Using it is the operator's policy.** `planar-agent queue rule` prints how to use the queue (submitting, waiting, what an exit 125 refusal means). The instruction that builds and tests are queued host-wide and never run directly is printed only for a scope whose policy sets `use_queue = true` in `config.toml`, and it names that policy as its source; no environment variable enables it. Where it is on, a queue refusal (exit 125) is reported, not bypassed. The how-to reaches agents through the generated workspace guides, and `skills/planar/references/queue.md` describes the verbs.
 - **Where it sits in the binary boundary.** The queue is a `planar-agent` domain and never `planar`'s. It writes tables that no planning entity and no existing agent table shares, and it is outside the claim ritual: the only touch is `queue run --claim <token>`, which renews a claim the way `planar-agent heartbeat` does. `planar-watch queue` and `queue history` read it.
 
 Operating the queue (watching, cancelling, settings, file modes) is in [`operations.md` §4](operations.md#4-the-host-build-and-test-queue); the schema contract for read-side tools is in [`architecture.md`](architecture.md#reading-the-queue-tables-from-another-tool).

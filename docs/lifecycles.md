@@ -606,7 +606,7 @@ closeout path is `planar plan closeout --dry-run`, then apply.
 
 ### 5.2 Spec ingest
 
-Only `spec ingest` exists as a binary verb; drafting and review are skills.
+Only `spec ingest` exists as a binary verb; drafting and review are not Planar verbs.
 Inputs are the anchor's artifacts, read back from the workbench feature
 directory. A work list is required: the `roadmap` artifact, or, when the
 anchor has none, the single artifact that parses as one. Decisions, questions
@@ -851,7 +851,7 @@ bug, unless noted.
 
 | Claim | Where | What the code does |
 |---|---|---|
-| Plan status flips write a `session_entries` note beginning `plan_status: <id>`, recoverable with `audit trail --grep "^plan_status:"` | `docs/concepts.md` § Plan (**fixed at task 6825** — now describes the `audit_log` row), `agents/methodology.md` § Plan-status invariant (since fixed) | The C++ roll-up writes an `audit_log` `status_change` row with a free-text summary; no `plan_status:` sentinel is produced anywhere in `src/` |
+| Plan status flips write a `session_entries` note beginning `plan_status: <id>`, recoverable with `audit trail --grep "^plan_status:"` | `docs/concepts.md` § Plan (**fixed at task 6825** — now describes the `audit_log` row) | The C++ roll-up writes an `audit_log` `status_change` row with a free-text summary; no `plan_status:` sentinel is produced anywhere in `src/` |
 | `planar health` `overall` is one of `ok`, `degraded`, `critical` | the retired health skill (since removed; fixed — now names `ok` and `degraded`) | Two values only, `ok` and `degraded` (`src/engine/health/health.cpp`) |
 | Whole-tree `ext propagate <plan>` is not yet implemented | the retired propagate skill (since removed); `docs/cli-reference.md` § `planar-ext ext propagate`, its `workbench publish` and `link --propagate` cross-references (**fixed at task 6825**) | Both the `github-parent-issue` arm and the generic tree-walk arm (task 6451) are wired in `src/cmd/planar-ext/handlers/ext/propagate.cpp`; only `github-projects-v2` refuses (decision 1001) |
 | Workbench terminal filter's primary module is `src/engine/workbench/terminal.zig` | `docs/concepts.md` § Workbench (**fixed at task 6926** — now cites `src/engine/workbench/terminal.cppm`) | `src/engine/workbench/terminal.cppm` |

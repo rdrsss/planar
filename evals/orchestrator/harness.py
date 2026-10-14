@@ -1391,7 +1391,7 @@ SKILL_RELS = ["skills/planar/SKILL.md"] + [
         "local",
         "recovery",
         "resume-handoff",
-        "spec-pipeline",
+        "preparation",
         "status",
     )
 ]

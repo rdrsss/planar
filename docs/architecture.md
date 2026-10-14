@@ -146,7 +146,7 @@ Migration 00025 landed the `runs`, `run_events` and `run_touches` tables, the re
 
 Migration 00026 landed the `closures` table, a per-task snapshot of the symbols a task must hold resident, one row per `(task, symbol unit)` with a `role in (modify, reference, transitive)` CHECK. The closure pipeline, its `planar closure` verbs and the tree-sitter extractor were removed in plan 1142 and live on branch `dev/grouping-solvers`; no verb on master writes the table.
 
-The `agent_actions.metadata` JSON column (migration 00016) is the durable home for caller-attached per-action context. It is a nullable `TEXT` column; the engine and CLI store it opaquely, only parsing happens at the consuming surface. The first consumer is the orchestrator strategy-persistence model (see [`docs/concepts.md §Orchestration strategy`](concepts.md#orchestration-strategy) and `agents/methodology.md` § Strategy gate): when the orchestrator confirms a strategy for a cycle it writes `{"strategy":"<name>","axes":{...},"dispatch_shape":"<shape>","rationale":"<text>"}` to the dispatch action row via `planar-agent pull --metadata '...'` (for plan-pull dispatch) or `planar-agent action start --metadata '...' --claim <token>` (for hand-picked task dispatch). The next cycle's strategy gate reads the most recent dispatch entry's metadata via `planar-watch actions --plan <id> --json` and applies the recommendation algorithm's rule-6 stickiness. Both write verbs validate `--metadata` as well-formed JSON at the CLI parse layer; the read-side surfaces (`planar-watch actions | log | feed`) include the field in their `ActionRow` JSON shape as a nullable string.
+The `agent_actions.metadata` JSON column (migration 00016) is the durable home for caller-attached per-action context. It is a nullable `TEXT` column; the engine and CLI store it opaquely, only parsing happens at the consuming surface. A dispatcher attaches it with `planar-agent pull --metadata '...'` (for plan-pull dispatch) or `planar-agent action start --metadata '...' --claim <token>` (for hand-picked task dispatch), and reads it back with `planar-watch actions --plan <id> --json`. Planar assigns the keys no meaning; the caller owns the JSON shape. Both write verbs validate `--metadata` as well-formed JSON at the CLI parse layer; the read-side surfaces (`planar-watch actions | log | feed`) include the field in their `ActionRow` JSON shape as a nullable string.
 
 Migration 00027 adds `external_links.baseline_title` and `baseline_status`. These fields store the last common synchronized values used to distinguish local-only, remote-only, converged, and true two-sided changes before a two-way pull mutates local state.
 
@@ -696,7 +696,7 @@ Planar's vendor-neutral agent roles are examples, not installed: `planar-orchest
 | 3.5 — Test-coder | `test-coder` | Cycle's tasks intersect uncovered test-spec slugs after coder output |
 | 3.7 — Finalization | `janitor` | Explicit `--finalize` or interactive confirm after Phase 3; merge -> reconcile -> closeout gate |
 | 4 — Propagation | `planar-ext-sync` | User requests `--propagate` |
-| 5 — Archive | `planar workbench archive` (the planar skill's `spec-pipeline.md` reference) | Anchor plan done, user requests `--archive` |
+| 5 — Archive | `planar workbench archive` (see the `workbench archive` entry in [cli-reference.md](cli-reference.md#planar-workbench-archive-plan---filter-mode-failuresall)) | Anchor plan done, user requests `--archive` |
 
 The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion never auto-applies. Phases 3.7 and 4-5 are explicit/opt-in; The iteration cap is 5 per reviewer dispatch cycle.
 
@@ -720,13 +720,13 @@ the install layout and the upgrade note for the previous per-vendor projections
 are in [INSTALL.md](../INSTALL.md#install-layout-reference).
 
 The skill and the agents are documented in
-[skill-reference.md](skill-reference.md). The skill carries thirteen invariants
-and a routing table over nine references (claim ritual, status, recovery,
-resume and handoff, spec pipeline, knowledge, external sync, local, and the
-feedback contract); it states no verb detail, which comes from each binary's
-`--help` and `schema --command`.
+[skill-reference.md](skill-reference.md). The skill is a short reference: what each binary
+writes, seven mechanism invariants, and a routing table over ten optional
+references (dispatch, preparation, queue, claim ritual, recovery, resume and
+handoff, external sync, status, knowledge, local). It states no verb detail,
+which comes from each binary's `--help` and `schema --command`.
 
-Eleven agent roles (the role specs under `agents/` and `examples/agents/`: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, and `research`) cover orchestration and review, planning and ingestion, external propagation, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `sync-reconciler` coordinates preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
+Eleven agent roles (the role specs under `agents/` and `examples/agents/`: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, and `research`) cover orchestration and review, planning and ingestion, external propagation, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `sync-reconciler` coordinates preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`skill-reference.md`](skill-reference.md) for the role inventory.
 
 The planning-lifecycle role specs are `examples/agents/planar-planner.md`, `examples/agents/planar-spec-reviewer.md`, `examples/agents/planar-ingestor.md`, `examples/agents/planar-ext-sync.md` and `examples/agents/planar-sync-reconciler.md`; the coder, reviewer, research and janitor roles are there too. The orchestrator and test-coder roles and their companion methodology, doctrine and cross-scope-writes documents live under `agents/`.
 

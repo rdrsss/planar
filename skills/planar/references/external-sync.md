@@ -25,7 +25,7 @@ keeps its completed targets.
 - These three verbs are not scope-guarded (link rows carry no scope). Run them from the
   owning project anyway, and treat an existing identical binding as a skip.
 - Verify with `planar-ext sync status --entity <kind:id> --system <slug> --json` and
-  report the link id and external id or URL.
+  it shows the link id and the external id or URL.
 
 ## Pull, push and status
 
@@ -33,10 +33,9 @@ keeps its completed targets.
   `last_sync_status`. It does not identify conflict events or carry field values.
 - `planar-ext sync pull <link-id|kind:id>` (or `--all`) fetches remote state and **writes
   no planning entity**. Where a remote field differs from local, the row carries
-  `remote_title` or `remote_status`; an absent field means no drift was seen. Present
-  these as observed drift. The only way a remote value reaches a local entity is a
-  separate, operator-confirmed `planar <kind> update`. Never say a pull "updated" or
-  "synced" a task.
+  `remote_title` or `remote_status`; an absent field means no drift was seen. These
+  are observed drift. The only way a remote value reaches a local entity is a separate
+  `planar <kind> update`; a pull does not update or sync a task.
 - `planar-ext sync push <link-id|kind:id>` (or `--all`) sends local state out.
 - `pull`, `push` and `resolve` are cross-scope guarded on a single target: a mismatch
   exits 5 with no bypass. Run from the owning repo or pass the entity's `--scope`.
@@ -49,7 +48,7 @@ keeps its completed targets.
 
 A link is in conflict only while its status is `conflict` and no later resolution event
 has closed it; an old conflict row in the append-only audit trail is history. With no
-conflicting link in the target set, stop: `outcome=ok`, zero resolutions.
+conflicting link in the target set there is nothing to resolve.
 
 For each conflicting link:
 
@@ -66,56 +65,46 @@ For each conflicting link:
 
 ## The four dispositions
 
-Recommend exactly one per event, with its rationale. A reconciler specialist may make the
-recommendation; it never mutates anything.
+Each conflict event takes one disposition.
 
-| Disposition | Effect once confirmed |
+| Disposition | Effect |
 |-------------|-----------------------|
 | `keep-local` | `planar-ext sync resolve <event-id> --keep local ...` pushes the whole current local entity. |
-| `keep-remote` | `... --keep remote ...` clears the conflict and resets the link baseline to the current local values. It sends nothing and changes nothing locally; the next pull emits the remote values for a separately confirmed local update. |
-| `manual-merge` | No resolve yet; follow the two gates below. |
+| `keep-remote` | `... --keep remote ...` clears the conflict and resets the link baseline to the current local values. It sends nothing and changes nothing locally; the next pull emits the remote values for a separate local update. |
+| `manual-merge` | No resolve yet; see Manual merge below. |
 | `defer` | Write nothing; keep the evidence and the recovery command. |
 
-Before any resolve, show the operator the scope, event, entity, link, system and
-external id, the field rows, the raw detail, the recommendation, the whole-entity effect
-and the exact command. Wait for a confirmation that names the event id and the
-disposition. Approval is per event and per evidence: silence, general permission, an
-approval of another event, or an approval given before the evidence changed is not
-consent.
+A resolve acts on the whole entity. The facts it works from are the scope, event, entity,
+link, system and external id, the field rows and the raw detail.
 
 Immediately before resolving, re-read status and audit. The same link must still be in
-conflict, the approved event must still be the latest unresolved one, and the evidence
-must be unchanged; otherwise present a fresh preview. Pass the approved evidence token
-and the reviewed local `updated_at` through the compare-and-swap flags (see
-`planar-ext sync resolve --help`). A changed token or version is a conflict result, not
-a resolution. The provider read-then-write race cannot be closed where the provider has
-no conditional write; say so on every provider write.
+conflict, the event must still be the latest unresolved one, and the evidence must be
+unchanged. Pass the evidence token and the reviewed local `updated_at` through the
+compare-and-swap flags (see `planar-ext sync resolve --help`). A changed token or version
+is a conflict result, not a resolution. The provider read-then-write race cannot be
+closed where the provider has no conditional write.
 
-### Manual merge: two gates
+### Manual merge
 
-1. Gate one: show both values and the proposed merged local value. Approval covers the
-   proposal only.
-2. The operator edits the entity through its normal `planar <kind>` workflow.
-3. Show the post-edit state from `planar <kind> show <id> --json`.
-4. Gate two: a new confirmation naming the event id and `keep-local`.
-5. Revalidate the evidence, then resolve with `--keep local`.
-
-Approving merge text is not approval to edit; approving the edit is not approval to push.
+1. Compare both values and propose a merged local value.
+2. Edit the entity through its normal `planar <kind>` workflow.
+3. Read the post-edit state from `planar <kind> show <id> --json`.
+4. Revalidate the evidence, then resolve with `--keep local`.
 
 ### Verify, never retry blindly
 
-A resolve succeeds only when its JSON reports the approved `event_id`, the chosen side and
+A resolve succeeds only when its JSON reports the `event_id`, the chosen side and
 a `new_event_id`, and a re-read shows link status `ok`, a new audit event that names the
 side and the source event, and local state matching the expected effect. Resolve is not
 idempotent. After ambiguous output or a failure, inspect audit, status and the entity
-first; retry only if the link is still in conflict, no resolution event references the
-conflict, the evidence was rebuilt and the operator approved again.
+first; a retry is valid only while the link is still in conflict, no resolution event
+references the conflict and the evidence has been rebuilt.
 
 ## Propagate a feature
 
 1. Preview: `planar-ext ext propagate <plan-id> --system <slug> --dry-run`. Always pass
    `--system`; without it the first registered system is used.
-2. Run it without `--dry-run` only after the operator confirms.
+2. Run it without `--dry-run` to create the counterparts.
 3. One entity: `planar-ext ext propagate-one <system> --from <kind:id>`. It is idempotent;
    an existing mirror link returns `skipped`.
 4. `planar workbench publish <plan-id> --system <slug>` pushes the rendered workbench body
@@ -127,27 +116,20 @@ Propagation renders JSON templates resolved from the configured set, then the on
 and check a customised file with `planar templates validate <set> <system> <kind>`;
 `planar templates init` and `planar templates path` extract and locate the defaults.
 
-## Report an issue from a feedback finding
+## File an issue on GitHub
 
-Posting to the Planar issue tracker uses `gh` with the operator's own login.
+An issue on the Planar tracker is posted with `gh` and the operator's own login. The
+body is not structurally redacted and may name entities.
 
-1. Collect, for a finding, its `show --json` plus `planar audit trail --kind <kind> <id>`.
-2. Assemble the title, the finding section and a version footer.
-3. **Show the whole body and wait for explicit confirmation.** Nothing skips this. The
-   finding text is not structurally redacted and may name entities. This preview of the
-   full body is the only redaction boundary.
-4. On decline: no post, no link, nothing changed.
-5. On confirmation: `gh issue create -R rdrsss/planar --title "<title>" --body "<body>"`.
-   On failure, show the error verbatim and write nothing.
-6. On success, record the link. Register the upstream once if `planar-ext ext list` lacks
-   it, then link:
+1. `gh issue create -R rdrsss/planar --title "<title>" --body "<body>"`. On failure
+   nothing is written locally.
+2. To record the issue against a local entity, register the upstream once if
+   `planar-ext ext list` lacks it, then link:
 
    ```sh
    planar-ext ext register github planar-upstream --project rdrsss/planar
    planar link <kind:id> --to planar-upstream:<issue-number> --role reference --sync read-only --json
    ```
 
-If the post succeeded but the link failed, the result is partial: never post again;
-retry only the `planar link` command.
-
-Report results with the envelope in [feedback-contract.md](feedback-contract.md).
+If the post succeeded but the link failed, retry only the `planar link` command; the issue
+already exists.

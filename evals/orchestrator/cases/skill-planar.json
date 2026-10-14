@@ -187,7 +187,7 @@
         "skills/planar/references/local.md",
         "skills/planar/references/recovery.md",
         "skills/planar/references/resume-handoff.md",
-        "skills/planar/references/spec-pipeline.md",
+        "skills/planar/references/preparation.md",
         "skills/planar/references/status.md"
       ],
       "pattern": "/pl-"
@@ -205,7 +205,7 @@
         "skills/planar/references/local.md",
         "skills/planar/references/recovery.md",
         "skills/planar/references/resume-handoff.md",
-        "skills/planar/references/spec-pipeline.md",
+        "skills/planar/references/preparation.md",
         "skills/planar/references/status.md"
       ],
       "pattern": "scriptorium"
@@ -223,7 +223,7 @@
         "skills/planar/references/local.md",
         "skills/planar/references/recovery.md",
         "skills/planar/references/resume-handoff.md",
-        "skills/planar/references/spec-pipeline.md",
+        "skills/planar/references/preparation.md",
         "skills/planar/references/status.md"
       ],
       "pattern": "planar task done` then `planar-agent release"

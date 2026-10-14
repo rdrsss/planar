@@ -1,8 +1,7 @@
 # Knowledge: decisions, artifacts, annotations, questions
 
-Durable project knowledge lives in four entity kinds plus typed links between them. Pick
-the narrowest kind, resolve every target before the first write, and read every write
-back. There is no parallel knowledge store and no direct database path.
+Durable project knowledge lives in four entity kinds plus typed links between them. Each
+kind has its own verbs. There is no parallel knowledge store and no direct database path.
 
 | Kind | Use for | Lifecycle |
 |------|---------|-----------|
@@ -11,22 +10,16 @@ back. There is no parallel knowledge store and no direct database path.
 | Annotation | An anchored review note on a file and line range. | Tag, resolve, dismiss, archive. |
 | Question | An open uncertainty that blocks or shapes work. | `open` to `answered` or `wontfix`. |
 
-## Resolve before writing
+## Resolving targets
 
-Finish this for every target and every link endpoint before running any mutation:
-
-1. `planar scope show --json`. A request that names another scope must name it
-   explicitly; pass `--scope <slug>` on the reads and the create.
+1. `planar scope show --json` shows the scope a read or create will use. To act in
+   another scope, pass `--scope <slug>`.
 2. A typed reference such as `decision:9` goes straight to the matching
    `show <id> --json`. A name or phrase goes through the scoped `list ... --json` of that
-   kind only: exact title first, then case-insensitive exact title, then
-   case-insensitive substring as candidates. Never resolve one kind by searching another.
-3. Continue only when every explicit id exists and every phrase gives exactly one
-   candidate. Zero candidates: stop with the list command and a create-or-refine next
-   action. Two or more: stop, print each candidate's typed id, title, scope, status and
-   plan, and ask for one typed id. Do not write anything in that invocation.
-4. For a link, inspect both endpoints and check the relationship against the allowed set
-   below before writing.
+   kind: exact title, then case-insensitive exact title, then case-insensitive substring.
+   One kind's list does not find another kind's rows.
+3. Zero candidates means nothing matches; several means a typed id is needed to pick one.
+4. A link takes two typed endpoints and a relationship from the allowed set below.
 
 ## Scope behaviour of these verbs
 
@@ -35,8 +28,8 @@ Finish this for every target and every link endpoint before running any mutation
 - Of the existing-entity verbs here, only `decision accept` and `decision withdraw`
   compare your scope with the entity's (exit 5 on mismatch, no bypass). Every other
   update, including every `question` verb, `artifact update`, `annotate update` and
-  `decision supersede`, writes without comparing. Confirm the stored scope with
-  `show --json` before mutating an existing row.
+  `decision supersede`, writes without comparing. The stored scope is in
+  `show --json`.
 - On `artifact update` and `annotate update`, `--scope` is a patch field that moves the
   entity, not a permission.
 - `annotate add` accepts `--plan` and `--task`, but does not check that those targets
@@ -55,38 +48,35 @@ ids only, never slugs. Allowed relationships: `derives-from`, `depends-on`, `add
 `decision` and `annotation`; resolve a scenario through `planar scenario show` and an
 annotation through `planar annotate show`.
 
-- `links add` is unguarded on purpose and may cross scopes. When the endpoints' scopes
-  differ, say so and get explicit confirmation of the exact endpoints and relationship.
+- `links add` is unguarded on purpose and may cross scopes.
 - Run `planar links list <kind:id> --json` before adding. An identical existing tuple is
   a successful no-op (skipped), not a failed duplicate.
 - A `supersedes` link records a relationship only. It does not change either decision's
-  status; do not report it as if it did.
+  status; it is not a status change.
 
 ## Recording a decision chain
 
 1. Resolve the plan, the supporting artifact and any annotation target, with scopes.
 2. `planar decision add "<title>" --body <text> --rationale <text>`; keep the returned id
    and read it with `planar decision show <id> --json`.
-3. Link it: normally `decision:<id> addresses plan:<id>` and
-   `decision:<id> cites artifact:<id>`. Use the relationship the operator stated.
-4. Add an anchored note only if asked, with only the anchor facts actually known.
-5. Verify with the `show` verbs and `planar links list decision:<id> --json`. Report the
-   chain as `kind:id --[relationship]--> kind:id`.
+3. Link it, for example `decision:<id> addresses plan:<id>` and
+   `decision:<id> cites artifact:<id>`.
+4. An anchored note carries only the anchor facts actually known.
+5. Verify with the `show` verbs and `planar links list decision:<id> --json`.
 
-Each step is an independent write. If a later step fails, report the earlier verified
-writes as done and give the retry for the rest.
+Each step is an independent write; a failed later step leaves the earlier ones in place.
 
 ## Artifacts and annotations
 
 - Prefer `--from-file` for an existing document and `--body` for inline text.
 - `artifact update --body @file` reads the file verbatim. For a workbench spec, pass a
-  body-only file; see [spec-pipeline.md](spec-pipeline.md).
+  body-only file; see [preparation.md](preparation.md).
 - Use annotations for anchored review notes, not general documents. After creating one,
   `planar annotate verify` reports whether its anchor is clean or has drifted.
 
 ## Questions
 
-- Capture a question the moment an uncertainty blocks progress:
+- Add a question with
   `planar question add "<short title>" --body <text>`, adding `--plan` when it belongs
   to one.
 - Link it to what it blocks: `planar question link <id> task:<id> --relationship <rel>`.
@@ -104,10 +94,6 @@ personal work turns out to matter. `planar demote <kind:id>` returns it to globa
 personal scope; association-to-association moves go through `promote`. Both are planning
 writes and refuse in a worktree.
 
-- Confirm the current scope with `show --json` first; an entity already in the target
-  scope is a skip.
-- A promoted entity joins the target association's next workbench export; say so.
-- Verify with `planar <kind> show <id> --json`. Offer the inverse command only when the
-  operator asks to reverse a verified move.
-
-Report results with the envelope in [feedback-contract.md](feedback-contract.md).
+- An entity already in the target scope is a skip; `show --json` gives its current scope.
+- A promoted entity joins the target association's next workbench export.
+- Verify with `planar <kind> show <id> --json`.
