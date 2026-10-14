@@ -318,6 +318,18 @@ scenario() {
   mkdir -p "$home"
   [[ "$vendors" == 0 ]] || mkdir -p "$home/.claude" "$home/.codex"
   p="$home/.planar"
+  if [[ "$vendors" == 1 ]]; then
+    # An older install that placed role agents: the staged agents/ and
+    # codex-agents/, a copied Claude agent and a linked Codex agent. The
+    # upgrade sweep removes both under this bash, then the cleanup list
+    # removes the staged trees.
+    mkdir -p "$p/agents" "$p/codex-agents" "$home/.claude/agents" "$home/.codex/agents"
+    : > "$p/.planar-install"
+    printf -- '---\nname: planar-coder\ndescription: An old role.\n---\n\nBody.\n' > "$p/agents/planar-coder.md"
+    printf 'name = "planar-coder"\n' > "$p/codex-agents/planar-coder.toml"
+    cp "$p/agents/planar-coder.md" "$home/.claude/agents/planar-coder.md"
+    ln -s "$p/codex-agents/planar-coder.toml" "$home/.codex/agents/planar-coder.toml"
+  fi
   install_run "$bash_bin" "$home" ${@+"$@"}
   [[ "$RC" == 0 ]] || fail "[$tag/$name] prebuilt install exited $RC: $(cat "$TMP/err") $(cat "$TMP/out")"
   grep -Eqi 'unbound variable|syntax error|bad substitution|command not found' "$TMP/err" "$TMP/out" && fail "[$tag/$name] install printed a shell error: $(cat "$TMP/err")"
@@ -328,7 +340,11 @@ scenario() {
   [[ -f "$p/install-manifest.json" && -f "$p/release.json" && -f "$p/skills/planar/SKILL.md" ]] || fail "[$tag/$name] the install left no manifest, release.json or skill"
   if [[ "$vendors" == 1 ]]; then
     [[ -f "$home/.claude/skills/planar/SKILL.md" && -f "$home/.agents/skills/planar/SKILL.md" ]] || fail "[$tag/$name] vendor surfaces were not placed"
-    [[ ! -e "$home/.claude/agents" && ! -e "$home/.codex/agents" ]] || fail "[$tag/$name] a role agent was placed"
+    [[ ! -e "$home/.claude/agents/planar-coder.md" && ! -L "$home/.codex/agents/planar-coder.toml" ]] \
+      || fail "[$tag/$name] the role agents an older install placed (a copy and a link) were not removed"
+    [[ ! -e "$p/agents" && ! -e "$p/codex-agents" ]] || fail "[$tag/$name] the staged agents/ or codex-agents/ survived"
+    [[ -z "$(find "$home/.claude/agents" "$home/.codex/agents" -mindepth 1)" ]] || fail "[$tag/$name] a role agent was placed"
+    grep -Fq "removed role agent: $home/.codex/agents/planar-coder.toml" "$TMP/out" || fail "[$tag/$name] the linked role agent's removal was not printed"
   elif [[ "$vendors" == 2 ]]; then
     [[ ! -e "$home/.claude/skills/planar" && ! -e "$home/.agents/skills/planar" ]] || fail "[$tag/$name] --no-vendor placed vendor surfaces"
   else
