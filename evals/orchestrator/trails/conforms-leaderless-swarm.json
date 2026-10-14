@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "id": "conforms-leaderless-swarm",
+  "description": "Peers that pull their own work with no orchestrator and no parent actions: no orchestration is visible, so rule 4 grades nothing.",
+  "style": "leaderless swarm",
+  "policy": {
+    "require_model": true
+  },
+  "tasks": [
+    {
+      "title": "a",
+      "final": "done"
+    },
+    {
+      "title": "b",
+      "final": "done"
+    },
+    {
+      "title": "c",
+      "final": "done"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "claude-sonnet-5",
+      "session": "peer-1",
+      "parent_action": false
+    },
+    {
+      "task": 2,
+      "status": "completed",
+      "role": "coder",
+      "model": "claude-sonnet-5",
+      "session": "peer-2",
+      "parent_action": false
+    },
+    {
+      "task": 3,
+      "status": "completed",
+      "role": "coder",
+      "model": "claude-sonnet-5",
+      "session": "peer-3",
+      "parent_action": false
+    }
+  ],
+  "expected": {
+    "conforms": true,
+    "violations": [],
+    "overrides": []
+  }
+}

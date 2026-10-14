@@ -235,6 +235,25 @@ class RunConformanceTests(unittest.TestCase):
             with self.assertRaises(trail.TrailError):
                 trail.run_conformance(source, 1, planar=planar)
 
+    def test_exit_one_without_a_report_is_a_refusal_not_a_verdict(self) -> None:
+        # `planar health conformance` exits 1 for a violation AND for a plan, scope or policy it could not read.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "trail.db"
+            make_database(source)
+            planar, _ = fake_planar(root / "bin", "", code=1)
+            with self.assertRaises(trail.TrailError) as caught:
+                trail.run_conformance(source, 1, planar=planar)
+            self.assertIn("produced no report (exit 1)", str(caught.exception))
+
+    def test_exit_one_with_a_report_is_a_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "trail.db"
+            make_database(source)
+            planar, _ = fake_planar(root / "bin", sample_report([violation(4)]), code=1)
+            self.assertEqual(trail.run_conformance(source, 1, planar=planar).exit_code, 1)
+
     def test_output_that_is_not_the_report_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -337,7 +356,7 @@ class SpecValidationTests(unittest.TestCase):
 class ShippedTrailTests(unittest.TestCase):
     def test_every_shipped_trail_is_valid_and_the_corpus_covers_the_checker(self) -> None:
         specs = trail.load_trails()
-        self.assertGreaterEqual(len(specs), 14)
+        self.assertGreaterEqual(len(specs), 16)
         harness.check_trail_corpus(specs)
 
     def test_the_corpus_check_names_a_rule_no_trail_breaks(self) -> None:
@@ -347,7 +366,7 @@ class ShippedTrailTests(unittest.TestCase):
         self.assertIn("[5]", str(caught.exception))
 
     def test_the_corpus_check_needs_three_conforming_styles(self) -> None:
-        specs = [(p, s) for p, s in trail.load_trails() if s["id"] != "conforms-swarm"]
+        specs = [(p, s) for p, s in trail.load_trails() if s["id"] not in ("conforms-swarm", "conforms-leaderless-swarm")]
         with self.assertRaises(harness.EvalFailure) as caught:
             harness.check_trail_corpus(specs)
         self.assertIn("orchestrator style", str(caught.exception))

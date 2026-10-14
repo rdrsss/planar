@@ -137,7 +137,8 @@ make eval-orchestrator-live VENDOR=codex SURFACE=skill
   --keep
 ```
 
-Lifecycle cases use the real project-scoped orchestrator agent and replace only
+Lifecycle cases use the real project-scoped orchestrator agent by default
+(`--orchestrator-prompt <file>` substitutes another prompt) and replace only
 `planar-coder`, `planar-reviewer`, and `planar-test-coder` with fixture agents whose behavior is
 defined under `evals/orchestrator/fixtures/`. First validate the fixture and
 grader without a model, then invoke a configured host:
@@ -240,13 +241,13 @@ Three ways in:
   `evals/orchestrator/trails/` describes a trail (a plan, its tasks, and the
   claims, reviews and queued runs recorded on them) and the verdict the checker
   must give it. The plan and tasks are made with the real verbs; the claim rows
-  are the recorded part. The set covers three conforming trails in different
+  are the recorded part. The set covers four conforming trails in different
   orchestrator styles (a session with an orchestrator and dispatched coders, a
-  swarm of peer workers, a Codex session), one trail per broken rule 1-6
-  (including a lapsed `active` claim and a review row with no verdict), an
+  swarm of peer workers, a leaderless swarm with no orchestrator, a Codex session), one trail per broken rule 1-6
+  (including a lapsed `active` claim, a review row with no verdict, and rule 4 both in a partial protocol and with a child the worker nests under its own root action), an
   operator `--force` listed as an override, history before the floor that never
   fails, and a task in a descendant plan. The lane refuses to run if a rule, an
-  override, the floor, a descendant plan or the three conforming styles loses
+  override, the floor, a descendant plan or the conforming styles loses
   its trail, runs a negative control (a wrong expected verdict must be refused)
   before the trails, and fails with the checker's own description of the trail
   on a mismatch. `style` is a label for the reader: the grade does not depend on

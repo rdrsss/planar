@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "id": "breaks-parent-action-nested-child",
+  "description": "Rule 4: a worker that nests a child action under its own root action has still no parent action.",
+  "tasks": [
+    {
+      "title": "self-nested",
+      "final": "done"
+    }
+  ],
+  "claims": [
+    {
+      "task": 1,
+      "status": "released",
+      "role": "orchestrator",
+      "vendor": "claude",
+      "session": "orchestrator",
+      "parent_action": false
+    },
+    {
+      "task": 1,
+      "status": "completed",
+      "role": "coder",
+      "model": "m",
+      "session": "coder",
+      "parent_action": false,
+      "self_nested_action": true
+    }
+  ],
+  "expected": {
+    "conforms": false,
+    "violations": [
+      {
+        "rule": 4,
+        "entity": "claim:2"
+      }
+    ]
+  }
+}

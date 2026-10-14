@@ -343,9 +343,12 @@ def run_conformance(
         result = subprocess.run(
             argv, capture_output=True, text=True, env=env, cwd=scratch, timeout=300, check=False
         )
-    if result.returncode not in (0, 1):
+    # Exit 1 means both "the trail broke a rule" and "the plan, scope or policy could not be read". Only the
+    # presence of the JSON report tells them apart, so a refusal is never read as a verdict.
+    if result.returncode not in (0, 1) or not result.stdout.lstrip().startswith("{"):
         raise TrailError(
-            f"{' '.join(argv[1:])} exited {result.returncode}: {result.stderr.strip() or result.stdout.strip()}"
+            f"{' '.join(argv[1:])} produced no report (exit {result.returncode}): "
+            f"{result.stderr.strip() or result.stdout.strip() or 'no output'}"
         )
     return parse_report(result.stdout, result.returncode)
 
@@ -386,6 +389,7 @@ _CLAIM_KEYS = {
     "vendor",
     "session",
     "parent_action",
+    "self_nested_action",
     "lease",
     "repo_root",
     "reviews",
@@ -597,11 +601,18 @@ def build_trail(spec: Mapping[str, Any], directory: Path, planar: Path | None = 
                     orchestrator_action[dispatcher] = int(cursor.lastrowid)
                 parent = orchestrator_action[dispatcher]
             kind = _ROLE_ACTION_KIND.get(claim.get("role") or "", "other")
-            connection.execute(
+            root = connection.execute(
                 "insert into agent_actions (session_id, claim_id, parent_action_id, action_kind, vendor, model) "
                 "values (?, ?, ?, ?, ?, ?)",
                 (session, claim_id, parent, kind, vendor, claim.get("model")),
-            )
+            ).lastrowid
+            if claim.get("self_nested_action"):
+                # What `planar-agent action start --claim` records: a child under the claim's own newest action.
+                connection.execute(
+                    "insert into agent_actions (session_id, claim_id, parent_action_id, action_kind, vendor) "
+                    "values (?, ?, ?, 'tool_call', ?)",
+                    (session, claim_id, root, vendor),
+                )
             for review in claim.get("reviews", []):
                 reviewer = session_for(review["session"], "claude")
                 connection.execute(
