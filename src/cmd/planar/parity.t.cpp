@@ -1084,7 +1084,8 @@ TEST_CASE("every ported command declares what it should, self-consistently", "[c
   // count was already stale at HEAD; re-measured from the built binary, it is 232.
   // The operator restored `document validate-range` after the review of task 7468 (196 -> 197).
   // Task 7476 removes the `task facts` group and its `stage` leaf (197 -> 195).
-  CHECK(mine->size() == 195);
+  // `health conformance` adds one catalog entry (195 -> 196), re-measured from the built binary.
+  CHECK(mine->size() == 196);
 
   CHECK(mine->contains("planar help"));
   CHECK(mine->contains("planar update"));
