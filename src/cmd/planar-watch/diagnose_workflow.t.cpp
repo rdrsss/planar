@@ -8,17 +8,16 @@
 // (its `diagnose` key), and `planar plan closeout --dry-run --json` on the anchor. The three must
 // agree, exactly:
 //
-//   * the 7335 shape: a dispatch previewed and confirmed whose claim completes with no coder
-//     action is one `dispatch-no-role-action` warning;
 //   * the 7337 shape: a lapsed claim left active behind a recovery claim that finished the task
 //     is a `claim-superseded-active` error, with its open claim_check marker as an `action-unended` warning;
 //   * an action left open under a claim that lapsed and was reconciled is one `action-unended` warning beside the info event
 //   `claim-closed-by-reconcile`;
-//   * a direct claim doing its own work, and a healthy orchestrated run, give no finding.
+//   * a direct claim doing its own work, and a healthy run with a coder action and heartbeats, give
+//     no finding.
 //
-// Writes outside a verb are TIME TRAVEL (a lease cannot be waited out, so a lease timestamp is moved
-// afterwards) and the dispatch rows no verb writes any more (plan 1142, task 7455): the preview, the
-// confirmed snapshot that spends it, and the routing candidate and project they name.
+// Writes outside a verb are TIME TRAVEL: a lease cannot be waited out, so a lease timestamp is moved
+// afterwards. The dispatch checks this file once drove read the routing dispatch tables migration
+// 00043 dropped; they were retired with them.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -71,11 +70,9 @@ struct world {
       planar({"task", "add", std::format("Task {}", i), "--plan", "2"});
     }
     planar({"plan", "update", "1", "--status", "active"});
-    sql("insert or ignore into projects (id, slug, name) values (1, 'routing-project', 'Routing Project')");
-    sql("insert into routing_candidates (vendor, candidate_id, fallback_order) values ('claude', 'candidate', 0)");
   }
 
-  /// TIME TRAVEL and the routing candidate: the only writes made outside a verb.
+  /// TIME TRAVEL: the only writes made outside a verb.
   auto sql(std::string_view statement) -> void {
     auto conn = planar::db::connection::open((root / "planar.db").string());
     REQUIRE(conn.has_value());
@@ -109,38 +106,6 @@ struct world {
   auto start_action(std::string const& token, std::string const& kind, int task_id) -> void {
     planar_agent({"action", "start", "--claim", token, "--kind", kind, "--entity", std::format("task:{}", task_id),
                   "--no-locality-probe"});
-  }
-
-  static auto now_text(int offset_seconds = 0) -> std::string {
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now() +
-                                                                                         std::chrono::seconds{offset_seconds}));
-  }
-
-  /// The orchestrator's dispatch as the rows it leaves: a preview (no claim yet) spent by a confirmed
-  /// snapshot a minute in the past. Synthetic digests, consistent. No verb writes these rows (plan 1142,
-  /// task 7455), so they are inserted directly.
-  auto dispatch(int task_id) -> void {
-    auto const token = std::format("ptok{}", task_id);
-    auto const at    = now_text(-60);
-    sql(std::format("insert into routing_dispatch_previews (preview_token, task_id, logical_work_item_id, project_id, "
-                    "validation_policy_version, routing_policy_version, profile_rule_version, vendor, role, tier, "
-                    "work_type, complexity, packet_digest, profile_digest, policy_digest, capability_digest, "
-                    "requested_candidate_id, host_id, assignment_class, evidence_state, expires_at) values ('{}', {}, "
-                    "'w{}', 1, 'v1', 'r1', 'p1', 'claude', 'coder', 'medium', 'feature', 'standard', 'pk', 'pf', 'po', "
-                    "'cp', 1, 'host', 'default', 'evidential', '2099-01-01T00:00:00.000Z')",
-                    token, task_id, task_id));
-    sql(std::format("insert into routing_dispatch_snapshots (dispatch_key, task_id, logical_work_item_id, project_id, "
-                    "validation_policy_version, routing_policy_version, profile_rule_version, vendor, role, tier, "
-                    "work_type, complexity, packet_digest, policy_digest, capability_digest, requested_candidate_id, "
-                    "assignment_class, operator_decision, reviewer_disposition, confirmed_at) select 'key-{0}', task_id, "
-                    "logical_work_item_id, project_id, validation_policy_version, routing_policy_version, "
-                    "profile_rule_version, vendor, role, tier, work_type, complexity, packet_digest, policy_digest, "
-                    "capability_digest, requested_candidate_id, assignment_class, 'confirmed', 'required', '{1}' "
-                    "from routing_dispatch_previews where preview_token = '{0}'",
-                    token, at));
-    sql(std::format("update routing_dispatch_previews set consumed_at = '{1}', "
-                    "consumed_dispatch_id = (select max(id) from routing_dispatch_snapshots) where preview_token = '{0}'",
-                    token, at));
   }
 
   /// `check entity severity` for each finding in a diagnose result object, sorted.
@@ -196,24 +161,6 @@ using findings = std::vector<std::string>;
 
 } // namespace
 
-TEST_CASE("the 7335 shape: a confirmed dispatch whose claim completes with no coder action is one warning",
-          "[cmd][watch][diagnose][workflow][integration][7385]") {
-  world w{1};
-  w.dispatch(1);
-  auto const token = w.claim(1);
-  // The claim is live and may still start its action.
-  CHECK(w.watch_findings(1).empty());
-
-  auto const at_complete = w.complete_findings(token);
-  REQUIRE(at_complete.has_value());
-  CHECK(w.text("select status from plans where id = 2") == "done");
-  findings const expected{"dispatch-no-role-action claim:1 warning"};
-  CHECK(*at_complete == expected);
-  CHECK(w.watch_findings(1) == expected);
-  CHECK(w.watch_findings(2) == expected);
-  CHECK(w.closeout_findings() == expected);
-}
-
 TEST_CASE("the 7337 shape: a lapsed claim left active behind the claim that finished the task is an error and its open marker",
           "[cmd][watch][diagnose][workflow][integration][7385]") {
   world      w{1};
@@ -257,10 +204,9 @@ TEST_CASE("an action left open on a claim that lapsed and was reconciled is one 
   CHECK(w.closeout_findings() == expected);
 }
 
-TEST_CASE("a direct claim doing its own work gives no dispatch finding anywhere",
-          "[cmd][watch][diagnose][workflow][integration][7385]") {
+TEST_CASE("a direct claim doing its own work gives no finding anywhere", "[cmd][watch][diagnose][workflow][integration][7385]") {
   world w{2};
-  // Task 1 with a coder action, task 2 with none: neither is a dispatch.
+  // Task 1 with a coder action, task 2 with none.
   auto const first = w.claim(1);
   w.start_action(first, "coder", 1);
   w.planar_agent({"heartbeat", "--claim", first});
@@ -276,10 +222,9 @@ TEST_CASE("a direct claim doing its own work gives no dispatch finding anywhere"
   CHECK(w.closeout_findings().empty());
 }
 
-TEST_CASE("a healthy orchestrated run, preview to complete, gives no finding anywhere",
+TEST_CASE("a healthy run, claim to complete with a coder action and a heartbeat, gives no finding anywhere",
           "[cmd][watch][diagnose][workflow][integration][7385]") {
-  world w{1};
-  w.dispatch(1);
+  world      w{1};
   auto const token = w.claim(1);
   w.start_action(token, "coder", 1);
   w.planar_agent({"heartbeat", "--claim", token});

@@ -268,6 +268,17 @@ swap_at="${o%%Swapping the managed subtrees*}"; mig_at="${o%%Migrating the datab
 [[ "${#swap_at}" -lt "${#mig_at}" && "${#mig_at}" -lt "${#cur_at}" && "${#cur_at}" -lt "${#o}" ]] \
   || fail "the log does not show the swap, then the migration, then a current probe: $(show)"
 grep -Fq "behind this release's $HEAD_SCHEMA" "$TMP/out" || fail "the probe did not name the behind versions"
+# The real head migration drops the routing tables, so the real release backs the database up first.
+if grep -qi '^drop table routing_' "$(ls "$ROOT/migrations"/*.up.sql | sort | tail -1)"; then
+  copy="$(ls -d "$P/backups"/*-schema-$((HEAD_SCHEMA - 1))/planar.db 2>/dev/null || true)"
+  [[ -n "$copy" && "$(printf '%s\n' "$copy" | grep -c .)" == 1 ]] || fail "the real table-dropping release wrote no backup: $(ls -la "$P/backups" 2>&1)"
+  grep -Fq "backed up $P/planar.db (schema $((HEAD_SCHEMA - 1))) to $copy" "$TMP/out" || fail "the backup's path was not printed: $(show)"
+  [[ "$(db_version "$copy")" == "$((HEAD_SCHEMA - 1))" ]] || fail "the backup does not open at the old schema"
+  [[ "$(db_rows "$copy" "select count(*) from sqlite_master where type = 'table' and name like 'routing\_%' escape '\\'")" == "[(10,)]" ]] \
+    || fail "the backup does not hold the ten routing tables"
+  [[ "$(db_rows "$P/planar.db" "select count(*) from sqlite_master where name like 'routing\_%' escape '\\'")" == "[(0,)]" ]] \
+    || fail "the migrated database still holds a routing object"
+fi
 no_evidence "$P"
 pass "a behind database is migrated after the swap"
 fi

@@ -2,9 +2,9 @@
 /// @brief `planar.engine.ingest.materialize` — the digest and Markdown-section
 /// helpers shared by the packet's references and `task packet --expand`.
 ///
-/// This module no longer writes anything. It used to stage `routing_task_facts`
-/// rows for every task below an anchor plan; the packet now cites through the
-/// task's `cites` entity links and no fact is stored or read. What remains is
+/// This module no longer writes anything. It once staged a fact row for every
+/// task below an anchor plan, in a table migration 00043 dropped; the packet
+/// cites through the task's `cites` entity links. What remains is
 /// pure: a SHA-256 wrapper, the reference digest, and the heading-based
 /// section resolver `--expand` uses. The functions touch no database and
 /// return `std::optional` for absence; none throws.

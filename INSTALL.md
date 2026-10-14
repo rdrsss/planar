@@ -413,8 +413,8 @@ at or below the release's. One drops a table when its up file has
 `drop table NAME` and neither creates `NAME` nor renames another table to it,
 so a table rebuild (create the new table, copy, drop the old one, rename) is
 not a drop, and neither is a `temp.` table. The installer reads this from the
-release's `migrations/` directory; migration 00009 (`active_scope`) is such a
-migration. A fresh or current database, or a release whose pending
+release's `migrations/` directory; migrations 00009 (`active_scope`) and
+00043 (the ten `routing_*` tables) are such migrations. A fresh or current database, or a release whose pending
 migrations drop no table, gets no copy.
 
 The copy is taken under the mutation lock, after the probe and before
@@ -886,12 +886,13 @@ at `~/.planar.lock/`):
 ├── .staging-<token>/, <name>.old       # staging and backups of an unfinished install (journal-owned)
 ├── .planar-update/<name>/              # `planar update`'s download directory, removed by the installer it hands off to
 ├── queue-logs/                         # detached queue-run output (`<seq>.log`)
+├── backups/                            # copies of planar.db taken before a migration that drops tables
 ├── migrations/
 │   ├── 00001_foundation.up.sql         # canonical migration sources, sqlx-cli format
 │   ├── 00001_foundation.down.sql
 │   ├── 00002_planning.up.sql
 │   ├── 00002_planning.down.sql
-│   └── … (through 00042_review_gate_policy)
+│   └── … (through 00043_drop_routing_tables)
 ├── skills/planar/                      # staged planar skill (SKILL.md + references/)
 ├── templates/                          # Operator-editable defaults
 └── scripts/                            # install-lib/ only, from a release bundle; a source install stages the repository's scripts/

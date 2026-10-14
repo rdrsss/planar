@@ -625,7 +625,9 @@ printf 'drop table not_an_up;\n' > "$MIGS/00003_gone.down.sql"
 [[ -z "$(planar_migrations_dropping_tables "$MIGS" 3 4)" ]] || fail "the lower bound is not exclusive"
 if planar_migrations_dropping_tables "$TMP/drops/absent" 0 4 >/dev/null; then fail "an absent migrations directory was not refused"; fi
 # The repository's own stream: every migration that drops a table for good.
-[[ "$(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')" == "00009_drop_active_scope.up.sql: active_scope|" ]] \
+_routing="routing_candidate_bindings routing_candidates routing_dispatch_events routing_dispatch_previews routing_dispatch_snapshots"
+_routing="$_routing routing_experiments routing_host_observations routing_legacy_outcomes routing_task_facts routing_terminal_samples"
+[[ "$(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')" == "00009_drop_active_scope.up.sql: active_scope|00043_drop_routing_tables.up.sql: $_routing|" ]] \
   || fail "the repository's table-dropping migrations changed: $(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')"
 _backup_line="$(qr_line '^    planar_db_backup "\$STAGE/bin" "\$ROOT_C" "\$INSTALL_DB_VERSION"')"
 [[ "$(printf '%s\n' "$_backup_line" | grep -c .)" == 1 ]] || fail "install.sh: the backup call is not exactly one line ('$_backup_line')"

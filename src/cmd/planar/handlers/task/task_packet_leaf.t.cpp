@@ -543,16 +543,23 @@ TEST_CASE("task facts stage is an unknown subcommand", "[task-packet][references
   seed(fx);
 
   // The verb was removed with the facts it staged; it is refused at the
-  // argument layer and writes nothing.
+  // argument layer and writes nothing. The table it wrote is gone too
+  // (migration 00043).
+  auto const snapshot = [&] {
+    auto conn = planar::db::connection::open(fx.db_path.string());
+    REQUIRE(conn.has_value());
+    auto stmt = conn->prepare("select (select count(*) from entity_links) || '|' || (select updated_at from tasks where id = 100)"
+                              " || '|' || (select count(*) from sqlite_master where name = 'routing_task_facts')");
+    REQUIRE(stmt.has_value());
+    REQUIRE(stmt->step().has_value());
+    return std::string{stmt->column_text(0)};
+  };
+  auto const before = snapshot();
+  CHECK(before.ends_with("|0"));
+
   auto const res = dispatch(fx, {"task", "facts", "stage", "100"});
   CHECK(res.code == 2);
   CHECK(res.out.empty());
   CHECK(res.err.contains("facts"));
-
-  auto conn = planar::db::connection::open(fx.db_path.string());
-  REQUIRE(conn.has_value());
-  auto stmt = conn->prepare("select count(*) from routing_task_facts");
-  REQUIRE(stmt.has_value());
-  REQUIRE(stmt->step().has_value());
-  CHECK(stmt->column_int64(0) == 0);
+  CHECK(snapshot() == before);
 }

@@ -20,13 +20,12 @@
 ///
 /// ## REFERENCES, NOT FACTS
 ///
-/// The packet carries no `routing_task_facts` row and no section text. A
-/// citation is a REFERENCE derived live from the task's `cites` entity links:
-/// the cited artifact's id, a locator, a digest and a one-line label. The
-/// text of a cited section is fetched on demand with `expand_reference`
-/// (`planar task packet <id> --expand <ref>`). Nothing reads
-/// `routing_task_facts` on master any more; the table is dropped by a later
-/// migration.
+/// The packet carries no stored fact and no section text. A citation is a
+/// REFERENCE derived live from the task's `cites` entity links: the cited
+/// artifact's id, a locator, a digest and a one-line label. The text of a
+/// cited section is fetched on demand with `expand_reference`
+/// (`planar task packet <id> --expand <ref>`). The fact table it once read
+/// was dropped by migration 00043.
 ///
 /// ## READINESS COVERS COORDINATION FACTS ONLY
 ///
