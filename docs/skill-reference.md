@@ -88,56 +88,50 @@ name.
 
 ## What installs where
 
-`install.sh` stages the skill and the agents under `$PLANAR_HOME` (default `~/.planar/`),
-then places them into each vendor harness whose presence marker exists. Six vendors read
-nine targets. A vendor without its marker is skipped and named in the installer's summary;
-`--vendors` narrows the set further.
+`install.sh` stages the skill under `$PLANAR_HOME` (default `~/.planar/`), then places it
+into each vendor harness whose presence marker exists. Six vendors read three skill
+targets. A vendor without its marker is skipped and named in the installer's summary;
+`--vendors` narrows the set further. No role agent is staged or placed: the
+`planar-<role>` agents are examples under `examples/agents/` in the source tree, which you
+can copy into a harness's agent directory yourself.
 
 ### Vendor targets
 
-| Vendor | Presence marker | Skill | Agents |
-|--------|-----------------|-------|--------|
-| Claude Code | `~/.claude/` | `~/.claude/skills/planar` | `~/.claude/agents/planar-<role>.md` |
-| Codex | `$CODEX_HOME` set, else `~/.codex/` | `~/.agents/skills/planar` (shared) | `$CODEX_HOME/agents/planar-<role>.toml` |
-| Copilot | `~/.copilot/` | `~/.agents/skills/planar` (shared) | `~/.copilot/agents/planar-<role>.agent.md` |
-| Gemini CLI | `~/.gemini/settings.json` | `~/.agents/skills/planar` (shared) | `~/.gemini/agents/planar-<role>.md` |
-| Antigravity | `~/.gemini/antigravity-cli/` | `~/.gemini/antigravity-cli/skills/planar` | `~/.gemini/antigravity-cli/agents/planar-<role>.md` |
-| OpenCode | `~/.config/opencode/` | none of its own | `~/.config/opencode/agents/planar-<role>.md` |
+| Vendor | Presence marker | Skill |
+|--------|-----------------|-------|
+| Claude Code | `~/.claude/` | `~/.claude/skills/planar` |
+| Codex | `$CODEX_HOME` set, else `~/.codex/` | `~/.agents/skills/planar` (shared) |
+| Copilot | `~/.copilot/` | `~/.agents/skills/planar` (shared) |
+| Gemini CLI | `~/.gemini/settings.json` | `~/.agents/skills/planar` (shared) |
+| Antigravity | `~/.gemini/antigravity-cli/` | `~/.gemini/antigravity-cli/skills/planar` |
+| OpenCode | `~/.config/opencode/` | none of its own |
 
-The nine targets are the three skill roots (`~/.claude/skills`, the shared `~/.agents/skills`
-and Antigravity's private `~/.gemini/antigravity-cli/skills`) and the six agent directories.
+The three targets are `~/.claude/skills`, the shared `~/.agents/skills` and Antigravity's
+private `~/.gemini/antigravity-cli/skills`.
 
 - **The shared skill root.** `~/.agents/skills/planar` is placed once when any of Codex,
   Copilot, Gemini CLI or OpenCode is present, however many of them are. The install
   manifest records it under the owner `shared`, because no single vendor owns it.
 - **Antigravity** has a private skill root and is detected independently of Gemini CLI.
 - **OpenCode** gets no private skill copy. It reads the shared `~/.agents/skills` root and
-  `~/.claude/skills`, and Planar never writes `~/.config/opencode/skills`. Its agent copy is
-  derived: the frontmatter is reduced to `description` and `mode: subagent`, the body kept.
-- **Copilot** agent files carry the `.agent.md` suffix.
-- **Codex** agents are TOML files with `name`, `description` and `developer_instructions`,
-  staged under `$PLANAR_HOME/codex-agents/`. `$CODEX_HOME` defaults to `~/.codex`.
-
-### Gemini CLI subagents
-
-Gemini CLI loads the agents in `~/.gemini/agents/` as subagents by default. Setting
-`experimental.enableAgents` to `false` in `~/.gemini/settings.json` turns subagents off; the
-skill keeps working and the installer still places the agent files.
+  `~/.claude/skills`, and Planar never writes `~/.config/opencode/skills`.
+- **Role agents an older install placed.** An upgrade removes the `planar-<role>` agents an
+  older install placed in the six vendor agent directories, when it can prove Planar placed
+  them, and never touches a `planar-local-*` agent. See
+  [INSTALL.md § Upgrade note](../INSTALL.md#upgrade-note-the-previous-skill-and-agent-projections).
 
 ### Link and copy mode
 
-By default `install.sh` copies: each skill target is a real directory and each agent a
-regular file, so the source checkout can be deleted afterwards. With `--link`, the skill
-directories and the Markdown, Copilot and Codex agent files are symlinks into
-`$PLANAR_HOME`, and source edits show up without reinstalling. The OpenCode agents are
-derived, so they are regular files in both modes. A destination that exists and that no
+By default `install.sh` copies: each skill target is a real directory, so the source
+checkout can be deleted afterwards. With `--link`, the skill directories are symlinks into
+`$PLANAR_HOME`, and source edits show up without reinstalling. A destination that exists and that no
 Planar install manifest records stops the install, naming the path. See
 [INSTALL.md § Copy mode vs link mode](../INSTALL.md#copy-mode-vs-link-mode).
 
 ### Drift, upgrade and uninstall
 
 - **Drift.** `$PLANAR_HOME/install-manifest.json` is the only ownership record.
-  `planar health` compares every recorded target across the nine roots with the staged
+  `planar health` compares every recorded target across the vendor roots with the staged
   authority and reports it `fresh`, `stale` or `missing`; other entries in those roots are
   `unmanaged` and never degrade health. A degraded result carries the reinstall command.
 - **Upgrade.** A reinstall over an older install removes the previous per-vendor skill and
@@ -255,7 +249,8 @@ surface, never invoked as a skill: no slash-command skill exists for any role.
 
 ### Frontmatter contract
 
-Each agent source is `agents/planar-<role>.md` with this frontmatter:
+Each agent source is `examples/agents/planar-<role>.md` (`agents/` for
+`planar-orchestrator` and `planar-test-coder`) with this frontmatter:
 
 ```yaml
 ---
@@ -267,15 +262,14 @@ planar:
 ---
 ```
 
-`name` equals the file stem and the `slug`. The Copilot, OpenCode and Codex forms are
-derived from this one source at install time.
+`name` equals the file stem and the `slug`. The installer does not place these files.
 
 ### Doctrine documents
 
 Three shared documents sit beside the agents: `methodology.md` (the procedural flow and the
 claim ritual), `doctrine.md` (cross-cutting judgment, and the canonical operator feedback
-contract) and `cross-scope-writes.md` (the cross-scope write cue). They install under `$PLANAR_HOME/agents/` and are never placed into
-a vendor agent directory; an agent refers to them by name.
+contract) and `cross-scope-writes.md` (the cross-scope write cue). They live in the source
+tree's `agents/` and are not installed; an agent refers to them by name.
 
 ### Role values on flags
 

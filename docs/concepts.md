@@ -1057,7 +1057,7 @@ after apply. Before apply, its legitimate zero totals do not prove draft
 coverage. After apply it provides the per-milestone four-bucket breakdown
 (happy / empty / error / edge) used by test-coder cycles and reviewers.
 
-**Planning loop integration.** The planner authors the test-spec in Phase 4 of its authoring pipeline (see [`agents/planar-planner.md` §Authoring phases](../agents/planar-planner.md#authoring-phases)). Phase 4 is purely adversarial: what could go wrong, what scenarios prove this works, what scenarios prove it doesn't. The planner explicitly does NOT propose implementations of the tests — that's the [test-coder](#test-coder)'s job (see below).
+**Planning loop integration.** The planner authors the test-spec in Phase 4 of its authoring pipeline (see [`examples/agents/planar-planner.md` §Authoring phases](../examples/agents/planar-planner.md#authoring-phases)). Phase 4 is purely adversarial: what could go wrong, what scenarios prove this works, what scenarios prove it doesn't. The planner explicitly does NOT propose implementations of the tests — that's the [test-coder](#test-coder)'s job (see below).
 
 **Orchestrator integration.** When dispatched tasks have `[slug:]` annotations on their roadmap bullets and the test-spec cites those slugs via `task:<slug>`, the orchestrator's Phase 3.5 dispatches the test-coder agent. The gating oracle is `planar test-spec status <plan> --json` — the orchestrator does not re-implement coverage calculation. The reviewer then runs `planar test-spec status` against the post-diff DB; any slug claimed by the brief that still appears in the uncovered set is a `request-changes` finding citing the verb output verbatim.
 

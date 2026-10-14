@@ -12,7 +12,7 @@
       "mode": "all",
       "paths": [
         "agents/planar-orchestrator.md",
-        "agents/planar-janitor.md"
+        "examples/agents/planar-janitor.md"
       ],
       "pattern": "Git delivery profile"
     },
@@ -20,7 +20,7 @@
       "id": "delivery-modes",
       "description": "The janitor supports hosted, local, and already-integrated delivery.",
       "mode": "all",
-      "paths": ["agents/planar-janitor.md"],
+      "paths": ["examples/agents/planar-janitor.md"],
       "pattern": "github-pr.*external-pr.*local-ref.*already-integrated",
       "multiline": true
     }

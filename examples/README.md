@@ -16,6 +16,22 @@ Replace placeholder values such as `<plan-id>`, `<task-id>` and
 | [`spec-review-loop.md`](spec-review-loop.md) | You have draft specs with open questions and want to turn them into complete, self-consistent artifacts. |
 | [`operational-plane.md`](operational-plane.md) | You want to preview and propagate a finished local plan to Jira or GitHub Issues. |
 
+## Example role agents
+
+[`agents/`](agents/) holds example role agents, one `planar-<role>.md` file per
+role: coder, reviewer, janitor, research, planner, spec-reviewer, ingestor,
+ext-sync and sync-reconciler. Each is one way to divide work around Planar's
+mechanism; none is required by it.
+
+The installer does not place them. Planar installs only the `planar` skill,
+and an upgrade removes the `planar-<role>` agents an older install placed. To
+use one, copy it into your harness's agent directory (for example
+`~/.claude/agents/`) and adapt it to your workflow. Each file carries the
+frontmatter contract described in
+[skill-reference.md § Frontmatter contract](../docs/skill-reference.md#frontmatter-contract).
+They still cite the doctrine documents under the repository's
+[`agents/`](../agents/) directory by name.
+
 ## Minimal End-To-End Shape
 
 ```text

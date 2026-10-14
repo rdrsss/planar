@@ -41,7 +41,7 @@ Session-attributed defect log (add entries when a new defect class is observed):
 
 ## Verify independently
 
-Full doctrine lives in [`agents/planar-reviewer.md` §What the reviewer does](planar-reviewer.md#what-the-reviewer-does).
+Full doctrine lives in [`examples/agents/planar-reviewer.md` §What the reviewer does](../examples/agents/planar-reviewer.md#what-the-reviewer-does).
 
 Summary: the blind reviewer does not receive the coder's narrative report. It
 receives a structured validation packet and independently verifies the diff.
@@ -160,7 +160,7 @@ gate, weaken strict scope resolution, or bypass the cross-scope guard — no suc
 
 ## Work-complete report template
 
-Full template lives in [`agents/planar-coder.md §Work-complete report template`](planar-coder.md#work-complete-report-template).
+Full template lives in [`examples/agents/planar-coder.md §Work-complete report template`](../examples/agents/planar-coder.md#work-complete-report-template).
 
 Required sections (all six must be present; write "N/A" only if the section genuinely does not apply):
 
@@ -179,7 +179,7 @@ spec citations, confirmed validation profile, and structured evidence packet.
 
 ## When to skip agents
 
-Aggregated from [`agents/planar-coder.md`](planar-coder.md) and [`agents/planar-reviewer.md`](planar-reviewer.md) per the reviewer skip-condition rules:
+Aggregated from [`examples/agents/planar-coder.md`](../examples/agents/planar-coder.md) and [`examples/agents/planar-reviewer.md`](../examples/agents/planar-reviewer.md) per the reviewer skip-condition rules:
 
 | Agent | Skip when |
 |---|---|

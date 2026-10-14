@@ -1164,7 +1164,10 @@ TEST_CASE("update: the binary updates a bootstrap install end to end through the
   std::filesystem::create_directories(unpacked);
   REQUIRE(bash(R"(tar -xzf "$1" -C "$2")",
                {(rel / std::format("download/v1.1.0/planar-{}.tar.gz", *plat)).string(), unpacked.string()}) == 0);
-  for (std::string_view sub : {"bin", "skills", "agents", "codex-agents", "scripts", "migrations"}) {
+  // No role agent is staged: the bundle ships no agents/ or codex-agents/.
+  CHECK_FALSE(std::filesystem::exists(inst / "agents"));
+  CHECK_FALSE(std::filesystem::exists(inst / "codex-agents"));
+  for (std::string_view sub : {"bin", "skills", "scripts", "migrations"}) {
     INFO(sub);
     // Every bundle file is installed byte for byte (the installer adds
     // bin/planar-uninstall beside them).

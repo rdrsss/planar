@@ -192,7 +192,7 @@ These tasks follow the same terminal rules as any task — they must reach `done
    id, owned worktrees/branches, reviewer or bypass disposition, structured
    validation evidence, and session context.
 4. **Janitor executes its six-step flow.** See
-   [`agents/planar-janitor.md`](planar-janitor.md): verify evidence → integrate and prove Git
+   [`examples/agents/planar-janitor.md`](../examples/agents/planar-janitor.md): verify evidence → integrate and prove Git
    state → post-integration validation → reconcile Planar → clean owned Git
    state → `planar plan closeout`.
 5. **Gate verdict surfaces to operator.** The orchestrator reports the janitor's result:
@@ -1279,7 +1279,7 @@ the operator's explicit `barrel-bypass` choice.
 | Docs changes | Reviewer-on unless operator explicitly selects bypass | Documentation can encode contracts and executable examples. |
 
 When the reviewer IS dispatched, see the role spec at
-[`agents/planar-reviewer.md`](planar-reviewer.md) for the focused responsibilities and
+[`examples/agents/planar-reviewer.md`](../examples/agents/planar-reviewer.md) for the focused responsibilities and
 the explicit NOT-do list. The blind-read contract below governs how the
 brief is composed.
 
@@ -1332,7 +1332,7 @@ Every coder brief MUST:
   language or framework assumption.
 - **Specify the report shape.** A word ceiling (the work-complete
   report has a cap — keep it tight) and the required sections per
-  [`agents/planar-coder.md` §Work-complete report template](planar-coder.md#work-complete-report-template).
+  [`examples/agents/planar-coder.md` §Work-complete report template](../examples/agents/planar-coder.md#work-complete-report-template).
   The dispatcher reads the report; vague shape produces vague reports.
 - **Pose the problem; do not include the solution.** State the
   invariant, the constraint, and the acceptance signal. Let the coder
@@ -1475,7 +1475,7 @@ Status strings describe the **agent's own state** (what it is doing), not a mirr
 
 ### Cross-references
 
-- Per-role canonical status strings: see the "Status reporting" sections in [`agents/planar-coder.md`](planar-coder.md#status-reporting), [`agents/planar-orchestrator.md`](planar-orchestrator.md#status-reporting), [`agents/planar-planner.md`](planar-planner.md#status-reporting), [`agents/planar-reviewer.md`](planar-reviewer.md#status-reporting), [`agents/planar-test-coder.md`](planar-test-coder.md#iteration-and-status), and [`agents/planar-ingestor.md`](planar-ingestor.md#status-reporting).
+- Per-role canonical status strings: see the "Status reporting" sections in [`examples/agents/planar-coder.md`](../examples/agents/planar-coder.md#status-reporting), [`agents/planar-orchestrator.md`](planar-orchestrator.md#status-reporting), [`examples/agents/planar-planner.md`](../examples/agents/planar-planner.md#status-reporting), [`examples/agents/planar-reviewer.md`](../examples/agents/planar-reviewer.md#status-reporting), [`agents/planar-test-coder.md`](planar-test-coder.md#iteration-and-status), and [`examples/agents/planar-ingestor.md`](../examples/agents/planar-ingestor.md#status-reporting).
 - `agent_actions` schema: see the installed Planar version's authoritative
   schema documentation.
 - Claim ritual: see [Coordination claims](#coordination-claims) above.

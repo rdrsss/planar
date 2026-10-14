@@ -2,7 +2,9 @@
 // hq-role-files; tech spec 647 § Codex is reached through role files; test spec
 // 649 "every vendor's role files carry the short rule"; plan 1104 task 7214).
 //
-// The agent files are the only role text. Each role file carries one sentence
+// The agent files are the only role text: planar-orchestrator and
+// planar-test-coder under agents/, the rest as examples under examples/agents/.
+// Each role file carries one sentence
 // citing the host build queue rule in `agents/methodology.md`. These cases read
 // the authored sources from the repository and fail when one of them loses that
 // citation, or when the coder's own instructions stop using the queued form.
@@ -15,8 +17,8 @@ namespace {
 
 /// @brief Every role file, which cites the methodology's queue rule.
 constexpr std::array k_role_files{
-    "agents/planar-coder.md",   "agents/planar-test-coder.md",   "agents/planar-reviewer.md",
-    "agents/planar-janitor.md", "agents/planar-orchestrator.md",
+    "examples/agents/planar-coder.md",   "agents/planar-test-coder.md",   "examples/agents/planar-reviewer.md",
+    "examples/agents/planar-janitor.md", "agents/planar-orchestrator.md",
 };
 
 auto read_file(std::filesystem::path const& path) -> std::string {
@@ -66,7 +68,7 @@ TEST_CASE("every role file cites the methodology's host build queue rule", "[cmd
 }
 
 TEST_CASE("the coder's gate instructions use the queued form", "[cmd][agent][queue][roles]") {
-  auto const text = flat(read_file(repo("agents/planar-coder.md")));
+  auto const text = flat(read_file(repo("examples/agents/planar-coder.md")));
   // Long profile commands are submitted detached, short ones run in the
   // foreground, and neither names a make target: the files are installed for
   // every repository and defer to its confirmed validation profile.

@@ -75,7 +75,7 @@ import pathlib, shutil, sys
 stage = pathlib.Path(sys.argv[1])
 ignore = shutil.ignore_patterns('__pycache__', '*.pyc', '.DS_Store')
 for source, destination in [('skills/planar', 'skills/planar'), ('scripts/install-lib', 'scripts/install-lib'),
-                            *[(name, name) for name in ('agents', 'templates', 'migrations')]]:
+                            *[(name, name) for name in ('templates', 'migrations')]]:
     shutil.copytree(source, stage / destination, symlinks=True, ignore=ignore)
 PYTHON
 cp install.sh install-cleanup.txt "$stage/"
@@ -87,7 +87,6 @@ cp scripts/uninstall.sh "$stage/uninstall.sh"
 # asset: one script, byte-identical in both places.
 [ -f scripts/get-planar.sh ] || fail "scripts/get-planar.sh is missing"
 cp scripts/get-planar.sh "$stage/get-planar.sh"
-python3 scripts/render-codex-agents.py "$stage/agents" "$stage/codex-agents"
 
 # init is planning-class: even a scratch DB must be probed outside a worktree.
 arena=$(mktemp -d "${TMPDIR:-/tmp}/dist-cut.XXXXXX")

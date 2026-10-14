@@ -297,6 +297,7 @@ fault_case() {
     *) db_exec "$p/planar.db" "$how" ;;
   esac
   # A previous projection the vendor sweep would retire: it must survive.
+  mkdir -p "$h/.claude/agents"
   ln -s "$p/agents/claude/old.md" "$h/.claude/agents/old-planar-link.md"
   before="$(tree_sum "$p")"
   run_install "$h" "$B2" --
@@ -393,8 +394,8 @@ P="$KILL_HOME/.planar"
 run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 0 ]] || fail "the same command did not recover ($RC): $(show)"
 [[ "$(bin_sum "$P/bin")" == "$(bin_sum "$B2/bin")" ]] || fail "bin/ is not the bundle's after recovery"
-for d in skills agents codex-agents scripts migrations; do
-  diff -r "$B2/$d" "$P/$d" >/dev/null 2>&1 || [[ "$d" == agents ]] || fail "$d/ does not match the bundle after recovery"
+for d in skills scripts migrations; do
+  diff -r "$B2/$d" "$P/$d" >/dev/null 2>&1 || fail "$d/ does not match the bundle after recovery"
 done
 grep -Fq '"version": "v1.2.4"' "$P/release.json" || fail "release.json is not new after recovery"
 grep -Fq "restored $P/bin from $P/bin.old" "$TMP/out" || fail "recovery did not restore bin/ before restaging: $(show)"
@@ -624,12 +625,12 @@ grep -Fq "stopped before changing the installation; removing its staging" "$TMP/
 grep -Fq '"version": "v1.2.4"' "$P/release.json" || fail "the valid newer upgrade did not complete"
 no_evidence "$P"
 # A probe failure while recovering an earlier mutating transaction keeps it.
-kill_case backed-up:agents
+kill_case backed-up:scripts
 P="$KILL_HOME/.planar"
-j_before="$(grep -v '^staging=\|^owner_\|^sub_agents' "$P/.planar-journal")"
+j_before="$(grep -v '^staging=\|^owner_\|^sub_scripts' "$P/.planar-journal")"
 run_install "$KILL_HOME" "$B2" PLANAR_INSTALL_TEST_FAULT=fail@probe --
 [[ "$RC" == 1 && "$(journal_phase "$P")" == mutating ]] || fail "a probe failure during recovery aborted the transaction ($RC)"
-[[ "$(grep -v '^staging=\|^owner_\|^sub_agents' "$P/.planar-journal")" == "$j_before" ]] || fail "the earlier transaction's evidence changed"
+[[ "$(grep -v '^staging=\|^owner_\|^sub_scripts' "$P/.planar-journal")" == "$j_before" ]] || fail "the earlier transaction's evidence changed"
 [[ -z "$(ls -d "$P"/.staging-* 2>/dev/null | while read -r s; do grep -q "${s##*/}" "$P/.planar-journal" || echo "$s"; done)" ]] || fail "the failed attempt left unrecorded staging"
 run_install "$KILL_HOME" "$B2" --
 [[ "$RC" == 0 ]] || fail "recovery after the probe failure did not complete ($RC): $(show)"

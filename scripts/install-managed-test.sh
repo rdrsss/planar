@@ -95,7 +95,7 @@ bundle_tree() {
 no_evidence() { # no_evidence ROOT -- no staging, backup or journal is left
   [[ -z "$(ls -d "$1"/*.old "$1"/.staging-* "$1/.planar-journal" 2>/dev/null)" ]] || fail "recovery evidence is left: $(ls -a "$1")"
 }
-MANAGED="bin skills agents codex-agents scripts migrations"
+MANAGED="bin skills scripts migrations"
 
 # --- 1. an install of unknown age becomes clean ----------------------------------------------
 
@@ -126,7 +126,7 @@ DATA="queue-logs retired workbench config.toml models execute"
 data_before="$(cd "$P" && for d in $DATA; do tree_id "$d" 2>/dev/null || cksum "$d"; done)"
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "the install over an install of unknown age failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
-for n in bin skills agents codex-agents scripts migrations; do
+for n in $MANAGED; do
   same_tree "$(bundle_tree "$BUNDLE" "$n")" "$P/$n" || fail "$n/ is not the bundle's: $(diff -r "$(bundle_tree "$BUNDLE" "$n")" "$P/$n" | head)"
 done
 for b in planar planar-agent planar-watch planar-ext; do
@@ -135,7 +135,8 @@ done
 cmp -s "$BUNDLE/uninstall.sh" "$P/bin/planar-uninstall" && [[ -x "$P/bin/planar-uninstall" ]] \
   || fail "bin/planar-uninstall is not the bundle's uninstall.sh, executable"
 for gone in bin/planar-execute agents/models.md workflows bin/scriptorium bin/mtkahypar lib/libmtkahypar.dylib opt/mtkahypar commands copilot skills/codex agents/claude codex-skills \
-            scripts/stray.sh scripts/old workflows/old.lua codex-agents/planar-gone.toml migrations/00001_ancient.sql skills/planar/OLD.md; do
+            scripts/stray.sh scripts/old workflows/old.lua codex-agents/planar-gone.toml migrations/00001_ancient.sql skills/planar/OLD.md \
+            agents codex-agents; do
   [[ ! -e "$P/$gone" && ! -L "$P/$gone" ]] || fail "$gone survived the install"
 done
 no_evidence "$P"
@@ -170,11 +171,11 @@ out_before="$(tree_id "$OUT")"
 run_prebuilt "$H" "$BUNDLE" --
 [[ "$RC" == 0 ]] || fail "install over symlinked subtrees failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
 [[ "$(tree_id "$OUT")" == "$out_before" ]] || fail "a symlink target was changed: $(tree_id "$OUT" | diff - <(printf '%s\n' "$out_before"))"
-for n in scripts codex-agents; do
-  [[ -d "$P/$n" && ! -L "$P/$n" ]] || fail "$n/ is still a symlink after the install"
-  same_tree "$BUNDLE/$n" "$P/$n" || fail "$n/ is not the bundle's after replacing a symlink"
+[[ -d "$P/scripts" && ! -L "$P/scripts" ]] || fail "scripts/ is still a symlink after the install"
+same_tree "$BUNDLE/scripts" "$P/scripts" || fail "scripts/ is not the bundle's after replacing a symlink"
+for n in commands copilot codex-agents; do
+  [[ ! -e "$P/$n" && ! -L "$P/$n" ]] || fail "the retired symlink $n survived"
 done
-[[ ! -e "$P/commands" && ! -L "$P/commands" && ! -e "$P/copilot" && ! -L "$P/copilot" ]] || fail "a retired symlink survived"
 no_evidence "$P"
 pass "a symlinked managed subtree is replaced by a directory and a symlinked retired path is unlinked, never followed"
 
@@ -182,29 +183,33 @@ pass "a symlinked managed subtree is replaced by a directory and a symlinked ret
 
 B1="$TMP/bundle/rel1"; B2="$TMP/bundle/rel2"
 fake_bundle_make "$ROOT" "$B1"; fake_bundle_make "$ROOT" "$B2"
-mkdir -p "$B1/codex-agents/sub" "$B1/migrations/x" "$B2/migrations"
-printf 'a\n' > "$B1/codex-agents/run.sh";  chmod 644 "$B1/codex-agents/run.sh"
-printf 'b\n' > "$B1/codex-agents/tool.sh"; chmod 755 "$B1/codex-agents/tool.sh"
-printf 'c\n' > "$B1/codex-agents/sub/f"          # a directory in release 1 ...
-printf 'x\n' > "$B1/codex-agents/link-me"        # ... a file that becomes a symlink in release 2
-printf 'a\n' > "$B2/codex-agents/run.sh";  chmod 755 "$B2/codex-agents/run.sh"
-printf 'b\n' > "$B2/codex-agents/tool.sh"; chmod 644 "$B2/codex-agents/tool.sh"
-printf 'now a file\n' > "$B2/codex-agents/sub"  # ... and a file in release 2
-printf 'target\n' > "$B2/codex-agents/real"
-ln -s real "$B2/codex-agents/link-me"
+# The skill subtree carries the cases: install.sh chmods scripts/ itself, so a
+# mode change there is not the release's to make.
+K1="$B1/skills/planar/case"; K2="$B2/skills/planar/case"
+mkdir -p "$K1/sub" "$K2" "$B1/migrations/x" "$B2/migrations"
+printf 'a\n' > "$K1/run.sh";  chmod 644 "$K1/run.sh"
+printf 'b\n' > "$K1/tool.sh"; chmod 755 "$K1/tool.sh"
+printf 'c\n' > "$K1/sub/f"          # a directory in release 1 ...
+printf 'x\n' > "$K1/link-me"        # ... a file that becomes a symlink in release 2
+printf 'a\n' > "$K2/run.sh";  chmod 755 "$K2/run.sh"
+printf 'b\n' > "$K2/tool.sh"; chmod 644 "$K2/tool.sh"
+printf 'now a file\n' > "$K2/sub"  # ... and a file in release 2
+printf 'target\n' > "$K2/real"
+ln -s real "$K2/link-me"
 printf 'y\n' > "$B1/migrations/x/m.sql"; printf 'file now\n' > "$B2/migrations/x"
 H="$(new_home types)"; P="$H/.planar"
 run_prebuilt "$H" "$B1" --
 [[ "$RC" == 0 ]] || fail "release 1 failed ($RC): $(cat "$TMP/err")"
-[[ -d "$P/codex-agents/sub" && ! -x "$P/codex-agents/run.sh" && -x "$P/codex-agents/tool.sh" && -f "$P/codex-agents/link-me" && ! -L "$P/codex-agents/link-me" ]] || fail "release 1 was not installed as built"
+K="$P/skills/planar/case"
+[[ -d "$K/sub" && ! -x "$K/run.sh" && -x "$K/tool.sh" && -f "$K/link-me" && ! -L "$K/link-me" ]] || fail "release 1 was not installed as built"
 run_prebuilt "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "release 2 failed ($RC): $(cat "$TMP/err") $(cat "$TMP/out")"
-[[ -x "$P/codex-agents/run.sh" ]] || fail "an executable bit added by the release was not applied"
-[[ ! -x "$P/codex-agents/tool.sh" ]] || fail "an executable bit removed by the release was kept"
-[[ -f "$P/codex-agents/sub" && ! -d "$P/codex-agents/sub" ]] || fail "a directory that became a file was not replaced"
-[[ -L "$P/codex-agents/link-me" && "$(readlink "$P/codex-agents/link-me")" == real ]] || fail "a file that became a symlink was not replaced"
+[[ -x "$K/run.sh" ]] || fail "an executable bit added by the release was not applied"
+[[ ! -x "$K/tool.sh" ]] || fail "an executable bit removed by the release was kept"
+[[ -f "$K/sub" && ! -d "$K/sub" ]] || fail "a directory that became a file was not replaced"
+[[ -L "$K/link-me" && "$(readlink "$K/link-me")" == real ]] || fail "a file that became a symlink was not replaced"
 [[ -f "$P/migrations/x" && ! -d "$P/migrations/x" ]] || fail "migrations/x did not change type"
-same_tree "$B2/codex-agents" "$P/codex-agents" && same_tree "$B2/migrations" "$P/migrations" || fail "the subtrees are not release 2's"
+same_tree "$B2/skills" "$P/skills" && same_tree "$B2/migrations" "$P/migrations" || fail "the subtrees are not release 2's"
 no_evidence "$P"
 pass "executable-bit and type changes between releases are applied (directory to file, file to symlink)"
 
@@ -216,7 +221,7 @@ H="$(new_home incomplete)"; P="$H/.planar"
 run_prebuilt "$H" "$B2" --
 [[ "$RC" == 0 ]] || fail "release 2 failed ($RC): $(cat "$TMP/err")"
 arena_before="$(tree_id "$P")"
-for missing in migrations scripts/install-lib scripts skills/planar codex-agents uninstall.sh; do
+for missing in migrations scripts/install-lib scripts skills/planar uninstall.sh; do
   BM="$TMP/bundle/missing-${missing//\//-}"
   fake_bundle_make "$ROOT" "$BM"
   rm -rf "${BM:?}/$missing"
@@ -385,7 +390,7 @@ pass "switching between link and copy mode replaces the subtree's form and leave
 # --- 7. a checkout without a managed subtree's source is refused before any write -----------------------
 
 REPO_GOOD="$REPO"
-for missing in migrations scripts/install-lib skills/planar agents; do
+for missing in migrations scripts/install-lib skills/planar; do
   REPO="$TMP/repo-missing-${missing//\//-}"
   cp -R "$REPO_GOOD" "$REPO"
   rm -rf "${REPO:?}/$missing"

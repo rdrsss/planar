@@ -327,9 +327,10 @@ scenario() {
   done
   [[ -f "$p/install-manifest.json" && -f "$p/release.json" && -f "$p/skills/planar/SKILL.md" ]] || fail "[$tag/$name] the install left no manifest, release.json or skill"
   if [[ "$vendors" == 1 ]]; then
-    [[ -f "$home/.claude/agents/planar-coder.md" && -f "$home/.codex/agents/planar-coder.toml" ]] || fail "[$tag/$name] vendor surfaces were not placed"
+    [[ -f "$home/.claude/skills/planar/SKILL.md" && -f "$home/.agents/skills/planar/SKILL.md" ]] || fail "[$tag/$name] vendor surfaces were not placed"
+    [[ ! -e "$home/.claude/agents" && ! -e "$home/.codex/agents" ]] || fail "[$tag/$name] a role agent was placed"
   elif [[ "$vendors" == 2 ]]; then
-    [[ ! -e "$home/.claude/agents/planar-coder.md" && ! -e "$home/.codex/agents/planar-coder.toml" ]] || fail "[$tag/$name] --no-vendor placed vendor surfaces"
+    [[ ! -e "$home/.claude/skills/planar" && ! -e "$home/.agents/skills/planar" ]] || fail "[$tag/$name] --no-vendor placed vendor surfaces"
   else
     [[ ! -e "$home/.claude" && ! -e "$home/.codex" ]] || fail "[$tag/$name] a vendor directory appeared in a vendorless HOME"
   fi
@@ -351,7 +352,7 @@ scenario() {
   # planar-uninstall reads the manifest with sed (no python3 is on this PATH) and
   # removes the vendor surfaces it recorded.
   if [[ "$vendors" == 1 && "$UNINSTALL_REMOVES_VENDORS" == 1 ]]; then
-    [[ ! -e "$home/.claude/agents/planar-coder.md" && ! -e "$home/.codex/agents/planar-coder.toml" ]] || fail "[$tag/$name] uninstall left vendor surfaces"
+    [[ ! -e "$home/.claude/skills/planar" && ! -e "$home/.agents/skills/planar" ]] || fail "[$tag/$name] uninstall left vendor surfaces"
   fi
   local ls; ls="$(lock_state "$bash_bin" "$home")"
   lock_clear "$ls" || fail "[$tag/$name] after uninstall the mutation lock library judges the owner $ls (a live or unreleased owner remains)"

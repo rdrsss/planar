@@ -57,7 +57,9 @@ constexpr std::string_view skill_spec          = "surface-skill-spec";
 
 constexpr std::array<std::string_view, 6> k_suppressible_codes{code::link,       code::legacy,  code::artifacts,
                                                                code::capability, code::command, code::path};
-constexpr std::array<std::string_view, 3> k_scan_dirs{"agents", "skills", "docs"};
+// `examples/agents` holds the role agents Planar no longer installs; they are
+// still authored text that names Planar's commands, so they stay linted.
+constexpr std::array<std::string_view, 4> k_scan_dirs{"agents", "examples/agents", "skills", "docs"};
 
 struct finding_t {
   std::string_view code;
@@ -978,9 +980,9 @@ struct capability_exemption_t {
   std::string_view shape;
 };
 constexpr std::array<capability_exemption_t, 3> k_capability_exemptions{
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
-    capability_exemption_t{"agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},
+    capability_exemption_t{"examples/agents/planar-reviewer.md", "reviewer", "planar-agent pull"},
+    capability_exemption_t{"examples/agents/planar-reviewer.md", "reviewer", "planar-agent claim"},
+    capability_exemption_t{"examples/agents/planar-reviewer.md", "reviewer", "planar-agent heartbeat"},
 };
 auto is_capability_exemption(std::string const& file, std::string_view role, std::string_view shape) -> bool {
   for (auto const& e : k_capability_exemptions)
@@ -1163,7 +1165,7 @@ auto check_deferred_executable(std::string const& file, std::size_t line_no, std
 
 auto check_deferred_command(std::string const& file, std::size_t line_no, std::string_view line, bool in_fence,
                             std::vector<finding_t>& findings, std::vector<suppression_t>& suppressions) -> void {
-  if (!file.starts_with("agents/") && !file.starts_with("skills/"))
+  if (!file.starts_with("agents/") && !file.starts_with("examples/agents/") && !file.starts_with("skills/"))
     return;
   if (in_fence) {
     check_deferred_executable(file, line_no, line, findings, suppressions);

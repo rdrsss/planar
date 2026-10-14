@@ -36,7 +36,7 @@ Given a goal statement and the cwd-derived scope (or an explicit `--scope` overr
   - `roadmap.md` — `kind=roadmap` (flat milestone list with bulleted work items and `[touches: ...]` annotations)
   - `test-spec.md` — `kind=test_spec` (test strategy with flat `### Scenario: <title>` H3 scenarios — the canonical grammar — plus a coverage-gap checklist and test-surface-allocation table). Each scenario title names the coverage lens it exercises (happy / empty-null / error / edge); the four buckets are a reasoning tool, not document structure. The rendered front matter carries `verifies: [artifact:<product-spec-id>]` so cross-references track which user stories the test plan covers; it is not part of the body the planner writes.
 
-  The artifact body is stored in the database **without** front matter. `planar workbench push` renders the YAML front matter (the `front_matter` struct in [`src/engine/workbench/parse.cppm`](../src/engine/workbench/parse.cppm)) and the generated header into each workbench file, and `--body @<file>` reads the file's bytes verbatim. The planner therefore never writes front matter itself and never passes a file that carries it to `artifact update`: that would store the front matter inside the body and render it twice.
+  The artifact body is stored in the database **without** front matter. `planar workbench push` renders the YAML front matter (the `front_matter` struct in [`src/engine/workbench/parse.cppm`](../../src/engine/workbench/parse.cppm)) and the generated header into each workbench file, and `--body @<file>` reads the file's bytes verbatim. The planner therefore never writes front matter itself and never passes a file that carries it to `artifact update`: that would store the front matter inside the body and render it twice.
 
 - **Optional initial scenario files** under `scenarios/`, each registered via `planar scenario add`.
 - **Workbench manifest** seeded via `planar workbench push <plan>`.
@@ -196,7 +196,7 @@ The planner emits parseable Markdown so the ingestor can re-read the same files 
 
 The `## Decisions` H2 is the **only** section the ingestor reads to extract decisions. Each H3 heading becomes one `decisions` row linked to the anchor plan via `entity_links(relationship='derives-from')`. The planner must not embed decision text elsewhere in the document.
 
-The `## Open Questions` H2 is parsed by `parse_tech_spec_open_questions` in [`src/engine/ingest/parse.cppm`](../src/engine/ingest/parse.cppm). Each H3 heading becomes one `questions` row. When an H3's body begins with a `Resolution:` marker (case-sensitive; must be the first non-blank token after the heading), the ingestor also creates a `decisions` row carrying the resolution text and flips the question to `answered`. Two forms are supported:
+The `## Open Questions` H2 is parsed by `parse_tech_spec_open_questions` in [`src/engine/ingest/parse.cppm`](../../src/engine/ingest/parse.cppm). Each H3 heading becomes one `questions` row. When an H3's body begins with a `Resolution:` marker (case-sensitive; must be the first non-blank token after the heading), the ingestor also creates a `decisions` row carrying the resolution text and flips the question to `answered`. Two forms are supported:
 
 ```markdown
 ## Open Questions

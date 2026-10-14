@@ -13,9 +13,9 @@
       "paths": [
         "agents/methodology.md",
         "agents/planar-orchestrator.md",
-        "agents/planar-coder.md",
+        "examples/agents/planar-coder.md",
         "agents/planar-test-coder.md",
-        "agents/planar-reviewer.md"
+        "examples/agents/planar-reviewer.md"
       ],
       "pattern": "^## Validation cadence"
     },
@@ -26,9 +26,9 @@
       "paths": [
         "agents/methodology.md",
         "agents/planar-orchestrator.md",
-        "agents/planar-coder.md",
+        "examples/agents/planar-coder.md",
         "agents/planar-test-coder.md",
-        "agents/planar-reviewer.md"
+        "examples/agents/planar-reviewer.md"
       ],
       "pattern": "[Ff]ull regression and end-to-end suites?\\s+(belong\\s+to|runs\\s+at)\\s+the\\s+milestone\\s+barrier"
     },
@@ -39,9 +39,9 @@
       "paths": [
         "agents/methodology.md",
         "agents/planar-orchestrator.md",
-        "agents/planar-coder.md",
+        "examples/agents/planar-coder.md",
         "agents/planar-test-coder.md",
-        "agents/planar-reviewer.md"
+        "examples/agents/planar-reviewer.md"
       ],
       "pattern": "broader regression verification"
     },
@@ -56,7 +56,7 @@
       "id": "reviewer-no-full-suite-demand",
       "description": "The reviewer does not demand the full suite for every task.",
       "mode": "all",
-      "paths": ["agents/planar-reviewer.md"],
+      "paths": ["examples/agents/planar-reviewer.md"],
       "pattern": "Do not demand the full suite for every task"
     },
     {

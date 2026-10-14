@@ -20,7 +20,6 @@
 #                                  placeholder database at $PLANAR_DB when none
 #                                  is there and exits 0
 #   anything else                  exit 0
-# python3 is used here to render the Codex agents; that is test tooling.
 
 FAKE_BUNDLE_VERSION_TAG="v1.2.3"
 
@@ -74,11 +73,9 @@ fake_bundle_make() {
   cp -R "$root/scripts/install-lib" "$dest/scripts/install-lib"
   rm -rf "$dest/scripts/install-lib/__pycache__"
   cp -R "$root/skills/planar" "$dest/skills/planar"
-  cp -R "$root/agents" "$dest/agents"
   cp -R "$root/migrations" "$dest/migrations"
   printf 'shipped a\n' > "$dest/templates/a.toml"
   printf 'shipped b\n' > "$dest/templates/b.toml"
-  python3 "$root/scripts/render-codex-agents.py" "$dest/agents" "$dest/codex-agents" >/dev/null
   for b in planar planar-agent planar-watch planar-ext; do
     stub_binary_write "$dest/bin/$b" "$FAKE_BUNDLE_VERSION_TAG"
   done

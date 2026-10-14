@@ -99,22 +99,22 @@ claimable again, and whatever it captured remains in the store.
 
 Planar is harness-agnostic. A harness needs only to run commands and read their
 output; read commands accept `--json` for machine-readable results. The
-installer additionally places the `planar` skill and the role agents into each
-of six vendors it finds on the host, by presence marker: Claude Code
-(`~/.claude/`), Codex (`$CODEX_HOME` or `~/.codex/`), Copilot (`~/.copilot/`),
-Gemini CLI (`~/.gemini/settings.json`), Antigravity
-(`~/.gemini/antigravity-cli/`) and OpenCode (`~/.config/opencode/`). Skills go to
-`~/.claude/skills`, the shared `~/.agents/skills` (Codex, Copilot, Gemini CLI,
-OpenCode) and `~/.gemini/antigravity-cli/skills`; agents go to each vendor's own
-agents directory. The target table is in
-[INSTALL.md](INSTALL.md#install-layout-reference). The role specifications under
-[`agents/`](agents/) are vendor-neutral. For any other harness, the same
-operations are available as plain commands. The role specifications and skills
-are described in the [skill reference](docs/skill-reference.md).
+installer additionally places the `planar` skill into each of six vendors it
+finds on the host, by presence marker: Claude Code (`~/.claude/`), Codex
+(`$CODEX_HOME` or `~/.codex/`), Copilot (`~/.copilot/`), Gemini CLI
+(`~/.gemini/settings.json`), Antigravity (`~/.gemini/antigravity-cli/`) and
+OpenCode (`~/.config/opencode/`). The skill goes to `~/.claude/skills`, the
+shared `~/.agents/skills` (Codex, Copilot, Gemini CLI, OpenCode) and
+`~/.gemini/antigravity-cli/skills`. The target table is in
+[INSTALL.md](INSTALL.md#install-layout-reference). The installer places no role
+agents: the vendor-neutral `planar-<role>` agents under
+[`examples/agents/`](examples/agents/) are examples to copy into a harness if you
+want them. For any other harness, the same operations are available as plain
+commands. The skill is described in the
+[skill reference](docs/skill-reference.md).
 
 With the skill installed there is no command to type. Ask for the outcome from
-inside a project, and the harness loads the skill and dispatches the matching
-`planar-<role>` agent:
+inside a project, and the harness loads the skill:
 
 ```text
 Draft a Planar spec for adding multi-currency checkout.
@@ -164,7 +164,7 @@ curl -fsSL https://github.com/rdrsss/planar/releases/latest/download/get-planar.
 
 The script downloads the latest release bundle, verifies it against the
 release's `SHA256SUMS`, and installs it into `~/.planar` with the `planar` skill
-and the `planar-<role>` agents placed into each harness it finds. Add
+placed into each harness it finds. Add
 `~/.planar/bin` to your `PATH`. To pin a release, fetch that release's script
 and set `PLANAR_VERSION` on the shell that reads it:
 
@@ -207,7 +207,7 @@ The [documentation index](docs/README.md) gives a reading order. In brief:
 | Install and try it | [INSTALL.md](INSTALL.md), [Getting started](docs/getting-started.md) |
 | See how work flows | [Operations](docs/operations.md), [Lifecycles](docs/lifecycles.md), [Workflows](docs/workflows.md) |
 | Look up a command | [CLI reference](docs/cli-reference.md) |
-| Use the skill and role agents | [Skill and agent reference](docs/skill-reference.md) |
+| Use the skill | [Skill reference](docs/skill-reference.md) |
 | Understand the internals | [Architecture](docs/architecture.md), [Testing](docs/testing.md) |
 | Contribute | [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) |
 

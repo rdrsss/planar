@@ -6186,7 +6186,9 @@ COHERENCE_CALL_TOTAL = 18  # 11 role-pinned above + COHERENCE_OTHER_CALLS
 
 
 def _role_of(path: str) -> str:
-    match = re.fullmatch(r"agents/planar-([a-z-]+)\.md", path)
+    # A role agent lives in agents/ or, as an example Planar no longer
+    # installs, in examples/agents/.
+    match = re.fullmatch(r"(?:examples/)?agents/planar-([a-z-]+)\.md", path)
     return match.group(1) if match else path
 
 
@@ -6280,7 +6282,7 @@ class RoleAssertionRetargetTests(unittest.TestCase):
             encoding="utf-8"
         )
         mutated = source.replace(
-            '    forbid(r"planar task done", ["agents/planar-coder.md"])\n', "", 1
+            '    forbid(r"planar task done", ["examples/agents/planar-coder.md"])\n', "", 1
         )
         self.assertNotEqual(mutated, source)
         missing = missing_coherence_phrases(mutated)
@@ -6294,7 +6296,7 @@ class RoleAssertionRetargetTests(unittest.TestCase):
         source = (harness.ROOT / "evals" / "orchestrator" / "harness.py").read_text(
             encoding="utf-8"
         )
-        mutated = source.replace('["agents/planar-coder.md"])', '[])', 1)
+        mutated = source.replace('["examples/agents/planar-coder.md"])', '[])', 1)
         missing = missing_coherence_phrases(mutated)
         self.assertTrue(any("coder" in line for line in missing), missing)
 

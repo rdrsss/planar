@@ -45,7 +45,7 @@ flowchart TD
 Two layers are touched by users and agents:
 
 1. **The Planar binaries** — four C++26 executables that share the SQLite engine/runtime graph: `planar` is the operator surface, `planar-agent` owns coordination writes, `planar-watch` is a driver-enforced read-only viewer, and `planar-ext` (decisions 995–1001) owns the operational-plane adapters (Jira, GitHub Issues) with read-only access to planning tables and read-write access to exactly `external_links` / `external_systems` / `sync_events`, enforced by a `sqlite3_set_authorizer` allowlist. Capability boundaries are enforced by each binary's verb set and locked by integration tests. See [Four-binary architecture](#four-binary-architecture) below. The Zig implementation these binaries were ported from was retained under `zig/` as the port's parity oracle and DELETED at the M10 cutover (decisions 963/982) once its state-differential evidence came back clean; C++26 is now the only implementation.
-2. **The skill and agent layer** — one skill, `planar` (`skills/planar/`), and eleven role agents (`agents/planar-<role>.md`), placed unchanged into six vendors' directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references; the agents are dispatched by name. Both invoke binary verbs; binary verbs operate on SQLite. See [skill-reference.md](skill-reference.md).
+2. **The skill layer** — one skill, `planar` (`skills/planar/`), placed unchanged into six vendors' skill directories at install time with no rendering step. The skill states the rules that cross verbs and routes to references, and it invokes binary verbs; binary verbs operate on SQLite. Role agents (`planar-<role>.md`) are examples under `examples/agents/` and are not installed. See [skill-reference.md](skill-reference.md).
 
 An LLM agent running a skill has no direct database access. It calls Planar verbs and reads their stdout.
 
@@ -318,8 +318,9 @@ The repo root IS the CMake project root: `CMakeLists.txt` and `CMakePresets.json
 | `templates/defaults/` | Propagation templates (JSON) for external systems (`github-issues/`, `github-projects/`, `jira/`); embedded at build time |
 | `templates/doc-prompts/agents.md`, `templates/workspace-capabilities.toml` | Operator-editable defaults staged into `~/.planar/templates/` on install (alongside `templates/defaults/`) |
 | `skills/planar/` | The one authored skill: `SKILL.md` plus `references/` |
-| `$PLANAR_HOME/skills/planar/`, `$PLANAR_HOME/agents/`, `$PLANAR_HOME/codex-agents/` | Staged skill and agents, the authority the placed targets are compared against (install output, not checked in) |
-| `agents/` | The `planar-<role>.md` agent role specs, with the doctrine documents beside them |
+| `$PLANAR_HOME/skills/planar/` | The staged skill, the authority the placed targets are compared against (install output, not checked in) |
+| `agents/` | `planar-orchestrator.md` and `planar-test-coder.md`, which the orchestrator eval reads, with the doctrine documents beside them; not installed |
+| `examples/agents/` | The example `planar-<role>.md` role agents; not installed |
 | `docs/` | User-facing reference docs (architecture, CLI, skills, concepts, workflows) |
 | `examples/` | Copy-paste oriented examples for the spec, orchestration, workflow, and propagation flows |
 | `evals/` | Orchestrator and planning evaluation harnesses |
@@ -667,7 +668,7 @@ Repo onboarding was removed with `planar import` and `planar synthesize` (plan 1
 
 ## The Agent Methodology
 
-Planar defines vendor-neutral agent roles under `agents/`. Per-vendor command surfaces (Claude, Codex, Copilot, Gemini) inherit the role spec and add vendor-specific invocation details.
+Planar's vendor-neutral agent roles are examples, not installed: `planar-orchestrator` and `planar-test-coder` under `agents/` (the orchestrator eval reads them) and the rest under `examples/agents/`. Per-vendor command surfaces (Claude, Codex, Copilot, Gemini) inherit the role spec and add vendor-specific invocation details.
 
 ### Roles
 
@@ -701,16 +702,19 @@ The orchestrator gates Phases 2 and 3 on explicit user confirmation. Ingestion n
 
 ### Skill and agent install
 
-The skill source is `skills/planar/` (one `SKILL.md`, nine `references/` files);
-the agent sources are `agents/planar-<role>.md`. `install.sh` copies both into
-`$PLANAR_HOME` (`skills/planar/`, `agents/`), derives the Codex TOML agents into
-`$PLANAR_HOME/codex-agents/`, and then places the staged skill and agents into
-each vendor whose presence marker exists. No generated projection exists: a
-placed skill is the staged directory and a placed agent is the staged file,
-except the Copilot (`.agent.md` suffix), Codex (TOML) and OpenCode (reduced
-frontmatter) forms, which are derived from the one Markdown source. Review and
-edit `skills/planar/` and `agents/`; never edit a placed or staged copy. The
-vendor table, link and copy mode, and the Gemini subagent switch are in
+The skill source is `skills/planar/`. `install.sh` copies it into
+`$PLANAR_HOME/skills/planar/` and then places the staged skill into each vendor
+whose presence marker exists. No generated projection exists: a placed skill is
+the staged directory. No role agent is staged or placed. An upgrade's sweep
+(`scripts/install-lib/ownership.sh`, `sweep_role_agents`) removes the
+`planar-<role>` agents an older install placed in the six vendor agent
+directories, proving each one by a symlink into the old `$PLANAR_HOME/agents/`
+or `$PLANAR_HOME/codex-agents/`, or by bytes equal to what placing the staged
+file wrote (the Copilot `.agent.md` copy, the Codex TOML, the derived OpenCode
+form); `planar-local-*` agents and unproven files are left. `install-cleanup.txt`
+then removes `$PLANAR_HOME/agents/` and `$PLANAR_HOME/codex-agents/`. Review and
+edit `skills/planar/`; never edit a placed or staged copy. The
+vendor table and link and copy mode are in
 [skill-reference.md § What installs where](skill-reference.md#what-installs-where);
 the install layout and the upgrade note for the previous per-vendor projections
 are in [INSTALL.md](../INSTALL.md#install-layout-reference).
@@ -722,9 +726,9 @@ resume and handoff, spec pipeline, knowledge, external sync, local, and the
 feedback contract); it states no verb detail, which comes from each binary's
 `--help` and `schema --command`.
 
-Eleven agent roles (the `agents/*.md` role specs: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, and `research`) cover orchestration and review, planning and ingestion, external propagation, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `sync-reconciler` coordinates preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
+Eleven agent roles (the role specs under `agents/` and `examples/agents/`: `orchestrator`, `coder`, `reviewer`, `test-coder`, `janitor`, `planner`, `spec-reviewer`, `ingestor`, `ext-sync`, `sync-reconciler`, and `research`) cover orchestration and review, planning and ingestion, external propagation, guarded sync reconciliation, research, testing, and closeout. The specialist boundaries are deliberate: `sync-reconciler` coordinates preview-gated changes, `research` is read-only, and planning-state writes still go through the owning CLI binary. See [`agents/methodology.md`](../agents/methodology.md) for orchestration and [`skill-reference.md`](skill-reference.md) for the role inventory.
 
-Agent role specs live under `agents/`. The planning-lifecycle files are `agents/planar-planner.md`, `agents/planar-spec-reviewer.md`, `agents/planar-ingestor.md`, `agents/planar-ext-sync.md`, `agents/planar-sync-reconciler.md`. The orchestrator, coder, reviewer, research, test-coder, and janitor roles — plus their companion methodology, doctrine, cross-scope-writes, and model-tier-routing docs — also live here.
+The planning-lifecycle role specs are `examples/agents/planar-planner.md`, `examples/agents/planar-spec-reviewer.md`, `examples/agents/planar-ingestor.md`, `examples/agents/planar-ext-sync.md` and `examples/agents/planar-sync-reconciler.md`; the coder, reviewer, research and janitor roles are there too. The orchestrator and test-coder roles and their companion methodology, doctrine and cross-scope-writes documents live under `agents/`.
 
 `install.sh`, the update verb and the uninstaller change an installation only
 while they hold its **mutation lock**, a coordination directory beside the
@@ -771,21 +775,25 @@ again after every target, through a same-directory temp file and an atomic
 rename, so an interrupted run leaves the previous complete manifest
 authoritative. Version 2 records the build id, the global `copy|link` mode, the
 vendors the run found (`claude`, `codex`, `copilot`, `gemini`, `antigravity`,
-`opencode`), `extras` (the staged `skills/planar/**`, `agents/*.md` and
-`codex-agents/*.toml` paths, and every placed file) and one `projections` row
-per placed target: the skill directory, or one agent file. A row fixes the
+`opencode`), `extras` (the staged `skills/planar/**` paths and every placed
+file) and one `projections` row per placed target, a skill directory. A
+manifest an older install wrote can also hold agent rows. A row fixes the
 vendor, kind (`skill|agent`), name, staged source, installed path and the
 actual `copy|link` install kind; its two digest fields are always empty. The
 vendor is the target's only owner, or `shared` for `~/.agents/skills`, which
 codex, copilot, gemini and opencode all read: it is placed once, so no one
-vendor owns it. An OpenCode agent is a derived copy (frontmatter reduced to
-`description` and `mode: subagent`) in both modes, so its row is always
-`copy`.
+vendor owns it. In an older manifest an OpenCode agent row is always `copy`:
+the agent was a derived copy (frontmatter reduced to `description` and
+`mode: subagent`) in both modes.
 
 The staged authority the rows compare against is `$PLANAR_HOME/skills/planar/`
-(the skill, compared as a directory, every file), `$PLANAR_HOME/agents/planar-<role>.md`
-(Markdown and Copilot agents; OpenCode's derivation of it) and
-`$PLANAR_HOME/codex-agents/planar-<role>.toml`. The nine roots, each tagged with
+(the skill, compared as a directory, every file); an older manifest's agent
+rows compare against `$PLANAR_HOME/agents/planar-<role>.md` (Markdown and
+Copilot agents; OpenCode's derivation of it) and
+`$PLANAR_HOME/codex-agents/planar-<role>.toml` until the next install removes
+them. The installer places into the three skill roots; `planar health` still
+reads the six agent roots, so a leftover `planar-<role>` agent shows as
+unmanaged. The nine roots, each tagged with
 the vendors that read it, are: `~/.claude/skills` (claude), `~/.agents/skills`
 (codex, copilot, gemini, opencode), `~/.gemini/antigravity-cli/skills`
 (antigravity), `~/.claude/agents`, `$CODEX_HOME/agents` (default
@@ -847,8 +855,6 @@ planar-<os>-<arch>/
 ├── install-cleanup.txt
 ├── bin/                  # the four binaries
 ├── skills/planar/
-├── agents/
-├── codex-agents/         # rendered at dist time
 ├── templates/
 ├── migrations/
 └── scripts/install-lib/  # the only part of scripts/ that ships
@@ -865,15 +871,16 @@ The cut and its gates are in [operations.md § 5](operations.md#5-release-gate-e
 in `install.sh --prebuilt <bundle>`, the same installer a source install runs.
 It takes the mutation lock, validates the recovery journal, stages every managed
 subtree, probes the database with the staged binaries (an ahead database
-refuses), swaps each subtree in by two renames through `<name>.old`, creates or
-migrates the database with the installed `planar init`, places the vendor
-surfaces, and writes `release.json` and then the install stamp last. The full
+refuses), removes the role agents an older install placed, swaps each subtree
+in by two renames through `<name>.old`, creates or migrates the database with
+the installed `planar init`, places the skill, and writes `release.json` and then the install stamp last. The full
 order and the failure rules are in
 [INSTALL.md](../INSTALL.md#ownership-recovery-and-the-order-of-an-install).
 
 **Managed subtrees and data paths.** The installer owns `bin/`, `skills/`,
-`agents/`, `codex-agents/`, `scripts/` and `migrations/` outright
-and replaces each whole. It never removes a data path, and the uninstaller keeps
+`scripts/` and `migrations/` outright and replaces each whole; `agents/` and
+`codex-agents/` from an older install are removed through
+`install-cleanup.txt`. It never removes a data path, and the uninstaller keeps
 them without `--purge`: `planar.db` with `planar.db-wal` and `planar.db-shm`,
 `queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`, `workspaces/`,
 `models/`, `execute/` and `templates/`. They live under `~/.planar` unless
@@ -899,7 +906,7 @@ toolchain prefix, carries an rpath, or misses the floor: macOS 26.0, or glibc
 
 <!-- surface-lint-ignore surface-path-missing: names the deleted-with-zig/ source this tool was ported from, for history -->
 `src/tools/surface_lint/` (ported from the Zig tree's `tools/surface_lint.zig` at task 6402, decision 1000) deterministically scans canonical Markdown under
-`agents/`, `skills/`, and `docs/`. Its stable finding codes are
+`agents/`, `examples/agents/`, `skills/`, and `docs/`. Its stable finding codes are
 `surface-link-missing`, `surface-legacy-reference`,
 `surface-artifact-set-drift`, `surface-capability-drift`,
 `surface-command-drift`, `surface-skill-spec` and
@@ -996,8 +1003,8 @@ The binaries produced by `make build` land under `./bin/`; `make dist` builds th
 portable release bundle ([Release bundles](#release-bundles)). The Makefile has no
 install target; `cmake --install` places the C++ executables under a prefix you
 choose, and `install.sh` additionally
-stages the skill, agents, workflows, and migrations under `~/.planar` and places
-the skill and agents into each present vendor's directories after the CMake build.
+stages the skill and migrations under `~/.planar` and places the skill into
+each present vendor's skill directories after the CMake build.
 
 The black-box lane follows two stylistic conventions documented in [Testing § Black-box harness](testing.md#black-box-harness): focused per-leaf tests live beside their command family under `src/cmd/planar/handlers/<family>/` and pin that verb's contract; multi-command lifecycle scenarios and their inventory live in [`src/cmd/integration_tests/`](../src/cmd/integration_tests/README.md). `planar`-only scenarios share an injected in-memory SQLite connection across handler invocations; cross-binary tests use a scratch database file and real processes, as in `src/cmd/planar/cross_process.t.cpp`. The `src/cmd/*/parity.t.cpp` cases pin process-level output. `planar_binary()` discovers nested `*.t.cpp` files so colocated tests remain in the binary's test target; `src/cmd/integration_tests/CMakeLists.txt` adds its scenarios to that target explicitly.
 

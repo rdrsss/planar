@@ -230,8 +230,8 @@ inspection/retry commands for failures. Never claim cross-remote rollback.
 
 ## Cross-references
 
-- Sync command contract: [`docs/cli-reference.md` § Sync](../docs/cli-reference.md#planar-ext-sync-pull-target).
-- Scope and binary boundaries: [`docs/concepts.md`](../docs/concepts.md).
+- Sync command contract: [`docs/cli-reference.md` § Sync](../../docs/cli-reference.md#planar-ext-sync-pull-target).
+- Scope and binary boundaries: [`docs/concepts.md`](../../docs/concepts.md).
 - Status doctrine: `agents/methodology.md` § Heartbeat status contract.
 
 Cross-scope writes require the scope checks defined by the stack's cross-scope-writes doctrine; when running under Codex, this also covers the Codex enforcement caveat for this role's `coordinate` capability.

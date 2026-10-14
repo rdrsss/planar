@@ -24,15 +24,20 @@
 ///
 /// Freshness is a plain existence + byte/symlink comparison against the
 /// staged authority, not a semantic digest match. The staged authority is
-/// `$PLANAR_HOME/skills/planar/` (the skill, a directory),
-/// `$PLANAR_HOME/agents/planar-<role>.md` (Markdown, Copilot and OpenCode
-/// agents; OpenCode's installed form is derived from it by `derive_opencode`)
-/// and `$PLANAR_HOME/codex-agents/planar-<role>.toml` (Codex agents).
+/// `$PLANAR_HOME/skills/planar/` (the skill, a directory). The installer
+/// places only the skill; a manifest an older install wrote can still hold
+/// agent rows, whose authority was `$PLANAR_HOME/agents/planar-<role>.md`
+/// (Markdown, Copilot and OpenCode agents; OpenCode's installed form is derived
+/// from it by `derive_opencode`) and `$PLANAR_HOME/codex-agents/planar-<role>.toml`
+/// (Codex agents). Such rows are classified against those trees until the
+/// next install removes both the trees and the rows.
 ///
 /// ## The nine roots
 ///
-/// Planar places into nine vendor roots (`installed_roots`), each tagged with
-/// the vendors that read it. A root takes part only when at least one of its
+/// Planar places the skill into the three skill roots. The six agent roots stay
+/// in the table so that a leftover `planar-<role>` agent reads as `unmanaged`
+/// and an older manifest's agent rows are still classified. The nine vendor
+/// roots (`installed_roots`) are each tagged with the vendors that read it. A root takes part only when at least one of its
 /// vendors is present on the host, with the same presence markers
 /// `install.sh`'s `vendor_present` uses. The shared `~/.agents/skills` root is
 /// recorded in the manifest under the vendor name `shared`: it is placed once

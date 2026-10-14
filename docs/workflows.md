@@ -1206,8 +1206,8 @@ There is no `planar local promote` shortcut, deliberately. Making a local skill 
 
 ## Recipe 14A — Inspect installed skill and agent placements
 
-`install.sh` stages `skills/planar/` and the agents under `~/.planar` and places
-them into each vendor found on the host. Planar's own `install-manifest.json`
+`install.sh` stages `skills/planar/` under `~/.planar` and places it into each
+vendor found on the host; it places no role agents. Planar's own `install-manifest.json`
 records every placement. Run these inspections from the repository root:
 
 ```bash
@@ -1220,7 +1220,7 @@ skill as a directory, every file) and reports `projection_freshness`:
 `fresh`, `stale` (drifted) or `missing` rows, and a `legacy` manifest left by an
 older installer. `scripts/check-self-installed.sh` exits non-zero unless the
 manifest is current with no stale or missing row. To repair a managed
-placement, run `./install.sh --prefix ~/.planar`. The nine targets and the
+placement, run `./install.sh --prefix ~/.planar`. The three skill targets and the
 drift rules are in [skill-reference.md § What installs where](skill-reference.md#what-installs-where).
 Personal `planar local` extensions remain outside this install manifest.
 
@@ -2255,7 +2255,7 @@ cd /path/to/planar-repo && ./install.sh
 
 **Finalization tasks convention:** The janitor (and orchestrator) create tasks with slug prefixes `finalize-`, `merge-`, or `reconcile-` to track discrete merge/reconciliation work items. `planar plan closeout --json` reports these as `hard_evidence.finalization_tasks` — an advisory count that identifies finalization work in the audit output without changing gate logic.
 
-**Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and `agents/planar-janitor.md` § Capability and hard boundary for the full detail.
+**Capability boundary reminder:** Coders close tasks via `planar-agent complete`. The janitor is the only agent role that runs `planar plan closeout`. The orchestrator dispatches the janitor; it never calls closeout directly. See `docs/concepts.md § Closeout gate` and `examples/agents/planar-janitor.md` § Capability and hard boundary for the full detail.
 
 ## Recipe 29 — Orient, diagnose, and choose work
 

@@ -89,3 +89,13 @@ codex-agents/planar-introspector.toml
 # over a tree from an older release removes the staged role spec.
 agents/planar-feedback-triager.md
 codex-agents/planar-feedback-triager.toml
+
+# Role agents left the install with plan 1142: they are examples
+# (examples/agents/ in the source tree), and the `planar` skill is the only
+# agent surface Planar ships. A re-install removes the staged role files and
+# the shared documents beside them, and the Codex TOML renders. The planar-<role>
+# agents an older install placed in the vendor agent directories are removed by
+# install.sh's sweep (ownership.sh, sweep_role_agents), which runs BEFORE these
+# lines take effect because the staged files are its evidence.
+agents/
+codex-agents/

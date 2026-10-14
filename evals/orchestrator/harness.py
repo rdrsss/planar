@@ -1447,10 +1447,10 @@ def grade_coherence(root: Path = ROOT) -> None:
         "agents/planar-orchestrator.md",
         "agents/methodology.md",
         "agents/doctrine.md",
-        "agents/planar-coder.md",
-        "agents/planar-reviewer.md",
+        "examples/agents/planar-coder.md",
+        "examples/agents/planar-reviewer.md",
         "agents/planar-test-coder.md",
-        "agents/planar-janitor.md",
+        "examples/agents/planar-janitor.md",
     ] + SKILL_RELS
     for relative in core_rel:
         if not (root / relative).is_file():
@@ -1503,27 +1503,27 @@ def grade_coherence(root: Path = ROOT) -> None:
         r"recommended for:.*(mechanical|docs-polish|single-verb)",
         ["agents/planar-orchestrator.md", "agents/methodology.md"],
     )
-    forbid(r"planar task done", ["agents/planar-coder.md"])
+    forbid(r"planar task done", ["examples/agents/planar-coder.md"])
 
     must(
         r"Planar-managed Git repositor",
-        ["agents/planar-orchestrator.md", "agents/planar-janitor.md"],
+        ["agents/planar-orchestrator.md", "examples/agents/planar-janitor.md"],
     )
     must(
         r"validation profile",
         [
             "agents/planar-orchestrator.md",
             "agents/methodology.md",
-            "agents/planar-coder.md",
-            "agents/planar-reviewer.md",
+            "examples/agents/planar-coder.md",
+            "examples/agents/planar-reviewer.md",
             "agents/planar-test-coder.md",
         ],
     )
     must(
         r"structured.*evidence|evidence row",
         [
-            "agents/planar-coder.md",
-            "agents/planar-reviewer.md",
+            "examples/agents/planar-coder.md",
+            "examples/agents/planar-reviewer.md",
             "agents/planar-test-coder.md",
         ],
     )
@@ -1535,17 +1535,17 @@ def grade_coherence(root: Path = ROOT) -> None:
     must(
         r"in-pwd.*barrel-bypass|barrel-bypass.*in-pwd",
         [
-            "agents/planar-coder.md",
+            "examples/agents/planar-coder.md",
             "agents/planar-orchestrator.md",
         ],
     )
     must(
         r"github-pr.*external-pr.*local-ref.*already-integrated",
-        ["agents/planar-janitor.md"],
+        ["examples/agents/planar-janitor.md"],
     )
     must(
         r"coder.*(narrative )?report|coder's report",
-        ["agents/planar-reviewer.md", "agents/methodology.md"],
+        ["examples/agents/planar-reviewer.md", "agents/methodology.md"],
     )
     # The unified `planar` skill and its nine references (plan 1104 M1): no
     # legacy pl-* command, no scriptorium, no instruction to split the
@@ -1568,7 +1568,7 @@ def grade_coherence(root: Path = ROOT) -> None:
     for lead in SKILL_INVARIANT_LEADS:
         must(re.escape(lead), ["skills/planar/SKILL.md"])
     must(re.escape("references/feedback-contract.md"), ["skills/planar/SKILL.md"])
-    must(r"Output contract — the findings brief", ["agents/planar-research.md"])
+    must(r"Output contract — the findings brief", ["examples/agents/planar-research.md"])
     must(r"fork_turns=none", ["evals/orchestrator/harness.py"])
     must(r"complete final response verbatim", ["evals/orchestrator/harness.py"])
 
@@ -1576,7 +1576,7 @@ def grade_coherence(root: Path = ROOT) -> None:
 def grade_coherence_negative_control() -> None:
     with tempfile.TemporaryDirectory(prefix="planar-coherence-negative.") as raw_tmp:
         temp_root = Path(raw_tmp)
-        for directory in ("skills", "agents"):
+        for directory in ("skills", "agents", "examples"):
             shutil.copytree(ROOT / directory, temp_root / directory)
         harness_target = temp_root / "evals" / "orchestrator" / "harness.py"
         harness_target.parent.mkdir(parents=True)
@@ -1616,7 +1616,7 @@ def grade_skill_coherence_negative_control() -> None:
         nonlocal runs
         with tempfile.TemporaryDirectory(prefix="planar-skill-coherence.") as raw_tmp:
             temp_root = Path(raw_tmp)
-            for directory in ("skills", "agents"):
+            for directory in ("skills", "agents", "examples"):
                 shutil.copytree(ROOT / directory, temp_root / directory)
             harness_target = temp_root / "evals" / "orchestrator" / "harness.py"
             harness_target.parent.mkdir(parents=True)

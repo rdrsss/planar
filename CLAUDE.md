@@ -13,8 +13,9 @@ working in that area. `AGENTS.md` is a symlink to this file.
   LLVM with `libc++`. State is one SQLite database. Every third-party
   dependency is vendored and compiled from source.
 - **Binaries:** `planar`, `planar-agent`, `planar-watch` and `planar-ext`.
-  The `planar` skill and the `planar-<role>` agents ship as
-  authored files and need no renderer.
+  The `planar` skill ships as authored files and needs no renderer; it is
+  the only agent surface the installer places. The `planar-<role>` agents
+  are examples under `examples/agents/` and are not installed.
 - **History:** Planar was written in Go, ported to Zig, then ported to C++26.
   Neither earlier tree exists here. Nothing builds, tests or lints against
   them, and "check it against the oracle" is not an answerable question. In
@@ -132,17 +133,18 @@ direct-claim dispatch the caller runs it. Full sequence:
 | Content | Location |
 |---------|----------|
 | Project tooling, one directory per tool | `src/tools/<tool-name>/` |
-| Installable agents | `agents/planar-<role>.md`, with the doctrine documents beside them |
+| Example role agents (not installed) | `examples/agents/planar-<role>.md`; `agents/` keeps `planar-orchestrator.md`, `planar-test-coder.md` and the doctrine documents, which the orchestrator eval reads |
 | The `planar` skill | `skills/planar/` |
 | User-facing reference docs | `docs/` |
 | Planning artifacts: specs, roadmaps, ADRs | Planar artifacts under `~/.planar/`, through `planar artifact` and the workbench |
 | Operational state | SQLite |
 | Operator-local skills and agents | `~/.planar/local/{skills,agents}/`, linked with `planar local link` |
 
-- The skill tree is `skills/planar/` and the agents are
-  `agents/planar-*.md`. `install.sh` stages them under `$PLANAR_HOME` and
-  places them into six vendors' directories (Claude Code, Codex, Copilot,
-  Gemini CLI, Antigravity, OpenCode). Nothing is rendered; see
+- The skill tree is `skills/planar/`. `install.sh` stages it under
+  `$PLANAR_HOME` and places it into six vendors' skill directories (Claude
+  Code, Codex, Copilot, Gemini CLI, Antigravity, OpenCode). Nothing is
+  rendered, and no role agent is staged or placed: an upgrade removes the
+  `planar-<role>` agents an older install placed. See
   [docs/skill-reference.md](docs/skill-reference.md).
 - Do not author agent, skill or instruction files under vendor dot
   directories such as `.claude/`, `.codex/` or `.github/`; the installer
@@ -204,14 +206,14 @@ use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architectu
 - **Bundle.** `planar-<os>-<arch>.tar.gz` for `macos-arm64` (macOS 26.0 or
   later) and `linux-x86_64` (glibc 2.36 or later), no version in the name.
   Layout: `release.json`, `install.sh`, `uninstall.sh`, `get-planar.sh`,
-  `install-cleanup.txt`, `bin/`, `skills/planar/`, `agents/`, `codex-agents/`,
-  `templates/`, `migrations/`, `scripts/install-lib/`.
+  `install-cleanup.txt`, `bin/`, `skills/planar/`, `templates/`,
+  `migrations/`, `scripts/install-lib/`.
 - **Install order.** Both the bootstrap and `planar update` end in
   `install.sh --prebuilt`: lock, journal, stage, probe the database with the
-  staged binaries, swap the managed subtrees (`bin/`, `skills/`, `agents/`,
-  `codex-agents/`, `scripts/`, `migrations/`) through `<name>.old`,
-  create or migrate the database, place vendor surfaces, write `release.json`
-  and then the install stamp last.
+  staged binaries, retire the role agents older installs placed, swap the
+  managed subtrees (`bin/`, `skills/`, `scripts/`, `migrations/`) through
+  `<name>.old`, create or migrate the database, place the skill, write
+  `release.json` and then the install stamp last.
 - **Data paths** are never removed by an install and are kept by
   `planar-uninstall` without `--purge`: `planar.db` (with `-wal` and `-shm`),
   `queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`,
@@ -240,11 +242,12 @@ use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architectu
 | `vendor/` | Committed CPM cache of third-party release archives. |
 | `migrations/` | Schema migrations in sqlx-cli format. See `migrations/README.md`. |
 | `templates/` | Propagation templates and operator-editable defaults. |
-| `agents/`, `skills/planar/` | Authored agent and skill sources. |
+| `skills/planar/` | The authored `planar` skill, the one installed agent surface. |
+| `agents/`, `examples/` | The orchestrator and test-coder agents and doctrine documents the orchestrator eval reads; example role agents and walkthroughs, none of them installed. |
 | `evals/` | Eval harnesses, fixtures and the results ledger. |
 | `docs/` | User-facing reference documentation. |
 | `scripts/` | Bash and Python tooling: gates, validators, git hooks. |
-| `install.sh` | Builds and installs the binaries, then stages and places the skill and agents into each present vendor's directories. |
+| `install.sh` | Builds and installs the binaries, then stages the skill and places it into each present vendor's skill directories. |
 
 ## Build and test
 
@@ -402,6 +405,7 @@ Test layers, harness, conventions and rationale:
 ### Workflow surface change
 
 1. Edit `skills/planar/SKILL.md`, a file under `skills/planar/references/`,
-   or `agents/planar-<role>.md`. There is no rendered output to check in.
+   `agents/planar-<role>.md` or `examples/agents/planar-<role>.md`. There is
+   no rendered output to check in.
 2. Use the current CLI and the SQLite-backed model in all workflow text.
 3. Run `make cli-usage-check` and `make surface-lint`.

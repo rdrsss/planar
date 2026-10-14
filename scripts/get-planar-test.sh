@@ -253,7 +253,7 @@ expect_matches_bundle() { # expect_matches_bundle BUNDLE_DIR -- every managed su
     cmp -s "$b/bin/$n" "$p/bin/$n" || fail "bin/$n is not the bundle's"
   done
   cmp -s "$b/release.json" "$p/release.json" || fail "release.json is not the bundle's"
-  [[ "$(tree_sum "$b/codex-agents")" == "$(tree_sum "$p/codex-agents")" ]] || fail "codex-agents/ differs from the bundle's"
+  [[ ! -e "$p/agents" && ! -e "$p/codex-agents" ]] || fail "agents/ or codex-agents/ was staged"
   [[ "$(tree_sum "$b/skills/planar")" == "$(tree_sum "$p/skills/planar")" ]] || fail "skills/planar differs from the bundle's"
   [[ "$(tree_sum "$b/templates")" == "$(tree_sum "$p/templates")" ]] || fail "templates/ differs from the bundle's"
   [[ "$(tree_sum "$b/migrations")" == "$(tree_sum "$p/migrations")" ]] || fail "migrations/ differs from the bundle's"

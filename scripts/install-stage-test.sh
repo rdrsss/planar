@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Installer staging and vendor-surface fixtures (plan 1104, M2): install.sh
-# stages skills/planar/ and agents/*.md under $PLANAR_HOME, renders the Codex
-# agent TOML into codex-agents/, then places them into each vendor found on the
-# host (six vendors, nine targets, one presence marker each). Every run is
+# stages skills/planar/ under $PLANAR_HOME, then places the skill into each
+# vendor found on the host (six vendors, three skill targets, one presence
+# marker each). Role agents are examples and are never staged or placed; an
+# upgrade removes the planar-<role> agents an older install placed. Every run is
 # against a scratch copy of the installer, a scratch HOME and prefix, and a stub
 # `cmake` and stub binaries, so nothing is built and the operator's ~/.planar is
 # never looked at.
@@ -16,8 +17,9 @@ fail() { printf 'install-stage-test: %s\n' "$*" >&2; exit 1; }
 MARKED=0
 mark() { MARKED=$((MARKED + 1)); printf 'stage: scenario %s (previous took %ss)\n' "$1" "$SECONDS"; SECONDS=0; }
 
-# A scratch checkout: the installer, its scripts, the real skill and agents,
-# and the minimum else the installer checks for. The pinned compiler paths are
+# A scratch checkout: the installer, its scripts, the real skill, the agents/
+# directory a checkout still carries (which the installer must ignore), and the
+# minimum else the installer checks for. The pinned compiler paths are
 # pointed at a file that exists everywhere, as install-deps-test.sh points them
 # at a missing one.
 make_repo() {
@@ -74,11 +76,11 @@ run_install() {
     "$repo/install.sh" --build-dir "$home/build" "$@" >"$home/out" 2>"$home/err"
 }
 
-ROLES=(coder ext-sync ingestor janitor orchestrator planner research reviewer spec-reviewer sync-reconciler test-coder)
-DOCS=(cross-scope-writes doctrine methodology)
+# The planar-<role> agents older installs staged and placed in every vendor.
+RETIRED_ROLES=(coder ext-sync ingestor janitor orchestrator planner research reviewer spec-reviewer sync-reconciler test-coder)
 
 check_staged() {
-  local repo="$1" home="$2" prefix="$2/.planar" r d f
+  local repo="$1" home="$2" prefix="$2/.planar" f
   [[ -f "$prefix/skills/planar/SKILL.md" ]] || fail "SKILL.md was not staged"
   cmp -s "$repo/skills/planar/SKILL.md" "$prefix/skills/planar/SKILL.md" || fail "staged SKILL.md differs"
   for f in "$repo"/skills/planar/references/*.md; do
@@ -86,47 +88,17 @@ check_staged() {
   done
   [[ "$(find "$prefix/skills/planar/" -type f | grep -c .)" == "$(find "$repo/skills/planar/" -type f | grep -c .)" ]] \
     || fail "the staged skill has a different file count than the checkout"
-  [[ "${#ROLES[@]}" == 11 && "${#DOCS[@]}" == 3 ]] || fail "role/doc fixtures are not 11 + 3"
-  for r in "${ROLES[@]}"; do
-    cmp -s "$repo/agents/planar-$r.md" "$prefix/agents/planar-$r.md" || fail "agents/planar-$r.md was not staged"
-    [[ -f "$prefix/codex-agents/planar-$r.toml" ]] || fail "codex-agents/planar-$r.toml was not rendered"
-    python3 - "$prefix/codex-agents/planar-$r.toml" "planar-$r" <<'PY' || fail "codex-agents/planar-$r.toml does not parse"
-import sys
-try:
-    import tomllib
-except ImportError:  # Python < 3.11: the renderer writes exactly three one-line keys
-    lines = open(sys.argv[1], encoding='utf-8').read().split('\n')
-    assert lines.pop() == '' and len(lines) == 3, lines
-    for line, key in zip(lines, ('name', 'description', 'developer_instructions')):
-        assert line.startswith(key + ' = "') and line.endswith('"'), line
-    assert lines[0] == 'name = "%s"' % sys.argv[2]
-else:
-    d = tomllib.load(open(sys.argv[1], 'rb'))
-    assert list(d) == ['name', 'description', 'developer_instructions'], list(d)
-    assert d['name'] == sys.argv[2]
-PY
-  done
-  for d in "${DOCS[@]}"; do
-    cmp -s "$repo/agents/$d.md" "$prefix/agents/$d.md" || fail "agents/$d.md was not staged"
-  done
-  [[ "$(find "$prefix/codex-agents" -type f | grep -c .)" == 11 ]] || fail "codex-agents/ does not hold exactly the eleven TOML files"
-  [[ ! -e "$prefix/codex-agents.new" ]] || fail "the staging temp directory was left behind"
-  # Nothing renders into agents/<vendor>/ any more, and the TOML never lands
-  # under agents/codex/.
-  [[ ! -e "$prefix/agents/codex" && ! -e "$prefix/agents/claude" ]] || fail "agents/<vendor>/ exists: $(ls "$prefix/agents")"
+  # No role agent is staged: no agents/, no codex-agents/, whatever the checkout holds.
+  [[ ! -e "$prefix/agents" && ! -L "$prefix/agents" ]] || fail "agents/ was staged: $(ls -A "$prefix/agents")"
+  [[ ! -e "$prefix/codex-agents" && ! -L "$prefix/codex-agents" ]] || fail "codex-agents/ was staged"
   [[ ! -e "$prefix/skills/src" ]] || fail "the retired skills/src/ tree was staged"
-  # The manifest records each staged path.
+  # The manifest records each staged path, and nothing under agents/ or codex-agents/.
   local m="$prefix/install-manifest.json"
   grep -Fq '"skills/planar/SKILL.md"' "$m" || fail "manifest lacks skills/planar/SKILL.md"
   for f in "$repo"/skills/planar/references/*.md; do
     grep -Fq "\"skills/planar/references/$(basename "$f")\"" "$m" || fail "manifest lacks $(basename "$f")"
   done
-  for r in "${ROLES[@]}"; do
-    grep -Fq "\"agents/planar-$r.md\"" "$m" || fail "manifest lacks agents/planar-$r.md"
-    grep -Fq "\"codex-agents/planar-$r.toml\"" "$m" || fail "manifest lacks codex-agents/planar-$r.toml"
-  done
-  for d in "${DOCS[@]}"; do grep -Fq "\"agents/$d.md\"" "$m" || fail "manifest lacks agents/$d.md"; done
-  grep -Fq '"agents/codex/' "$m" && fail "manifest records something under agents/codex/"
+  ! grep -Eq '"(agents|codex-agents)/' "$m" || fail "manifest records a staged agent path"
   return 0
 }
 
@@ -148,7 +120,7 @@ case " all $STAGE_GROUPS " in *" $GROUP "*) ;; *) printf 'install-stage-test: un
 # and link modes with homes of their own, so each mode is a name (no-change-copy, no-change-link,
 # uninstall-copy, uninstall-link). The table is the dispatch order, name:group. No scenario here
 # tests the mutation lock, so none is serial.
-SCEN_TABLE="all-vendors:vendors no-change-copy:placement no-change-link:placement uninstall-copy:uninstall uninstall-link:uninstall mode-switch:modes mid-run-failure:placement manifest-rename-failure:placement upgrade-layout:modes copy-reinstall:staging old-agent-layout:staging foreign-destination:staging vendors-filter:staging claude-vendor:staging link-mode:staging malformed-agent:staging opencode-only:vendors gemini-antigravity:vendors opencode-quoting:staging unprovable-evidence:modes foreign-entries:modes legacy-manifest:modes flags:staging lists:staging doc-urls:staging"
+SCEN_TABLE="all-vendors:vendors no-change-copy:placement no-change-link:placement uninstall-copy:uninstall uninstall-link:uninstall mode-switch:modes mid-run-failure:placement manifest-rename-failure:placement upgrade-layout:modes copy-reinstall:staging old-agent-layout:staging foreign-destination:staging vendors-filter:staging claude-vendor:staging link-mode:staging checkout-agents-ignored:staging opencode-only:vendors gemini-antigravity:vendors retire-role-agents:modes unprovable-evidence:modes foreign-entries:modes legacy-manifest:modes flags:staging lists:staging doc-urls:staging"
 SCEN_SERIAL=""
 # shellcheck source=fixtures/scenario-runner.sh
 source "$ROOT/scripts/fixtures/scenario-runner.sh"
@@ -196,22 +168,27 @@ print(f["manifest_status"], f["state"], f["managed"], f["fresh"], f["stale"], f[
 
 if scen copy-reinstall; then
 mark 1
-# 1. Copy mode, no vendor: everything is staged and no renderer runs.
+# 1. A fresh copy-mode install, no vendor: the skill is staged, no renderer
+# runs, and no agents/ or codex-agents/ is staged.
 run_install "$REPO" "$TMP/h1" --no-vendor || fail "install failed: $(cat "$TMP/h1/err")"
 check_staged "$REPO" "$TMP/h1"
 [[ ! -e "$TMP/h1/.planar/commands" ]] || fail "the installer still runs a renderer"
-[[ ! -L "$TMP/h1/.planar/skills/planar" && ! -L "$TMP/h1/.planar/agents/planar-coder.md" ]] || fail "copy mode staged symlinks"
-grep -Fq 'Staging the planar skill and agents' "$TMP/h1/out" || fail "the staging step did not run"
+[[ ! -L "$TMP/h1/.planar/skills/planar" ]] || fail "copy mode staged symlinks"
+grep -Fq 'Staging the planar skill' "$TMP/h1/out" || fail "the staging step did not run"
 ! grep -Fq 'Rendering per-vendor skill outputs' "$TMP/h1/out" || fail "the render section is still in the installer"
 [[ ! -e "$TMP/h1/.claude" && ! -e "$TMP/h1/.agents" ]] || fail "--no-vendor placed something in the home directory"
 
 mark 2
-# 2. A re-install replaces stale staged files and leaves agents/<vendor>/ alone.
+# 2. A re-install replaces stale staged files, and removes the agents/ and
+# codex-agents/ trees an older install staged (install-cleanup.txt).
 echo stale > "$TMP/h1/.planar/skills/planar/references/stale.md"
-echo stale > "$TMP/h1/.planar/codex-agents/stale.toml"
+mkdir -p "$TMP/h1/.planar/agents" "$TMP/h1/.planar/codex-agents"
+echo old > "$TMP/h1/.planar/agents/planar-coder.md"; echo old > "$TMP/h1/.planar/agents/methodology.md"
+echo old > "$TMP/h1/.planar/codex-agents/planar-coder.toml"
 run_install "$REPO" "$TMP/h1" --no-vendor || fail "re-install failed: $(cat "$TMP/h1/err")"
 [[ ! -e "$TMP/h1/.planar/skills/planar/references/stale.md" ]] || fail "a re-install kept a stale staged reference"
-[[ ! -e "$TMP/h1/.planar/codex-agents/stale.toml" ]] || fail "a re-install kept a stale TOML"
+grep -Fq "removed stale dir  $TMP/h1/.planar/agents/" "$TMP/h1/out" || fail "the cleanup did not report agents/: $(grep removed "$TMP/h1/out")"
+grep -Fq "removed stale dir  $TMP/h1/.planar/codex-agents/" "$TMP/h1/out" || fail "the cleanup did not report codex-agents/"
 check_staged "$REPO" "$TMP/h1"
 
 fi
@@ -222,7 +199,8 @@ mark 3
 mkdir -p "$TMP/h3/.claude"
 run_install "$REPO" "$TMP/h3" --vendors claude || fail "install with --vendors claude failed: $(cat "$TMP/h3/err")"
 check_staged "$REPO" "$TMP/h3"
-[[ -f "$TMP/h3/.claude/skills/planar/SKILL.md" && -f "$TMP/h3/.claude/agents/planar-coder.md" ]] || fail "the claude vendor was not placed"
+[[ -f "$TMP/h3/.claude/skills/planar/SKILL.md" ]] || fail "the claude vendor was not placed"
+[[ ! -e "$TMP/h3/.claude/agents" ]] || fail "a role agent was placed for claude: $(ls -A "$TMP/h3/.claude/agents")"
 [[ ! -e "$TMP/h3/.claude/commands" ]] || fail "the old ~/.claude/commands target is still written"
 grep -Fq '"vendors": ["claude"]' "$TMP/h3/.planar/install-manifest.json" || fail "the claude placement was not recorded as a vendor"
 grep -Fq '"vendor": "claude", "kind": "skill", "name": "planar"' "$TMP/h3/.planar/install-manifest.json" || fail "the claude skill has no projection row"
@@ -233,22 +211,22 @@ mark 4
 # 4. Link mode: the staged trees point into the checkout.
 run_install "$REPO" "$TMP/h4" --no-vendor --link || fail "link install failed: $(cat "$TMP/h4/err")"
 [[ -L "$TMP/h4/.planar/skills/planar" ]] || fail "link mode did not link skills/planar"
-[[ -L "$TMP/h4/.planar/agents/planar-coder.md" ]] || fail "link mode did not link the agents"
 check_staged "$REPO" "$TMP/h4"
 
 fi
-if scen malformed-agent; then
+if scen checkout-agents-ignored; then
 mark 5
-# 5. A malformed agent stops the installer at the staging step, naming the
-# file, before the render, and leaves no codex-agents/.
+# 5. The checkout's agents/ is not an install input: a malformed role file there
+# (which the retired Codex renderer refused) changes nothing, and nothing from
+# agents/ is staged or placed.
 BAD="$TMP/badrepo"; make_repo "$BAD"
 printf 'no frontmatter at all\n' > "$BAD/agents/planar-broken.md"
-if run_install "$BAD" "$TMP/h5" --no-vendor; then fail "a malformed agent did not stop the installer"; fi
-grep -Fq 'planar-broken.md' "$TMP/h5/err" || fail "the failure does not name the malformed file: $(cat "$TMP/h5/err")"
-grep -Fq 'Staging the planar skill and agents' "$TMP/h5/out" || fail "the failure was not at the staging step"
-! grep -Fq 'Rendering per-vendor skill outputs' "$TMP/h5/out" || fail "the installer went past the staging step"
-[[ ! -e "$TMP/h5/.planar/codex-agents" && ! -e "$TMP/h5/.planar/codex-agents.new" ]] || fail "a failed render left codex-agents/"
-[[ ! -e "$TMP/h5/.planar/install-manifest.json" ]] || fail "a failed staging step still wrote the manifest"
+git -C "$BAD" add -A; git -C "$BAD" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false commit -q -m broken
+mkdir -p "$TMP/h5/.claude"
+run_install "$BAD" "$TMP/h5" || fail "a malformed checkout agent stopped the installer: $(cat "$TMP/h5/err")"
+check_staged "$BAD" "$TMP/h5"
+[[ ! -e "$TMP/h5/.claude/agents" ]] || fail "an agent was placed from the checkout's agents/"
+! grep -Fq 'planar-broken' "$TMP/h5/out" "$TMP/h5/err" || fail "the installer read the checkout's agents/"
 
 fi
 if scen copy-reinstall; then
@@ -258,18 +236,18 @@ mark 6
 # shellcheck source=install-lib/install-manifest.sh
 source "$ROOT/scripts/install-lib/install-manifest.sh"
 install_manifest_begin "build-staged" copy
-install_manifest_record_staged "$TMP/h1/.planar" "$REPO"
+install_manifest_record_staged "$TMP/h1/.planar"
 install_manifest_write "$TMP/staged-manifest.json"
 grep -Fq '"projections": [' "$TMP/staged-manifest.json" || fail "the manifest lost its projections array"
 [[ "${#INSTALL_MANIFEST_ROW_VENDOR[@]}" == 0 ]] || fail "staged paths were recorded as projection rows"
-[[ "${#INSTALL_MANIFEST_EXTRAS[@]}" == $(( $(find "$REPO/skills/planar" -type f | grep -c .) + 11 + 3 + 11 )) ]] \
+[[ "${#INSTALL_MANIFEST_EXTRAS[@]}" == "$(find "$REPO/skills/planar" -type f | grep -c .)" ]] \
   || fail "unexpected extras count: ${#INSTALL_MANIFEST_EXTRAS[@]}"
 
 
 fi
 
 # ---------------------------------------------------------------------------
-# Vendor surfaces: six vendors, nine targets, one presence marker each.
+# Vendor surfaces: six vendors, three skill targets, one presence marker each.
 # ---------------------------------------------------------------------------
 
 # mk_home NAME MARKER... -- a scratch home seeded with presence markers.
@@ -302,20 +280,15 @@ placed_set() {
 
 SKILL_FILES="$(cd "$REPO/skills/planar" && find . -type f | sed 's#^\./##' | sort)"
 
-# expected_set VENDOR... -- the files the given vendors' targets must hold.
+# expected_set VENDOR... -- the files the given vendors' targets must hold: the
+# skill in each skill root a vendor reads, and no agent file anywhere.
 expected_set() {
-  local v r f shared=0
+  local v f shared=0
   for v in "$@"; do
     case "$v" in codex|copilot|gemini|opencode) shared=1 ;; esac
     case "$v" in
-      claude)      while read -r f; do echo "./.claude/skills/planar/$f"; done <<< "$SKILL_FILES"
-                   for r in "${ROLES[@]}"; do echo "./.claude/agents/planar-$r.md"; done ;;
-      codex)       for r in "${ROLES[@]}"; do echo "./.codex/agents/planar-$r.toml"; done ;;
-      copilot)     for r in "${ROLES[@]}"; do echo "./.copilot/agents/planar-$r.agent.md"; done ;;
-      gemini)      for r in "${ROLES[@]}"; do echo "./.gemini/agents/planar-$r.md"; done ;;
-      antigravity) while read -r f; do echo "./.gemini/antigravity-cli/skills/planar/$f"; done <<< "$SKILL_FILES"
-                   for r in "${ROLES[@]}"; do echo "./.gemini/antigravity-cli/agents/planar-$r.md"; done ;;
-      opencode)    for r in "${ROLES[@]}"; do echo "./.config/opencode/agents/planar-$r.md"; done ;;
+      claude)      while read -r f; do echo "./.claude/skills/planar/$f"; done <<< "$SKILL_FILES" ;;
+      antigravity) while read -r f; do echo "./.gemini/antigravity-cli/skills/planar/$f"; done <<< "$SKILL_FILES" ;;
     esac
   done
   [[ "$shared" -eq 0 ]] || while read -r f; do echo "./.agents/skills/planar/$f"; done <<< "$SKILL_FILES"
@@ -332,61 +305,28 @@ assert_found() {  # HOME "vendors as printed"
   grep -Fxq "  vendors found:   $2" "$1/out" || fail "installer did not print 'vendors found: $2': $(grep 'vendors' "$1/out")"
 }
 
-# check_formats REPO HOME VENDOR... -- the content of each placed file.
+# check_formats REPO HOME VENDOR... -- each placed skill holds the checkout's
+# skill bytes, and no vendor agent directory was created.
 check_formats() {
   local repo="$1" home="$2"; shift 2
-  local v r f
+  local v d
   for v in "$@"; do
-    for r in "${ROLES[@]}"; do
-      case "$v" in
-        claude)      f="$home/.claude/agents/planar-$r.md" ;;
-        gemini)      f="$home/.gemini/agents/planar-$r.md" ;;
-        antigravity) f="$home/.gemini/antigravity-cli/agents/planar-$r.md" ;;
-        copilot)     f="$home/.copilot/agents/planar-$r.agent.md" ;;
-        *) f="" ;;
-      esac
-      if [[ -n "$f" ]]; then
-        cmp -s "$repo/agents/planar-$r.md" "$f" || fail "$f is not the staged agent"
-      fi
-    done
     case "$v" in
-      codex)
-        for r in "${ROLES[@]}"; do
-          python3 - "$home/.codex/agents/planar-$r.toml" "planar-$r" <<'PY' || fail "$home/.codex/agents/planar-$r.toml does not parse"
-import sys
-try:
-    import tomllib
-except ImportError:
-    lines = open(sys.argv[1], encoding='utf-8').read().split('\n')
-    assert lines[0] == 'name = "%s"' % sys.argv[2], lines[0]
-else:
-    d = tomllib.load(open(sys.argv[1], 'rb'))
-    assert list(d) == ['name', 'description', 'developer_instructions'], list(d)
-    assert d['name'] == sys.argv[2]
-PY
-        done ;;
-      opencode)
-        for r in "${ROLES[@]}"; do
-          f="$home/.config/opencode/agents/planar-$r.md"
-          python3 - "$repo/agents/planar-$r.md" "$f" <<'PY' || fail "$f is not the reduced OpenCode form of planar-$r.md"
-import sys
-src = open(sys.argv[1], encoding='utf-8').read().split('\n')
-out = open(sys.argv[2], encoding='utf-8').read().split('\n')
-assert src[0] == '---'
-close = src.index('---', 1)
-desc = [l for l in src[1:close] if l.startswith('description:')][0]
-assert out[:4] == ['---', desc, 'mode: subagent', '---'], out[:4]
-assert out[4:] == src[close + 1:], 'body changed'
-PY
-        done ;;
+      claude)      d="$home/.claude/skills/planar" ;;
+      antigravity) d="$home/.gemini/antigravity-cli/skills/planar" ;;
+      *)           d="$home/.agents/skills/planar" ;;
     esac
+    diff -r "$repo/skills/planar" "$d" >/dev/null || fail "$d is not the staged skill"
+  done
+  for d in .claude/agents .codex/agents .copilot/agents .gemini/agents .gemini/antigravity-cli/agents .config/opencode/agents; do
+    [[ ! -e "$home/$d" ]] || fail "a vendor agent directory was created: $d"
   done
 }
 
 # assert_manifest HOME [VENDOR...] -- version 2: `vendors` is what the run found
-# (all six when none are named), one projection row per placed target with the
-# right vendor, kind, name, staged source and install kind, and every placed
-# file and skill directory also in extras.
+# (all six when none are named), one skill row per placed skill root with the
+# right vendor, name, staged source and install kind, no agent row, and every
+# placed file and skill directory also in extras.
 assert_manifest() {
   local home="$1"; shift
   python3 - "$home" "${@:-claude codex copilot gemini antigravity opencode}" <<'PY' || fail "the manifest does not record every placed path"
@@ -413,34 +353,22 @@ for rel in out:
             missing.append(d)
 assert not missing, missing[:5]
 
-# The rows: skills and agents per root.
-codex_home = os.environ.get('RUN_CODEX_HOME') or home + '/.codex'
-agent_roots = {  # vendor -> (directory, suffix)
-    'claude': ('/.claude/agents', '.md'), 'codex': (None, '.toml'), 'copilot': ('/.copilot/agents', '.agent.md'),
-    'gemini': ('/.gemini/agents', '.md'), 'antigravity': ('/.gemini/antigravity-cli/agents', '.md'),
-    'opencode': ('/.config/opencode/agents', '.md')}
+# The rows: one skill row per skill root, and no agent row.
 want = {}  # installed path -> (vendor label, kind, staged)
-roles = sorted(f[:-3] for f in os.listdir(home + '/.planar/agents') if f.startswith('planar-'))
-assert len(roles) == 11, roles
 skill_root = {'claude': '/.claude/skills', 'antigravity': '/.gemini/antigravity-cli/skills'}
 for v in found:
     if v in skill_root:
         want[home + skill_root[v] + '/planar'] = (v, 'skill', home + '/.planar/skills/planar')
     elif v in ('codex', 'copilot', 'gemini', 'opencode'):
         want[home + '/.agents/skills/planar'] = ('shared', 'skill', home + '/.planar/skills/planar')
-    d, suffix = agent_roots[v]
-    d = codex_home + '/agents' if v == 'codex' else home + d
-    for r in roles:
-        staged = home + ('/.planar/codex-agents/%s.toml' if v == 'codex' else '/.planar/agents/%s.md') % r
-        want[d + '/' + r + suffix] = (v, 'agent', staged)
 rows = {r['installed_path']: r for r in m['projections']}
 assert len(rows) == len(m['projections']), 'duplicate installed_path'
 assert set(rows) == set(want), (sorted(set(rows) ^ set(want))[:5])
 for path, (vendor, kind, staged) in want.items():
     r = rows[path]
     assert (r['vendor'], r['kind'], r['staged_path']) == (vendor, kind, staged), (path, r)
-    assert r['name'] == ('planar' if kind == 'skill' else os.path.basename(path).split('.')[0]), r
-    assert r['install_kind'] == ('copy' if vendor == 'opencode' else m['install_mode']), r
+    assert r['name'] == 'planar', r
+    assert r['install_kind'] == m['install_mode'], r
     assert r['source_digest'] == '' and r['projection_digest'] == '', r
     assert path in extras, path
 PY
@@ -450,7 +378,7 @@ ALL6=(claude codex copilot gemini antigravity opencode)
 
 if scen all-vendors; then
 mark 8
-# 8. All six markers: every target, in the right format.
+# 8. All six markers: every skill target, and no role agent anywhere.
 mk_home h8 "${ALL6[@]}"
 run_install "$REPO" "$TMP/h8" || fail "all-vendor install failed: $(cat "$TMP/h8/err")"
 assert_found "$TMP/h8" "claude codex copilot gemini antigravity opencode"
@@ -465,7 +393,7 @@ check_formats "$REPO" "$TMP/h8" "${ALL6[@]}"
 assert_manifest "$TMP/h8"
 
 mark 9
-# 9. Only ~/.claude/: the Claude skill and agents, nothing else, one vendor found.
+# 9. Only ~/.claude/: the Claude skill, nothing else, one vendor found.
 mk_home h9 claude
 run_install "$REPO" "$TMP/h9" || fail "claude-only install failed: $(cat "$TMP/h9/err")"
 assert_found "$TMP/h9" "claude"
@@ -478,7 +406,7 @@ assert_manifest "$TMP/h9" claude
 fi
 if scen opencode-only; then
 mark 10
-# 10. Only ~/.config/opencode/: the shared skill and the OpenCode agents.
+# 10. Only ~/.config/opencode/: the shared skill and no OpenCode agent.
 mk_home h10 opencode
 run_install "$REPO" "$TMP/h10" || fail "opencode-only install failed: $(cat "$TMP/h10/err")"
 assert_found "$TMP/h10" "opencode"
@@ -508,24 +436,17 @@ assert_placed "$TMP/h11c" antigravity
 fi
 if scen all-vendors; then
 mark 12
-# 12. Link vs copy: same path set; link mode links skills and Markdown agents;
-# the derived OpenCode file is a regular file in both modes.
+# 12. Link vs copy: same path set; link mode links every skill root.
 mk_home h12 "${ALL6[@]}"
 run_install "$REPO" "$TMP/h12" --link || fail "link install failed: $(cat "$TMP/h12/err")"
 assert_placed "$TMP/h12" "${ALL6[@]}"
 check_formats "$REPO" "$TMP/h12" "${ALL6[@]}"
 diff <(placed_set "$TMP/h8") <(placed_set "$TMP/h12") >/dev/null || fail "link and copy mode placed different paths"
-for p in .claude/skills/planar .agents/skills/planar .gemini/antigravity-cli/skills/planar \
-         .claude/agents/planar-coder.md .gemini/agents/planar-coder.md .gemini/antigravity-cli/agents/planar-coder.md \
-         .copilot/agents/planar-coder.agent.md .codex/agents/planar-coder.toml; do
+for p in .claude/skills/planar .agents/skills/planar .gemini/antigravity-cli/skills/planar; do
   [[ -L "$TMP/h12/$p" ]] || fail "link mode did not link $p"
   [[ "$(readlink "$TMP/h12/$p")" == "$TMP/h12/.planar/"* ]] || fail "$p does not point into the prefix"
 done
-[[ -f "$TMP/h12/.config/opencode/agents/planar-coder.md" && ! -L "$TMP/h12/.config/opencode/agents/planar-coder.md" ]] \
-  || fail "the OpenCode agent is not a regular file in link mode"
 [[ -z "$(find "$TMP/h8" -type l ! -path "$TMP/h8/.planar/*")" ]] || fail "copy mode left symlinks outside the prefix"
-[[ -f "$TMP/h8/.config/opencode/agents/planar-coder.md" && ! -L "$TMP/h8/.config/opencode/agents/planar-coder.md" ]] \
-  || fail "the OpenCode agent is not a regular file in copy mode"
 assert_manifest "$TMP/h12"
 
 mark 13
@@ -545,7 +466,7 @@ mark 23
 # rows read fresh by construction.
 [[ -L "$TMP/h12/.claude/skills/planar" && "$(readlink "$TMP/h12/.claude/skills/planar")" == "$TMP/h12/.planar/skills/planar" ]] \
   || fail "the link-mode skill is not a symlink into the staged tree"
-[[ "$(freshness "$TMP/h12")" == "current fresh 69 69 0 0" ]] || fail "link install is not fresh in health: $(freshness "$TMP/h12")"
+[[ "$(freshness "$TMP/h12")" == "current fresh 3 3 0 0" ]] || fail "link install is not fresh in health: $(freshness "$TMP/h12")"
 
 else
   skip_health 23
@@ -554,10 +475,10 @@ fi
 if [[ "$HEALTH" == 1 ]]; then
 mark 24
 # 24. An absent vendor produces no row: only ~/.claude/ left on a host whose
-# manifest names all six leaves the two Claude roots (1 skill + 11 agents).
+# manifest names all six leaves the one Claude skill root.
 for d in .codex .copilot .gemini .config; do rm -rf "${TMP:?}/h8/$d"; done
-[[ "$(freshness "$TMP/h8")" == "current fresh 12 12 0 0" ]] || fail "absent vendors still produced rows: $(freshness "$TMP/h8")"
-[[ "$(freshness "$TMP/h9")" == "current fresh 12 12 0 0" ]] || fail "the claude-only install is not 12 fresh rows: $(freshness "$TMP/h9")"
+[[ "$(freshness "$TMP/h8")" == "current fresh 1 1 0 0" ]] || fail "absent vendors still produced rows: $(freshness "$TMP/h8")"
+[[ "$(freshness "$TMP/h9")" == "current fresh 1 1 0 0" ]] || fail "the claude-only install is not 1 fresh row: $(freshness "$TMP/h9")"
 
 else
   skip_health 24
@@ -577,14 +498,15 @@ grep -Fq "$TMP/h14/.claude/skills/planar" "$TMP/h14/err" || fail "the error does
 grep -Fq 'no Planar manifest records it' "$TMP/h14/err" || fail "the error does not say no manifest records it: $(cat "$TMP/h14/err")"
 [[ "$(cat "$TMP/h14/.claude/skills/planar/SKILL.md")" == foreign ]] || fail "the foreign file was changed"
 [[ "$(placed_set "$TMP/h14")" == "./.claude/skills/planar/SKILL.md" ]] || fail "something was placed despite the foreign destination: $(placed_set "$TMP/h14")"
+# A planar-coder.md of the operator's own in an agent directory is no longer a
+# placement target: the install goes ahead and the file is neither changed,
+# removed nor reported (no manifest records it and no staged copy proves it).
 mk_home h14b claude opencode
 mkdir -p "$TMP/h14b/.claude/agents"
 echo foreign > "$TMP/h14b/.claude/agents/planar-coder.md"
-if run_install "$REPO" "$TMP/h14b"; then fail "a foreign agent file did not stop the installer"; fi
-grep -Fq "$TMP/h14b/.claude/agents/planar-coder.md" "$TMP/h14b/err" || fail "the error does not name the agent path"
-[[ "$(placed_set "$TMP/h14b")" == "./.claude/agents/planar-coder.md" ]] || fail "something was placed despite the foreign agent: $(placed_set "$TMP/h14b")"
+run_install "$REPO" "$TMP/h14b" || fail "a foreign agent file stopped the installer: $(cat "$TMP/h14b/err")"
 [[ "$(cat "$TMP/h14b/.claude/agents/planar-coder.md")" == foreign ]] || fail "the foreign agent was changed"
-grep -Fq 'no Planar manifest records it' "$TMP/h14b/err" || fail "the agent error does not say no manifest records it: $(cat "$TMP/h14b/err")"
+! grep -Fq "$TMP/h14b/.claude/agents/planar-coder.md" "$TMP/h14b/out" "$TMP/h14b/err" || fail "the foreign agent was reported"
 
 fi
 if scen vendors-filter; then
@@ -600,36 +522,26 @@ grep -Fq 'unknown vendor: bogus' "$TMP/h15/err" || fail "no warning for an unkno
 mk_home h15b
 RUN_CODEX_HOME="$TMP/h15b/custom-codex" run_install "$REPO" "$TMP/h15b" || fail "CODEX_HOME install failed: $(cat "$TMP/h15b/err")"
 assert_found "$TMP/h15b" "codex"
-[[ -f "$TMP/h15b/custom-codex/agents/planar-coder.toml" && -f "$TMP/h15b/.agents/skills/planar/SKILL.md" ]] || fail "CODEX_HOME did not select Codex"
+[[ -f "$TMP/h15b/.agents/skills/planar/SKILL.md" ]] || fail "CODEX_HOME did not select Codex"
+[[ ! -e "$TMP/h15b/custom-codex/agents" ]] || fail "a Codex agent was placed under CODEX_HOME"
 [[ ! -e "$TMP/h15b/.codex" ]] || fail "the default ~/.codex was written when CODEX_HOME is set"
-
-fi
-if scen opencode-quoting; then
-mark 16
-# 16. An OpenCode description YAML would misread is quoted, body unchanged.
-QUOTE="$TMP/quoterepo"; make_repo "$QUOTE"
-printf -- '---\nname: planar-quirky\ndescription: Does a thing: with a colon\nplanar:\n  kind: agent\n  slug: planar-quirky\n---\n\n# Body\n---\nkept\n' > "$QUOTE/agents/planar-quirky.md"
-mk_home h16 opencode
-run_install "$QUOTE" "$TMP/h16" || fail "quirky install failed: $(cat "$TMP/h16/err")"
-[[ "$(sed -n 1,4p "$TMP/h16/.config/opencode/agents/planar-quirky.md" | tr '\n' '|')" == '---|description: "Does a thing: with a colon"|mode: subagent|---|' ]] \
-  || fail "the quirky description was not quoted: $(head -5 "$TMP/h16/.config/opencode/agents/planar-quirky.md")"
-[[ "$(tail -4 "$TMP/h16/.config/opencode/agents/planar-quirky.md" | tr '\n' '|')" == '|# Body|---|kept|' ]] || fail "the OpenCode body changed"
 
 fi
 if scen doc-urls; then
 mark 17
-# 17. Every one of the nine target rows in install.sh carries an adjacent
-# documentation URL and the date it was checked.
+# 17. Every one of the three target rows in install.sh carries an adjacent
+# documentation URL and the date it was checked, and every row is a skill.
 python3 - "$ROOT/install.sh" <<'PY' || fail "a vendor target row lacks an adjacent doc-URL comment with a date"
 import re, sys
 lines = open(sys.argv[1], encoding='utf-8').read().split('\n')
 row = re.compile(r'^  "[a-z,]+\|(skill|md|toml|copilot|opencode)\|[^"]+"$')
 rows = [i for i, l in enumerate(lines) if row.match(l)]
-assert len(rows) == 9, len(rows)
+assert len(rows) == 3, len(rows)
+assert all('|skill|' in lines[i] for i in rows), [lines[i] for i in rows]
 for i in rows:
     assert re.match(r'^  # https://\S+.*\(checked \d{4}-\d{2}-\d{2}\)$', lines[i - 1]), (lines[i], lines[i - 1])
 text = '\n'.join(lines[i] for i in rows)
-assert 'opencode/skills' not in text and '/commands' not in text
+assert 'opencode/skills' not in text and '/commands' not in text and '/agents"' not in text
 PY
 
 fi
@@ -641,7 +553,7 @@ fi
 # switch that replaces the prior form.
 # ---------------------------------------------------------------------------
 
-NTARGETS=69   # 3 skill directories + 11 agents x 6 agent targets, all six vendors
+NTARGETS=3    # the 3 skill directories, all six vendors
 
 # summary_has HOME TEXT -- the one summary line the placement step prints.
 summary_has() { grep -Fq "  $2" "$1/out" || fail "the placement summary lacks '$2': $(grep -E 'vendor target|no changes' "$1/out")"; }
@@ -685,39 +597,34 @@ done
 fi
 if scen mid-run-failure; then
 mark 19
-# 19. A failure in the middle: the fourth target (the first Claude agent) cannot
-# be created because a regular file sits where its parent directory must go.
-# The pre-check passes it (nothing exists at the destination), placement fails.
-# The installer stops naming the target and the reason, the three skill
-# directories before it stay placed and recorded, nothing after it exists; once
-# the cause is gone a re-run places only the rest.
+# 19. A failure in the middle: the second target (the shared skill) cannot be
+# created because a regular file sits where its parent directory must go. The
+# pre-check passes it (nothing exists at the destination), placement fails. The
+# installer stops naming the target and the reason, the Claude skill before it
+# stays placed and recorded, nothing after it exists; once the cause is gone a
+# re-run places only the rest.
 mk_home h19 "${ALL6[@]}"
-: > "$TMP/h19/.claude/agents"
+: > "$TMP/h19/.agents"
 if run_install "$REPO" "$TMP/h19" --verbose; then fail "a mid-run failure did not stop the installer"; fi
-grep -Fq "could not place $TMP/h19/.claude/agents/planar-coder.md" "$TMP/h19/err" || fail "the stop does not name the fourth target: $(cat "$TMP/h19/err")"
+grep -Fq "could not place $TMP/h19/.agents/skills/planar" "$TMP/h19/err" || fail "the stop does not name the second target: $(cat "$TMP/h19/err")"
 grep -Eq 'File exists|Not a directory' "$TMP/h19/err" || fail "the stop does not give the reason: $(cat "$TMP/h19/err")"
-for d in .claude/skills/planar .agents/skills/planar .gemini/antigravity-cli/skills/planar; do
-  [[ -f "$TMP/h19/$d/SKILL.md" ]] || fail "target before the failure was not placed: $d"
-done
-[[ "$(grep -c 'placed: ' "$TMP/h19/out")" == 3 ]] || fail "expected exactly three placed targets before the stop: $(grep 'placed: ' "$TMP/h19/out")"
-for d in .codex/agents .copilot/agents .gemini/agents .config/opencode/agents .gemini/antigravity-cli/agents; do
-  [[ ! -e "$TMP/h19/$d" || -z "$(find "$TMP/h19/$d" -type f | head -1)" ]] || fail "a target after the failure was placed: $d"
-done
-[[ -f "$TMP/h19/.claude/agents" && ! -d "$TMP/h19/.claude/agents" ]] || fail "the blocker file was disturbed"
-python3 - "$TMP/h19" <<'PY' || fail "the manifest after the stop does not record exactly the three placed targets"
+[[ -f "$TMP/h19/.claude/skills/planar/SKILL.md" ]] || fail "the target before the failure was not placed"
+[[ "$(grep -c 'placed: ' "$TMP/h19/out")" == 1 ]] || fail "expected exactly one placed target before the stop: $(grep 'placed: ' "$TMP/h19/out")"
+[[ ! -e "$TMP/h19/.gemini/antigravity-cli/skills/planar" ]] || fail "a target after the failure was placed"
+[[ -f "$TMP/h19/.agents" && ! -d "$TMP/h19/.agents" ]] || fail "the blocker file was disturbed"
+python3 - "$TMP/h19" <<'PY' || fail "the manifest after the stop does not record exactly the one placed target"
 import json, sys
 h = sys.argv[1]
 m = json.load(open(h + '/.planar/install-manifest.json'))
 absolute = sorted(e for e in m['extras'] if e.startswith('/'))
-roots = [h + '/.claude/skills/planar', h + '/.agents/skills/planar', h + '/.gemini/antigravity-cli/skills/planar']
-for r in roots:
-    assert r in absolute, r
-assert all(any(e == r or e.startswith(r + '/') for r in roots) for e in absolute), absolute
+root = h + '/.claude/skills/planar'
+assert root in absolute, root
+assert all(e == root or e.startswith(root + '/') for e in absolute), absolute
 PY
-rm -f "$TMP/h19/.claude/agents"
+rm -f "$TMP/h19/.agents"
 run_install "$REPO" "$TMP/h19" --verbose || fail "the re-run after the fix failed: $(cat "$TMP/h19/err")"
-summary_has "$TMP/h19" "placed $((NTARGETS - 3)), replaced 0, unchanged 3 of $NTARGETS vendor target(s) (copy)"
-[[ "$(grep -c 'unchanged: ' "$TMP/h19/out")" == 3 && "$(grep -c 'placed: ' "$TMP/h19/out")" == $((NTARGETS - 3)) ]] || fail "the re-run did not report only the remainder as changed"
+summary_has "$TMP/h19" "placed $((NTARGETS - 1)), replaced 0, unchanged 1 of $NTARGETS vendor target(s) (copy)"
+[[ "$(grep -c 'unchanged: ' "$TMP/h19/out")" == 1 && "$(grep -c 'placed: ' "$TMP/h19/out")" == $((NTARGETS - 1)) ]] || fail "the re-run did not report only the remainder as changed"
 assert_placed "$TMP/h19" "${ALL6[@]}"
 check_formats "$REPO" "$TMP/h19" "${ALL6[@]}"
 assert_manifest "$TMP/h19"
@@ -767,22 +674,21 @@ fi
 if scen mode-switch; then
 mark 21
 # 21. Switching mode replaces the prior form of every target and records the
-# new mode; the path set is identical; OpenCode's derived files are the same
-# regular files in both modes, so they are unchanged.
+# new mode; the path set is identical.
 mk_home h21 "${ALL6[@]}"
 run_install "$REPO" "$TMP/h21" || fail "copy install failed: $(cat "$TMP/h21/err")"
 placed_set "$TMP/h21" > "$TMP/set21-copy"
 grep -Fq '"install_mode": "copy"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest does not record copy mode"
 run_install "$REPO" "$TMP/h21" --link || fail "copy -> link switch failed: $(cat "$TMP/h21/err")"
-summary_has "$TMP/h21" "placed 0, replaced $((NTARGETS - 11)), unchanged 11 of $NTARGETS vendor target(s) (link)"
+summary_has "$TMP/h21" "placed 0, replaced $NTARGETS, unchanged 0 of $NTARGETS vendor target(s) (link)"
 placed_set "$TMP/h21" > "$TMP/set21-link"
 cmp -s "$TMP/set21-copy" "$TMP/set21-link" || fail "the path set changed on the switch to link mode"
 grep -Fq '"install_mode": "link"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest still records copy mode after the switch"
 [[ -z "$(find "$TMP/h21/.claude" "$TMP/h21/.codex" "$TMP/h21/.copilot" "$TMP/h21/.gemini" "$TMP/h21/.agents" -type f ! -name settings.json)" ]] \
   || fail "link mode left a regular file where a link belongs"
-[[ -L "$TMP/h21/.agents/skills/planar" && -L "$TMP/h21/.claude/agents/planar-coder.md" ]] || fail "the switch to link did not link"
+[[ -L "$TMP/h21/.agents/skills/planar" && -L "$TMP/h21/.claude/skills/planar" ]] || fail "the switch to link did not link"
 run_install "$REPO" "$TMP/h21" || fail "link -> copy switch failed: $(cat "$TMP/h21/err")"
-summary_has "$TMP/h21" "placed 0, replaced $((NTARGETS - 11)), unchanged 11 of $NTARGETS vendor target(s) (copy)"
+summary_has "$TMP/h21" "placed 0, replaced $NTARGETS, unchanged 0 of $NTARGETS vendor target(s) (copy)"
 placed_set "$TMP/h21" | cmp -s - "$TMP/set21-copy" || fail "the path set changed on the switch back to copy"
 grep -Fq '"install_mode": "copy"' "$TMP/h21/.planar/install-manifest.json" || fail "the manifest still records link mode after the switch back"
 [[ -z "$(find "$TMP/h21/.claude" "$TMP/h21/.codex" "$TMP/h21/.copilot" "$TMP/h21/.gemini" "$TMP/h21/.agents" -type l)" ]] \
@@ -795,19 +701,19 @@ fi
 if scen mode-switch; then
 if [[ "$HEALTH" == 1 ]]; then
 mark 22
-# 22. A copy install across all six vendors: nine roots, 3 skill directories and
-# 66 agent files, every one fresh. One byte changed in the installed Claude
+# 22. A copy install across all six vendors: three skill roots, every one
+# fresh. One byte changed in the installed Claude
 # skill flips exactly that row to stale and degrades health; restoring it
 # clears it.
-[[ "$(freshness "$TMP/h21")" == "current fresh 69 69 0 0" ]] || fail "all-vendor copy install is not fresh in health: $(freshness "$TMP/h21")"
+[[ "$(freshness "$TMP/h21")" == "current fresh 3 3 0 0" ]] || fail "all-vendor copy install is not fresh in health: $(freshness "$TMP/h21")"
 SKILLMD="$TMP/h21/.claude/skills/planar/SKILL.md"
 cp "$SKILLMD" "$TMP/skill.bak"
 printf 'x' >> "$SKILLMD"
-[[ "$(freshness "$TMP/h21")" == "current degraded 69 68 1 0" ]] || fail "one drifted byte did not flip exactly one row: $(freshness "$TMP/h21")"
+[[ "$(freshness "$TMP/h21")" == "current degraded 3 2 1 0" ]] || fail "one drifted byte did not flip exactly one row: $(freshness "$TMP/h21")"
 cp "$TMP/skill.bak" "$SKILLMD"
-[[ "$(freshness "$TMP/h21")" == "current fresh 69 69 0 0" ]] || fail "restoring the byte did not clear the drift: $(freshness "$TMP/h21")"
+[[ "$(freshness "$TMP/h21")" == "current fresh 3 3 0 0" ]] || fail "restoring the byte did not clear the drift: $(freshness "$TMP/h21")"
 rm -rf "$TMP/h21/.agents/skills/planar"
-[[ "$(freshness "$TMP/h21")" == "current degraded 69 68 0 1" ]] || fail "a removed skill directory is not one missing row: $(freshness "$TMP/h21")"
+[[ "$(freshness "$TMP/h21")" == "current degraded 3 2 0 1" ]] || fail "a removed skill directory is not one missing row: $(freshness "$TMP/h21")"
 
 else
   skip_health 22
@@ -845,7 +751,7 @@ if scen upgrade-layout; then
 mark 26
 # 26. Upgrade from the previous layout: seven artifacts, all retired and
 # reported; the sweep title comes before the cleanup output; the staged
-# *-skills/ trees are gone afterwards; codex-agents/ is the fresh render.
+# *-skills/ trees are gone afterwards, and so are agents/ and codex-agents/.
 H="$TMP/h26"; P="$H/.planar"
 mk_home h26 "${ALL6[@]}"
 mkdir -p "$P/commands/claude" "$P/codex-skills/pl-task/references" "$P/opencode-skills/pl-task" \
@@ -889,7 +795,7 @@ sweep_line="$(grep -n 'Retiring the previous skill and agent projections' "$H/ou
 clean_line="$(grep -n 'removed stale' "$H/out" | head -1 | cut -d: -f1)"
 [[ -n "$sweep_line" && -n "$clean_line" && "$sweep_line" -lt "$clean_line" ]] || fail "the sweep does not precede the cleanup output ($sweep_line, $clean_line)"
 for t in commands/ skills/codex/ skills/copilot/ skills/gemini/ codex-skills/ copilot-skills/ gemini-skills/ opencode-skills/ \
-         agents/claude/ agents/codex/ agents/copilot/ agents/gemini/ agents/opencode/ bin/scriptorium; do
+         agents/claude/ agents/codex/ agents/copilot/ agents/gemini/ agents/opencode/ bin/scriptorium agents/ codex-agents/; do
   grep -Eq "^$t([[:space:]]|\$)" "$ROOT/install-cleanup.txt" || fail "install-cleanup.txt does not list $t"
 done
 check_staged "$REPO" "$H"
@@ -953,19 +859,19 @@ for mode in copy link; do
   run_install "$REPO" "$H" ${flag[@]+"${flag[@]}"} || fail "$mode: install before uninstall failed: $(cat "$H/err")"
   manifest_abs "$H" > "$TMP/recorded29$mode"
   [[ -s "$TMP/recorded29$mode" ]] || fail "$mode: nothing recorded"
-  echo mine > "$H/.claude/agents/planar-mine.md"
-  rm -f "$H/.gemini/agents/planar-coder.md"; echo replaced > "$H/.gemini/agents/planar-coder.md"
+  mkdir -p "$H/.claude/agents"; echo mine > "$H/.claude/agents/planar-mine.md"
+  R="$H/.gemini/antigravity-cli/skills/planar"
+  rm -rf "$R"; mkdir -p "$R"; echo replaced > "$R/SKILL.md"
   run_install "$REPO" "$H" --uninstall || fail "$mode: uninstall failed: $(cat "$H/err")"
   while IFS= read -r p; do
-    case "$p" in "$H/.gemini/agents/planar-coder.md") continue ;; esac
+    case "$p" in "$R"|"$R"/*) continue ;; esac
     [[ ! -e "$p" && ! -L "$p" ]] || fail "$mode: uninstall left the recorded target $p"
   done < "$TMP/recorded29$mode"
-  [[ "$(cat "$H/.gemini/agents/planar-coder.md")" == replaced ]] || fail "$mode: a replaced target was removed"
-  grep -Fq "$H/.gemini/agents/planar-coder.md" "$H/err" || fail "$mode: the replaced target was not reported"
+  [[ "$(cat "$R/SKILL.md")" == replaced ]] || fail "$mode: a replaced target was removed"
+  grep -Fq "$R" "$H/err" || fail "$mode: the replaced target was not reported"
   [[ -f "$H/.claude/agents/planar-mine.md" ]] || fail "$mode: the foreign file was removed"
   grep -Fq "$H/.claude/agents/planar-mine.md" "$H/err" || fail "$mode: the foreign file was not reported"
-  for d in .claude/skills .claude/agents .agents/skills .codex/agents .copilot/agents .gemini/agents \
-           .gemini/antigravity-cli/skills .gemini/antigravity-cli/agents .config/opencode/agents; do
+  for d in .claude/skills .claude/agents .agents/skills .gemini/antigravity-cli/skills; do
     [[ -d "$H/$d" ]] || fail "$mode: uninstall removed the vendor directory $d"
   done
   [[ ! -e "$P/bin" && ! -e "$P/install-manifest.json" && ! -e "$P/skills" ]] || fail "$mode: the prefix contents survived: $(ls -A "$P")"
@@ -980,8 +886,8 @@ mark 31
 # The upgrade rebuilds that directory with planar-*.md only, so those links
 # would dangle. The sweep removes every such link, live or already dangling,
 # and leaves a foreign link, a regular file and a link elsewhere under the
-# prefix. A link-mode install followed by a re-run keeps its own planar-*
-# links, so the rule never sweeps the current layout.
+# prefix. A link-mode install followed by a re-run keeps its own skill links,
+# so no rule sweeps the current layout.
 H="$TMP/h31"; P="$H/.planar"
 mk_home h31 claude codex
 mkdir -p "$P/agents" "$H/.codex/agents" "$H/.claude/agents" "$P/scripts"
@@ -1009,11 +915,118 @@ grep -Fq 'retired 3 previous projection(s); left 0' "$H/out" || fail "unexpected
 H="$TMP/h31link"
 mk_home h31link "${ALL6[@]}"
 run_install "$REPO" "$H" --link || fail "link-mode install failed: $(cat "$H/err")"
-[[ -L "$H/.claude/agents/planar-coder.md" ]] || fail "link mode did not place planar-coder.md as a link"
+[[ -L "$H/.claude/skills/planar" ]] || fail "link mode did not place the skill as a link"
 run_install "$REPO" "$H" --link || fail "link-mode re-run failed: $(cat "$H/err")"
 grep -Fq 'retired 0 previous projection(s); left 0' "$H/out" || fail "the link-mode re-run swept its own links: $(grep -E 'removed|previous projection' "$H/out")"
-[[ -L "$H/.claude/agents/planar-coder.md" ]] || fail "the link-mode re-run lost planar-coder.md"
+[[ -L "$H/.claude/skills/planar" ]] || fail "the link-mode re-run lost its skill link"
 
+
+fi
+if scen retire-role-agents; then
+mark 34
+# 34. Upgrade from an install that placed role agents. An older install staged
+# $PLANAR_HOME/agents/planar-<role>.md and codex-agents/planar-<role>.toml and
+# placed every role into all six vendors' agent directories: Markdown for
+# Claude Code, Gemini CLI and Antigravity, planar-<role>.agent.md for Copilot,
+# the derived form for OpenCode and the TOML for Codex. Once in copy mode and
+# once in link mode (a dangling link too), the upgrade leaves no role agent in
+# any vendor directory and no agents/ or codex-agents/ under $PLANAR_HOME. It
+# never touches a planar-local-* agent (`planar local link`), an operator's own
+# planar-* file, or a file outside the planar-* names; a copy Planar placed and
+# the operator then edited is left and reported. A second run removes nothing.
+# shellcheck source=install-lib/ownership.sh
+( source "$ROOT/scripts/install-lib/ownership.sh"; declare -f opencode_derive ) > "$TMP/derive.sh"
+# shellcheck disable=SC1091
+source "$TMP/derive.sh"
+# seed_old_install HOME MODE -- the prefix and vendor directories an install
+# that placed role agents left behind, in MODE (copy or link).
+seed_old_install() {
+  local H="$1" mode="$2" P="$1/.planar" r d
+  mk_home "${H##*/}" "${ALL6[@]}"
+  mkdir -p "$P/agents" "$P/codex-agents" "$P/local/agents"
+  touch "$P/.planar-install"
+  echo doctrine > "$P/agents/methodology.md"
+  for r in "${RETIRED_ROLES[@]}"; do
+    printf -- '---\nname: planar-%s\ndescription: The %s role: a retired example.\n---\n\nBody of %s.\n' "$r" "$r" "$r" > "$P/agents/planar-$r.md"
+    printf 'name = "planar-%s"\ndescription = "The %s role"\ndeveloper_instructions = "Body"\n' "$r" "$r" > "$P/codex-agents/planar-$r.toml"
+  done
+  for d in .claude/agents .codex/agents .copilot/agents .gemini/agents .gemini/antigravity-cli/agents .config/opencode/agents; do
+    mkdir -p "$H/$d"
+  done
+  for r in "${RETIRED_ROLES[@]}"; do
+    opencode_derive "$P/agents/planar-$r.md" > "$H/.config/opencode/agents/planar-$r.md"
+    if [[ "$mode" == link ]]; then
+      for d in .claude/agents .gemini/agents .gemini/antigravity-cli/agents; do ln -s "$P/agents/planar-$r.md" "$H/$d/planar-$r.md"; done
+      ln -s "$P/agents/planar-$r.md" "$H/.copilot/agents/planar-$r.agent.md"
+      ln -s "$P/codex-agents/planar-$r.toml" "$H/.codex/agents/planar-$r.toml"
+    else
+      for d in .claude/agents .gemini/agents .gemini/antigravity-cli/agents; do cp "$P/agents/planar-$r.md" "$H/$d/planar-$r.md"; done
+      cp "$P/agents/planar-$r.md" "$H/.copilot/agents/planar-$r.agent.md"
+      cp "$P/codex-agents/planar-$r.toml" "$H/.codex/agents/planar-$r.toml"
+    fi
+  done
+  # Kept: operator-local agents (a link into local/ and a regular file), the
+  # operator's own planar-* file, a non-planar file, and a planar-* link that
+  # points outside the staged trees.
+  echo helper > "$P/local/agents/helper.md"
+  ln -s "$P/local/agents/helper.md" "$H/.claude/agents/planar-local-helper.md"
+  echo 'name = "planar-local-helper"' > "$H/.codex/agents/planar-local-helper.toml"
+  # A planar-local-* name is never the sweep's even where the staged-tree proof
+  # would hold: a link into the old agents/ tree, beside a staged file of that name.
+  echo pinned > "$P/agents/planar-local-pinned.md"
+  ln -s "$P/agents/planar-local-pinned.md" "$H/.gemini/antigravity-cli/agents/planar-local-pinned.md"
+  echo mine > "$H/.gemini/agents/planar-mine.md"
+  echo mine > "$H/.claude/agents/notes.md"
+  ln -s /somewhere/else/planar-x.md "$H/.copilot/agents/planar-x.agent.md"
+}
+for mode in copy link; do
+  H="$TMP/h34$mode"; P="$H/.planar"
+  seed_old_install "$H" "$mode"
+  # The copy an older install placed and recorded, which the operator edited.
+  edited="$H/.config/opencode/agents/planar-coder.md"
+  printf '\nmy edit\n' >> "$edited"
+  (
+    source "$ROOT/scripts/install-lib/install-manifest.sh"
+    install_manifest_begin "old-build" "$mode"
+    INSTALL_MANIFEST_VENDORS=("${ALL6[@]}")
+    install_manifest_add opencode agent planar-coder "$P/agents/planar-coder.md" "$edited" copy
+    install_manifest_write "$P/install-manifest.json"
+  ) || fail "$mode: could not write the old manifest"
+  if [[ "$mode" == link ]]; then
+    ln -s "$P/agents/planar-gone.md" "$H/.claude/agents/planar-gone.md"   # dangling: an older role
+  fi
+  flag=(); [[ "$mode" == link ]] && flag=(--link)
+  run_install "$REPO" "$H" ${flag[@]+"${flag[@]}"} || fail "$mode: upgrade from placed role agents failed: $(cat "$H/err")"
+  left="$(find "$H/.claude/agents" "$H/.codex/agents" "$H/.copilot/agents" "$H/.gemini/agents" \
+    "$H/.gemini/antigravity-cli/agents" "$H/.config/opencode/agents" -name 'planar-*' ! -name 'planar-local-*' \
+    ! -path "$edited" ! -name 'planar-mine.md' ! -name 'planar-x.agent.md' | sort)"
+  [[ -z "$left" ]] || fail "$mode: the upgrade left role agents behind: $left"
+  [[ ! -e "$P/agents" && ! -e "$P/codex-agents" ]] || fail "$mode: agents/ or codex-agents/ survived the upgrade"
+  for r in "${RETIRED_ROLES[@]}"; do
+    grep -Fq "removed role agent: $H/.codex/agents/planar-$r.toml" "$H/out" || fail "$mode: the removal of the planar-$r Codex agent was not printed"
+  done
+  n=$(( ${#RETIRED_ROLES[@]} * 6 - 1 ))
+  [[ "$mode" == link ]] && n=$((n + 1))
+  grep -Fq "retired $n previous projection(s); left 1" "$H/out" || fail "$mode: unexpected sweep summary: $(grep 'previous projection' "$H/out")"
+  [[ "$(tail -1 "$edited")" == "my edit" ]] || fail "$mode: the edited copy was removed or changed"
+  grep -Fq "left $edited: Planar placed it" "$H/err" || fail "$mode: the edited copy was not reported: $(cat "$H/err")"
+  [[ -L "$H/.claude/agents/planar-local-helper.md" && "$(cat "$H/.claude/agents/planar-local-helper.md")" == helper ]] \
+    || fail "$mode: the planar-local link was touched"
+  [[ -f "$H/.codex/agents/planar-local-helper.toml" ]] || fail "$mode: the planar-local Codex agent was removed"
+  [[ -L "$H/.gemini/antigravity-cli/agents/planar-local-pinned.md" ]] || fail "$mode: a planar-local link into the old agents/ tree was removed"
+  [[ -f "$P/local/agents/helper.md" ]] || fail "$mode: \$PLANAR_HOME/local/ was touched"
+  [[ "$(cat "$H/.gemini/agents/planar-mine.md")" == mine && -f "$H/.claude/agents/notes.md" ]] || fail "$mode: an operator file was removed"
+  [[ -L "$H/.copilot/agents/planar-x.agent.md" ]] || fail "$mode: a planar-* link outside the staged trees was removed"
+  ! grep -Fq 'planar-mine.md' "$H/err" || fail "$mode: the operator's own planar-mine.md was reported"
+  for d in .claude/agents .codex/agents .copilot/agents .gemini/agents .gemini/antigravity-cli/agents .config/opencode/agents; do
+    [[ -d "$H/$d" ]] || fail "$mode: the vendor directory $d was removed"
+  done
+  check_staged "$REPO" "$H"
+  ! grep -Fq '"kind": "agent"' "$P/install-manifest.json" || fail "$mode: the new manifest still records an agent row"
+  ! grep -Fq "$edited" "$P/install-manifest.json" || fail "$mode: the new manifest still records the edited agent"
+  run_install "$REPO" "$H" ${flag[@]+"${flag[@]}"} || fail "$mode: re-run after the upgrade failed: $(cat "$H/err")"
+  ! grep -Fq 'removed role agent' "$H/out" || fail "$mode: the re-run removed a role agent: $(grep removed "$H/out")"
+done
 
 fi
 if scen flags; then
@@ -1052,12 +1065,12 @@ LISTS="$ROOT/scripts/install-lib/managed-lists.sh"
 [[ -f "$LISTS" ]] || fail "scripts/install-lib/managed-lists.sh is missing"
 subtrees="$(bash -c 'source "$1"; printf "%s" "$PLANAR_JOURNAL_SUBTREES"' x "$LISTS")"
 vendors="$(bash -c 'source "$1"; printf "%s" "$PLANAR_VENDOR_NAMES"' x "$LISTS")"
-[[ "$subtrees" == "bin skills agents codex-agents scripts migrations" ]] || fail "unexpected managed subtrees: $subtrees"
+[[ "$subtrees" == "bin skills scripts migrations" ]] || fail "unexpected managed subtrees: $subtrees"
 [[ "$vendors" == "claude codex copilot gemini antigravity opencode" ]] || fail "unexpected vendor names: $vendors"
 for f in install.sh scripts/uninstall.sh scripts/install-lib/ownership.sh; do
   grep -Fq 'managed-lists.sh' "$ROOT/$f" || fail "$f does not source managed-lists.sh"
   ! grep -Eq '^[[:space:]]*(PLANAR_JOURNAL_SUBTREES|PLANAR_VENDOR_NAMES)=' "$ROOT/$f" || fail "$f defines a list of its own"
-  ! grep -Fq 'codex-agents scripts' "$ROOT/$f" || fail "$f spells out the managed-subtree list"
+  ! grep -Fq 'bin skills scripts migrations' "$ROOT/$f" || fail "$f spells out the managed-subtree list"
   ! grep -Eq 'claude,? ?codex,? ?copilot' "$ROOT/$f" || fail "$f spells out the vendor list"
 done
 # Behaviour, not just text: a vendor added to the one list is known to the installer.

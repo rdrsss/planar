@@ -17,7 +17,7 @@
       "id": "specialists-read-base-diff",
       "description": "Reviewer and test-coder surfaces inspect the base-relative diff.",
       "mode": "all",
-      "paths": ["agents/planar-reviewer.md", "agents/planar-test-coder.md"],
+      "paths": ["examples/agents/planar-reviewer.md", "agents/planar-test-coder.md"],
       "pattern": "git diff <coder-cycle-base>"
     }
   ],

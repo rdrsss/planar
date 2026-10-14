@@ -45,8 +45,9 @@ def check_checksums(directory, asset):
 
 
 def check_layout(stage, source, fake_bin, expected):
+    # Role agents are examples, not shipped: no agents/ and no codex-agents/.
     entries = {'release.json', 'install.sh', 'uninstall.sh', 'get-planar.sh', 'install-cleanup.txt', 'bin', 'skills',
-               'agents', 'codex-agents', 'templates', 'migrations', 'scripts'}
+               'templates', 'migrations', 'scripts'}
     require({p.name for p in stage.iterdir()} == entries, 'top-level entries differ')
     for name in ('install.sh', 'install-cleanup.txt'):
         require((stage / name).read_bytes() == (source / name).read_bytes(),
@@ -69,8 +70,7 @@ def check_layout(stage, source, fake_bin, expected):
             'scripts must contain install-lib only')
     require({p.name for p in (stage / 'skills').iterdir()} == {'planar'}, 'skills entries differ')
     # Verify authored content, including nested files, rather than directory presence alone.
-    require(not (stage / 'agents' / 'models.md').exists(), 'agents/models.md is shipped')
-    for name in ('skills/planar', 'agents', 'templates', 'migrations', 'scripts/install-lib'):
+    for name in ('skills/planar', 'templates', 'migrations', 'scripts/install-lib'):
         def snapshot(directory):
             return {p.relative_to(directory).as_posix():
                     ('link', os.readlink(p)) if p.is_symlink() else
@@ -79,15 +79,6 @@ def check_layout(stage, source, fake_bin, expected):
                     if not any(part == '__pycache__' or part == '.DS_Store' or part.endswith('.pyc')
                                for part in p.relative_to(directory).parts)}
         require(snapshot(stage / name) == snapshot(source / name), f'{name}: authored content differs')
-    authored = {p.stem for p in (source / 'agents').glob('planar-*.md')}
-    require(authored, 'no authored agents')
-    require({p.name for p in (stage / 'codex-agents').iterdir()} ==
-            {name + '.toml' for name in authored}, 'codex-agents entries differ')
-    for name in authored:
-        rendered = stage / 'codex-agents' / (name + '.toml')
-        require(rendered.is_file() and not rendered.is_symlink() and rendered.stat().st_size > 0,
-                f'{name}: missing rendered agent')
-        require(rendered.read_text().startswith(f'name = "{name}"\n'), f'{name}: wrong rendered agent')
     text = (stage / 'release.json').read_text()
     metadata = json.loads(text)
     require(isinstance(metadata, dict) and set(metadata) == FIELDS, 'release.json fields differ')
@@ -195,7 +186,8 @@ if '--install' in sys.argv:
         mutations = [('top-level entries', stage / 'extra', b'extra'),
                      ('bin entries', stage / 'bin/extra', b'extra'),
                      ('scripts must contain', stage / 'scripts/extra', b'extra'),
-                     ('codex-agents entries', stage / 'codex-agents/extra.toml', b'extra'),
+                     ('top-level entries', stage / 'agents', b'a shipped agents entry'),
+                     ('top-level entries', stage / 'codex-agents', b'a shipped codex-agents entry'),
                      ('not byte-identical', stage / 'install.sh', b'wrong installer'),
                      ('uninstall.sh: not byte-identical', stage / 'uninstall.sh', b'wrong uninstaller'),
                      ('get-planar.sh: not byte-identical', stage / 'get-planar.sh', b'wrong bootstrap'),

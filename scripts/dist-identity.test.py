@@ -17,10 +17,10 @@ class IdentityTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='planar-dist-identity-')
         self.root = Path(self.temp.name)
-        for name in ('skills', 'agents', 'templates', 'migrations'):
+        for name in ('skills', 'templates', 'migrations'):
             shutil.copytree(ROOT / name, self.root / name)
         (self.root / 'scripts').mkdir()
-        for name in ('dist.sh', 'get-planar.sh', 'render-codex-agents.py', 'uninstall.sh'):
+        for name in ('dist.sh', 'get-planar.sh', 'uninstall.sh'):
             shutil.copy2(ROOT / 'scripts' / name, self.root / 'scripts' / name)
         shutil.copytree(ROOT / 'scripts/install-lib', self.root / 'scripts/install-lib')
         for name in ('install.sh', 'install-cleanup.txt'):
