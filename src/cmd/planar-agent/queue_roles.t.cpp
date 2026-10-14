@@ -62,7 +62,10 @@ TEST_CASE("every role file cites the methodology's host build queue rule", "[cmd
   for (auto const* rel : k_role_files) {
     DYNAMIC_SECTION(rel) {
       auto const text = flat(read_file(repo(rel)));
-      CHECK(contains(text, "host build queue rule in `methodology.md` in the Planar agents directory"));
+      // The two role files under agents/ name the methodology by its installed
+      // directory; the examples name it by its repository path.
+      CHECK((contains(text, "host build queue rule in `methodology.md` in the Planar agents directory") ||
+             contains(text, "host build queue rule in the repository's `agents/methodology.md`")));
     }
   }
 }
