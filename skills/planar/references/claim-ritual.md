@@ -67,14 +67,12 @@ state, live and stale claims, the parallel wave, readiness, the policy and the c
 
 ### Status strings
 
-Add `--status "<text>"` at every phase boundary so `planar-watch ps` shows what you are
-doing: `claim acquired: task <id>`, `reading brief`, `editing <area>`,
-`validating: <gate-id>`, `committing` or `reporting`. Prefix `awaiting:` when blocked on
-something external (`awaiting:reviewer`, `awaiting:operator-confirmation`). The prefix is
-a convention, not an enum. The string is capped at 256 bytes; a longer one is refused at
-exit 2 and the lease is not refreshed. Do not heartbeat a status that mirrors an
-entity create (a new question, decision or artifact): those are recorded automatically
-under the active claim, and a manual echo duplicates the action row.
+`planar-agent heartbeat --status "<text>"` stores free text on the heartbeat, shown by
+`planar-watch ps`. The string is capped at 256 bytes; a longer one is refused at exit 2 and
+the lease is not refreshed. Entity creates (a new question, decision or artifact) are
+recorded automatically under the active claim, so a heartbeat status that echoes one
+duplicates the action row. [dispatch.md](dispatch.md#optional-heartbeat-status-strings)
+describes how `planar-watch` displays the field.
 
 ## Finishing: exactly one terminal verb
 
@@ -100,14 +98,11 @@ releases its coordination claim explicitly rather than waiting out the lease.
 ## Orchestrated versus direct claims
 
 - **Orchestrated.** The orchestrator claims or pulls and hands the token to a coder in the
-  brief. The coder heartbeats with status strings and returns its report; it never runs
+  brief. The coder heartbeats and returns; it never runs
   `complete`, `fail`, `release`, `block`, `planar task done` or any other status write.
-  The orchestrator runs the one terminal verb after review and, in worktree isolation,
-  only after the coder's commit is merged into the integration branch. Confirm the merge
-  with `git merge-base --is-ancestor <coder-sha> HEAD`; a merge of a misspelt branch name
-  can report "Already up to date" and exit 0.
-- **Direct.** The agent that claimed the work runs the terminal verb itself, after its
-  validation evidence is green.
+  The dispatcher runs the one terminal verb. [dispatch.md](dispatch.md#complete-once-the-work-is-integrated)
+  covers when to run `complete`.
+- **Direct.** The agent that claimed the work runs the terminal verb itself, when its work is done.
 
 ## Reviews are recorded, not asserted
 
@@ -116,7 +111,7 @@ approve|request-changes --summary <text>`, passing its own `--reviewer-claim <to
 `--vendor-session <id>`. The verb is refused when that session is the reviewed claim's session,
 so run the review under a different claim or session than the coder's. It writes one `review`
 action under the reviewed claim and changes no status; the terminal verb stays with the
-orchestrator or the claim's owner.
+dispatcher or the claim's owner.
 
 ## Lapsed-claim recovery
 
@@ -147,8 +142,3 @@ task.
   regardless of owner. It is an operator action.
 - A stale claim leaves the task `doing`; a later `pull` can take it again.
 - Full doctor flow: [recovery.md](recovery.md).
-
-The full contract is in `methodology.md` in the Planar agents directory, under
-Coordination claims and Heartbeat status contract.
-
-Report results with the envelope in [feedback-contract.md](feedback-contract.md).
