@@ -8,19 +8,32 @@ import std;
 import planar.cliapp.args;
 import planar.db;
 import planar.json_text;
+import planar.engine.config;
 import planar.engine.health;
+import planar.engine.hostqueue;
+import planar.engine.identity;
+import planar.engine.runtime.agentactivity;
+import planar.engine.runtime.completion;
+import planar.engine.runtime.conformance;
 import planar.installed_surface;
+import planar.cmd.internal.config_path;
 import planar.cmd.planar.context;
 import planar.cmd.planar.exit;
 import planar.cmd.planar.handler;
+import planar.cmd.planar.scope;
 import cli11;
 import planar.cmd.planar.declare;
 import planar.cmd.planar.handlers.health.hygiene;
+import planar.cmd.planar.handlers.health.conformance;
 
 namespace planar::cmd::handlers {
 
-namespace he  = engine::health;
-namespace is_ = installed_surface;
+namespace he   = engine::health;
+namespace is_  = installed_surface;
+namespace cf   = engine::runtime::conformance;
+namespace comp = engine::runtime::completion;
+namespace cfg  = engine::config;
+namespace hq   = engine::hostqueue;
 
 namespace {
 
@@ -157,6 +170,91 @@ auto map_hygiene_error(he::hygiene_error err) -> domain_error {
   return error_from_body(domain_error_kind::generic_failure, "health hygiene failed: QueryFailed");
 }
 
+/// @brief The scope slug a plan is stored at, as `engine::identity` labels it (unset for global).
+/// @param conn An open, migrated connection.
+/// @param plan_id The plan.
+/// @return The label, or the refusal. A missing plan is `not_found`.
+auto plan_scope_label(db::connection& conn, std::int64_t plan_id) -> std::expected<std::optional<std::string>, domain_error> {
+  auto stmt = conn.prepare("select scope_kind, scope_id from plans where id = ?");
+  if (!stmt || !stmt->bind_int64(1, plan_id)) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "health conformance: QueryFailed"));
+  }
+  auto stepped = stmt->step();
+  if (!stepped) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "health conformance: QueryFailed"));
+  }
+  if (*stepped != db::step_result::row) {
+    return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no plan with id {}", plan_id)));
+  }
+  auto const                  text = stmt->column_text(0);
+  auto const                  kind = text == "association" ? engine::identity::scope_kind::association
+                                     : text == "repo"      ? engine::identity::scope_kind::repo
+                                                           : engine::identity::scope_kind::global;
+  std::optional<std::int64_t> id;
+  if (!stmt->is_null(1)) {
+    id = stmt->column_int64(1);
+  }
+  auto label = engine::identity::slug_from_ref(conn, kind, id);
+  if (!label) {
+    return std::unexpected(
+        error_from_body(domain_error_kind::generic_failure, "health conformance: reading the plan's scope failed"));
+  }
+  return *label;
+}
+
+/// @brief The policy resolver `conformance::check` is given: the effective policy of a plan's scope from the located
+/// `config.toml`, the same resolution `planar-agent claim` and `complete` apply. No environment variable participates.
+/// @param doc The parsed config file.
+/// @return A resolver; its failure text says why the policy cannot be applied.
+auto conformance_policy_resolver(cfg::toml_map doc) -> cf::policy_resolver {
+  return [doc = std::move(doc)](db::connection& conn, std::int64_t plan_id) -> std::expected<cf::policy_view, std::string> {
+    auto const association = cfg::policy_association_for_plan(conn, plan_id);
+    if (!association) {
+      return std::unexpected(std::format("the policy scope of plan {} could not be read", plan_id));
+    }
+    auto const slug = association->slug;
+    auto const resolved =
+        cfg::effective_policy(doc, slug.has_value() ? std::optional<std::string_view>{std::string_view{*slug}} : std::nullopt);
+    if (!resolved) {
+      std::string problem;
+      for (auto const& finding : resolved.error()) {
+        problem += problem.empty() ? "" : "; ";
+        problem += std::format("{}: {}", finding.key, finding.message);
+      }
+      return std::unexpected(std::format("the policy in config.toml cannot be applied: {}\n"
+                                         "  fix the file, then check it with: planar config validate",
+                                         problem));
+    }
+    auto const& values = resolved->values;
+    return cf::policy_view{.review_required = values.review_required,
+                           .task_gate       = values.task_gate,
+                           .require_model   = values.require_model,
+                           .use_queue       = values.use_queue,
+                           .digest          = cfg::policy_digest(values)};
+  };
+}
+
+/// @brief The queued runs recorded for a claim, read from the host queue's history (read-only).
+/// @return A lookup for rule 5, equal in meaning to the one `planar-agent complete` uses.
+auto history_gate_lookup() -> comp::gate_run_lookup {
+  return [](db::connection& conn, std::string_view claim_token)
+             -> std::expected<std::vector<comp::gate_run>, engine::runtime::agentactivity::agent_error> {
+    auto const rows = hq::history_for_claim(conn, claim_token);
+    if (!rows) {
+      return std::unexpected(engine::runtime::agentactivity::agent_error::query_failed);
+    }
+    std::vector<comp::gate_run> runs;
+    runs.reserve(rows->size());
+    for (auto const& row : *rows) {
+      runs.push_back(comp::gate_run{.argv   = row.argv,
+                                    .cwd    = row.cwd,
+                                    .passed = row.outcome == hq::history_outcome::exited && row.exit_code.has_value() &&
+                                              *row.exit_code == 0});
+    }
+    return runs;
+  };
+}
+
 } // namespace
 
 auto health(context& ctx, const cliapp::parsed_args& args) -> handler_result {
@@ -223,6 +321,72 @@ auto health_hygiene(context& ctx, const cliapp::parsed_args& args) -> handler_re
   return {};
 }
 
+auto health_conformance(context& ctx, const cliapp::parsed_args& args) -> handler_result {
+  auto const plan_id = entity_id_arg(args, "plan-id", "plan");
+  if (!plan_id) {
+    return std::unexpected(plan_id.error());
+  }
+  auto const floor = cliapp::flag_int(args, "--floor");
+  if (floor.has_value() && *floor < 1) {
+    return std::unexpected(error_from_body(domain_error_kind::invalid_input, "--floor must be a positive claim id"));
+  }
+  auto conn = ctx.db().ensure_db();
+  if (!conn) {
+    return std::unexpected(conn.error());
+  }
+
+  auto const label = plan_scope_label(**conn, *plan_id);
+  if (!label) {
+    return std::unexpected(label.error());
+  }
+  if (auto const scope = cliapp::flag_string(args, "--scope"); scope.has_value()) {
+    // A read filter, not a write guard: the write guard lets any scope reach a global entity, which would make
+    // `--scope` filter nothing. A global plan is in scope `global` and nowhere else; any other plan is in the
+    // scope it is stored at, or in an association that its repository belongs to.
+    auto const entity_view = label->has_value() ? std::optional<std::string_view>{**label} : std::nullopt;
+    bool const in_scope =
+        label->has_value() ? guard_with_membership(**conn, entity_view, std::string_view{*scope}) : *scope == "global";
+    if (!in_scope) {
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure,
+                          std::format("plan {} is in scope '{}', not '{}'", *plan_id, label->value_or("global"), *scope)));
+    }
+  }
+
+  auto const path = internal::resolve_config_path(ctx.env());
+  auto       doc  = path.has_value() ? cfg::load_toml_file(*path) : std::expected<cfg::toml_map, std::string>{cfg::toml_map{}};
+  if (!doc) {
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           std::format("health conformance: the policy in config.toml cannot be applied: {}\n"
+                                                       "  fix the file, then check it with: planar config validate",
+                                                       doc.error())));
+  }
+
+  auto const graded = cf::check(**conn, cf::options{.plan_id = *plan_id, .floor_claim_id = floor, .now = std::nullopt},
+                                conformance_policy_resolver(std::move(*doc)), history_gate_lookup());
+  if (!graded) {
+    switch (graded.error().kind) {
+    case cf::error_kind::plan_not_found:
+      return std::unexpected(error_from_body(domain_error_kind::not_found, std::format("no plan with id {}", *plan_id)));
+    case cf::error_kind::policy_unavailable:
+      return std::unexpected(
+          error_from_body(domain_error_kind::generic_failure, std::format("health conformance: {}", graded.error().detail)));
+    case cf::error_kind::query_failed:
+      break;
+    }
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure, "health conformance: QueryFailed"));
+  }
+
+  ctx.out() << (cliapp::flag_bool(args, "--json") ? cf::render_json(*graded) : cf::render_text(*graded));
+  if (!graded->conforms()) {
+    // The report is already written; the exit code is how a script learns the trail broke a rule.
+    return std::unexpected(error_from_body(domain_error_kind::generic_failure,
+                                           std::format("plan {} does not conform: {} violation{}", *plan_id,
+                                                       graded->violations.size(), graded->violations.size() == 1 ? "" : "s")));
+  }
+  return {};
+}
+
 /// @brief Declare the `health` group and its `hygiene` child.
 ///
 /// THE LAST ANCESTOR-FLAGS SITE, and the reason this one is written
@@ -251,6 +415,7 @@ auto declare_health(CLI::App& root) -> void {
   add_json(*health, "Emit machine-readable JSON instead of text");
 
   health_cli::attach_hygiene(health);
+  health_cli::attach_conformance(health);
 }
 
 } // namespace planar::cmd::handlers

@@ -80,6 +80,17 @@ export auto health(context& ctx, const cliapp::parsed_args& args) -> handler_res
 /// @return Success after writing the report, or the refusal.
 export auto health_hygiene(context& ctx, const cliapp::parsed_args& args) -> handler_result;
 
+/// @brief Handle `planar health conformance <plan-id> [--scope --floor --json]`.
+///
+/// Grades the plan's recorded trail with `planar.engine.runtime.conformance` and writes the report. Read-only.
+/// Exit 0 when the trail broke no rule; exit 1 when it broke at least one (the report is already written) or when the
+/// plan, its scope or its policy cannot be read; 2 for a plan id that is not an integer or a `--floor` below 1.
+/// `--scope` is a read filter: the plan must be in that scope, an association covering its member repositories.
+/// @param ctx The process context.
+/// @param args The parsed command line.
+/// @return Success when the trail conforms, else the refusal.
+export auto health_conformance(context& ctx, const cliapp::parsed_args& args) -> handler_result;
+
 /// @brief Declare the `health` group. Folded out of the generated
 /// `surface.cpp` at M11.3f (task 6636, decision 1068).
 /// @param root The root app to attach it to.

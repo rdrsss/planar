@@ -269,6 +269,7 @@ auto make_handler_table(const CLI::App& root) -> handler_table {
   // a subcommand — same shape as `handoff`/`resume`. See handlers/health.cppm.
   table.emplace("health", handlers::health);
   table.emplace("health hygiene", handlers::health_hygiene);
+  table.emplace("health conformance", handlers::health_conformance);
   // `audit` — all five leaves. The note that used to stand here said
   // `commits` needed git subprocess REVISION WALKS. It does not, and never
   // did — the oracle handler calls `listFiltered` and `writeJsonList`

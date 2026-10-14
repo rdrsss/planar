@@ -315,6 +315,7 @@ export auto surface_summaries() -> std::span<std::pair<std::string_view, std::st
       {"planar audit handoff-readiness", "Check resume-readiness for all in-flight tasks."},
       {"planar health", "Report database, handoff, and installed-projection health."},
       {"planar health hygiene", "Report stale plan, task, and question lifecycle state without mutating it."},
+      {"planar health conformance", "Grade a plan's recorded trail against the coordination rules; exit 1 on any violation."},
       {"planar dashboard", "Operator situational-awareness view of in-flight plans (and, with --agents, live claims)."},
       {"planar spec", "Spec pipeline commands (ingest)."},
       {"planar spec ingest", "Decompose workbench spec documents into the task graph."},

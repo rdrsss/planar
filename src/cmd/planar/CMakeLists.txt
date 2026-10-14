@@ -455,6 +455,7 @@ planar_binary(planar
     handlers/test_spec/status.cppm
     handlers/health/command.cppm
     handlers/health/hygiene.cppm
+    handlers/health/conformance.cppm
     handlers/audit/command.cppm
     handlers/audit/handoff_readiness.cppm
     handlers/audit/session.cppm
@@ -640,6 +641,9 @@ planar_binary(planar
     engine_ingest
     engine_local
     engine_health
+    # `health conformance` reads the host queue's history through `history_for_claim` (a SELECT)
+    # to grade rule 5; no queue verb or write is reachable from this binary.
+    engine_hostqueue
     engine_planning
     document_authority
     # New at task 6299, for handlers/shared/promotion.cpp. `promote` and `demote`

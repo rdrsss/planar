@@ -771,7 +771,7 @@ constexpr command_class_t m_(std::string_view s) {
   return {s, access_t::mutate};
 }
 
-constexpr std::array<command_class_t, 198> k_command_classes{
+constexpr std::array<command_class_t, 199> k_command_classes{
     m_("planar init"),
     r_("planar scope show"),
     r_("planar scope suggest"),
@@ -921,6 +921,7 @@ constexpr std::array<command_class_t, 198> k_command_classes{
     r_("planar audit session"),
     r_("planar audit handoff-readiness"),
     r_("planar health hygiene"),
+    r_("planar health conformance"),
     r_("planar dashboard"),
     m_("planar spec ingest"),
     r_("planar test-spec status"),
