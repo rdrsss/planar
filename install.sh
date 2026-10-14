@@ -692,6 +692,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     fi
   fi
   log "stage every managed subtree under $ROOT_C/.staging-<token>/, then probe the database with the staged binaries (an ahead or unusable database stops the install before any change)"
+  log "retire the previous projections, among them the planar-<role> agents an older install placed in the vendor agent directories (with or without --no-vendor)"
   log "run cleanup manifest: $_cleanup_n path(s) checked for removal"
   log "swap bin/, skills/, scripts/ and migrations/ in through <name>.old"
   log "create a missing database, or migrate a behind one, with the installed planar init --skip-project --allow-no-repo"
@@ -707,7 +708,6 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   fi
   log "place templates/ (missing-only, --force included); write release.json, then the install stamp last"
   if [[ -n "$VENDORS" ]]; then
-    log "remove the planar-<role> agents an older install placed in the vendor agent directories"
     log "place the planar skill for each vendor found among: $VENDORS (presence markers decide; see the vendor table in install.sh)"
   else
     log "vendor surfaces: skipped (--no-vendor)"

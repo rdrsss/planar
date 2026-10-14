@@ -134,6 +134,13 @@ run_prebuilt "$H" "$BUNDLE" -- --dry-run
 [[ "$RC" == 0 ]] || fail "prebuilt dry run failed ($RC): $(cat "$TMP/err")"
 [[ ! -e "$H/.planar" ]] || fail "a dry run created ~/.planar"
 grep -Fq 'nothing is built' "$TMP/out" || fail "the dry run does not say nothing is built"
+grep -Fq 'planar-<role> agents an older install placed' "$TMP/out" || fail "the dry run does not plan the role-agent sweep"
+# The sweep runs with --no-vendor too, so its dry-run line does as well.
+run_prebuilt "$H" "$BUNDLE" -- --dry-run --no-vendor
+[[ "$RC" == 0 ]] || fail "prebuilt --no-vendor dry run failed ($RC): $(cat "$TMP/err")"
+grep -Fq 'planar-<role> agents an older install placed' "$TMP/out" || fail "the --no-vendor dry run does not plan the role-agent sweep"
+grep -Fq 'vendor surfaces: skipped (--no-vendor)' "$TMP/out" || fail "the --no-vendor dry run does not say vendor surfaces are skipped"
+[[ ! -e "$H/.planar" ]] || fail "a --no-vendor dry run created ~/.planar"
 pass
 
 # --- the old queue store is moved aside, unread -------------------------------------------
