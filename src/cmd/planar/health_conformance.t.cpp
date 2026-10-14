@@ -21,6 +21,8 @@ import planar.cmd.planar.context;
 import planar.cmd.planar.dispatch;
 import planar.cmd.planar.main;
 
+#include "parity_harness.hpp"
+
 namespace {
 
 using planar::cmd::context;
@@ -73,6 +75,23 @@ auto dispatch(const fixture& fx, std::vector<std::string> args) -> invocation {
   auto const table = planar::cmd::make_handler_table(*tree);
   int const  code  = planar::cmd::run(ctx, *tree, table);
   return invocation{.code = code, .out = out.str(), .err = err.str()};
+}
+
+/// Runs the real `planar-agent` in the fixture's pinned scratch environment (the fixture's database and `config.toml`).
+auto agent(const fixture& fx, std::vector<std::string> args) -> invocation {
+  static int counter = 0;
+  auto const got     = planar::cmd::parity::run_pinned(std::filesystem::path{PLANAR_AGENT_CPP_BIN}, args, fx.root,
+                                                       std::format("agent{}", ++counter));
+  return invocation{.code = got.code, .out = got.out, .err = got.err};
+}
+
+/// The claim token in a `pull --json` reply.
+auto claim_token(const invocation& pulled) -> std::string {
+  std::string const key = "\"claim_token\":\"";
+  auto const        at  = pulled.out.find(key);
+  REQUIRE(at != std::string::npos);
+  auto const begin = at + key.size();
+  return pulled.out.substr(begin, pulled.out.find('"', begin) - begin);
 }
 
 /// Runs raw SQL against the fixture's database (opened after a verb has migrated it).
@@ -289,4 +308,71 @@ TEST_CASE("the force marker `task done --force` leaves is what the checker reads
         1);
   CHECK(count(fx, "select count(*) from audit_log where entity_kind = 'task' and entity_id = 1 and summary = 'done (--force)'") ==
         0);
+}
+
+TEST_CASE("a claim taken and completed with the real planar-agent is graded under the policy it ran under",
+          "[cmd][planar][health][conformance][wiring]") {
+  auto const fx = make_fixture("real", "[policy]\nrequire_model = true\nreview_required = true\n");
+  REQUIRE(dispatch(fx, {"init", "--name", "proj", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "P", "--scope", "global", "--slug", "p", "--status", "active"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T", "--plan", "1", "--scope", "global"}).code == 0);
+
+  // The policy is enforced where the claim is taken and completed...
+  CHECK(agent(fx, {"pull", "1", "--role", "coder", "--vendor", "claude", "--vendor-session", "claude:none"}).code != 0);
+  auto const pulled = agent(
+      fx, {"pull", "1", "--role", "coder", "--model", "m", "--vendor", "claude", "--vendor-session", "claude:coder", "--json"});
+  REQUIRE(pulled.code == 0);
+  auto const token = claim_token(pulled);
+  CHECK(agent(fx, {"complete", "--claim", token}).code != 0);
+  REQUIRE(agent(fx, {"review", "--claim", token, "--verdict", "approve", "--summary", "ok", "--vendor", "claude",
+                     "--vendor-session", "claude:reviewer"})
+              .code == 0);
+  REQUIRE(agent(fx, {"complete", "--claim", token}).code == 0);
+
+  // ...and the checker reads the digest that claim recorded as the current policy, so it grades rules 3 and 6.
+  auto const clean = dispatch(fx, {"health", "conformance", "1", "--floor", "1", "--json"});
+  CHECK(clean.code == 0);
+  CHECK(clean.out.contains("\"policy_changed\":[]"));
+  CHECK(clean.out.contains("\"violations\":[]"));
+  CHECK(count(fx, "select count(*) from agent_work_claims where policy_digest is not null") == 1);
+
+  sql(fx, "update agent_work_claims set model = null");
+  sql(fx, "delete from agent_actions where action_kind = 'review'");
+  auto const broken = dispatch(fx, {"health", "conformance", "1", "--floor", "1", "--json"});
+  CHECK(broken.code == 1);
+  CHECK(broken.out.contains("\"policy_changed\":[]"));
+  CHECK(broken.out.contains("\"rule\":3,\"name\":\"coder-model\""));
+  CHECK(broken.out.contains("\"rule\":6,\"name\":\"independent-review\""));
+}
+
+TEST_CASE("the checker resolves a claim's policy scope as the claim did, for a task in a descendant plan",
+          "[cmd][planar][health][conformance][wiring]") {
+  // The association table turns require_model on; the top-level table leaves it off. A checker that resolved the
+  // wrong scope would record a different digest (policy_changed) or miss the missing model.
+  auto const fx = make_fixture("assoc", "[policy]\nrequire_model = false\n[associations.\"project:proj\".policy]\n"
+                                        "require_model = true\n");
+  REQUIRE(dispatch(fx, {"init", "--name", "proj", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "create", "project:proj", "--kind", "project", "--json"}).code == 0);
+  REQUIRE(dispatch(fx, {"assoc", "add", "project:proj", (fx.root / "proj").string()}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Anchor", "--status", "active"}).code == 0);
+  REQUIRE(dispatch(fx, {"plan", "create", "Child", "--parent", "1", "--status", "active"}).code == 0);
+  REQUIRE(dispatch(fx, {"task", "add", "T", "--plan", "2"}).code == 0);
+
+  // The association's require_model is what refuses a model-less coder pull, so this scope is the claim's.
+  CHECK(agent(fx, {"pull", "2", "--role", "coder", "--vendor", "claude", "--vendor-session", "claude:none"}).code != 0);
+  auto const pulled = agent(
+      fx, {"pull", "2", "--role", "coder", "--model", "m", "--vendor", "claude", "--vendor-session", "claude:coder", "--json"});
+  REQUIRE(pulled.code == 0);
+  REQUIRE(agent(fx, {"complete", "--claim", claim_token(pulled)}).code == 0);
+
+  auto const clean = dispatch(fx, {"health", "conformance", "1", "--floor", "1", "--json"});
+  CHECK(clean.code == 0);
+  CHECK(clean.out.contains("\"plans\":2"));
+  CHECK(clean.out.contains("\"policy_changed\":[]"));
+
+  sql(fx, "update agent_work_claims set model = null");
+  auto const broken = dispatch(fx, {"health", "conformance", "1", "--floor", "1", "--json"});
+  CHECK(broken.code == 1);
+  CHECK(broken.out.contains("\"policy_changed\":[]"));
+  CHECK(broken.out.contains("\"rule\":3,\"name\":\"coder-model\""));
 }

@@ -1452,7 +1452,7 @@ planar task update <task-id> [--title <text>] [--body <text>] [--status <status>
 | `--next-action <text>` | Update the next concrete action. | unchanged |
 | `--due <date>` | Update due date. | unchanged |
 | `--plan <plan-id>` | Move task to a different plan (or `none` to detach). | unchanged |
-| `--force` | Bypass the active-claim guard (see **Claim-atomic guard** below) AND the status-transition matrix. Required to move a `done` / `cancelled` task back to a non-terminal status without going through `task reopen`; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. | off |
+| `--force` | Bypass the active-claim guard (see **Claim-atomic guard** below) AND the status-transition matrix. Required to move a `done` / `cancelled` task back to a non-terminal status without going through `task reopen`; the transition is recorded in `task_reopens` with `source='task-update-force'`. Prefer `task reopen <id>` for the documented recovery path. When it sets `done`, the `audit_log` row says `done (--force)`, which `planar health conformance` lists as an override. | off |
 | `--reason <text>` | Operator-supplied rationale recorded on the `task_reopens` audit row when `--force` triggers a terminal → non-terminal transition. | empty |
 | `--no-auto-promote` | Skip the [plan-status auto-promotion invariant](concepts.md#plan) (plan 304) for this operation. Escape hatch for scripted migrations that don't intend the plan-level transition. | off |
 | `--editor` | Accepted as a no-op. The editor-driven path is `task edit`; this flag exists so scripts that pass `--editor=false` alongside other flags (e.g. copied from `task add` invocations) are not rejected with `UnknownFlag`. | off |
@@ -4867,11 +4867,11 @@ orchestrator, vendor or prompt produced the work. `<plan-id>` is a plan id.
 
 | Rule | Name | Violation |
 |------|------|-----------|
-| 1 | `completed-claim` | A `done` task has no claim that ended `completed`. A task moved to `done` with `task done --force` or `task update --status done --force` is an override: it is listed apart and does not fail the verb. |
-| 2 | `terminal-verb` | A claim ended `stale`, or is still `active` past its lease expiry. A live `active` claim is work in progress. |
+| 1 | `completed-claim` | A `done` task has no claim that ended `completed`. A task whose latest status change is `task done --force` or `task update --status done --force` is an override: it is listed apart and does not fail the verb, and its line says whether a claim was live when it was forced (`forced, no live claim`, or `a claim was live at the time`). A later `task reopen` and a plain `done` make it an ordinary done task again. |
+| 2 | `terminal-verb` | A claim ended `stale`, or is still `active` past its lease expiry. The second half reads the clock, so the same database can pass now and fail later. A live `active` claim is work in progress. |
 | 3 | `coder-model` | Under `require_model`, a `coder` claim records no model, or an empty one. |
-| 4 | `parent-action` | A claim taken on a worker's behalf (a role other than `orchestrator`) has no action under a parent action. A `review` row does not count; it is about the claim. |
-| 5 | `queued-gate` | Under `use_queue` and a `task_gate`, a completed task claim has no passing queued run of exactly the gate argv, carrying its token, in its repository root or worktree. The test is the one `planar-agent complete` applies. |
+| 4 | `parent-action` | Graded only where an orchestration is visible in the plan tree: some claim has the role `orchestrator`, or some claim has a parent action. Then every claim with a role other than `orchestrator` must have a root action (its first non-review action) under a parent action. A child that the claim's own worker nests under its root with `planar-agent action start` does not count, nor does a parent that belongs to the same claim. A claim with no role is never graded, and a tree with no orchestration (a solo session that pulls its own work) grades no claim on this rule. A `review` row does not count; it is about the claim. |
+| 5 | `queued-gate` | Only when `use_queue` and a `task_gate` are both set (`use_queue` alone grades nothing), a completed task claim has no passing queued run of exactly the gate argv, carrying its token, in its repository root or worktree. The test is the one `planar-agent complete` applies. |
 | 6 | `independent-review` | Under `review_required`, a completed task claim has no approving review from another session. The test is the one `complete` applies: the latest review decides, and a review row with no verdict is never a review. |
 
 The policy is the effective policy of the plan's scope, resolved from
@@ -4881,31 +4881,42 @@ claim records only the digest of the policy it ran under, so rules 3, 5 and 6
 grade a claim when its digest equals the current policy's, or when it recorded
 none. A claim whose digest differs ran under a policy that cannot be
 reconstructed: it is graded on rules 1, 2 and 4 only, and listed under
-`policy_changed`. A `config.toml` whose policy cannot be applied refuses the
-verb (exit 1, nothing graded).
+`policy_changed` (the text output prints it as `graded without the policy
+rules`). The digest covers every policy key, including the display-only
+`confirm_before` and `require_scenario_coverage`, so editing either of them
+also moves every earlier claim into `policy_changed` and exempts it from rules
+3, 5 and 6; keep those two keys steady across a plan, or read `policy_changed`
+as "not graded on the policy rules". A `config.toml` whose policy cannot be
+applied refuses the verb (exit 1, nothing graded).
 
 **The floor.** History from before the first release that carries this check
 never fails; it is counted and reported on its own line (`before the floor: N
 claims, M done tasks`). The cut-over is a claim id, the floor: claims with a
 lower id are before it. A task has no claim id, so the floor carries a time as
-well, and a done task last updated before it is before the floor. By default
+well, and a done task that became done before it is before the floor (the time
+is that of the task's latest status change to `done`, so a later edit of an old
+done task does not bring it back; a task with no such record uses its
+`updated_at`). By default
 both come from the database, so the default works on every install: the time
 is when migration `00042` was applied (`schema_migrations.applied_at`) and the
 floor is the lowest claim id claimed at or after it, or one past the highest
 id when there is none. When no row records migration 42, the floor is the lowest
 claim that recorded a policy digest. `--floor <claim-id>` replaces the default:
-claims with that id or higher are graded, and done tasks updated since the
-first of them; a floor of 1, or one at or below the lowest claim id, grades
+claims with that id or higher are graded, and done tasks that became done since
+the first of them; a floor of 1, or one at or below the lowest claim id, grades
 everything. `--floor` must be at least 1 (exit 2).
 
 `--scope <slug>` is a read filter: the plan must be in that scope, an
 association also covering the repositories that belong to it, otherwise the
 verb exits 1 without grading. A global plan is in scope `global`.
 
-Text output lists the violations (rule number and name, the entity and its id,
-the claim token's first eight characters and what it holds, one line of
-reason), then the overrides, then the before-the-floor line. `--json` carries
-the same facts:
+Text output opens with a `conformance: plan N (K plans graded)` line, a `floor:`
+line (the floor claim, its origin and the cut-over time) and a `graded:` line,
+then lists the violations (rule number and name, the entity and its id, the
+claim token's first eight characters and what it holds, one line of reason),
+then the overrides, then any claims that are `graded without the policy rules
+(policy changed since the claim)`, then the before-the-floor line. `--json`
+carries the same facts:
 
 ```json
 {
@@ -4924,12 +4935,15 @@ the same facts:
 ```
 
 `origin` is `migration`, `digest` or `explicit`; `cut_at` is `null` when
-nothing is graded.
+nothing is graded and `""` when everything is.
 
 **Exit codes:**
 - `0` — the trail broke no rule.
 - `1` — at least one violation (the report is written first), or the plan, its
-  scope or its policy could not be read.
+  scope or its policy could not be read. The two share the code; the JSON
+  report on stdout is what tells them apart (a refusal prints no report and
+  names the cause on stderr), and a program should check for it rather than
+  trust the exit code alone.
 - `2` — a plan id that is not an integer, or a `--floor` below 1.
 - `7` — the database schema is ahead of this build.
 

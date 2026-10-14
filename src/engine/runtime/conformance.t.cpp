@@ -230,6 +230,53 @@ TEST_CASE("rule 1: an operator --force status change is an override, not a viola
   CHECK_FALSE(report.conforms());
 }
 
+TEST_CASE("rule 1: a forced done that was reopened and finished plainly with no claim is a violation", "[conformance][1142]") {
+  world      w;
+  auto const task = w.add_task("done", k_after);
+  for (auto const* summary_text : {"done (--force)", "reopen to todo: wrong", "done"}) {
+    exec(w.conn, std::format("insert into audit_log (verb, entity_kind, entity_id, summary) "
+                             "values ('status_change', 'task', {}, '{}')",
+                             task, summary_text));
+  }
+  auto const report = w.grade();
+  CHECK(summary(report) == strings{std::format("1:task:{}", task)});
+  CHECK(report.overrides.empty());
+}
+
+TEST_CASE("rule 1: a forced done states whether a claim was live when it was forced", "[conformance][1142]") {
+  world      w;
+  auto const bare = w.add_task("done", k_after);
+  exec(w.conn, std::format("insert into audit_log (verb, entity_kind, entity_id, summary, recorded_at) "
+                           "values ('status_change', 'task', {}, 'done (--force)', '{}')",
+                           bare, k_later));
+  auto const over = w.add_task("done", k_after);
+  w.add_claim(over, world::claim_spec{.status = "active"});
+  exec(w.conn, std::format("insert into audit_log (verb, entity_kind, entity_id, summary, recorded_at) "
+                           "values ('status_change', 'task', {}, 'done (--force)', '{}')",
+                           over, k_later));
+  auto const report = w.grade();
+  REQUIRE(report.overrides.size() == 2);
+  CHECK(report.overrides[0].reason.contains("forced, no live claim"));
+  CHECK(report.overrides[1].reason.contains("a claim was live at the time"));
+  CHECK(report.violations.empty());
+}
+
+TEST_CASE("an old done task edited after the cut-over still never fails", "[conformance][1142]") {
+  world w;
+  // It became done before migration 42; a later edit moved updated_at past the cut-over.
+  auto const old = w.add_task("done", k_later);
+  exec(w.conn, std::format("insert into audit_log (verb, entity_kind, entity_id, summary, recorded_at) "
+                           "values ('status_change', 'task', {}, 'done', '{}')",
+                           old, k_before));
+  exec(w.conn, std::format("insert into audit_log (verb, entity_kind, entity_id, recorded_at) "
+                           "values ('update', 'task', {}, '{}')",
+                           old, k_later));
+  auto const report = w.grade();
+  CHECK(report.conforms());
+  CHECK(report.before.done_tasks == 1);
+  CHECK(report.done_tasks_graded == 0);
+}
+
 TEST_CASE("rule 2: a stale claim is exactly one violation", "[conformance][1142]") {
   world      w;
   auto const task   = w.add_task("doing", k_after);
@@ -300,6 +347,50 @@ TEST_CASE("rule 4: a review row's parent does not stand in for the claim's own, 
                            orphan));
   w.add_claim(w.add_task("todo", k_after), world::claim_spec{.status = "released", .role = "orchestrator", .with_parent = false});
   w.add_claim(w.add_task("todo", k_after), world::claim_spec{.status = "released", .role = std::nullopt, .with_parent = false});
+  CHECK(summary(w.grade()) == strings{std::format("4:claim:{}", orphan)});
+}
+
+TEST_CASE("rule 4: a child the claim's own worker nests under its root action does not give the claim a parent action",
+          "[conformance][1142]") {
+  world w;
+  w.add_clean_task(); // an orchestration is visible: this claim has a parent action
+  auto const task   = w.add_task("done", k_after);
+  auto const nested = w.add_claim(task, world::claim_spec{.with_parent = false});
+  // `planar-agent action start --claim <token>` parents the new action under the claim's newest open action.
+  exec(w.conn, std::format("insert into agent_actions (session_id, claim_id, parent_action_id, action_kind, vendor) "
+                           "values (1, {0}, (select min(id) from agent_actions where claim_id = {0}), 'tool_call', 'test')",
+                           nested));
+  CHECK(summary(w.grade()) == strings{std::format("4:claim:{}", nested)});
+}
+
+TEST_CASE("rule 4: a root action whose parent belongs to the same claim is not a dispatch", "[conformance][1142]") {
+  world w;
+  w.add_clean_task();
+  auto const claim = w.add_claim(w.add_task("done", k_after), world::claim_spec{.with_parent = false});
+  exec(w.conn,
+       std::format("insert into agent_actions (session_id, claim_id, action_kind, vendor) values (1, {}, 'tool_call', 'test')",
+                   claim));
+  exec(w.conn, std::format("update agent_actions set parent_action_id = (select max(id) from agent_actions) "
+                           "where id = (select min(id) from agent_actions where claim_id = {})",
+                           claim));
+  CHECK(summary(w.grade()) == strings{std::format("4:claim:{}", claim)});
+}
+
+TEST_CASE("rule 4: a solo session with no orchestrator claim and no parent action is not graded", "[conformance][1142]") {
+  world w;
+  w.add_claim(w.add_task("done", k_after), world::claim_spec{.with_parent = false});
+  w.add_claim(w.add_task("done", k_after), world::claim_spec{.with_parent = false});
+  auto const report = w.grade();
+  CHECK(report.conforms());
+  CHECK(report.claims_graded == 2);
+}
+
+TEST_CASE("rule 4: one orchestrator claim is enough to make a worker without a parent action a violation",
+          "[conformance][1142]") {
+  world      w;
+  auto const orphan = w.add_claim(w.add_task("done", k_after), world::claim_spec{.with_parent = false});
+  CHECK(w.grade().conforms());
+  w.add_claim(w.add_task("todo", k_after), world::claim_spec{.status = "released", .role = "orchestrator", .with_parent = false});
   CHECK(summary(w.grade()) == strings{std::format("4:claim:{}", orphan)});
 }
 

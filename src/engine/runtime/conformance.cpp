@@ -107,8 +107,12 @@ auto load_claims(db::connection& conn, std::int64_t plan_id) -> std::expected<st
       "           when 'plan' then c.entity_id\n"
       "           when 'task' then (select t.plan_id from tasks t where t.id = c.entity_id)\n"
       "           else (select s.plan_id from plan_steps s where s.id = c.entity_id) end as plan_id,\n"
-      "         exists (select 1 from agent_actions a\n"
-      "                 where a.claim_id = c.id and a.action_kind <> 'review' and a.parent_action_id is not null) as has_parent\n"
+      "         exists (select 1 from agent_actions r\n"
+      "                 where r.id = (select min(a.id) from agent_actions a where a.claim_id = c.id and a.action_kind <> "
+      "'review')\n"
+      "                   and r.parent_action_id is not null\n"
+      "                   and not exists (select 1 from agent_actions p where p.id = r.parent_action_id and p.claim_id = c.id)\n"
+      "                ) as has_parent\n"
       "  from agent_work_claims c\n"
       ")\n"
       "where plan_id in (select id from plan_tree)\n"
@@ -142,29 +146,42 @@ auto load_claims(db::connection& conn, std::int64_t plan_id) -> std::expected<st
 /// @brief One done task of the plan tree.
 struct done_task {
   std::int64_t                id = 0;
-  std::string                 updated_at;
+  std::string                 done_at; ///< When the task last became done: its latest status-change row, else `updated_at`.
   bool                        completed_claim = false;
-  std::string                 claim_statuses; ///< Distinct statuses of the task's claims, comma separated; empty for none.
-  std::optional<std::int64_t> forced_audit_id;
+  std::string                 claim_statuses;  ///< Distinct statuses of the task's claims, comma separated; empty for none.
+  std::optional<std::int64_t> forced_audit_id; ///< Set only when the task's LATEST status change is the forced `done`.
   std::optional<std::string>  forced_at;
+  bool                        live_claim_at_force = false; ///< A claim on the task was open when it was forced.
 };
 
 auto load_done_tasks(db::connection& conn, std::int64_t plan_id) -> std::expected<std::vector<done_task>, check_error> {
+  // The row that made the task done is its latest `status_change`: nothing else rewrites a task's status, and a
+  // later edit of an old done task writes an `update` row, never a `status_change`. Tasks with no such row (made
+  // by other means) fall back to `updated_at`.
   auto stmt = conn.prepare(
       std::string{k_plan_tree} +
-      "select t.id, t.updated_at,\n"
-      "  exists (select 1 from agent_work_claims c\n"
-      "          where c.entity_kind = 'task' and c.entity_id = t.id and c.status = 'completed'),\n"
-      "  coalesce((select group_concat(s, ',') from (select distinct c.status as s from agent_work_claims c\n"
-      "                                               where c.entity_kind = 'task' and c.entity_id = t.id order by 1)), ''),\n"
-      "  (select a.id from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id and a.verb = 'status_change'\n"
-      "     and a.summary = ?2 order by a.id desc limit 1),\n"
-      "  (select a.recorded_at from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id and a.verb = "
-      "'status_change'\n"
-      "     and a.summary = ?2 order by a.id desc limit 1)\n"
-      "from tasks t where t.status = 'done' and t.plan_id in (select id from plan_tree)\n"
-      "order by t.id");
-  if (!stmt || !stmt->bind_int64(1, plan_id) || !stmt->bind_text(2, k_forced_done_summary)) {
+      "select id, coalesce(last_at, updated_at), completed, statuses, last_id, last_at, last_summary,\n"
+      "  case when last_at is null then 0 else exists (\n"
+      "    select 1 from agent_work_claims c\n"
+      "    where c.entity_kind = 'task' and c.entity_id = x.id and c.claimed_at <= last_at\n"
+      "      and (c.released_at is null or c.released_at >= last_at)) end\n"
+      "from (\n"
+      "  select t.id, t.updated_at,\n"
+      "    exists (select 1 from agent_work_claims c\n"
+      "            where c.entity_kind = 'task' and c.entity_id = t.id and c.status = 'completed') as completed,\n"
+      "    coalesce((select group_concat(s, ',') from (select distinct c.status as s from agent_work_claims c\n"
+      "                                                 where c.entity_kind = 'task' and c.entity_id = t.id order by 1)), '') as "
+      "statuses,\n"
+      "    (select a.id from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id and a.verb = 'status_change'\n"
+      "       order by a.id desc limit 1) as last_id,\n"
+      "    (select a.recorded_at from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id\n"
+      "       and a.verb = 'status_change' order by a.id desc limit 1) as last_at,\n"
+      "    (select a.summary from audit_log a where a.entity_kind = 'task' and a.entity_id = t.id and a.verb = 'status_change'\n"
+      "       order by a.id desc limit 1) as last_summary\n"
+      "  from tasks t where t.status = 'done' and t.plan_id in (select id from plan_tree)\n"
+      ") x\n"
+      "order by id");
+  if (!stmt || !stmt->bind_int64(1, plan_id)) {
     return std::unexpected(failed());
   }
   std::vector<done_task> rows;
@@ -177,12 +194,13 @@ auto load_done_tasks(db::connection& conn, std::int64_t plan_id) -> std::expecte
       return rows;
     }
     done_task row{.id              = stmt->column_int64(0),
-                  .updated_at      = stmt->column_text(1),
+                  .done_at         = stmt->column_text(1),
                   .completed_claim = stmt->column_int64(2) != 0,
                   .claim_statuses  = stmt->column_text(3)};
-    if (!stmt->is_null(4)) {
-      row.forced_audit_id = stmt->column_int64(4);
-      row.forced_at       = opt_text(*stmt, 5);
+    if (!stmt->is_null(4) && !stmt->is_null(6) && stmt->column_text(6) == k_forced_done_summary) {
+      row.forced_audit_id     = stmt->column_int64(4);
+      row.forced_at           = opt_text(*stmt, 5);
+      row.live_claim_at_force = stmt->column_int64(7) != 0;
     }
     rows.push_back(std::move(row));
   }
@@ -351,7 +369,7 @@ auto check(db::connection& conn, const options& opts, const policy_resolver& res
 
   // Rule 1, and the done tasks before the cut-over.
   for (auto const& task : *tasks) {
-    bool const graded = floor->cut_at.has_value() && task.updated_at >= *floor->cut_at;
+    bool const graded = floor->cut_at.has_value() && task.done_at >= *floor->cut_at;
     if (!graded) {
       ++out.before.done_tasks;
       continue;
@@ -363,8 +381,9 @@ auto check(db::connection& conn, const options& opts, const policy_resolver& res
     if (task.forced_audit_id.has_value()) {
       out.overrides.push_back(override_entry{
           .task_id = task.id,
-          .reason  = std::format("operator moved the task to done with --force (audit row {}{})", *task.forced_audit_id,
-                                 task.forced_at.has_value() ? std::format(" at {}", *task.forced_at) : std::string{})});
+          .reason  = std::format("operator moved the task to done with --force (audit row {}{}); {}", *task.forced_audit_id,
+                                 task.forced_at.has_value() ? std::format(" at {}", *task.forced_at) : std::string{},
+                                 task.live_claim_at_force ? "a claim was live at the time" : "forced, no live claim")});
       continue;
     }
     out.violations.push_back(violation{
@@ -390,6 +409,12 @@ auto check(db::connection& conn, const options& opts, const policy_resolver& res
     return &policies.emplace(plan_id, std::move(*resolved)).first->second;
   };
 
+  // A solo session (a coder that pulls its own work, with no orchestrator) leaves no parent action by design, so
+  // rule 4 grades only a tree where some claim is an orchestrator's or carries a parent action.
+  bool const orchestrated = std::ranges::any_of(*claims, [](const claim_row& claim) {
+    return claim.has_parent_action || (claim.role.has_value() && *claim.role == "orchestrator");
+  });
+
   for (auto const& claim : *claims) {
     if (claim.id < floor->claim_id) {
       ++out.before.claims;
@@ -406,8 +431,8 @@ auto check(db::connection& conn, const options& opts, const policy_resolver& res
           rule::terminal_verb, claim, std::format("claim is still active past its lease expiry at {}", claim.lease_expires_at)));
     }
 
-    // Rule 4.
-    if (is_worker_role(claim.role) && !claim.has_parent_action) {
+    // Rule 4, only where an orchestration is visible in the tree.
+    if (orchestrated && is_worker_role(claim.role) && !claim.has_parent_action) {
       out.violations.push_back(
           claim_violation(rule::parent_action, claim, std::format("claim for role {} carries no parent action", *claim.role)));
     }

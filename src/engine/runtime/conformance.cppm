@@ -9,39 +9,46 @@
 ///
 /// ## Rules
 ///
-/// 1. **Completed claim.** Every `done` task had a claim that ended `completed`. A task an operator
-///    moved to `done` with `--force` (the `audit_log` row `status_change` whose summary is
-///    `done (--force)`) is listed as an override, not a violation.
-/// 2. **Terminal verb.** Every claim ended through a terminal verb: a claim marked `stale`, or still
-///    `active` past its lease expiry, is a violation. A live `active` claim is work in progress.
+/// 1. **Completed claim.** Every `done` task had a claim that ended `completed`. A task whose latest status
+///    change is an operator `--force` to `done` (the `audit_log` row `status_change` whose summary is
+///    `done (--force)`) is listed as an override, not a violation; a later reopen and a plain `done` make it an
+///    ordinary done task again. The override says whether a claim was live when it was forced.
+/// 2. **Terminal verb.** Every claim ended through a terminal verb: a claim marked `stale`, or still `active`
+///    past its lease expiry, is a violation. The second half reads the clock, so the same database can pass
+///    now and fail later; a live `active` claim is work in progress.
 /// 3. **Model.** Under `require_model`, every `coder` claim records a non-empty model.
-/// 4. **Parent action.** Every claim taken on a worker's behalf (a role other than `orchestrator`)
-///    has an action under a parent action. Review rows do not count: they are about the claim.
-/// 5. **Queued gate.** Under `use_queue` with a `task_gate`, every completed task claim has a passing
-///    queued run of exactly the gate argv carrying its token, run in its directory. The queue's
-///    history arrives through the injected `gate_run_lookup`, because that table belongs to another
-///    bucket; the requirement itself is `completion::unmet_completion_requirements`, the function
-///    `complete` applies.
-/// 6. **Independent review.** Under `review_required`, every completed task claim passes the same
-///    review test `complete` applies: the latest review (a row with a non-NULL verdict) approves and
-///    was written by another session. A NULL-verdict row is never a review.
+/// 4. **Parent action.** In a plan tree where an orchestration is visible (some claim has the role
+///    `orchestrator`, or some claim has a parent action), every claim with a role other than `orchestrator`
+///    has a root action under a parent action. A claim's root action is its first non-review action; a child
+///    that the claim's own worker nests under that root does not count, and neither does a parent that belongs
+///    to the same claim. A claim with no role is never graded, and a tree with no orchestration (a solo session)
+///    grades no claim on this rule.
+/// 5. **Queued gate.** Only when `use_queue` AND a `task_gate` are both set (`use_queue` alone grades nothing),
+///    every completed task claim has a passing queued run of exactly the gate argv carrying its token, run in
+///    its directory. The queue's history arrives through the injected `gate_run_lookup`, because that table
+///    belongs to another bucket; the requirement itself is `completion::unmet_completion_requirements`, the
+///    function `complete` applies.
+/// 6. **Independent review.** Under `review_required`, every completed task claim passes the same review test
+///    `complete` applies: the latest review (a row with a non-NULL verdict) approves and was written by
+///    another session. A NULL-verdict row is never a review.
 ///
 /// ## Policy
 ///
-/// The effective policy arrives through the injected `policy_resolver`, per plan, because the
-/// config module is another bucket's. A claim records only the digest of the policy it ran under, so
-/// the policy rules (3, 5 and 6) grade a claim only when its digest equals the resolved policy's, or
-/// when it recorded none (graded under the plan's current policy). A claim whose digest differs ran
-/// under a policy the checker cannot reconstruct: it is listed in `policy_changed` and still graded
-/// on the policy-independent rules (1, 2 and 4).
+/// The effective policy arrives through the injected `policy_resolver`, per plan, because the config module is
+/// another bucket's. A claim records only the digest of the policy it ran under, so the policy rules (3, 5 and
+/// 6) grade a claim only when its digest equals the resolved policy's, or when it recorded none (graded under
+/// the plan's current policy). A claim whose digest differs ran under a policy the checker cannot reconstruct:
+/// it is listed in `policy_changed` and still graded on the policy-independent rules (1, 2 and 4). The digest
+/// covers every policy key, including the display-only `confirm_before` and `require_scenario_coverage`, so
+/// editing either one also moves earlier claims into `policy_changed`.
 ///
 /// ## The floor
 ///
 /// History from before the first release that carries this check never fails; it is counted
 /// separately. The cut-over is a claim id, `floor_claim_id`: claims with a lower id are "before the
-/// floor". A task has no claim id, so the floor carries a time as well, `cut_at`, and a done task whose
-/// `updated_at` is earlier is before the floor. The default is read from the database, so it works on
-/// every install without a baked-in id: the cut-over is when migration 00042 was applied
+/// floor". A task has no claim id, so the floor carries a time as well, `cut_at`, and a done task that became
+/// done earlier (its latest status change to done, else its `updated_at`) is before the floor. The default is read from the
+/// database, so it works on every install without a baked-in id: the cut-over is when migration 00042 was applied
 /// (`schema_migrations.applied_at`); the floor is the lowest claim id claimed at or after that moment
 /// (one past the highest id when there is none), and `cut_at` is that moment. When no row records
 /// migration 42, the floor is the lowest claim id that recorded a policy digest (a column 00042
@@ -133,13 +140,13 @@ export auto floor_origin_name(floor_origin value) -> std::string_view;
 export struct floor_info {
   std::int64_t               claim_id = 0;                       ///< Claims with this id or higher are graded.
   floor_origin               origin   = floor_origin::migration; ///< How it was chosen.
-  std::optional<std::string> cut_at; ///< Done tasks updated at or after this are graded; unset grades none.
+  std::optional<std::string> cut_at; ///< Done tasks that became done at or after this are graded; unset grades none.
 };
 
 /// @brief What lies before the floor, which never fails.
 export struct before_floor {
   std::int64_t claims     = 0; ///< Claims of the plan with an id below the floor.
-  std::int64_t done_tasks = 0; ///< Done tasks of the plan last updated before the cut-over.
+  std::int64_t done_tasks = 0; ///< Done tasks of the plan that became done before the cut-over.
 };
 
 /// @brief Inputs to `check`.
