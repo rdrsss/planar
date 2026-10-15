@@ -1632,7 +1632,7 @@ TEST_CASE("schema-40 receipts replay after migration 41 only for the identical l
   REQUIRE(receipt->bind_text(2, planar::sha256::hex(material)));
   REQUIRE(receipt->step());
   REQUIRE(planar::db::apply_all(conn));
-  CHECK(scalar_int(conn, "select max(version) from schema_migrations") == 42);
+  CHECK(scalar_int(conn, "select max(version) from schema_migrations") == static_cast<std::int64_t>(planar::db::embedded_max()));
   ann::command_args request{.operation      = ann::command_kind::create,
                             .operation_uuid = "schema39-create",
                             .source_uuid    = *source,

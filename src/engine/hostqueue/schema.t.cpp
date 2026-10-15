@@ -663,9 +663,13 @@ TEST_CASE("migration 00042 is queue version 2 at compat 1: this binary accepts i
   // column. A queue verb never reaches this check there, because the
   // schema_migrations handshake refuses the behind database first
   // (queue_schema_refusal_tag(41, 42) is nullopt: schema_version_behind).
+  // The head is newer than 00042 (00043 dropped the routing tables), so roll
+  // back every migration above 00042 and then 00042 itself.
   auto const chain = planar::db::migrations();
-  REQUIRE(chain.back().version_ == 42);
-  REQUIRE(conn.execute(chain.back().down_sql_));
+  REQUIRE(chain.size() >= 42);
+  REQUIRE(chain[41].version_ == 42);
+  for (auto i = chain.size(); i-- > 41;)
+    REQUIRE(conn.execute(chain[i].down_sql_));
   CHECK(scalar(conn, "select group_concat(version || ',' || compat, ';') from queue_schema") == "1,1");
   auto const old_db = hq::check_queue_schema(conn);
   REQUIRE_FALSE(old_db.has_value());

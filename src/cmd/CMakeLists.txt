@@ -108,7 +108,8 @@ endif()
 #
 # The probes compile the three helper interface units themselves (the
 # executables' module sources are not linkable libraries) and link nothing,
-# so the check costs a handful of translation units. It is RUN_SERIAL
+# so the check costs a handful of translation units, plus building
+# `planar_engine_runtime` for the module the shared cli.cppm imports. It is RUN_SERIAL
 # because it drives a nested build of this build directory.
 # The probe sources live under cmake/tests/ rather than src/: the negative
 # probes are deliberately ill-formed, and `make cpp-lint` runs clang-tidy over
@@ -135,7 +136,10 @@ foreach(_probe IN LISTS _planar_compile_fail_probes)
     CXX_STANDARD 26
     CXX_STANDARD_REQUIRED ON
     CXX_MODULE_STD ON)
-  target_link_libraries(${_target} PRIVATE planar_cliapp CLI11::CLI11_Module)
+  # planar_engine_runtime provides `planar.engine.runtime.agentactivity`, which
+  # the planar-agent shared cli.cppm imports; linking it gives the probe that
+  # module's BMI (an OBJECT library's own link step never runs).
+  target_link_libraries(${_target} PRIVATE planar_cliapp planar_engine_runtime CLI11::CLI11_Module)
 endforeach()
 
 add_test(NAME compile_fail_check
