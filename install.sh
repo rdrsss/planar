@@ -1462,14 +1462,19 @@ PLAN_PATHS=()            # PLAN_PATHS[i]: the newline-joined manifest paths of t
 STAGED_EXTRAS=()         # the staged-tree extras, read once (the staged tree does not change)
 STAGED_EXTRAS_READ=0
 
-# target_paths <i> — the manifest paths of planned target <i>: the skill
-# directory itself and every file beneath it, sorted so the manifest bytes do
-# not depend on directory order.
+# target_paths <i> — set TARGET_PATHS_OUT to the manifest paths of planned
+# target <i>, newline-joined with no trailing newline: the skill directory
+# itself and every file beneath it, sorted so the manifest bytes do not depend
+# on directory order. The caller reads the variable rather than capturing
+# stdout with $(...): a capture pipe lets a signal interrupt the printf under
+# load ("printf: write error: Interrupted system call"). Only the find|sort
+# process substitution crosses a pipe, and the shell reads it, not a printf.
+TARGET_PATHS_OUT=""
 target_paths() {
   local src="${PLAN_SRC[$1]}" dst="${PLAN_DST[$1]}" f
-  printf '%s\n' "$dst"
+  TARGET_PATHS_OUT="$dst"
   while IFS= read -r -d '' f; do
-    printf '%s\n' "$dst/${f#"$src"/}"
+    TARGET_PATHS_OUT+=$'\n'"$dst/${f#"$src"/}"
   done < <(find -L "$src" -type f -print0 | sort -z)
 }
 
@@ -1549,7 +1554,8 @@ if [[ -n "$VENDORS" ]]; then
   load_prev_manifest
   for ((_i = 0; _i < ${#PLAN_DST[@]}; _i++)); do
     check_destination "${PLAN_DST[$_i]}" "${PLAN_SRC[$_i]}" "${PLAN_FMT[$_i]}"
-    PLAN_PATHS+=("$(target_paths "$_i")")
+    target_paths "$_i"
+    PLAN_PATHS+=("$TARGET_PATHS_OUT")
     if prev_manifest_records "${PLAN_DST[$_i]}"; then PLAN_STATE+=(carried); else PLAN_STATE+=(""); fi
   done
 
