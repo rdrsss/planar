@@ -211,13 +211,16 @@ use `install.sh` or `make build`. Detail: [docs/architecture.md](docs/architectu
   `migrations/`, `scripts/install-lib/`.
 - **Install order.** Both the bootstrap and `planar update` end in
   `install.sh --prebuilt`: lock, journal, stage, probe the database with the
-  staged binaries, retire the role agents older installs placed, swap the
-  managed subtrees (`bin/`, `skills/`, `scripts/`, `migrations/`) through
+  staged binaries, copy `planar.db` with its `-wal` and `-shm` into
+  `$PLANAR_HOME/backups/` when the database is behind and a pending migration
+  drops a table (a copy that cannot be written or opened stops the install
+  before anything changes), retire the role agents older installs placed, swap
+  the managed subtrees (`bin/`, `skills/`, `scripts/`, `migrations/`) through
   `<name>.old`, create or migrate the database, place the skill, write
   `release.json` and then the install stamp last.
 - **Data paths** are never removed by an install and are kept by
   `planar-uninstall` without `--purge`: `planar.db` (with `-wal` and `-shm`),
-  `queue-logs/`, `retired/`, `workbench/`, `config.toml`, `local/`,
+  `queue-logs/`, `retired/`, `backups/`, `workbench/`, `config.toml`, `local/`,
   `workspaces/`, `models/`, `execute/`, `templates/`. The one list is
   `scripts/install-lib/data-paths.sh`; INSTALL.md carries a checked copy.
 - **`PLANAR_PORTABLE`** (CMake option, default `OFF`, set by the `dist` preset
@@ -406,7 +409,7 @@ Test layers, harness, conventions and rationale:
 ### Workflow surface change
 
 1. Edit `skills/planar/SKILL.md`, a file under `skills/planar/references/`,
-   `agents/planar-<role>.md` or `examples/agents/planar-<role>.md`. There is
-   no rendered output to check in.
+   `agents/planar-orchestrator.md`, `agents/planar-test-coder.md` or
+   `examples/agents/planar-<role>.md`. There is no rendered output to check in.
 2. Use the current CLI and the SQLite-backed model in all workflow text.
 3. Run `make cli-usage-check` and `make surface-lint`.
