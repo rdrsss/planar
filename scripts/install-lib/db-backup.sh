@@ -13,9 +13,13 @@
 #       Print one line per migration in DIR numbered above FROM and at or below
 #       TO whose up file drops a table: `NNNNN_name.up.sql: table table ...`.
 #       A table counts as dropped when the file has `drop table [if exists]
-#       NAME` and neither creates NAME (`create table [if not exists] NAME`)
-#       nor renames another table to it (`rename to NAME`), so a table rebuild
-#       (create the new table, copy, drop the old one, rename) is not a drop.
+#       NAME` and does not create NAME (`create table [if not exists] NAME`).
+#       When NAME is the target of `alter table OLD rename to NAME`, the table
+#       dropped is OLD's: it counts, under the name OLD, unless the file
+#       creates OLD again or renames another table to OLD. So a table rebuild
+#       (create the new table, copy, drop the old one, rename; or rename the
+#       old one aside, create the new one, copy, drop the old one) is not a
+#       drop, and `rename x to x_old; drop x_old` with no new x is.
 #       A `temp.` table is never counted, and `--` comments are ignored. Status
 #       1 when DIR is not a directory.
 #
@@ -25,7 +29,9 @@
 #       time>-schema-VERSION/, keeping their base names so the copy opens as
 #       it stands. Each copy is compared with its source afterwards; a
 #       difference (a writer committed during the copy) copies again, up to
-#       three attempts. The copy is then opened with BINDIR's read-only
+#       three attempts. The database and -wal are compared; -shm is copied but
+#       not compared, because a live reader rewrites its read marks without
+#       committing anything. The copy is then opened with BINDIR's read-only
 #       planar-watch, which must find it at schema VERSION. Sets
 #       INSTALL_DB_BACKUP to the copied database's path. On failure removes
 #       the directory it created, sets INSTALL_DB_DETAIL and returns 1. The
@@ -54,13 +60,25 @@ END {
     made[n] = 1
   }
   s = text
-  while (match(s, /rename to [a-z0-9_."`]+/)) {
+  while (match(s, /alter table [a-z0-9_."`]+ rename to [a-z0-9_."`]+/)) {
     n = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
-    sub(/^rename to /, "", n); gsub(/["`]/, "", n); sub(/^main\./, "", n)
-    made[n] = 1
+    sub(/^alter table /, "", n); gsub(/["`]/, "", n)
+    src = n; sub(/ rename to .*$/, "", src); sub(/^main\./, "", src)
+    dst = n; sub(/^.* rename to /, "", dst); sub(/^main\./, "", dst)
+    from[dst] = src
   }
   out = ""
-  for (n in dropped) if (!(n in made)) out = out (out == "" ? "" : " ") n
+  for (n in dropped) {
+    if (n in made) continue
+    # A dropped rename target is the renamed table: it is lost unless the file
+    # creates its old name again, or renames another table to it.
+    lost = n
+    if (n in from) {
+      lost = from[n]
+      if ((lost in made) || (lost in from)) continue
+    }
+    out = out (out == "" ? "" : " ") lost
+  }
   print out
 }'
 
@@ -121,7 +139,8 @@ planar_db_backup() {
           || { _pdb_backup_fail "$dir" "cannot copy $src$s into $dir"; return 1; }
       fi
     done
-    for s in "" -wal -shm; do
+    # -shm is only an index SQLite rebuilds; a reader changes it without a commit.
+    for s in "" -wal; do
       if [ -e "$src$s" ] || [ -e "$dir/$base$s" ]; then
         (trap - ERR; cmp -s "$src$s" "$dir/$base$s") || same=0
       fi

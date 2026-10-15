@@ -520,6 +520,78 @@ class GradeFixtureTest(unittest.TestCase):
         self.stub(json.dumps(report()), 1)
         self.assertEqual(acceptance.grade_fixture(self.fixture, self.planar).grade, "fail")
 
+    def assert_unreadable(self, verdict: acceptance.RunGrade) -> None:
+        self.assertEqual(verdict.grade, "fail")
+        self.assertIn("unreadable", verdict.reasons[0])
+        self.assertEqual(verdict.tasks, {})
+
+    def test_missing_database_is_an_unreadable_report_not_an_exception(self):
+        self.stub(json.dumps(report()), 0)
+        self.fixture.database.unlink()
+        self.assert_unreadable(acceptance.grade_fixture(self.fixture, self.planar))
+
+    def test_corrupt_database_is_an_unreadable_report_not_an_exception(self):
+        self.stub(json.dumps(report()), 0)
+        self.fixture.database.write_bytes(b"this is not a database " * 200)
+        with mock.patch.object(acceptance.trail, "grade_database", side_effect=AssertionError("must not be reached")):
+            self.assert_unreadable(acceptance.grade_fixture(self.fixture, self.planar))
+
+    def test_sqlite_error_while_grading_is_an_unreadable_report(self):
+        with mock.patch.object(acceptance.trail, "grade_database", side_effect=sqlite3.OperationalError("database is locked")):
+            verdict = acceptance.grade_fixture(self.fixture, self.planar)
+        self.assert_unreadable(verdict)
+        self.assertIn("database is locked", verdict.reasons[0])
+
+    def test_unreadable_policy_file_is_an_unreadable_report(self):
+        self.stub(json.dumps(report()), 0)
+        self.fixture.config.unlink()
+        self.assert_unreadable(acceptance.grade_fixture(self.fixture, self.planar))
+
+
+class ExecuteRunTest(unittest.TestCase):
+    """`execute_run` records a database or file error as that run's failure and returns."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name).resolve()
+        self.results = self.root / "results"
+        self.sandboxes = self.root / "sandboxes"
+        self.sandboxes.mkdir()
+        self.run = acceptance.RUNS["claude-swarm"]
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def execute(self) -> dict:
+        return acceptance.execute_run(
+            self.run, self.results, self.sandboxes, bin_dir=self.root / "bin",
+            timeout_minutes=1, model=None, keep=False, ledger=False,
+        )
+
+    def test_a_database_error_building_the_sandbox_fails_the_run_and_returns(self):
+        with mock.patch.object(acceptance, "vendor_binaries", return_value={"claude": Path("/bin/true")}), \
+                mock.patch.object(acceptance, "build_sandbox", side_effect=sqlite3.OperationalError("disk I/O error")):
+            summary = self.execute()
+        self.assertEqual(summary["status"], "fail")
+        self.assertIn("disk I/O error", summary["reasons"][0])
+        written = json.loads((self.results / self.run.name / "grade.json").read_text())
+        self.assertEqual(written["status"], "fail")
+
+    def test_a_failed_snapshot_keeps_the_grade_and_names_the_snapshot(self):
+        fixture = fixture_in(self.root / "fixture")
+        passed = acceptance.RunGrade("pass", [], report(), dict(ALL_DONE))
+        with mock.patch.object(acceptance, "vendor_binaries", return_value={"claude": Path("/bin/true")}), \
+                mock.patch.object(acceptance, "build_sandbox", return_value=fixture), \
+                mock.patch.object(acceptance, "auth_problem", return_value=None), \
+                mock.patch.object(acceptance, "prompt_for", return_value="prompt"), \
+                mock.patch.object(acceptance, "build_command", return_value=["claude", "prompt"]), \
+                mock.patch.object(acceptance, "run_host", return_value=acceptance.HostResult(0, 1.0, False)), \
+                mock.patch.object(acceptance, "grade_fixture", return_value=passed), \
+                mock.patch.object(acceptance.trail, "snapshot_database", side_effect=OSError("no space left")):
+            summary = self.execute()
+        self.assertEqual(summary["status"], "pass")
+        self.assertIn("the database snapshot was not saved: no space left", summary["reasons"])
+
 
 class LedgerTest(unittest.TestCase):
     def test_row_follows_the_ledger_format(self):

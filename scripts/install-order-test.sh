@@ -443,6 +443,8 @@ before="$(tree_sum "$P")"; before_db="$(cksum < "$P/planar.db")"
 run_install "$H" "$BD" -- --dry-run
 [[ "$RC" == 0 ]] || fail "the dry run failed ($RC): $(show)"
 grep -Fq "copy it with its -wal and -shm into $P/backups/" "$TMP/out" || fail "the dry run does not name the backup: $(show)"
+grep -Fq "migrations in this release's stream that drop tables: 00009 $(printf '%05d' "$HEAD_SCHEMA");" "$TMP/out" \
+  || fail "the dry run does not name the release's table-dropping migrations as its stream: $(show)"
 [[ ! -e "$P/backups" ]] || fail "the dry run wrote a backup: $(ls -la "$P/backups")"
 [[ "$(tree_sum "$P")" == "$before" && "$(cksum < "$P/planar.db")" == "$before_db" ]] || fail "the dry run changed the installation"
 pass "a dry run names the backup and copies nothing"

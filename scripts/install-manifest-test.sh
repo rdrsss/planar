@@ -624,11 +624,47 @@ printf 'drop table not_an_up;\n' > "$MIGS/00003_gone.down.sql"
   || fail "the upper bound is not inclusive"
 [[ -z "$(planar_migrations_dropping_tables "$MIGS" 3 4)" ]] || fail "the lower bound is not exclusive"
 if planar_migrations_dropping_tables "$TMP/drops/absent" 0 4 >/dev/null; then fail "an absent migrations directory was not refused"; fi
+# A table renamed aside and then dropped, with nothing created under its old name, is lost:
+# it is named by its old name. Renamed back from another table instead, it is not.
+cat > "$MIGS/00005_rename_aside.up.sql" <<'SQL'
+alter table "Ledger" rename to ledger_old;
+drop table ledger_old;
+alter table kept_shape rename to kept_shape_old;
+alter table kept_shape_new rename to kept_shape;
+drop table kept_shape_old;
+SQL
+[[ "$(planar_migrations_dropping_tables "$MIGS" 4 5)" == "00005_rename_aside.up.sql: ledger" ]] \
+  || fail "a table renamed aside and dropped was not named: '$(planar_migrations_dropping_tables "$MIGS" 4 5)'"
 # The repository's own stream: every migration that drops a table for good.
 _routing="routing_candidate_bindings routing_candidates routing_dispatch_events routing_dispatch_previews routing_dispatch_snapshots"
 _routing="$_routing routing_experiments routing_host_observations routing_legacy_outcomes routing_task_facts routing_terminal_samples"
 [[ "$(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')" == "00009_drop_active_scope.up.sql: active_scope|00043_drop_routing_tables.up.sql: $_routing|" ]] \
   || fail "the repository's table-dropping migrations changed: $(planar_migrations_dropping_tables "$ROOT/migrations" 0 999999 | tr '\n' '|')"
+# planar_db_backup compares the database and -wal with their copies, not -shm: a live reader
+# rewrites -shm's read marks without committing, so a -shm that differs on every attempt still
+# backs up, while a -wal that differs on every attempt is refused. A subshell keeps the stubs
+# (the copy's probe answers behind at 42; cp touches the named sidecar after each copy of it).
+backup_case() { # backup_case SIDECAR -- status of planar_db_backup while SIDECAR changes on every copy
+  (
+    bk="$TMP/backup-$1"; mkdir -p "$bk/root"
+    PLANAR_INSTALL_DB="$bk/planar.db"
+    printf 'db\n' > "$PLANAR_INSTALL_DB"; printf 'wal\n' > "$PLANAR_INSTALL_DB-wal"; printf 'shm\n' > "$PLANAR_INSTALL_DB-shm"
+    planar_db_probe() { INSTALL_DB_STATE=behind; INSTALL_DB_VERSION=42; INSTALL_DB_TARGET=43; INSTALL_DB_DETAIL=stub; }
+    cp() {
+      local last
+      for last; do :; done
+      command cp "$@" || return
+      case "$last" in *-"$SIDECAR") printf 'x' >> "$PLANAR_INSTALL_DB-$SIDECAR" ;; esac
+    }
+    SIDECAR="$1"
+    planar_db_backup "$bk/bin" "$bk/root" 42 || { printf '%s\n' "$INSTALL_DB_DETAIL" > "$bk/detail"; exit 1; }
+    [[ "$INSTALL_DB_BACKUP" == "$bk/root/backups/"*-schema-42/planar.db && -f "$INSTALL_DB_BACKUP-shm" && -f "$INSTALL_DB_BACKUP-wal" ]] \
+      || { printf 'backup path %s\n' "$INSTALL_DB_BACKUP" > "$bk/detail"; exit 1; }
+  )
+}
+backup_case shm || fail "a -shm that changes on every copy stopped the backup: $(cat "$TMP/backup-shm/detail" 2>/dev/null)"
+if backup_case wal; then fail "a -wal that changes on every copy was backed up"; fi
+grep -Fq "kept changing while it was copied" "$TMP/backup-wal/detail" || fail "the -wal refusal is not named: $(cat "$TMP/backup-wal/detail" 2>/dev/null)"
 _backup_line="$(qr_line '^    planar_db_backup "\$STAGE/bin" "\$ROOT_C" "\$INSTALL_DB_VERSION"')"
 [[ "$(printf '%s\n' "$_backup_line" | grep -c .)" == 1 ]] || fail "install.sh: the backup call is not exactly one line ('$_backup_line')"
 [[ "$_warn_line" -lt "$_backup_line" && "$_backup_line" -lt "$_mutating_line" ]] \

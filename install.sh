@@ -699,7 +699,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   log "swap bin/, skills/, scripts/ and migrations/ in through <name>.old"
   _drops="$(planar_migrations_dropping_tables "$SRC_ROOT/migrations" 0 999999 | sed 's/_.*//' | tr '\n' ' ')"
   if [[ -n "$_drops" ]]; then
-    log "before migrating a behind database, copy it with its -wal and -shm into $PLANAR_HOME/backups/<time>-schema-<version>/ when a pending migration drops tables (this release's: ${_drops% })"
+    log "before migrating a behind database, copy it with its -wal and -shm into $PLANAR_HOME/backups/<time>-schema-<version>/ when a pending migration drops tables (migrations in this release's stream that drop tables: ${_drops% }; the dry run does not probe the database, so it cannot say which are pending)"
   fi
   log "create a missing database, or migrate a behind one, with the installed planar init --skip-project --allow-no-repo"
   if [[ -e "$PLANAR_HOME/agent.db" && "$PREBUILT" -eq 1 ]]; then

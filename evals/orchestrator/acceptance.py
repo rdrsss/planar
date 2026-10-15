@@ -895,10 +895,15 @@ def judge(grade: trail.TrailGrade | None, error: str | None, tasks: Mapping[str,
 
 
 def grade_fixture(fixture: Fixture, planar: Path | None = None) -> RunGrade:
-    """Grade the sandbox trail with the installed branch `planar`."""
+    """Grade the sandbox trail with the installed branch `planar`.
+
+    A database or file the grader cannot read (a missing or corrupt sandbox
+    database, an unreadable policy file) is an unreadable report, a fail, not
+    an exception that would stop the remaining runs.
+    """
     binary = planar or fixture.bin_dir / "planar"
-    tasks = task_statuses(fixture.database, fixture.task_ids)
     try:
+        tasks = task_statuses(fixture.database, fixture.task_ids)
         report = trail.grade_database(
             fixture.database,
             fixture.anchor_id,
@@ -906,8 +911,8 @@ def grade_fixture(fixture: Fixture, planar: Path | None = None) -> RunGrade:
             config_text=fixture.config.read_text(encoding="utf-8"),
             planar=binary,
         )
-    except trail.TrailError as exc:
-        return judge(None, str(exc), tasks)
+    except (trail.TrailError, sqlite3.Error, OSError) as exc:
+        return judge(None, str(exc), {})
     return judge(report, None, tasks)
 
 
@@ -985,9 +990,15 @@ def execute_run(
                 if host.timed_out:
                     grade.reasons.append(f"the host hit the {timeout_minutes:g}-minute limit")
                     grade.grade = "fail"
-                trail.snapshot_database(fixture.database, artifact_dir / "planar.db")
+                try:
+                    trail.snapshot_database(fixture.database, artifact_dir / "planar.db")
+                except (trail.TrailError, sqlite3.Error, OSError) as exc:
+                    grade.reasons.append(f"the database snapshot was not saved: {exc}")
     except AcceptanceError as exc:
         grade = RunGrade("fail", [f"sandbox: {exc}"], None, {})
+    except (sqlite3.Error, OSError) as exc:
+        # A database or file error fails this run; the caller's loop goes on to the next one.
+        grade = RunGrade("fail", [f"database: {exc}"], None, {})
     finally:
         if keep:
             summary["sandbox"] = str(root)
