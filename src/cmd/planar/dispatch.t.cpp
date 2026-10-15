@@ -234,6 +234,21 @@ TEST_CASE("a word that names a root verb under a group is refused naming only th
   CHECK(task_show.err == "error: planar: The following argument was not expected: init\n");
 }
 
+TEST_CASE("a misplaced root verb that repeats later is reported from its first position", "[cmd][dispatch][parity]") {
+  // The refusal lists the tokens from the FIRST misplaced word onward. A name
+  // that also appears later (as the next word or as an option value) must not
+  // pull the start of the list forward to its last occurrence.
+  auto const repeated = dispatch({"task", "show", "1", "init", "init"});
+  CHECK(repeated.code == 2);
+  CHECK(repeated.out.empty());
+  CHECK(repeated.err == "error: planar: The following arguments were not expected: init init\n");
+
+  auto const as_value = dispatch({"config", "init", "--name", "init"});
+  CHECK(as_value.code == 2);
+  CHECK(as_value.out.empty());
+  CHECK(as_value.err == "error: planar: The following arguments were not expected: init --name init\n");
+}
+
 TEST_CASE("the removed workflow verb is an unknown subcommand and leaves the schema catalog", "[cmd][dispatch][parity]") {
   // Task 7453 removed `planar workflow`. A removal needs a negative test: the
   // verb must refuse at exit 2 as an unknown subcommand, and no catalog entry
