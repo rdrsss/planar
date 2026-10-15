@@ -701,10 +701,24 @@ auto run_detailed(context& ctx, CLI::App& root, const handler_table& table) -> r
     // An unknown word under a group is refused as a parse failure, the same line a
     // flag or positional CLI11 cannot place produces (see the ParseError branch).
     // Only the tokens from the misplaced word onward are unexpected; the words
-    // before it named valid nodes.
+    // before it named valid nodes: walk past the words that named the parsed
+    // chain, then take the first later token that spells the extra child's name
+    // or one of its aliases, so a repeat further right does not move the start.
+    auto const names = [](CLI::App const& app, std::string_view word) {
+      auto const aliases = app.get_aliases();
+      return word == app.get_name() || std::ranges::find(aliases, word) != aliases.end();
+    };
+    std::size_t cursor = 1;
+    for (CLI::App const* node = &root; !node->get_subcommands().empty();) {
+      node = node->get_subcommands().front();
+      while (cursor < argv.size() && !names(*node, argv[cursor])) {
+        ++cursor;
+      }
+      cursor = std::min(cursor + 1, argv.size());
+    }
     std::size_t first = argv.size();
-    for (std::size_t i = argv.size(); i-- > 1;) {
-      if (argv[i] == extra->get_name()) {
+    for (std::size_t i = cursor; i < argv.size(); ++i) {
+      if (names(*extra, argv[i])) {
         first = i;
         break;
       }
