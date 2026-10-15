@@ -55,7 +55,17 @@ What each flag records:
 
 A dispatcher that coordinates a plan can hold its own claim with
 `planar-agent claim --entity plan:<id>`; `pull` is for workers because it consumes a task.
-The `action_id` in that claim's `--json` output is the value to pass as `--parent-action` to each worker's claim.
+A plan claim writes no action row, and its `--json` output carries `claim_token` and no
+`action_id`. To get an action to pass as `--parent-action`, start one on the dispatcher's own
+claim:
+
+```sh
+planar-agent action start --claim <dispatcher-claim-token> --kind orchestrator --json
+```
+
+The `action_id` in that output is the value to pass as `--parent-action` to each worker's
+claim. `orchestrator` is one of the accepted `--kind` values; `action start` refuses `review`
+and the supervision kinds.
 
 `claim` refuses a task that is not ready (exit 1, nothing written), names the reasons and
 prints the command that would succeed. `--allow-unready` claims it anyway and records the

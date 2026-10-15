@@ -43,8 +43,11 @@ session has recorded an approving review on the claim; when it sets
    effective policy. Run it again after every wave; the next wave comes from it.
 2. **Take a coordination claim.**
    `planar-agent claim --entity plan:<plan-id> --role orchestrator --vendor <vendor> --model <model> --ttl 8h --json`.
-   Keep its `action_id`; every worker claim passes it as `--parent-action`, so
-   `planar-watch tree` shows the workers under the orchestrator.
+   Keep its `claim_token`. A plan claim writes no action, so start one on it:
+   `planar-agent action start --claim <claim-token> --kind orchestrator --json`.
+   Keep the `action_id` that returns; every worker claim passes it as
+   `--parent-action`, so `planar-watch tree` shows the workers under the
+   orchestrator.
 3. **Prepare each task** from the parent checkout (planning writes refuse inside
    a worktree). A task is ready when `planar task packet <task-id> --json` shows
    `"ready": true`. Prepare what your plan needs:
@@ -67,7 +70,7 @@ session has recorded an approving review on the claim; when it sets
    ```sh
    planar-agent claim --entity task:<task-id> --role coder --vendor <vendor> \
      --model <worker-model> --vendor-session <vendor>:<worker-label> \
-     --parent-action <action-id> --worktree <worker-worktree> --ttl 4h --json
+     --parent-action <orchestrator-action-id> --worktree <worker-worktree> --ttl 4h --json
    ```
 
    Keep the `claim_token`. The `--vendor-session` value is what a review later

@@ -42,7 +42,9 @@ state, live and stale claims, the parallel wave, readiness, the policy and the c
   is not ready (exit 1, nothing written), names the reasons and prints the command that would succeed;
   `--allow-unready` claims it anyway and records the overridden reasons in an audit action.
 - **Coordination:** an orchestrator claims `plan:<id>` and never uses `pull` for itself,
-  because `pull` consumes a feature task. Its coders pass `--parent-action <action-id>` on
+  because `pull` consumes a feature task. A plan claim writes no action, so the orchestrator
+  runs `planar-agent action start --claim <plan-claim-token> --kind orchestrator --json` and keeps the
+  `action_id` it returns. Its coders pass that id as `--parent-action <action-id>` on
   `pull` or `claim` so the action tree links them; without it each coder's action is a
   disconnected root. The id must name an existing action, else the verb refuses and writes
   nothing.
