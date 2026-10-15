@@ -2089,7 +2089,7 @@ Shows what reconciliation would do without writing:
 
 ```
 reconcile (dry-run):
-  would mark stale: claim:9f2c1e44... task:2931 (last heartbeat 47m ago, TTL 10m)
+  would mark stale: claim:9f2c1e44... task:2931 (last heartbeat 2h47m ago, TTL 2h)
   would mark stale: 0 actions
 ```
 

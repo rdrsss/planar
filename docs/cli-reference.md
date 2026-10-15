@@ -5231,6 +5231,11 @@ tables `planar-agent` and `planar-ext` write) and then lists every top-level com
 
 `planar help` takes no arguments. Per-node help stays on the flag: `planar <subcommand> [<sub-subcommand>] --help`
 for a group or leaf. Trailing words are not interpreted: `planar help task` prints the root page, not `task`'s.
+That is the one place a second root verb is tolerated, and only when `help` is the first word. A root verb
+(`help`, `version`, `update`, `init` and the rest) typed as a trailing word after a group or leaf, such as
+`planar task help` or `planar plan list version`, is refused as a parse failure at exit 2 with
+`error: planar: The following argument was not expected: <word>`, listing only the misplaced word and any
+words after it.
 `help` is a leaf in the `planar schema`
 catalog. The text is rendered by Planar's own help renderer in `src/lib/cliapp/` (decision 948: CLI11 handles
 tokenization and value coercion only, because the help text is a pinned surface).
@@ -5239,6 +5244,7 @@ tokenization and value coercion only, because the help text is a pinned surface)
 
 **Exit codes:**
 - `2` — the node the flag was attached to does not exist (`planar plan nosuch --help` prints `plan`'s help and exits 0, because CLI11 stops at the last valid node; `planar plan nosuch` without `--help` exits 2).
+- `2` — a root verb typed as a trailing word after a group or leaf (`planar task help`); `planar help task` is exempt and exits 0.
 
 ---
 
