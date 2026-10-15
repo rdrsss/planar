@@ -2,6 +2,18 @@
 
 A changelog of shipped milestones and plans, newest first.
 
+## 2026-10-15
+
+### Plan 1142: the routing tables are dropped
+
+Nothing on master writes or reads the routing tables any more, so the schema drops them.
+
+- **Migration 00043.** Drops the ten `routing_*` tables: `routing_candidates`, `routing_candidate_bindings`, `routing_host_observations`, `routing_task_facts`, `routing_experiments`, `routing_dispatch_snapshots`, `routing_dispatch_events`, `routing_terminal_samples`, `routing_legacy_outcomes` and `routing_dispatch_previews`, with their indexes, their triggers and the compatibility view. The down migration recreates them empty.
+- **Diagnose.** The `planar-watch diagnose` checks `dispatch-no-role-action` and `dispatch-confirmed-late` are retired; naming either with `--check` is an unknown check (exit 2). `action-unended` stays.
+- **Installer backup.** Before it applies a migration that drops tables, the installer copies `planar.db` with its `-wal` and `-shm` into `$PLANAR_HOME/backups/` and prints the copy's path. If the copy fails, the install stops before anything changes. `backups/` is a data path: uninstall keeps it without `--purge`. See [INSTALL.md](../INSTALL.md#the-backup-before-a-table-dropping-migration).
+- **Plan claims.** A plan claim returns no action id. A dispatcher starts an orchestrator action with `planar-agent action start --claim <token> --kind orchestrator --json` and passes its id as `--parent-action`.
+- **Examples.** [`examples/swarm-orchestration.md`](../examples/swarm-orchestration.md) is added.
+
 ## 2026-10-14
 
 ### Plan 1142: role agents are examples and no longer installed
