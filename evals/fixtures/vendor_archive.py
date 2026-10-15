@@ -95,7 +95,9 @@ def gzip_bytes(data: bytes) -> bytes:
     though the decompressed tar bytes are identical.
     """
     out = io.BytesIO()
-    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0, filename="") as handle:
+    # The level is pinned because the interpreter default is not stable across
+    # versions (3.15 changed it), and it also sets the gzip header's XFL byte.
+    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0, filename="", compresslevel=9) as handle:
         handle.write(data)
     return out.getvalue()
 
