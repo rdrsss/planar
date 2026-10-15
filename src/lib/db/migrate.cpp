@@ -174,7 +174,7 @@ auto apply_all(connection& conn, std::span<migration_record const> chain) -> std
     }
 
     // `lock_mode::immediate` (M1 boundary-review finding R1): Planar is a
-    // five-binary system that shares one SQLite file, and every binary
+    // four-binary system that shares one SQLite file, and every binary
     // migrates the database at startup. A plain `begin;` takes no lock —
     // two concurrent starters could both read the same current_version,
     // both open a deferred transaction, and both start executing this

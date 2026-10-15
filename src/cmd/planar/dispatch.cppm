@@ -57,7 +57,7 @@
 ///     $ planar resume         -> exit 1, "no active task in cwd-derived
 ///                                scope; pass <task-id> explicitly"
 ///     $ planar capture        -> exit 0, help page
-///     $ planar feedback       -> exit 0, help page
+///     $ planar workspace      -> exit 0, help page
 ///
 /// The last two are pure groups, so the previous rule — "a matched node
 /// with children renders help" — was right for every verb this binary had
@@ -66,7 +66,7 @@
 /// help ONLY WHEN THE TABLE HAS NO ENTRY FOR IT. A registered handler on a
 /// group node means the group is dual and the handler wins.
 ///
-/// That keeps `capture`, `feedback`, `workbench`, `annotate`,
+/// That keeps `capture`, `workbench`, `annotate`,
 /// `workspace` and bare `planar` on the help path (none is registered) and
 /// routes `handoff` / `resume` to their handlers, with no per-verb special
 /// case anywhere.

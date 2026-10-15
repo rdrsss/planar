@@ -4,7 +4,7 @@
 ///
 /// Port of zig/src/cmd/planar/handlers/audit/session.zig.
 ///
-/// ## All five of the family's leaves are now landed
+/// ## All four of the family's leaves are now landed
 ///
 /// `audit session` landed at task 6090; `audit trail` at task 6262. Named
 /// rather than left to be inferred from the dispatch table:

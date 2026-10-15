@@ -13,7 +13,7 @@
 //     raw `CLI::App::add_option(...)` calls in `planar-agent` and
 //     `planar-ext` bypass the helpers entirely. Neither is visible to the
 //     compiler. Both surface in the catalog as an empty description.
-//   - The catalog is the one artifact all five binaries share, so it is the
+//   - The catalog is the one artifact all four binaries share, so it is the
 //     place a single walk can hold them to one rule.
 //
 // ## No allowance

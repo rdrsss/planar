@@ -507,7 +507,7 @@ Two invariants govern scope behavior when cwd is inside a worktree:
 `barrel-bypass` exception, coders return evidence and the orchestrator advances
 task state with `planar-agent complete --claim <token>`, the atomic terminal
 verb that flips claim status and task status in one transaction. This
-reinforces the five-binary boundary and the canonical claim ritual in
+reinforces the four-binary boundary and the canonical claim ritual in
 [Coordination claims](#coordination-claims).
 
 **`--scope <slug>` does NOT override the refusal.** The rule is about *where the verb runs*, not which scope it targets. To plan against a member repo from elsewhere, cd to the parent repo (or workspace root with `--scope <member>`); do not try to plan from inside a worktree.

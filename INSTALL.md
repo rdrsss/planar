@@ -748,7 +748,7 @@ ctest --test-dir build/debug --output-on-failure         # Catch2 unit tests
 The repo also ships a `Makefile` with the common targets:
 
 ```bash
-make build              # cmake --preset release; copies the 5 binaries into ./bin/
+make build              # cmake --preset release; copies the 4 binaries into ./bin/
 make test               # cmake --preset debug; cmake --build --target all planar_tests; ctest
 make test-all           # unit (ctest) + registry check + coverage + cli-usage-check + surface/exit-code/eval contracts + cpp-lint-gate
 make cpp-lint           # pinned clang-format --dry-run --Werror + clang-tidy + doxygen
